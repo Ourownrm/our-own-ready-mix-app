@@ -7,6 +7,7 @@ import orderRoutes from "./routes/orders.js";
 import ticketRoutes from "./routes/tickets.js";
 import driverRoutes from "./routes/driver.js";
 import masterDataRoutes from "./routes/masterData.js";
+import setupRoutes from "./routes/setup.js";
 
 dotenv.config();
 
@@ -21,6 +22,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/tickets", ticketRoutes);
 app.use("/api/driver", driverRoutes);
 app.use("/api/master", masterDataRoutes);
+app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff
 app.use((err, req, res, next) => {
