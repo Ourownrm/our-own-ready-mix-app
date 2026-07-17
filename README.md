@@ -8,16 +8,21 @@ Real, running codebase (not a mockup). This is phase 1 of the actual build.
   even though their screens aren't built yet).
 - **Backend API** (`backend/`) — sign-in, Order creation, Delivery Ticket creation with
   full Trip Status Timeline logging, Driver duty toggle + GPS ping ingestion, trip
-  allowance auto-payout on completed delivery only, breakdown/fuel reporting.
+  allowance auto-payout on completed delivery only, breakdown/fuel reporting, Plant QC,
+  Site QC with reject-concrete flow, invoicing based on rate master, and payments
+  supporting multiple receipts per invoice.
 - **Frontend** (`frontend/`) — installable Progressive Web App (PWA), works offline for
-  the Driver screen (queues actions locally, syncs automatically once back online),
-  sign-in page, role-based routing for all 7 roles.
-- **Driver duty screen** — the one screen fully wired end-to-end to the real backend,
-  matching the mockup you approved (50%-size button, green ON / red OFF).
+  the Driver and Site Supervisor screens (queues actions locally, syncs automatically
+  once back online), sign-in page, role-based routing for all 7 roles.
+- **Five roles fully wired end-to-end**: Driver, Manager, Site Supervisor, Plant
+  Operator/QC, Accountant. Each was tested against a real database with a full pipeline
+  test (order → ticket → plant QC → dispatch → site arrival → unloading complete →
+  invoice generated → trip allowance paid → accountant payment recorded) before being
+  handed over.
 
-## What's not built yet (placeholders in place)
-Manager, Site Supervisor, Plant Operator/QC, Accountant, Administrator screens —
-their designs are approved, they just need the same wiring the Driver screen has.
+## What's not built yet (placeholder in place)
+Administrator screen (user management, master data entry for customers/sites/rates —
+right now these need to be added directly in the database until this screen exists).
 Also: Pump module, Fuel module, and the 12 Reports — schema is ready, screens are not.
 
 ## How to run this yourself
