@@ -1,0 +1,158 @@
+import { useEffect, useState } from "react";
+import { useAuth } from "../lib/AuthContext.jsx";
+import { apiRequest } from "../lib/api.js";
+
+export default function PlantOperator() {
+  const { user, logout } = useAuth();
+  const [orders, setOrders] = useState([]);
+  const [trucks, setTrucks] = useState([]);
+  const [drivers, setDrivers] = useState([]);
+  const [pendingQc, setPendingQc] = useState([]);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const [ticketForm, setTicketForm] = useState({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "" });
+  const [qcTicketId, setQcTicketId] = useState("");
+  const [qcForm, setQcForm] = useState({ slump_mm: "", temperature_c: "", number_of_cubes: 3, sample_ids: "", remarks: "" });
+
+  async function load() {
+    try {
+      const [o, t, d, pending] = await Promise.all([
+        apiRequest("/plant-operator/available-orders"),
+        apiRequest("/master/trucks"),
+        apiRequest("/master/drivers"),
+        apiRequest("/plant-operator/pending-qc"),
+      ]);
+      setOrders(o); setTrucks(t); setDrivers(d); setPendingQc(pending);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function submitTicket(e) {
+    e.preventDefault();
+    setError(""); setNotice("");
+    try {
+      const ticket = await apiRequest("/plant-operator/tickets", { method: "POST", body: ticketForm });
+      setNotice(`Ticket ${ticket.ticket_number} created.`);
+      setTicketForm({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function submitQc(e) {
+    e.preventDefault();
+    setError(""); setNotice("");
+    if (!qcTicketId) return setError("Select a ticket to submit QC for.");
+    try {
+      await apiRequest(`/plant-operator/${qcTicketId}/plant-qc`, { method: "POST", body: qcForm });
+      setNotice("QC submitted, ticket moved to dispatched.");
+      setQcForm({ slump_mm: "", temperature_c: "", number_of_cubes: 3, sample_ids: "", remarks: "" });
+      setQcTicketId("");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  const selectedOrder = orders.find((o) => String(o.id) === String(ticketForm.order_id));
+
+  return (
+    <div style={{ maxWidth: 900, margin: "24px auto", padding: "0 16px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: "#666" }}>Plant Operator / QC &middot; {user?.name}</div>
+        <button onClick={logout} style={{ fontSize: 12, color: "#999", background: "none", border: "none" }}>Sign out</button>
+      </div>
+      {error && <div style={{ color: "#c0392b", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      {notice && <div style={{ color: "#1D9E75", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={{ background: "#f5f5f5", borderRadius: 12, padding: 16 }}>
+          <div style={{ fontWeight: 500, marginBottom: 10 }}>Create delivery ticket</div>
+          <form onSubmit={submitTicket} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+            <div>
+              <div style={{ color: "#666" }}>Select order</div>
+              <select value={ticketForm.order_id} onChange={(e) => setTicketForm({ ...ticketForm, order_id: e.target.value })} required>
+                <option value="">Select</option>
+                {orders.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
+                  </option>
+                ))}
+              </select>
+            </div>
+            {selectedOrder && (
+              <div style={{ fontSize: 12, color: "#666", background: "#fff", padding: 8, borderRadius: 6 }}>
+                Order {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;
+                remaining {selectedOrder.order_quantity_m3 - selectedOrder.dispatched_so_far} m³
+              </div>
+            )}
+            <div>
+              <div style={{ color: "#666" }}>This ticket's quantity (m³)</div>
+              <input type="number" value={ticketForm.loaded_quantity_m3} onChange={(e) => setTicketForm({ ...ticketForm, loaded_quantity_m3: e.target.value })} required />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <div style={{ color: "#666" }}>Truck</div>
+                <select value={ticketForm.truck_id} onChange={(e) => setTicketForm({ ...ticketForm, truck_id: e.target.value })} required>
+                  <option value="">Select</option>
+                  {trucks.map((t) => <option key={t.id} value={t.id}>{t.truck_number}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{ color: "#666" }}>Driver</div>
+                <select value={ticketForm.driver_id} onChange={(e) => setTicketForm({ ...ticketForm, driver_id: e.target.value })} required>
+                  <option value="">Select</option>
+                  {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <button type="submit" style={{ marginTop: 4 }}>Save ticket</button>
+          </form>
+        </div>
+
+        <div style={{ background: "#f5f5f5", borderRadius: 12, padding: 16 }}>
+          <div style={{ fontWeight: 500, marginBottom: 10 }}>Plant QC entry</div>
+          <form onSubmit={submitQc} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+            <div>
+              <div style={{ color: "#666" }}>Ticket awaiting QC</div>
+              <select value={qcTicketId} onChange={(e) => setQcTicketId(e.target.value)} required>
+                <option value="">Select</option>
+                {pendingQc.map((t) => (
+                  <option key={t.id} value={t.id}>{t.ticket_number} — {t.truck_number} — {t.site_name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <div style={{ color: "#666" }}>Slump (mm)</div>
+                <input type="number" value={qcForm.slump_mm} onChange={(e) => setQcForm({ ...qcForm, slump_mm: e.target.value })} required />
+              </div>
+              <div>
+                <div style={{ color: "#666" }}>Temperature (°C)</div>
+                <input type="number" value={qcForm.temperature_c} onChange={(e) => setQcForm({ ...qcForm, temperature_c: e.target.value })} />
+              </div>
+            </div>
+            <div>
+              <div style={{ color: "#666" }}>Number of cubes</div>
+              <input type="number" value={qcForm.number_of_cubes} onChange={(e) => setQcForm({ ...qcForm, number_of_cubes: e.target.value })} />
+            </div>
+            <div>
+              <div style={{ color: "#666" }}>Sample IDs</div>
+              <input type="text" value={qcForm.sample_ids} onChange={(e) => setQcForm({ ...qcForm, sample_ids: e.target.value })} placeholder="C-2231-1, C-2231-2" />
+            </div>
+            <div>
+              <div style={{ color: "#666" }}>Remarks</div>
+              <textarea rows={2} value={qcForm.remarks} onChange={(e) => setQcForm({ ...qcForm, remarks: e.target.value })} />
+            </div>
+            <button type="submit" style={{ marginTop: 4 }}>Submit QC and release</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}

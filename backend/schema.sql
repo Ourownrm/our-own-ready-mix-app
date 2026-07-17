@@ -276,7 +276,7 @@ CREATE TABLE breakdown_reports (
 
 CREATE TABLE invoices (
   id SERIAL PRIMARY KEY,
-  ticket_id INTEGER REFERENCES delivery_tickets(id) NOT NULL,
+  ticket_id INTEGER REFERENCES delivery_tickets(id) UNIQUE NOT NULL,
   customer_id INTEGER REFERENCES customers(id) NOT NULL,
   concrete_amount NUMERIC(12,2) NOT NULL,
   pumping_charge NUMERIC(12,2) DEFAULT 0,

@@ -4,6 +4,9 @@ import ProtectedRoute from "./lib/ProtectedRoute.jsx";
 import Login from "./pages/Login.jsx";
 import DriverDuty from "./pages/DriverDuty.jsx";
 import ManagerDashboard from "./pages/ManagerDashboard.jsx";
+import SiteSupervisor from "./pages/SiteSupervisor.jsx";
+import PlantOperator from "./pages/PlantOperator.jsx";
+import Accountant from "./pages/Accountant.jsx";
 import { ComingSoon } from "./pages/ComingSoon.jsx";
 
 export default function App() {
@@ -21,13 +24,13 @@ export default function App() {
             <ProtectedRoute roles={["manager"]}><ManagerDashboard /></ProtectedRoute>
           } />
           <Route path="/site-supervisor" element={
-            <ProtectedRoute roles={["site_supervisor"]}><ComingSoon role="Site Supervisor" /></ProtectedRoute>
+            <ProtectedRoute roles={["site_supervisor"]}><SiteSupervisor /></ProtectedRoute>
           } />
           <Route path="/plant-operator" element={
-            <ProtectedRoute roles={["plant_operator", "qc_engineer"]}><ComingSoon role="Plant Operator / QC" /></ProtectedRoute>
+            <ProtectedRoute roles={["plant_operator", "qc_engineer"]}><PlantOperator /></ProtectedRoute>
           } />
           <Route path="/accountant" element={
-            <ProtectedRoute roles={["accountant"]}><ComingSoon role="Accountant" /></ProtectedRoute>
+            <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>
           } />
           <Route path="/administrator" element={
             <ProtectedRoute roles={["administrator"]}><ComingSoon role="Administrator" /></ProtectedRoute>

@@ -44,4 +44,9 @@ router.get("/trip-allowance-categories", async (req, res) => {
   res.json(rows);
 });
 
+router.get("/rejection-reasons", async (req, res) => {
+  const { rows } = await query("SELECT id, reason FROM rejection_reasons ORDER BY reason");
+  res.json(rows);
+});
+
 export default router;

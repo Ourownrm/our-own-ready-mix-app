@@ -58,7 +58,48 @@ router.get("/setup", async (req, res) => {
        SELECT * FROM (VALUES ('M20'), ('M25'), ('M30'), ('M35')) AS v(name)
        WHERE NOT EXISTS (SELECT 1 FROM mix_grades)`
     );
+    await query(
+      `INSERT INTO rejection_reasons (reason)
+       SELECT * FROM (VALUES
+         ('Slump out of range'), ('Segregation'),
+         ('Delayed delivery / setting started'), ('Wrong grade supplied'), ('Other')
+       ) AS v(reason)
+       WHERE NOT EXISTS (SELECT 1 FROM rejection_reasons)`
+    );
     log.push("Sample trip allowance categories and mix grades added.");
+
+    await query(
+      `INSERT INTO customers (name)
+       SELECT * FROM (VALUES ('Skyline Builders'), ('Greenfield Infra')) AS v(name)
+       WHERE NOT EXISTS (SELECT 1 FROM customers)`
+    );
+    const { rows: custForSite } = await query("SELECT id FROM customers ORDER BY id LIMIT 1");
+    const { rows: catForSite } = await query(
+      "SELECT id FROM trip_allowance_categories WHERE amount = 150 LIMIT 1"
+    );
+    if (custForSite.length && catForSite.length) {
+      await query(
+        `INSERT INTO sites (customer_id, name, distance_from_plant_km, trip_allowance_category_id)
+         SELECT $1, 'Sector 12, Site A', 14, $2
+         WHERE NOT EXISTS (SELECT 1 FROM sites)`,
+        [custForSite[0].id, catForSite[0].id]
+      );
+    }
+    log.push("Sample customer and site added.");
+
+    const { rows: allCustomers } = await query("SELECT id FROM customers");
+    const { rows: gradeRows } = await query("SELECT id FROM mix_grades WHERE name = 'M25' LIMIT 1");
+    if (allCustomers.length && gradeRows.length) {
+      for (const c of allCustomers) {
+        await query(
+          `INSERT INTO rate_master (customer_id, mix_grade_id, rate_per_m3, pumping_charge_per_m3, waiting_charge_per_hour, effective_from)
+           SELECT $1, $2, 4500, 200, 500, CURRENT_DATE
+           WHERE NOT EXISTS (SELECT 1 FROM rate_master WHERE customer_id = $1 AND mix_grade_id = $2)`,
+          [c.id, gradeRows[0].id]
+        );
+      }
+      log.push("Sample M25 rate added for all existing customers.");
+    }
 
     res.send(
       `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
