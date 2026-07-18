@@ -9,6 +9,7 @@ import driverRoutes from "./routes/driver.js";
 import siteSupervisorRoutes from "./routes/siteSupervisor.js";
 import plantOperatorRoutes from "./routes/plantOperator.js";
 import accountantRoutes from "./routes/accountant.js";
+import administratorRoutes from "./routes/administrator.js";
 import masterDataRoutes from "./routes/masterData.js";
 import setupRoutes from "./routes/setup.js";
 
@@ -27,6 +28,7 @@ app.use("/api/driver", driverRoutes);
 app.use("/api/site-supervisor", siteSupervisorRoutes);
 app.use("/api/plant-operator", plantOperatorRoutes);
 app.use("/api/accountant", accountantRoutes);
+app.use("/api/administrator", administratorRoutes);
 app.use("/api/master", masterDataRoutes);
 app.use("/", setupRoutes);
 

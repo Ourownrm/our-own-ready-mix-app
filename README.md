@@ -14,16 +14,24 @@ Real, running codebase (not a mockup). This is phase 1 of the actual build.
 - **Frontend** (`frontend/`) — installable Progressive Web App (PWA), works offline for
   the Driver and Site Supervisor screens (queues actions locally, syncs automatically
   once back online), sign-in page, role-based routing for all 7 roles.
-- **Five roles fully wired end-to-end**: Driver, Manager, Site Supervisor, Plant
-  Operator/QC, Accountant. Each was tested against a real database with a full pipeline
-  test (order → ticket → plant QC → dispatch → site arrival → unloading complete →
-  invoice generated → trip allowance paid → accountant payment recorded) before being
-  handed over.
+- **All 7 roles fully wired end-to-end**: Driver, Manager, Site Supervisor, Plant
+  Operator/QC, Accountant, and Administrator (user management + master data: customers,
+  sites, trucks, rates). Each was tested against a real database with full pipeline
+  tests before being handed over, including role-security checks (e.g. confirming a
+  Driver account cannot reach Administrator or Accountant routes).
 
-## What's not built yet (placeholder in place)
-Administrator screen (user management, master data entry for customers/sites/rates —
-right now these need to be added directly in the database until this screen exists).
-Also: Pump module, Fuel module, and the 12 Reports — schema is ready, screens are not.
+## What's not built yet
+Pump module, Fuel module, and the 12 Reports — schema is ready (see `schema.sql`),
+screens are not. These were flagged in the original requirements gap analysis and
+intentionally deferred.
+
+A few smaller items also noted during the build, worth knowing about:
+- Manager "approve rejected concrete" step isn't wired (rejections currently just notify
+  the Manager, without a formal approval action)
+- Site temperature isn't captured at the Site Supervisor step (only slump is)
+- No audit-trail UI yet, though the underlying `audit_log` table exists in the schema
+- Disabling a user takes effect on their next login; a currently-logged-in session
+  isn't force-ended immediately (their token remains valid until it expires, up to 30 days)
 
 ## How to run this yourself
 

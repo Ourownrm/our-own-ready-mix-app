@@ -7,7 +7,7 @@ import ManagerDashboard from "./pages/ManagerDashboard.jsx";
 import SiteSupervisor from "./pages/SiteSupervisor.jsx";
 import PlantOperator from "./pages/PlantOperator.jsx";
 import Accountant from "./pages/Accountant.jsx";
-import { ComingSoon } from "./pages/ComingSoon.jsx";
+import Administrator from "./pages/Administrator.jsx";
 
 export default function App() {
   return (
@@ -33,7 +33,7 @@ export default function App() {
             <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>
           } />
           <Route path="/administrator" element={
-            <ProtectedRoute roles={["administrator"]}><ComingSoon role="Administrator" /></ProtectedRoute>
+            <ProtectedRoute roles={["administrator"]}><Administrator /></ProtectedRoute>
           } />
 
           <Route path="*" element={<Navigate to="/login" replace />} />

@@ -1,0 +1,111 @@
+import { Router } from "express";
+import bcrypt from "bcryptjs";
+import { query } from "../db.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+
+const router = Router();
+router.use(requireAuth, requireRole("administrator"));
+
+// ===== Users =====
+
+router.get("/users", async (req, res) => {
+  const { rows } = await query(
+    "SELECT id, name, phone, email, role, is_active, created_at FROM users ORDER BY created_at DESC"
+  );
+  res.json(rows);
+});
+
+router.post("/users", async (req, res) => {
+  const { name, phone, email, password, role } = req.body;
+  if (!name || !phone || !password || !role) {
+    return res.status(400).json({ error: "Name, phone, password, and role are all required." });
+  }
+  const validRoles = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant"];
+  if (!validRoles.includes(role)) {
+    return res.status(400).json({ error: "That role isn't recognized." });
+  }
+
+  const { rows: existing } = await query("SELECT id FROM users WHERE phone = $1", [phone]);
+  if (existing.length) {
+    return res.status(400).json({ error: "A user with that phone number already exists." });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const { rows } = await query(
+    `INSERT INTO users (name, phone, email, password_hash, role)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id, name, phone, email, role, is_active`,
+    [name, phone, email || null, passwordHash, role]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// Toggle active/disabled — soft only, never a hard delete (SRS §16)
+router.patch("/users/:id/status", async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
+});
+
+router.post("/users/:id/reset-password", async (req, res) => {
+  const { new_password } = req.body;
+  if (!new_password || new_password.length < 6) {
+    return res.status(400).json({ error: "New password must be at least 6 characters." });
+  }
+  const passwordHash = await bcrypt.hash(new_password, 10);
+  await query("UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2", [passwordHash, req.params.id]);
+  res.json({ ok: true });
+});
+
+// ===== Master data: Customers =====
+
+router.post("/customers", async (req, res) => {
+  const { name, contact_number, billing_address } = req.body;
+  if (!name) return res.status(400).json({ error: "Customer name is required." });
+  const { rows } = await query(
+    "INSERT INTO customers (name, contact_number, billing_address) VALUES ($1,$2,$3) RETURNING *",
+    [name, contact_number, billing_address]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// ===== Master data: Sites =====
+
+router.post("/sites", async (req, res) => {
+  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id } = req.body;
+  if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
+  const { rows } = await query(
+    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// ===== Master data: Trucks =====
+
+router.post("/trucks", async (req, res) => {
+  const { truck_number, capacity_m3 } = req.body;
+  if (!truck_number) return res.status(400).json({ error: "Truck number is required." });
+  const { rows } = await query(
+    "INSERT INTO trucks (truck_number, capacity_m3) VALUES ($1,$2) RETURNING *",
+    [truck_number, capacity_m3]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// ===== Master data: Rate master (rate per m3, pumping & waiting charges) =====
+
+router.post("/rates", async (req, res) => {
+  const { customer_id, mix_grade_id, rate_per_m3, pumping_charge_per_m3, waiting_charge_per_hour, effective_from } = req.body;
+  if (!customer_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
+    return res.status(400).json({ error: "Customer, mix grade, rate, and effective date are required." });
+  }
+  const { rows } = await query(
+    `INSERT INTO rate_master (customer_id, mix_grade_id, rate_per_m3, pumping_charge_per_m3, waiting_charge_per_hour, effective_from)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [customer_id, mix_grade_id, rate_per_m3, pumping_charge_per_m3 || 0, waiting_charge_per_hour || 0, effective_from]
+  );
+  res.status(201).json(rows[0]);
+});
+
+export default router;
