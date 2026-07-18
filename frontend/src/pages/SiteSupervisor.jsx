@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import { useAuth } from "../lib/AuthContext.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount } from "../lib/offlineQueue.js";
+import { TopBar } from "../lib/TopBar.jsx";
 
 export default function SiteSupervisor() {
-  const { user, logout } = useAuth();
   const [deliveries, setDeliveries] = useState([]);
   const [selected, setSelected] = useState(null);
   const [showReject, setShowReject] = useState(false);
@@ -40,19 +39,16 @@ export default function SiteSupervisor() {
   }
 
   return (
-    <div style={{ maxWidth: 320, margin: "24px auto", padding: "0 16px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontSize: 13, color: "#666" }}>{user?.name}</div>
-        <button onClick={logout} style={{ fontSize: 12, color: "#999", background: "none", border: "none" }}>Sign out</button>
-      </div>
-
-      {error && <div style={{ color: "#c0392b", fontSize: 13, marginBottom: 8 }}>{error}</div>}
-      {!navigator.onLine && (
-        <div style={{ textAlign: "center", fontSize: 12, background: "#fff3cd", color: "#856404", padding: 6, borderRadius: 8, marginBottom: 12 }}>
-          No signal — actions are being saved and will sync automatically
-        </div>
-      )}
-      {pending > 0 && <div style={{ textAlign: "center", fontSize: 12, color: "#999", marginBottom: 12 }}>{pending} action(s) waiting to sync</div>}
+    <>
+      <TopBar title="Site Supervisor" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+        {!navigator.onLine && (
+          <div style={{ textAlign: "center", fontSize: 12, background: "var(--amber-bg)", color: "var(--amber)", padding: 6, borderRadius: 8, marginBottom: 12 }}>
+            No signal — actions are being saved and will sync automatically
+          </div>
+        )}
+        {pending > 0 && <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>{pending} action(s) waiting to sync</div>}
 
       {deliveries.length > 1 && (
         <select
@@ -67,11 +63,11 @@ export default function SiteSupervisor() {
       )}
 
       {!selected ? (
-        <div style={{ fontSize: 13, color: "#999", textAlign: "center", marginTop: 40 }}>No deliveries assigned today.</div>
+        <div style={{ fontSize: 13, color: "var(--slate)", textAlign: "center", marginTop: 40 }}>No deliveries assigned today.</div>
       ) : (
-        <div style={{ background: "#f5f5f5", borderRadius: 24, padding: "20px 16px" }}>
-          <div style={{ textAlign: "center", fontSize: 13, color: "#666" }}>{selected.site_name} &middot; {selected.ticket_number}</div>
-          <div style={{ textAlign: "center", fontSize: 15, fontWeight: 500, margin: "4px 0 16px" }}>{statusLabel(selected.status)}</div>
+        <div className="card" style={{ borderRadius: 20, padding: "20px 16px" }}>
+          <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)" }}>{selected.site_name} &middot; {selected.ticket_number}</div>
+          <div style={{ textAlign: "center", fontSize: 15, fontWeight: 600, margin: "4px 0 16px" }}>{statusLabel(selected.status)}</div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <button disabled={selected.status !== "dispatched" && selected.status !== "created"} onClick={() => act("arrival")}>
@@ -88,14 +84,16 @@ export default function SiteSupervisor() {
           {selected.status === "unloading" && <CompleteForm onAct={act} />}
 
           <button
-            style={{ width: "100%", marginTop: 16, color: "#c0392b", borderColor: "#c0392b" }}
+            className="btn-danger"
+            style={{ width: "100%", marginTop: 16 }}
             onClick={() => setShowReject(true)}
           >
             Reject concrete
           </button>
         </div>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -120,9 +118,9 @@ function CompleteForm({ onAct }) {
 
   return (
     <div style={{ marginTop: 16, fontSize: 13 }}>
-      <div style={{ color: "#666", marginBottom: 4 }}>Site slump (mm)</div>
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Site slump (mm)</div>
       <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
-      <div style={{ color: "#666", marginBottom: 4 }}>Delivery note status</div>
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Delivery note status</div>
       <select value={noteStatus} onChange={(e) => setNoteStatus(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
         <option value="pending">Pending</option>
         <option value="signed">Signed</option>
@@ -160,31 +158,34 @@ function RejectForm({ ticket, onAct, onDone }) {
   }
 
   return (
-    <div style={{ maxWidth: 320, margin: "24px auto", padding: "0 16px" }}>
-      <div style={{ fontSize: 15, fontWeight: 500 }}>Reject concrete</div>
-      <div style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>{ticket.ticket_number} &middot; {ticket.site_name}</div>
+    <>
+      <TopBar title="Site Supervisor · Reject concrete" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>Reject concrete</div>
+      <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{ticket.ticket_number} &middot; {ticket.site_name}</div>
 
-      <div style={{ fontSize: 13 }}>
-        <div style={{ color: "#666", marginBottom: 4 }}>Reason for rejection</div>
+      <div className="field-input" style={{ fontSize: 13 }}>
+        <div style={{ color: "var(--slate)", marginBottom: 4 }}>Reason for rejection</div>
         <select value={reasonId} onChange={(e) => setReasonId(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
           <option value="">Select</option>
           {reasons.map((r) => <option key={r.id} value={r.id}>{r.reason}</option>)}
         </select>
 
-        <div style={{ color: "#666", marginBottom: 4 }}>Measured site slump (mm)</div>
+        <div style={{ color: "var(--slate)", marginBottom: 4 }}>Measured site slump (mm)</div>
         <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
-        <div style={{ color: "#666", marginBottom: 4 }}>Quantity rejected (m³)</div>
+        <div style={{ color: "var(--slate)", marginBottom: 4 }}>Quantity rejected (m³)</div>
         <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
-        <div style={{ color: "#666", marginBottom: 4 }}>Remarks</div>
+        <div style={{ color: "var(--slate)", marginBottom: 4 }}>Remarks</div>
         <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
 
-        <button onClick={submit} disabled={saving} style={{ width: "100%", background: "#c0392b", color: "#fff", marginBottom: 8 }}>
+        <button className="btn-danger" onClick={submit} disabled={saving} style={{ width: "100%", marginBottom: 8 }}>
           {saving ? "Saving..." : "Confirm rejection"}
         </button>
         <button onClick={onDone} style={{ width: "100%" }}>Cancel</button>
       </div>
-    </div>
+      </div>
+    </>
   );
 }

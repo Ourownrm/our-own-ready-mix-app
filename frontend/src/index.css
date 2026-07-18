@@ -1,25 +1,134 @@
+/* ===== Design tokens ===== */
+:root {
+  /* Color: grounded in the material itself — cured concrete, rebar, plant-floor signage */
+  --concrete: #F3F1EC;       /* page background — warm cast-concrete gray, not sterile white */
+  --charcoal: #22262B;       /* primary text, top bar */
+  --slate: #5B6470;          /* secondary text */
+  --rebar: #C75B12;          /* primary accent — safety-orange, used with restraint */
+  --rebar-dark: #A94B0C;
+  --signal-green: #1D7A55;   /* on / active / paid / completed */
+  --signal-green-bg: #E4F2EC;
+  --alert-red: #B03A2E;      /* off / rejected / overdue */
+  --alert-red-bg: #F8E9E7;
+  --amber: #9C6B12;          /* pending / waiting */
+  --amber-bg: #F5EDDD;
+  --surface: #FFFFFF;
+  --border: #DEDAD1;
+  --border-strong: #C8C2B5;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(34, 38, 43, 0.06), 0 1px 8px rgba(34, 38, 43, 0.04);
+}
+
+* { box-sizing: border-box; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #111;
+  color: var(--charcoal);
+  background: var(--concrete);
   margin: 0;
 }
 
+/* Signature: a rebar-orange stripe along the very top of the app, like hazard
+   striping on plant equipment — the one deliberate accent, everything else stays quiet. */
+#root {
+  border-top: 4px solid var(--rebar);
+  min-height: 100vh;
+}
+
+h1, h2, h3 { color: var(--charcoal); margin: 0; }
+
+/* ===== Top bar (shared across every signed-in screen) ===== */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--charcoal);
+  color: #fff;
+  padding: 14px 20px;
+  margin-bottom: 20px;
+}
+.topbar-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+.topbar-title span { color: #B8BFC7; font-weight: 400; }
+.topbar-signout {
+  background: none; border: 1px solid #454B52; color: #D7DBDF;
+  padding: 6px 12px; font-size: 12px; border-radius: 6px;
+}
+.topbar-signout:hover { background: #2C3138; }
+
+/* ===== Buttons ===== */
+button {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--charcoal);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+button:hover:not(:disabled) { border-color: var(--slate); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary, button[type="submit"] {
+  background: var(--rebar);
+  border-color: var(--rebar);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled), button[type="submit"]:hover:not(:disabled) { background: var(--rebar-dark); }
+
+.btn-danger { background: var(--alert-red); border-color: var(--alert-red); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #8E2F25; }
+
+.btn-tab { background: var(--surface); }
+.btn-tab.active { background: var(--charcoal); border-color: var(--charcoal); color: #fff; }
+
+/* ===== Cards / KPIs ===== */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow); }
+.kpi-label { font-size: 12px; color: var(--slate); text-transform: uppercase; letter-spacing: 0.4px; }
+.kpi-value { font-size: 26px; font-weight: 600; color: var(--charcoal); margin-top: 2px; }
+.kpi-value.danger { color: var(--alert-red); }
+
+/* ===== Status badges ===== */
+.badge { display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 20px; font-weight: 500; }
+.badge-success { background: var(--signal-green-bg); color: var(--signal-green); }
+.badge-danger { background: var(--alert-red-bg); color: var(--alert-red); }
+.badge-warning { background: var(--amber-bg); color: var(--amber); }
+.badge-neutral { background: #ECEAE4; color: var(--slate); }
+
+/* ===== Tables ===== */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--slate); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border-strong); font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
+td { padding: 8px 6px; border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: none; }
+
+/* ===== Forms ===== */
 .field-input input,
 .field-input select,
 .field-input textarea {
   width: 100%;
-  padding: 8px;
+  padding: 9px 10px;
   font-size: 13px;
   box-sizing: border-box;
-  border: 1px solid #ccc;
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--charcoal);
+  font-family: inherit;
+}
+.field-input input:focus,
+.field-input select:focus,
+.field-input textarea:focus {
+  outline: 2px solid var(--rebar);
+  outline-offset: 1px;
+  border-color: var(--rebar);
 }
 
-button {
-  padding: 10px 14px;
-  font-size: 13px;
-  border-radius: 8px;
-  border: 1px solid #ccc;
-  background: #fff;
-  cursor: pointer;
-}
+a { color: var(--rebar); }

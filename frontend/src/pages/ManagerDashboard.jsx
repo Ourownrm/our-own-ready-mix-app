@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useAuth } from "../lib/AuthContext.jsx";
 import { apiRequest } from "../lib/api.js";
+import { TopBar } from "../lib/TopBar.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
 const FLEET_LABELS = {
@@ -9,7 +9,6 @@ const FLEET_LABELS = {
 };
 
 export default function ManagerDashboard() {
-  const { user, logout } = useAuth();
   const [stats, setStats] = useState(null);
   const [orders, setOrders] = useState([]);
   const [showCreateOrder, setShowCreateOrder] = useState(false);
@@ -31,7 +30,14 @@ export default function ManagerDashboard() {
   useEffect(() => { load(); }, []);
 
   if (showCreateOrder) {
-    return <CreateOrder onDone={() => { setShowCreateOrder(false); load(); }} />;
+    return (
+      <>
+        <TopBar title="Manager · Create order" />
+        <div style={{ maxWidth: 960, margin: "0 auto", padding: "0 16px 32px" }}>
+          <CreateOrder onDone={() => { setShowCreateOrder(false); load(); }} />
+        </div>
+      </>
+    );
   }
 
   const fleetCounts = { "At plant": 0, Running: 0, "At site": 0, Returning: 0 };
@@ -44,72 +50,64 @@ export default function ManagerDashboard() {
   const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)));
 
   return (
-    <div style={{ maxWidth: 960, margin: "24px auto", padding: "0 16px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontSize: 13, color: "#666" }}>Manager Dashboard &middot; {user?.name}</div>
-        <button onClick={logout} style={{ fontSize: 12, color: "#999", background: "none", border: "none" }}>Sign out</button>
+    <>
+      <TopBar title="Manager Dashboard" />
+      <div style={{ maxWidth: 960, margin: "0 auto", padding: "0 16px 32px" }}>
+        {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
+          <Kpi label="Today's production" value={`${stats?.today_production_m3 ?? "–"} m³`} />
+          <Kpi label="Monthly production" value={`${stats?.monthly_production_m3 ?? "–"} m³`} />
+          <Kpi label="Delayed trucks" value={stats?.delayed_trucks ?? "–"} danger={stats?.delayed_trucks > 0} />
+          <Kpi label="Rejected concrete" value={stats?.rejected_concrete ?? "–"} />
+        </div>
+
+        <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+          {Object.entries(fleetCounts).map(([label, count]) => (
+            <div key={label} className="card" style={{ flex: 1, textAlign: "center" }}>
+              <div className="kpi-label">{label}</div>
+              <div style={{ fontSize: 20, fontWeight: 600, marginTop: 2 }}>{count}</div>
+            </div>
+          ))}
+        </div>
+
+        <button className="btn-primary" onClick={() => setShowCreateOrder(true)} style={{ marginBottom: 20 }}>Create order</button>
+
+        <OrderTable title="Running today" rows={today} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} />
       </div>
-
-      {error && <div style={{ color: "#c0392b", fontSize: 13, marginBottom: 12 }}>{error}</div>}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
-        <Kpi label="Today's production" value={`${stats?.today_production_m3 ?? "–"} m³`} />
-        <Kpi label="Monthly production" value={`${stats?.monthly_production_m3 ?? "–"} m³`} />
-        <Kpi label="Delayed trucks" value={stats?.delayed_trucks ?? "–"} danger={stats?.delayed_trucks > 0} />
-        <Kpi label="Rejected concrete" value={stats?.rejected_concrete ?? "–"} />
-      </div>
-
-      <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
-        {Object.entries(fleetCounts).map(([label, count]) => (
-          <div key={label} style={{ flex: 1, background: "#f5f5f5", borderRadius: 12, padding: "10px", textAlign: "center" }}>
-            <div style={{ fontSize: 12, color: "#666" }}>{label}</div>
-            <div style={{ fontSize: 20, fontWeight: 500 }}>{count}</div>
-          </div>
-        ))}
-      </div>
-
-      <button onClick={() => setShowCreateOrder(true)} style={{ marginBottom: 16 }}>Create order</button>
-
-      <OrderTable title="Running today" rows={today} />
-      <OrderTable title="Scheduled tomorrow" rows={tomorrow} />
-    </div>
+    </>
   );
 }
 
 function Kpi({ label, value, danger }) {
   return (
-    <div style={{ background: "#f5f5f5", borderRadius: 12, padding: "1rem" }}>
-      <div style={{ fontSize: 13, color: "#666" }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 500, color: danger ? "#c0392b" : "#111" }}>{value}</div>
+    <div className="kpi">
+      <div className="kpi-label">{label}</div>
+      <div className={`kpi-value ${danger ? "danger" : ""}`}>{value}</div>
     </div>
   );
 }
 
 function OrderTable({ title, rows }) {
   return (
-    <div style={{ marginBottom: 24 }}>
-      <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>{title}</div>
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
       {rows.length === 0 ? (
-        <div style={{ fontSize: 13, color: "#999" }}>No orders.</div>
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No orders.</div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <table>
           <thead>
-            <tr style={{ textAlign: "left", color: "#666" }}>
-              <th style={{ padding: "6px 4px" }}>Customer</th>
-              <th style={{ padding: "6px 4px" }}>Site</th>
-              <th style={{ padding: "6px 4px" }}>Grade</th>
-              <th style={{ padding: "6px 4px" }}>Qty</th>
-              <th style={{ padding: "6px 4px" }}>Status</th>
-            </tr>
+            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Qty</th><th>Status</th></tr>
           </thead>
           <tbody>
             {rows.map((o) => (
-              <tr key={o.id} style={{ borderTop: "0.5px solid #ddd" }}>
-                <td style={{ padding: "6px 4px" }}>{o.customer_name}</td>
-                <td style={{ padding: "6px 4px" }}>{o.site_name}</td>
-                <td style={{ padding: "6px 4px" }}>{o.mix_grade_name}</td>
-                <td style={{ padding: "6px 4px" }}>{o.order_quantity_m3} m³</td>
-                <td style={{ padding: "6px 4px" }}>{o.status}</td>
+              <tr key={o.id}>
+                <td>{o.customer_name}</td>
+                <td>{o.site_name}</td>
+                <td>{o.mix_grade_name}</td>
+                <td>{o.order_quantity_m3} m³</td>
+                <td><StatusBadge status={o.status} /></td>
               </tr>
             ))}
           </tbody>
@@ -117,6 +115,14 @@ function OrderTable({ title, rows }) {
       )}
     </div>
   );
+}
+
+function StatusBadge({ status }) {
+  const map = {
+    completed: "badge-success", planned: "badge-neutral", in_progress: "badge-warning",
+    partially_completed: "badge-warning", cancelled: "badge-danger",
+  };
+  return <span className={`badge ${map[status] || "badge-neutral"}`}>{status.replace(/_/g, " ")}</span>;
 }
 
 function isSameDay(dateStr, d2) {

@@ -11,8 +11,8 @@ export default defineConfig({
         name: "Our Own Ready Mix",
         short_name: "OORM",
         description: "Ready mix concrete logistics management",
-        theme_color: "#1D9E75",
-        background_color: "#ffffff",
+        theme_color: "#C75B12",
+        background_color: "#F3F1EC",
         display: "standalone",
         start_url: "/",
         icons: [

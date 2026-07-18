@@ -1,21 +1,18 @@
 import { useEffect, useState } from "react";
-import { useAuth } from "../lib/AuthContext.jsx";
 import { apiRequest } from "../lib/api.js";
+import { TopBar } from "../lib/TopBar.jsx";
 
 const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant"];
 
 export default function Administrator() {
-  const { user, logout } = useAuth();
   const [view, setView] = useState("users"); // users | customers | sites | trucks | rates
   const [error, setError] = useState("");
 
   return (
-    <div style={{ maxWidth: 900, margin: "24px auto", padding: "0 16px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-        <div style={{ fontSize: 13, color: "#666" }}>Administrator &middot; {user?.name}</div>
-        <button onClick={logout} style={{ fontSize: 12, color: "#999", background: "none", border: "none" }}>Sign out</button>
-      </div>
-      {error && <div style={{ color: "#c0392b", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+    <>
+      <TopBar title="Administrator" />
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         {[
@@ -27,8 +24,8 @@ export default function Administrator() {
         ].map(([key, label]) => (
           <button
             key={key}
+            className={`btn-tab ${view === key ? "active" : ""}`}
             onClick={() => setView(key)}
-            style={{ background: view === key ? "#111" : "#fff", color: view === key ? "#fff" : "#111" }}
           >
             {label}
           </button>
@@ -41,6 +38,7 @@ export default function Administrator() {
       {view === "trucks" && <TrucksPanel setError={setError} />}
       {view === "rates" && <RatesPanel setError={setError} />}
     </div>
+    </>
   );
 }
 
@@ -80,25 +78,25 @@ function UsersPanel({ setError }) {
   }
 
   return (
-    <div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 12 }}>
+    <div className="card" style={{ marginBottom: 12 }}>
+      <table>
         <thead>
-          <tr style={{ textAlign: "left", color: "#666" }}>
-            <th style={{ padding: "6px 4px" }}>Name</th>
-            <th style={{ padding: "6px 4px" }}>Phone</th>
-            <th style={{ padding: "6px 4px" }}>Role</th>
-            <th style={{ padding: "6px 4px" }}>Status</th>
-            <th style={{ padding: "6px 4px" }}></th>
+          <tr>
+            <th>Name</th>
+            <th>Phone</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
           {users.map((u) => (
-            <tr key={u.id} style={{ borderTop: "0.5px solid #ddd" }}>
-              <td style={{ padding: "6px 4px" }}>{u.name}</td>
-              <td style={{ padding: "6px 4px" }}>{u.phone}</td>
-              <td style={{ padding: "6px 4px" }}>{u.role.replace("_", " ")}</td>
-              <td style={{ padding: "6px 4px", color: u.is_active ? "#1D9E75" : "#999" }}>{u.is_active ? "Active" : "Disabled"}</td>
-              <td style={{ padding: "6px 4px" }}>
+            <tr key={u.id}>
+              <td>{u.name}</td>
+              <td>{u.phone}</td>
+              <td>{u.role.replace("_", " ")}</td>
+              <td><span className={`badge ${u.is_active ? "badge-success" : "badge-neutral"}`}>{u.is_active ? "Active" : "Disabled"}</span></td>
+              <td>
                 <button onClick={() => toggleStatus(u)}>{u.is_active ? "Disable" : "Enable"}</button>
               </td>
             </tr>
@@ -109,13 +107,13 @@ function UsersPanel({ setError }) {
       {!showAdd ? (
         <button onClick={() => setShowAdd(true)}>Add user</button>
       ) : (
-        <form onSubmit={addUser} className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, background: "#f5f5f5", padding: 16, borderRadius: 12 }}>
-          <div><div style={{ color: "#666" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
-          <div><div style={{ color: "#666" }}>Phone</div><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required /></div>
-          <div><div style={{ color: "#666" }}>Email (optional)</div><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
-          <div><div style={{ color: "#666" }}>Temporary password</div><input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required /></div>
+        <form onSubmit={addUser} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
+          <div><div style={{ color: "var(--slate)" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+          <div><div style={{ color: "var(--slate)" }}>Phone</div><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required /></div>
+          <div><div style={{ color: "var(--slate)" }}>Email (optional)</div><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
+          <div><div style={{ color: "var(--slate)" }}>Temporary password</div><input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required /></div>
           <div>
-            <div style={{ color: "#666" }}>Role</div>
+            <div style={{ color: "var(--slate)" }}>Role</div>
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
               {ROLES.map((r) => <option key={r} value={r}>{r.replace("_", " ")}</option>)}
             </select>
@@ -153,10 +151,10 @@ function CustomersPanel({ setError }) {
   return (
     <div>
       <List rows={customers} columns={[["name", "Name"], ["contact_number", "Contact"]]} />
-      <form onSubmit={submit} className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, background: "#f5f5f5", padding: 16, borderRadius: 12, marginTop: 12 }}>
-        <div><div style={{ color: "#666" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
-        <div><div style={{ color: "#666" }}>Contact number</div><input value={form.contact_number} onChange={(e) => setForm({ ...form, contact_number: e.target.value })} /></div>
-        <div style={{ gridColumn: "1 / -1" }}><div style={{ color: "#666" }}>Billing address</div><textarea rows={2} value={form.billing_address} onChange={(e) => setForm({ ...form, billing_address: e.target.value })} /></div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
+        <div><div style={{ color: "var(--slate)" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Contact number</div><input value={form.contact_number} onChange={(e) => setForm({ ...form, contact_number: e.target.value })} /></div>
+        <div style={{ gridColumn: "1 / -1" }}><div style={{ color: "var(--slate)" }}>Billing address</div><textarea rows={2} value={form.billing_address} onChange={(e) => setForm({ ...form, billing_address: e.target.value })} /></div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add customer"}</button></div>
       </form>
     </div>
@@ -193,24 +191,24 @@ function SitesPanel({ setError }) {
   return (
     <div>
       <List rows={sites} columns={[["name", "Site"], ["distance_from_plant_km", "Distance (km)"], ["trip_allowance_label", "Trip allowance"]]} />
-      <form onSubmit={submit} className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, background: "#f5f5f5", padding: 16, borderRadius: 12, marginTop: 12 }}>
+      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
         <div>
-          <div style={{ color: "#666" }}>Customer</div>
+          <div style={{ color: "var(--slate)" }}>Customer</div>
           <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} required>
             <option value="">Select</option>
             {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        <div><div style={{ color: "#666" }}>Site name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
-        <div><div style={{ color: "#666" }}>Distance from plant (km)</div><input type="number" value={form.distance_from_plant_km} onChange={(e) => setForm({ ...form, distance_from_plant_km: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Site name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Distance from plant (km)</div><input type="number" value={form.distance_from_plant_km} onChange={(e) => setForm({ ...form, distance_from_plant_km: e.target.value })} /></div>
         <div>
-          <div style={{ color: "#666" }}>Trip allowance category</div>
+          <div style={{ color: "var(--slate)" }}>Trip allowance category</div>
           <select value={form.trip_allowance_category_id} onChange={(e) => setForm({ ...form, trip_allowance_category_id: e.target.value })}>
             <option value="">Select</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </div>
-        <div style={{ gridColumn: "1 / -1" }}><div style={{ color: "#666" }}>Address</div><textarea rows={2} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
+        <div style={{ gridColumn: "1 / -1" }}><div style={{ color: "var(--slate)" }}>Address</div><textarea rows={2} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add site"}</button></div>
       </form>
     </div>
@@ -240,9 +238,9 @@ function TrucksPanel({ setError }) {
   return (
     <div>
       <List rows={trucks} columns={[["truck_number", "Truck number"], ["capacity_m3", "Capacity (m³)"]]} />
-      <form onSubmit={submit} className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, background: "#f5f5f5", padding: 16, borderRadius: 12, marginTop: 12 }}>
-        <div><div style={{ color: "#666" }}>Truck number</div><input value={form.truck_number} onChange={(e) => setForm({ ...form, truck_number: e.target.value })} required /></div>
-        <div><div style={{ color: "#666" }}>Capacity (m³)</div><input type="number" value={form.capacity_m3} onChange={(e) => setForm({ ...form, capacity_m3: e.target.value })} /></div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
+        <div><div style={{ color: "var(--slate)" }}>Truck number</div><input value={form.truck_number} onChange={(e) => setForm({ ...form, truck_number: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Capacity (m³)</div><input type="number" value={form.capacity_m3} onChange={(e) => setForm({ ...form, capacity_m3: e.target.value })} /></div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add truck"}</button></div>
       </form>
     </div>
@@ -272,26 +270,26 @@ function RatesPanel({ setError }) {
   }
 
   return (
-    <form onSubmit={submit} className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, background: "#f5f5f5", padding: 16, borderRadius: 12, maxWidth: 480 }}>
-      {notice && <div style={{ gridColumn: "1 / -1", color: "#1D9E75" }}>{notice}</div>}
+    <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, maxWidth: 480 }}>
+      {notice && <div style={{ gridColumn: "1 / -1", color: "var(--signal-green)" }}>{notice}</div>}
       <div>
-        <div style={{ color: "#666" }}>Customer</div>
+        <div style={{ color: "var(--slate)" }}>Customer</div>
         <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} required>
           <option value="">Select</option>
           {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </div>
       <div>
-        <div style={{ color: "#666" }}>Mix grade</div>
+        <div style={{ color: "var(--slate)" }}>Mix grade</div>
         <select value={form.mix_grade_id} onChange={(e) => setForm({ ...form, mix_grade_id: e.target.value })} required>
           <option value="">Select</option>
           {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
         </select>
       </div>
-      <div><div style={{ color: "#666" }}>Rate per m³ (₹)</div><input type="number" value={form.rate_per_m3} onChange={(e) => setForm({ ...form, rate_per_m3: e.target.value })} required /></div>
-      <div><div style={{ color: "#666" }}>Pumping charge per m³ (₹)</div><input type="number" value={form.pumping_charge_per_m3} onChange={(e) => setForm({ ...form, pumping_charge_per_m3: e.target.value })} /></div>
-      <div><div style={{ color: "#666" }}>Waiting charge per hour (₹)</div><input type="number" value={form.waiting_charge_per_hour} onChange={(e) => setForm({ ...form, waiting_charge_per_hour: e.target.value })} /></div>
-      <div><div style={{ color: "#666" }}>Effective from</div><input type="date" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required /></div>
+      <div><div style={{ color: "var(--slate)" }}>Rate per m³ (₹)</div><input type="number" value={form.rate_per_m3} onChange={(e) => setForm({ ...form, rate_per_m3: e.target.value })} required /></div>
+      <div><div style={{ color: "var(--slate)" }}>Pumping charge per m³ (₹)</div><input type="number" value={form.pumping_charge_per_m3} onChange={(e) => setForm({ ...form, pumping_charge_per_m3: e.target.value })} /></div>
+      <div><div style={{ color: "var(--slate)" }}>Waiting charge per hour (₹)</div><input type="number" value={form.waiting_charge_per_hour} onChange={(e) => setForm({ ...form, waiting_charge_per_hour: e.target.value })} /></div>
+      <div><div style={{ color: "var(--slate)" }}>Effective from</div><input type="date" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required /></div>
       <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
     </form>
   );
@@ -299,20 +297,20 @@ function RatesPanel({ setError }) {
 
 function List({ rows, columns }) {
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-      <thead>
-        <tr style={{ textAlign: "left", color: "#666" }}>
-          {columns.map(([key, label]) => <th key={key} style={{ padding: "6px 4px" }}>{label}</th>)}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr key={row.id || i} style={{ borderTop: "0.5px solid #ddd" }}>
-            {columns.map(([key]) => <td key={key} style={{ padding: "6px 4px" }}>{row[key] ?? "–"}</td>)}
-          </tr>
-        ))}
-        {rows.length === 0 && <tr><td colSpan={columns.length} style={{ padding: 8, color: "#999" }}>None yet.</td></tr>}
-      </tbody>
-    </table>
+    <div className="card" style={{ marginBottom: 12 }}>
+      <table>
+        <thead>
+          <tr>{columns.map(([key, label]) => <th key={key}>{label}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={row.id || i}>
+              {columns.map(([key]) => <td key={key}>{row[key] ?? "–"}</td>)}
+            </tr>
+          ))}
+          {rows.length === 0 && <tr><td colSpan={columns.length} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+        </tbody>
+      </table>
+    </div>
   );
 }

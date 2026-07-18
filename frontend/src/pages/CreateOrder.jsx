@@ -62,7 +62,7 @@ export default function CreateOrder({ onDone }) {
   const selectedSite = sites.find((s) => String(s.id) === String(form.site_id));
 
   return (
-    <div style={{ maxWidth: 640, margin: "24px auto", padding: "0 16px" }}>
+    <div className="card" style={{ maxWidth: 640, margin: "0 auto" }}>
       <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 12 }}>Create customer order</div>
       <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 13 }}>
         <Field label="Order date">
@@ -140,12 +140,12 @@ export default function CreateOrder({ onDone }) {
         </div>
 
         {selectedSite?.trip_allowance_label && (
-          <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "#666" }}>
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "var(--slate)" }}>
             Driver trip allowance for this site: {selectedSite.trip_allowance_label}
           </div>
         )}
 
-        {error && <div style={{ gridColumn: "1 / -1", color: "#c0392b" }}>{error}</div>}
+        {error && <div style={{ gridColumn: "1 / -1", color: "var(--alert-red)" }}>{error}</div>}
 
         <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>
           <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save order"}</button>
@@ -159,7 +159,7 @@ export default function CreateOrder({ onDone }) {
 function Field({ label, children }) {
   return (
     <div>
-      <div style={{ color: "#666", marginBottom: 4 }}>{label}</div>
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>{label}</div>
       <div className="field-input">{children}</div>
     </div>
   );
