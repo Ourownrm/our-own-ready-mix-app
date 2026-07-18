@@ -1,4 +1,5 @@
 import express from "express";
+import "express-async-errors";
 import cors from "cors";
 import dotenv from "dotenv";
 
@@ -8,12 +9,20 @@ import ticketRoutes from "./routes/tickets.js";
 import driverRoutes from "./routes/driver.js";
 import siteSupervisorRoutes from "./routes/siteSupervisor.js";
 import plantOperatorRoutes from "./routes/plantOperator.js";
+import qcEngineerRoutes from "./routes/qcEngineer.js";
 import accountantRoutes from "./routes/accountant.js";
 import administratorRoutes from "./routes/administrator.js";
 import masterDataRoutes from "./routes/masterData.js";
 import setupRoutes from "./routes/setup.js";
 
 dotenv.config();
+
+// Safety net: an error in one request should never take the whole server down.
+// (This is what let a single bad SQL query crash the app during testing —
+// now it just logs and the request fails gracefully instead.)
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled error (server stayed up):", err);
+});
 
 const app = express();
 app.use(cors());
@@ -27,6 +36,7 @@ app.use("/api/tickets", ticketRoutes);
 app.use("/api/driver", driverRoutes);
 app.use("/api/site-supervisor", siteSupervisorRoutes);
 app.use("/api/plant-operator", plantOperatorRoutes);
+app.use("/api/qc-engineer", qcEngineerRoutes);
 app.use("/api/accountant", accountantRoutes);
 app.use("/api/administrator", administratorRoutes);
 app.use("/api/master", masterDataRoutes);

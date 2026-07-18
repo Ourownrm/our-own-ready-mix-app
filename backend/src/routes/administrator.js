@@ -96,16 +96,95 @@ router.post("/trucks", async (req, res) => {
 // ===== Master data: Rate master (rate per m3, pumping & waiting charges) =====
 
 router.post("/rates", async (req, res) => {
-  const { customer_id, mix_grade_id, rate_per_m3, pumping_charge_per_m3, waiting_charge_per_hour, effective_from } = req.body;
+  const { customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from } = req.body;
   if (!customer_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
     return res.status(400).json({ error: "Customer, mix grade, rate, and effective date are required." });
   }
   const { rows } = await query(
-    `INSERT INTO rate_master (customer_id, mix_grade_id, rate_per_m3, pumping_charge_per_m3, waiting_charge_per_hour, effective_from)
+    `INSERT INTO rate_master (customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [customer_id, mix_grade_id, rate_per_m3, pumping_charge_per_m3 || 0, waiting_charge_per_hour || 0, effective_from]
+    [customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum || 0, waiting_charge_per_hour || 0, effective_from]
   );
   res.status(201).json(rows[0]);
+});
+
+// ===== Master data: Pumps =====
+
+router.post("/pumps", async (req, res) => {
+  const { pump_code, pump_type } = req.body;
+  if (!pump_code || !pump_type) return res.status(400).json({ error: "Pump code and type are required." });
+  const { rows } = await query(
+    "INSERT INTO pumps (pump_code, pump_type) VALUES ($1,$2) RETURNING *",
+    [pump_code, pump_type]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// ===== Correcting mistaken entries (orders & tickets) =====
+// Nothing is ever hard-deleted (SRS §16) — "delete" here means cancelling, which
+// keeps the record but excludes it from active workflows and dashboards.
+
+router.get("/orders", async (req, res) => {
+  const { rows } = await query(
+    `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time,
+            c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     JOIN mix_grades m ON m.id = o.mix_grade_id
+     ORDER BY o.order_date DESC, o.id DESC
+     LIMIT 100`
+  );
+  res.json(rows);
+});
+
+router.patch("/orders/:id", async (req, res) => {
+  const { order_quantity_m3, scheduled_batching_time, remarks } = req.body;
+  const { rows } = await query(
+    `UPDATE customer_orders SET
+       order_quantity_m3 = COALESCE($1, order_quantity_m3),
+       scheduled_batching_time = COALESCE($2, scheduled_batching_time),
+       remarks = COALESCE($3, remarks)
+     WHERE id = $4 RETURNING *`,
+    [order_quantity_m3, scheduled_batching_time, remarks, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  res.json(rows[0]);
+});
+
+router.post("/orders/:id/cancel", async (req, res) => {
+  await query("UPDATE customer_orders SET status = 'cancelled' WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+router.get("/tickets", async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.id, dt.ticket_number, dt.loaded_quantity_m3, dt.status, dt.ticket_date,
+            t.truck_number, u.name AS driver_name, s.name AS site_name
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users u ON u.id = dt.driver_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN sites s ON s.id = co.site_id
+     ORDER BY dt.ticket_date DESC, dt.id DESC
+     LIMIT 100`
+  );
+  res.json(rows);
+});
+
+router.patch("/tickets/:id", async (req, res) => {
+  const { loaded_quantity_m3 } = req.body;
+  const { rows } = await query(
+    `UPDATE delivery_tickets SET loaded_quantity_m3 = COALESCE($1, loaded_quantity_m3) WHERE id = $2 RETURNING *`,
+    [loaded_quantity_m3, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Ticket not found." });
+  res.json(rows[0]);
+});
+
+router.post("/tickets/:id/cancel", async (req, res) => {
+  await query("UPDATE delivery_tickets SET status = 'cancelled' WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
 });
 
 export default router;

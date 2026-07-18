@@ -4,7 +4,7 @@ import { useAuth } from "../lib/AuthContext.jsx";
 
 const ROLE_HOME = {
   administrator: "/administrator", manager: "/manager", plant_operator: "/plant-operator",
-  qc_engineer: "/plant-operator", driver: "/driver", site_supervisor: "/site-supervisor",
+  qc_engineer: "/qc", driver: "/driver", site_supervisor: "/site-supervisor",
   accountant: "/accountant",
 };
 

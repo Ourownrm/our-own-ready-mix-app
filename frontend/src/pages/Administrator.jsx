@@ -20,7 +20,10 @@ export default function Administrator() {
           ["customers", "Customers"],
           ["sites", "Projects and sites"],
           ["trucks", "Trucks and fleet"],
+          ["pumps", "Pumps"],
           ["rates", "Concrete grades and rates"],
+          ["orders", "Correct orders"],
+          ["tickets", "Correct tickets"],
         ].map(([key, label]) => (
           <button
             key={key}
@@ -36,7 +39,10 @@ export default function Administrator() {
       {view === "customers" && <CustomersPanel setError={setError} />}
       {view === "sites" && <SitesPanel setError={setError} />}
       {view === "trucks" && <TrucksPanel setError={setError} />}
+      {view === "pumps" && <PumpsPanel setError={setError} />}
       {view === "rates" && <RatesPanel setError={setError} />}
+      {view === "orders" && <OrdersPanel setError={setError} />}
+      {view === "tickets" && <TicketsPanel setError={setError} />}
     </div>
     </>
   );
@@ -247,10 +253,48 @@ function TrucksPanel({ setError }) {
   );
 }
 
+function PumpsPanel({ setError }) {
+  const [pumps, setPumps] = useState([]);
+  const [form, setForm] = useState({ pump_code: "", pump_type: "line_pump" });
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setPumps(await apiRequest("/master/pumps")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError("");
+    try {
+      await apiRequest("/administrator/pumps", { method: "POST", body: form });
+      setForm({ pump_code: "", pump_type: "line_pump" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  return (
+    <div>
+      <List rows={pumps} columns={[["pump_code", "Pump"], ["pump_type", "Type"]]} />
+      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
+        <div><div style={{ color: "var(--slate)" }}>Pump code</div><input value={form.pump_code} onChange={(e) => setForm({ ...form, pump_code: e.target.value })} placeholder="e.g. Line-3" required /></div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Type</div>
+          <select value={form.pump_type} onChange={(e) => setForm({ ...form, pump_type: e.target.value })}>
+            <option value="line_pump">Line pump</option>
+            <option value="boom_pump">Boom pump</option>
+          </select>
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add pump"}</button></div>
+      </form>
+    </div>
+  );
+}
+
 function RatesPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [grades, setGrades] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", rate_per_m3: "", pumping_charge_per_m3: "", waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10) });
+  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", rate_per_m3: "", pumping_charge_lumpsum: "", waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10) });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -287,11 +331,158 @@ function RatesPanel({ setError }) {
         </select>
       </div>
       <div><div style={{ color: "var(--slate)" }}>Rate per m³ (₹)</div><input type="number" value={form.rate_per_m3} onChange={(e) => setForm({ ...form, rate_per_m3: e.target.value })} required /></div>
-      <div><div style={{ color: "var(--slate)" }}>Pumping charge per m³ (₹)</div><input type="number" value={form.pumping_charge_per_m3} onChange={(e) => setForm({ ...form, pumping_charge_per_m3: e.target.value })} /></div>
+      <div><div style={{ color: "var(--slate)" }}>Pumping charge — lump sum per delivery (₹)</div><input type="number" value={form.pumping_charge_lumpsum} onChange={(e) => setForm({ ...form, pumping_charge_lumpsum: e.target.value })} /></div>
       <div><div style={{ color: "var(--slate)" }}>Waiting charge per hour (₹)</div><input type="number" value={form.waiting_charge_per_hour} onChange={(e) => setForm({ ...form, waiting_charge_per_hour: e.target.value })} /></div>
       <div><div style={{ color: "var(--slate)" }}>Effective from</div><input type="date" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required /></div>
       <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
     </form>
+  );
+}
+
+function OrdersPanel({ setError }) {
+  const [orders, setOrders] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "" });
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setOrders(await apiRequest("/administrator/orders")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  function startEdit(o) {
+    setEditing(o.id);
+    setForm({ order_quantity_m3: o.order_quantity_m3, scheduled_batching_time: o.scheduled_batching_time || "", remarks: "" });
+  }
+
+  async function saveEdit(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/orders/${id}`, { method: "PATCH", body: form });
+      setEditing(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function cancelOrder(id) {
+    if (!confirm("Cancel this order? It will no longer show as active, but stays on record.")) return;
+    try {
+      await apiRequest(`/administrator/orders/${id}/cancel`, { method: "POST" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div className="card">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Qty (m³)</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+          {orders.map((o) => (
+            <tr key={o.id}>
+              <td>{new Date(o.order_date).toLocaleDateString()}</td>
+              <td>{o.customer_name}</td>
+              <td>{o.site_name}</td>
+              <td>{o.mix_grade_name}</td>
+              <td>
+                {editing === o.id ? (
+                  <input type="number" value={form.order_quantity_m3} onChange={(e) => setForm({ ...form, order_quantity_m3: e.target.value })} style={{ width: 70 }} />
+                ) : o.order_quantity_m3}
+              </td>
+              <td><span className={`badge ${o.status === "cancelled" ? "badge-danger" : "badge-neutral"}`}>{o.status.replace("_", " ")}</span></td>
+              <td>
+                {o.status !== "cancelled" && (
+                  editing === o.id ? (
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => saveEdit(o.id)} disabled={saving}>Save</button>
+                      <button onClick={() => setEditing(null)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => startEdit(o)}>Edit</button>
+                      <button className="btn-danger" onClick={() => cancelOrder(o.id)}>Cancel order</button>
+                    </span>
+                  )
+                )}
+              </td>
+            </tr>
+          ))}
+          {orders.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TicketsPanel({ setError }) {
+  const [tickets, setTickets] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [qty, setQty] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setTickets(await apiRequest("/administrator/tickets")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function saveEdit(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/tickets/${id}`, { method: "PATCH", body: { loaded_quantity_m3: qty } });
+      setEditing(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function cancelTicket(id) {
+    if (!confirm("Cancel this delivery ticket? It stays on record but won't count as active.")) return;
+    try {
+      await apiRequest(`/administrator/tickets/${id}/cancel`, { method: "POST" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div className="card">
+      <table>
+        <thead>
+          <tr><th>Ticket</th><th>Truck</th><th>Driver</th><th>Site</th><th>Qty (m³)</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+          {tickets.map((t) => (
+            <tr key={t.id}>
+              <td>{t.ticket_number}</td>
+              <td>{t.truck_number}</td>
+              <td>{t.driver_name}</td>
+              <td>{t.site_name}</td>
+              <td>
+                {editing === t.id ? (
+                  <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: 70 }} />
+                ) : t.loaded_quantity_m3}
+              </td>
+              <td><span className={`badge ${t.status === "cancelled" ? "badge-danger" : t.status === "completed" ? "badge-success" : "badge-neutral"}`}>{t.status.replace("_", " ")}</span></td>
+              <td>
+                {t.status !== "cancelled" && (
+                  editing === t.id ? (
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => saveEdit(t.id)} disabled={saving}>Save</button>
+                      <button onClick={() => setEditing(null)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => { setEditing(t.id); setQty(t.loaded_quantity_m3); }}>Edit</button>
+                      <button className="btn-danger" onClick={() => cancelTicket(t.id)}>Cancel ticket</button>
+                    </span>
+                  )
+                )}
+              </td>
+            </tr>
+          ))}
+          {tickets.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No tickets yet.</td></tr>}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

@@ -6,6 +6,7 @@ import DriverDuty from "./pages/DriverDuty.jsx";
 import ManagerDashboard from "./pages/ManagerDashboard.jsx";
 import SiteSupervisor from "./pages/SiteSupervisor.jsx";
 import PlantOperator from "./pages/PlantOperator.jsx";
+import QcEngineer from "./pages/QcEngineer.jsx";
 import Accountant from "./pages/Accountant.jsx";
 import Administrator from "./pages/Administrator.jsx";
 
@@ -27,7 +28,10 @@ export default function App() {
             <ProtectedRoute roles={["site_supervisor"]}><SiteSupervisor /></ProtectedRoute>
           } />
           <Route path="/plant-operator" element={
-            <ProtectedRoute roles={["plant_operator", "qc_engineer"]}><PlantOperator /></ProtectedRoute>
+            <ProtectedRoute roles={["plant_operator"]}><PlantOperator /></ProtectedRoute>
+          } />
+          <Route path="/qc" element={
+            <ProtectedRoute roles={["qc_engineer"]}><QcEngineer /></ProtectedRoute>
           } />
           <Route path="/accountant" element={
             <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>

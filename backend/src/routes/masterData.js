@@ -44,6 +44,11 @@ router.get("/trip-allowance-categories", async (req, res) => {
   res.json(rows);
 });
 
+router.get("/pumps", async (req, res) => {
+  const { rows } = await query("SELECT id, pump_code, pump_type FROM pumps WHERE is_active ORDER BY pump_code");
+  res.json(rows);
+});
+
 router.get("/rejection-reasons", async (req, res) => {
   const { rows } = await query("SELECT id, reason FROM rejection_reasons ORDER BY reason");
   res.json(rows);

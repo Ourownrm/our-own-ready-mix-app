@@ -104,7 +104,7 @@ CREATE TABLE rate_master (
   customer_id INTEGER REFERENCES customers(id),
   mix_grade_id INTEGER REFERENCES mix_grades(id),
   rate_per_m3 NUMERIC(10,2) NOT NULL,
-  pumping_charge_per_m3 NUMERIC(10,2) DEFAULT 0,
+  pumping_charge_lumpsum NUMERIC(10,2) DEFAULT 0,  -- flat charge per delivery, not per m³
   waiting_charge_per_hour NUMERIC(10,2) DEFAULT 0,
   effective_from DATE NOT NULL,
   effective_to DATE
@@ -131,6 +131,7 @@ CREATE TABLE customer_orders (
   site_id INTEGER REFERENCES sites(id) NOT NULL,
   mix_grade_id INTEGER REFERENCES mix_grades(id) NOT NULL,
   pump_requirement pump_type NOT NULL,
+  pump_id INTEGER REFERENCES pumps(id),  -- which specific pump (e.g. Line-2), when more than one exists
   site_technician_required BOOLEAN NOT NULL,
   cube_samples_required INTEGER NOT NULL,
   assigned_pump_crew VARCHAR(150),
@@ -221,6 +222,7 @@ CREATE TABLE site_qc (
   rejected_quantity_m3 NUMERIC(8,2),
   rejection_reason_id INTEGER REFERENCES rejection_reasons(id),
   delivery_note_status delivery_note_status DEFAULT 'pending',
+  after_pour_care_confirmed BOOLEAN DEFAULT false,  -- site supervisor guided customer on post-pour care (e.g. plastic sheeting)
   remarks TEXT,
   manager_approved_rejection BOOLEAN DEFAULT FALSE, -- Manager role: "approve rejected concrete"
   manager_approved_by INTEGER REFERENCES users(id),

@@ -54,14 +54,14 @@ router.post("/:ticketId/unloading-start", async (req, res) => {
 
 // Confirm unloading completion + record site slump — this is what triggers trip allowance payout
 router.post("/:ticketId/unloading-complete", async (req, res) => {
-  const { site_slump_mm, delivery_note_status, remarks } = req.body;
+  const { site_slump_mm, delivery_note_status, remarks, after_pour_care_confirmed } = req.body;
 
   await logEvent(req.params.ticketId, "unloading_completed", req.user.id);
   await query(
     `UPDATE site_qc SET unload_finish_time = now(), arrival_slump_mm = $1,
-       delivery_note_status = $2, remarks = $3, accepted = true
+       delivery_note_status = $2, remarks = $3, accepted = true, after_pour_care_confirmed = $5
      WHERE ticket_id = $4`,
-    [site_slump_mm, delivery_note_status || "pending", remarks, req.params.ticketId]
+    [site_slump_mm, delivery_note_status || "pending", remarks, req.params.ticketId, !!after_pour_care_confirmed]
   );
   await query("UPDATE delivery_tickets SET status = 'completed' WHERE id = $1", [req.params.ticketId]);
 
@@ -85,20 +85,20 @@ router.post("/:ticketId/unloading-complete", async (req, res) => {
 
   // Generate invoice for the Accountant, based on the customer/grade rate on file
   const { rows: rateRows } = await query(
-    `SELECT dt.loaded_quantity_m3, co.customer_id, rm.rate_per_m3, rm.pumping_charge_per_m3, co.pump_requirement
+    `SELECT dt.loaded_quantity_m3, co.customer_id, rm.rate_per_m3, rm.pumping_charge_lumpsum, co.pump_requirement
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
        AND rm.effective_from <= CURRENT_DATE AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)
      WHERE dt.id = $1
-     ORDER BY rm.effective_from DESC LIMIT 1`,
+     ORDER BY rm.effective_from DESC, rm.id DESC LIMIT 1`,
     [req.params.ticketId]
   );
   if (rateRows[0]) {
     const r = rateRows[0];
     const concreteAmount = Number(r.loaded_quantity_m3) * Number(r.rate_per_m3);
-    const pumpingCharge = r.pump_requirement !== "without_pump"
-      ? Number(r.loaded_quantity_m3) * Number(r.pumping_charge_per_m3 || 0) : 0;
+    // Pumping charge is a flat lump sum per delivery, not multiplied by quantity
+    const pumpingCharge = r.pump_requirement !== "without_pump" ? Number(r.pumping_charge_lumpsum || 0) : 0;
     await query(
       `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, waiting_charge, total_amount)
        VALUES ($1, $2, $3, $4, 0, $5)

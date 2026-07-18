@@ -9,6 +9,7 @@ const initialForm = {
   site_id: "",
   mix_grade_id: "",
   pump_requirement: "without_pump",
+  pump_id: "",
   site_technician_required: false,
   cube_samples_required: 3,
   assigned_pump_crew: "",
@@ -27,6 +28,7 @@ export default function CreateOrder({ onDone }) {
   const [sites, setSites] = useState([]);
   const [mixGrades, setMixGrades] = useState([]);
   const [supervisors, setSupervisors] = useState([]);
+  const [pumps, setPumps] = useState([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -36,8 +38,9 @@ export default function CreateOrder({ onDone }) {
       apiRequest("/master/sites"),
       apiRequest("/master/mix-grades"),
       apiRequest("/master/site-supervisors"),
-    ]).then(([c, s, m, sup]) => {
-      setCustomers(c); setSites(s); setMixGrades(m); setSupervisors(sup);
+      apiRequest("/master/pumps"),
+    ]).then(([c, s, m, sup, p]) => {
+      setCustomers(c); setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p);
     }).catch((err) => setError(err.message));
   }, []);
 
@@ -99,6 +102,16 @@ export default function CreateOrder({ onDone }) {
             <option value="without_pump">Without pump</option>
           </select>
         </Field>
+        {form.pump_requirement !== "without_pump" && (
+          <Field label="Which pump">
+            <select value={form.pump_id} onChange={(e) => set("pump_id", e.target.value)}>
+              <option value="">Select</option>
+              {pumps.filter((p) => p.pump_type === form.pump_requirement).map((p) => (
+                <option key={p.id} value={p.id}>{p.pump_code}</option>
+              ))}
+            </select>
+          </Field>
+        )}
         <Field label="Site technician required">
           <select value={form.site_technician_required} onChange={(e) => set("site_technician_required", e.target.value === "true")}>
             <option value="false">No</option>

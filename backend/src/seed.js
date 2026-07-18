@@ -26,7 +26,7 @@ async function seed() {
   );
 
   await query(
-    `INSERT INTO mix_grades (name) VALUES ('M20'), ('M25'), ('M30'), ('M35')
+    `INSERT INTO mix_grades (name) VALUES ('M7.5'), ('M10'), ('M15'), ('M20'), ('M25'), ('M30'), ('M35'), ('M40'), ('M45'), ('M50')
      ON CONFLICT DO NOTHING`
   );
 

@@ -11,23 +11,33 @@ const FLEET_LABELS = {
 export default function ManagerDashboard() {
   const [stats, setStats] = useState(null);
   const [orders, setOrders] = useState([]);
+  const [activeTrucks, setActiveTrucks] = useState([]);
+  const [liveLocations, setLiveLocations] = useState([]);
   const [showCreateOrder, setShowCreateOrder] = useState(false);
   const [error, setError] = useState("");
 
   async function load() {
     try {
-      const [dashboard, orderList] = await Promise.all([
+      const [dashboard, orderList, trucks, locations] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
+        apiRequest("/orders/active-trucks"),
+        apiRequest("/orders/live-locations"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
+      setActiveTrucks(trucks);
+      setLiveLocations(locations);
     } catch (err) {
       setError(err.message);
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 20000); // keep the truck list and map reasonably live
+    return () => clearInterval(interval);
+  }, []);
 
   if (showCreateOrder) {
     return (
@@ -73,6 +83,7 @@ export default function ManagerDashboard() {
 
         <button className="btn-primary" onClick={() => setShowCreateOrder(true)} style={{ marginBottom: 20 }}>Create order</button>
 
+        <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} />
         <OrderTable title="Running today" rows={today} />
         <OrderTable title="Scheduled tomorrow" rows={tomorrow} />
       </div>
@@ -89,6 +100,50 @@ function Kpi({ label, value, danger }) {
   );
 }
 
+function ActiveTrucksTable({ trucks, locations }) {
+  const locationByTicket = Object.fromEntries(locations.map((l) => [l.ticket_id, l]));
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Active trucks</div>
+      {trucks.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No trucks currently running.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr><th>Truck</th><th>Driver</th><th>Customer</th><th>Status</th><th>GPS</th></tr>
+          </thead>
+          <tbody>
+            {trucks.map((t) => {
+              const loc = locationByTicket[t.ticket_id];
+              return (
+                <tr key={t.ticket_id}>
+                  <td>{t.truck_number}</td>
+                  <td>{t.driver_name}</td>
+                  <td>{t.customer_name} &middot; {t.site_name}</td>
+                  <td><StatusBadge status={t.status} /></td>
+                  <td>
+                    {loc ? (
+                      <a
+                        href={`https://maps.google.com/?q=${loc.latitude},${loc.longitude}`}
+                        target="_blank" rel="noreferrer"
+                      >
+                        View location ({minutesAgo(loc.recorded_at)})
+                      </a>
+                    ) : (
+                      <span style={{ color: "var(--slate)" }}>No GPS yet</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function OrderTable({ title, rows }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -98,7 +153,7 @@ function OrderTable({ title, rows }) {
       ) : (
         <table>
           <thead>
-            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Qty</th><th>Status</th></tr>
+            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th></tr>
           </thead>
           <tbody>
             {rows.map((o) => (
@@ -107,6 +162,7 @@ function OrderTable({ title, rows }) {
                 <td>{o.site_name}</td>
                 <td>{o.mix_grade_name}</td>
                 <td>{o.order_quantity_m3} m³</td>
+                <td>{o.delivered_qty_m3} m³</td>
                 <td><StatusBadge status={o.status} /></td>
               </tr>
             ))}
@@ -120,7 +176,8 @@ function OrderTable({ title, rows }) {
 function StatusBadge({ status }) {
   const map = {
     completed: "badge-success", planned: "badge-neutral", in_progress: "badge-warning",
-    partially_completed: "badge-warning", cancelled: "badge-danger",
+    partially_completed: "badge-warning", cancelled: "badge-danger", dispatched: "badge-warning",
+    reached_site: "badge-warning", unloading: "badge-warning", created: "badge-neutral",
   };
   return <span className={`badge ${map[status] || "badge-neutral"}`}>{status.replace(/_/g, " ")}</span>;
 }
@@ -133,4 +190,8 @@ function addDays(date, days) {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
   return d;
+}
+function minutesAgo(isoTime) {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(isoTime).getTime()) / 60000));
+  return mins < 1 ? "just now" : `${mins} min ago`;
 }

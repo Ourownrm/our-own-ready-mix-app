@@ -6,23 +6,19 @@ export default function PlantOperator() {
   const [orders, setOrders] = useState([]);
   const [trucks, setTrucks] = useState([]);
   const [drivers, setDrivers] = useState([]);
-  const [pendingQc, setPendingQc] = useState([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   const [ticketForm, setTicketForm] = useState({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "" });
-  const [qcTicketId, setQcTicketId] = useState("");
-  const [qcForm, setQcForm] = useState({ slump_mm: "", temperature_c: "", number_of_cubes: 3, sample_ids: "", remarks: "" });
 
   async function load() {
     try {
-      const [o, t, d, pending] = await Promise.all([
+      const [o, t, d] = await Promise.all([
         apiRequest("/plant-operator/available-orders"),
         apiRequest("/master/trucks"),
         apiRequest("/master/drivers"),
-        apiRequest("/plant-operator/pending-qc"),
       ]);
-      setOrders(o); setTrucks(t); setDrivers(d); setPendingQc(pending);
+      setOrders(o); setTrucks(t); setDrivers(d);
     } catch (err) {
       setError(err.message);
     }
@@ -35,23 +31,8 @@ export default function PlantOperator() {
     setError(""); setNotice("");
     try {
       const ticket = await apiRequest("/plant-operator/tickets", { method: "POST", body: ticketForm });
-      setNotice(`Ticket ${ticket.ticket_number} created.`);
+      setNotice(`Ticket ${ticket.ticket_number} created — now waiting on QC Engineer.`);
       setTicketForm({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "" });
-      load();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  async function submitQc(e) {
-    e.preventDefault();
-    setError(""); setNotice("");
-    if (!qcTicketId) return setError("Select a ticket to submit QC for.");
-    try {
-      await apiRequest(`/plant-operator/${qcTicketId}/plant-qc`, { method: "POST", body: qcForm });
-      setNotice("QC submitted, ticket moved to dispatched.");
-      setQcForm({ slump_mm: "", temperature_c: "", number_of_cubes: 3, sample_ids: "", remarks: "" });
-      setQcTicketId("");
       load();
     } catch (err) {
       setError(err.message);
@@ -62,14 +43,13 @@ export default function PlantOperator() {
 
   return (
     <>
-      <TopBar title="Plant Operator / QC" />
-      <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
-      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
-      {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+      <TopBar title="Plant Operator" />
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+        {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+        {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div style={{ background: "var(--concrete)", borderRadius: 12, padding: 16 }}>
-          <div style={{ fontWeight: 500, marginBottom: 10 }}>Create delivery ticket</div>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>Create delivery ticket</div>
           <form onSubmit={submitTicket} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
             <div>
               <div style={{ color: "var(--slate)" }}>Select order</div>
@@ -83,7 +63,7 @@ export default function PlantOperator() {
               </select>
             </div>
             {selectedOrder && (
-              <div style={{ fontSize: 12, color: "var(--slate)", background: "#fff", padding: 8, borderRadius: 6 }}>
+              <div style={{ fontSize: 12, color: "var(--slate)", background: "var(--concrete)", padding: 8, borderRadius: 6 }}>
                 Order {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;
                 remaining {selectedOrder.order_quantity_m3 - selectedOrder.dispatched_so_far} m³
               </div>
@@ -111,45 +91,6 @@ export default function PlantOperator() {
             <button type="submit" style={{ marginTop: 4 }}>Save ticket</button>
           </form>
         </div>
-
-        <div style={{ background: "var(--concrete)", borderRadius: 12, padding: 16 }}>
-          <div style={{ fontWeight: 500, marginBottom: 10 }}>Plant QC entry</div>
-          <form onSubmit={submitQc} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Ticket awaiting QC</div>
-              <select value={qcTicketId} onChange={(e) => setQcTicketId(e.target.value)} required>
-                <option value="">Select</option>
-                {pendingQc.map((t) => (
-                  <option key={t.id} value={t.id}>{t.ticket_number} — {t.truck_number} — {t.site_name}</option>
-                ))}
-              </select>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <div>
-                <div style={{ color: "var(--slate)" }}>Slump (mm)</div>
-                <input type="number" value={qcForm.slump_mm} onChange={(e) => setQcForm({ ...qcForm, slump_mm: e.target.value })} required />
-              </div>
-              <div>
-                <div style={{ color: "var(--slate)" }}>Temperature (°C)</div>
-                <input type="number" value={qcForm.temperature_c} onChange={(e) => setQcForm({ ...qcForm, temperature_c: e.target.value })} />
-              </div>
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Number of cubes</div>
-              <input type="number" value={qcForm.number_of_cubes} onChange={(e) => setQcForm({ ...qcForm, number_of_cubes: e.target.value })} />
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Sample IDs</div>
-              <input type="text" value={qcForm.sample_ids} onChange={(e) => setQcForm({ ...qcForm, sample_ids: e.target.value })} placeholder="C-2231-1, C-2231-2" />
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Remarks</div>
-              <textarea rows={2} value={qcForm.remarks} onChange={(e) => setQcForm({ ...qcForm, remarks: e.target.value })} />
-            </div>
-            <button type="submit" style={{ marginTop: 4 }}>Submit QC and release</button>
-          </form>
-        </div>
-      </div>
       </div>
     </>
   );

@@ -67,3 +67,37 @@ service (Netlify, Vercel, Cloudflare Pages — many have free tiers). The `backe
 needs a Node.js hosting service (Render, Railway, Fly.io are common, simple choices).
 None of this requires an Apple/Google developer account — it's a website your team opens
 in their phone browser and adds to their home screen.
+
+## Fixes from first round of real-world testing
+
+After the team tried this with real orders, several issues came back and were fixed:
+
+1. **Administrator can now correct or cancel orders and delivery tickets** — under
+   "Correct orders" / "Correct tickets" in the Administrator screen. Nothing is ever
+   hard-deleted (matches the SRS's "no permanent deletion" rule) — cancelling just
+   excludes a record from active workflows while keeping it on file.
+2. **All 10 mix grades added** (M7.5 through M50), and the seeding logic was fixed so
+   adding grades in the future won't silently skip if some already exist.
+3. **Pumping charge is now a flat lump sum per delivery**, not per m³ — this was a
+   genuine schema change (`rate_master.pumping_charge_lumpsum`), applied automatically
+   via migration when you next run `/setup`.
+4. **Driver's "Report breakdown" and "Report fuel filling" now actually work** — they
+   previously failed silently with no error shown. Both now open a proper form and
+   show a clear confirmation or error message.
+5. **Manager dashboard now shows delivered quantity** against each order's ordered
+   quantity, not just the ordered amount.
+6. **Orders now let you pick a specific pump** (e.g. "Line-2"), not just a pump type —
+   Administrator can manage the list of pumps under "Pumps".
+7. **Plant Operator and QC Engineer are fully separate screens now**, each with their
+   own login and only their own actions available (`/plant-operator` vs `/qc`).
+8. **Manager dashboard shows live GPS links** per active truck (opens the location in
+   Google Maps) alongside the restored "Active trucks" table from the original mockup.
+9. **Site Supervisor improvements**:
+   - Added an "after-pour care" checklist item (e.g. covering with plastic sheet) and
+     a comments field for notes about each supply
+   - Fixed a real bug where the screen didn't refresh after tapping a button — it now
+     also auto-refreshes every 15 seconds in case another role changes the ticket status
+
+Also fixed along the way: a rate-lookup bug where having two rates on file for the same
+day picked the wrong one, and the server no longer crashes entirely if one request hits
+a database error (it now fails just that one request and stays up for everyone else).

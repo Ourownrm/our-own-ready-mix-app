@@ -8,12 +8,15 @@ router.use(requireAuth);
 // List orders — running (today) and scheduled (future), visible to all roles per business rule
 router.get("/", async (req, res) => {
   const { rows } = await query(
-    `SELECT o.*, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name
+    `SELECT o.*, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status = 'completed'), 0) AS delivered_qty_m3
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id
      JOIN mix_grades m ON m.id = o.mix_grade_id
+     LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
      WHERE o.order_date >= CURRENT_DATE - INTERVAL '1 day'
+     GROUP BY o.id, c.name, s.name, m.name
      ORDER BY o.order_date, o.scheduled_batching_time`
   );
   res.json(rows);
@@ -23,7 +26,7 @@ router.get("/", async (req, res) => {
 router.post("/", requireRole("manager", "administrator"), async (req, res) => {
   const {
     order_date, scheduled_batching_time, truck_dispatch_interval_minutes,
-    customer_id, site_id, mix_grade_id, pump_requirement,
+    customer_id, site_id, mix_grade_id, pump_requirement, pump_id,
     site_technician_required, cube_samples_required, assigned_pump_crew,
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
     sales_representative, casting_location, pump_departure_time, remarks,
@@ -40,13 +43,13 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
-      mix_grade_id, pump_requirement, site_technician_required, cube_samples_required,
+      mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative, casting_location, pump_departure_time, remarks, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
-     mix_grade_id, pump_requirement, !!site_technician_required, cube_samples_required,
+     mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
      assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
      sales_representative, casting_location, pump_departure_time, remarks, req.user.id]
   );
@@ -91,6 +94,41 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
     delayed_trucks: Number(delayed.rows[0].count),
     rejected_concrete: Number(rejected.rows[0].count),
   });
+});
+
+// Active trucks today — matches the original "Active trucks" mockup table
+router.get("/active-trucks", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, dt.created_at,
+            t.truck_number, u.name AS driver_name, c.name AS customer_name, s.name AS site_name
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users u ON u.id = dt.driver_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     WHERE dt.ticket_date = CURRENT_DATE AND dt.status NOT IN ('completed', 'cancelled', 'returned')
+     ORDER BY dt.created_at`
+  );
+  res.json(rows);
+});
+
+// Latest known position for every truck currently on an active trip
+router.get("/live-locations", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT DISTINCT ON (dt.id)
+            dt.id AS ticket_id, dt.ticket_number, t.truck_number, u.name AS driver_name,
+            s.name AS site_name, gp.latitude, gp.longitude, gp.recorded_at
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users u ON u.id = dt.driver_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN gps_pings gp ON gp.ticket_id = dt.id
+     WHERE dt.status NOT IN ('completed', 'cancelled', 'returned') AND dt.ticket_date = CURRENT_DATE
+     ORDER BY dt.id, gp.recorded_at DESC`
+  );
+  res.json(rows);
 });
 
 export default router;
