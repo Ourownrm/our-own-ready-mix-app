@@ -17,12 +17,15 @@ async function logEvent(ticketId, eventType, userId) {
 router.get("/my-deliveries", async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id, dt.ticket_number, dt.status, s.name AS site_name, c.name AS customer_name,
-            m.name AS mix_grade_name, dt.loaded_quantity_m3
+            m.name AS mix_grade_name, dt.loaded_quantity_m3,
+            t.truck_number, u.name AS driver_name
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN sites s ON s.id = co.site_id
      JOIN customers c ON c.id = co.customer_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN trucks t ON t.id = dt.truck_id
+     LEFT JOIN users u ON u.id = dt.driver_id
      WHERE co.assigned_site_supervisor_id = $1
        AND dt.ticket_date = CURRENT_DATE
        AND dt.status NOT IN ('completed', 'cancelled', 'returned')

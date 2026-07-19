@@ -69,7 +69,9 @@ export default function SiteSupervisor() {
             style={{ width: "100%", marginBottom: 12, padding: 8 }}
           >
             {deliveries.map((d) => (
-              <option key={d.id} value={d.id}>{d.ticket_number} — {d.site_name}</option>
+              <option key={d.id} value={d.id}>
+                {d.ticket_number} — {d.site_name} — {d.truck_number || "no truck"} · {d.driver_name || "no driver"}
+              </option>
             ))}
           </select>
         )}
@@ -79,6 +81,9 @@ export default function SiteSupervisor() {
         ) : (
           <div className="card" style={{ borderRadius: 20, padding: "20px 16px" }}>
             <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)" }}>{selected.site_name} &middot; {selected.ticket_number}</div>
+            <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)", marginTop: 2 }}>
+              {selected.truck_number || "No truck"} &middot; {selected.driver_name || "No driver"}
+            </div>
             <div style={{ textAlign: "center", fontSize: 15, fontWeight: 600, margin: "4px 0 16px" }}>{statusLabel(selected.status)}</div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

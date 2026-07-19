@@ -101,3 +101,54 @@ After the team tried this with real orders, several issues came back and were fi
 Also fixed along the way: a rate-lookup bug where having two rates on file for the same
 day picked the wrong one, and the server no longer crashes entirely if one request hits
 a database error (it now fails just that one request and stays up for everyone else).
+
+## Second round — pending-work items addressed
+
+1. **Orders now carry forward automatically.** Any order not completed by end of day
+   stays visible (on the Manager dashboard and the shared Today/Tomorrow screen) every
+   following day until it's completed or formally closed — it no longer just falls off
+   the list once its `order_date` is in the past. Manager (not just Administrator) can
+   now **close an order** that will never be completed, with an optional reason on file
+   (`POST /api/orders/:id/close`); this soft-cancels it (SRS: nothing is hard-deleted).
+2. **Site Supervisor's delivery list** now shows truck number and driver name alongside
+   ticket number and site, both in the picker and on the delivery card.
+3. **Manager's "Active trucks" table** now has a "Loaded at" column (the delivery
+   ticket's creation time).
+4. **GPS on sites, with a tap-to-navigate link for drivers.** Sites can now have a
+   latitude/longitude (Administrator/Manager → Projects and sites → "Use my current
+   location" or type coordinates). The Driver's assigned-trip card shows a "Navigate to
+   site in Google Maps" button once a site has coordinates on file.
+5. **Back button from "Today & tomorrow's orders."** The top bar now always shows a
+   "← Back to my dashboard" link (to whichever screen matches your role) whenever you're
+   away from it, not just a forward link to the orders view.
+6. **Auto-login fixed.** Your sign-in was already being saved (a 30-day token in the
+   browser's local storage) — but opening the app always forced you back to the sign-in
+   screen regardless, because the home route didn't check for a saved session. That's
+   fixed: opening the app now goes straight to your dashboard if you're already signed
+   in. The sign-in form also now has proper autocomplete hints, so your phone/browser
+   will offer to save the password for next time (look for that prompt right after you
+   sign in) — no separate "remember me" setting needed.
+7. **Reports module + Director's Dashboard built.** New `/reports` screen (Manager,
+   Accountant, Administrator) covering: today's & cumulative monthly orders; today's &
+   cumulative sales value (total and per-customer); today's & cumulative collections;
+   total outstanding; a 0–7/8–14/15–30/30+ day outstanding-aging table by customer;
+   running orders with supplied/balance quantity; upcoming orders; salesman-wise monthly
+   sales; monthly pump utilization; and concrete rejection quantity/reasons. Backed by a
+   single `GET /api/reports/director-dashboard` endpoint.
+8. **Breakdown tracking extended to pumps and the batching plant**, not just trucks.
+   Plant Operator/QC Engineer/Manager can report a pump or plant breakdown from a new
+   "Report pump/plant breakdown" action; all of it (trucks, pumps, plant) lands on a new
+   Manager-facing **Equipment breakdowns** screen (`/breakdowns`) until marked repaired.
+9. **App icon.** The PWA manifest referenced `icon-192.png`/`icon-512.png`, but those
+   files didn't actually exist in `frontend/public/` — that's why the installed icon
+   looked wrong/default. Placeholder OORM-branded icons are now in place. **To use your
+   real logo instead:** replace `frontend/public/icon-192.png` and `icon-512.png` with
+   your own square PNGs at those exact sizes (keep the filenames), and optionally
+   `frontend/public/favicon.svg` for the browser tab icon — then rebuild
+   (`npm run build`) and redeploy. No other changes needed; `vite.config.js` already
+   points at these filenames.
+
+### Migration note
+All schema changes above (order closing columns, expanded breakdown-reporting table)
+are applied automatically the next time you visit `/setup?key=...` on your deployed
+backend — same one-time-setup mechanism as before, safe to run repeatedly.

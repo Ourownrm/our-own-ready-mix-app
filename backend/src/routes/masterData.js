@@ -12,7 +12,8 @@ router.get("/customers", async (req, res) => {
 
 router.get("/sites", async (req, res) => {
   const { rows } = await query(
-    `SELECT s.id, s.name, s.customer_id, s.distance_from_plant_km, tac.label AS trip_allowance_label
+    `SELECT s.id, s.name, s.customer_id, s.distance_from_plant_km, s.latitude, s.longitude,
+            tac.label AS trip_allowance_label
      FROM sites s LEFT JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
      WHERE s.is_active ORDER BY s.name`
   );

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { List, CustomersPanel, SitesPanel, RatesPanel } from "../lib/MasterDataPanels.jsx";
@@ -34,6 +35,8 @@ export default function Administrator() {
             {label}
           </button>
         ))}
+        <Link to="/reports"><button type="button">Reports &amp; Director's Dashboard</button></Link>
+        <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
       </div>
 
       {view === "users" && <UsersPanel setError={setError} />}

@@ -58,7 +58,7 @@ export function SitesPanel({ setError }) {
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "" });
+  const [form, setForm] = useState({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "" });
   const [saving, setSaving] = useState(false);
 
   async function load() {
@@ -76,14 +76,21 @@ export function SitesPanel({ setError }) {
     setSaving(true); setError("");
     try {
       await apiRequest("/administrator/sites", { method: "POST", body: form });
-      setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "" });
+      setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "" });
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
+  function useCurrentLocation() {
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => setForm((f) => ({ ...f, latitude: pos.coords.latitude.toFixed(7), longitude: pos.coords.longitude.toFixed(7) })),
+      () => setError("Couldn't get current location — enter coordinates manually, or allow location access.")
+    );
+  }
+
   return (
     <div>
-      <List rows={sites} columns={[["name", "Site"], ["distance_from_plant_km", "Distance (km)"], ["trip_allowance_label", "Trip allowance"]]} />
+      <List rows={sites} columns={[["name", "Site"], ["distance_from_plant_km", "Distance (km)"], ["trip_allowance_label", "Trip allowance"], ["latitude", "Lat"], ["longitude", "Lng"]]} />
       <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
         <div>
           <div style={{ color: "var(--slate)" }}>Customer</div>
@@ -100,6 +107,11 @@ export function SitesPanel({ setError }) {
             <option value="">Select</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
+        </div>
+        <div><div style={{ color: "var(--slate)" }}>Latitude</div><input type="number" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} placeholder="e.g. 8.5241" /></div>
+        <div><div style={{ color: "var(--slate)" }}>Longitude</div><input type="number" step="any" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} placeholder="e.g. 76.9366" /></div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <button type="button" onClick={useCurrentLocation} style={{ fontSize: 12, padding: "6px 10px" }}>Use my current location</button>
         </div>
         <div style={{ gridColumn: "1 / -1" }}><div style={{ color: "var(--slate)" }}>Address</div><textarea rows={2} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add site"}</button></div>

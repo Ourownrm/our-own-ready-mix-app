@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel } from "../lib/MasterDataPanels.jsx";
@@ -40,6 +41,21 @@ export default function ManagerDashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  async function closeOrder(order) {
+    const reason = window.prompt(
+      `Close order for ${order.customer_name} · ${order.site_name}?\n` +
+      `This marks it as never-to-be-completed and removes it from the running lists.\n\n` +
+      `Reason (optional):`
+    );
+    if (reason === null) return;
+    try {
+      await apiRequest(`/orders/${order.id}/close`, { method: "POST", body: { reason } });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (view === "create-order") {
     return (
       <>
@@ -75,8 +91,12 @@ export default function ManagerDashboard() {
     if (label) fleetCounts[label] += Number(row.count);
   });
 
-  const today = orders.filter((o) => isSameDay(o.order_date, new Date()));
-  const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)));
+  const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && o.status !== "cancelled");
+  const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && o.status !== "cancelled");
+  const carriedForward = orders.filter((o) =>
+    new Date(o.order_date) < startOfDay(new Date()) &&
+    !["completed", "cancelled"].includes(o.status)
+  );
 
   return (
     <>
@@ -100,14 +120,24 @@ export default function ManagerDashboard() {
           ))}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
           <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
+          <Link to="/reports"><button type="button">Reports &amp; Director's Dashboard</button></Link>
+          <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
         </div>
 
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} />
-        <OrderTable title="Running today" rows={today} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} />
+
+        {carriedForward.length > 0 && (
+          <OrderTable
+            title="Needs attention — carried forward from an earlier day"
+            rows={carriedForward}
+            onClose={closeOrder}
+          />
+        )}
+        <OrderTable title="Running today" rows={today} onClose={closeOrder} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} />
       </div>
     </>
   );
@@ -133,7 +163,7 @@ function ActiveTrucksTable({ trucks, locations }) {
       ) : (
         <table>
           <thead>
-            <tr><th>Truck</th><th>Driver</th><th>Customer</th><th>Status</th><th>GPS</th></tr>
+            <tr><th>Truck</th><th>Driver</th><th>Customer</th><th>Loaded at</th><th>Status</th><th>GPS</th></tr>
           </thead>
           <tbody>
             {trucks.map((t) => {
@@ -143,6 +173,7 @@ function ActiveTrucksTable({ trucks, locations }) {
                   <td>{t.truck_number}</td>
                   <td>{t.driver_name}</td>
                   <td>{t.customer_name} &middot; {t.site_name}</td>
+                  <td>{formatTime(t.created_at)}</td>
                   <td><StatusBadge status={t.status} /></td>
                   <td>
                     {loc ? (
@@ -166,7 +197,7 @@ function ActiveTrucksTable({ trucks, locations }) {
   );
 }
 
-function OrderTable({ title, rows }) {
+function OrderTable({ title, rows, onClose }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
@@ -175,7 +206,7 @@ function OrderTable({ title, rows }) {
       ) : (
         <table>
           <thead>
-            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th></tr>
+            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((o) => (
@@ -186,6 +217,11 @@ function OrderTable({ title, rows }) {
                 <td>{o.order_quantity_m3} m³</td>
                 <td>{o.delivered_qty_m3} m³</td>
                 <td><StatusBadge status={o.status} /></td>
+                <td>
+                  <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
+                    Close order
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -213,7 +249,16 @@ function addDays(date, days) {
   d.setDate(d.getDate() + days);
   return d;
 }
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
 function minutesAgo(isoTime) {
   const mins = Math.max(0, Math.round((Date.now() - new Date(isoTime).getTime()) / 60000));
   return mins < 1 ? "just now" : `${mins} min ago`;
+}
+function formatTime(isoTime) {
+  if (!isoTime) return "–";
+  return new Date(isoTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }

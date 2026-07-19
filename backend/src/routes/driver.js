@@ -45,8 +45,8 @@ router.post("/gps-ping", async (req, res) => {
 router.post("/breakdown", async (req, res) => {
   const { truck_id, location, latitude, longitude, remarks } = req.body;
   await query(
-    `INSERT INTO breakdown_reports (truck_id, driver_id, location, latitude, longitude, remarks)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
+    `INSERT INTO breakdown_reports (equipment_type, truck_id, driver_id, reported_by, location, latitude, longitude, remarks)
+     VALUES ('truck', $1,$2,$2,$3,$4,$5,$6)`,
     [truck_id, req.user.id, location, latitude, longitude, remarks]
   );
   res.json({ ok: true });

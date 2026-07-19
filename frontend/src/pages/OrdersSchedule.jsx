@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { useAuth } from "../lib/AuthContext.jsx";
 
 export default function OrdersSchedule() {
   const [orders, setOrders] = useState([]);
   const [error, setError] = useState("");
+  const { user } = useAuth();
+  const canClose = user?.role === "manager" || user?.role === "administrator";
 
   async function load() {
     try {
@@ -15,6 +18,21 @@ export default function OrdersSchedule() {
   }
 
   useEffect(() => { load(); }, []);
+
+  async function closeOrder(order) {
+    const reason = window.prompt(
+      `Close order for ${order.customer_name} · ${order.site_name}?\n` +
+      `This marks it as never-to-be-completed and removes it from the running lists.\n\n` +
+      `Reason (optional):`
+    );
+    if (reason === null) return; // cancelled the prompt
+    try {
+      await apiRequest(`/orders/${order.id}/close`, { method: "POST", body: { reason } });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && o.status !== "cancelled");
   const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && o.status !== "cancelled");
@@ -29,15 +47,22 @@ export default function OrdersSchedule() {
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
-        {overdue.length > 0 && <OrderTable title="Needs attention — not yet completed" rows={overdue} />}
-        <OrderTable title="Running today" rows={today} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} />
+        {overdue.length > 0 && (
+          <OrderTable
+            title="Needs attention — carried forward, not yet completed"
+            rows={overdue}
+            canClose={canClose}
+            onClose={closeOrder}
+          />
+        )}
+        <OrderTable title="Running today" rows={today} canClose={canClose} onClose={closeOrder} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} canClose={canClose} onClose={closeOrder} />
       </div>
     </>
   );
 }
 
-function OrderTable({ title, rows }) {
+function OrderTable({ title, rows, canClose, onClose }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
@@ -46,7 +71,10 @@ function OrderTable({ title, rows }) {
       ) : (
         <table>
           <thead>
-            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th></tr>
+            <tr>
+              <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>
+              {canClose && <th></th>}
+            </tr>
           </thead>
           <tbody>
             {rows.map((o) => (
@@ -57,6 +85,13 @@ function OrderTable({ title, rows }) {
                 <td>{o.order_quantity_m3} m³</td>
                 <td>{o.delivered_qty_m3} m³</td>
                 <td><StatusBadge status={o.status} /></td>
+                {canClose && (
+                  <td>
+                    <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
+                      Close order
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

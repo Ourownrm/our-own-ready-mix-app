@@ -144,7 +144,13 @@ CREATE TABLE customer_orders (
   remarks TEXT,
   status order_status DEFAULT 'planned',
   created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  -- Manager "close order" (formal cancel when an order will never be completed).
+  -- Orders are never deleted; incomplete orders instead carry forward to every
+  -- following day automatically until completed or closed here.
+  closed_by INTEGER REFERENCES users(id),
+  closed_at TIMESTAMPTZ,
+  closure_reason TEXT
 );
 
 -- ===================== DELIVERY TICKETS (SRS 6) =====================
@@ -261,17 +267,28 @@ CREATE TABLE fuel_logs (
 );
 
 -- ===================== BREAKDOWN REPORTING =====================
+-- Covers trucks (mixers), pumps, and the batching plant itself — equipment_type
+-- says which. truck_id/pump_id are set only for their matching equipment_type;
+-- equipment_label is a free-text name for the plant (or any non-listed asset).
+
+CREATE TYPE breakdown_equipment_type AS ENUM ('truck', 'pump', 'plant');
 
 CREATE TABLE breakdown_reports (
   id SERIAL PRIMARY KEY,
-  truck_id INTEGER REFERENCES trucks(id) NOT NULL,
-  driver_id INTEGER REFERENCES users(id) NOT NULL,
+  equipment_type breakdown_equipment_type NOT NULL DEFAULT 'truck',
+  truck_id INTEGER REFERENCES trucks(id),
+  pump_id INTEGER REFERENCES pumps(id),
+  equipment_label VARCHAR(100),
+  reported_by INTEGER REFERENCES users(id) NOT NULL,
+  driver_id INTEGER REFERENCES users(id),
   breakdown_time TIMESTAMPTZ NOT NULL DEFAULT now(),
   location TEXT,
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
   remarks TEXT,
-  resolved BOOLEAN DEFAULT FALSE
+  resolved BOOLEAN DEFAULT FALSE,
+  repaired_by INTEGER REFERENCES users(id),
+  repaired_at TIMESTAMPTZ
 );
 
 -- ===================== ACCOUNTS (SRS §2, §16 — restricted visibility) =====================

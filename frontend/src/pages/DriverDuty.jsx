@@ -119,6 +119,15 @@ export default function DriverDuty() {
                 <Row label="Ticket" value={trip.ticket_number} />
                 <Row label="Site" value={trip.site_name} />
                 <Row label="Trip allowance" value={`₹${trip.trip_allowance_amount}`} strong />
+                {trip.site_latitude && trip.site_longitude && (
+                  <a
+                    href={`https://maps.google.com/?q=${trip.site_latitude},${trip.site_longitude}`}
+                    target="_blank" rel="noreferrer"
+                    style={{ display: "block", textAlign: "center", marginTop: 10, padding: 10, background: "var(--rebar)", color: "#fff", borderRadius: 8, fontWeight: 600, textDecoration: "none" }}
+                  >
+                    Navigate to site in Google Maps
+                  </a>
+                )}
               </div>
             </div>
           )}

@@ -38,6 +38,32 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migrations applied (specific pump selection, after-pour care checklist, lump-sum pumping charge).");
 
+    // Order closing (Manager "close/never-complete" action) — orders now carry
+    // forward automatically until completed or formally closed here.
+    await pool.query(`
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS closed_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS closure_reason TEXT;
+    `);
+    log.push("Schema migration applied (order closing / carry-forward).");
+
+    // Breakdown reporting extended from trucks-only to trucks + pumps + the batching plant.
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE breakdown_equipment_type AS ENUM ('truck', 'pump', 'plant');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS equipment_type breakdown_equipment_type NOT NULL DEFAULT 'truck';
+      ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS pump_id INTEGER REFERENCES pumps(id);
+      ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS equipment_label VARCHAR(100);
+      ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS reported_by INTEGER REFERENCES users(id);
+      ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS repaired_by INTEGER REFERENCES users(id);
+      ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS repaired_at TIMESTAMPTZ;
+      ALTER TABLE breakdown_reports ALTER COLUMN truck_id DROP NOT NULL;
+      ALTER TABLE breakdown_reports ALTER COLUMN driver_id DROP NOT NULL;
+      UPDATE breakdown_reports SET reported_by = driver_id WHERE reported_by IS NULL;
+    `);
+    log.push("Schema migration applied (breakdown reporting now covers pumps and the batching plant, not just trucks).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

@@ -35,6 +35,7 @@ router.post("/", requireRole("plant_operator", "manager", "administrator"), asyn
 router.get("/my-trip", requireRole("driver"), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id, dt.ticket_number, t.truck_number, t.id AS truck_id, s.name AS site_name,
+            s.address AS site_address, s.latitude AS site_latitude, s.longitude AS site_longitude,
             tac.amount AS trip_allowance_amount
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id

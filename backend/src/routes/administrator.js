@@ -71,12 +71,12 @@ router.post("/customers", requireRole("administrator", "manager"), async (req, r
 // ===== Master data: Sites =====
 
 router.post("/sites", requireRole("administrator", "manager"), async (req, res) => {
-  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id } = req.body;
+  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   const { rows } = await query(
-    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id]
+    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null]
   );
   res.status(201).json(rows[0]);
 });

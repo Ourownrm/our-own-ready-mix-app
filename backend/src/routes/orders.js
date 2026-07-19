@@ -5,7 +5,9 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 const router = Router();
 router.use(requireAuth);
 
-// List orders — running (today) and scheduled (future), visible to all roles per business rule
+// List orders — running (today), scheduled (future), and any not-yet-completed
+// order from an earlier day, which carries forward automatically instead of
+// disappearing (it stays visible every day until completed or closed).
 router.get("/", async (req, res) => {
   const { rows } = await query(
     `SELECT o.*, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
@@ -16,10 +18,27 @@ router.get("/", async (req, res) => {
      JOIN mix_grades m ON m.id = o.mix_grade_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
      WHERE o.order_date >= CURRENT_DATE - INTERVAL '1 day'
+        OR o.status NOT IN ('completed', 'cancelled')
      GROUP BY o.id, c.name, s.name, m.name
      ORDER BY o.order_date, o.scheduled_batching_time`
   );
   res.json(rows);
+});
+
+// Manager formally closes/cancels an order that will never be completed.
+// Same soft-cancel as the Administrator's "correct orders" action, but reachable
+// directly by a Manager without needing Administrator access, with a reason on file.
+router.post("/:id/close", requireRole("manager", "administrator"), async (req, res) => {
+  const { reason } = req.body;
+  const { rows } = await query(
+    `UPDATE customer_orders
+     SET status = 'cancelled', closed_by = $1, closed_at = now(),
+         closure_reason = COALESCE($2, closure_reason)
+     WHERE id = $3 RETURNING *`,
+    [req.user.id, reason || null, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  res.json(rows[0]);
 });
 
 // Create order — Manager or Administrator only
