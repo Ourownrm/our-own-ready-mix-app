@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { RatesPanel } from "../lib/MasterDataPanels.jsx";
 
 export default function Accountant() {
   const [stats, setStats] = useState(null);
   const [ledger, setLedger] = useState([]);
   const [allowances, setAllowances] = useState([]);
   const [payingInvoice, setPayingInvoice] = useState(null);
+  const [showRates, setShowRates] = useState(false);
   const [error, setError] = useState("");
 
   async function load() {
@@ -35,6 +37,19 @@ export default function Accountant() {
     );
   }
 
+  if (showRates) {
+    return (
+      <>
+        <TopBar title="Accountant · Concrete grades and rates" />
+        <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+          <button onClick={() => setShowRates(false)} style={{ marginBottom: 16 }}>← Back to dashboard</button>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+          <RatesPanel setError={setError} />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <TopBar title="Accountant" />
@@ -47,6 +62,8 @@ export default function Accountant() {
         <Kpi label="Pumping/waiting due" value={`₹${stats?.pumping_waiting_due ?? "–"}`} />
         <Kpi label="Trip allowance, this month" value={`₹${stats?.trip_allowance_this_month ?? "–"}`} />
       </div>
+
+      <button onClick={() => setShowRates(true)} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <div className="card">

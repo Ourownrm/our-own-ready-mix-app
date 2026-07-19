@@ -9,6 +9,7 @@ import PlantOperator from "./pages/PlantOperator.jsx";
 import QcEngineer from "./pages/QcEngineer.jsx";
 import Accountant from "./pages/Accountant.jsx";
 import Administrator from "./pages/Administrator.jsx";
+import OrdersSchedule from "./pages/OrdersSchedule.jsx";
 
 export default function App() {
   return (
@@ -38,6 +39,9 @@ export default function App() {
           } />
           <Route path="/administrator" element={
             <ProtectedRoute roles={["administrator"]}><Administrator /></ProtectedRoute>
+          } />
+          <Route path="/orders" element={
+            <ProtectedRoute><OrdersSchedule /></ProtectedRoute>
           } />
 
           <Route path="*" element={<Navigate to="/login" replace />} />

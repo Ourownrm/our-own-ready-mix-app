@@ -4,18 +4,18 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("administrator"));
+router.use(requireAuth); // per-route role checks below, since customers/sites/rates need broader access
 
 // ===== Users =====
 
-router.get("/users", async (req, res) => {
+router.get("/users", requireRole("administrator"), async (req, res) => {
   const { rows } = await query(
     "SELECT id, name, phone, email, role, is_active, created_at FROM users ORDER BY created_at DESC"
   );
   res.json(rows);
 });
 
-router.post("/users", async (req, res) => {
+router.post("/users", requireRole("administrator"), async (req, res) => {
   const { name, phone, email, password, role } = req.body;
   if (!name || !phone || !password || !role) {
     return res.status(400).json({ error: "Name, phone, password, and role are all required." });
@@ -40,13 +40,13 @@ router.post("/users", async (req, res) => {
 });
 
 // Toggle active/disabled — soft only, never a hard delete (SRS §16)
-router.patch("/users/:id/status", async (req, res) => {
+router.patch("/users/:id/status", requireRole("administrator"), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
 });
 
-router.post("/users/:id/reset-password", async (req, res) => {
+router.post("/users/:id/reset-password", requireRole("administrator"), async (req, res) => {
   const { new_password } = req.body;
   if (!new_password || new_password.length < 6) {
     return res.status(400).json({ error: "New password must be at least 6 characters." });
@@ -58,7 +58,7 @@ router.post("/users/:id/reset-password", async (req, res) => {
 
 // ===== Master data: Customers =====
 
-router.post("/customers", async (req, res) => {
+router.post("/customers", requireRole("administrator", "manager"), async (req, res) => {
   const { name, contact_number, billing_address } = req.body;
   if (!name) return res.status(400).json({ error: "Customer name is required." });
   const { rows } = await query(
@@ -70,7 +70,7 @@ router.post("/customers", async (req, res) => {
 
 // ===== Master data: Sites =====
 
-router.post("/sites", async (req, res) => {
+router.post("/sites", requireRole("administrator", "manager"), async (req, res) => {
   const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   const { rows } = await query(
@@ -83,7 +83,7 @@ router.post("/sites", async (req, res) => {
 
 // ===== Master data: Trucks =====
 
-router.post("/trucks", async (req, res) => {
+router.post("/trucks", requireRole("administrator"), async (req, res) => {
   const { truck_number, capacity_m3 } = req.body;
   if (!truck_number) return res.status(400).json({ error: "Truck number is required." });
   const { rows } = await query(
@@ -95,7 +95,7 @@ router.post("/trucks", async (req, res) => {
 
 // ===== Master data: Rate master (rate per m3, pumping & waiting charges) =====
 
-router.post("/rates", async (req, res) => {
+router.post("/rates", requireRole("administrator", "accountant"), async (req, res) => {
   const { customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from } = req.body;
   if (!customer_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
     return res.status(400).json({ error: "Customer, mix grade, rate, and effective date are required." });
@@ -110,7 +110,7 @@ router.post("/rates", async (req, res) => {
 
 // ===== Master data: Pumps =====
 
-router.post("/pumps", async (req, res) => {
+router.post("/pumps", requireRole("administrator"), async (req, res) => {
   const { pump_code, pump_type } = req.body;
   if (!pump_code || !pump_type) return res.status(400).json({ error: "Pump code and type are required." });
   const { rows } = await query(
@@ -124,7 +124,7 @@ router.post("/pumps", async (req, res) => {
 // Nothing is ever hard-deleted (SRS §16) — "delete" here means cancelling, which
 // keeps the record but excludes it from active workflows and dashboards.
 
-router.get("/orders", async (req, res) => {
+router.get("/orders", requireRole("administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name
@@ -138,7 +138,7 @@ router.get("/orders", async (req, res) => {
   res.json(rows);
 });
 
-router.patch("/orders/:id", async (req, res) => {
+router.patch("/orders/:id", requireRole("administrator"), async (req, res) => {
   const { order_quantity_m3, scheduled_batching_time, remarks } = req.body;
   const { rows } = await query(
     `UPDATE customer_orders SET
@@ -152,12 +152,12 @@ router.patch("/orders/:id", async (req, res) => {
   res.json(rows[0]);
 });
 
-router.post("/orders/:id/cancel", async (req, res) => {
+router.post("/orders/:id/cancel", requireRole("administrator"), async (req, res) => {
   await query("UPDATE customer_orders SET status = 'cancelled' WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
-router.get("/tickets", async (req, res) => {
+router.get("/tickets", requireRole("administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id, dt.ticket_number, dt.loaded_quantity_m3, dt.status, dt.ticket_date,
             t.truck_number, u.name AS driver_name, s.name AS site_name
@@ -172,7 +172,7 @@ router.get("/tickets", async (req, res) => {
   res.json(rows);
 });
 
-router.patch("/tickets/:id", async (req, res) => {
+router.patch("/tickets/:id", requireRole("administrator"), async (req, res) => {
   const { loaded_quantity_m3 } = req.body;
   const { rows } = await query(
     `UPDATE delivery_tickets SET loaded_quantity_m3 = COALESCE($1, loaded_quantity_m3) WHERE id = $2 RETURNING *`,
@@ -182,7 +182,7 @@ router.patch("/tickets/:id", async (req, res) => {
   res.json(rows[0]);
 });
 
-router.post("/tickets/:id/cancel", async (req, res) => {
+router.post("/tickets/:id/cancel", requireRole("administrator"), async (req, res) => {
   await query("UPDATE delivery_tickets SET status = 'cancelled' WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });

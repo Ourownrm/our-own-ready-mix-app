@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { CustomersPanel, SitesPanel } from "../lib/MasterDataPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
 const FLEET_LABELS = {
@@ -13,7 +14,7 @@ export default function ManagerDashboard() {
   const [orders, setOrders] = useState([]);
   const [activeTrucks, setActiveTrucks] = useState([]);
   const [liveLocations, setLiveLocations] = useState([]);
-  const [showCreateOrder, setShowCreateOrder] = useState(false);
+  const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
 
   async function load() {
@@ -39,12 +40,30 @@ export default function ManagerDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  if (showCreateOrder) {
+  if (view === "create-order") {
     return (
       <>
         <TopBar title="Manager · Create order" />
         <div style={{ maxWidth: 960, margin: "0 auto", padding: "0 16px 32px" }}>
-          <CreateOrder onDone={() => { setShowCreateOrder(false); load(); }} />
+          <button onClick={() => setView("dashboard")} style={{ marginBottom: 16 }}>← Back to dashboard</button>
+          <CreateOrder onDone={() => { setView("dashboard"); load(); }} />
+        </div>
+      </>
+    );
+  }
+  if (view === "customers" || view === "sites") {
+    return (
+      <>
+        <TopBar title="Manager · Customers & Sites" />
+        <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <button onClick={() => setView("dashboard")}>← Back to dashboard</button>
+            <button className={`btn-tab ${view === "customers" ? "active" : ""}`} onClick={() => setView("customers")}>Customers</button>
+            <button className={`btn-tab ${view === "sites" ? "active" : ""}`} onClick={() => setView("sites")}>Projects and sites</button>
+          </div>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+          {view === "customers" && <CustomersPanel setError={setError} />}
+          {view === "sites" && <SitesPanel setError={setError} />}
         </div>
       </>
     );
@@ -81,7 +100,10 @@ export default function ManagerDashboard() {
           ))}
         </div>
 
-        <button className="btn-primary" onClick={() => setShowCreateOrder(true)} style={{ marginBottom: 20 }}>Create order</button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+          <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
+          <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
+        </div>
 
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} />
         <OrderTable title="Running today" rows={today} />
