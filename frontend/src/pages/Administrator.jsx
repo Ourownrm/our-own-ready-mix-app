@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { List, CustomersPanel, SitesPanel, RatesPanel } from "../lib/MasterDataPanels.jsx";
+import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel } from "../lib/MasterDataPanels.jsx";
 
 const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant"];
 
@@ -21,8 +21,8 @@ export default function Administrator() {
           ["users", "Users and roles"],
           ["customers", "Customers"],
           ["sites", "Projects and sites"],
-          ["trucks", "Trucks and fleet"],
-          ["pumps", "Pumps"],
+          ["fleet", "Trucks and pumps"],
+          ["salespersons", "Salespersons"],
           ["rates", "Concrete grades and rates"],
           ["orders", "Correct orders"],
           ["tickets", "Correct tickets"],
@@ -42,8 +42,8 @@ export default function Administrator() {
       {view === "users" && <UsersPanel setError={setError} />}
       {view === "customers" && <CustomersPanel setError={setError} />}
       {view === "sites" && <SitesPanel setError={setError} />}
-      {view === "trucks" && <TrucksPanel setError={setError} />}
-      {view === "pumps" && <PumpsPanel setError={setError} />}
+      {view === "fleet" && <FleetPanel setError={setError} />}
+      {view === "salespersons" && <SalespersonsPanel setError={setError} />}
       {view === "rates" && <RatesPanel setError={setError} />}
       {view === "orders" && <OrdersPanel setError={setError} />}
       {view === "tickets" && <TicketsPanel setError={setError} />}
@@ -134,76 +134,6 @@ function UsersPanel({ setError }) {
           </div>
         </form>
       )}
-    </div>
-  );
-}
-
-function TrucksPanel({ setError }) {
-  const [trucks, setTrucks] = useState([]);
-  const [form, setForm] = useState({ truck_number: "", capacity_m3: "" });
-  const [saving, setSaving] = useState(false);
-
-  async function load() {
-    try { setTrucks(await apiRequest("/master/trucks")); } catch (err) { setError(err.message); }
-  }
-  useEffect(() => { load(); }, []);
-
-  async function submit(e) {
-    e.preventDefault();
-    setSaving(true); setError("");
-    try {
-      await apiRequest("/administrator/trucks", { method: "POST", body: form });
-      setForm({ truck_number: "", capacity_m3: "" });
-      load();
-    } catch (err) { setError(err.message); } finally { setSaving(false); }
-  }
-
-  return (
-    <div>
-      <List rows={trucks} columns={[["truck_number", "Truck number"], ["capacity_m3", "Capacity (m³)"]]} />
-      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
-        <div><div style={{ color: "var(--slate)" }}>Truck number</div><input value={form.truck_number} onChange={(e) => setForm({ ...form, truck_number: e.target.value })} required /></div>
-        <div><div style={{ color: "var(--slate)" }}>Capacity (m³)</div><input type="number" value={form.capacity_m3} onChange={(e) => setForm({ ...form, capacity_m3: e.target.value })} /></div>
-        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add truck"}</button></div>
-      </form>
-    </div>
-  );
-}
-
-function PumpsPanel({ setError }) {
-  const [pumps, setPumps] = useState([]);
-  const [form, setForm] = useState({ pump_code: "", pump_type: "line_pump" });
-  const [saving, setSaving] = useState(false);
-
-  async function load() {
-    try { setPumps(await apiRequest("/master/pumps")); } catch (err) { setError(err.message); }
-  }
-  useEffect(() => { load(); }, []);
-
-  async function submit(e) {
-    e.preventDefault();
-    setSaving(true); setError("");
-    try {
-      await apiRequest("/administrator/pumps", { method: "POST", body: form });
-      setForm({ pump_code: "", pump_type: "line_pump" });
-      load();
-    } catch (err) { setError(err.message); } finally { setSaving(false); }
-  }
-
-  return (
-    <div>
-      <List rows={pumps} columns={[["pump_code", "Pump"], ["pump_type", "Type"]]} />
-      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
-        <div><div style={{ color: "var(--slate)" }}>Pump code</div><input value={form.pump_code} onChange={(e) => setForm({ ...form, pump_code: e.target.value })} placeholder="e.g. Line-3" required /></div>
-        <div>
-          <div style={{ color: "var(--slate)" }}>Type</div>
-          <select value={form.pump_type} onChange={(e) => setForm({ ...form, pump_type: e.target.value })}>
-            <option value="line_pump">Line pump</option>
-            <option value="boom_pump">Boom pump</option>
-          </select>
-        </div>
-        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add pump"}</button></div>
-      </form>
     </div>
   );
 }

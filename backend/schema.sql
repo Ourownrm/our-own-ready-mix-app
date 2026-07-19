@@ -98,6 +98,14 @@ CREATE TABLE rejection_reasons (
   reason VARCHAR(200) NOT NULL UNIQUE
 );
 
+-- Salesmen, as a controlled list — orders reference this instead of a free-text
+-- name, so a typo doesn't silently create a second "salesman" in reports.
+CREATE TABLE salespersons (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(150) NOT NULL UNIQUE,
+  is_active BOOLEAN DEFAULT TRUE
+);
+
 -- Rate master for Accountant (rates, pumping charges, waiting charges per customer/grade)
 CREATE TABLE rate_master (
   id SERIAL PRIMARY KEY,
@@ -138,7 +146,8 @@ CREATE TABLE customer_orders (
   assigned_site_supervisor_id INTEGER REFERENCES users(id),
   site_contact_number VARCHAR(20) NOT NULL,
   order_quantity_m3 NUMERIC(8,2) NOT NULL,
-  sales_representative VARCHAR(150),
+  sales_representative VARCHAR(150),  -- deprecated free-text field, kept for old records only
+  sales_representative_id INTEGER REFERENCES salespersons(id),
   casting_location VARCHAR(200),
   pump_departure_time TIME,
   remarks TEXT,

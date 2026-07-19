@@ -55,4 +55,9 @@ router.get("/rejection-reasons", async (req, res) => {
   res.json(rows);
 });
 
+router.get("/salespersons", async (req, res) => {
+  const { rows } = await query("SELECT id, name FROM salespersons WHERE is_active ORDER BY name");
+  res.json(rows);
+});
+
 export default router;

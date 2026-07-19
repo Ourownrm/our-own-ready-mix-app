@@ -167,3 +167,184 @@ export function RatesPanel({ setError }) {
     </form>
   );
 }
+
+export function FleetPanel({ setError }) {
+  const [trucks, setTrucks] = useState([]);
+  const [pumps, setPumps] = useState([]);
+  const [truckForm, setTruckForm] = useState({ truck_number: "", capacity_m3: "" });
+  const [pumpForm, setPumpForm] = useState({ pump_code: "", pump_type: "line_pump" });
+  const [savingTruck, setSavingTruck] = useState(false);
+  const [savingPump, setSavingPump] = useState(false);
+
+  async function load() {
+    try {
+      const [t, p] = await Promise.all([apiRequest("/administrator/trucks"), apiRequest("/administrator/pumps")]);
+      setTrucks(t); setPumps(p);
+    } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function addTruck(e) {
+    e.preventDefault();
+    setSavingTruck(true); setError("");
+    try {
+      await apiRequest("/administrator/trucks", { method: "POST", body: truckForm });
+      setTruckForm({ truck_number: "", capacity_m3: "" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSavingTruck(false); }
+  }
+
+  async function addPump(e) {
+    e.preventDefault();
+    setSavingPump(true); setError("");
+    try {
+      await apiRequest("/administrator/pumps", { method: "POST", body: pumpForm });
+      setPumpForm({ pump_code: "", pump_type: "line_pump" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSavingPump(false); }
+  }
+
+  async function toggleActive(kind, id, is_active) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/${kind}/${id}/status`, { method: "PATCH", body: { is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function hardDelete(kind, id, label) {
+    if (!window.confirm(`Delete ${label}? This can't be undone. If it's already been used anywhere, this will be blocked — deactivate it instead.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/administrator/${kind}/${id}`, { method: "DELETE" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Trucks</div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table>
+          <thead><tr><th>Truck number</th><th>Capacity (m³)</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {trucks.map((t) => (
+              <tr key={t.id}>
+                <td>{t.truck_number}</td>
+                <td>{t.capacity_m3 ?? "–"}</td>
+                <td>{t.is_active ? "Active" : "Inactive"}</td>
+                <td style={{ display: "flex", gap: 6 }}>
+                  <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleActive("trucks", t.id, !t.is_active)}>
+                    {t.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                  <button className="btn-danger" style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => hardDelete("trucks", t.id, t.truck_number)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {trucks.length === 0 && <tr><td colSpan={4} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={addTruck} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginBottom: 24 }}>
+        <div><div style={{ color: "var(--slate)" }}>Truck number</div><input value={truckForm.truck_number} onChange={(e) => setTruckForm({ ...truckForm, truck_number: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Capacity (m³)</div><input type="number" value={truckForm.capacity_m3} onChange={(e) => setTruckForm({ ...truckForm, capacity_m3: e.target.value })} /></div>
+        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={savingTruck}>{savingTruck ? "Saving..." : "Add truck"}</button></div>
+      </form>
+
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Pumps</div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table>
+          <thead><tr><th>Pump code</th><th>Type</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {pumps.map((p) => (
+              <tr key={p.id}>
+                <td>{p.pump_code}</td>
+                <td>{p.pump_type.replace(/_/g, " ")}</td>
+                <td>{p.is_active ? "Active" : "Inactive"}</td>
+                <td style={{ display: "flex", gap: 6 }}>
+                  <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleActive("pumps", p.id, !p.is_active)}>
+                    {p.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                  <button className="btn-danger" style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => hardDelete("pumps", p.id, p.pump_code)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {pumps.length === 0 && <tr><td colSpan={4} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={addPump} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
+        <div><div style={{ color: "var(--slate)" }}>Pump code</div><input value={pumpForm.pump_code} onChange={(e) => setPumpForm({ ...pumpForm, pump_code: e.target.value })} required /></div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Type</div>
+          <select value={pumpForm.pump_type} onChange={(e) => setPumpForm({ ...pumpForm, pump_type: e.target.value })}>
+            <option value="boom_pump">Boom pump</option>
+            <option value="line_pump">Line pump</option>
+          </select>
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={savingPump}>{savingPump ? "Saving..." : "Add pump"}</button></div>
+      </form>
+    </div>
+  );
+}
+
+export function SalespersonsPanel({ setError }) {
+  const [salespersons, setSalespersons] = useState([]);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setSalespersons(await apiRequest("/administrator/salespersons")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError("");
+    try {
+      await apiRequest("/administrator/salespersons", { method: "POST", body: { name } });
+      setName("");
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function toggleActive(id, is_active) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/salespersons/${id}/status`, { method: "PATCH", body: { is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table>
+          <thead><tr><th>Name</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {salespersons.map((s) => (
+              <tr key={s.id}>
+                <td>{s.name}</td>
+                <td>{s.is_active ? "Active" : "Inactive"}</td>
+                <td>
+                  <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleActive(s.id, !s.is_active)}>
+                    {s.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {salespersons.length === 0 && <tr><td colSpan={3} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "flex", gap: 8, fontSize: 13 }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Salesperson name" required style={{ flex: 1 }} />
+        <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add"}</button>
+      </form>
+    </div>
+  );
+}

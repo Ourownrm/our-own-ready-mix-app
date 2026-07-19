@@ -16,7 +16,7 @@ const initialForm = {
   assigned_site_supervisor_id: "",
   site_contact_number: "",
   order_quantity_m3: "",
-  sales_representative: "",
+  sales_representative_id: "",
   casting_location: "",
   pump_departure_time: "",
   remarks: "",
@@ -29,6 +29,7 @@ export default function CreateOrder({ onDone }) {
   const [mixGrades, setMixGrades] = useState([]);
   const [supervisors, setSupervisors] = useState([]);
   const [pumps, setPumps] = useState([]);
+  const [salespersons, setSalespersons] = useState([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -39,8 +40,9 @@ export default function CreateOrder({ onDone }) {
       apiRequest("/master/mix-grades"),
       apiRequest("/master/site-supervisors"),
       apiRequest("/master/pumps"),
-    ]).then(([c, s, m, sup, p]) => {
-      setCustomers(c); setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p);
+      apiRequest("/master/salespersons"),
+    ]).then(([c, s, m, sup, p, sp]) => {
+      setCustomers(c); setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p); setSalespersons(sp);
     }).catch((err) => setError(err.message));
   }, []);
 
@@ -137,7 +139,29 @@ export default function CreateOrder({ onDone }) {
           <input type="number" value={form.order_quantity_m3} onChange={(e) => set("order_quantity_m3", e.target.value)} required />
         </Field>
         <Field label="Sales representative">
-          <input type="text" value={form.sales_representative} onChange={(e) => set("sales_representative", e.target.value)} />
+          <select
+            value={form.sales_representative_id}
+            onChange={async (e) => {
+              if (e.target.value === "__add_new__") {
+                const name = window.prompt("New salesperson's name:");
+                if (name && name.trim()) {
+                  try {
+                    const sp = await apiRequest("/administrator/salespersons", { method: "POST", body: { name: name.trim() } });
+                    setSalespersons((list) => [...list, sp].sort((a, b) => a.name.localeCompare(b.name)));
+                    set("sales_representative_id", sp.id);
+                  } catch (err) {
+                    setError(err.message);
+                  }
+                }
+                return;
+              }
+              set("sales_representative_id", e.target.value);
+            }}
+          >
+            <option value="">Select</option>
+            {salespersons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            <option value="__add_new__">+ Add new salesperson...</option>
+          </select>
         </Field>
         <Field label="Structure / casting location">
           <input type="text" value={form.casting_location} onChange={(e) => set("casting_location", e.target.value)} />

@@ -48,7 +48,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     customer_id, site_id, mix_grade_id, pump_requirement, pump_id,
     site_technician_required, cube_samples_required, assigned_pump_crew,
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-    sales_representative, casting_location, pump_departure_time, remarks,
+    sales_representative_id, casting_location, pump_departure_time, remarks,
   } = req.body;
 
   const required = { order_date, scheduled_batching_time, truck_dispatch_interval_minutes,
@@ -64,13 +64,13 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-      sales_representative, casting_location, pump_departure_time, remarks, created_by)
+      sales_representative_id, casting_location, pump_departure_time, remarks, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
      assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-     sales_representative, casting_location, pump_departure_time, remarks, req.user.id]
+     sales_representative_id || null, casting_location, pump_departure_time, remarks, req.user.id]
   );
   res.status(201).json(rows[0]);
 });

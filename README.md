@@ -152,3 +152,58 @@ a database error (it now fails just that one request and stays up for everyone e
 All schema changes above (order closing columns, expanded breakdown-reporting table)
 are applied automatically the next time you visit `/setup?key=...` on your deployed
 backend — same one-time-setup mechanism as before, safe to run repeatedly.
+
+## Third round
+
+1. **Reports & Director's Dashboard is now Administrator-only.** Removed from Manager
+   and Accountant screens; the backend route rejects any other role too, not just the
+   button being hidden.
+2. **Salesman-wise sales report now shows quantity (m³), not just rupee value.**
+3. **Sales representative is now a dropdown**, not free text — a typo can no longer
+   silently split one salesman's numbers into two names in reports. Manage the list
+   under Administrator → Salespersons (Manager can also add a new name inline from the
+   order form via "+ Add new salesperson..."). Existing free-text names already on file
+   were automatically carried over into the new list by the migration, so nothing is
+   lost — but every *new* order uses the dropdown from here on.
+4. **Trip allowance no longer shows the distance range** — "₹100 per trip (0-10 km)" is
+   now just "₹100 per trip" everywhere it's displayed. The migration also cleans up any
+   already-seeded labels with the old format.
+5. **Manager Dashboard: Completed trips list**, with the full per-trip timeline —
+   batch time (ticket created) | left plant (QC dispatch) | reached site | unloading
+   start | unloading finish. One honest caveat: this app's workflow doesn't currently
+   have a distinct "batching started/completed" step separate from the Plant Operator
+   creating the ticket, so "batch time" is the ticket's creation timestamp — a true
+   separate batching step would need a small workflow addition on the Plant Operator
+   side if you want that later.
+6. **The "truck at site over 2 hours" alert is now visible, not just a background
+   count.** The Active trucks table highlights the row and shows "At site Xh Ym —
+   notify site" once a truck has been sitting at a site for more than 2 hours since
+   arrival, plus a badge count at the top of the table.
+
+### Database — starting fresh
+A new protected endpoint clears every transactional/operational record (orders,
+delivery tickets, their full event/GPS/QC history, breakdown & fuel logs, invoices,
+payments, notifications) while leaving **users, trucks, pumps, customers, sites, mix
+grades, salespersons, rate master, trip allowance categories, and rejection reasons**
+untouched — that's your configuration, not test data.
+
+Visit (after deploying this update and re-running `/setup?key=...` once to apply the
+new migrations):
+
+```
+https://your-backend.onrender.com/setup/reset-transactional-data?key=YOUR_SETUP_SECRET&confirm=RESET
+```
+
+Visiting without `&confirm=RESET` shows a warning and does nothing — this is a genuine
+"delete everything transactional" action with no undo, so it's deliberately hard to
+trigger by accident. **Do this once, right before you start using the app for real**,
+not on an ongoing basis.
+
+### Database — fixing a mistaken equipment entry (e.g. a pump typo)
+Administrator → **Trucks and pumps** now has full management: add, deactivate/
+reactivate, or permanently delete a truck or pump. For your pump typo: open that tab
+and click **Delete** next to the mistaken entry. If it's never actually been used on
+any order or ticket, it deletes cleanly; if it has, the delete is blocked with a message
+telling you to **Deactivate** instead (so it disappears from dropdowns going forward
+without breaking any historical record that already points to it) — then add the
+correctly-spelled pump as new.

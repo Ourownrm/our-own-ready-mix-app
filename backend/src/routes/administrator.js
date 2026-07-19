@@ -83,6 +83,11 @@ router.post("/sites", requireRole("administrator", "manager"), async (req, res) 
 
 // ===== Master data: Trucks =====
 
+router.get("/trucks", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM trucks ORDER BY truck_number");
+  res.json(rows);
+});
+
 router.post("/trucks", requireRole("administrator"), async (req, res) => {
   const { truck_number, capacity_m3 } = req.body;
   if (!truck_number) return res.status(400).json({ error: "Truck number is required." });
@@ -91,6 +96,29 @@ router.post("/trucks", requireRole("administrator"), async (req, res) => {
     [truck_number, capacity_m3]
   );
   res.status(201).json(rows[0]);
+});
+
+// Deactivate/reactivate — safe default, doesn't touch any history that points at this truck.
+router.patch("/trucks/:id/status", requireRole("administrator"), async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE trucks SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
+});
+
+// Hard delete — only for a mistaken entry (e.g. a typo) that was never actually used.
+// If it's referenced by any delivery ticket, breakdown report, etc., Postgres blocks
+// the delete and we surface a clear message instead of a generic error.
+router.delete("/trucks/:id", requireRole("administrator"), async (req, res) => {
+  try {
+    const { rowCount } = await query("DELETE FROM trucks WHERE id = $1", [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: "Truck not found." });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === "23503") {
+      return res.status(400).json({ error: "This truck already has tickets or other records against it — deactivate it instead of deleting." });
+    }
+    throw err;
+  }
 });
 
 // ===== Master data: Rate master (rate per m3, pumping & waiting charges) =====
@@ -110,6 +138,11 @@ router.post("/rates", requireRole("administrator", "accountant"), async (req, re
 
 // ===== Master data: Pumps =====
 
+router.get("/pumps", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM pumps ORDER BY pump_code");
+  res.json(rows);
+});
+
 router.post("/pumps", requireRole("administrator"), async (req, res) => {
   const { pump_code, pump_type } = req.body;
   if (!pump_code || !pump_type) return res.status(400).json({ error: "Pump code and type are required." });
@@ -118,6 +151,50 @@ router.post("/pumps", requireRole("administrator"), async (req, res) => {
     [pump_code, pump_type]
   );
   res.status(201).json(rows[0]);
+});
+
+router.patch("/pumps/:id/status", requireRole("administrator"), async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE pumps SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
+});
+
+router.delete("/pumps/:id", requireRole("administrator"), async (req, res) => {
+  try {
+    const { rowCount } = await query("DELETE FROM pumps WHERE id = $1", [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: "Pump not found." });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === "23503") {
+      return res.status(400).json({ error: "This pump already has orders or other records against it — deactivate it instead of deleting." });
+    }
+    throw err;
+  }
+});
+
+// ===== Master data: Salespersons (dropdown, replaces free-text sales rep) =====
+
+router.get("/salespersons", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM salespersons ORDER BY name");
+  res.json(rows);
+});
+
+router.post("/salespersons", requireRole("administrator", "manager"), async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "Name is required." });
+  const { rows } = await query(
+    `INSERT INTO salespersons (name) VALUES ($1)
+     ON CONFLICT (name) DO UPDATE SET is_active = true
+     RETURNING *`,
+    [name.trim()]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/salespersons/:id/status", requireRole("administrator"), async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE salespersons SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
 });
 
 // ===== Correcting mistaken entries (orders & tickets) =====

@@ -64,6 +64,29 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (breakdown reporting now covers pumps and the batching plant, not just trucks).");
 
+    // Salesman is now a controlled dropdown list instead of free text, so a
+    // typo can't silently split one salesman's numbers across two names.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS salespersons (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(150) NOT NULL UNIQUE,
+        is_active BOOLEAN DEFAULT TRUE
+      );
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS sales_representative_id INTEGER REFERENCES salespersons(id);
+    `);
+    // Carry forward any distinct names already typed into the old free-text
+    // field, so existing orders aren't silently orphaned from the new dropdown.
+    await pool.query(`
+      INSERT INTO salespersons (name)
+      SELECT DISTINCT trim(sales_representative) FROM customer_orders
+      WHERE sales_representative IS NOT NULL AND trim(sales_representative) != ''
+      ON CONFLICT (name) DO NOTHING;
+      UPDATE customer_orders co SET sales_representative_id = sp.id
+      FROM salespersons sp
+      WHERE co.sales_representative_id IS NULL AND trim(co.sales_representative) = sp.name;
+    `);
+    log.push("Schema migration applied (salesman is now a dropdown list — any names already on file were carried over as options).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
@@ -80,11 +103,17 @@ router.get("/setup", async (req, res) => {
     await query(
       `INSERT INTO trip_allowance_categories (label, amount, min_distance_km, max_distance_km)
        SELECT * FROM (VALUES
-         ('₹100 per trip (0-10 km)', 100::numeric, 0::numeric, 10::numeric),
-         ('₹150 per trip (10-20 km)', 150::numeric, 10::numeric, 20::numeric),
-         ('₹200 per trip (20+ km)', 200::numeric, 20::numeric, NULL::numeric)
+         ('₹100 per trip', 100::numeric, 0::numeric, 10::numeric),
+         ('₹150 per trip', 150::numeric, 10::numeric, 20::numeric),
+         ('₹200 per trip', 200::numeric, 20::numeric, NULL::numeric)
        ) AS v(label, amount, min_distance_km, max_distance_km)
        WHERE NOT EXISTS (SELECT 1 FROM trip_allowance_categories)`
+    );
+    // Existing installs may already have labels seeded with the distance range
+    // baked in (e.g. "₹100 per trip (0-10 km)") — clean those up too.
+    await query(
+      `UPDATE trip_allowance_categories SET label = regexp_replace(label, '\\s*\\([^)]*\\)\\s*$', '')
+       WHERE label ~ '\\([^)]*\\)\\s*$'`
     );
 
     // Mix grades: insert each grade individually so adding new grades later
@@ -152,6 +181,53 @@ router.get("/setup", async (req, res) => {
       `You can now sign in to the app with:\nPhone: 9999999999\nPassword: ChangeMe123!\n\n` +
       `Please change this password once you're able to.` +
       `</pre>`
+    );
+  } catch (err) {
+    console.error(err);
+    res.status(500).send(
+      `<pre style="font-family: sans-serif; padding: 20px; color: #c0392b;">Something went wrong:\n${err.message}</pre>`
+    );
+  }
+});
+
+// Clears every transactional/operational record — orders, delivery tickets and
+// their full event/GPS/QC history, breakdown and fuel logs, invoices, payments,
+// and notifications — so the app can start fresh with real data.
+//
+// Deliberately KEPT (not touched): users, trucks, pumps, customers, sites,
+// mix grades, salespersons, rate master, trip allowance categories, rejection
+// reasons, fuel stations, and role permissions — none of that is "test data",
+// it's your configuration.
+//
+// Protected the same way as /setup: needs the SETUP_SECRET, plus an explicit
+// confirm=RESET so a stray visit to the URL can't trigger it by accident.
+router.get("/setup/reset-transactional-data", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  if (req.query.confirm !== "RESET") {
+    return res.status(400).send(
+      `<pre style="font-family: sans-serif; padding: 20px;">` +
+      `This permanently deletes every order, delivery ticket, invoice, payment, and log —\n` +
+      `keeping only users, equipment (trucks/pumps), customers, and sites.\n\n` +
+      `This cannot be undone. To proceed, add &confirm=RESET to this URL.</pre>`
+    );
+  }
+
+  try {
+    await pool.query(`
+      TRUNCATE TABLE
+        audit_log, notifications, trip_allowance_payouts, payments, invoices,
+        breakdown_reports, fuel_logs, pump_logs, site_qc, plant_qc, gps_pings,
+        trip_events, delivery_tickets, customer_orders
+      RESTART IDENTITY CASCADE;
+    `);
+    res.send(
+      `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
+      `Done. All orders, delivery tickets, logs, invoices, and payments have been cleared.\n\n` +
+      `Kept as-is: users, trucks, pumps, customers, sites, mix grades, salespersons,\n` +
+      `rate master, trip allowance categories, rejection reasons.\n\n` +
+      `You're starting fresh on transactional data.</pre>`
     );
   } catch (err) {
     console.error(err);
