@@ -98,7 +98,7 @@ export default function Reports() {
             <Section title="Salesman-wise sales this month">
               <SimpleTable
                 rows={data.salesman_monthly}
-                columns={[["salesman", "Salesman"], [(r) => inr(r.total), "Sales value"]]}
+                columns={[["salesman", "Salesman"], [(r) => `${r.total_qty_m3} m³`, "Quantity"], [(r) => inr(r.total), "Sales value"]]}
                 empty="No sales recorded this month."
               />
             </Section>

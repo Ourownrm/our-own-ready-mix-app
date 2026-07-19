@@ -3,10 +3,8 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-// Reports and the Director's Dashboard carry the same financially-sensitive
-// visibility as the Accountant/Manager screens — Manager, Accountant, and
-// Administrator only.
-router.use(requireAuth, requireRole("manager", "accountant", "administrator"));
+// Director's Dashboard carries full company financials — Administrator only.
+router.use(requireAuth, requireRole("administrator"));
 
 // Everything the Director's Dashboard needs, in one call.
 router.get("/director-dashboard", async (req, res) => {
@@ -88,7 +86,8 @@ router.get("/director-dashboard", async (req, res) => {
 
     query(
       `SELECT COALESCE(co.sales_representative, 'Unassigned') AS salesman,
-              COALESCE(SUM(i.total_amount), 0) AS total
+              COALESCE(SUM(i.total_amount), 0) AS total,
+              COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3
        FROM invoices i
        JOIN delivery_tickets dt ON dt.id = i.ticket_id
        JOIN customer_orders co ON co.id = dt.order_id

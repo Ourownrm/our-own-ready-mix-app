@@ -115,19 +115,56 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
   });
 });
 
-// Active trucks today — matches the original "Active trucks" mockup table
+// Active trucks today — matches the original "Active trucks" mockup table.
+// Also flags any truck that has been sitting at site more than 2 hours since
+// arrival (site_supervisor's "reached_site" confirmation) so the delay is
+// visible right on this list, not just as a background count.
 router.get("/active-trucks", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, dt.created_at,
-            t.truck_number, u.name AS driver_name, c.name AS customer_name, s.name AS site_name
+            t.truck_number, u.name AS driver_name, c.name AS customer_name, s.name AS site_name,
+            rs.event_time AS reached_site_at,
+            CASE WHEN dt.status IN ('reached_site', 'unloading') AND rs.event_time IS NOT NULL
+                 THEN EXTRACT(EPOCH FROM (now() - rs.event_time)) / 60
+            END AS minutes_at_site
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN users u ON u.id = dt.driver_id
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
+     LEFT JOIN LATERAL (
+       SELECT event_time FROM trip_events
+       WHERE ticket_id = dt.id AND event_type = 'reached_site'
+       ORDER BY event_time DESC LIMIT 1
+     ) rs ON true
      WHERE dt.ticket_date = CURRENT_DATE AND dt.status NOT IN ('completed', 'cancelled', 'returned')
      ORDER BY dt.created_at`
+  );
+  res.json(rows);
+});
+
+// Completed trips today, with the full timeline: batching (ticket created),
+// left plant (dispatched by QC), reached site, unloading start, unloading finish.
+router.get("/completed-trips", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.id AS ticket_id, dt.ticket_number, t.truck_number, u.name AS driver_name,
+            c.name AS customer_name, s.name AS site_name, dt.loaded_quantity_m3,
+            dt.created_at AS batch_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'dispatched') AS left_plant_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'reached_site') AS reached_site_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'unloading_started') AS unloading_start_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'unloading_completed') AS unloading_finish_time
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users u ON u.id = dt.driver_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     LEFT JOIN trip_events te ON te.ticket_id = dt.id
+     WHERE dt.ticket_date = CURRENT_DATE AND dt.status = 'completed'
+     GROUP BY dt.id, t.truck_number, u.name, c.name, s.name, dt.loaded_quantity_m3, dt.created_at
+     ORDER BY dt.created_at DESC`
   );
   res.json(rows);
 });

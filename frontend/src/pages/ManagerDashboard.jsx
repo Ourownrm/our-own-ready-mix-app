@@ -14,21 +14,24 @@ export default function ManagerDashboard() {
   const [stats, setStats] = useState(null);
   const [orders, setOrders] = useState([]);
   const [activeTrucks, setActiveTrucks] = useState([]);
+  const [completedTrips, setCompletedTrips] = useState([]);
   const [liveLocations, setLiveLocations] = useState([]);
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
 
   async function load() {
     try {
-      const [dashboard, orderList, trucks, locations] = await Promise.all([
+      const [dashboard, orderList, trucks, trips, locations] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
         apiRequest("/orders/active-trucks"),
+        apiRequest("/orders/completed-trips"),
         apiRequest("/orders/live-locations"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
       setActiveTrucks(trucks);
+      setCompletedTrips(trips);
       setLiveLocations(locations);
     } catch (err) {
       setError(err.message);
@@ -123,11 +126,11 @@ export default function ManagerDashboard() {
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
           <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
-          <Link to="/reports"><button type="button">Reports &amp; Director's Dashboard</button></Link>
           <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
         </div>
 
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} />
+        <CompletedTripsTable trips={completedTrips} />
 
         {carriedForward.length > 0 && (
           <OrderTable
@@ -154,10 +157,18 @@ function Kpi({ label, value, danger }) {
 
 function ActiveTrucksTable({ trucks, locations }) {
   const locationByTicket = Object.fromEntries(locations.map((l) => [l.ticket_id, l]));
+  const delayedCount = trucks.filter((t) => t.minutes_at_site > 120).length;
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Active trucks</div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+        Active trucks
+        {delayedCount > 0 && (
+          <span className="badge badge-danger" style={{ marginLeft: 8 }}>
+            {delayedCount} truck{delayedCount > 1 ? "s" : ""} over 2 hrs at site
+          </span>
+        )}
+      </div>
       {trucks.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No trucks currently running.</div>
       ) : (
@@ -168,13 +179,21 @@ function ActiveTrucksTable({ trucks, locations }) {
           <tbody>
             {trucks.map((t) => {
               const loc = locationByTicket[t.ticket_id];
+              const delayed = t.minutes_at_site > 120;
               return (
-                <tr key={t.ticket_id}>
+                <tr key={t.ticket_id} style={delayed ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
                   <td>{t.truck_number}</td>
                   <td>{t.driver_name}</td>
                   <td>{t.customer_name} &middot; {t.site_name}</td>
                   <td>{formatTime(t.created_at)}</td>
-                  <td><StatusBadge status={t.status} /></td>
+                  <td>
+                    <StatusBadge status={t.status} />
+                    {delayed && (
+                      <div style={{ color: "var(--alert-red)", fontSize: 11, fontWeight: 600, marginTop: 2 }}>
+                        At site {formatDuration(t.minutes_at_site)} — notify site
+                      </div>
+                    )}
+                  </td>
                   <td>
                     {loc ? (
                       <a
@@ -192,6 +211,43 @@ function ActiveTrucksTable({ trucks, locations }) {
             })}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+function CompletedTripsTable({ trips }) {
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Completed trips today</div>
+      {trips.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No trips completed yet today.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Truck</th><th>Driver</th><th>Customer</th><th>Qty</th>
+                <th>Batch time</th><th>Left plant</th><th>Reached site</th><th>Unloading start</th><th>Unloading finish</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trips.map((t) => (
+                <tr key={t.ticket_id}>
+                  <td>{t.truck_number}</td>
+                  <td>{t.driver_name}</td>
+                  <td>{t.customer_name} &middot; {t.site_name}</td>
+                  <td>{t.loaded_quantity_m3} m³</td>
+                  <td>{formatTime(t.batch_time)}</td>
+                  <td>{formatTime(t.left_plant_time)}</td>
+                  <td>{formatTime(t.reached_site_time)}</td>
+                  <td>{formatTime(t.unloading_start_time)}</td>
+                  <td>{formatTime(t.unloading_finish_time)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -261,4 +317,9 @@ function minutesAgo(isoTime) {
 function formatTime(isoTime) {
   if (!isoTime) return "–";
   return new Date(isoTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+function formatDuration(mins) {
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins % 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
