@@ -87,6 +87,17 @@ function UsersPanel({ setError }) {
     }
   }
 
+  async function resetPassword(u) {
+    const newPassword = window.prompt(`New password for ${u.name} (at least 6 characters):`);
+    if (!newPassword) return; // cancelled
+    try {
+      await apiRequest(`/administrator/users/${u.id}/reset-password`, { method: "POST", body: { new_password: newPassword } });
+      window.alert(`Password updated for ${u.name}. Tell them the new password directly — it isn't emailed or shown anywhere else.`);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <table>
@@ -106,8 +117,9 @@ function UsersPanel({ setError }) {
               <td>{u.phone}</td>
               <td>{u.role.replace("_", " ")}</td>
               <td><span className={`badge ${u.is_active ? "badge-success" : "badge-neutral"}`}>{u.is_active ? "Active" : "Disabled"}</span></td>
-              <td>
+              <td style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => toggleStatus(u)}>{u.is_active ? "Disable" : "Enable"}</button>
+                <button onClick={() => resetPassword(u)}>Reset password</button>
               </td>
             </tr>
           ))}
