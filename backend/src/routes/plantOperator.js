@@ -39,24 +39,40 @@ router.post("/tickets", requireRole("plant_operator", "administrator"), async (r
     return res.status(400).json({ error: "Order, quantity, truck, and driver are all required." });
   }
 
-  const { rows: countRows } = await query(
-    "SELECT COUNT(*) FROM delivery_tickets WHERE ticket_date = CURRENT_DATE"
-  );
-  const ticketNumber = `DT-${2200 + Number(countRows[0].count) + 1}`;
+  // Ticket numbers must be globally unique. Basing the next number on a same-day
+  // COUNT(*) could collide — a cancelled ticket, a manually-entered ticket number
+  // from Administrator/Manager (see tickets.js), or two tickets created back to
+  // back could all land on the same number and fail the UNIQUE constraint with a
+  // generic 500. Instead: derive the next number from the highest DT-#### issued
+  // so far (any date), and retry a couple of times on the rare remaining race.
+  let lastErr;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const { rows: maxRows } = await query(
+        `SELECT COALESCE(MAX((regexp_match(ticket_number, '^DT-(\\d+)$'))[1]::int), 2200) AS max_num
+         FROM delivery_tickets`
+      );
+      const ticketNumber = `DT-${Number(maxRows[0].max_num) + 1}`;
 
-  const { rows } = await query(
-    `INSERT INTO delivery_tickets (ticket_number, order_id, loaded_quantity_m3, truck_id, driver_id, plant_operator_id)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [ticketNumber, order_id, loaded_quantity_m3, truck_id, driver_id, req.user.id]
-  );
-  await logEvent(rows[0].id, "created", req.user.id);
+      const { rows } = await query(
+        `INSERT INTO delivery_tickets (ticket_number, order_id, loaded_quantity_m3, truck_id, driver_id, plant_operator_id)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [ticketNumber, order_id, loaded_quantity_m3, truck_id, driver_id, req.user.id]
+      );
+      await logEvent(rows[0].id, "created", req.user.id);
 
-  await query(
-    `UPDATE customer_orders SET status = 'in_progress' WHERE id = $1 AND status = 'planned'`,
-    [order_id]
-  );
+      await query(
+        `UPDATE customer_orders SET status = 'in_progress' WHERE id = $1 AND status = 'planned'`,
+        [order_id]
+      );
 
-  res.status(201).json(rows[0]);
+      return res.status(201).json(rows[0]);
+    } catch (err) {
+      lastErr = err;
+      if (err.code !== "23505") break; // not a duplicate-key race — don't retry other errors
+    }
+  }
+  throw lastErr;
 });
 
 export default router;
