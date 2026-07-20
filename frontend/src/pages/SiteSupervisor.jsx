@@ -20,7 +20,16 @@ export default function SiteSupervisor() {
     try {
       const rows = await apiRequest("/site-supervisor/my-deliveries");
       setDeliveries(rows);
-      if (!selectedId && rows.length) setSelectedId(rows[0].id);
+      // Keep whatever the supervisor currently has selected, as long as it's
+      // still in the list. Reading `selectedId` directly here was the bug:
+      // this function is captured once by setInterval below, so it always
+      // saw the `null` it had at first render and kept forcing the selection
+      // back to the first ticket every 15s, no matter what was picked since.
+      // A functional update reads the real current value instead.
+      setSelectedId((current) => {
+        if (current && rows.some((r) => r.id === current)) return current;
+        return rows[0]?.id ?? null;
+      });
     } catch (err) {
       setError(err.message);
     }
