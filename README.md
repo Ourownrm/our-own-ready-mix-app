@@ -279,3 +279,23 @@ correctly-spelled pump as new.
 ### Migration note
 This round adds the `raw_material_stock` table, seeded with the 9 fixed bins — applied
 the same way as always, by revisiting `/setup?key=...` once after deploying.
+
+## Sixth round
+
+1. **Director's Dashboard KPIs replaced with quantities.** "Orders today" and "Orders
+   this month" (counts) are now:
+   - **Order qty today** — total m³ ordered for today, regardless of how much has
+     shipped
+   - **Supplied qty today** — total m³ across today's delivery tickets, whether or not
+     the trip has completed yet (new)
+   - **Monthly production qty** — total ticket quantity this month minus whatever was
+     rejected at site this month, i.e. what the plant actually produced and got
+     accepted
+2. **Mobile-friendly tables everywhere, not just Completed trips.** The same
+   horizontal-scroll pattern used for Completed trips is now applied to every wide
+   table in the app that didn't have it yet: Running today / Scheduled tomorrow (Manager
+   Dashboard and the shared Today/Tomorrow screen used by all 7 roles), Active trucks,
+   On-duty drivers, and every table on the Director's Dashboard (sales by customer,
+   outstanding aging, running orders, upcoming orders, salesman-wise sales, pump
+   utilization, rejections). None of them will force the whole page to scroll sideways
+   on a phone anymore — just the table itself, same as Completed trips already did.

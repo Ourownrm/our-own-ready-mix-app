@@ -42,8 +42,9 @@ export default function Reports() {
             <ProductionChart />
             <RawMaterialStockCard />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
-              <Kpi label="Orders today" value={data.orders_today} />
-              <Kpi label="Orders this month" value={data.orders_month} />
+              <Kpi label="Order qty today" value={`${data.order_qty_today} m³`} />
+              <Kpi label="Supplied qty today" value={`${data.supplied_qty_today} m³`} />
+              <Kpi label="Monthly production qty" value={`${data.monthly_production_qty} m³`} />
               <Kpi label="Sales today" value={inr(data.sales_today)} />
               <Kpi label="Sales this month" value={inr(data.sales_month)} />
               <Kpi label="Collected today" value={inr(data.collected_today)} />
@@ -63,6 +64,7 @@ export default function Reports() {
               {data.outstanding_aging.length === 0 ? (
                 <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing outstanding.</div>
               ) : (
+                <div style={{ overflowX: "auto" }}>
                 <table>
                   <thead>
                     <tr><th>Customer</th><th>0–7 days</th><th>8–14 days</th><th>15–30 days</th><th>30+ days</th><th>Total</th></tr>
@@ -80,6 +82,7 @@ export default function Reports() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </Section>
 
@@ -163,20 +166,22 @@ function SimpleTable({ rows, columns, empty }) {
     return <div style={{ fontSize: 13, color: "var(--slate)" }}>{empty}</div>;
   }
   return (
-    <table>
-      <thead>
-        <tr>{columns.map(([, label], i) => <th key={i}>{label}</th>)}</tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr key={i}>
-            {columns.map(([key], j) => (
-              <td key={j}>{typeof key === "function" ? key(row) : row[key] ?? "–"}</td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div style={{ overflowX: "auto" }}>
+      <table>
+        <thead>
+          <tr>{columns.map(([, label], i) => <th key={i}>{label}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {columns.map(([key], j) => (
+                <td key={j}>{typeof key === "function" ? key(row) : row[key] ?? "–"}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

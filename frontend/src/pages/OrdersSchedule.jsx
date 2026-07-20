@@ -73,37 +73,39 @@ function OrderTable({ title, rows, canClose, onClose, onView }) {
       {rows.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No orders.</div>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>
-              <th></th>
-              {canClose && <th></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((o) => (
-              <tr key={o.id}>
-                <td>{o.customer_name}</td>
-                <td>{o.site_name}</td>
-                <td>{o.mix_grade_name}</td>
-                <td>{o.order_quantity_m3} m³</td>
-                <td>{o.delivered_qty_m3} m³</td>
-                <td><StatusBadge status={o.status} /></td>
-                <td>
-                  <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
-                </td>
-                {canClose && (
-                  <td>
-                    <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
-                      Close order
-                    </button>
-                  </td>
-                )}
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>
+                <th></th>
+                {canClose && <th></th>}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((o) => (
+                <tr key={o.id}>
+                  <td>{o.customer_name}</td>
+                  <td>{o.site_name}</td>
+                  <td>{o.mix_grade_name}</td>
+                  <td>{o.order_quantity_m3} m³</td>
+                  <td>{o.delivered_qty_m3} m³</td>
+                  <td><StatusBadge status={o.status} /></td>
+                  <td>
+                    <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
+                  </td>
+                  {canClose && (
+                    <td>
+                      <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
+                        Close order
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

@@ -9,15 +9,24 @@ router.use(requireAuth, requireRole("administrator"));
 // Everything the Director's Dashboard needs, in one call.
 router.get("/director-dashboard", async (req, res) => {
   const [
-    ordersToday, ordersMonth,
+    orderQtyToday, suppliedQtyToday, monthlyTicketQty, monthlyRejectedQty,
     salesToday, salesMonth, salesByCustomer,
     collectedToday, collectedMonth,
     outstanding, aging,
     runningOrders, upcomingOrders,
     salesmanMonthly, pumpUtilization, rejections,
   ] = await Promise.all([
-    query(`SELECT COUNT(*) AS count FROM customer_orders WHERE order_date = CURRENT_DATE`),
-    query(`SELECT COUNT(*) AS count FROM customer_orders WHERE date_trunc('month', order_date) = date_trunc('month', CURRENT_DATE)`),
+    // Order Qty Today — how much was ordered for today, regardless of how much has shipped
+    query(`SELECT COALESCE(SUM(order_quantity_m3), 0) AS qty FROM customer_orders WHERE order_date = CURRENT_DATE`),
+    // Supplied Qty Today — total delivery ticket quantity for today, whether or not the trip has completed
+    query(`SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS qty FROM delivery_tickets WHERE ticket_date = CURRENT_DATE AND status != 'cancelled'`),
+    // Monthly Production Qty — total ticket quantity this month, minus what was rejected at site
+    query(`SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS qty FROM delivery_tickets WHERE date_trunc('month', ticket_date) = date_trunc('month', CURRENT_DATE) AND status != 'cancelled'`),
+    query(
+      `SELECT COALESCE(SUM(sq.rejected_quantity_m3), 0) AS qty
+       FROM site_qc sq JOIN delivery_tickets dt ON dt.id = sq.ticket_id
+       WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
+    ),
 
     query(`SELECT COALESCE(SUM(total_amount), 0) AS total FROM invoices WHERE created_at::date = CURRENT_DATE`),
     query(`SELECT COALESCE(SUM(total_amount), 0) AS total FROM invoices WHERE date_trunc('month', created_at) = date_trunc('month', CURRENT_DATE)`),
@@ -123,8 +132,9 @@ router.get("/director-dashboard", async (req, res) => {
   ]);
 
   res.json({
-    orders_today: Number(ordersToday.rows[0].count),
-    orders_month: Number(ordersMonth.rows[0].count),
+    order_qty_today: orderQtyToday.rows[0].qty,
+    supplied_qty_today: suppliedQtyToday.rows[0].qty,
+    monthly_production_qty: Number(monthlyTicketQty.rows[0].qty) - Number(monthlyRejectedQty.rows[0].qty),
     sales_today: salesToday.rows[0].total,
     sales_month: salesMonth.rows[0].total,
     sales_by_customer_month: salesByCustomer.rows,

@@ -175,29 +175,31 @@ function OnDutyDriversTable({ drivers }) {
       {drivers.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No drivers currently on duty.</div>
       ) : (
-        <table>
-          <thead>
-            <tr><th>Driver</th><th>Current trip</th><th>On duty since</th><th>Last location</th></tr>
-          </thead>
-          <tbody>
-            {drivers.map((d) => (
-              <tr key={d.driver_id}>
-                <td>{d.driver_name}</td>
-                <td>{d.ticket_number ? `${d.ticket_number} · ${d.truck_number || ""}` : "No active ticket"}</td>
-                <td>{formatTime(d.duty_since)}</td>
-                <td>
-                  {d.latitude ? (
-                    <a href={`https://maps.google.com/?q=${d.latitude},${d.longitude}`} target="_blank" rel="noreferrer">
-                      View location ({minutesAgo(d.recorded_at)})
-                    </a>
-                  ) : (
-                    <span style={{ color: "var(--slate)" }}>No GPS yet</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr><th>Driver</th><th>Current trip</th><th>On duty since</th><th>Last location</th></tr>
+            </thead>
+            <tbody>
+              {drivers.map((d) => (
+                <tr key={d.driver_id}>
+                  <td>{d.driver_name}</td>
+                  <td>{d.ticket_number ? `${d.ticket_number} · ${d.truck_number || ""}` : "No active ticket"}</td>
+                  <td>{formatTime(d.duty_since)}</td>
+                  <td>
+                    {d.latitude ? (
+                      <a href={`https://maps.google.com/?q=${d.latitude},${d.longitude}`} target="_blank" rel="noreferrer">
+                        View location ({minutesAgo(d.recorded_at)})
+                      </a>
+                    ) : (
+                      <span style={{ color: "var(--slate)" }}>No GPS yet</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -220,45 +222,47 @@ function ActiveTrucksTable({ trucks, locations }) {
       {trucks.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No trucks currently running.</div>
       ) : (
-        <table>
-          <thead>
-            <tr><th>Truck</th><th>Driver</th><th>Customer</th><th>Loaded at</th><th>Status</th><th>GPS</th></tr>
-          </thead>
-          <tbody>
-            {trucks.map((t) => {
-              const loc = locationByTicket[t.ticket_id];
-              const delayed = t.minutes_at_site > 120;
-              return (
-                <tr key={t.ticket_id} style={delayed ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
-                  <td>{t.truck_number}</td>
-                  <td>{t.driver_name}</td>
-                  <td>{t.customer_name} &middot; {t.site_name}</td>
-                  <td>{formatTime(t.created_at)}</td>
-                  <td>
-                    <StatusBadge status={t.status} />
-                    {delayed && (
-                      <div style={{ color: "var(--alert-red)", fontSize: 11, fontWeight: 600, marginTop: 2 }}>
-                        At site {formatDuration(t.minutes_at_site)} — notify site
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    {loc ? (
-                      <a
-                        href={`https://maps.google.com/?q=${loc.latitude},${loc.longitude}`}
-                        target="_blank" rel="noreferrer"
-                      >
-                        View location ({minutesAgo(loc.recorded_at)})
-                      </a>
-                    ) : (
-                      <span style={{ color: "var(--slate)" }}>No GPS yet</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr><th>Truck</th><th>Driver</th><th>Customer</th><th>Loaded at</th><th>Status</th><th>GPS</th></tr>
+            </thead>
+            <tbody>
+              {trucks.map((t) => {
+                const loc = locationByTicket[t.ticket_id];
+                const delayed = t.minutes_at_site > 120;
+                return (
+                  <tr key={t.ticket_id} style={delayed ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                    <td>{t.truck_number}</td>
+                    <td>{t.driver_name}</td>
+                    <td>{t.customer_name} &middot; {t.site_name}</td>
+                    <td>{formatTime(t.created_at)}</td>
+                    <td>
+                      <StatusBadge status={t.status} />
+                      {delayed && (
+                        <div style={{ color: "var(--alert-red)", fontSize: 11, fontWeight: 600, marginTop: 2 }}>
+                          At site {formatDuration(t.minutes_at_site)} — notify site
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      {loc ? (
+                        <a
+                          href={`https://maps.google.com/?q=${loc.latitude},${loc.longitude}`}
+                          target="_blank" rel="noreferrer"
+                        >
+                          View location ({minutesAgo(loc.recorded_at)})
+                        </a>
+                      ) : (
+                        <span style={{ color: "var(--slate)" }}>No GPS yet</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -308,31 +312,33 @@ function OrderTable({ title, rows, onClose, onView }) {
       {rows.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No orders.</div>
       ) : (
-        <table>
-          <thead>
-            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th></th><th></th></tr>
-          </thead>
-          <tbody>
-            {rows.map((o) => (
-              <tr key={o.id}>
-                <td>{o.customer_name}</td>
-                <td>{o.site_name}</td>
-                <td>{o.mix_grade_name}</td>
-                <td>{o.order_quantity_m3} m³</td>
-                <td>{o.delivered_qty_m3} m³</td>
-                <td><StatusBadge status={o.status} /></td>
-                <td>
-                  <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
-                </td>
-                <td>
-                  <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
-                    Close order
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th></th><th></th></tr>
+            </thead>
+            <tbody>
+              {rows.map((o) => (
+                <tr key={o.id}>
+                  <td>{o.customer_name}</td>
+                  <td>{o.site_name}</td>
+                  <td>{o.mix_grade_name}</td>
+                  <td>{o.order_quantity_m3} m³</td>
+                  <td>{o.delivered_qty_m3} m³</td>
+                  <td><StatusBadge status={o.status} /></td>
+                  <td>
+                    <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
+                  </td>
+                  <td>
+                    <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
+                      Close order
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
