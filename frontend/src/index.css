@@ -12,6 +12,10 @@
   --alert-red-bg: #F8E9E7;
   --amber: #9C6B12;          /* pending / waiting */
   --amber-bg: #F5EDDD;
+  --info: #2A6F97;           /* dispatched / in transit */
+  --info-bg: #E3EEF4;
+  --violet: #6B4C9A;         /* unloading in progress */
+  --violet-bg: #ECE6F3;
   --surface: #FFFFFF;
   --border: #DEDAD1;
   --border-strong: #C8C2B5;
@@ -102,6 +106,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .badge-danger { background: var(--alert-red-bg); color: var(--alert-red); }
 .badge-warning { background: var(--amber-bg); color: var(--amber); }
 .badge-neutral { background: #ECEAE4; color: var(--slate); }
+.badge-info { background: var(--info-bg); color: var(--info); }
+.badge-progress { background: var(--violet-bg); color: var(--violet); }
 
 /* ===== Tables ===== */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }

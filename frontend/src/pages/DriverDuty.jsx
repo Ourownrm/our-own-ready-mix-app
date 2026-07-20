@@ -7,41 +7,96 @@ export default function DriverDuty() {
   const [onDuty, setOnDuty] = useState(false);
   const [trip, setTrip] = useState(null);
   const [pending, setPending] = useState(pendingCount());
-  const [activeForm, setActiveForm] = useState(null); // null | 'breakdown' | 'fuel'
+  const [activeForm, setActiveForm] = useState(null); // null | 'breakdown' | 'fuel' | 'reject'
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const gpsIntervalRef = useRef(null);
+  const wakeLockRef = useRef(null);
+  const tripRef = useRef(null);
+  tripRef.current = trip;
 
-  useEffect(() => {
+  function loadTrip() {
     apiRequest("/tickets/my-trip").then(setTrip).catch(() => {});
+  }
+
+  // On open, read the REAL duty status from the server instead of assuming
+  // "off". A backgrounded Android tab can get suspended by the OS, which
+  // resets React state to its defaults on reload — without this, that made it
+  // look like duty had silently turned off even though the driver never
+  // pressed Duty OFF. If the server says we're still on, resume tracking
+  // immediately.
+  useEffect(() => {
+    loadTrip();
+    apiRequest("/driver/duty-status").then((status) => {
+      setOnDuty(status.on_duty);
+      if (status.on_duty) {
+        startGpsPings();
+        requestWakeLock();
+      }
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
-    return () => clearInterval(gpsIntervalRef.current);
+    return () => { clearInterval(gpsIntervalRef.current); releaseWakeLock(); };
   }, []);
+
+  // Whenever the app comes back to the foreground (switching apps, unlocking
+  // the phone, reopening after the tab was suspended), immediately send a
+  // fresh GPS ping and re-acquire the wake lock — closing the tracking gap as
+  // soon as possible instead of waiting for the next 30s tick, and without
+  // ever declaring "duty off" on our own.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === "visible" && wakeLockRef.current === "on") {
+        requestWakeLock();
+        pingOnce();
+      }
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
+  function pingOnce() {
+    navigator.geolocation?.getCurrentPosition((pos) => {
+      queuedRequest("/driver/gps-ping", {
+        method: "POST",
+        body: {
+          ticket_id: tripRef.current?.id,
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          speed_kmh: pos.coords.speed ? pos.coords.speed * 3.6 : null,
+          accuracy_m: pos.coords.accuracy,
+        },
+      }).then(() => setPending(pendingCount()));
+    });
+  }
 
   function startGpsPings() {
-    gpsIntervalRef.current = setInterval(() => {
-      navigator.geolocation?.getCurrentPosition((pos) => {
-        queuedRequest("/driver/gps-ping", {
-          method: "POST",
-          body: {
-            ticket_id: trip?.id,
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            speed_kmh: pos.coords.speed ? pos.coords.speed * 3.6 : null,
-            accuracy_m: pos.coords.accuracy,
-          },
-        }).then(() => setPending(pendingCount()));
-      });
-    }, 30000);
+    clearInterval(gpsIntervalRef.current);
+    pingOnce();
+    gpsIntervalRef.current = setInterval(pingOnce, 30000);
+  }
+
+  async function requestWakeLock() {
+    wakeLockRef.current = "on";
+    try {
+      await navigator.wakeLock?.request("screen");
+    } catch {
+      // Not supported, or permission denied — tracking still works while the
+      // app is open and in the foreground, just without the screen-stay-awake
+      // assist. No native background GPS is possible from a browser tab; a
+      // driver who fully closes the app will need to reopen it to resume.
+    }
+  }
+  function releaseWakeLock() {
+    wakeLockRef.current = "off";
   }
 
   async function toggleDuty() {
     const next = !onDuty;
     setOnDuty(next);
-    if (next) startGpsPings();
-    else clearInterval(gpsIntervalRef.current);
+    if (next) { startGpsPings(); requestWakeLock(); }
+    else { clearInterval(gpsIntervalRef.current); releaseWakeLock(); }
 
     navigator.geolocation?.getCurrentPosition(async (pos) => {
       await queuedRequest("/driver/duty", {
@@ -53,6 +108,19 @@ export default function DriverDuty() {
       await queuedRequest("/driver/duty", { method: "POST", body: { on: next, ticket_id: trip?.id } });
       setPending(pendingCount());
     });
+  }
+
+  async function act(path, body) {
+    setError(""); setNotice("");
+    try {
+      await queuedRequest(`/driver/tickets/${trip.id}/${path}`, { method: "POST", body });
+      setPending(pendingCount());
+      loadTrip();
+      return true;
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+      return false;
+    }
   }
 
   if (activeForm === "breakdown") {
@@ -70,6 +138,16 @@ export default function DriverDuty() {
         trip={trip}
         onDone={(msg) => { setActiveForm(null); setNotice(msg); setPending(pendingCount()); }}
         onCancel={() => setActiveForm(null)}
+      />
+    );
+  }
+  if (activeForm === "reject") {
+    return (
+      <RejectForm
+        trip={trip}
+        onAct={act}
+        error={error}
+        onDone={() => { setActiveForm(null); loadTrip(); }}
       />
     );
   }
@@ -111,6 +189,12 @@ export default function DriverDuty() {
               {onDuty ? "Duty OFF" : "Duty ON"}
             </button>
           </div>
+          {onDuty && (
+            <div style={{ textAlign: "center", fontSize: 11, color: "var(--slate)", marginTop: 10 }}>
+              Keep this screen open while on duty for the most accurate tracking —
+              reopening the app resumes automatically if it gets interrupted.
+            </div>
+          )}
 
           {trip && (
             <div style={{ marginTop: 20 }}>
@@ -129,6 +213,38 @@ export default function DriverDuty() {
                   </a>
                 )}
               </div>
+
+              {trip.no_site_supervisor && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 6 }}>
+                    No Site Supervisor assigned to this site — confirm delivery yourself.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <button
+                      disabled={!["created", "batching", "dispatched"].includes(trip.status)}
+                      onClick={() => act("arrival")}
+                    >
+                      Confirm truck arrival
+                    </button>
+                    <button
+                      disabled={trip.status !== "reached_site"}
+                      onClick={() => act("unloading-start")}
+                    >
+                      Confirm unloading start
+                    </button>
+                  </div>
+                  {trip.status === "unloading" && <CompleteForm onAct={act} />}
+                  {(trip.status === "reached_site" || trip.status === "unloading") && (
+                    <button
+                      className="btn-danger"
+                      style={{ width: "100%", marginTop: 8 }}
+                      onClick={() => setActiveForm("reject")}
+                    >
+                      Reject concrete
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -162,6 +278,109 @@ function Row({ label, value, strong }) {
       <span style={{ color: "var(--slate)" }}>{label}</span>
       <span style={{ fontWeight: strong ? 600 : 400 }}>{value}</span>
     </div>
+  );
+}
+
+function CompleteForm({ onAct }) {
+  const [slump, setSlump] = useState("");
+  const [noteStatus, setNoteStatus] = useState("pending");
+  const [afterPourCare, setAfterPourCare] = useState(false);
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    setSaving(true);
+    await onAct("unloading-complete", {
+      site_slump_mm: slump,
+      delivery_note_status: noteStatus,
+      after_pour_care_confirmed: afterPourCare,
+      remarks,
+    });
+    setSaving(false);
+  }
+
+  return (
+    <div style={{ marginTop: 12, fontSize: 13 }}>
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Site slump (mm)</div>
+      <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Delivery note status</div>
+      <select value={noteStatus} onChange={(e) => setNoteStatus(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
+        <option value="pending">Pending</option>
+        <option value="signed">Signed</option>
+        <option value="refused">Refused</option>
+      </select>
+
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={afterPourCare} onChange={(e) => setAfterPourCare(e.target.checked)} />
+        <span>Guided customer on after-pour care (covering with plastic sheet, curing)</span>
+      </label>
+
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Comments about this supply</div>
+      <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+      <button onClick={submit} disabled={saving} style={{ width: "100%" }}>
+        {saving ? "Saving..." : "Save completion"}
+      </button>
+    </div>
+  );
+}
+
+function RejectForm({ trip, onAct, onDone, error }) {
+  const [reasons, setReasons] = useState([]);
+  const [reasonId, setReasonId] = useState("");
+  const [slump, setSlump] = useState("");
+  const [qty, setQty] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    apiRequest("/master/rejection-reasons").then(setReasons).catch(() => {});
+  }, []);
+
+  async function submit() {
+    setSaving(true);
+    const ok = await onAct("reject", {
+      rejection_reason_id: reasonId || null,
+      site_slump_mm: slump,
+      rejected_quantity_m3: qty,
+      remarks,
+    });
+    setSaving(false);
+    if (ok) onDone();
+  }
+
+  return (
+    <>
+      <TopBar title="Driver · Reject concrete" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div style={{ fontSize: 15, fontWeight: 600 }}>Reject concrete</div>
+        <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.ticket_number} &middot; {trip?.site_name}</div>
+
+        <div className="field-input" style={{ fontSize: 13 }}>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Reason for rejection</div>
+          <select value={reasonId} onChange={(e) => setReasonId(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
+            <option value="">Select</option>
+            {reasons.map((r) => <option key={r.id} value={r.id}>{r.reason}</option>)}
+          </select>
+
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Measured site slump (mm)</div>
+          <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Quantity rejected (m³)</div>
+          <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Comments</div>
+          <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
+
+          {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
+          <button className="btn-danger" onClick={submit} disabled={saving} style={{ width: "100%", marginBottom: 8 }}>
+            {saving ? "Saving..." : "Confirm rejection"}
+          </button>
+          <button onClick={onDone} style={{ width: "100%" }}>Cancel</button>
+        </div>
+      </div>
+    </>
   );
 }
 

@@ -69,8 +69,8 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
-     assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-     sales_representative_id || null, casting_location, pump_departure_time, remarks, req.user.id]
+     assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, order_quantity_m3,
+     sales_representative_id || null, casting_location || null, pump_departure_time || null, remarks || null, req.user.id]
   );
   res.status(201).json(rows[0]);
 });
@@ -185,6 +185,63 @@ router.get("/live-locations", requireRole("manager", "administrator"), async (re
      ORDER BY dt.id, gp.recorded_at DESC`
   );
   res.json(rows);
+});
+
+// Every driver currently on duty, regardless of whether they have a truck
+// assigned or a delivery ticket created yet — small sites and plant waiting
+// time still need to be trackable. Stays listed here until the driver
+// explicitly presses Duty OFF; a gap in recent GPS pings (backgrounded app,
+// bad signal) is shown as "last seen" rather than dropping them off the list.
+router.get("/on-duty-drivers", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT DISTINCT ON (d.driver_id)
+            d.driver_id, u.name AS driver_name, d.event_time AS duty_since,
+            gp.latitude, gp.longitude, gp.recorded_at,
+            dt.id AS ticket_id, dt.ticket_number, t.truck_number
+     FROM (
+       SELECT DISTINCT ON (driver_id) driver_id, is_on, event_time
+       FROM driver_duty_log ORDER BY driver_id, event_time DESC
+     ) d
+     JOIN users u ON u.id = d.driver_id
+     LEFT JOIN LATERAL (
+       SELECT latitude, longitude, recorded_at FROM gps_pings
+       WHERE driver_id = d.driver_id ORDER BY recorded_at DESC LIMIT 1
+     ) gp ON true
+     LEFT JOIN LATERAL (
+       SELECT id, ticket_number, truck_id FROM delivery_tickets
+       WHERE driver_id = d.driver_id AND status NOT IN ('completed', 'cancelled', 'returned')
+       ORDER BY created_at DESC LIMIT 1
+     ) dt ON true
+     LEFT JOIN trucks t ON t.id = dt.truck_id
+     WHERE d.is_on = true
+     ORDER BY d.driver_id, d.event_time DESC`
+  );
+  res.json(rows);
+});
+
+// Full order detail — every role can view (read-only); editing stays restricted
+// to Administrator's "Correct orders" panel.
+router.get("/:id", async (req, res) => {
+  const { rows } = await query(
+    `SELECT o.*, c.name AS customer_name, s.name AS site_name, s.address AS site_address,
+            m.name AS mix_grade_name, p.pump_code, sup.name AS site_supervisor_name,
+            sp.name AS sales_representative_name, creator.name AS created_by_name,
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status = 'completed'), 0) AS delivered_qty_m3
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     JOIN mix_grades m ON m.id = o.mix_grade_id
+     LEFT JOIN pumps p ON p.id = o.pump_id
+     LEFT JOIN users sup ON sup.id = o.assigned_site_supervisor_id
+     LEFT JOIN salespersons sp ON sp.id = o.sales_representative_id
+     LEFT JOIN users creator ON creator.id = o.created_by
+     LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
+     WHERE o.id = $1
+     GROUP BY o.id, c.name, s.name, s.address, m.name, p.pump_code, sup.name, sp.name, creator.name`,
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  res.json(rows[0]);
 });
 
 export default router;

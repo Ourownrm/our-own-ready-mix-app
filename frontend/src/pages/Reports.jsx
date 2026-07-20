@@ -42,7 +42,7 @@ export default function Reports() {
             <Section title="Sales this month, by customer">
               <SimpleTable
                 rows={data.sales_by_customer_month}
-                columns={[["customer_name", "Customer"], [(r) => inr(r.total), "Sales value"]]}
+                columns={[["customer_name", "Customer"], [(r) => `${r.total_qty_m3} m³`, "Quantity"], [(r) => inr(r.total), "Sales value"]]}
                 empty="No invoiced sales this month yet."
               />
             </Section>

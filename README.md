@@ -207,3 +207,54 @@ any order or ticket, it deletes cleanly; if it has, the delete is blocked with a
 telling you to **Deactivate** instead (so it disappears from dropdowns going forward
 without breaking any historical record that already points to it) — then add the
 correctly-spelled pump as new.
+
+## Fourth round
+
+1. **Small sites with no Site Supervisor.** An order's Site Supervisor field was
+   already optional — but leaving it blank actually crashed order creation (an empty
+   value was sent straight into an integer database column). Fixed that, and built the
+   actual tracking/recording solution: when an order has no Site Supervisor assigned,
+   the **Driver's own screen** now shows "Confirm truck arrival," "Confirm unloading
+   start," and the same completion form (slump, delivery note status, after-pour care,
+   rejection) that a Site Supervisor would normally use. It's the same underlying logic
+   either way — invoice generation and trip allowance payout included — just reachable
+   by the Driver directly when no supervisor exists for that site. If a supervisor *is*
+   assigned, the Driver doesn't see these buttons at all; the supervisor is still the
+   one who confirms it.
+2. **"View details" on every order, everywhere.** All seven roles can now click "View
+   details" on any order (from the shared Today/Tomorrow screen, or the Manager
+   Dashboard) to see the full order — batching time, pump crew departure time, assigned
+   Site Supervisor, technician required, which pump, etc. — in a read-only popup.
+   Editing stays exactly where it was: Administrator → Correct orders only.
+3. **Customer-wise sales report now shows quantity (m³)**, not just rupee value —
+   matching the salesman-wise report from last round.
+4. **Driver duty tracking on Android background/lock.** Root cause: duty ON/OFF state
+   only ever lived in the browser tab's memory. Android can suspend a backgrounded PWA
+   tab, and when that happens the app loses that memory — so reopening it looked like
+   duty had silently gone off, even though the driver never pressed Duty OFF. Fixed:
+   - Duty status is now saved server-side and re-read every time the app opens, so it
+     always reflects what actually happened, not a guess.
+   - Duty is tracked per-driver, not per-ticket, so a driver can be on duty and visible
+     to the Manager **before any truck is assigned or ticket created** — new **On-duty
+     drivers** panel on the Manager Dashboard shows every currently-on-duty driver,
+     their last known location, and how long ago that GPS ping was, regardless of
+     whether they currently have an active delivery. They stay listed until they
+     actually press Duty OFF.
+   - Reopening the app after an interruption immediately sends a fresh GPS ping and
+     resumes tracking, instead of waiting or requiring the toggle to be pressed again.
+   - Added a screen wake-lock while on duty, to reduce how often Android puts the tab
+     to sleep in the first place.
+
+   **Honest limitation:** none of this can fully solve *true* background tracking —
+   Android and iOS both throttle or suspend JavaScript in any browser tab once it's
+   minimized or the screen is off, and no website (PWA included) can override that. The
+   fixes above close the gap as fast as possible and stop the app from ever lying about
+   duty status, but if you need GPS pings to keep flowing every 30 seconds while the
+   phone is in the driver's pocket with the screen off for an hour, that specifically
+   requires a real native Android app (a "foreground service"), not a web app — e.g.
+   wrapping this app with something like Capacitor and adding that native piece. Happy
+   to scope that separately if it's something you want.
+5. **Active trucks status colors** are now visually distinct per stage (at plant, in
+   transit, at site/waiting, unloading, completed, cancelled/rejected) instead of most
+   statuses sharing the same amber "warning" color — easier to read the fleet at a
+   glance.

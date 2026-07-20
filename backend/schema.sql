@@ -208,6 +208,18 @@ CREATE TABLE gps_pings (
   accuracy_m NUMERIC(6,2),
   recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Driver duty ON/OFF, tracked per-driver rather than per-ticket. A driver can be
+-- on duty (and trackable) with no truck assigned and no delivery ticket created
+-- yet — e.g. waiting at the plant, or covering a small site with no formal trip.
+CREATE TABLE driver_duty_log (
+  id SERIAL PRIMARY KEY,
+  driver_id INTEGER REFERENCES users(id) NOT NULL,
+  is_on BOOLEAN NOT NULL,
+  event_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+  latitude NUMERIC(10,7),
+  longitude NUMERIC(10,7)
+);
 CREATE INDEX idx_gps_pings_driver_time ON gps_pings(driver_id, recorded_at);
 
 -- ===================== PLANT QC (SRS §8) =====================

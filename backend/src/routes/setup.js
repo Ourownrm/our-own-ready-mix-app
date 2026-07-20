@@ -87,6 +87,21 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (salesman is now a dropdown list — any names already on file were carried over as options).");
 
+    // Driver duty ON/OFF, tracked per-driver instead of per-ticket, so a driver
+    // can be on duty and trackable with no truck/order assigned yet (small
+    // sites, or waiting at plant before the first ticket of the day).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS driver_duty_log (
+        id SERIAL PRIMARY KEY,
+        driver_id INTEGER REFERENCES users(id) NOT NULL,
+        is_on BOOLEAN NOT NULL,
+        event_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+        latitude NUMERIC(10,7),
+        longitude NUMERIC(10,7)
+      );
+    `);
+    log.push("Schema migration applied (driver duty ON/OFF now tracked independent of any truck or ticket).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
@@ -219,7 +234,7 @@ router.get("/setup/reset-transactional-data", async (req, res) => {
       TRUNCATE TABLE
         audit_log, notifications, trip_allowance_payouts, payments, invoices,
         breakdown_reports, fuel_logs, pump_logs, site_qc, plant_qc, gps_pings,
-        trip_events, delivery_tickets, customer_orders
+        driver_duty_log, trip_events, delivery_tickets, customer_orders
       RESTART IDENTITY CASCADE;
     `);
     res.send(

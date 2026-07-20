@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
+import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 
 export default function OrdersSchedule() {
   const [orders, setOrders] = useState([]);
   const [error, setError] = useState("");
+  const [detailOrderId, setDetailOrderId] = useState(null);
   const { user } = useAuth();
   const canClose = user?.role === "manager" || user?.role === "administrator";
 
@@ -53,16 +55,18 @@ export default function OrdersSchedule() {
             rows={overdue}
             canClose={canClose}
             onClose={closeOrder}
+            onView={setDetailOrderId}
           />
         )}
-        <OrderTable title="Running today" rows={today} canClose={canClose} onClose={closeOrder} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} canClose={canClose} onClose={closeOrder} />
+        <OrderTable title="Running today" rows={today} canClose={canClose} onClose={closeOrder} onView={setDetailOrderId} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} canClose={canClose} onClose={closeOrder} onView={setDetailOrderId} />
       </div>
+      <OrderDetailModal orderId={detailOrderId} onClose={() => setDetailOrderId(null)} />
     </>
   );
 }
 
-function OrderTable({ title, rows, canClose, onClose }) {
+function OrderTable({ title, rows, canClose, onClose, onView }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
@@ -73,6 +77,7 @@ function OrderTable({ title, rows, canClose, onClose }) {
           <thead>
             <tr>
               <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>
+              <th></th>
               {canClose && <th></th>}
             </tr>
           </thead>
@@ -85,6 +90,9 @@ function OrderTable({ title, rows, canClose, onClose }) {
                 <td>{o.order_quantity_m3} m³</td>
                 <td>{o.delivered_qty_m3} m³</td>
                 <td><StatusBadge status={o.status} /></td>
+                <td>
+                  <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
+                </td>
                 {canClose && (
                   <td>
                     <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
@@ -103,8 +111,10 @@ function OrderTable({ title, rows, canClose, onClose }) {
 
 function StatusBadge({ status }) {
   const map = {
-    completed: "badge-success", planned: "badge-neutral", in_progress: "badge-warning",
-    partially_completed: "badge-warning", cancelled: "badge-danger",
+    completed: "badge-success", planned: "badge-neutral", in_progress: "badge-info",
+    partially_completed: "badge-info", cancelled: "badge-danger", dispatched: "badge-info",
+    reached_site: "badge-warning", unloading: "badge-progress", created: "badge-neutral",
+    batching: "badge-neutral", returned: "badge-neutral", rejected: "badge-danger",
   };
   return <span className={`badge ${map[status] || "badge-neutral"}`}>{status.replace(/_/g, " ")}</span>;
 }

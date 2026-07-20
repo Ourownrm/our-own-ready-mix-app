@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel } from "../lib/MasterDataPanels.jsx";
+import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
 const FLEET_LABELS = {
@@ -16,23 +17,27 @@ export default function ManagerDashboard() {
   const [activeTrucks, setActiveTrucks] = useState([]);
   const [completedTrips, setCompletedTrips] = useState([]);
   const [liveLocations, setLiveLocations] = useState([]);
+  const [onDutyDrivers, setOnDutyDrivers] = useState([]);
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
+  const [detailOrderId, setDetailOrderId] = useState(null);
 
   async function load() {
     try {
-      const [dashboard, orderList, trucks, trips, locations] = await Promise.all([
+      const [dashboard, orderList, trucks, trips, locations, drivers] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
         apiRequest("/orders/active-trucks"),
         apiRequest("/orders/completed-trips"),
         apiRequest("/orders/live-locations"),
+        apiRequest("/orders/on-duty-drivers"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
       setActiveTrucks(trucks);
       setCompletedTrips(trips);
       setLiveLocations(locations);
+      setOnDutyDrivers(drivers);
     } catch (err) {
       setError(err.message);
     }
@@ -129,6 +134,7 @@ export default function ManagerDashboard() {
           <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
         </div>
 
+        <OnDutyDriversTable drivers={onDutyDrivers} />
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} />
         <CompletedTripsTable trips={completedTrips} />
 
@@ -137,11 +143,13 @@ export default function ManagerDashboard() {
             title="Needs attention — carried forward from an earlier day"
             rows={carriedForward}
             onClose={closeOrder}
+            onView={setDetailOrderId}
           />
         )}
-        <OrderTable title="Running today" rows={today} onClose={closeOrder} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} />
+        <OrderTable title="Running today" rows={today} onClose={closeOrder} onView={setDetailOrderId} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} />
       </div>
+      <OrderDetailModal orderId={detailOrderId} onClose={() => setDetailOrderId(null)} />
     </>
   );
 }
@@ -151,6 +159,44 @@ function Kpi({ label, value, danger }) {
     <div className="kpi">
       <div className="kpi-label">{label}</div>
       <div className={`kpi-value ${danger ? "danger" : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+// Every driver currently on duty — tracked independent of whether they have a
+// truck/ticket right now, and stays listed until they press Duty OFF. This is
+// what makes a driver trackable at a small site with no formal delivery ticket.
+function OnDutyDriversTable({ drivers }) {
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>On-duty drivers</div>
+      {drivers.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No drivers currently on duty.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr><th>Driver</th><th>Current trip</th><th>On duty since</th><th>Last location</th></tr>
+          </thead>
+          <tbody>
+            {drivers.map((d) => (
+              <tr key={d.driver_id}>
+                <td>{d.driver_name}</td>
+                <td>{d.ticket_number ? `${d.ticket_number} · ${d.truck_number || ""}` : "No active ticket"}</td>
+                <td>{formatTime(d.duty_since)}</td>
+                <td>
+                  {d.latitude ? (
+                    <a href={`https://maps.google.com/?q=${d.latitude},${d.longitude}`} target="_blank" rel="noreferrer">
+                      View location ({minutesAgo(d.recorded_at)})
+                    </a>
+                  ) : (
+                    <span style={{ color: "var(--slate)" }}>No GPS yet</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -253,7 +299,7 @@ function CompletedTripsTable({ trips }) {
   );
 }
 
-function OrderTable({ title, rows, onClose }) {
+function OrderTable({ title, rows, onClose, onView }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
@@ -262,7 +308,7 @@ function OrderTable({ title, rows, onClose }) {
       ) : (
         <table>
           <thead>
-            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th></th></tr>
+            <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th></th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((o) => (
@@ -273,6 +319,9 @@ function OrderTable({ title, rows, onClose }) {
                 <td>{o.order_quantity_m3} m³</td>
                 <td>{o.delivered_qty_m3} m³</td>
                 <td><StatusBadge status={o.status} /></td>
+                <td>
+                  <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
+                </td>
                 <td>
                   <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
                     Close order
@@ -289,9 +338,10 @@ function OrderTable({ title, rows, onClose }) {
 
 function StatusBadge({ status }) {
   const map = {
-    completed: "badge-success", planned: "badge-neutral", in_progress: "badge-warning",
-    partially_completed: "badge-warning", cancelled: "badge-danger", dispatched: "badge-warning",
-    reached_site: "badge-warning", unloading: "badge-warning", created: "badge-neutral",
+    completed: "badge-success", planned: "badge-neutral", in_progress: "badge-info",
+    partially_completed: "badge-info", cancelled: "badge-danger", dispatched: "badge-info",
+    reached_site: "badge-warning", unloading: "badge-progress", created: "badge-neutral",
+    batching: "badge-neutral", returned: "badge-neutral", rejected: "badge-danger",
   };
   return <span className={`badge ${map[status] || "badge-neutral"}`}>{status.replace(/_/g, " ")}</span>;
 }

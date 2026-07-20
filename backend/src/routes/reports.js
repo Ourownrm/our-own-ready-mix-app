@@ -22,8 +22,11 @@ router.get("/director-dashboard", async (req, res) => {
     query(`SELECT COALESCE(SUM(total_amount), 0) AS total FROM invoices WHERE created_at::date = CURRENT_DATE`),
     query(`SELECT COALESCE(SUM(total_amount), 0) AS total FROM invoices WHERE date_trunc('month', created_at) = date_trunc('month', CURRENT_DATE)`),
     query(
-      `SELECT c.name AS customer_name, COALESCE(SUM(i.total_amount), 0) AS total
-       FROM invoices i JOIN customers c ON c.id = i.customer_id
+      `SELECT c.name AS customer_name, COALESCE(SUM(i.total_amount), 0) AS total,
+              COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3
+       FROM invoices i
+       JOIN customers c ON c.id = i.customer_id
+       JOIN delivery_tickets dt ON dt.id = i.ticket_id
        WHERE date_trunc('month', i.created_at) = date_trunc('month', CURRENT_DATE)
        GROUP BY c.name ORDER BY total DESC`
     ),
