@@ -258,3 +258,24 @@ correctly-spelled pump as new.
    transit, at site/waiting, unloading, completed, cancelled/rejected) instead of most
    statuses sharing the same amber "warning" color — easier to read the fleet at a
    glance.
+
+## Fifth round
+
+1. **Administrator now lands on Reports & Director's Dashboard** after signing in,
+   instead of the master-data screen. A "Manage users, customers, sites, fleet, rates..."
+   button at the top takes them to the old Administrator screen when needed.
+2. **Raw material stock — QC Engineer entry, dashboard display.** New section on the
+   QC Engineer screen listing all 9 bins (3 silos, 3 admixtures, M Sand, and two
+   aggregate sizes) with editable type/brand and quantity; shows who last updated it and
+   when. Manager and Administrator dashboards both show a compact read-only grid (bin +
+   brand + quantity, 3 per row) reflecting whatever QC last saved — it doesn't reset or
+   disappear, it just sits there until QC updates it again.
+3. **Daily production bar chart on the Administrator dashboard** (Reports page),
+   defaulting to the last 7 days so it's readable on a phone screen without cramming;
+   a "View 30 days" toggle switches to a horizontally-scrollable 30-day view, matching
+   how your existing tables already handle overflow on mobile. Built as a plain SVG
+   chart with no new library dependency, so there's nothing extra to `npm install`.
+
+### Migration note
+This round adds the `raw_material_stock` table, seeded with the 9 fixed bins — applied
+the same way as always, by revisiting `/setup?key=...` once after deploying.

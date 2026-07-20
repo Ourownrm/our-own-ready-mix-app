@@ -1,7 +1,7 @@
 // Where each role lands after signing in — shared by Login (initial redirect)
 // and TopBar (the "back to my dashboard" link from shared screens like Orders).
 export const ROLE_HOME = {
-  administrator: "/administrator",
+  administrator: "/reports",
   manager: "/manager",
   plant_operator: "/plant-operator",
   qc_engineer: "/qc",

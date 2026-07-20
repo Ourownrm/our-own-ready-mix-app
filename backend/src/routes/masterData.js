@@ -60,4 +60,16 @@ router.get("/salespersons", async (req, res) => {
   res.json(rows);
 });
 
+// Raw material stock — read-only here (QC Engineer edits via /qc/raw-material-stock).
+// Shown on Manager and Administrator dashboards, always reflecting whatever QC
+// last saved until they update it again.
+router.get("/raw-material-stock", async (req, res) => {
+  const { rows } = await query(
+    `SELECT s.id, s.bin_name, s.unit, s.type_brand, s.stock_qty, s.updated_at, u.name AS updated_by_name
+     FROM raw_material_stock s LEFT JOIN users u ON u.id = s.updated_by
+     ORDER BY s.id`
+  );
+  res.json(rows);
+});
+
 export default router;

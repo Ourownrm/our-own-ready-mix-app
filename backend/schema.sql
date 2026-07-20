@@ -106,6 +106,20 @@ CREATE TABLE salespersons (
   is_active BOOLEAN DEFAULT TRUE
 );
 
+-- Raw material stock — one row per bin, entered/updated by QC Engineer and
+-- shown read-only on the Manager and Administrator dashboards until QC
+-- updates it again. Bins themselves are a fixed list (silos, admixtures,
+-- aggregates); type/brand and quantity are what QC edits day to day.
+CREATE TABLE raw_material_stock (
+  id SERIAL PRIMARY KEY,
+  bin_name VARCHAR(50) NOT NULL UNIQUE,
+  unit VARCHAR(20) NOT NULL,
+  type_brand VARCHAR(100),
+  stock_qty NUMERIC(10,2) NOT NULL DEFAULT 0,
+  updated_by INTEGER REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Rate master for Accountant (rates, pumping charges, waiting charges per customer/grade)
 CREATE TABLE rate_master (
   id SERIAL PRIMARY KEY,

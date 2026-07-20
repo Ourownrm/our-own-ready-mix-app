@@ -48,4 +48,23 @@ router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), 
   res.json({ ok: true });
 });
 
+// Raw material stock — QC Engineer enters/updates daily. Shown read-only on
+// Manager and Administrator dashboards until QC updates it again.
+router.put("/raw-material-stock", requireRole("qc_engineer"), async (req, res) => {
+  const updates = req.body.rows || [];
+  for (const row of updates) {
+    await query(
+      `UPDATE raw_material_stock SET type_brand = $1, stock_qty = $2, updated_by = $3, updated_at = now()
+       WHERE id = $4`,
+      [row.type_brand || null, row.stock_qty || 0, req.user.id, row.id]
+    );
+  }
+  const { rows } = await query(
+    `SELECT s.id, s.bin_name, s.unit, s.type_brand, s.stock_qty, s.updated_at, u.name AS updated_by_name
+     FROM raw_material_stock s LEFT JOIN users u ON u.id = s.updated_by
+     ORDER BY s.id`
+  );
+  res.json(rows);
+});
+
 export default router;

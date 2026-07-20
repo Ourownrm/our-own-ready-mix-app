@@ -140,4 +140,26 @@ router.get("/director-dashboard", async (req, res) => {
   });
 });
 
+// Daily production for the last N days (default 7) — fills in gaps with 0 so
+// a day with no completed deliveries still shows a bar rather than a hole.
+router.get("/daily-production", async (req, res) => {
+  const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
+  const { rows } = await query(
+    `SELECT ticket_date::text AS day, COALESCE(SUM(loaded_quantity_m3), 0) AS qty_m3
+     FROM delivery_tickets
+     WHERE status = 'completed' AND ticket_date >= CURRENT_DATE - ($1 || ' days')::interval
+     GROUP BY ticket_date`,
+    [days - 1]
+  );
+  const byDay = Object.fromEntries(rows.map((r) => [r.day, Number(r.qty_m3)]));
+  const result = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    result.push({ day: key, qty_m3: byDay[key] || 0 });
+  }
+  res.json(result);
+});
+
 export default router;

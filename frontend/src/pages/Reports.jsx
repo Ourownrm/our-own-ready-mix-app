@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { useAuth } from "../lib/AuthContext.jsx";
+import ProductionChart from "../lib/ProductionChart.jsx";
+import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 
 export default function Reports() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const { user } = useAuth();
 
   async function load() {
     try {
@@ -24,11 +29,18 @@ export default function Reports() {
     <>
       <TopBar title="Reports & Director's Dashboard" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
+        {user?.role === "administrator" && (
+          <div style={{ marginBottom: 16 }}>
+            <Link to="/administrator"><button type="button">Manage users, customers, sites, fleet, rates...</button></Link>
+          </div>
+        )}
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
         {!data ? (
           <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>
         ) : (
           <>
+            <ProductionChart />
+            <RawMaterialStockCard />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
               <Kpi label="Orders today" value={data.orders_today} />
               <Kpi label="Orders this month" value={data.orders_month} />

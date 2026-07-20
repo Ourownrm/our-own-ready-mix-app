@@ -4,6 +4,7 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel } from "../lib/MasterDataPanels.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
+import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
 const FLEET_LABELS = {
@@ -135,6 +136,7 @@ export default function ManagerDashboard() {
         </div>
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
+        <RawMaterialStockCard />
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} />
         <CompletedTripsTable trips={completedTrips} />
 

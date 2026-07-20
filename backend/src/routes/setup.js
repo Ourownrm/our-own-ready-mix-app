@@ -102,6 +102,27 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (driver duty ON/OFF now tracked independent of any truck or ticket).");
 
+    // Raw material stock — fixed set of bins, QC-editable type/brand and quantity.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS raw_material_stock (
+        id SERIAL PRIMARY KEY,
+        bin_name VARCHAR(50) NOT NULL UNIQUE,
+        unit VARCHAR(20) NOT NULL,
+        type_brand VARCHAR(100),
+        stock_qty NUMERIC(10,2) NOT NULL DEFAULT 0,
+        updated_by INTEGER REFERENCES users(id),
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await pool.query(`
+      INSERT INTO raw_material_stock (bin_name, unit) VALUES
+        ('Silo 1', 'ton'), ('Silo 2', 'ton'), ('Silo 3', 'ton'),
+        ('Admix. 1', 'Barrel'), ('Admix. 2', 'Barrel'), ('Admix. 3', 'Barrel'),
+        ('M Sand', 'Load'), ('Agg. 12 mm', 'Load'), ('Agg. 20 mm', 'Load')
+      ON CONFLICT (bin_name) DO NOTHING;
+    `);
+    log.push("Schema migration applied (raw material stock — 9 bins seeded, ready for QC Engineer to fill in).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
