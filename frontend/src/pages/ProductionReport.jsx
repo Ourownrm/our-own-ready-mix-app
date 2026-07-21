@@ -138,6 +138,16 @@ export default function ProductionReport() {
     return apiRequest(`/production-report/export?${buildQuery()}`);
   }
 
+  // jsPDF's built-in fonts (Helvetica etc.) don't include a glyph for ₹ — it was
+  // rendering as a stray "1" in the exported PDF. Using "Rs." there instead
+  // avoids the missing-glyph problem entirely (the on-screen table and the
+  // Excel export both keep the real ₹ symbol, since those don't have this
+  // font limitation).
+  function inrPdf(value) {
+    if (value === null || value === undefined || value === "") return "–";
+    return `Rs. ${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+  }
+
   async function exportPdf() {
     setExporting("pdf"); setError("");
     try {
@@ -161,11 +171,16 @@ export default function ProductionReport() {
         body: rows.map((r) => [
           formatDate(r.ticket_date), r.dc_no, r.customer_name, r.site_name, r.truck_number, r.driver_name,
           r.salesperson_name || "–", r.pump_code || "–", r.supervisor_name || "–", r.grade_name,
-          r.quantity_m3, r.rate ?? "–", r.amount != null ? inr(r.amount) : "–", r.delivery_note_status || "–",
+          r.quantity_m3, r.rate != null ? inrPdf(r.rate) : "–", r.amount != null ? inrPdf(r.amount) : "–", r.delivery_note_status || "–",
         ]),
-        foot: [["", "", "", "", "", "", "", "", "", "Total", sumQty(rows), "", inr(sumAmount(rows)), `${rows.length} deliveries`]],
-        styles: { fontSize: 7 },
+        foot: [["", "", "", "", "", "", "", "", "", "Total", sumQty(rows), "", inrPdf(sumAmount(rows)), `${rows.length} deliveries`]],
+        styles: { fontSize: 7, overflow: "linebreak" },
         headStyles: { fillColor: [199, 91, 18] },
+        columnStyles: {
+          10: { cellWidth: 16 },  // Qty
+          11: { cellWidth: 20 },  // Rate
+          12: { cellWidth: 24 },  // Amount — was getting clipped before
+        },
       });
       doc.save(`Production_Report_${filters.from_date}to${filters.to_date}.pdf`);
     } catch (err) {

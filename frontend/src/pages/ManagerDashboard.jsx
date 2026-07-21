@@ -100,11 +100,11 @@ export default function ManagerDashboard() {
     if (label) fleetCounts[label] += Number(row.count);
   });
 
-  const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && o.status !== "cancelled");
-  const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && o.status !== "cancelled");
+  const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && !["cancelled", "closed"].includes(o.status));
+  const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && !["cancelled", "closed"].includes(o.status));
   const carriedForward = orders.filter((o) =>
     new Date(o.order_date) < startOfDay(new Date()) &&
-    !["completed", "cancelled"].includes(o.status)
+    !["completed", "cancelled", "closed"].includes(o.status)
   );
 
   return (
@@ -330,9 +330,11 @@ function OrderTable({ title, rows, onClose, onView }) {
                     <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
                   </td>
                   <td>
-                    <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
-                      Close order
-                    </button>
+                    {!["closed", "cancelled", "completed"].includes(o.status) && (
+                      <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
+                        Close order
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

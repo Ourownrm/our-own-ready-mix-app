@@ -36,11 +36,11 @@ export default function OrdersSchedule() {
     }
   }
 
-  const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && o.status !== "cancelled");
-  const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && o.status !== "cancelled");
+  const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && !["cancelled", "closed"].includes(o.status));
+  const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && !["cancelled", "closed"].includes(o.status));
   const overdue = orders.filter((o) =>
     new Date(o.order_date) < startOfDay(new Date()) &&
-    !["completed", "cancelled"].includes(o.status)
+    !["completed", "cancelled", "closed"].includes(o.status)
   );
 
   return (
@@ -96,9 +96,11 @@ function OrderTable({ title, rows, canClose, onClose, onView }) {
                   </td>
                   {canClose && (
                     <td>
-                      <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
-                        Close order
-                      </button>
+                      {!["closed", "cancelled", "completed"].includes(o.status) && (
+                        <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
+                          Close order
+                        </button>
+                      )}
                     </td>
                   )}
                 </tr>

@@ -82,6 +82,7 @@ router.get("/director-dashboard", async (req, res) => {
        LEFT JOIN delivery_tickets dt ON dt.order_id = o.id AND dt.status != 'cancelled'
        WHERE o.status IN ('planned', 'in_progress', 'partially_completed')
          AND o.status NOT IN ('cancelled', 'closed')
+         AND o.order_date <= CURRENT_DATE
        GROUP BY o.id, c.name, s.name, m.name
        ORDER BY o.order_date, o.scheduled_batching_time`
     ),

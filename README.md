@@ -372,3 +372,30 @@ Administrator-only, same as the rest of Reports.
 **Action needed:** this adds two new npm packages (`jspdf`, `jspdf-autotable`, `xlsx`)
 to `frontend/package.json` — run `npm install` in `frontend/` once before your next
 build, or the build will fail on the missing packages.
+
+## Ninth round — bug fixes
+
+1. **PDF export: ₹ symbol showing as "1", Amount column clipped.** jsPDF's built-in
+   font doesn't have a glyph for ₹ — it silently renders as a stray "1" instead of
+   erroring. Fixed by using "Rs." in the PDF export specifically (the on-screen table
+   and the Excel export both still show the real ₹ symbol — only jsPDF's font has this
+   limitation). Also widened the Rate/Amount columns so the numbers don't get clipped.
+2. **Today's orders appearing in "Upcoming orders" too — root cause was bigger than
+   this one screen.** The database server's default timezone is UTC, but the business
+   runs on IST. Every query using `CURRENT_DATE` was affected: for the roughly 5.5 hours
+   between midnight and 5:30 AM IST, the database still thought it was "yesterday"
+   (UTC hadn't rolled over the date yet) — so today's orders got miscategorized as
+   "upcoming," today's production/sales KPIs could be measuring the wrong day, and the
+   carry-forward logic could be a day off. **Fixed at the source**: every database
+   connection now explicitly sets its session to `Asia/Kolkata`, so "today" means the
+   same thing to the database as it does to everyone using the app. Also made "Running
+   orders" and "Upcoming orders" mutually exclusive by date (today-or-earlier vs.
+   strictly future) so they can't double up even independent of the timezone issue.
+3. **Closed orders stuck showing under "Needs attention — carried forward."** Real
+   regression from when I split "closed" out as its own status a few rounds back — I
+   updated the backend but missed two frontend filters (Manager Dashboard and the
+   shared Today/Tomorrow screen) that still only excluded `completed`/`cancelled`, not
+   `closed`. Fixed in both places, for the carried-forward list and the plain
+   today/tomorrow lists. Also added a defensive check so the "Close order" button never
+   appears at all on an order that's already closed, cancelled, or completed, even if
+   one somehow ends up in a list it shouldn't be in.
