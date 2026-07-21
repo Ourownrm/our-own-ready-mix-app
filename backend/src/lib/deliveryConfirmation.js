@@ -81,8 +81,17 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
        ON CONFLICT DO NOTHING`,
       [ticketId, r.customer_id, concreteAmount, pumpingCharge, concreteAmount + pumpingCharge]
     );
+  } else {
+    // No rate on file for this customer/mix-grade combination — this delivery
+    // will never show up in Sales/Collections until a rate is added and this
+    // is corrected, so make that visible instead of a silent gap.
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+       VALUES ('accountant', $1, 'no_rate_on_file',
+         'Delivery completed but no rate is on file for this customer/grade — invoice not generated')`,
+      [ticketId]
+    );
   }
-  // Note: if no rate is on file for this customer/grade, no invoice is created.
 }
 
 export async function confirmRejection(ticketId, userId, { rejection_reason_id, rejected_quantity_m3, remarks, site_slump_mm }) {

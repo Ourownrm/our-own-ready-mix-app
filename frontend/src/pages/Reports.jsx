@@ -30,8 +30,9 @@ export default function Reports() {
       <TopBar title="Reports & Director's Dashboard" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
         {user?.role === "administrator" && (
-          <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Link to="/administrator"><button type="button">Manage users, customers, sites, fleet, rates...</button></Link>
+            <Link to="/production-report"><button type="button">Production report</button></Link>
           </div>
         )}
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
@@ -39,8 +40,10 @@ export default function Reports() {
           <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>
         ) : (
           <>
+            {/* 1. Daily production chart */}
             <ProductionChart />
-            <RawMaterialStockCard />
+
+            {/* 2. KPIs */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
               <Kpi label="Order qty today" value={`${data.order_qty_today} m³`} />
               <Kpi label="Supplied qty today" value={`${data.supplied_qty_today} m³`} />
@@ -52,14 +55,34 @@ export default function Reports() {
               <Kpi label="Total outstanding" value={inr(data.total_outstanding)} danger={Number(data.total_outstanding) > 0} />
             </div>
 
-            <Section title="Sales this month, by customer">
+            {/* 3. Running orders */}
+            <Section title="Running orders — supplied vs balance">
               <SimpleTable
-                rows={data.sales_by_customer_month}
-                columns={[["customer_name", "Customer"], [(r) => `${r.total_qty_m3} m³`, "Quantity"], [(r) => inr(r.total), "Sales value"]]}
-                empty="No invoiced sales this month yet."
+                rows={data.running_orders}
+                columns={[
+                  ["customer_name", "Customer"], ["site_name", "Site"], ["mix_grade_name", "Grade"],
+                  [(r) => `${r.order_quantity_m3} m³`, "Ordered"],
+                  [(r) => `${r.supplied_qty_m3} m³`, "Supplied"],
+                  [(r) => `${r.balance_qty_m3} m³`, "Balance"],
+                ]}
+                empty="No running orders."
               />
             </Section>
 
+            {/* 4. Upcoming orders */}
+            <Section title="Upcoming orders">
+              <SimpleTable
+                rows={data.upcoming_orders}
+                columns={[
+                  [(r) => new Date(r.order_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" }), "Date"],
+                  ["customer_name", "Customer"], ["site_name", "Site"],
+                  ["mix_grade_name", "Grade"], [(r) => `${r.order_quantity_m3} m³`, "Quantity"],
+                ]}
+                empty="Nothing scheduled beyond today/tomorrow."
+              />
+            </Section>
+
+            {/* 5. Outstanding aging */}
             <Section title="Outstanding — aging report (by customer)">
               {data.outstanding_aging.length === 0 ? (
                 <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing outstanding.</div>
@@ -86,30 +109,19 @@ export default function Reports() {
               )}
             </Section>
 
-            <Section title="Running orders — supplied vs balance">
+            {/* 6. Raw material stock */}
+            <RawMaterialStockCard />
+
+            {/* 7. Sales this month by customer */}
+            <Section title="Sales this month, by customer">
               <SimpleTable
-                rows={data.running_orders}
-                columns={[
-                  ["customer_name", "Customer"], ["site_name", "Site"], ["mix_grade_name", "Grade"],
-                  [(r) => `${r.order_quantity_m3} m³`, "Ordered"],
-                  [(r) => `${r.supplied_qty_m3} m³`, "Supplied"],
-                  [(r) => `${r.balance_qty_m3} m³`, "Balance"],
-                ]}
-                empty="No running orders."
+                rows={data.sales_by_customer_month}
+                columns={[["customer_name", "Customer"], [(r) => `${r.total_qty_m3} m³`, "Quantity"], [(r) => inr(r.total), "Sales value"]]}
+                empty="No invoiced sales this month yet."
               />
             </Section>
 
-            <Section title="Upcoming orders">
-              <SimpleTable
-                rows={data.upcoming_orders}
-                columns={[
-                  ["order_date", "Date"], ["customer_name", "Customer"], ["site_name", "Site"],
-                  ["mix_grade_name", "Grade"], [(r) => `${r.order_quantity_m3} m³`, "Quantity"],
-                ]}
-                empty="Nothing scheduled beyond today/tomorrow."
-              />
-            </Section>
-
+            {/* 8. Sales this month by salesman */}
             <Section title="Salesman-wise sales this month">
               <SimpleTable
                 rows={data.salesman_monthly}
@@ -118,6 +130,7 @@ export default function Reports() {
               />
             </Section>
 
+            {/* 9. Pump utilization */}
             <Section title="Pump utilization this month">
               <SimpleTable
                 rows={data.pump_utilization_month}
@@ -129,6 +142,7 @@ export default function Reports() {
               />
             </Section>
 
+            {/* 10. Concrete rejection */}
             <Section title="Concrete rejections this month">
               <SimpleTable
                 rows={data.rejections_month}

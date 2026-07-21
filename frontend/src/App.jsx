@@ -12,6 +12,7 @@ import Accountant from "./pages/Accountant.jsx";
 import Administrator from "./pages/Administrator.jsx";
 import OrdersSchedule from "./pages/OrdersSchedule.jsx";
 import Reports from "./pages/Reports.jsx";
+import ProductionReport from "./pages/ProductionReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
@@ -57,6 +58,9 @@ export default function App() {
           } />
           <Route path="/reports" element={
             <ProtectedRoute roles={["administrator"]}><Reports /></ProtectedRoute>
+          } />
+          <Route path="/production-report" element={
+            <ProtectedRoute roles={["administrator"]}><ProductionReport /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>

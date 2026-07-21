@@ -299,3 +299,76 @@ the same way as always, by revisiting `/setup?key=...` once after deploying.
    outstanding aging, running orders, upcoming orders, salesman-wise sales, pump
    utilization, rejections). None of them will force the whole page to scroll sideways
    on a phone anymore — just the table itself, same as Completed trips already did.
+
+## Seventh round — bug fixes
+
+1. **"Closed" order showing as "cancelled".** Root cause: Manager's "Close order" and
+   Administrator's separate "Cancel order" action both wrote the exact same
+   `status = 'cancelled'` value, so there was no way to distinguish them anywhere in the
+   app. Fixed: `closed` is now its own status, with its own badge color. A migration
+   backfills any order that was already closed (has a `closed_at` on file) to the
+   correct status.
+2. **Director's Dashboard bugs:**
+   - **(a)** "Order qty today" now excludes cancelled/closed orders from the total —
+     it previously counted every order placed today regardless of whether it was
+     immediately cancelled.
+   - **(b)** "Today's sales not showing anything" — **yes, a rate must exist** for that
+     exact customer + concrete grade combination (Administrator → Concrete grades and
+     rates) before a completed delivery generates an invoice. This isn't a bug, it's how
+     invoicing is intentionally wired: the invoice amount comes from `rate_per_m3` on
+     file for that customer/grade, so without a rate there's nothing to calculate from.
+     What *was* a real gap: this failure was completely silent — a completed delivery
+     with no matching rate just quietly generated no invoice, with no record anywhere
+     that it happened. Fixed: it now writes a notification (`no_rate_on_file`) recording
+     exactly which ticket was affected. **Caveat:** the app doesn't have a notification
+     inbox/bell UI anywhere yet — right now this is queryable in the database
+     (`SELECT * FROM notifications WHERE type = 'no_rate_on_file'`) but not
+     surfaced on screen. Happy to build a simple "unbilled deliveries" list if that'd be
+     useful — let me know.
+   - **(c)** Running/Upcoming orders now explicitly exclude cancelled and closed orders
+     in the query itself (previously relied only on an allow-list of active statuses,
+     which should have already excluded them — this makes it explicit and airtight). If
+     you still see a cancelled/closed order in either list after this update, that's a
+     different bug than what the code review found — send me a screenshot with the order
+     name and I'll dig further with that specific case.
+   - **(d)** Upcoming orders' date column was rendering the raw database timestamp
+     (`2026-07-25T00:00:00.000Z`) instead of a formatted date — fixed to show it properly
+     (e.g. "25 Jul 2026").
+3. **Director's Dashboard reordered** to: Daily production chart, KPIs, Running orders,
+   Upcoming orders, Outstanding aging, Raw material stock, Sales by customer, Sales by
+   salesman, Pump utilization, Concrete rejection.
+4. **Raw material stock now highlights low stock** — a bin turns red (border + text)
+   when at or below: cement (any Silo) 15 ton, aggregates (Agg. 12mm/20mm) 2 Load,
+   admixtures (Admix. 1/2/3) 2 Barrel. A count badge ("N low") shows on the card header
+   when anything's below threshold.
+
+### Migration note
+This round adds the `closed` order status and backfills existing closed orders —
+applied by revisiting `/setup?key=...` once after deploying, as always.
+
+## Eighth round — Production Report module
+
+New standalone report at `/production-report`, linked from the Director's Dashboard.
+Administrator-only, same as the rest of Reports.
+
+- **Filters**: date range (defaults to today, can be a single day), customer, site
+  (narrows to that customer's sites once one is picked), truck, driver, salesperson,
+  pump, site supervisor, and delivery note status — all combined with AND. Delivery
+  note status is **multi-select toggle chips** (All / Signed / Pending / Refused), so
+  you can pick any combination, not just one at a time.
+- **Results**: table with Date, DC No., Customer, Site, Truck, Driver, Sales Person,
+  Pump, Supervisor, Grade, Quantity, Rate, Amount, and Delivery Note Status, paginated
+  at 100 rows/page, with a totals row (quantity, amount, delivery count) computed over
+  the *entire* filtered set, not just the visible page.
+  - **Rate and Amount show as "–" (blank), not ₹0**, whenever no rate was on file at
+    delivery time — this is the same "no rate → no invoice" situation covered in the
+    bug-fix round above, made visible here too rather than looking like free concrete.
+- **Export**: PDF (`jspdf` + `jspdf-autotable`) and Excel (`xlsx`/SheetJS), both pulling
+  the complete filtered dataset (not just the current page), capped at 5,000 rows. PDF
+  includes a header (company name, applied filters, generated timestamp) and the same
+  totals row. Filenames: `Production_Report_<fromDate>to<toDate>.pdf` / `.xlsx`.
+  Export buttons are disabled until a report has been generated and has at least one row.
+
+**Action needed:** this adds two new npm packages (`jspdf`, `jspdf-autotable`, `xlsx`)
+to `frontend/package.json` — run `npm install` in `frontend/` once before your next
+build, or the build will fail on the missing packages.

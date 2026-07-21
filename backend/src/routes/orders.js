@@ -18,21 +18,22 @@ router.get("/", async (req, res) => {
      JOIN mix_grades m ON m.id = o.mix_grade_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
      WHERE o.order_date >= CURRENT_DATE - INTERVAL '1 day'
-        OR o.status NOT IN ('completed', 'cancelled')
+        OR o.status NOT IN ('completed', 'cancelled', 'closed')
      GROUP BY o.id, c.name, s.name, m.name
      ORDER BY o.order_date, o.scheduled_batching_time`
   );
   res.json(rows);
 });
 
-// Manager formally closes/cancels an order that will never be completed.
-// Same soft-cancel as the Administrator's "correct orders" action, but reachable
-// directly by a Manager without needing Administrator access, with a reason on file.
+// Manager formally closes an order that will never be completed. Distinct from
+// Administrator's "cancel" — same effect (stops it from carrying forward or
+// counting as running/upcoming) but keeps its own status so the two read
+// differently in the UI and reports.
 router.post("/:id/close", requireRole("manager", "administrator"), async (req, res) => {
   const { reason } = req.body;
   const { rows } = await query(
     `UPDATE customer_orders
-     SET status = 'cancelled', closed_by = $1, closed_at = now(),
+     SET status = 'closed', closed_by = $1, closed_at = now(),
          closure_reason = COALESCE($2, closure_reason)
      WHERE id = $3 RETURNING *`,
     [req.user.id, reason || null, req.params.id]

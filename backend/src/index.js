@@ -16,6 +16,7 @@ import masterDataRoutes from "./routes/masterData.js";
 import setupRoutes from "./routes/setup.js";
 import breakdownRoutes from "./routes/breakdowns.js";
 import reportsRoutes from "./routes/reports.js";
+import productionReportRoutes from "./routes/productionReport.js";
 
 dotenv.config();
 
@@ -44,6 +45,7 @@ app.use("/api/administrator", administratorRoutes);
 app.use("/api/master", masterDataRoutes);
 app.use("/api/breakdowns", breakdownRoutes);
 app.use("/api/reports", reportsRoutes);
+app.use("/api/production-report", productionReportRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff

@@ -347,7 +347,7 @@ function OrderTable({ title, rows, onClose, onView }) {
 function StatusBadge({ status }) {
   const map = {
     completed: "badge-success", planned: "badge-neutral", in_progress: "badge-info",
-    partially_completed: "badge-info", cancelled: "badge-danger", dispatched: "badge-info",
+    partially_completed: "badge-info", cancelled: "badge-danger", closed: "badge-neutral", dispatched: "badge-info",
     reached_site: "badge-warning", unloading: "badge-progress", created: "badge-neutral",
     batching: "badge-neutral", returned: "badge-neutral", rejected: "badge-danger",
   };

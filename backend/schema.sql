@@ -7,7 +7,7 @@ CREATE TYPE user_role AS ENUM (
 );
 
 CREATE TYPE order_status AS ENUM (
-  'planned', 'in_progress', 'completed', 'partially_completed', 'cancelled'
+  'planned', 'in_progress', 'completed', 'partially_completed', 'cancelled', 'closed'
 );
 
 CREATE TYPE ticket_status AS ENUM (

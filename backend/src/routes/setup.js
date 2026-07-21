@@ -123,6 +123,20 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (raw material stock — 9 bins seeded, ready for QC Engineer to fill in).");
 
+    // "Closed" is now its own status, separate from "cancelled" — previously
+    // both wrote the same value, so a Manager-closed order and an
+    // Administrator-cancelled order were indistinguishable in the UI.
+    await pool.query(`DO $$ BEGIN
+      ALTER TYPE order_status ADD VALUE IF NOT EXISTS 'closed';
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    // Backfill: any order that already has a closed_at/closed_by on file was
+    // closed via the Manager's "close order" action, not truly cancelled.
+    await pool.query(`
+      UPDATE customer_orders SET status = 'closed'
+      WHERE status = 'cancelled' AND closed_at IS NOT NULL;
+    `);
+    log.push("Schema migration applied ('closed' is now a distinct order status from 'cancelled' — existing closed orders were corrected).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

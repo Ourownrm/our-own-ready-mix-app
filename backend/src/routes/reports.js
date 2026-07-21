@@ -17,7 +17,7 @@ router.get("/director-dashboard", async (req, res) => {
     salesmanMonthly, pumpUtilization, rejections,
   ] = await Promise.all([
     // Order Qty Today — how much was ordered for today, regardless of how much has shipped
-    query(`SELECT COALESCE(SUM(order_quantity_m3), 0) AS qty FROM customer_orders WHERE order_date = CURRENT_DATE`),
+    query(`SELECT COALESCE(SUM(order_quantity_m3), 0) AS qty FROM customer_orders WHERE order_date = CURRENT_DATE AND status NOT IN ('cancelled', 'closed')`),
     // Supplied Qty Today — total delivery ticket quantity for today, whether or not the trip has completed
     query(`SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS qty FROM delivery_tickets WHERE ticket_date = CURRENT_DATE AND status != 'cancelled'`),
     // Monthly Production Qty — total ticket quantity this month, minus what was rejected at site
@@ -81,6 +81,7 @@ router.get("/director-dashboard", async (req, res) => {
        JOIN mix_grades m ON m.id = o.mix_grade_id
        LEFT JOIN delivery_tickets dt ON dt.order_id = o.id AND dt.status != 'cancelled'
        WHERE o.status IN ('planned', 'in_progress', 'partially_completed')
+         AND o.status NOT IN ('cancelled', 'closed')
        GROUP BY o.id, c.name, s.name, m.name
        ORDER BY o.order_date, o.scheduled_batching_time`
     ),
@@ -91,7 +92,7 @@ router.get("/director-dashboard", async (req, res) => {
        JOIN customers c ON c.id = o.customer_id
        JOIN sites s ON s.id = o.site_id
        JOIN mix_grades m ON m.id = o.mix_grade_id
-       WHERE o.order_date > CURRENT_DATE AND o.status NOT IN ('cancelled', 'completed')
+       WHERE o.order_date > CURRENT_DATE AND o.status NOT IN ('cancelled', 'closed', 'completed')
        ORDER BY o.order_date, o.scheduled_batching_time
        LIMIT 100`
     ),
