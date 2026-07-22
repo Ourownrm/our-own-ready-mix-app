@@ -164,10 +164,12 @@ router.get("/director-dashboard", async (req, res) => {
 router.get("/daily-production", async (req, res) => {
   const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
   const { rows } = await query(
-    `SELECT ticket_date::text AS day, COALESCE(SUM(loaded_quantity_m3), 0) AS qty_m3
-     FROM delivery_tickets
-     WHERE status = 'completed' AND ticket_date >= CURRENT_DATE - ($1 || ' days')::interval
-     GROUP BY ticket_date`,
+    `SELECT dt.ticket_date::text AS day,
+            COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS qty_m3
+     FROM delivery_tickets dt
+     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+     WHERE dt.status != 'cancelled' AND dt.ticket_date >= CURRENT_DATE - ($1 || ' days')::interval
+     GROUP BY dt.ticket_date`,
     [days - 1]
   );
   const byDay = Object.fromEntries(rows.map((r) => [r.day, Number(r.qty_m3)]));

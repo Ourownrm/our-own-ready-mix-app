@@ -82,14 +82,16 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
 router.get("/dashboard", requireRole("manager", "administrator"), async (req, res) => {
   const [today, month, fleet, delayed, rejected] = await Promise.all([
     query(
-      `SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total
+      `SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS total
        FROM delivery_tickets dt
-       WHERE dt.status = 'completed' AND dt.ticket_date = CURRENT_DATE`
+       LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+       WHERE dt.status != 'cancelled' AND dt.ticket_date = CURRENT_DATE`
     ),
     query(
-      `SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total
+      `SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS total
        FROM delivery_tickets dt
-       WHERE dt.status = 'completed' AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
+       LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+       WHERE dt.status != 'cancelled' AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
     ),
     query(
       `SELECT status, COUNT(*) AS count FROM delivery_tickets

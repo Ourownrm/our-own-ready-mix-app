@@ -433,3 +433,19 @@ build, or the build will fail on the missing packages.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Eleventh round — bug fix
+
+**Manager Dashboard's "Today's production" / "Monthly production" was wrong while
+Administrator's matched.** Root cause: when I fixed the delivered/supplied quantity
+formula last round (delivery note qty − rejected qty, counted from ticket creation),
+I updated the order list, order detail, the Director's Dashboard KPIs, and the
+production chart's data source — but missed one more place, a separate endpoint
+(`/orders/dashboard`) that specifically powers the Manager Dashboard's KPI tiles. It
+was still using the old logic (only tickets already marked "completed," no rejection
+subtracted). Fixed to match exactly, plus double-checked the daily production chart
+itself had the same gap (it did — fixed too) and ran an exhaustive search across the
+whole backend to confirm no other spot was still on the old formula.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
