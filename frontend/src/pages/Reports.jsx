@@ -33,6 +33,7 @@ export default function Reports() {
           <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Link to="/administrator"><button type="button">Manage users, customers, sites, fleet, rates...</button></Link>
             <Link to="/production-report"><button type="button">Production report</button></Link>
+            <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
           </div>
         )}
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { syncOrderCompletionStatus } from "../lib/deliveryConfirmation.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("plant_operator", "manager", "administrator"));
@@ -18,15 +19,16 @@ router.get("/available-orders", async (req, res) => {
   const { rows } = await query(
     `SELECT co.id, co.order_quantity_m3, c.name AS customer_name, s.name AS site_name,
             m.name AS mix_grade_name,
-            COALESCE(SUM(dt.loaded_quantity_m3), 0) AS dispatched_so_far
+            COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS dispatched_so_far
      FROM customer_orders co
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = co.id AND dt.status != 'cancelled'
+     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE co.order_date = CURRENT_DATE AND co.status IN ('planned', 'in_progress', 'partially_completed')
      GROUP BY co.id, c.name, s.name, m.name
-     HAVING COALESCE(SUM(dt.loaded_quantity_m3), 0) < co.order_quantity_m3
+     HAVING COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) < co.order_quantity_m3
      ORDER BY co.scheduled_batching_time`
   );
   res.json(rows);
@@ -65,6 +67,7 @@ router.post("/tickets", requireRole("plant_operator", "administrator"), async (r
         `UPDATE customer_orders SET status = 'in_progress' WHERE id = $1 AND status = 'planned'`,
         [order_id]
       );
+      await syncOrderCompletionStatus(order_id);
 
       return res.status(201).json(rows[0]);
     } catch (err) {

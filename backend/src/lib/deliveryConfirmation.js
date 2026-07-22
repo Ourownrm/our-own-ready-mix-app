@@ -6,6 +6,37 @@ import { query } from "../db.js";
 // fallback (for small sites with no Site Supervisor assigned) goes through the
 // exact same business logic instead of a second, drift-prone copy of it.
 
+// Delivered/supplied quantity for an order = every non-cancelled delivery
+// ticket's loaded quantity, counted as soon as the delivery note is created —
+// minus whatever was rejected at site. When that reaches the ordered
+// quantity, the order is done; if a later rejection drops it back below that
+// (e.g. a load gets rejected after the order had already hit its target),
+// it's put back to in_progress rather than staying incorrectly "completed".
+// Terminal states (cancelled/closed) are never touched.
+export async function syncOrderCompletionStatus(orderId) {
+  if (!orderId) return;
+  const { rows } = await query(
+    `SELECT o.status, o.order_quantity_m3,
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0)
+              - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS delivered_qty_m3
+     FROM customer_orders o
+     LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
+     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+     WHERE o.id = $1
+     GROUP BY o.id`,
+    [orderId]
+  );
+  const order = rows[0];
+  if (!order || ["cancelled", "closed"].includes(order.status)) return;
+
+  const reached = Number(order.delivered_qty_m3) >= Number(order.order_quantity_m3);
+  if (reached && order.status !== "completed") {
+    await query("UPDATE customer_orders SET status = 'completed' WHERE id = $1", [orderId]);
+  } else if (!reached && order.status === "completed") {
+    await query("UPDATE customer_orders SET status = 'in_progress' WHERE id = $1", [orderId]);
+  }
+}
+
 export async function logTripEvent(ticketId, eventType, userId) {
   await query(
     `INSERT INTO trip_events (ticket_id, event_type, source, edited_by)
@@ -41,6 +72,9 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
     [site_slump_mm, delivery_note_status || "pending", remarks, ticketId, !!after_pour_care_confirmed]
   );
   await query("UPDATE delivery_tickets SET status = 'completed' WHERE id = $1", [ticketId]);
+
+  const { rows: ticketRows } = await query("SELECT order_id FROM delivery_tickets WHERE id = $1", [ticketId]);
+  const orderId = ticketRows[0]?.order_id;
 
   // Trip allowance payout — only on completed delivery (business rule)
   const { rows } = await query(
@@ -92,6 +126,8 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
       [ticketId]
     );
   }
+
+  await syncOrderCompletionStatus(orderId);
 }
 
 export async function confirmRejection(ticketId, userId, { rejection_reason_id, rejected_quantity_m3, remarks, site_slump_mm }) {
@@ -111,6 +147,9 @@ export async function confirmRejection(ticketId, userId, { rejection_reason_id, 
      VALUES ('manager', $1, 'concrete_rejected', 'Concrete rejected at site — pending manager approval')`,
     [ticketId]
   );
+
+  const { rows: ticketRows } = await query("SELECT order_id FROM delivery_tickets WHERE id = $1", [ticketId]);
+  await syncOrderCompletionStatus(ticketRows[0]?.order_id);
 }
 
 // A ticket can be confirmed by the Driver directly only when its order has no

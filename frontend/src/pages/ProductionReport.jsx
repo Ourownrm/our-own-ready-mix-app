@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import QcDetailModal from "../lib/QcDetailModal.jsx";
 
 const STATUS_OPTIONS = ["All", "Signed", "Pending", "Refused"];
 const FILTER_KEYS = ["customer_id", "site_id", "truck_id", "driver_id", "salesperson_id", "pump_id", "supervisor_id"];
@@ -45,6 +46,7 @@ export default function ProductionReport() {
   const [exporting, setExporting] = useState("");
   const [error, setError] = useState("");
   const [generated, setGenerated] = useState(false);
+  const [qcTicketId, setQcTicketId] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -351,7 +353,7 @@ export default function ProductionReport() {
                     <tr>
                       <th>Date</th><th>DC No.</th><th>Customer</th><th>Site</th><th>Truck</th><th>Driver</th>
                       <th>Sales Person</th><th>Pump</th><th>Supervisor</th><th>Grade</th><th>Quantity</th>
-                      <th>Rate</th><th>Amount</th><th>Status</th>
+                      <th>Rate</th><th>Amount</th><th>Status</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -371,6 +373,11 @@ export default function ProductionReport() {
                         <td>{r.rate != null ? inr(r.rate) : "–"}</td>
                         <td>{r.amount != null ? inr(r.amount) : "–"}</td>
                         <td>{r.delivery_note_status || "–"}</td>
+                        <td>
+                          <button style={{ padding: "3px 8px", fontSize: 11 }} onClick={() => setQcTicketId(r.id)}>
+                            QC details
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -380,6 +387,7 @@ export default function ProductionReport() {
                       <td>{result.totals.total_qty_m3} m³</td>
                       <td></td>
                       <td>{inr(result.totals.total_amount)}</td>
+                      <td></td>
                       <td></td>
                     </tr>
                   </tfoot>
@@ -397,6 +405,7 @@ export default function ProductionReport() {
           )}
         </div>
       </div>
+      <QcDetailModal ticketId={qcTicketId} onClose={() => setQcTicketId(null)} />
     </>
   );
 }

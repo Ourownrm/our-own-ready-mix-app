@@ -9,7 +9,7 @@ router.use(requireAuth, requireRole("administrator"));
 // Everything the Director's Dashboard needs, in one call.
 router.get("/director-dashboard", async (req, res) => {
   const [
-    orderQtyToday, suppliedQtyToday, monthlyTicketQty, monthlyRejectedQty,
+    orderQtyToday, suppliedTicketQtyToday, todayRejectedQty, monthlyTicketQty, monthlyRejectedQty,
     salesToday, salesMonth, salesByCustomer,
     collectedToday, collectedMonth,
     outstanding, aging,
@@ -18,8 +18,14 @@ router.get("/director-dashboard", async (req, res) => {
   ] = await Promise.all([
     // Order Qty Today — how much was ordered for today, regardless of how much has shipped
     query(`SELECT COALESCE(SUM(order_quantity_m3), 0) AS qty FROM customer_orders WHERE order_date = CURRENT_DATE AND status NOT IN ('cancelled', 'closed')`),
-    // Supplied Qty Today — total delivery ticket quantity for today, whether or not the trip has completed
+    // Supplied Qty Today — every delivery note issued today counts as supplied as soon as
+    // it's created (whether or not the trip has completed), minus whatever got rejected at site.
     query(`SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS qty FROM delivery_tickets WHERE ticket_date = CURRENT_DATE AND status != 'cancelled'`),
+    query(
+      `SELECT COALESCE(SUM(sq.rejected_quantity_m3), 0) AS qty
+       FROM site_qc sq JOIN delivery_tickets dt ON dt.id = sq.ticket_id
+       WHERE dt.ticket_date = CURRENT_DATE`
+    ),
     // Monthly Production Qty — total ticket quantity this month, minus what was rejected at site
     query(`SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS qty FROM delivery_tickets WHERE date_trunc('month', ticket_date) = date_trunc('month', CURRENT_DATE) AND status != 'cancelled'`),
     query(
@@ -72,14 +78,15 @@ router.get("/director-dashboard", async (req, res) => {
     query(
       `SELECT o.id, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
               o.order_quantity_m3,
-              COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status = 'completed'), 0) AS supplied_qty_m3,
-              o.order_quantity_m3 - COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status = 'completed'), 0) AS balance_qty_m3,
+              COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS supplied_qty_m3,
+              o.order_quantity_m3 - (COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0)) AS balance_qty_m3,
               o.order_date, o.status
        FROM customer_orders o
        JOIN customers c ON c.id = o.customer_id
        JOIN sites s ON s.id = o.site_id
        JOIN mix_grades m ON m.id = o.mix_grade_id
        LEFT JOIN delivery_tickets dt ON dt.order_id = o.id AND dt.status != 'cancelled'
+       LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
        WHERE o.status IN ('planned', 'in_progress', 'partially_completed')
          AND o.status NOT IN ('cancelled', 'closed')
          AND o.order_date <= CURRENT_DATE
@@ -135,7 +142,7 @@ router.get("/director-dashboard", async (req, res) => {
 
   res.json({
     order_qty_today: orderQtyToday.rows[0].qty,
-    supplied_qty_today: suppliedQtyToday.rows[0].qty,
+    supplied_qty_today: Number(suppliedTicketQtyToday.rows[0].qty) - Number(todayRejectedQty.rows[0].qty),
     monthly_production_qty: Number(monthlyTicketQty.rows[0].qty) - Number(monthlyRejectedQty.rows[0].qty),
     sales_today: salesToday.rows[0].total,
     sales_month: salesMonth.rows[0].total,

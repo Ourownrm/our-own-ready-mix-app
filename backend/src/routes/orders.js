@@ -11,12 +11,14 @@ router.use(requireAuth);
 router.get("/", async (req, res) => {
   const { rows } = await query(
     `SELECT o.*, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
-            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status = 'completed'), 0) AS delivered_qty_m3
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0)
+              - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS delivered_qty_m3
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id
      JOIN mix_grades m ON m.id = o.mix_grade_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
+     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE o.order_date >= CURRENT_DATE - INTERVAL '1 day'
         OR o.status NOT IN ('completed', 'cancelled', 'closed')
      GROUP BY o.id, c.name, s.name, m.name
@@ -227,7 +229,8 @@ router.get("/:id", async (req, res) => {
     `SELECT o.*, c.name AS customer_name, s.name AS site_name, s.address AS site_address,
             m.name AS mix_grade_name, p.pump_code, sup.name AS site_supervisor_name,
             sp.name AS sales_representative_name, creator.name AS created_by_name,
-            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status = 'completed'), 0) AS delivered_qty_m3
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0)
+              - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS delivered_qty_m3
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id
@@ -237,6 +240,7 @@ router.get("/:id", async (req, res) => {
      LEFT JOIN salespersons sp ON sp.id = o.sales_representative_id
      LEFT JOIN users creator ON creator.id = o.created_by
      LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
+     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE o.id = $1
      GROUP BY o.id, c.name, s.name, s.address, m.name, p.pump_code, sup.name, sp.name, creator.name`,
     [req.params.id]

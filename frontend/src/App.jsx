@@ -36,7 +36,7 @@ export default function App() {
           } />
 
           <Route path="/manager" element={
-            <ProtectedRoute roles={["manager"]}><ManagerDashboard /></ProtectedRoute>
+            <ProtectedRoute roles={["manager", "administrator"]}><ManagerDashboard /></ProtectedRoute>
           } />
           <Route path="/site-supervisor" element={
             <ProtectedRoute roles={["site_supervisor"]}><SiteSupervisor /></ProtectedRoute>

@@ -399,3 +399,37 @@ build, or the build will fail on the missing packages.
    today/tomorrow lists. Also added a defensive check so the "Close order" button never
    appears at all on an order that's already closed, cancelled, or completed, even if
    one somehow ends up in a list it shouldn't be in.
+
+## Tenth round
+
+1. **Administrator can now view the Manager Dashboard directly** — "View Manager
+   Dashboard" button on the Director's Dashboard, no sign-out/sign-in switching
+   needed. (The backend already allowed this everywhere it mattered; only the frontend
+   route was locked to Manager-only.)
+2. **Delivered/supplied quantity formula corrected app-wide** to match exactly what you
+   described: **delivered qty = delivery note quantity − rejected quantity**, counted
+   from the moment the delivery ticket is created (not waiting for the trip to finish).
+   Previously several places only counted tickets already marked "completed" and never
+   subtracted rejections — fixed consistently in the order list, order detail view, and
+   the Director's Dashboard's running-orders report.
+3. **Orders now auto-complete when their ordered quantity is reached**, using that same
+   formula, checked at every point that can change it: when a new delivery ticket is
+   created, when unloading is confirmed complete, and when a load is rejected (which
+   can drop a previously-"completed" order back to "in progress" if a rejection pulls
+   its delivered total back below target — this shouldn't come up often, but it's
+   handled correctly rather than leaving a wrong status on the books).
+4. **QC and slump details are now viewable**, not just saved. Both plant-side data (QC
+   Engineer: slump, temperature, cube samples, sample IDs) and site-side data (Site
+   Supervisor/Driver: arrival slump, rejection details, delivery note status, after-pour
+   care confirmation) were already being captured correctly — there was just never a
+   screen to see them. Added a **"QC details" button on every row of the Production
+   Report** that opens a popup with the full plant + site record for that delivery. I
+   went with a per-row detail view rather than cramming 8+ more columns into an already
+   14-column table, or turning it into filter fields — none of this data is naturally
+   something you'd filter *by* (a slump reading, a remark), it's something you look *up*
+   for a specific delivery, so a "view details" pattern (same one already used for
+   orders) fit better than either of your suggested approaches. Happy to add slump-range
+   or "has rejection" as an actual filter separately if that would be useful.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.

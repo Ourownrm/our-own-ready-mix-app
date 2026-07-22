@@ -116,4 +116,28 @@ router.get("/export", async (req, res) => {
   res.json(rows);
 });
 
+// Full QC detail for one delivery — everything QC Engineer recorded at the
+// plant (slump, temperature, cube samples) and everything Site Supervisor/
+// Driver recorded at site (arrival slump, rejection, delivery note, remarks).
+// This data was always being saved but had no report to view it in.
+router.get("/:ticketId/qc-detail", async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.ticket_number, dt.ticket_date,
+            pq.slump_mm AS plant_slump_mm, pq.temperature_c AS plant_temperature_c,
+            pq.number_of_cubes, pq.sample_ids, pq.remarks AS plant_remarks,
+            sq.arrival_slump_mm AS site_slump_mm, sq.site_temperature_c,
+            sq.unload_start_time, sq.unload_finish_time, sq.accepted,
+            sq.rejected_quantity_m3, rr.reason AS rejection_reason,
+            sq.delivery_note_status, sq.after_pour_care_confirmed, sq.remarks AS site_remarks
+     FROM delivery_tickets dt
+     LEFT JOIN plant_qc pq ON pq.ticket_id = dt.id
+     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+     LEFT JOIN rejection_reasons rr ON rr.id = sq.rejection_reason_id
+     WHERE dt.id = $1`,
+    [req.params.ticketId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Ticket not found." });
+  res.json(rows[0]);
+});
+
 export default router;
