@@ -21,7 +21,7 @@ router.get("/my-deliveries", async (req, res) => {
      LEFT JOIN users u ON u.id = dt.driver_id
      WHERE co.assigned_site_supervisor_id = $1
        AND dt.ticket_date = CURRENT_DATE
-       AND dt.status NOT IN ('completed', 'cancelled', 'returned')
+       AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
      ORDER BY dt.created_at`,
     [req.user.id]
   );

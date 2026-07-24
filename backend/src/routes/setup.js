@@ -347,4 +347,61 @@ router.get("/setup/generate-vapid-keys", async (req, res) => {
   );
 });
 
+// Manually runs the "truck over 2 hours at site" check right now, instead of
+// waiting for the 5-minute timer — useful for testing, or if you don't want
+// to wait for the next automatic pass. Same protection as the rest of this
+// file's maintenance endpoints.
+router.get("/setup/run-delayed-trucks-check", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  const { checkDelayedTrucks } = await import("../lib/scheduledChecks.js");
+  const notified = await checkDelayedTrucks();
+  res.send(
+    `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
+    (notified.length
+      ? `Notified QC about ${notified.length} truck(s):\n\n` + notified.map((t) => `- ${t.ticket_number} — ${t.truck_number} — ${t.site_name}`).join("\n")
+      : `No trucks currently over 2 hours at site — nothing to notify.\n\n` +
+        `If you expected one to show up here, double check its status is\n` +
+        `"reached_site" or "unloading", and that it actually reached site\n` +
+        `more than 2 hours ago.`) +
+    `</pre>`
+  );
+});
+
+// Diagnostic: shows exactly where a push notification chain might be broken —
+// whether VAPID is configured, who has subscribed (by role), and the most
+// recent notifications of each type, so you can tell "did the trigger fire"
+// apart from "did delivery fail" without needing database access.
+router.get("/setup/push-diagnostics", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  const vapidConfigured = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+  const { rows: subsByRole } = await pool.query(
+    `SELECT u.role, u.name, COUNT(ps.id) AS device_count
+     FROM users u LEFT JOIN push_subscriptions ps ON ps.user_id = u.id
+     WHERE u.is_active
+     GROUP BY u.role, u.name
+     ORDER BY u.role, u.name`
+  );
+  const { rows: recent } = await pool.query(
+    `SELECT type, recipient_role, recipient_id, message, created_at
+     FROM notifications ORDER BY created_at DESC LIMIT 20`
+  );
+  res.send(
+    `<pre style="font-family: sans-serif; font-size: 14px; padding: 20px;">` +
+    `VAPID keys configured: ${vapidConfigured ? "yes" : "NO — set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY first"}\n\n` +
+    `Who has notifications enabled (0 devices = never tapped "Enable notifications",\n` +
+    `or tapped it but their phone blocked the permission prompt):\n` +
+    subsByRole.map((r) => `  ${r.role.padEnd(16)} ${r.name.padEnd(20)} ${r.device_count} device(s)`).join("\n") +
+    `\n\nLast 20 notifications actually triggered (proves the trigger fired,\n` +
+    `separate from whether the push itself was delivered):\n` +
+    (recent.length
+      ? recent.map((n) => `  ${n.created_at.toISOString().slice(0, 16).replace("T", " ")}  ${n.type.padEnd(22)} → ${n.recipient_id ? `user #${n.recipient_id}` : n.recipient_role}  — ${n.message}`).join("\n")
+      : "  None yet.") +
+    `</pre>`
+  );
+});
+
 export default router;

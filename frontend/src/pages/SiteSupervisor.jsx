@@ -79,7 +79,7 @@ export default function SiteSupervisor() {
           >
             {deliveries.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.ticket_number} — {d.site_name} — {d.truck_number || "no truck"} · {d.driver_name || "no driver"}
+                {d.ticket_number} — {statusLabel(d.status)} — {d.truck_number || "no truck"} · {d.driver_name || "no driver"}
               </option>
             ))}
           </select>

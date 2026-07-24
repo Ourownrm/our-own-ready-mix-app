@@ -38,4 +38,5 @@ export async function checkDelayedTrucks() {
       url: "/qc",
     });
   }
+  return rows;
 }
