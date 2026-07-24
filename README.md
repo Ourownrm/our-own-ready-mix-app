@@ -449,3 +449,34 @@ whole backend to confirm no other spot was still on the old formula.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Twelfth round
+
+1. **Raw material stock entry moved to its own screen**, reachable from a button on
+   the main QC Engineer dashboard ("Raw material stock entry →") instead of sitting
+   inline on the page. **PIN-protected**: set a `RAW_MATERIAL_STOCK_PIN` environment
+   variable on your backend service in Render (same pattern as `SETUP_SECRET` from
+   earlier) — once set, saving a stock update prompts for that PIN and the server
+   rejects the save if it's wrong, so on a shared device/login, only whoever knows the
+   PIN can actually change stock levels; everyone with QC access can still see current
+   stock. If you don't set the env var, saving still works exactly as before (nothing
+   is protected until you add it — this is deliberate, so setting it up is optional and
+   doesn't break anything if skipped).
+2. **QC Engineer now sees the same "over 2 hours at site" trucks Manager sees**, with a
+   quality nudge and a "Flag for Manager" button. Flagging a truck shows a badge
+   directly on the Manager Dashboard's Active Trucks table — "QC flagged this
+   delivery" — right on the row Manager's already looking at, with a "Mark reviewed"
+   button to clear it once they've followed up. **Honest scope note**: this isn't a
+   push notification (that's still on hold, per your earlier call) — it's a badge that
+   appears the next time Manager's dashboard refreshes (every 20 seconds while the page
+   is open). If Manager isn't currently looking at their dashboard, they won't be
+   alerted until they open it.
+
+### Action needed
+Optional: set `RAW_MATERIAL_STOCK_PIN` in Render's environment variables for the
+`oorm-backend` service if you want the PIN protection active (Environment tab, same
+place `SETUP_SECRET` lives). Any value works — a 4-digit PIN, a word, anything QC can
+remember and share only with whoever should be allowed to edit stock.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

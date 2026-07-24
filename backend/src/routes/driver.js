@@ -5,6 +5,7 @@ import {
   confirmArrival, confirmUnloadingStart, confirmUnloadingComplete, confirmRejection,
   orderHasNoSiteSupervisor,
 } from "../lib/deliveryConfirmation.js";
+import { pushToRole } from "../lib/push.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("driver"));
@@ -34,7 +35,8 @@ router.post("/duty", async (req, res) => {
   // SRS §13: notify manager if driver goes off duty mid-trip
   if (!on && ticket_id) {
     const { rows } = await query(
-      "SELECT status FROM delivery_tickets WHERE id = $1", [ticket_id]
+      "SELECT dt.status, dt.ticket_number, t.truck_number FROM delivery_tickets dt JOIN trucks t ON t.id = dt.truck_id WHERE dt.id = $1",
+      [ticket_id]
     );
     if (rows[0] && !["completed", "returned", "cancelled"].includes(rows[0].status)) {
       await query(
@@ -42,6 +44,11 @@ router.post("/duty", async (req, res) => {
          VALUES ('manager', $1, 'driver_off_duty_during_trip', 'Driver went off duty during an active trip')`,
         [ticket_id]
       );
+      await pushToRole("manager", {
+        title: "Driver went off duty mid-trip",
+        body: `${rows[0].ticket_number} — ${rows[0].truck_number}`,
+        url: "/manager",
+      });
     }
   }
   res.json({ ok: true });
@@ -111,17 +118,21 @@ router.post("/breakdown", async (req, res) => {
      VALUES ('truck', $1,$2,$2,$3,$4,$5,$6)`,
     [truck_id, req.user.id, location, latitude, longitude, remarks]
   );
+  const { rows } = await query("SELECT truck_number FROM trucks WHERE id = $1", [truck_id]);
+  await query(
+    `INSERT INTO notifications (recipient_role, type, message)
+     VALUES ('manager', 'breakdown_reported', $1)`,
+    [`Breakdown reported: truck ${rows[0]?.truck_number || truck_id}${location ? ` near ${location}` : ""}`]
+  );
+  await pushToRole("manager", {
+    title: "Truck breakdown reported",
+    body: `${rows[0]?.truck_number || "A truck"}${location ? ` — ${location}` : ""}`,
+    url: "/manager",
+  });
   res.json({ ok: true });
 });
 
-router.post("/fuel", async (req, res) => {
-  const { truck_id, odometer_reading, fuel_quantity_litres, fuel_cost, fuel_station_id } = req.body;
-  await query(
-    `INSERT INTO fuel_logs (truck_id, odometer_reading, fuel_quantity_litres, fuel_cost, fuel_station_id, logged_by)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [truck_id, odometer_reading, fuel_quantity_litres, fuel_cost, fuel_station_id, req.user.id]
-  );
-  res.json({ ok: true });
-});
+// Fuel filling moved to the shared /api/fuel route (covers any equipment,
+// not just this driver's truck) — see routes/fuel.js.
 
 export default router;

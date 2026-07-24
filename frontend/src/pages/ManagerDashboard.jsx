@@ -65,6 +65,16 @@ export default function ManagerDashboard() {
     }
   }
 
+  async function markReviewed(ticketId) {
+    setError("");
+    try {
+      await apiRequest(`/orders/active-trucks/${ticketId}/mark-reviewed`, { method: "POST" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (view === "create-order") {
     return (
       <>
@@ -137,7 +147,7 @@ export default function ManagerDashboard() {
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
         <RawMaterialStockCard />
-        <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} />
+        <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} />
         <CompletedTripsTable trips={completedTrips} />
 
         {carriedForward.length > 0 && (
@@ -205,7 +215,7 @@ function OnDutyDriversTable({ drivers }) {
   );
 }
 
-function ActiveTrucksTable({ trucks, locations }) {
+function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
   const locationByTicket = Object.fromEntries(locations.map((l) => [l.ticket_id, l]));
   const delayedCount = trucks.filter((t) => t.minutes_at_site > 120).length;
 
@@ -242,6 +252,17 @@ function ActiveTrucksTable({ trucks, locations }) {
                       {delayed && (
                         <div style={{ color: "var(--alert-red)", fontSize: 11, fontWeight: 600, marginTop: 2 }}>
                           At site {formatDuration(t.minutes_at_site)} — notify site
+                        </div>
+                      )}
+                      {t.qc_flagged && (
+                        <div style={{ marginTop: 4 }}>
+                          <span className="badge badge-progress" style={{ fontSize: 10 }}>QC flagged this delivery</span>
+                          <button
+                            style={{ display: "block", marginTop: 4, padding: "2px 6px", fontSize: 11 }}
+                            onClick={() => onMarkReviewed(t.ticket_id)}
+                          >
+                            Mark reviewed
+                          </button>
                         </div>
                       )}
                     </td>

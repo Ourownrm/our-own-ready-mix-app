@@ -131,7 +131,11 @@ router.get("/active-trucks", requireRole("manager", "administrator"), async (req
             rs.event_time AS reached_site_at,
             CASE WHEN dt.status IN ('reached_site', 'unloading') AND rs.event_time IS NOT NULL
                  THEN EXTRACT(EPOCH FROM (now() - rs.event_time)) / 60
-            END AS minutes_at_site
+            END AS minutes_at_site,
+            EXISTS (
+              SELECT 1 FROM notifications n
+              WHERE n.ticket_id = dt.id AND n.type = 'qc_flagged_delay' AND n.is_read = false
+            ) AS qc_flagged
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN users u ON u.id = dt.driver_id
@@ -147,6 +151,16 @@ router.get("/active-trucks", requireRole("manager", "administrator"), async (req
      ORDER BY dt.created_at`
   );
   res.json(rows);
+});
+
+// Manager clears a QC flag once they've reviewed it.
+router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "administrator"), async (req, res) => {
+  await query(
+    `UPDATE notifications SET is_read = true
+     WHERE ticket_id = $1 AND type = 'qc_flagged_delay' AND is_read = false`,
+    [req.params.ticketId]
+  );
+  res.json({ ok: true });
 });
 
 // Completed trips today, with the full timeline: batching (ticket created),

@@ -172,6 +172,81 @@ router.delete("/pumps/:id", requireRole("administrator"), async (req, res) => {
   }
 });
 
+// ===== Master data: Fuel stations =====
+
+router.get("/fuel-stations", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM fuel_stations ORDER BY name");
+  res.json(rows);
+});
+
+router.post("/fuel-stations", requireRole("administrator"), async (req, res) => {
+  const { name, location } = req.body;
+  if (!name) return res.status(400).json({ error: "Station name is required." });
+  const { rows } = await query(
+    "INSERT INTO fuel_stations (name, location) VALUES ($1,$2) RETURNING *",
+    [name, location || null]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/fuel-stations/:id/status", requireRole("administrator"), async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE fuel_stations SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
+});
+
+router.delete("/fuel-stations/:id", requireRole("administrator"), async (req, res) => {
+  try {
+    const { rowCount } = await query("DELETE FROM fuel_stations WHERE id = $1", [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: "Fuel station not found." });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === "23503") {
+      return res.status(400).json({ error: "This station already has fuel entries against it — deactivate it instead of deleting." });
+    }
+    throw err;
+  }
+});
+
+// ===== Master data: Equipment (pickup vans, loaders, generators) =====
+
+router.get("/equipment", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM equipment ORDER BY equipment_type, name");
+  res.json(rows);
+});
+
+router.post("/equipment", requireRole("administrator"), async (req, res) => {
+  const { equipment_type, name } = req.body;
+  if (!equipment_type || !["pickup_van", "loader", "generator"].includes(equipment_type)) {
+    return res.status(400).json({ error: "Equipment type must be pickup van, loader, or generator." });
+  }
+  if (!name) return res.status(400).json({ error: "Name is required." });
+  const { rows } = await query(
+    "INSERT INTO equipment (equipment_type, name) VALUES ($1,$2) RETURNING *",
+    [equipment_type, name]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/equipment/:id/status", requireRole("administrator"), async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE equipment SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
+});
+
+router.delete("/equipment/:id", requireRole("administrator"), async (req, res) => {
+  try {
+    const { rowCount } = await query("DELETE FROM equipment WHERE id = $1", [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: "Equipment not found." });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === "23503") {
+      return res.status(400).json({ error: "This equipment already has fuel entries against it — deactivate it instead of deleting." });
+    }
+    throw err;
+  }
+});
+
 // ===== Master data: Salespersons (dropdown, replaces free-text sales rep) =====
 
 router.get("/salespersons", requireRole("administrator"), async (req, res) => {

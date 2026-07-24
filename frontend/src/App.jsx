@@ -8,6 +8,7 @@ import ManagerDashboard from "./pages/ManagerDashboard.jsx";
 import SiteSupervisor from "./pages/SiteSupervisor.jsx";
 import PlantOperator from "./pages/PlantOperator.jsx";
 import QcEngineer from "./pages/QcEngineer.jsx";
+import QcRawMaterialStock from "./pages/QcRawMaterialStock.jsx";
 import Accountant from "./pages/Accountant.jsx";
 import Administrator from "./pages/Administrator.jsx";
 import OrdersSchedule from "./pages/OrdersSchedule.jsx";
@@ -46,6 +47,9 @@ export default function App() {
           } />
           <Route path="/qc" element={
             <ProtectedRoute roles={["qc_engineer"]}><QcEngineer /></ProtectedRoute>
+          } />
+          <Route path="/qc/raw-material-stock" element={
+            <ProtectedRoute roles={["qc_engineer"]}><QcRawMaterialStock /></ProtectedRoute>
           } />
           <Route path="/accountant" element={
             <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>

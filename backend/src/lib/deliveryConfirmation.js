@@ -1,4 +1,5 @@
 import { query } from "../db.js";
+import { pushToRole } from "./push.js";
 
 // The actual arrival/unloading/rejection logic — including the trip-allowance
 // payout and invoice generation that fire on completion — used to live only in
@@ -125,6 +126,12 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
          'Delivery completed but no rate is on file for this customer/grade — invoice not generated')`,
       [ticketId]
     );
+    const { rows: t } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
+    await pushToRole("accountant", {
+      title: "No rate on file",
+      body: `${t[0]?.ticket_number || "A delivery"} completed with no rate — invoice not generated`,
+      url: "/accountant",
+    });
   }
 
   await syncOrderCompletionStatus(orderId);
@@ -147,6 +154,12 @@ export async function confirmRejection(ticketId, userId, { rejection_reason_id, 
      VALUES ('manager', $1, 'concrete_rejected', 'Concrete rejected at site — pending manager approval')`,
     [ticketId]
   );
+  const { rows: t } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
+  await pushToRole("manager", {
+    title: "Concrete rejected at site",
+    body: t[0]?.ticket_number || "A delivery was rejected",
+    url: "/manager",
+  });
 
   const { rows: ticketRows } = await query("SELECT order_id FROM delivery_tickets WHERE id = $1", [ticketId]);
   await syncOrderCompletionStatus(ticketRows[0]?.order_id);

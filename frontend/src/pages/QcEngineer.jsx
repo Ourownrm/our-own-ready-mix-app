@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 
 export default function QcEngineer() {
   const [pendingQc, setPendingQc] = useState([]);
+  const [delayedTrucks, setDelayedTrucks] = useState([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [qcTicketId, setQcTicketId] = useState("");
@@ -11,13 +13,22 @@ export default function QcEngineer() {
 
   async function load() {
     try {
-      setPendingQc(await apiRequest("/qc-engineer/pending-qc"));
+      const [pending, delayed] = await Promise.all([
+        apiRequest("/qc-engineer/pending-qc"),
+        apiRequest("/qc-engineer/delayed-trucks"),
+      ]);
+      setPendingQc(pending);
+      setDelayedTrucks(delayed);
     } catch (err) {
       setError(err.message);
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 30000); // keep the delayed-trucks list reasonably live
+    return () => clearInterval(interval);
+  }, []);
 
   async function submitQc(e) {
     e.preventDefault();
@@ -34,12 +45,50 @@ export default function QcEngineer() {
     }
   }
 
+  async function flagForManager(ticketId) {
+    setError("");
+    try {
+      await apiRequest(`/qc-engineer/delayed-trucks/${ticketId}/flag`, { method: "POST" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <>
       <TopBar title="QC Engineer" />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+
+        {delayedTrucks.length > 0 && (
+          <div className="card" style={{ marginBottom: 16, border: "1px solid var(--alert-red)" }}>
+            <div style={{ fontWeight: 600, color: "var(--alert-red)", marginBottom: 4 }}>
+              {delayedTrucks.length} truck{delayedTrucks.length > 1 ? "s" : ""} over 2 hrs at site
+            </div>
+            <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
+              Worth a quality check — a truck sitting this long at site can mean the concrete is losing workability.
+            </div>
+            {delayedTrucks.map((t) => (
+              <div key={t.ticket_id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 8, fontSize: 13 }}>
+                <div style={{ fontWeight: 600 }}>{t.truck_number} · {t.ticket_number}</div>
+                <div style={{ color: "var(--slate)" }}>{t.customer_name} — {t.site_name}</div>
+                <div style={{ color: "var(--slate)" }}>{t.mix_grade_name} · Driver: {t.driver_name}</div>
+                <div style={{ color: "var(--alert-red)", fontWeight: 600, marginTop: 4 }}>
+                  At site {formatDuration(t.minutes_at_site)}
+                </div>
+                <button
+                  style={{ marginTop: 8, width: "100%", fontSize: 12, padding: "6px" }}
+                  disabled={t.already_flagged}
+                  onClick={() => flagForManager(t.ticket_id)}
+                >
+                  {t.already_flagged ? "Manager already notified" : "Flag for Manager"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="card">
           <div style={{ fontWeight: 600, marginBottom: 10 }}>Plant QC entry</div>
@@ -83,83 +132,16 @@ export default function QcEngineer() {
           <div style={{ fontSize: 13, color: "var(--slate)", marginTop: 12 }}>No tickets waiting on QC right now.</div>
         )}
 
-        <RawMaterialStockForm />
+        <Link to="/qc/raw-material-stock">
+          <button type="button" style={{ width: "100%", marginTop: 16 }}>Raw material stock entry →</button>
+        </Link>
       </div>
     </>
   );
 }
 
-function RawMaterialStockForm() {
-  const [rows, setRows] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
-
-  async function load() {
-    try {
-      setRows(await apiRequest("/master/raw-material-stock"));
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-  useEffect(() => { load(); }, []);
-
-  function update(id, field, value) {
-    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
-  }
-
-  async function save() {
-    setSaving(true); setError(""); setNotice("");
-    try {
-      const updated = await apiRequest("/qc-engineer/raw-material-stock", {
-        method: "PUT",
-        body: { rows: rows.map((r) => ({ id: r.id, type_brand: r.type_brand, stock_qty: r.stock_qty })) },
-      });
-      setRows(updated);
-      setNotice("Stock levels saved.");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const lastUpdated = rows.reduce((latest, r) => {
-    if (!r.updated_at) return latest;
-    return !latest || new Date(r.updated_at) > new Date(latest) ? r.updated_at : latest;
-  }, null);
-
-  return (
-    <div className="card" style={{ marginTop: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <div style={{ fontWeight: 600 }}>Raw material stock</div>
-      </div>
-      {lastUpdated && (
-        <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
-          Last updated {new Date(lastUpdated).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-          {rows.find((r) => r.updated_at === lastUpdated)?.updated_by_name ? ` by ${rows.find((r) => r.updated_at === lastUpdated).updated_by_name}` : ""}
-        </div>
-      )}
-      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
-      {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
-      <table style={{ fontSize: 13 }}>
-        <thead>
-          <tr><th>Bin</th><th>Type / brand</th><th>Stock qty</th><th>Unit</th></tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td>{r.bin_name}</td>
-              <td><input type="text" value={r.type_brand || ""} onChange={(e) => update(r.id, "type_brand", e.target.value)} style={{ width: "100%" }} /></td>
-              <td><input type="number" value={r.stock_qty ?? ""} onChange={(e) => update(r.id, "stock_qty", e.target.value)} style={{ width: 80 }} /></td>
-              <td style={{ color: "var(--slate)" }}>{r.unit}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <button style={{ marginTop: 12, width: "100%" }} onClick={save} disabled={saving}>
-        {saving ? "Saving..." : "Save stock levels"}
-      </button>
-    </div>
-  );
+function formatDuration(mins) {
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins % 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }

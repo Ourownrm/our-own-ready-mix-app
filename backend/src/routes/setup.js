@@ -137,6 +137,42 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied ('closed' is now a distinct order status from 'cancelled' — existing closed orders were corrected).");
 
+    // Web Push subscriptions, for real push notifications (not just the
+    // in-app notifications table, which nothing was ever reading from).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) NOT NULL,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (push notification subscriptions table added).");
+
+    // Fuel module redesign: any equipment (not just trucks), odometer or hour
+    // meter, filling stations become manageable, new lightweight equipment
+    // list for pickup vans/loaders/generators.
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE fuel_equipment_type AS ENUM ('truck', 'pump', 'pickup_van', 'loader', 'generator');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS equipment (
+        id SERIAL PRIMARY KEY,
+        equipment_type fuel_equipment_type NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE
+      );
+      ALTER TABLE fuel_stations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+      ALTER TABLE fuel_logs ADD COLUMN IF NOT EXISTS equipment_type fuel_equipment_type NOT NULL DEFAULT 'truck';
+      ALTER TABLE fuel_logs ADD COLUMN IF NOT EXISTS pump_id INTEGER REFERENCES pumps(id);
+      ALTER TABLE fuel_logs ADD COLUMN IF NOT EXISTS equipment_id INTEGER REFERENCES equipment(id);
+      ALTER TABLE fuel_logs ADD COLUMN IF NOT EXISTS hour_meter_reading NUMERIC(10,2);
+      ALTER TABLE fuel_logs ALTER COLUMN truck_id DROP NOT NULL;
+    `);
+    log.push("Schema migration applied (fuel filling now covers any equipment — trucks, pumps, pickup vans, loaders, generators — with odometer or hour meter).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
@@ -285,6 +321,30 @@ router.get("/setup/reset-transactional-data", async (req, res) => {
       `<pre style="font-family: sans-serif; padding: 20px; color: #c0392b;">Something went wrong:\n${err.message}</pre>`
     );
   }
+});
+
+// One-time helper: generates a VAPID key pair for Web Push, so you don't need
+// to install anything locally or run a separate script to get one. Visit
+// this once, copy the two values into your backend's environment variables
+// as VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY, then redeploy — push
+// notifications won't work until both are set. Safe to revisit (generates a
+// fresh pair each time), but note that changing the keys after devices have
+// already subscribed invalidates their existing subscriptions — they'll need
+// to re-enable notifications once.
+router.get("/setup/generate-vapid-keys", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  const webpush = (await import("web-push")).default;
+  const keys = webpush.generateVAPIDKeys();
+  res.send(
+    `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
+    `Copy these into your backend service's environment variables on Render,\n` +
+    `then redeploy:\n\n` +
+    `VAPID_PUBLIC_KEY=${keys.publicKey}\n` +
+    `VAPID_PRIVATE_KEY=${keys.privateKey}\n\n` +
+    `Keep the private key secret (same care as JWT_SECRET/SETUP_SECRET).</pre>`
+  );
 });
 
 export default router;

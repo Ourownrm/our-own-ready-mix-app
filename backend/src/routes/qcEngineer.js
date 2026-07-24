@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { pushToRole } from "../lib/push.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("qc_engineer", "manager", "administrator"));
@@ -50,7 +51,19 @@ router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), 
 
 // Raw material stock — QC Engineer enters/updates daily. Shown read-only on
 // Manager and Administrator dashboards until QC updates it again.
+//
+// Protected by a shared PIN (RAW_MATERIAL_STOCK_PIN env var) so that on a
+// shared device/login, not just anyone who can open the QC screen can also
+// edit stock — only whoever knows the PIN. If the PIN isn't configured on
+// the server yet, saves are still allowed (so this doesn't break anything
+// for anyone who hasn't set it up), but nothing is actually protected until
+// you do — see README for how to set it.
 router.put("/raw-material-stock", requireRole("qc_engineer"), async (req, res) => {
+  const configuredPin = process.env.RAW_MATERIAL_STOCK_PIN;
+  if (configuredPin && req.body.pin !== configuredPin) {
+    return res.status(403).json({ error: "Incorrect PIN." });
+  }
+
   const updates = req.body.rows || [];
   for (const row of updates) {
     await query(
@@ -65,6 +78,59 @@ router.put("/raw-material-stock", requireRole("qc_engineer"), async (req, res) =
      ORDER BY s.id`
   );
   res.json(rows);
+});
+
+// Trucks that have been sitting at site more than 2 hours — same data Manager
+// sees on Active Trucks, so QC can proactively check on quality without
+// waiting to be told, and flag it back to Manager if something looks off.
+router.get("/delayed-trucks", async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.id AS ticket_id, dt.ticket_number, t.truck_number, u.name AS driver_name,
+            c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            rs.event_time AS reached_site_at,
+            EXTRACT(EPOCH FROM (now() - rs.event_time)) / 60 AS minutes_at_site,
+            EXISTS (
+              SELECT 1 FROM notifications n
+              WHERE n.ticket_id = dt.id AND n.type = 'qc_flagged_delay' AND n.is_read = false
+            ) AS already_flagged
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users u ON u.id = dt.driver_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     JOIN LATERAL (
+       SELECT event_time FROM trip_events
+       WHERE ticket_id = dt.id AND event_type = 'reached_site'
+       ORDER BY event_time DESC LIMIT 1
+     ) rs ON true
+     WHERE dt.ticket_date = CURRENT_DATE AND dt.status IN ('reached_site', 'unloading')
+       AND rs.event_time < now() - INTERVAL '2 hours'
+     ORDER BY rs.event_time`
+  );
+  res.json(rows);
+});
+
+// QC flags a delayed truck for Manager's attention — shows up directly on the
+// Manager Dashboard's Active Trucks table (as a badge on that row), not as a
+// separate notification inbox (the app doesn't have one yet).
+router.post("/delayed-trucks/:ticketId/flag", async (req, res) => {
+  await query(
+    `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+     VALUES ('manager', $1, 'qc_flagged_delay', 'QC Engineer flagged this delayed truck for review')`,
+    [req.params.ticketId]
+  );
+  const { rows } = await query(
+    `SELECT dt.ticket_number, t.truck_number FROM delivery_tickets dt JOIN trucks t ON t.id = dt.truck_id WHERE dt.id = $1`,
+    [req.params.ticketId]
+  );
+  await pushToRole("manager", {
+    title: "QC flagged a delayed truck",
+    body: rows[0] ? `${rows[0].ticket_number} — ${rows[0].truck_number}` : "A delayed truck was flagged",
+    url: "/manager",
+  });
+  res.json({ ok: true });
 });
 
 export default router;

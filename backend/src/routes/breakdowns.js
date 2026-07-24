@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { pushToRole } from "../lib/push.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -30,6 +31,23 @@ router.post(
        equipment_type === "plant" ? (equipment_label || "Batching plant") : null,
        req.user.id, location, latitude || null, longitude || null, remarks]
     );
+
+    let label = rows[0].equipment_label || "Batching plant";
+    if (equipment_type === "pump") {
+      const { rows: pumpRows } = await query("SELECT pump_code FROM pumps WHERE id = $1", [pump_id]);
+      label = pumpRows[0]?.pump_code || "A pump";
+    }
+    await query(
+      `INSERT INTO notifications (recipient_role, type, message)
+       VALUES ('manager', 'breakdown_reported', $1)`,
+      [`Breakdown reported: ${label}`]
+    );
+    await pushToRole("manager", {
+      title: `${equipment_type === "pump" ? "Pump" : "Plant"} breakdown reported`,
+      body: label,
+      url: "/manager",
+    });
+
     res.status(201).json(rows[0]);
   }
 );

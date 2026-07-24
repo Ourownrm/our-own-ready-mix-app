@@ -90,7 +90,20 @@ CREATE TABLE pumps (
 CREATE TABLE fuel_stations (
   id SERIAL PRIMARY KEY,
   name VARCHAR(150) NOT NULL,
-  location TEXT
+  location TEXT,
+  is_active BOOLEAN DEFAULT TRUE
+);
+
+-- Lightweight equipment — pickup vans, loaders, generators — anything that
+-- doesn't need its own specialized table the way trucks/pumps do, but still
+-- needs to be selectable when logging fuel.
+CREATE TYPE fuel_equipment_type AS ENUM ('truck', 'pump', 'pickup_van', 'loader', 'generator');
+
+CREATE TABLE equipment (
+  id SERIAL PRIMARY KEY,
+  equipment_type fuel_equipment_type NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  is_active BOOLEAN DEFAULT TRUE
 );
 
 CREATE TABLE rejection_reasons (
@@ -118,6 +131,17 @@ CREATE TABLE raw_material_stock (
   stock_qty NUMERIC(10,2) NOT NULL DEFAULT 0,
   updated_by INTEGER REFERENCES users(id),
   updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Web Push subscriptions — one row per device/browser a user has enabled
+-- notifications on (a user can have more than one, e.g. phone + desktop).
+CREATE TABLE push_subscriptions (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) NOT NULL,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Rate master for Accountant (rates, pumping charges, waiting charges per customer/grade)
@@ -288,15 +312,23 @@ CREATE TABLE pump_logs (
 
 -- ===================== FUEL MODULE (SRS §11) =====================
 
+-- One row per fuel filling, for any equipment — a truck, a pump, or (via the
+-- equipment table) a pickup van, loader, or generator. Exactly one of
+-- truck_id/pump_id/equipment_id is set, matching equipment_type. At least one
+-- of odometer_reading/hour_meter_reading is required (enforced in the API,
+-- not a DB constraint, to keep this easy to adjust later) — trucks and
+-- pickup vans run on odometer, pumps/loaders/generators run on hour meter.
 CREATE TABLE fuel_logs (
   id SERIAL PRIMARY KEY,
-  truck_id INTEGER REFERENCES trucks(id) NOT NULL,
+  equipment_type fuel_equipment_type NOT NULL,
+  truck_id INTEGER REFERENCES trucks(id),
+  pump_id INTEGER REFERENCES pumps(id),
+  equipment_id INTEGER REFERENCES equipment(id),
   odometer_reading NUMERIC(10,2),
-  fuel_quantity_litres NUMERIC(7,2),
+  hour_meter_reading NUMERIC(10,2),
+  fuel_quantity_litres NUMERIC(7,2) NOT NULL,
   fuel_cost NUMERIC(10,2),
   fuel_station_id INTEGER REFERENCES fuel_stations(id),
-  pump_fuel_litres NUMERIC(7,2),        -- fuel used by pump, if applicable
-  generator_fuel_litres NUMERIC(7,2),   -- fuel used by generator, if applicable
   logged_by INTEGER REFERENCES users(id),
   logged_at TIMESTAMPTZ DEFAULT now()
 );

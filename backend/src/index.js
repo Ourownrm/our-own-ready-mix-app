@@ -17,6 +17,9 @@ import setupRoutes from "./routes/setup.js";
 import breakdownRoutes from "./routes/breakdowns.js";
 import reportsRoutes from "./routes/reports.js";
 import productionReportRoutes from "./routes/productionReport.js";
+import pushRoutes from "./routes/push.js";
+import fuelRoutes from "./routes/fuel.js";
+import { checkDelayedTrucks } from "./lib/scheduledChecks.js";
 
 dotenv.config();
 
@@ -46,6 +49,8 @@ app.use("/api/master", masterDataRoutes);
 app.use("/api/breakdowns", breakdownRoutes);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/production-report", productionReportRoutes);
+app.use("/api/push", pushRoutes);
+app.use("/api/fuel", fuelRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff
@@ -56,3 +61,12 @@ app.use((err, req, res, next) => {
 
 const port = process.env.PORT || 4000;
 app.listen(port, () => console.log(`OORM backend running on port ${port}`));
+
+// The "truck over 2 hours at site" push is the one notification not tied to
+// a specific user action, so it runs on a timer instead — checked every 5
+// minutes. (This only works while the server process stays running, which
+// is how Render's web service tier behaves — not applicable if this were
+// ever moved to a serverless/cold-start hosting model.)
+setInterval(() => {
+  checkDelayedTrucks().catch((err) => console.error("Delayed-trucks check failed:", err));
+}, 5 * 60 * 1000);

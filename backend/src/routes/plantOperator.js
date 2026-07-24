@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { syncOrderCompletionStatus } from "../lib/deliveryConfirmation.js";
+import { pushToUser } from "../lib/push.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("plant_operator", "manager", "administrator"));
@@ -68,6 +69,30 @@ router.post("/tickets", requireRole("plant_operator", "administrator"), async (r
         [order_id]
       );
       await syncOrderCompletionStatus(order_id);
+
+      // Notify the Site Supervisor actually assigned to this order — a truck
+      // is now loaded and headed their way. Nothing to notify if the site
+      // has no supervisor assigned (small sites, per business need).
+      const { rows: siteInfo } = await query(
+        `SELECT co.assigned_site_supervisor_id, s.name AS site_name, t.truck_number
+         FROM customer_orders co
+         JOIN sites s ON s.id = co.site_id
+         JOIN trucks t ON t.id = $2
+         WHERE co.id = $1`,
+        [order_id, truck_id]
+      );
+      if (siteInfo[0]?.assigned_site_supervisor_id) {
+        await query(
+          `INSERT INTO notifications (recipient_role, recipient_id, ticket_id, type, message)
+           VALUES ('site_supervisor', $1, $2, 'delivery_note_created', $3)`,
+          [siteInfo[0].assigned_site_supervisor_id, rows[0].id, `Delivery note ${ticketNumber} created for ${siteInfo[0].site_name}`]
+        );
+        await pushToUser(siteInfo[0].assigned_site_supervisor_id, {
+          title: "Truck loaded and on the way",
+          body: `${ticketNumber} — ${siteInfo[0].truck_number} — ${siteInfo[0].site_name}`,
+          url: "/site-supervisor",
+        });
+      }
 
       return res.status(201).json(rows[0]);
     } catch (err) {
