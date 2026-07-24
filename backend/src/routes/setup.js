@@ -248,6 +248,42 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (sales module — sales_executive role, leads, bookings, after-sales feedback).");
 
+    // Richer lead activity tracking: quotation issue/follow-up/revision,
+    // meetings, site visits — each optionally geotagged when the salesperson
+    // confirms they're actually at site — plus quick quotation-status fields
+    // on the lead itself for fast list display.
+    await pool.query(`
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS quotation_issued BOOLEAN DEFAULT false;
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS latest_quotation_amount NUMERIC(10,2);
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS activity_type VARCHAR(30) NOT NULL DEFAULT 'note';
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS quotation_amount NUMERIC(10,2);
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS revision_reason TEXT;
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS persons_met TEXT;
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS at_site BOOLEAN;
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS latitude NUMERIC(10,7);
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS longitude NUMERIC(10,7);
+    `);
+    log.push("Schema migration applied (lead activity log now covers quotations, meetings, site visits, and location — Sales Executives can also self-add leads).");
+
+    // Customer visit reporting — separate from lead activity, since this is
+    // for existing customers rather than prospects.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS customer_visits (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        visited_by INTEGER REFERENCES users(id) NOT NULL,
+        visit_date DATE NOT NULL,
+        visit_time TIME,
+        contact_person VARCHAR(150),
+        discussion_outcome TEXT NOT NULL,
+        at_site BOOLEAN,
+        latitude NUMERIC(10,7),
+        longitude NUMERIC(10,7),
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (customer visit reporting for Sales Executives).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

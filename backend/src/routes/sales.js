@@ -35,6 +35,20 @@ router.post("/leads", requireRole("manager", "administrator"), async (req, res) 
   res.status(201).json(rows[0]);
 });
 
+// A Sales Executive adding their own lead, not one assigned by Admin/Manager —
+// auto-assigned and attributed to themselves.
+router.post("/leads/self", requireRole("sales_executive"), async (req, res) => {
+  const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3 } = req.body;
+  if (!prospect_name) return res.status(400).json({ error: "Prospect name is required." });
+  const { rows } = await query(
+    `INSERT INTO leads (prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$7) RETURNING *`,
+    [prospect_name, contact_person || null, contact_phone || null, site_location || null,
+     mix_grade_interest || null, estimated_qty_m3 || null, req.user.id]
+  );
+  res.status(201).json(rows[0]);
+});
+
 router.get("/leads", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
   const own = req.user.role === "sales_executive";
   const { rows } = await query(
@@ -66,17 +80,38 @@ router.get("/leads/:id", requireRole("sales_executive", "manager", "administrato
   res.json({ ...rows[0], followups });
 });
 
+const ACTIVITY_TYPES = ["note", "quotation_issued", "quotation_followup", "quotation_revised", "meeting", "site_visit"];
+
 router.post("/leads/:id/followup", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
-  const { note } = req.body;
-  if (!note) return res.status(400).json({ error: "Enter a follow-up note." });
+  const {
+    note, activity_type, quotation_amount, revision_reason, persons_met,
+    at_site, latitude, longitude,
+  } = req.body;
+  if (!note) return res.status(400).json({ error: "Enter a note describing this update." });
+  const type = ACTIVITY_TYPES.includes(activity_type) ? activity_type : "note";
+  if (typeof at_site !== "boolean") {
+    return res.status(400).json({ error: "Let us know whether you're at site for this update." });
+  }
+
   await query(
-    "INSERT INTO lead_followups (lead_id, note, created_by) VALUES ($1,$2,$3)",
-    [req.params.id, note, req.user.id]
+    `INSERT INTO lead_followups
+     (lead_id, activity_type, note, quotation_amount, revision_reason, persons_met, at_site, latitude, longitude, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [req.params.id, type, note, quotation_amount || null, revision_reason || null, persons_met || null,
+     at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null, req.user.id]
   );
-  await query(
-    "UPDATE leads SET status = CASE WHEN status = 'new' THEN 'contacted' ELSE status END, updated_at = now() WHERE id = $1",
-    [req.params.id]
-  );
+
+  const statusBump = type === "note" ? "CASE WHEN status = 'new' THEN 'contacted' ELSE status END" : "status";
+  if (type === "quotation_issued" || type === "quotation_revised") {
+    await query(
+      `UPDATE leads SET status = ${statusBump}, quotation_issued = true,
+         latest_quotation_amount = COALESCE($1, latest_quotation_amount), updated_at = now()
+       WHERE id = $2`,
+      [quotation_amount || null, req.params.id]
+    );
+  } else {
+    await query(`UPDATE leads SET status = ${statusBump}, updated_at = now() WHERE id = $1`, [req.params.id]);
+  }
   res.json({ ok: true });
 });
 
@@ -236,15 +271,51 @@ router.get("/feedback", requireRole("sales_executive", "manager", "administrator
   res.json(rows);
 });
 
+// ===================== CUSTOMER VISITS =====================
+
+router.post("/visits", requireRole("sales_executive"), async (req, res) => {
+  const { customer_id, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude } = req.body;
+  if (!customer_id || !visit_date || !discussion_outcome) {
+    return res.status(400).json({ error: "Customer, visit date, and discussion outcome are required." });
+  }
+  if (typeof at_site !== "boolean") {
+    return res.status(400).json({ error: "Let us know whether you're at site for this visit." });
+  }
+  const { rows } = await query(
+    `INSERT INTO customer_visits (customer_id, visited_by, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [customer_id, req.user.id, visit_date, visit_time || null, contact_person || null, discussion_outcome,
+     at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// Sales Executive sees their own visits; Manager/Administrator see everyone's
+// (this is the report that shows on Admin's Sales Performance dashboard).
+router.get("/visits", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+  const own = req.user.role === "sales_executive";
+  const { rows } = await query(
+    `SELECT cv.*, c.name AS customer_name, u.name AS visited_by_name
+     FROM customer_visits cv
+     JOIN customers c ON c.id = cv.customer_id
+     JOIN users u ON u.id = cv.visited_by
+     ${own ? "WHERE cv.visited_by = $1" : ""}
+     ORDER BY cv.visit_date DESC, cv.created_at DESC
+     LIMIT 200`,
+    own ? [req.user.id] : []
+  );
+  res.json(rows);
+});
+
 // ===================== SALES EXECUTIVE'S OWN DASHBOARD =====================
 
 router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => {
   const spId = await mySalespersonId(req.user.id);
   if (!spId) {
-    return res.json({ customers: [], orders_month_qty: 0, orders_month_value: 0, outstanding: 0, lead_counts: {} });
+    return res.json({ customers: [], orders_month_qty: 0, orders_month_value: 0, outstanding: 0, outstanding_by_customer: [], lead_counts: {} });
   }
 
-  const [customers, ordersMonth, outstanding, leadCounts] = await Promise.all([
+  const [customers, ordersMonth, outstanding, outstandingByCustomer, leadCounts] = await Promise.all([
     query(
       `SELECT DISTINCT c.id, c.name FROM customer_orders co
        JOIN customers c ON c.id = co.customer_id
@@ -269,6 +340,20 @@ router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => 
       [spId]
     ),
     query(
+      `SELECT c.name AS customer_name,
+              COALESCE(SUM(i.total_amount), 0) - COALESCE(SUM(p.paid), 0) AS outstanding
+       FROM invoices i
+       JOIN delivery_tickets dt ON dt.id = i.ticket_id
+       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN customers c ON c.id = co.customer_id
+       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
+       WHERE co.sales_representative_id = $1
+       GROUP BY c.name
+       HAVING COALESCE(SUM(i.total_amount), 0) - COALESCE(SUM(p.paid), 0) > 0.01
+       ORDER BY outstanding DESC`,
+      [spId]
+    ),
+    query(
       `SELECT status, COUNT(*) AS count FROM leads WHERE assigned_to = $1 GROUP BY status`,
       [req.user.id]
     ),
@@ -279,6 +364,7 @@ router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => 
     orders_month_qty: ordersMonth.rows[0].qty,
     orders_month_value: ordersMonth.rows[0].value,
     outstanding: outstanding.rows[0].total,
+    outstanding_by_customer: outstandingByCustomer.rows,
     lead_counts: Object.fromEntries(leadCounts.rows.map((r) => [r.status, Number(r.count)])),
   });
 });
@@ -287,13 +373,17 @@ router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => 
 
 router.get("/performance", requireRole("administrator"), async (req, res) => {
   const { rows } = await query(
-    `SELECT sp.id AS salesperson_id, sp.name,
+    `SELECT sp.id AS salesperson_id, sp.name, sp.user_id,
             COALESCE(month_stats.qty, 0) AS orders_month_qty,
             COALESCE(month_stats.value, 0) AS orders_month_value,
             COALESCE(outstanding_stats.total, 0) AS outstanding,
             COALESCE(lead_stats.total_leads, 0) AS total_leads,
             COALESCE(lead_stats.won_leads, 0) AS won_leads,
-            COALESCE(lead_stats.lost_leads, 0) AS lost_leads
+            COALESCE(lead_stats.lost_leads, 0) AS lost_leads,
+            COALESCE(activity_stats.quotations, 0) AS quotations_this_month,
+            COALESCE(activity_stats.meetings, 0) AS meetings_this_month,
+            COALESCE(activity_stats.site_visits, 0) AS site_visits_this_month,
+            COALESCE(visit_stats.visits, 0) AS customer_visits_this_month
      FROM salespersons sp
      LEFT JOIN LATERAL (
        SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) AS qty, COALESCE(SUM(i.total_amount), 0) AS value
@@ -316,6 +406,19 @@ router.get("/performance", requireRole("administrator"), async (req, res) => {
               COUNT(*) FILTER (WHERE status = 'lost') AS lost_leads
        FROM leads WHERE assigned_to = sp.user_id
      ) lead_stats ON true
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) FILTER (WHERE lf.activity_type IN ('quotation_issued', 'quotation_revised')) AS quotations,
+              COUNT(*) FILTER (WHERE lf.activity_type = 'meeting') AS meetings,
+              COUNT(*) FILTER (WHERE lf.activity_type = 'site_visit') AS site_visits
+       FROM lead_followups lf
+       JOIN leads l ON l.id = lf.lead_id
+       WHERE l.assigned_to = sp.user_id AND date_trunc('month', lf.created_at) = date_trunc('month', CURRENT_DATE)
+     ) activity_stats ON true
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) AS visits
+       FROM customer_visits cv
+       WHERE cv.visited_by = sp.user_id AND date_trunc('month', cv.visit_date) = date_trunc('month', CURRENT_DATE)
+     ) visit_stats ON true
      WHERE sp.is_active
      ORDER BY orders_month_value DESC`
   );

@@ -156,6 +156,7 @@ export default function ManagerDashboard() {
           <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
           <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
           <button onClick={() => setView("leads")}>Assign a lead</button>
+          <Link to="/leads"><button type="button">Browse leads</button></Link>
           <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
           <Link to="/fuel"><button type="button">Fuel filling</button></Link>
         </div>

@@ -618,3 +618,28 @@ later if useful (a `sales_targets` table plus a comparison column).
 ### Migration note
 Revisit `/setup?key=...` once after deploying — adds the `sales_executive` role and the
 `leads`, `lead_followups`, `bookings`, `aftersales_feedback` tables.
+
+## Seventeenth round — sales module expansion
+
+1. **Sales Executives can add their own leads** ("+ New lead" on the Leads tab), not
+   just receive assigned ones. Lead updates are now a full activity log, not just a
+   note: **general note, quotation issued, quotation follow-up, quotation revised
+   (with a required reason), meeting (with persons met), or site visit** — each shown
+   to Admin in full via a new **"Browse all leads"** page (Administrator and Manager
+   both, linked from Manager Dashboard and the Sales Performance page), where Admin is
+   also where "mark won" and the salesperson/company attribution decision live. The
+   Sales Performance dashboard now also shows quotations/meetings/site-visits counted
+   this month, per salesperson.
+2. **Sales Executive now sees customer-wise outstanding**, not just one combined total
+   — a table on their dashboard, one row per customer.
+3. **Location capture on every lead update and every customer visit.** Every time a
+   Sales Executive logs an update, they're asked "Are you at site?" — Yes captures GPS
+   (via the browser's location permission) and shows it to Admin as a map link; No
+   records "not updated from site," exactly as specified. Same prompt on the new
+   **customer visit** feature (separate from leads — this is for existing customers):
+   date, time, customer, contact person, discussion outcome, and location, all shown
+   as a report on Admin's Sales Performance page.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds `customer_visits`, and extends
+`leads`/`lead_followups` with the new quotation and activity-type columns.

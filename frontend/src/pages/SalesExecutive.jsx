@@ -9,6 +9,46 @@ const LEAD_STATUS_BADGE = {
 const BOOKING_STATUS_BADGE = {
   pending: "badge-warning", converted: "badge-success", declined: "badge-danger",
 };
+const ACTIVITY_LABEL = {
+  note: "Note", quotation_issued: "Quotation issued", quotation_followup: "Quotation follow-up",
+  quotation_revised: "Quotation revised", meeting: "Meeting", site_visit: "Site visit",
+};
+
+// Shared "are you at site?" control — captures GPS if yes, records
+// "not updated from site" if no. Used by both lead updates and customer visits.
+function AtSitePrompt({ atSite, setAtSite, coords, setCoords }) {
+  const [locating, setLocating] = useState(false);
+  const [locError, setLocError] = useState("");
+
+  function chooseYes() {
+    setAtSite(true);
+    setLocating(true); setLocError("");
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => { setCoords({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); setLocating(false); },
+      () => { setLocError("Couldn't get your location — check location permission."); setLocating(false); },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
+  function chooseNo() {
+    setAtSite(false);
+    setCoords(null);
+    setLocError("");
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Are you at site?</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" onClick={chooseYes} style={atSite === true ? { border: "1px solid var(--rebar)", fontWeight: 600 } : undefined}>Yes</button>
+        <button type="button" onClick={chooseNo} style={atSite === false ? { border: "1px solid var(--rebar)", fontWeight: 600 } : undefined}>No</button>
+      </div>
+      {atSite === true && locating && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>Capturing your location...</div>}
+      {atSite === true && !locating && coords && <div style={{ fontSize: 11, color: "var(--signal-green)", marginTop: 4 }}>Location captured.</div>}
+      {atSite === true && !locating && locError && <div style={{ fontSize: 11, color: "var(--alert-red)", marginTop: 4 }}>{locError}</div>}
+      {atSite === false && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>Will be recorded as "not updated from site."</div>}
+    </div>
+  );
+}
 
 export default function SalesExecutive() {
   const [view, setView] = useState("dashboard");
@@ -17,17 +57,19 @@ export default function SalesExecutive() {
   const [leads, setLeads] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [feedback, setFeedback] = useState([]);
+  const [visits, setVisits] = useState([]);
   const [error, setError] = useState("");
 
   async function loadAll() {
     try {
-      const [d, l, b, f] = await Promise.all([
+      const [d, l, b, f, v] = await Promise.all([
         apiRequest("/sales/my-dashboard"),
         apiRequest("/sales/leads"),
         apiRequest("/sales/bookings"),
         apiRequest("/sales/feedback"),
+        apiRequest("/sales/visits"),
       ]);
-      setDashboard(d); setLeads(l); setBookings(b); setFeedback(f);
+      setDashboard(d); setLeads(l); setBookings(b); setFeedback(f); setVisits(v);
     } catch (err) {
       setError(err.message);
     }
@@ -42,11 +84,17 @@ export default function SalesExecutive() {
       />
     );
   }
+  if (view === "new-lead") {
+    return <NewLeadForm onDone={() => { setView("leads"); loadAll(); }} onCancel={() => setView("leads")} />;
+  }
   if (view === "new-booking") {
     return <NewBookingForm onDone={() => { setView("bookings"); loadAll(); }} onCancel={() => setView("bookings")} />;
   }
   if (view === "new-feedback") {
     return <NewFeedbackForm onDone={() => { setView("feedback"); loadAll(); }} onCancel={() => setView("feedback")} />;
+  }
+  if (view === "new-visit") {
+    return <NewVisitForm onDone={() => { setView("visits"); loadAll(); }} onCancel={() => setView("visits")} />;
   }
 
   return (
@@ -56,7 +104,7 @@ export default function SalesExecutive() {
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-          {[["dashboard", "Dashboard"], ["leads", "My leads"], ["bookings", "Bookings"], ["feedback", "Feedback"]].map(([key, label]) => (
+          {[["dashboard", "Dashboard"], ["leads", "My leads"], ["bookings", "Bookings"], ["visits", "Visits"], ["feedback", "Feedback"]].map(([key, label]) => (
             <button
               key={key}
               className={`btn-tab ${view === key ? "active" : ""}`}
@@ -69,10 +117,13 @@ export default function SalesExecutive() {
 
         {view === "dashboard" && <Dashboard data={dashboard} />}
         {view === "leads" && (
-          <LeadsList leads={leads} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} />
+          <LeadsList leads={leads} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
         )}
         {view === "bookings" && (
           <BookingsList bookings={bookings} onNew={() => setView("new-booking")} />
+        )}
+        {view === "visits" && (
+          <VisitsList visits={visits} onNew={() => setView("new-visit")} />
         )}
         {view === "feedback" && (
           <FeedbackList feedback={feedback} onNew={() => setView("new-feedback")} />
@@ -102,12 +153,19 @@ function Dashboard({ data }) {
         </div>
       </div>
       <div className="card">
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>My customers</div>
-        {data.customers.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--slate)" }}>No orders on file under your name yet.</div>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Outstanding by customer</div>
+        {(!data.outstanding_by_customer || data.outstanding_by_customer.length === 0) ? (
+          <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing outstanding under your customers.</div>
         ) : (
-          <div style={{ fontSize: 13, display: "flex", flexDirection: "column", gap: 4 }}>
-            {data.customers.map((c) => <div key={c.id}>{c.name}</div>)}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ fontSize: 13 }}>
+              <thead><tr><th>Customer</th><th>Outstanding</th></tr></thead>
+              <tbody>
+                {data.outstanding_by_customer.map((c, i) => (
+                  <tr key={i}><td>{c.customer_name}</td><td>{inr(c.outstanding)}</td></tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -115,12 +173,15 @@ function Dashboard({ data }) {
   );
 }
 
-function LeadsList({ leads, onOpen }) {
+function LeadsList({ leads, onOpen, onNew }) {
   return (
     <div className="card">
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>My leads</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>My leads</div>
+        <button onClick={onNew} style={{ fontSize: 12, padding: "5px 10px" }}>+ New lead</button>
+      </div>
       {leads.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>No leads assigned yet.</div>
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No leads yet.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {leads.map((l) => (
@@ -131,6 +192,7 @@ function LeadsList({ leads, onOpen }) {
               </div>
               {l.contact_phone && <div style={{ color: "var(--slate)" }}>{l.contact_phone}</div>}
               {l.site_location && <div style={{ color: "var(--slate)" }}>{l.site_location}</div>}
+              {l.quotation_issued && <div style={{ color: "var(--slate)" }}>Quoted ₹{l.latest_quotation_amount}</div>}
             </div>
           ))}
         </div>
@@ -139,9 +201,56 @@ function LeadsList({ leads, onOpen }) {
   );
 }
 
+function NewLeadForm({ onDone, onCancel }) {
+  const [form, setForm] = useState({ prospect_name: "", contact_person: "", contact_phone: "", site_location: "", mix_grade_interest: "", estimated_qty_m3: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(""); setSaving(true);
+    try {
+      await apiRequest("/sales/leads/self", { method: "POST", body: form });
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <TopBar title="Sales Executive · New lead" />
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+        <button onClick={onCancel} style={{ marginBottom: 16 }}>← Back</button>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>Add a lead</div>
+          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            <div><div style={{ color: "var(--slate)" }}>Prospect name</div><input value={form.prospect_name} onChange={(e) => setForm({ ...form, prospect_name: e.target.value })} required /></div>
+            <div><div style={{ color: "var(--slate)" }}>Contact person</div><input value={form.contact_person} onChange={(e) => setForm({ ...form, contact_person: e.target.value })} /></div>
+            <div><div style={{ color: "var(--slate)" }}>Contact phone</div><input value={form.contact_phone} onChange={(e) => setForm({ ...form, contact_phone: e.target.value })} /></div>
+            <div><div style={{ color: "var(--slate)" }}>Site / location</div><input value={form.site_location} onChange={(e) => setForm({ ...form, site_location: e.target.value })} /></div>
+            <div><div style={{ color: "var(--slate)" }}>Grade interested in</div><input value={form.mix_grade_interest} onChange={(e) => setForm({ ...form, mix_grade_interest: e.target.value })} placeholder="e.g. M25" /></div>
+            <div><div style={{ color: "var(--slate)" }}>Estimated qty (m³)</div><input type="number" value={form.estimated_qty_m3} onChange={(e) => setForm({ ...form, estimated_qty_m3: e.target.value })} /></div>
+            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+            <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add lead"}</button>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function LeadDetail({ leadId, onBack }) {
   const [lead, setLead] = useState(null);
+  const [activityType, setActivityType] = useState("note");
   const [note, setNote] = useState("");
+  const [quotationAmount, setQuotationAmount] = useState("");
+  const [revisionReason, setRevisionReason] = useState("");
+  const [personsMet, setPersonsMet] = useState("");
+  const [atSite, setAtSite] = useState(null);
+  const [coords, setCoords] = useState(null);
   const [lostReason, setLostReason] = useState("");
   const [showLost, setShowLost] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -156,12 +265,23 @@ function LeadDetail({ leadId, onBack }) {
   }
   useEffect(() => { load(); }, [leadId]);
 
-  async function addFollowup() {
-    if (!note) return;
+  async function addUpdate() {
+    if (!note) return setError("Enter a note.");
+    if (atSite === null) return setError("Let us know whether you're at site.");
     setSaving(true); setError("");
     try {
-      await apiRequest(`/sales/leads/${leadId}/followup`, { method: "POST", body: { note } });
-      setNote("");
+      await apiRequest(`/sales/leads/${leadId}/followup`, {
+        method: "POST",
+        body: {
+          activity_type: activityType, note,
+          quotation_amount: quotationAmount || null,
+          revision_reason: revisionReason || null,
+          persons_met: personsMet || null,
+          at_site: atSite,
+          latitude: coords?.latitude, longitude: coords?.longitude,
+        },
+      });
+      setNote(""); setQuotationAmount(""); setRevisionReason(""); setPersonsMet(""); setAtSite(null); setCoords(null); setActivityType("note");
       load();
     } catch (err) {
       setError(err.message);
@@ -212,36 +332,76 @@ function LeadDetail({ leadId, onBack }) {
             {lead.site_location && <div>Location: {lead.site_location}</div>}
             {lead.mix_grade_interest && <div>Interested in: {lead.mix_grade_interest}</div>}
             {lead.estimated_qty_m3 && <div>Estimated quantity: {lead.estimated_qty_m3} m³</div>}
+            {lead.quotation_issued && <div>Latest quotation: ₹{lead.latest_quotation_amount}</div>}
             {lead.status === "lost" && lead.lost_reason && <div style={{ color: "var(--alert-red)", marginTop: 6 }}>Lost — {lead.lost_reason}</div>}
           </div>
         </div>
 
         {!["won", "lost"].includes(lead.status) && (
           <div className="card" style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Add follow-up</div>
-            <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Visited site, discussed quantity and timeline" style={{ width: "100%", marginBottom: 8 }} />
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={addFollowup} disabled={saving} style={{ flex: 1 }}>{saving ? "Saving..." : "Save follow-up"}</button>
-              <button className="btn-danger" style={{ flex: 1 }} onClick={() => setShowLost(!showLost)}>Mark lost</button>
-            </div>
-            {showLost && (
-              <div style={{ marginTop: 10 }}>
-                <input type="text" value={lostReason} onChange={(e) => setLostReason(e.target.value)} placeholder="Reason — price, timeline, went with competitor..." style={{ width: "100%", marginBottom: 8 }} />
-                <button className="btn-danger" onClick={markLost} disabled={saving} style={{ width: "100%" }}>Confirm lost</button>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Add an update</div>
+            <div className="field-input" style={{ fontSize: 13 }}>
+              <div style={{ color: "var(--slate)", marginBottom: 4 }}>Type</div>
+              <select value={activityType} onChange={(e) => setActivityType(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
+                <option value="note">General note</option>
+                <option value="quotation_issued">Quotation issued</option>
+                <option value="quotation_followup">Quotation follow-up</option>
+                <option value="quotation_revised">Quotation revised</option>
+                <option value="meeting">Meeting</option>
+                <option value="site_visit">Site visit</option>
+              </select>
+
+              {(activityType === "quotation_issued" || activityType === "quotation_revised") && (
+                <>
+                  <div style={{ color: "var(--slate)", marginBottom: 4 }}>Quotation amount (₹)</div>
+                  <input type="number" value={quotationAmount} onChange={(e) => setQuotationAmount(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+                </>
+              )}
+              {activityType === "quotation_revised" && (
+                <>
+                  <div style={{ color: "var(--slate)", marginBottom: 4 }}>Reason for revision</div>
+                  <input value={revisionReason} onChange={(e) => setRevisionReason(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+                </>
+              )}
+              {activityType === "meeting" && (
+                <>
+                  <div style={{ color: "var(--slate)", marginBottom: 4 }}>Persons met</div>
+                  <input value={personsMet} onChange={(e) => setPersonsMet(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+                </>
+              )}
+
+              <div style={{ color: "var(--slate)", marginBottom: 4 }}>Notes</div>
+              <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+              <AtSitePrompt atSite={atSite} setAtSite={setAtSite} coords={coords} setCoords={setCoords} />
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={addUpdate} disabled={saving} style={{ flex: 1 }}>{saving ? "Saving..." : "Save update"}</button>
+                <button className="btn-danger" style={{ flex: 1 }} onClick={() => setShowLost(!showLost)}>Mark lost</button>
               </div>
-            )}
+              {showLost && (
+                <div style={{ marginTop: 10 }}>
+                  <input type="text" value={lostReason} onChange={(e) => setLostReason(e.target.value)} placeholder="Reason — price, timeline, went with competitor..." style={{ width: "100%", marginBottom: 8 }} />
+                  <button className="btn-danger" onClick={markLost} disabled={saving} style={{ width: "100%" }}>Confirm lost</button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
         <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Follow-up history</div>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Activity history</div>
           {(!lead.followups || lead.followups.length === 0) ? (
-            <div style={{ fontSize: 13, color: "var(--slate)" }}>No follow-ups yet.</div>
+            <div style={{ fontSize: 13, color: "var(--slate)" }}>No updates yet.</div>
           ) : (
             lead.followups.map((f) => (
               <div key={f.id} style={{ fontSize: 12, padding: "6px 0", borderBottom: "1px solid var(--concrete)" }}>
-                <span style={{ color: "var(--slate)" }}>{new Date(f.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })} — </span>
-                {f.note}
+                <div style={{ fontWeight: 600 }}>{ACTIVITY_LABEL[f.activity_type] || "Note"}</div>
+                <div>{f.note}</div>
+                <div style={{ color: "var(--slate)" }}>
+                  {new Date(f.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })}
+                  {" · "}{f.at_site === false ? "Not updated from site" : f.at_site ? "At site" : ""}
+                </div>
               </div>
             ))
           )}
@@ -355,6 +515,104 @@ function NewBookingForm({ onDone, onCancel }) {
             <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center" }}>
               Manager confirms site readiness and payment terms before converting this to an order.
             </div>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function VisitsList({ visits, onNew }) {
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Customer visits</div>
+        <button onClick={onNew} style={{ fontSize: 12, padding: "5px 10px" }}>+ Report visit</button>
+      </div>
+      {visits.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No visits reported yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {visits.map((v) => (
+            <div key={v.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
+              <div style={{ fontWeight: 600 }}>{v.customer_name}</div>
+              <div style={{ color: "var(--slate)" }}>
+                {new Date(v.visit_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}
+                {v.visit_time ? ` · ${v.visit_time.slice(0, 5)}` : ""}
+                {v.contact_person ? ` · ${v.contact_person}` : ""}
+              </div>
+              <div>{v.discussion_outcome}</div>
+              <div style={{ color: "var(--slate)", fontSize: 11 }}>{v.at_site === false ? "Not updated from site" : v.at_site ? "At site" : ""}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NewVisitForm({ onDone, onCancel }) {
+  const [customers, setCustomers] = useState([]);
+  const [customerId, setCustomerId] = useState("");
+  const [visitDate, setVisitDate] = useState(new Date().toISOString().slice(0, 10));
+  const [visitTime, setVisitTime] = useState("");
+  const [contactPerson, setContactPerson] = useState("");
+  const [outcome, setOutcome] = useState("");
+  const [atSite, setAtSite] = useState(null);
+  const [coords, setCoords] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest("/master/customers").then(setCustomers).catch((err) => setError(err.message));
+  }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (atSite === null) return setError("Let us know whether you're at site.");
+    setSaving(true);
+    try {
+      await apiRequest("/sales/visits", {
+        method: "POST",
+        body: {
+          customer_id: customerId, visit_date: visitDate, visit_time: visitTime || null,
+          contact_person: contactPerson || null, discussion_outcome: outcome,
+          at_site: atSite, latitude: coords?.latitude, longitude: coords?.longitude,
+        },
+      });
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <TopBar title="Sales Executive · Report visit" />
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+        <button onClick={onCancel} style={{ marginBottom: 16 }}>← Back</button>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>Report a customer visit</div>
+          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Customer</div>
+              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} required>
+                <option value="">Select</option>
+                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div><div style={{ color: "var(--slate)" }}>Date</div><input type="date" value={visitDate} onChange={(e) => setVisitDate(e.target.value)} required /></div>
+              <div><div style={{ color: "var(--slate)" }}>Time</div><input type="time" value={visitTime} onChange={(e) => setVisitTime(e.target.value)} /></div>
+            </div>
+            <div><div style={{ color: "var(--slate)" }}>Contact person</div><input value={contactPerson} onChange={(e) => setContactPerson(e.target.value)} /></div>
+            <div><div style={{ color: "var(--slate)" }}>Discussion outcome</div><textarea rows={3} value={outcome} onChange={(e) => setOutcome(e.target.value)} required /></div>
+            <AtSitePrompt atSite={atSite} setAtSite={setAtSite} coords={coords} setCoords={setCoords} />
+            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+            <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save visit"}</button>
           </form>
         </div>
       </div>

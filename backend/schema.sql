@@ -145,14 +145,29 @@ CREATE TABLE leads (
   won_customer_id INTEGER REFERENCES customers(id),
   won_order_id INTEGER REFERENCES customer_orders(id),
   lost_reason TEXT,
+  quotation_issued BOOLEAN DEFAULT false,
+  latest_quotation_amount NUMERIC(10,2),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Every update a Sales Executive logs against a lead — a general note,
+-- issuing/revising a quotation, a meeting, or a site visit — all go through
+-- this one activity log so Admin (their reporting authority) sees the full
+-- trail in one place. Every entry captures whether they were actually at
+-- site when logging it, and their GPS location if so.
 CREATE TABLE lead_followups (
   id SERIAL PRIMARY KEY,
   lead_id INTEGER REFERENCES leads(id) NOT NULL,
+  activity_type VARCHAR(30) NOT NULL DEFAULT 'note',
+  -- 'note', 'quotation_issued', 'quotation_followup', 'quotation_revised', 'meeting', 'site_visit'
   note TEXT NOT NULL,
+  quotation_amount NUMERIC(10,2),
+  revision_reason TEXT,
+  persons_met TEXT,
+  at_site BOOLEAN,
+  latitude NUMERIC(10,7),
+  longitude NUMERIC(10,7),
   created_by INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -186,6 +201,24 @@ CREATE TABLE aftersales_feedback (
   feedback_type feedback_type NOT NULL,
   comment TEXT NOT NULL,
   recorded_by INTEGER REFERENCES users(id) NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- A Sales Executive's logged visit to an existing customer — distinct from
+-- lead activity (leads are prospects; this is relationship upkeep with
+-- customers already on the books). Shows up as a report on Admin's Sales
+-- Performance dashboard.
+CREATE TABLE customer_visits (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  visited_by INTEGER REFERENCES users(id) NOT NULL,
+  visit_date DATE NOT NULL,
+  visit_time TIME,
+  contact_person VARCHAR(150),
+  discussion_outcome TEXT NOT NULL,
+  at_site BOOLEAN,
+  latitude NUMERIC(10,7),
+  longitude NUMERIC(10,7),
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
