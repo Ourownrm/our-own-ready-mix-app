@@ -3,7 +3,7 @@
 
 CREATE TYPE user_role AS ENUM (
   'administrator', 'manager', 'plant_operator', 'qc_engineer',
-  'driver', 'site_supervisor', 'accountant'
+  'driver', 'site_supervisor', 'accountant', 'sales_executive'
 );
 
 CREATE TYPE order_status AS ENUM (
@@ -113,10 +113,80 @@ CREATE TABLE rejection_reasons (
 
 -- Salesmen, as a controlled list — orders reference this instead of a free-text
 -- name, so a typo doesn't silently create a second "salesman" in reports.
+-- user_id links this entry to an actual Sales Executive login, once they have
+-- one — kept nullable so existing orders/reports built on the old name-only
+-- list keep working exactly as before for anyone without a real account.
 CREATE TABLE salespersons (
   id SERIAL PRIMARY KEY,
   name VARCHAR(150) NOT NULL UNIQUE,
-  is_active BOOLEAN DEFAULT TRUE
+  is_active BOOLEAN DEFAULT TRUE,
+  user_id INTEGER REFERENCES users(id)
+);
+
+-- ===================== SALES MODULE =====================
+
+CREATE TYPE lead_status AS ENUM ('new', 'contacted', 'quoted', 'won', 'lost');
+-- Set only when a lead is won — Admin decides whether the resulting sale
+-- counts as this salesperson's own, or goes to the company directly.
+CREATE TYPE lead_attribution AS ENUM ('salesperson', 'company');
+
+CREATE TABLE leads (
+  id SERIAL PRIMARY KEY,
+  prospect_name VARCHAR(150) NOT NULL,
+  contact_person VARCHAR(150),
+  contact_phone VARCHAR(20),
+  site_location TEXT,
+  mix_grade_interest VARCHAR(50),
+  estimated_qty_m3 NUMERIC(8,2),
+  assigned_to INTEGER REFERENCES users(id),
+  created_by INTEGER REFERENCES users(id),
+  status lead_status DEFAULT 'new',
+  attribution lead_attribution,
+  won_customer_id INTEGER REFERENCES customers(id),
+  won_order_id INTEGER REFERENCES customer_orders(id),
+  lost_reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE lead_followups (
+  id SERIAL PRIMARY KEY,
+  lead_id INTEGER REFERENCES leads(id) NOT NULL,
+  note TEXT NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- A booking is a lighter-weight commitment than a real order — a Sales
+-- Executive places one, and it sits pending until Manager confirms site
+-- readiness and payment terms, then converts it into a real customer_orders row.
+CREATE TYPE booking_status AS ENUM ('pending', 'converted', 'declined');
+
+CREATE TABLE bookings (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  site_id INTEGER REFERENCES sites(id),
+  mix_grade_id INTEGER REFERENCES mix_grades(id),
+  estimated_qty_m3 NUMERIC(8,2),
+  preferred_date DATE,
+  notes TEXT,
+  requested_by INTEGER REFERENCES users(id) NOT NULL,
+  status booking_status DEFAULT 'pending',
+  converted_order_id INTEGER REFERENCES customer_orders(id),
+  declined_reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TYPE feedback_type AS ENUM ('compliment', 'complaint');
+
+CREATE TABLE aftersales_feedback (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  order_id INTEGER REFERENCES customer_orders(id),
+  feedback_type feedback_type NOT NULL,
+  comment TEXT NOT NULL,
+  recorded_by INTEGER REFERENCES users(id) NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Raw material stock — one row per bin, entered/updated by QC Engineer and

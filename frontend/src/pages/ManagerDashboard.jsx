@@ -5,6 +5,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel } from "../lib/MasterDataPanels.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
+import { BookingsQueue, CreateLeadForm } from "../lib/SalesPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
 const FLEET_LABELS = {
@@ -103,6 +104,18 @@ export default function ManagerDashboard() {
       </>
     );
   }
+  if (view === "leads") {
+    return (
+      <>
+        <TopBar title="Manager · Assign a lead" />
+        <div style={{ maxWidth: 600, margin: "0 auto", padding: "0 16px 32px" }}>
+          <button onClick={() => setView("dashboard")} style={{ marginBottom: 16 }}>← Back to dashboard</button>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+          <CreateLeadForm setError={setError} onDone={() => setView("dashboard")} />
+        </div>
+      </>
+    );
+  }
 
   const fleetCounts = { "At plant": 0, Running: 0, "At site": 0, Returning: 0 };
   stats?.fleet_status?.forEach((row) => {
@@ -142,10 +155,12 @@ export default function ManagerDashboard() {
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
           <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
+          <button onClick={() => setView("leads")}>Assign a lead</button>
           <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
           <Link to="/fuel"><button type="button">Fuel filling</button></Link>
         </div>
 
+        <BookingsQueue setError={setError} />
         <OnDutyDriversTable drivers={onDutyDrivers} />
         <RawMaterialStockCard />
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} />

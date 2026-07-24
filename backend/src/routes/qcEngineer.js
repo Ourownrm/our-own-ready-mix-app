@@ -34,13 +34,14 @@ router.get("/pending-qc", async (req, res) => {
 // Submit plant QC — advances ticket to dispatched, matching the Trip Status Timeline
 router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), async (req, res) => {
   const { slump_mm, temperature_c, number_of_cubes, sample_ids, remarks } = req.body;
+  if (!slump_mm) return res.status(400).json({ error: "Slump reading is required." });
 
   await query(
     `INSERT INTO plant_qc (ticket_id, slump_mm, temperature_c, number_of_cubes, sample_ids, remarks, entered_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (ticket_id) DO UPDATE SET
        slump_mm = $2, temperature_c = $3, number_of_cubes = $4, sample_ids = $5, remarks = $6`,
-    [req.params.ticketId, slump_mm, temperature_c, number_of_cubes, sample_ids, remarks, req.user.id]
+    [req.params.ticketId, slump_mm, temperature_c || null, number_of_cubes || null, sample_ids || null, remarks || null, req.user.id]
   );
   await logEvent(req.params.ticketId, "plant_qc_completed", req.user.id);
   await query("UPDATE delivery_tickets SET status = 'dispatched' WHERE id = $1", [req.params.ticketId]);

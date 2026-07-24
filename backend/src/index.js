@@ -19,6 +19,7 @@ import reportsRoutes from "./routes/reports.js";
 import productionReportRoutes from "./routes/productionReport.js";
 import pushRoutes from "./routes/push.js";
 import fuelRoutes from "./routes/fuel.js";
+import salesRoutes from "./routes/sales.js";
 import { checkDelayedTrucks } from "./lib/scheduledChecks.js";
 
 dotenv.config();
@@ -51,6 +52,7 @@ app.use("/api/reports", reportsRoutes);
 app.use("/api/production-report", productionReportRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/fuel", fuelRoutes);
+app.use("/api/sales", salesRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff

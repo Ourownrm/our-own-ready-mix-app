@@ -565,3 +565,56 @@ truck-only endpoint (`/driver/fuel`) is gone, replaced by the shared `/fuel` end
 ### Migration note
 Revisit `/setup?key=...` once after deploying — adds the `equipment` table, extends
 `fuel_logs`, and makes `fuel_stations` manageable.
+
+## Fifteenth round — bug fixes
+
+**Real root cause found for both reports:** an empty number input (left blank) sends an
+empty string `""` to the backend, and three places passed that straight into a `NUMERIC`
+database column instead of converting it to `null` first — which PostgreSQL rejects
+outright. This wasn't specific to selecting "Other" as a rejection reason (verified —
+there's no code anywhere that treats "Other" differently from any other option); it was
+about leaving slump/quantity/temperature blank, which happened to line up with when
+"Other" felt like the obviously-irrelevant-fields case. Fixed in the three places it
+existed — Site Supervisor and Driver's self-service rejection (shared code, one fix
+covers both), the unloading-completion form, and QC Engineer's plant QC entry. Also
+added an explicit "Slump reading is required" check on the QC side (the one field that
+genuinely should be mandatory), so its absence gets a clear message instead of a crash.
+This also directly answers the temperature question: it was never actually marked
+required in the form — it only *felt* mandatory because leaving it blank crashed the
+save. It's genuinely optional now.
+
+## Sixteenth round — Sales module (new role)
+
+New `sales_executive` login role, plus everything discussed:
+
+- **Own dashboard** (`/sales`): customers, orders this month (qty + value), outstanding,
+  leads by stage.
+- **Leads**: Manager or Administrator creates and assigns a lead to a specific Sales
+  Executive (Administrator → Assign a lead, or the same on Manager Dashboard). No
+  incentive language anywhere — leads carry a follow-up log and a required reason when
+  marked lost. Only **Administrator** can mark a lead "won," and doing so requires
+  choosing whether it counts as **that salesperson's own sale or the company's** —
+  exactly the attribution decision you described.
+- **Bookings**: Sales Executive submits one (customer, site if known, grade, estimated
+  quantity, preferred date, notes) — it lands in a **Pending bookings** queue right on
+  the Manager Dashboard, with Convert/Decline actions. Converting opens a form for the
+  remaining order details (batching time, dispatch interval, pump, site contact, etc.)
+  and creates a real order — nothing becomes an order without this explicit step.
+- **After-sales feedback**: Sales Executive records a compliment or complaint tied to a
+  customer (and optionally a specific order) after visiting a site post-delivery. A
+  complaint pushes a notification to Manager.
+- **Admin's combined performance dashboard** (`/sales-performance`, linked from the
+  Director's Dashboard): every active salesperson side by side — this month's quantity
+  and sales value, outstanding, and lead win/loss counts.
+- Existing salesperson dropdown (used on orders) now links to the real login account
+  when one exists — creating a Sales Executive user automatically connects them, so
+  historical reports and this new module read from the same underlying identity.
+
+### What I did not build this round
+Sales targets/quota tracking wasn't part of the final confirmed scope this time — the
+performance dashboard shows actuals only, no target-vs-actual. Straightforward to add
+later if useful (a `sales_targets` table plus a comparison column).
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds the `sales_executive` role and the
+`leads`, `lead_followups`, `bookings`, `aftersales_feedback` tables.

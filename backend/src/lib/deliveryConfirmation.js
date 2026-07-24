@@ -70,7 +70,7 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
     `UPDATE site_qc SET unload_finish_time = now(), arrival_slump_mm = $1,
        delivery_note_status = $2, remarks = $3, accepted = true, after_pour_care_confirmed = $5
      WHERE ticket_id = $4`,
-    [site_slump_mm, delivery_note_status || "pending", remarks, ticketId, !!after_pour_care_confirmed]
+    [site_slump_mm || null, delivery_note_status || "pending", remarks, ticketId, !!after_pour_care_confirmed]
   );
   await query("UPDATE delivery_tickets SET status = 'completed' WHERE id = $1", [ticketId]);
 
@@ -144,7 +144,7 @@ export async function confirmRejection(ticketId, userId, { rejection_reason_id, 
      VALUES ($1, $2, false, $3, $4, $5, $6)
      ON CONFLICT (ticket_id) DO UPDATE SET
        accepted = false, rejected_quantity_m3 = $3, rejection_reason_id = $4, remarks = $5`,
-    [ticketId, site_slump_mm, rejected_quantity_m3, rejection_reason_id, remarks, userId]
+    [ticketId, site_slump_mm || null, rejected_quantity_m3 || null, rejection_reason_id || null, remarks, userId]
   );
   await query("UPDATE delivery_tickets SET status = 'rejected' WHERE id = $1", [ticketId]);
   await logTripEvent(ticketId, "rejected", userId);

@@ -173,6 +173,81 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (fuel filling now covers any equipment — trucks, pumps, pickup vans, loaders, generators — with odometer or hour meter).");
 
+    // Sales module: new role, leads, bookings, after-sales feedback.
+    await pool.query(`DO $$ BEGIN
+      ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'sales_executive';
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      ALTER TABLE salespersons ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);
+    `);
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE lead_status AS ENUM ('new', 'contacted', 'quoted', 'won', 'lost');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE lead_attribution AS ENUM ('salesperson', 'company');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id SERIAL PRIMARY KEY,
+        prospect_name VARCHAR(150) NOT NULL,
+        contact_person VARCHAR(150),
+        contact_phone VARCHAR(20),
+        site_location TEXT,
+        mix_grade_interest VARCHAR(50),
+        estimated_qty_m3 NUMERIC(8,2),
+        assigned_to INTEGER REFERENCES users(id),
+        created_by INTEGER REFERENCES users(id),
+        status lead_status DEFAULT 'new',
+        attribution lead_attribution,
+        won_customer_id INTEGER REFERENCES customers(id),
+        won_order_id INTEGER REFERENCES customer_orders(id),
+        lost_reason TEXT,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS lead_followups (
+        id SERIAL PRIMARY KEY,
+        lead_id INTEGER REFERENCES leads(id) NOT NULL,
+        note TEXT NOT NULL,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE booking_status AS ENUM ('pending', 'converted', 'declined');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        site_id INTEGER REFERENCES sites(id),
+        mix_grade_id INTEGER REFERENCES mix_grades(id),
+        estimated_qty_m3 NUMERIC(8,2),
+        preferred_date DATE,
+        notes TEXT,
+        requested_by INTEGER REFERENCES users(id) NOT NULL,
+        status booking_status DEFAULT 'pending',
+        converted_order_id INTEGER REFERENCES customer_orders(id),
+        declined_reason TEXT,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE feedback_type AS ENUM ('compliment', 'complaint');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS aftersales_feedback (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        order_id INTEGER REFERENCES customer_orders(id),
+        feedback_type feedback_type NOT NULL,
+        comment TEXT NOT NULL,
+        recorded_by INTEGER REFERENCES users(id) NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (sales module — sales_executive role, leads, bookings, after-sales feedback).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

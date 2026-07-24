@@ -20,7 +20,7 @@ router.post("/users", requireRole("administrator"), async (req, res) => {
   if (!name || !phone || !password || !role) {
     return res.status(400).json({ error: "Name, phone, password, and role are all required." });
   }
-  const validRoles = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant"];
+  const validRoles = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant", "sales_executive"];
   if (!validRoles.includes(role)) {
     return res.status(400).json({ error: "That role isn't recognized." });
   }
@@ -36,6 +36,18 @@ router.post("/users", requireRole("administrator"), async (req, res) => {
      VALUES ($1,$2,$3,$4,$5) RETURNING id, name, phone, email, role, is_active`,
     [name, phone, email || null, passwordHash, role]
   );
+
+  // A Sales Executive account should immediately show up correctly in the
+  // existing salesperson dropdown/reports, linked to their real login rather
+  // than existing only as a disconnected name.
+  if (role === "sales_executive") {
+    await query(
+      `INSERT INTO salespersons (name, user_id) VALUES ($1, $2)
+       ON CONFLICT (name) DO UPDATE SET user_id = $2`,
+      [name, rows[0].id]
+    );
+  }
+
   res.status(201).json(rows[0]);
 });
 

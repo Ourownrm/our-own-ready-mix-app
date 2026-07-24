@@ -40,6 +40,11 @@ router.get("/site-supervisors", async (req, res) => {
   res.json(rows);
 });
 
+router.get("/sales-executives", async (req, res) => {
+  const { rows } = await query("SELECT id, name FROM users WHERE role = 'sales_executive' AND is_active ORDER BY name");
+  res.json(rows);
+});
+
 router.get("/trip-allowance-categories", async (req, res) => {
   const { rows } = await query("SELECT id, label FROM trip_allowance_categories ORDER BY amount");
   res.json(rows);

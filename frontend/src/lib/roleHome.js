@@ -8,6 +8,7 @@ export const ROLE_HOME = {
   driver: "/driver",
   site_supervisor: "/site-supervisor",
   accountant: "/accountant",
+  sales_executive: "/sales",
 };
 
 export const ROLE_LABEL = {
@@ -18,4 +19,5 @@ export const ROLE_LABEL = {
   driver: "Driver",
   site_supervisor: "Site Supervisor",
   accountant: "Accountant",
+  sales_executive: "Sales Executive",
 };
