@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 
+const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
+
 export default function SalesPerformance() {
   const [rows, setRows] = useState(null);
   const [visits, setVisits] = useState([]);
@@ -67,14 +69,15 @@ export default function SalesPerformance() {
             <div style={{ overflowX: "auto" }}>
               <table style={{ fontSize: 13 }}>
                 <thead>
-                  <tr><th>Date</th><th>Salesperson</th><th>Customer</th><th>Contact</th><th>Outcome</th><th>Location</th></tr>
+                  <tr><th>Date</th><th>Salesperson</th><th>Visited</th><th>Type</th><th>Contact</th><th>Outcome</th><th>Location</th></tr>
                 </thead>
                 <tbody>
                   {visits.map((v) => (
                     <tr key={v.id}>
                       <td>{new Date(v.visit_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}{v.visit_time ? ` ${v.visit_time.slice(0, 5)}` : ""}</td>
                       <td>{v.visited_by_name}</td>
-                      <td>{v.customer_name}</td>
+                      <td>{v.visited_name}{v.customer_name ? ` (${v.customer_name})` : ""}</td>
+                      <td>{VISITOR_TYPE_LABEL[v.visitor_type] || v.visitor_type}</td>
                       <td>{v.contact_person || "–"}</td>
                       <td>{v.discussion_outcome}</td>
                       <td>

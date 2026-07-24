@@ -203,14 +203,21 @@ function LeadsList({ leads, onOpen, onNew }) {
 
 function NewLeadForm({ onDone, onCancel }) {
   const [form, setForm] = useState({ prospect_name: "", contact_person: "", contact_phone: "", site_location: "", mix_grade_interest: "", estimated_qty_m3: "" });
+  const [atSite, setAtSite] = useState(null);
+  const [coords, setCoords] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function submit(e) {
     e.preventDefault();
-    setError(""); setSaving(true);
+    setError("");
+    if (atSite === null) return setError("Let us know whether you're at site.");
+    setSaving(true);
     try {
-      await apiRequest("/sales/leads/self", { method: "POST", body: form });
+      await apiRequest("/sales/leads/self", {
+        method: "POST",
+        body: { ...form, at_site: atSite, latitude: coords?.latitude, longitude: coords?.longitude },
+      });
       onDone();
     } catch (err) {
       setError(err.message);
@@ -233,6 +240,7 @@ function NewLeadForm({ onDone, onCancel }) {
             <div><div style={{ color: "var(--slate)" }}>Site / location</div><input value={form.site_location} onChange={(e) => setForm({ ...form, site_location: e.target.value })} /></div>
             <div><div style={{ color: "var(--slate)" }}>Grade interested in</div><input value={form.mix_grade_interest} onChange={(e) => setForm({ ...form, mix_grade_interest: e.target.value })} placeholder="e.g. M25" /></div>
             <div><div style={{ color: "var(--slate)" }}>Estimated qty (m³)</div><input type="number" value={form.estimated_qty_m3} onChange={(e) => setForm({ ...form, estimated_qty_m3: e.target.value })} /></div>
+            <AtSitePrompt atSite={atSite} setAtSite={setAtSite} coords={coords} setCoords={setCoords} />
             {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
             <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add lead"}</button>
           </form>
@@ -333,6 +341,7 @@ function LeadDetail({ leadId, onBack }) {
             {lead.mix_grade_interest && <div>Interested in: {lead.mix_grade_interest}</div>}
             {lead.estimated_qty_m3 && <div>Estimated quantity: {lead.estimated_qty_m3} m³</div>}
             {lead.quotation_issued && <div>Latest quotation: ₹{lead.latest_quotation_amount}</div>}
+            <div>{lead.at_site === false ? "Added: not updated from site" : lead.at_site ? "Added from site" : ""}</div>
             {lead.status === "lost" && lead.lost_reason && <div style={{ color: "var(--alert-red)", marginTop: 6 }}>Lost — {lead.lost_reason}</div>}
           </div>
         </div>
@@ -522,11 +531,13 @@ function NewBookingForm({ onDone, onCancel }) {
   );
 }
 
+const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
+
 function VisitsList({ visits, onNew }) {
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Customer visits</div>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Visits</div>
         <button onClick={onNew} style={{ fontSize: 12, padding: "5px 10px" }}>+ Report visit</button>
       </div>
       {visits.length === 0 ? (
@@ -535,11 +546,15 @@ function VisitsList({ visits, onNew }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {visits.map((v) => (
             <div key={v.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ fontWeight: 600 }}>{v.customer_name}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 600 }}>{v.visited_name}</span>
+                <span className="badge badge-neutral">{VISITOR_TYPE_LABEL[v.visitor_type] || v.visitor_type}</span>
+              </div>
               <div style={{ color: "var(--slate)" }}>
                 {new Date(v.visit_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}
                 {v.visit_time ? ` · ${v.visit_time.slice(0, 5)}` : ""}
                 {v.contact_person ? ` · ${v.contact_person}` : ""}
+                {v.customer_name ? ` · Linked to ${v.customer_name}` : ""}
               </div>
               <div>{v.discussion_outcome}</div>
               <div style={{ color: "var(--slate)", fontSize: 11 }}>{v.at_site === false ? "Not updated from site" : v.at_site ? "At site" : ""}</div>
@@ -554,6 +569,8 @@ function VisitsList({ visits, onNew }) {
 function NewVisitForm({ onDone, onCancel }) {
   const [customers, setCustomers] = useState([]);
   const [customerId, setCustomerId] = useState("");
+  const [visitedName, setVisitedName] = useState("");
+  const [visitorType, setVisitorType] = useState("customer");
   const [visitDate, setVisitDate] = useState(new Date().toISOString().slice(0, 10));
   const [visitTime, setVisitTime] = useState("");
   const [contactPerson, setContactPerson] = useState("");
@@ -576,7 +593,8 @@ function NewVisitForm({ onDone, onCancel }) {
       await apiRequest("/sales/visits", {
         method: "POST",
         body: {
-          customer_id: customerId, visit_date: visitDate, visit_time: visitTime || null,
+          customer_id: customerId || null, visited_name: visitedName, visitor_type: visitorType,
+          visit_date: visitDate, visit_time: visitTime || null,
           contact_person: contactPerson || null, discussion_outcome: outcome,
           at_site: atSite, latitude: coords?.latitude, longitude: coords?.longitude,
         },
@@ -595,12 +613,26 @@ function NewVisitForm({ onDone, onCancel }) {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
         <button onClick={onCancel} style={{ marginBottom: 16 }}>← Back</button>
         <div className="card">
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>Report a customer visit</div>
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>Report a visit</div>
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
             <div>
-              <div style={{ color: "var(--slate)" }}>Customer</div>
-              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} required>
-                <option value="">Select</option>
+              <div style={{ color: "var(--slate)" }}>Who did you visit</div>
+              <input value={visitedName} onChange={(e) => setVisitedName(e.target.value)} placeholder="Name or company — doesn't need to be an existing customer" required />
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Who is this</div>
+              <select value={visitorType} onChange={(e) => setVisitorType(e.target.value)}>
+                <option value="customer">Customer</option>
+                <option value="client">Client</option>
+                <option value="consultant">Consultant</option>
+                <option value="site_engineer">Site engineer</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Link to an existing customer (optional)</div>
+              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+                <option value="">Not linked</option>
                 {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
@@ -608,7 +640,7 @@ function NewVisitForm({ onDone, onCancel }) {
               <div><div style={{ color: "var(--slate)" }}>Date</div><input type="date" value={visitDate} onChange={(e) => setVisitDate(e.target.value)} required /></div>
               <div><div style={{ color: "var(--slate)" }}>Time</div><input type="time" value={visitTime} onChange={(e) => setVisitTime(e.target.value)} /></div>
             </div>
-            <div><div style={{ color: "var(--slate)" }}>Contact person</div><input value={contactPerson} onChange={(e) => setContactPerson(e.target.value)} /></div>
+            <div><div style={{ color: "var(--slate)" }}>Additional contact person (optional)</div><input value={contactPerson} onChange={(e) => setContactPerson(e.target.value)} /></div>
             <div><div style={{ color: "var(--slate)" }}>Discussion outcome</div><textarea rows={3} value={outcome} onChange={(e) => setOutcome(e.target.value)} required /></div>
             <AtSitePrompt atSite={atSite} setAtSite={setAtSite} coords={coords} setCoords={setCoords} />
             {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}

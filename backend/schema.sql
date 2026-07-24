@@ -147,6 +147,9 @@ CREATE TABLE leads (
   lost_reason TEXT,
   quotation_issued BOOLEAN DEFAULT false,
   latest_quotation_amount NUMERIC(10,2),
+  at_site BOOLEAN,
+  latitude NUMERIC(10,7),
+  longitude NUMERIC(10,7),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -204,13 +207,17 @@ CREATE TABLE aftersales_feedback (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- A Sales Executive's logged visit to an existing customer — distinct from
--- lead activity (leads are prospects; this is relationship upkeep with
--- customers already on the books). Shows up as a report on Admin's Sales
--- Performance dashboard.
+-- A Sales Executive's logged visit to whoever they actually met — an
+-- existing customer, but also a client, consultant, or site engineer who
+-- isn't in the customers list at all. visited_name/visitor_type are the
+-- primary "who" — customer_id is only set when it genuinely is an existing
+-- customer they want tagged for reporting.
 CREATE TABLE customer_visits (
   id SERIAL PRIMARY KEY,
-  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  customer_id INTEGER REFERENCES customers(id),
+  visited_name VARCHAR(150) NOT NULL,
+  visitor_type VARCHAR(30) NOT NULL DEFAULT 'customer',
+  -- 'customer', 'client', 'consultant', 'site_engineer', 'other'
   visited_by INTEGER REFERENCES users(id) NOT NULL,
   visit_date DATE NOT NULL,
   visit_time TIME,

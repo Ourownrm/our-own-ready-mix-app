@@ -284,6 +284,25 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (customer visit reporting for Sales Executives).");
 
+    // Location capture on the lead itself (when a Sales Executive adds it),
+    // and visits can now be to anyone — client, consultant, site engineer —
+    // not just an existing customer.
+    await pool.query(`
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS at_site BOOLEAN;
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS latitude NUMERIC(10,7);
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS longitude NUMERIC(10,7);
+      ALTER TABLE customer_visits ALTER COLUMN customer_id DROP NOT NULL;
+      ALTER TABLE customer_visits ADD COLUMN IF NOT EXISTS visited_name VARCHAR(150);
+      ALTER TABLE customer_visits ADD COLUMN IF NOT EXISTS visitor_type VARCHAR(30) NOT NULL DEFAULT 'customer';
+    `);
+    // Backfill visited_name for any visits already logged under the old
+    // customer-only design, so nothing existing loses its "who" on display.
+    await pool.query(`
+      UPDATE customer_visits cv SET visited_name = c.name
+      FROM customers c WHERE cv.customer_id = c.id AND cv.visited_name IS NULL;
+    `);
+    log.push("Schema migration applied (leads capture location on creation; visits can be to anyone, not just existing customers).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

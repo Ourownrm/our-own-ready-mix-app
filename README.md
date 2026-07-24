@@ -643,3 +643,22 @@ Revisit `/setup?key=...` once after deploying — adds the `sales_executive` rol
 ### Migration note
 Revisit `/setup?key=...` once after deploying — adds `customer_visits`, and extends
 `leads`/`lead_followups` with the new quotation and activity-type columns.
+
+## Eighteenth round — sales module refinements
+
+1. **"Are you at site?" now also applies to adding a new lead**, not just lead
+   updates — same Yes (captures GPS, shown to Admin as a map link) / No ("not updated
+   from site") pattern from the follow-up activity log, now on lead creation itself.
+2. **Visits are no longer limited to existing customers.** The mandatory customer
+   dropdown is gone — a Sales Executive now types who they visited freely and picks a
+   category (**Customer, Client, Consultant, Site Engineer, Other**), covering site
+   engineers, consultants, and anyone else who isn't in the customer list. An existing
+   customer can still be optionally linked for reporting purposes, but it's no longer
+   required. Admin's "Customer visits report" reflects this — shows who was visited and
+   their type, with the linked customer name in parentheses when there is one.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds location fields to `leads` and
+makes `customer_visits.customer_id` optional while adding `visited_name`/`visitor_type`
+(existing visits get backfilled with their customer's name automatically, so nothing
+already logged loses its "who").

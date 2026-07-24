@@ -123,6 +123,13 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
             {lead.site_location && <div>Location: {lead.site_location}</div>}
             {lead.estimated_qty_m3 && <div>Estimated quantity: {lead.estimated_qty_m3} m³</div>}
             {lead.quotation_issued && <div>Latest quotation: ₹{lead.latest_quotation_amount}</div>}
+            <div>
+              {lead.at_site && lead.latitude ? (
+                <>Added from site — <a href={`https://maps.google.com/?q=${lead.latitude},${lead.longitude}`} target="_blank" rel="noreferrer">view location</a></>
+              ) : lead.at_site === false ? (
+                "Added: not updated from site"
+              ) : ""}
+            </div>
             {lead.status === "lost" && lead.lost_reason && <div style={{ color: "var(--alert-red)" }}>Lost — {lead.lost_reason}</div>}
             {lead.status === "won" && <div style={{ color: "var(--signal-green)" }}>Won — counted as {lead.attribution === "salesperson" ? "salesperson's sale" : "company sale"}</div>}
           </div>

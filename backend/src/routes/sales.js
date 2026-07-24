@@ -38,13 +38,17 @@ router.post("/leads", requireRole("manager", "administrator"), async (req, res) 
 // A Sales Executive adding their own lead, not one assigned by Admin/Manager —
 // auto-assigned and attributed to themselves.
 router.post("/leads/self", requireRole("sales_executive"), async (req, res) => {
-  const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3 } = req.body;
+  const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, at_site, latitude, longitude } = req.body;
   if (!prospect_name) return res.status(400).json({ error: "Prospect name is required." });
+  if (typeof at_site !== "boolean") {
+    return res.status(400).json({ error: "Let us know whether you're at site for this lead." });
+  }
   const { rows } = await query(
-    `INSERT INTO leads (prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$7) RETURNING *`,
+    `INSERT INTO leads (prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to, created_by, at_site, latitude, longitude)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10) RETURNING *`,
     [prospect_name, contact_person || null, contact_phone || null, site_location || null,
-     mix_grade_interest || null, estimated_qty_m3 || null, req.user.id]
+     mix_grade_interest || null, estimated_qty_m3 || null, req.user.id,
+     at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null]
   );
   res.status(201).json(rows[0]);
 });
@@ -273,18 +277,23 @@ router.get("/feedback", requireRole("sales_executive", "manager", "administrator
 
 // ===================== CUSTOMER VISITS =====================
 
+const VISITOR_TYPES = ["customer", "client", "consultant", "site_engineer", "other"];
+
 router.post("/visits", requireRole("sales_executive"), async (req, res) => {
-  const { customer_id, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude } = req.body;
-  if (!customer_id || !visit_date || !discussion_outcome) {
-    return res.status(400).json({ error: "Customer, visit date, and discussion outcome are required." });
+  const { customer_id, visited_name, visitor_type, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude } = req.body;
+  if (!visited_name || !visit_date || !discussion_outcome) {
+    return res.status(400).json({ error: "Who you visited, the date, and the discussion outcome are all required." });
+  }
+  if (!VISITOR_TYPES.includes(visitor_type)) {
+    return res.status(400).json({ error: "Select who this is — customer, client, consultant, site engineer, or other." });
   }
   if (typeof at_site !== "boolean") {
     return res.status(400).json({ error: "Let us know whether you're at site for this visit." });
   }
   const { rows } = await query(
-    `INSERT INTO customer_visits (customer_id, visited_by, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [customer_id, req.user.id, visit_date, visit_time || null, contact_person || null, discussion_outcome,
+    `INSERT INTO customer_visits (customer_id, visited_name, visitor_type, visited_by, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [customer_id || null, visited_name, visitor_type, req.user.id, visit_date, visit_time || null, contact_person || null, discussion_outcome,
      at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null]
   );
   res.status(201).json(rows[0]);
@@ -297,7 +306,7 @@ router.get("/visits", requireRole("sales_executive", "manager", "administrator")
   const { rows } = await query(
     `SELECT cv.*, c.name AS customer_name, u.name AS visited_by_name
      FROM customer_visits cv
-     JOIN customers c ON c.id = cv.customer_id
+     LEFT JOIN customers c ON c.id = cv.customer_id
      JOIN users u ON u.id = cv.visited_by
      ${own ? "WHERE cv.visited_by = $1" : ""}
      ORDER BY cv.visit_date DESC, cv.created_at DESC
