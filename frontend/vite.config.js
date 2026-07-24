@@ -7,6 +7,15 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.js",
+      injectManifest: {
+        // Keep the precache manifest from growing to include every build
+        // artifact indiscriminately — same effective scope as the previous
+        // auto-generated config.
+        globPatterns: ["**/*.{js,css,html,png,svg,ico}"],
+      },
       manifest: {
         name: "Our Own Ready Mix",
         short_name: "OORM",
@@ -18,18 +27,6 @@ export default defineConfig({
         icons: [
           { src: "icon-192.png", sizes: "192x192", type: "image/png" },
           { src: "icon-512.png", sizes: "512x512", type: "image/png" },
-        ],
-      },
-      workbox: {
-        // App shell is cached so it opens with no signal.
-        // Data mutations made offline are queued (see src/offlineQueue.js)
-        // and flushed automatically once connectivity returns.
-        runtimeCaching: [
-          {
-            urlPattern: /\/api\/orders/,
-            handler: "NetworkFirst",
-            options: { cacheName: "orders-cache", networkTimeoutSeconds: 3 },
-          },
         ],
       },
     }),

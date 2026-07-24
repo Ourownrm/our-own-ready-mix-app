@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { RatesPanel } from "../lib/MasterDataPanels.jsx";
@@ -64,6 +65,7 @@ export default function Accountant() {
       </div>
 
       <button onClick={() => setShowRates(true)} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
+      <Link to="/fuel" style={{ marginLeft: 12, fontSize: 13 }}>Fuel filling</Link>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <div className="card">

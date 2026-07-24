@@ -348,3 +348,128 @@ export function SalespersonsPanel({ setError }) {
     </div>
   );
 }
+
+export function FuelStationsAndEquipmentPanel({ setError }) {
+  const [stations, setStations] = useState([]);
+  const [equipment, setEquipment] = useState([]);
+  const [stationForm, setStationForm] = useState({ name: "", location: "" });
+  const [equipForm, setEquipForm] = useState({ equipment_type: "pickup_van", name: "" });
+  const [savingStation, setSavingStation] = useState(false);
+  const [savingEquip, setSavingEquip] = useState(false);
+
+  async function load() {
+    try {
+      const [s, e] = await Promise.all([apiRequest("/administrator/fuel-stations"), apiRequest("/administrator/equipment")]);
+      setStations(s); setEquipment(e);
+    } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function addStation(e) {
+    e.preventDefault();
+    setSavingStation(true); setError("");
+    try {
+      await apiRequest("/administrator/fuel-stations", { method: "POST", body: stationForm });
+      setStationForm({ name: "", location: "" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSavingStation(false); }
+  }
+
+  async function addEquipment(e) {
+    e.preventDefault();
+    setSavingEquip(true); setError("");
+    try {
+      await apiRequest("/administrator/equipment", { method: "POST", body: equipForm });
+      setEquipForm({ equipment_type: "pickup_van", name: "" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSavingEquip(false); }
+  }
+
+  async function toggleActive(kind, id, is_active) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/${kind}/${id}/status`, { method: "PATCH", body: { is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function hardDelete(kind, id, label) {
+    if (!window.confirm(`Delete ${label}? This can't be undone. If it's already been used anywhere, this will be blocked — deactivate it instead.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/administrator/${kind}/${id}`, { method: "DELETE" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Fuel stations</div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table>
+          <thead><tr><th>Name</th><th>Location</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {stations.map((s) => (
+              <tr key={s.id}>
+                <td>{s.name}</td>
+                <td>{s.location || "–"}</td>
+                <td>{s.is_active ? "Active" : "Inactive"}</td>
+                <td style={{ display: "flex", gap: 6 }}>
+                  <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleActive("fuel-stations", s.id, !s.is_active)}>
+                    {s.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                  <button className="btn-danger" style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => hardDelete("fuel-stations", s.id, s.name)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {stations.length === 0 && <tr><td colSpan={4} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={addStation} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginBottom: 24 }}>
+        <div><div style={{ color: "var(--slate)" }}>Station name</div><input value={stationForm.name} onChange={(e) => setStationForm({ ...stationForm, name: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Location</div><input value={stationForm.location} onChange={(e) => setStationForm({ ...stationForm, location: e.target.value })} /></div>
+        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={savingStation}>{savingStation ? "Saving..." : "Add fuel station"}</button></div>
+      </form>
+
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Equipment (pickup vans, loaders, generators)</div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table>
+          <thead><tr><th>Type</th><th>Name</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {equipment.map((e) => (
+              <tr key={e.id}>
+                <td>{e.equipment_type.replace("_", " ")}</td>
+                <td>{e.name}</td>
+                <td>{e.is_active ? "Active" : "Inactive"}</td>
+                <td style={{ display: "flex", gap: 6 }}>
+                  <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleActive("equipment", e.id, !e.is_active)}>
+                    {e.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                  <button className="btn-danger" style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => hardDelete("equipment", e.id, e.name)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {equipment.length === 0 && <tr><td colSpan={4} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={addEquipment} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Type</div>
+          <select value={equipForm.equipment_type} onChange={(e) => setEquipForm({ ...equipForm, equipment_type: e.target.value })}>
+            <option value="pickup_van">Pickup van</option>
+            <option value="loader">Loader</option>
+            <option value="generator">Generator</option>
+          </select>
+        </div>
+        <div><div style={{ color: "var(--slate)" }}>Name</div><input value={equipForm.name} onChange={(e) => setEquipForm({ ...equipForm, name: e.target.value })} placeholder="e.g. Loader-1" required /></div>
+        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={savingEquip}>{savingEquip ? "Saving..." : "Add equipment"}</button></div>
+      </form>
+    </div>
+  );
+}

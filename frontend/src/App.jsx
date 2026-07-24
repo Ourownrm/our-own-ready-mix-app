@@ -15,6 +15,7 @@ import OrdersSchedule from "./pages/OrdersSchedule.jsx";
 import Reports from "./pages/Reports.jsx";
 import ProductionReport from "./pages/ProductionReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
+import FuelFilling from "./pages/FuelFilling.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -68,6 +69,9 @@ export default function App() {
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>
+          } />
+          <Route path="/fuel" element={
+            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator"]}><FuelFilling /></ProtectedRoute>
           } />
 
           <Route path="/" element={<RootRedirect />} />

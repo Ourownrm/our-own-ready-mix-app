@@ -480,3 +480,88 @@ remember and share only with whoever should be allowed to edit stock.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Thirteenth round — Push notifications
+
+Real phone push notifications, not just the in-app `notifications` table nothing was
+ever reading from before. Wired into exactly the 7 events we agreed on, each going to
+the specific person(s) who should act on it — nothing broadcasts to everyone, and
+nothing fires for routine workflow steps (ticket creation, status changes, etc.) that
+would just become noise:
+
+| Event | Goes to |
+|---|---|
+| Breakdown reported (truck, pump, or plant) | Manager |
+| Concrete rejected at site | Manager |
+| Driver goes off duty mid-trip | Manager |
+| QC flags a delayed truck | Manager |
+| Delivery completed with no rate on file | Accountant |
+| Truck crosses 2 hours at site | QC Engineer |
+| Delivery note created for their site | The specific assigned Site Supervisor |
+
+Two of these (breakdowns) turned out to have never written to the `notifications`
+table at all before now — fixed as part of wiring this in.
+
+### How it works
+- Real Web Push (VAPID), not a third-party service — no Firebase account, no per-message
+  cost, works the same way on Android/desktop Chrome and (with caveats — see our
+  conversation about iOS reliability) iOS 16.4+.
+- The "truck over 2 hours" check is the one exception that isn't triggered by a user
+  action — nobody "does" something at the 2-hour mark, so it runs on a timer instead
+  (checked every 5 minutes) rather than at a specific code path.
+- A "🔔 Enable notifications" button now appears in the top bar for anyone who hasn't
+  turned them on yet, on any screen, any role.
+- The service worker switched from auto-generated to a custom one (`frontend/src/sw.js`)
+  since handling push events requires custom code — the existing offline-caching
+  behavior for orders is preserved exactly as it was, just written explicitly now.
+
+### Action needed — two steps, in order
+1. **Deploy this update**, then run `/setup?key=YOUR_SETUP_SECRET` once (adds the
+   `push_subscriptions` table).
+2. **Generate your VAPID keys** by visiting (once):
+   ```
+   https://oorm-backend.onrender.com/setup/generate-vapid-keys?key=YOUR_SETUP_SECRET
+   ```
+   Copy the two values it shows you into your `oorm-backend` service's environment
+   variables on Render as `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY`, then redeploy the
+   backend. **Notifications will not work until both are set** — before that, the
+   "Enable notifications" button will show an error if tapped, since there's no key for
+   the frontend to subscribe against yet.
+
+This round also adds new npm packages on both sides — `web-push` (backend) and
+`workbox-precaching` / `workbox-routing` / `workbox-strategies` (frontend). Both build
+commands already run `npm install` automatically (per your `render.yaml`), so no manual
+step needed there — just be aware the next deploy will take a little longer than usual
+while it downloads them.
+
+## Fourteenth round — Fuel Module rebuild
+
+Driver's duty/trip screen is untouched — fuel filling moved to its own page (`/fuel`),
+reachable by Driver, Manager, Accountant, and Administrator.
+
+- **Any equipment, not just the driver's assigned truck** — pick a truck, pump, pickup
+  van, loader, or generator from the equipment-type chips, independent of any active
+  delivery. "Pickup van" and "Loader" didn't exist as trackable equipment before —
+  Administrator manages both (and generators) under a new **Fuel stations and
+  equipment** tab.
+- **Odometer or hour meter, at least one required** — trucks and vans run on odometer,
+  pumps/loaders/generators run on hour meter; the form accepts either.
+- **Fuel stations are now manageable** by Administrator (add, deactivate, delete) —
+  previously there was no way to add one at all beyond a database insert.
+- **Fuel history/report falls out of this automatically**: a "fuel by equipment" summary
+  (total litres and cost per truck/pump/van/loader/generator) and a recent-entries list,
+  both on the same page.
+- **Not built yet, by design**: flagging high consumption or suspiciously early refills
+  — you asked for this explicitly "for later." The data being recorded now (accurate
+  odometer/hour-meter per fill, per specific equipment) is exactly what that would need,
+  so this is a clean foundation for it whenever you're ready, not something that'll need
+  rework.
+
+### What changed under the hood
+`fuel_logs` no longer requires a truck — it references whichever equipment was actually
+fueled (truck, pump, or the new `equipment` table for vans/loaders/generators). The old
+truck-only endpoint (`/driver/fuel`) is gone, replaced by the shared `/fuel` endpoint.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds the `equipment` table, extends
+`fuel_logs`, and makes `fuel_stations` manageable.

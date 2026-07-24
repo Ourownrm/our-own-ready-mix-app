@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel } from "../lib/MasterDataPanels.jsx";
+import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel } from "../lib/MasterDataPanels.jsx";
 
 const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant"];
 
@@ -22,6 +22,7 @@ export default function Administrator() {
           ["customers", "Customers"],
           ["sites", "Projects and sites"],
           ["fleet", "Trucks and pumps"],
+          ["fuel", "Fuel stations and equipment"],
           ["salespersons", "Salespersons"],
           ["rates", "Concrete grades and rates"],
           ["orders", "Correct orders"],
@@ -43,6 +44,7 @@ export default function Administrator() {
       {view === "customers" && <CustomersPanel setError={setError} />}
       {view === "sites" && <SitesPanel setError={setError} />}
       {view === "fleet" && <FleetPanel setError={setError} />}
+      {view === "fuel" && <FuelStationsAndEquipmentPanel setError={setError} />}
       {view === "salespersons" && <SalespersonsPanel setError={setError} />}
       {view === "rates" && <RatesPanel setError={setError} />}
       {view === "orders" && <OrdersPanel setError={setError} />}

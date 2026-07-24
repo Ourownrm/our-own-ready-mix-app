@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
@@ -7,7 +8,7 @@ export default function DriverDuty() {
   const [onDuty, setOnDuty] = useState(false);
   const [trip, setTrip] = useState(null);
   const [pending, setPending] = useState(pendingCount());
-  const [activeForm, setActiveForm] = useState(null); // null | 'breakdown' | 'fuel' | 'reject'
+  const [activeForm, setActiveForm] = useState(null); // null | 'breakdown' | 'reject'
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const gpsIntervalRef = useRef(null);
@@ -132,15 +133,6 @@ export default function DriverDuty() {
       />
     );
   }
-  if (activeForm === "fuel") {
-    return (
-      <FuelForm
-        trip={trip}
-        onDone={(msg) => { setActiveForm(null); setNotice(msg); setPending(pendingCount()); }}
-        onCancel={() => setActiveForm(null)}
-      />
-    );
-  }
   if (activeForm === "reject") {
     return (
       <RejectForm
@@ -257,14 +249,7 @@ export default function DriverDuty() {
             >
               Report breakdown
             </button>
-            <button
-              onClick={() => {
-                if (!trip?.truck_id) { setError("No truck assigned yet — can't report this without one."); return; }
-                setError(""); setNotice(""); setActiveForm("fuel");
-              }}
-            >
-              Report fuel filling
-            </button>
+            <Link to="/fuel"><button type="button" style={{ width: "100%" }}>Report fuel filling</button></Link>
           </div>
         </div>
       </div>
@@ -421,61 +406,6 @@ function BreakdownForm({ trip, onDone, onCancel }) {
             <div>
               <div style={{ color: "var(--slate)" }}>What happened</div>
               <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} required />
-            </div>
-            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="submit" disabled={saving}>{saving ? "Saving..." : "Submit"}</button>
-              <button type="button" onClick={onCancel}>Cancel</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function FuelForm({ trip, onDone, onCancel }) {
-  const [odometer, setOdometer] = useState("");
-  const [litres, setLitres] = useState("");
-  const [cost, setCost] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  async function submit(e) {
-    e.preventDefault();
-    setSaving(true); setError("");
-    try {
-      await queuedRequest("/driver/fuel", {
-        method: "POST",
-        body: { truck_id: trip.truck_id, odometer_reading: odometer, fuel_quantity_litres: litres, fuel_cost: cost },
-      });
-      onDone("Fuel filling recorded.");
-    } catch (err) {
-      setError(err.message || "Couldn't save this — try again.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <>
-      <TopBar title="Driver · Report fuel filling" />
-      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
-        <div className="card">
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Report fuel filling</div>
-          <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.truck_number}</div>
-          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Odometer reading</div>
-              <input type="number" value={odometer} onChange={(e) => setOdometer(e.target.value)} required />
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Fuel quantity (litres)</div>
-              <input type="number" value={litres} onChange={(e) => setLitres(e.target.value)} required />
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Cost (₹)</div>
-              <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} />
             </div>
             {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
             <div style={{ display: "flex", gap: 8 }}>

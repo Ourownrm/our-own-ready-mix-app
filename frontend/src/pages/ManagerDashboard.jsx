@@ -143,6 +143,7 @@ export default function ManagerDashboard() {
           <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
           <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
           <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
+          <Link to="/fuel"><button type="button">Fuel filling</button></Link>
         </div>
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
