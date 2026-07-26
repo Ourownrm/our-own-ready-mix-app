@@ -51,7 +51,7 @@ export async function checkPumpDepartureOverdue() {
      FROM customer_orders o
      JOIN sites s ON s.id = o.site_id
      JOIN customers c ON c.id = o.customer_id
-     WHERE o.order_date = CURRENT_DATE AND o.pump_requirement = 'with_pump'
+     WHERE o.order_date = CURRENT_DATE AND o.pump_requirement != 'without_pump'
        AND o.pump_departure_time IS NOT NULL
        AND o.pump_actual_departure_time IS NULL
        AND (o.order_date + o.pump_departure_time) < now()

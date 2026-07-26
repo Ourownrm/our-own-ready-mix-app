@@ -209,17 +209,18 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
         <div><div style={{ color: "var(--slate)" }}>Truck dispatch interval (min)</div><input type="number" value={form.truck_dispatch_interval_minutes} onChange={(e) => setForm({ ...form, truck_dispatch_interval_minutes: e.target.value })} required /></div>
         <div>
           <div style={{ color: "var(--slate)" }}>Pump requirement</div>
-          <select value={form.pump_requirement} onChange={(e) => setForm({ ...form, pump_requirement: e.target.value })}>
+          <select value={form.pump_requirement} onChange={(e) => setForm({ ...form, pump_requirement: e.target.value, pump_id: "" })}>
             <option value="without_pump">Without pump</option>
-            <option value="with_pump">With pump</option>
+            <option value="boom_pump">Boom pump</option>
+            <option value="line_pump">Line pump</option>
           </select>
         </div>
-        {form.pump_requirement === "with_pump" && (
+        {form.pump_requirement !== "without_pump" && (
           <div>
             <div style={{ color: "var(--slate)" }}>Pump</div>
             <select value={form.pump_id} onChange={(e) => setForm({ ...form, pump_id: e.target.value })}>
-              <option value="">Any available</option>
-              {pumps.map((p) => <option key={p.id} value={p.id}>{p.pump_code}</option>)}
+              <option value="">Select</option>
+              {pumps.filter((p) => p.pump_type === form.pump_requirement).map((p) => <option key={p.id} value={p.id}>{p.pump_code}</option>)}
             </select>
           </div>
         )}

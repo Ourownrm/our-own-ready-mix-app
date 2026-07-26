@@ -746,3 +746,24 @@ exactly the kind of ambiguity that let this bug happen in the first place.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Twenty-first round — bug fix: pump departure confirmation never showed
+
+**Root cause**: `pump_requirement` never actually stores a value called `"with_pump"` —
+it's one of `boom_pump`, `line_pump`, or `without_pump` (matching the specific pump type
+selected on the order). The new pump-departure code from last round checked for
+`pump_requirement === "with_pump"`, a value that never exists — so the confirmation
+button, the Manager Dashboard's pump status table, and the automatic overdue check were
+all silently looking for something that could never match, regardless of whether the
+order actually needed a pump.
+
+Fixed everywhere this mistake was made (5 spots — 1 backend, 4 frontend), all changed to
+check `pump_requirement !== "without_pump"` instead, consistent with how the rest of the
+app already correctly identifies a pump order. Also fixed the same wrong value in the
+booking-conversion form's pump dropdown (Manager converting a Sales Executive's booking)
+— that one had the identical bug independently, plus wasn't filtering the pump list by
+type correctly; both fixed together. And fixed a small operator-precedence bug in the
+Site Supervisor's "show today's orders" condition while in there.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

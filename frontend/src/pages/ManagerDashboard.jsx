@@ -310,7 +310,7 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
 // Every order that needs a pump today — scheduled vs actual departure time,
 // and whether the site has confirmed ready for batching.
 function PumpStatusTable({ orders }) {
-  const pumpOrders = orders.filter((o) => o.pump_requirement === "with_pump");
+  const pumpOrders = orders.filter((o) => o.pump_requirement !== "without_pump");
   if (pumpOrders.length === 0) return null;
 
   return (

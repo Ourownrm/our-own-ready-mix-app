@@ -96,7 +96,7 @@ export default function SiteSupervisor() {
         )}
         {pending > 0 && <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>{pending} action(s) waiting to sync</div>}
 
-        {orders.some((o) => o.pump_requirement === "with_pump" && !o.pump_actual_departure_time || !o.site_ready_confirmed) && (
+        {orders.some((o) => (o.pump_requirement !== "without_pump" && !o.pump_actual_departure_time) || !o.site_ready_confirmed) && (
           <div className="card" style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Today's orders</div>
             {orders.map((o) => (
@@ -104,7 +104,7 @@ export default function SiteSupervisor() {
                 <div style={{ fontWeight: 600 }}>{o.customer_name} — {o.site_name}</div>
                 <div style={{ color: "var(--slate)" }}>Batching scheduled {o.scheduled_batching_time}</div>
 
-                {o.pump_requirement === "with_pump" && (
+                {o.pump_requirement !== "without_pump" && (
                   <div style={{ marginTop: 6 }}>
                     {o.pump_actual_departure_time ? (
                       <div style={{ color: "var(--signal-green)" }}>
