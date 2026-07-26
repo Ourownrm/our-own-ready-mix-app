@@ -95,13 +95,20 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
     );
   }
 
-  // Generate invoice for the Accountant, based on the customer/grade rate on file
+  // Generate invoice for the Accountant, based on the customer/grade rate on file.
+  // Rate is looked up against the ORDER's own date, not today's date — using
+  // CURRENT_DATE here was the bug behind different deliveries on the very same
+  // order getting different rates, whenever a rate changed between one
+  // delivery completing and the next (each ticket completes at a different
+  // real-world moment, but they should all be priced as of when the order was
+  // placed, not whenever each individual truck happened to finish unloading).
   const { rows: rateRows } = await query(
-    `SELECT dt.loaded_quantity_m3, co.customer_id, rm.rate_per_m3, rm.pumping_charge_lumpsum, co.pump_requirement
+    `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.order_date,
+            rm.rate_per_m3, rm.pumping_charge_lumpsum, co.pump_requirement
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
-       AND rm.effective_from <= CURRENT_DATE AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)
+       AND rm.effective_from <= co.order_date AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
      WHERE dt.id = $1
      ORDER BY rm.effective_from DESC, rm.id DESC LIMIT 1`,
     [ticketId]
@@ -109,7 +116,23 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
   if (rateRows[0]) {
     const r = rateRows[0];
     const concreteAmount = Number(r.loaded_quantity_m3) * Number(r.rate_per_m3);
-    const pumpingCharge = r.pump_requirement !== "without_pump" ? Number(r.pumping_charge_lumpsum || 0) : 0;
+
+    // Pumping charge is a one-time cost for the whole order, not per delivery —
+    // only apply it if no earlier ticket on this same order has already been
+    // charged for the pump. (Whichever ticket happens to be invoiced first
+    // carries the full charge; every later one on the same order gets 0.)
+    let pumpingCharge = 0;
+    if (r.pump_requirement !== "without_pump") {
+      const { rows: alreadyCharged } = await query(
+        `SELECT 1 FROM invoices i JOIN delivery_tickets dt2 ON dt2.id = i.ticket_id
+         WHERE dt2.order_id = $1 AND i.pumping_charge > 0 LIMIT 1`,
+        [r.order_id]
+      );
+      if (alreadyCharged.length === 0) {
+        pumpingCharge = Number(r.pumping_charge_lumpsum || 0);
+      }
+    }
+
     await query(
       `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, waiting_charge, total_amount)
        VALUES ($1, $2, $3, $4, 0, $5)

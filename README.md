@@ -708,3 +708,41 @@ so waiting isn't practical for testing. Trigger manually instead:
 https://oorm-backend.onrender.com/setup/run-pump-departure-check?key=YOUR_SETUP_SECRET
 https://oorm-backend.onrender.com/setup/run-batching-not-started-check?key=YOUR_SETUP_SECRET
 ```
+
+## Twentieth round — the real rate bug, found and fixed
+
+Your screenshot made the actual root cause obvious — two separate real bugs, both fixed:
+
+1. **Rate differing within the same order.** The rate lookup used `CURRENT_DATE` — the
+   real-world moment each individual delivery happened to complete — instead of the
+   order's own date. If a rate changed between one truck finishing and the next truck
+   on the *same order* finishing, they'd get priced differently even though it's
+   genuinely one order. Fixed: rate is now looked up against the order's own date, so
+   every delivery on one order is always priced identically, regardless of when each
+   truck actually completed.
+2. **Pumping charge applied per delivery instead of once per order.** This was a real
+   over-charging bug — a 4-truck pump order was being billed the pump lump sum 4 times
+   instead of once. Fixed: only the first delivery invoiced on a given order carries the
+   pump charge; every other delivery on that same order gets ₹0 for pumping, so the
+   order's total pump charge is correct. The old field label ("lump sum per delivery")
+   was actively misleading about this — corrected to "one-time per order."
+
+**Important — this fix is forward-looking only.** I did not touch any invoice already
+generated (including the ones in your screenshot) — correcting historical financial
+records automatically is too risky to do silently, since you may have already acted on
+those numbers. Those specific deliveries (DT-2244's rate, and the extra pump charges on
+DT-2243/2242/2241) will still show their original amounts until you address them
+manually. If you want, I can build a proper invoice-correction tool for
+Administrator/Accountant so fixing records like these doesn't require touching the
+database directly — let me know.
+
+**Rates module now has the history log you asked for.** Administrator/Accountant →
+Concrete grades and rates now shows every rate ever entered — customer, grade, rate,
+pump charge, effective dates, and whether it's currently active or was superseded —
+instead of just a blind "add rate" form with no way to see what's already on file. Also
+added an **"End this rate"** action, so replacing a rate can now properly close out the
+old one (set its end date) instead of leaving it open-ended indefinitely, which is
+exactly the kind of ambiguity that let this bug happen in the first place.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.

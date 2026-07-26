@@ -121,17 +121,22 @@ export function SitesPanel({ setError }) {
 }
 
 export function RatesPanel({ setError }) {
+  const [rates, setRates] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [grades, setGrades] = useState([]);
   const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", rate_per_m3: "", pumping_charge_lumpsum: "", waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10) });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
 
-  useEffect(() => {
-    Promise.all([apiRequest("/master/customers"), apiRequest("/master/mix-grades")])
-      .then(([c, g]) => { setCustomers(c); setGrades(g); })
-      .catch((err) => setError(err.message));
-  }, []);
+  async function load() {
+    try {
+      const [r, c, g] = await Promise.all([
+        apiRequest("/administrator/rates"), apiRequest("/master/customers"), apiRequest("/master/mix-grades"),
+      ]);
+      setRates(r); setCustomers(c); setGrades(g);
+    } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
 
   async function submit(e) {
     e.preventDefault();
@@ -139,32 +144,86 @@ export function RatesPanel({ setError }) {
     try {
       await apiRequest("/administrator/rates", { method: "POST", body: form });
       setNotice("Rate added.");
+      load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
+  async function endRate(id) {
+    const effectiveTo = window.prompt("End this rate as of which date? (it stops applying to new deliveries after this date)", new Date().toISOString().slice(0, 10));
+    if (!effectiveTo) return;
+    setError("");
+    try {
+      await apiRequest(`/administrator/rates/${id}/end`, { method: "POST", body: { effective_to: effectiveTo } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
   return (
-    <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, maxWidth: 480 }}>
-      {notice && <div style={{ gridColumn: "1 / -1", color: "var(--signal-green)" }}>{notice}</div>}
-      <div>
-        <div style={{ color: "var(--slate)" }}>Customer</div>
-        <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} required>
-          <option value="">Select</option>
-          {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Rate history — every rate on file, past and current</div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        {rates.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--slate)" }}>No rates entered yet.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th>Customer</th><th>Grade</th><th>Rate/m³</th><th>Pump charge (one-time/order)</th>
+                  <th>Waiting/hr</th><th>Effective from</th><th>Effective to</th><th>Status</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rates.map((r) => (
+                  <tr key={r.id} style={r.currently_active ? { fontWeight: 600 } : { color: "var(--slate)" }}>
+                    <td>{r.customer_name}</td>
+                    <td>{r.mix_grade_name}</td>
+                    <td>₹{r.rate_per_m3}</td>
+                    <td>{r.pumping_charge_lumpsum > 0 ? `₹${r.pumping_charge_lumpsum}` : "–"}</td>
+                    <td>{r.waiting_charge_per_hour > 0 ? `₹${r.waiting_charge_per_hour}` : "–"}</td>
+                    <td>{new Date(r.effective_from).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
+                    <td>{r.effective_to ? new Date(r.effective_to).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" }) : "Open-ended"}</td>
+                    <td>{r.currently_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-neutral">{r.effective_to ? "Ended" : "Superseded"}</span>}</td>
+                    <td>
+                      {!r.effective_to && (
+                        <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => endRate(r.id)}>End this rate</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
-      <div>
-        <div style={{ color: "var(--slate)" }}>Mix grade</div>
-        <select value={form.mix_grade_id} onChange={(e) => setForm({ ...form, mix_grade_id: e.target.value })} required>
-          <option value="">Select</option>
-          {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-        </select>
-      </div>
-      <div><div style={{ color: "var(--slate)" }}>Rate per m³ (₹)</div><input type="number" value={form.rate_per_m3} onChange={(e) => setForm({ ...form, rate_per_m3: e.target.value })} required /></div>
-      <div><div style={{ color: "var(--slate)" }}>Pumping charge — lump sum per delivery (₹)</div><input type="number" value={form.pumping_charge_lumpsum} onChange={(e) => setForm({ ...form, pumping_charge_lumpsum: e.target.value })} /></div>
-      <div><div style={{ color: "var(--slate)" }}>Waiting charge per hour (₹)</div><input type="number" value={form.waiting_charge_per_hour} onChange={(e) => setForm({ ...form, waiting_charge_per_hour: e.target.value })} /></div>
-      <div><div style={{ color: "var(--slate)" }}>Effective from</div><input type="date" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required /></div>
-      <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
-    </form>
+
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Add a new rate</div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, maxWidth: 480 }}>
+        {notice && <div style={{ gridColumn: "1 / -1", color: "var(--signal-green)" }}>{notice}</div>}
+        <div>
+          <div style={{ color: "var(--slate)" }}>Customer</div>
+          <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} required>
+            <option value="">Select</option>
+            {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Mix grade</div>
+          <select value={form.mix_grade_id} onChange={(e) => setForm({ ...form, mix_grade_id: e.target.value })} required>
+            <option value="">Select</option>
+            {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        </div>
+        <div><div style={{ color: "var(--slate)" }}>Rate per m³ (₹)</div><input type="number" value={form.rate_per_m3} onChange={(e) => setForm({ ...form, rate_per_m3: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Pumping charge — one-time per order (₹)</div><input type="number" value={form.pumping_charge_lumpsum} onChange={(e) => setForm({ ...form, pumping_charge_lumpsum: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Waiting charge per hour (₹)</div><input type="number" value={form.waiting_charge_per_hour} onChange={(e) => setForm({ ...form, waiting_charge_per_hour: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Effective from</div><input type="date" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required /></div>
+        <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)" }}>
+          If this replaces an existing rate above, use "End this rate" on the old one (set its end date to the day before this one starts) so there's no ambiguity about which rate applies on any given day.
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
+      </form>
+    </div>
   );
 }
 

@@ -135,6 +135,22 @@ router.delete("/trucks/:id", requireRole("administrator"), async (req, res) => {
 
 // ===== Master data: Rate master (rate per m3, pumping & waiting charges) =====
 
+// Full rate history — every rate ever entered, past and current, so
+// Administrator can actually see what's on file before adding a new one
+// instead of guessing (this visibility gap is what let overlapping/
+// inconsistent rates happen in the first place).
+router.get("/rates", requireRole("administrator", "accountant"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name,
+            (rm.effective_from <= CURRENT_DATE AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)) AS currently_active
+     FROM rate_master rm
+     JOIN customers c ON c.id = rm.customer_id
+     JOIN mix_grades m ON m.id = rm.mix_grade_id
+     ORDER BY c.name, m.name, rm.effective_from DESC`
+  );
+  res.json(rows);
+});
+
 router.post("/rates", requireRole("administrator", "accountant"), async (req, res) => {
   const { customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from } = req.body;
   if (!customer_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
@@ -146,6 +162,20 @@ router.post("/rates", requireRole("administrator", "accountant"), async (req, re
     [customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum || 0, waiting_charge_per_hour || 0, effective_from]
   );
   res.status(201).json(rows[0]);
+});
+
+// Closes out a rate as of a given date, so it stops being picked up for new
+// deliveries from that point on — use this when replacing a rate instead of
+// just adding a new row and leaving the old one open-ended indefinitely.
+router.post("/rates/:id/end", requireRole("administrator", "accountant"), async (req, res) => {
+  const { effective_to } = req.body;
+  if (!effective_to) return res.status(400).json({ error: "End date is required." });
+  const { rows } = await query(
+    "UPDATE rate_master SET effective_to = $1 WHERE id = $2 RETURNING *",
+    [effective_to, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Rate not found." });
+  res.json(rows[0]);
 });
 
 // ===== Master data: Pumps =====
