@@ -133,6 +133,15 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
             {lead.status === "lost" && lead.lost_reason && <div style={{ color: "var(--alert-red)" }}>Lost — {lead.lost_reason}</div>}
             {lead.status === "won" && <div style={{ color: "var(--signal-green)" }}>Won — counted as {lead.attribution === "salesperson" ? "salesperson's sale" : "company sale"}</div>}
           </div>
+          {lead.site_latitude && lead.site_longitude && (
+            <a
+              href={`https://maps.google.com/?q=${lead.site_latitude},${lead.site_longitude}`}
+              target="_blank" rel="noreferrer"
+              style={{ display: "block", textAlign: "center", marginTop: 10, padding: 10, background: "var(--rebar)", color: "#fff", borderRadius: 8, fontWeight: 600, textDecoration: "none", fontSize: 13 }}
+            >
+              View site location
+            </a>
+          )}
         </div>
 
         {canMarkWon && lead.status !== "won" && lead.status !== "lost" && (

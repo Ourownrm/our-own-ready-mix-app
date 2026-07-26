@@ -23,6 +23,12 @@ function sumQty(rows) {
 function sumAmount(rows) {
   return rows.reduce((s, r) => s + Number(r.amount || 0), 0).toFixed(2);
 }
+function sumPumpingCharge(rows) {
+  return rows.reduce((s, r) => s + Number(r.pumping_charge || 0), 0).toFixed(2);
+}
+function sumTotalAmount(rows) {
+  return rows.reduce((s, r) => s + Number(r.total_amount || 0), 0).toFixed(2);
+}
 
 export default function ProductionReport() {
   const [customers, setCustomers] = useState([]);
@@ -169,19 +175,23 @@ export default function ProductionReport() {
 
       doc.autoTable({
         startY: 31 + lines.length * 4,
-        head: [["Date", "DC No.", "Customer", "Site", "Truck", "Driver", "Sales Person", "Pump", "Supervisor", "Grade", "Qty (m³)", "Rate", "Amount", "Status"]],
+        head: [["Date", "DC No.", "Customer", "Site", "Truck", "Driver", "Sales Person", "Pump", "Supervisor", "Grade", "Qty (m³)", "Rate", "Amount", "Pump chg", "Total", "Status"]],
         body: rows.map((r) => [
           formatDate(r.ticket_date), r.dc_no, r.customer_name, r.site_name, r.truck_number, r.driver_name,
           r.salesperson_name || "–", r.pump_code || "–", r.supervisor_name || "–", r.grade_name,
-          r.quantity_m3, r.rate != null ? inrPdf(r.rate) : "–", r.amount != null ? inrPdf(r.amount) : "–", r.delivery_note_status || "–",
+          r.quantity_m3, r.rate != null ? inrPdf(r.rate) : "–", r.amount != null ? inrPdf(r.amount) : "–",
+          r.pumping_charge != null && Number(r.pumping_charge) > 0 ? inrPdf(r.pumping_charge) : "–",
+          r.total_amount != null ? inrPdf(r.total_amount) : "–", r.delivery_note_status || "–",
         ]),
-        foot: [["", "", "", "", "", "", "", "", "", "Total", sumQty(rows), "", inrPdf(sumAmount(rows)), `${rows.length} deliveries`]],
+        foot: [["", "", "", "", "", "", "", "", "", "Total", sumQty(rows), "", inrPdf(sumAmount(rows)), inrPdf(sumPumpingCharge(rows)), inrPdf(sumTotalAmount(rows)), `${rows.length} deliveries`]],
         styles: { fontSize: 7, overflow: "linebreak" },
         headStyles: { fillColor: [199, 91, 18] },
         columnStyles: {
           10: { cellWidth: 16 },  // Qty
-          11: { cellWidth: 20 },  // Rate
-          12: { cellWidth: 24 },  // Amount — was getting clipped before
+          11: { cellWidth: 18 },  // Rate
+          12: { cellWidth: 20 },  // Amount
+          13: { cellWidth: 18 },  // Pumping charge
+          14: { cellWidth: 20 },  // Total — was getting clipped before
         },
       });
       doc.save(`Production_Report_${filters.from_date}to${filters.to_date}.pdf`);
@@ -203,12 +213,16 @@ export default function ProductionReport() {
         Truck: r.truck_number, Driver: r.driver_name, "Sales Person": r.salesperson_name || "",
         Pump: r.pump_code || "", Supervisor: r.supervisor_name || "", Grade: r.grade_name,
         "Quantity (m³)": Number(r.quantity_m3), Rate: r.rate != null ? Number(r.rate) : "",
-        Amount: r.amount != null ? Number(r.amount) : "", "Delivery Note Status": r.delivery_note_status || "",
+        Amount: r.amount != null ? Number(r.amount) : "",
+        "Pumping charge": r.pumping_charge != null ? Number(r.pumping_charge) : "",
+        Total: r.total_amount != null ? Number(r.total_amount) : "",
+        "Delivery Note Status": r.delivery_note_status || "",
       }));
       sheetRows.push({
         Date: "", "DC No.": "", Customer: "", Site: "", Truck: "", Driver: "", "Sales Person": "",
         Pump: "", Supervisor: "", Grade: "Total", "Quantity (m³)": Number(sumQty(rows)),
-        Rate: "", Amount: Number(sumAmount(rows)), "Delivery Note Status": `${rows.length} deliveries`,
+        Rate: "", Amount: Number(sumAmount(rows)), "Pumping charge": Number(sumPumpingCharge(rows)),
+        Total: Number(sumTotalAmount(rows)), "Delivery Note Status": `${rows.length} deliveries`,
       });
       const ws = XLSX.utils.json_to_sheet(sheetRows);
       const wb = XLSX.utils.book_new();
@@ -353,7 +367,7 @@ export default function ProductionReport() {
                     <tr>
                       <th>Date</th><th>DC No.</th><th>Customer</th><th>Site</th><th>Truck</th><th>Driver</th>
                       <th>Sales Person</th><th>Pump</th><th>Supervisor</th><th>Grade</th><th>Quantity</th>
-                      <th>Rate</th><th>Amount</th><th>Status</th><th></th>
+                      <th>Rate</th><th>Amount</th><th>Pumping charge</th><th>Total</th><th>Status</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -372,6 +386,8 @@ export default function ProductionReport() {
                         <td>{r.quantity_m3} m³</td>
                         <td>{r.rate != null ? inr(r.rate) : "–"}</td>
                         <td>{r.amount != null ? inr(r.amount) : "–"}</td>
+                        <td>{r.pumping_charge != null && Number(r.pumping_charge) > 0 ? inr(r.pumping_charge) : "–"}</td>
+                        <td>{r.total_amount != null ? inr(r.total_amount) : "–"}</td>
                         <td>{r.delivery_note_status || "–"}</td>
                         <td>
                           <button style={{ padding: "3px 8px", fontSize: 11 }} onClick={() => setQcTicketId(r.id)}>
@@ -386,6 +402,8 @@ export default function ProductionReport() {
                       <td colSpan={10}>Totals ({result.totals.delivery_count} deliveries)</td>
                       <td>{result.totals.total_qty_m3} m³</td>
                       <td></td>
+                      <td>{inr(result.totals.total_concrete_amount)}</td>
+                      <td>{inr(result.totals.total_pumping_charge)}</td>
                       <td>{inr(result.totals.total_amount)}</td>
                       <td></td>
                       <td></td>

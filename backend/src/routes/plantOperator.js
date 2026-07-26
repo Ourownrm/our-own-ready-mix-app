@@ -20,6 +20,7 @@ router.get("/available-orders", async (req, res) => {
   const { rows } = await query(
     `SELECT co.id, co.order_quantity_m3, c.name AS customer_name, s.name AS site_name,
             m.name AS mix_grade_name,
+            (co.assigned_site_supervisor_id IS NOT NULL AND NOT co.site_ready_confirmed) AS blocked_site_not_ready,
             COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS dispatched_so_far
      FROM customer_orders co
      JOIN customers c ON c.id = co.customer_id
@@ -28,7 +29,7 @@ router.get("/available-orders", async (req, res) => {
      LEFT JOIN delivery_tickets dt ON dt.order_id = co.id AND dt.status != 'cancelled'
      LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE co.order_date = CURRENT_DATE AND co.status IN ('planned', 'in_progress', 'partially_completed')
-     GROUP BY co.id, c.name, s.name, m.name
+     GROUP BY co.id, c.name, s.name, m.name, co.assigned_site_supervisor_id, co.site_ready_confirmed
      HAVING COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) < co.order_quantity_m3
      ORDER BY co.scheduled_batching_time`
   );
@@ -40,6 +41,17 @@ router.post("/tickets", requireRole("plant_operator", "administrator"), async (r
   const { order_id, loaded_quantity_m3, truck_id, driver_id } = req.body;
   if (!order_id || !loaded_quantity_m3 || !truck_id || !driver_id) {
     return res.status(400).json({ error: "Order, quantity, truck, and driver are all required." });
+  }
+
+  // No batching until the assigned Site Supervisor confirms the site is
+  // ready — orders with no supervisor (small sites) aren't gated, since
+  // there's no one able to confirm.
+  const { rows: gateCheck } = await query(
+    "SELECT assigned_site_supervisor_id, site_ready_confirmed FROM customer_orders WHERE id = $1",
+    [order_id]
+  );
+  if (gateCheck[0]?.assigned_site_supervisor_id && !gateCheck[0].site_ready_confirmed) {
+    return res.status(400).json({ error: "Site Supervisor hasn't confirmed the site is ready yet — can't start batching for this order." });
   }
 
   // Ticket numbers must be globally unique. Basing the next number on a same-day

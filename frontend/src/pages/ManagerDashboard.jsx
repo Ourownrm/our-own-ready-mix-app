@@ -163,6 +163,7 @@ export default function ManagerDashboard() {
 
         <BookingsQueue setError={setError} />
         <OnDutyDriversTable drivers={onDutyDrivers} />
+        <PumpStatusTable orders={today.concat(carriedForward)} />
         <RawMaterialStockCard />
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} />
         <CompletedTripsTable trips={completedTrips} />
@@ -306,6 +307,49 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
   );
 }
 
+// Every order that needs a pump today — scheduled vs actual departure time,
+// and whether the site has confirmed ready for batching.
+function PumpStatusTable({ orders }) {
+  const pumpOrders = orders.filter((o) => o.pump_requirement === "with_pump");
+  if (pumpOrders.length === 0) return null;
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Pump status</div>
+      <div style={{ overflowX: "auto" }}>
+        <table>
+          <thead>
+            <tr><th>Customer</th><th>Site</th><th>Scheduled departure</th><th>Actual departure</th><th>Site ready</th></tr>
+          </thead>
+          <tbody>
+            {pumpOrders.map((o) => {
+              const overdue = o.pump_departure_time && !o.pump_actual_departure_time &&
+                new Date(`${o.order_date?.slice(0, 10)}T${o.pump_departure_time}`) < new Date();
+              return (
+                <tr key={o.id} style={overdue ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                  <td>{o.customer_name}</td>
+                  <td>{o.site_name}</td>
+                  <td>{o.pump_departure_time || "–"}</td>
+                  <td>
+                    {o.pump_actual_departure_time ? (
+                      formatTime(o.pump_actual_departure_time)
+                    ) : overdue ? (
+                      <span style={{ color: "var(--alert-red)", fontWeight: 600 }}>Overdue</span>
+                    ) : (
+                      "Not yet departed"
+                    )}
+                  </td>
+                  <td>{o.site_ready_confirmed ? <span className="badge badge-success">Ready</span> : <span className="badge badge-warning">Not confirmed</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function CompletedTripsTable({ trips }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -317,7 +361,7 @@ function CompletedTripsTable({ trips }) {
           <table>
             <thead>
               <tr>
-                <th>Truck</th><th>Driver</th><th>Customer</th><th>Qty</th>
+                <th>Truck</th><th>Driver</th><th>Customer</th><th>Qty</th><th>Status</th>
                 <th>Batch time</th><th>Left plant</th><th>Reached site</th><th>Unloading start</th><th>Unloading finish</th>
               </tr>
             </thead>
@@ -328,6 +372,7 @@ function CompletedTripsTable({ trips }) {
                   <td>{t.driver_name}</td>
                   <td>{t.customer_name} &middot; {t.site_name}</td>
                   <td>{t.loaded_quantity_m3} m³</td>
+                  <td><StatusBadge status={t.status} /></td>
                   <td>{formatTime(t.batch_time)}</td>
                   <td>{formatTime(t.left_plant_time)}</td>
                   <td>{formatTime(t.reached_site_time)}</td>

@@ -147,7 +147,7 @@ router.get("/active-trucks", requireRole("manager", "administrator"), async (req
        WHERE ticket_id = dt.id AND event_type = 'reached_site'
        ORDER BY event_time DESC LIMIT 1
      ) rs ON true
-     WHERE dt.ticket_date = CURRENT_DATE AND dt.status NOT IN ('completed', 'cancelled', 'returned')
+     WHERE dt.ticket_date = CURRENT_DATE AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
      ORDER BY dt.created_at`
   );
   res.json(rows);
@@ -167,7 +167,7 @@ router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "ad
 // left plant (dispatched by QC), reached site, unloading start, unloading finish.
 router.get("/completed-trips", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
-    `SELECT dt.id AS ticket_id, dt.ticket_number, t.truck_number, u.name AS driver_name,
+    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, t.truck_number, u.name AS driver_name,
             c.name AS customer_name, s.name AS site_name, dt.loaded_quantity_m3,
             dt.created_at AS batch_time,
             MAX(te.event_time) FILTER (WHERE te.event_type = 'dispatched') AS left_plant_time,
@@ -181,7 +181,7 @@ router.get("/completed-trips", requireRole("manager", "administrator"), async (r
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      LEFT JOIN trip_events te ON te.ticket_id = dt.id
-     WHERE dt.ticket_date = CURRENT_DATE AND dt.status = 'completed'
+     WHERE dt.ticket_date = CURRENT_DATE AND dt.status IN ('completed', 'rejected')
      GROUP BY dt.id, t.truck_number, u.name, c.name, s.name, dt.loaded_quantity_m3, dt.created_at
      ORDER BY dt.created_at DESC`
   );
@@ -200,7 +200,7 @@ router.get("/live-locations", requireRole("manager", "administrator"), async (re
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN sites s ON s.id = co.site_id
      JOIN gps_pings gp ON gp.ticket_id = dt.id
-     WHERE dt.status NOT IN ('completed', 'cancelled', 'returned') AND dt.ticket_date = CURRENT_DATE
+     WHERE dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected') AND dt.ticket_date = CURRENT_DATE
      ORDER BY dt.id, gp.recorded_at DESC`
   );
   res.json(rows);
@@ -228,7 +228,7 @@ router.get("/on-duty-drivers", requireRole("manager", "administrator"), async (r
      ) gp ON true
      LEFT JOIN LATERAL (
        SELECT id, ticket_number, truck_id FROM delivery_tickets
-       WHERE driver_id = d.driver_id AND status NOT IN ('completed', 'cancelled', 'returned')
+       WHERE driver_id = d.driver_id AND status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
        ORDER BY created_at DESC LIMIT 1
      ) dt ON true
      LEFT JOIN trucks t ON t.id = dt.truck_id

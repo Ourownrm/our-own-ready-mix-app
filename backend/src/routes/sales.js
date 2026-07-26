@@ -17,15 +17,16 @@ async function mySalespersonId(userId) {
 // ===================== LEADS =====================
 
 router.post("/leads", requireRole("manager", "administrator"), async (req, res) => {
-  const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to } = req.body;
+  const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to, site_latitude, site_longitude } = req.body;
   if (!prospect_name || !assigned_to) {
     return res.status(400).json({ error: "Prospect name and an assigned salesperson are required." });
   }
   const { rows } = await query(
-    `INSERT INTO leads (prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    `INSERT INTO leads (prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to, created_by, site_latitude, site_longitude)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
     [prospect_name, contact_person || null, contact_phone || null, site_location || null,
-     mix_grade_interest || null, estimated_qty_m3 || null, assigned_to, req.user.id]
+     mix_grade_interest || null, estimated_qty_m3 || null, assigned_to, req.user.id,
+     site_latitude || null, site_longitude || null]
   );
   await pushToRole("sales_executive", {
     title: "New lead assigned",

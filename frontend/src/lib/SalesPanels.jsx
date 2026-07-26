@@ -6,19 +6,32 @@ export function CreateLeadForm({ setError, onDone }) {
   const [form, setForm] = useState({
     prospect_name: "", contact_person: "", contact_phone: "",
     site_location: "", mix_grade_interest: "", estimated_qty_m3: "", assigned_to: "",
+    site_latitude: "", site_longitude: "",
   });
   const [saving, setSaving] = useState(false);
+  const [locating, setLocating] = useState(false);
 
   useEffect(() => {
     apiRequest("/master/sales-executives").then(setSalesExecs).catch((err) => setError(err.message));
   }, []);
+
+  function useCurrentLocation() {
+    setLocating(true);
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => {
+        setForm((f) => ({ ...f, site_latitude: pos.coords.latitude.toFixed(7), site_longitude: pos.coords.longitude.toFixed(7) }));
+        setLocating(false);
+      },
+      () => { setError("Couldn't get current location — enter coordinates manually, or paste from Google Maps."); setLocating(false); }
+    );
+  }
 
   async function submit(e) {
     e.preventDefault();
     setSaving(true); setError("");
     try {
       await apiRequest("/sales/leads", { method: "POST", body: form });
-      setForm({ prospect_name: "", contact_person: "", contact_phone: "", site_location: "", mix_grade_interest: "", estimated_qty_m3: "", assigned_to: "" });
+      setForm({ prospect_name: "", contact_person: "", contact_phone: "", site_location: "", mix_grade_interest: "", estimated_qty_m3: "", assigned_to: "", site_latitude: "", site_longitude: "" });
       if (onDone) onDone();
     } catch (err) {
       setError(err.message);
@@ -39,9 +52,20 @@ export function CreateLeadForm({ setError, onDone }) {
       </div>
       <div><div style={{ color: "var(--slate)" }}>Contact person</div><input value={form.contact_person} onChange={(e) => setForm({ ...form, contact_person: e.target.value })} /></div>
       <div><div style={{ color: "var(--slate)" }}>Contact phone</div><input value={form.contact_phone} onChange={(e) => setForm({ ...form, contact_phone: e.target.value })} /></div>
-      <div><div style={{ color: "var(--slate)" }}>Site / location</div><input value={form.site_location} onChange={(e) => setForm({ ...form, site_location: e.target.value })} /></div>
+      <div><div style={{ color: "var(--slate)" }}>Site / location (text)</div><input value={form.site_location} onChange={(e) => setForm({ ...form, site_location: e.target.value })} /></div>
       <div><div style={{ color: "var(--slate)" }}>Grade interested in</div><input value={form.mix_grade_interest} onChange={(e) => setForm({ ...form, mix_grade_interest: e.target.value })} placeholder="e.g. M25" /></div>
       <div><div style={{ color: "var(--slate)" }}>Estimated qty (m³)</div><input type="number" value={form.estimated_qty_m3} onChange={(e) => setForm({ ...form, estimated_qty_m3: e.target.value })} /></div>
+      <div></div>
+      <div><div style={{ color: "var(--slate)" }}>Site latitude</div><input type="number" step="any" value={form.site_latitude} onChange={(e) => setForm({ ...form, site_latitude: e.target.value })} placeholder="e.g. 8.5241" /></div>
+      <div><div style={{ color: "var(--slate)" }}>Site longitude</div><input type="number" step="any" value={form.site_longitude} onChange={(e) => setForm({ ...form, site_longitude: e.target.value })} placeholder="e.g. 76.9366" /></div>
+      <div style={{ gridColumn: "1 / -1" }}>
+        <button type="button" onClick={useCurrentLocation} disabled={locating} style={{ fontSize: 12, padding: "6px 10px" }}>
+          {locating ? "Getting location..." : "Use my current location"}
+        </button>
+        <span style={{ fontSize: 11, color: "var(--slate)", marginLeft: 8 }}>
+          Or paste coordinates from Google Maps (long-press the pin on the site → copy the numbers shown)
+        </span>
+      </div>
       <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Assign lead"}</button></div>
     </form>
   );

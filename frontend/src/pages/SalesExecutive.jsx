@@ -344,6 +344,15 @@ function LeadDetail({ leadId, onBack }) {
             <div>{lead.at_site === false ? "Added: not updated from site" : lead.at_site ? "Added from site" : ""}</div>
             {lead.status === "lost" && lead.lost_reason && <div style={{ color: "var(--alert-red)", marginTop: 6 }}>Lost — {lead.lost_reason}</div>}
           </div>
+          {lead.site_latitude && lead.site_longitude && (
+            <a
+              href={`https://maps.google.com/?q=${lead.site_latitude},${lead.site_longitude}`}
+              target="_blank" rel="noreferrer"
+              style={{ display: "block", textAlign: "center", marginTop: 10, padding: 10, background: "var(--rebar)", color: "#fff", borderRadius: 8, fontWeight: 600, textDecoration: "none", fontSize: 13 }}
+            >
+              Navigate to site in Google Maps
+            </a>
+          )}
         </div>
 
         {!["won", "lost"].includes(lead.status) && (

@@ -1,5 +1,5 @@
 import { query } from "../db.js";
-import { pushToRole } from "./push.js";
+import { pushToRole, pushToUser } from "./push.js";
 
 // Runs on a timer (see index.js) rather than being tied to a user action,
 // since nobody "does" anything at the 2-hour mark — it's a passive
@@ -37,6 +37,78 @@ export async function checkDelayedTrucks() {
       body: `${t.truck_number} — ${t.site_name}`,
       url: "/qc",
     });
+  }
+  return rows;
+}
+
+// Pump was scheduled to leave the plant by a certain time and hasn't been
+// confirmed departed — notify Manager, Administrator, and the specific
+// assigned Site Supervisor. Only applies to orders that actually need a pump.
+export async function checkPumpDepartureOverdue() {
+  const { rows } = await query(
+    `SELECT o.id AS order_id, o.pump_departure_time, s.name AS site_name, c.name AS customer_name,
+            o.assigned_site_supervisor_id
+     FROM customer_orders o
+     JOIN sites s ON s.id = o.site_id
+     JOIN customers c ON c.id = o.customer_id
+     WHERE o.order_date = CURRENT_DATE AND o.pump_requirement = 'with_pump'
+       AND o.pump_departure_time IS NOT NULL
+       AND o.pump_actual_departure_time IS NULL
+       AND (o.order_date + o.pump_departure_time) < now()
+       AND o.status NOT IN ('cancelled', 'closed', 'completed')
+       AND NOT EXISTS (
+         SELECT 1 FROM notifications n WHERE n.order_id = o.id AND n.type = 'pump_departure_overdue'
+       )`
+  );
+
+  for (const o of rows) {
+    const message = `Pump hasn't left the plant yet for ${o.customer_name} — ${o.site_name} (scheduled ${o.pump_departure_time})`;
+    await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('manager', $1, 'pump_departure_overdue', $2)`, [o.order_id, message]);
+    await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('administrator', $1, 'pump_departure_overdue', $2)`, [o.order_id, message]);
+    await pushToRole("manager", { title: "Pump departure overdue", body: message, url: "/manager" });
+    await pushToRole("administrator", { title: "Pump departure overdue", body: message, url: "/reports" });
+    if (o.assigned_site_supervisor_id) {
+      await query(
+        `INSERT INTO notifications (recipient_role, recipient_id, order_id, type, message) VALUES ('site_supervisor', $1, $2, 'pump_departure_overdue', $3)`,
+        [o.assigned_site_supervisor_id, o.order_id, message]
+      );
+      await pushToUser(o.assigned_site_supervisor_id, { title: "Pump departure overdue", body: message, url: "/site-supervisor" });
+    }
+  }
+  return rows;
+}
+
+// Scheduled batching time has passed with no delivery ticket created yet —
+// notify Manager, Administrator, and the assigned Site Supervisor.
+export async function checkBatchingNotStarted() {
+  const { rows } = await query(
+    `SELECT o.id AS order_id, o.scheduled_batching_time, s.name AS site_name, c.name AS customer_name,
+            o.assigned_site_supervisor_id
+     FROM customer_orders o
+     JOIN sites s ON s.id = o.site_id
+     JOIN customers c ON c.id = o.customer_id
+     WHERE o.order_date = CURRENT_DATE
+       AND (o.order_date + o.scheduled_batching_time) < now()
+       AND o.status = 'planned'
+       AND NOT EXISTS (SELECT 1 FROM delivery_tickets dt WHERE dt.order_id = o.id)
+       AND NOT EXISTS (
+         SELECT 1 FROM notifications n WHERE n.order_id = o.id AND n.type = 'batching_not_started'
+       )`
+  );
+
+  for (const o of rows) {
+    const message = `Batching hasn't started for ${o.customer_name} — ${o.site_name} (scheduled ${o.scheduled_batching_time})`;
+    await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('manager', $1, 'batching_not_started', $2)`, [o.order_id, message]);
+    await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('administrator', $1, 'batching_not_started', $2)`, [o.order_id, message]);
+    await pushToRole("manager", { title: "Batching not started", body: message, url: "/manager" });
+    await pushToRole("administrator", { title: "Batching not started", body: message, url: "/reports" });
+    if (o.assigned_site_supervisor_id) {
+      await query(
+        `INSERT INTO notifications (recipient_role, recipient_id, order_id, type, message) VALUES ('site_supervisor', $1, $2, 'batching_not_started', $3)`,
+        [o.assigned_site_supervisor_id, o.order_id, message]
+      );
+      await pushToUser(o.assigned_site_supervisor_id, { title: "Batching not started", body: message, url: "/site-supervisor" });
+    }
   }
   return rows;
 }

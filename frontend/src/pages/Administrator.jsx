@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel } from "../lib/MasterDataPanels.jsx";
-import { CreateLeadForm } from "../lib/SalesPanels.jsx";
 
 const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant", "sales_executive"];
 
@@ -25,7 +24,6 @@ export default function Administrator() {
           ["fleet", "Trucks and pumps"],
           ["fuel", "Fuel stations and equipment"],
           ["salespersons", "Salespersons"],
-          ["leads", "Assign a lead"],
           ["rates", "Concrete grades and rates"],
           ["orders", "Correct orders"],
           ["tickets", "Correct tickets"],
@@ -48,7 +46,6 @@ export default function Administrator() {
       {view === "fleet" && <FleetPanel setError={setError} />}
       {view === "fuel" && <FuelStationsAndEquipmentPanel setError={setError} />}
       {view === "salespersons" && <SalespersonsPanel setError={setError} />}
-      {view === "leads" && <CreateLeadForm setError={setError} />}
       {view === "rates" && <RatesPanel setError={setError} />}
       {view === "orders" && <OrdersPanel setError={setError} />}
       {view === "tickets" && <TicketsPanel setError={setError} />}

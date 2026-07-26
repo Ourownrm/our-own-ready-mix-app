@@ -64,7 +64,9 @@ const ROW_COLUMNS = `
   sq.delivery_note_status,
   CASE WHEN dt.loaded_quantity_m3 > 0 AND i.concrete_amount IS NOT NULL
        THEN ROUND(i.concrete_amount / dt.loaded_quantity_m3, 2) END AS rate,
-  i.total_amount AS amount
+  i.concrete_amount AS amount,
+  i.pumping_charge AS pumping_charge,
+  i.total_amount AS total_amount
 `;
 
 // Paginated results + totals for the current filtered set (not just the visible page).
@@ -84,6 +86,8 @@ router.get("/", async (req, res) => {
     query(
       `SELECT COUNT(*) AS delivery_count,
               COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3,
+              COALESCE(SUM(i.concrete_amount), 0) AS total_concrete_amount,
+              COALESCE(SUM(i.pumping_charge), 0) AS total_pumping_charge,
               COALESCE(SUM(i.total_amount), 0) AS total_amount
        ${BASE_FROM}
        WHERE ${where}`,
@@ -97,6 +101,8 @@ router.get("/", async (req, res) => {
     totals: {
       delivery_count: Number(totalsResult.rows[0].delivery_count),
       total_qty_m3: totalsResult.rows[0].total_qty_m3,
+      total_concrete_amount: totalsResult.rows[0].total_concrete_amount,
+      total_pumping_charge: totalsResult.rows[0].total_pumping_charge,
       total_amount: totalsResult.rows[0].total_amount,
     },
   });

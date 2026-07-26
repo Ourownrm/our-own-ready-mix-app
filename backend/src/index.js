@@ -20,7 +20,7 @@ import productionReportRoutes from "./routes/productionReport.js";
 import pushRoutes from "./routes/push.js";
 import fuelRoutes from "./routes/fuel.js";
 import salesRoutes from "./routes/sales.js";
-import { checkDelayedTrucks } from "./lib/scheduledChecks.js";
+import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted } from "./lib/scheduledChecks.js";
 
 dotenv.config();
 
@@ -71,4 +71,6 @@ app.listen(port, () => console.log(`OORM backend running on port ${port}`));
 // ever moved to a serverless/cold-start hosting model.)
 setInterval(() => {
   checkDelayedTrucks().catch((err) => console.error("Delayed-trucks check failed:", err));
+  checkPumpDepartureOverdue().catch((err) => console.error("Pump-departure-overdue check failed:", err));
+  checkBatchingNotStarted().catch((err) => console.error("Batching-not-started check failed:", err));
 }, 5 * 60 * 1000);

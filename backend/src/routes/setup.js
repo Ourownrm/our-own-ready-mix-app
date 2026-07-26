@@ -303,6 +303,28 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (leads capture location on creation; visits can be to anyone, not just existing customers).");
 
+    // Lead site location — the project site/customer office's own GPS
+    // coordinates, attached when a lead is assigned, so the salesperson can
+    // navigate straight there. Distinct from the at_site/latitude/longitude
+    // columns above, which record where the SALESPERSON was standing when
+    // they logged an update.
+    await pool.query(`
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS site_latitude NUMERIC(10,7);
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS site_longitude NUMERIC(10,7);
+    `);
+    log.push("Schema migration applied (leads can now carry the project site's own location, for direct navigation).");
+
+    // Pump dispatch tracking and site-readiness gate before batching.
+    await pool.query(`
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_actual_departure_time TIMESTAMPTZ;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_departure_confirmed_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_confirmed BOOLEAN DEFAULT false;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_confirmed_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_confirmed_at TIMESTAMPTZ;
+      ALTER TABLE notifications ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES customer_orders(id);
+    `);
+    log.push("Schema migration applied (pump departure confirmation and site-readiness gate before batching).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
@@ -495,6 +517,36 @@ router.get("/setup/run-delayed-trucks-check", async (req, res) => {
         `If you expected one to show up here, double check its status is\n` +
         `"reached_site" or "unloading", and that it actually reached site\n` +
         `more than 2 hours ago.`) +
+    `</pre>`
+  );
+});
+
+router.get("/setup/run-pump-departure-check", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  const { checkPumpDepartureOverdue } = await import("../lib/scheduledChecks.js");
+  const notified = await checkPumpDepartureOverdue();
+  res.send(
+    `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
+    (notified.length
+      ? `Notified about ${notified.length} overdue pump departure(s):\n\n` + notified.map((o) => `- ${o.customer_name} — ${o.site_name}`).join("\n")
+      : `No overdue pump departures right now — nothing to notify.`) +
+    `</pre>`
+  );
+});
+
+router.get("/setup/run-batching-not-started-check", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  const { checkBatchingNotStarted } = await import("../lib/scheduledChecks.js");
+  const notified = await checkBatchingNotStarted();
+  res.send(
+    `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
+    (notified.length
+      ? `Notified about ${notified.length} order(s) where batching hasn't started:\n\n` + notified.map((o) => `- ${o.customer_name} — ${o.site_name}`).join("\n")
+      : `Nothing overdue right now — nothing to notify.`) +
     `</pre>`
   );
 });

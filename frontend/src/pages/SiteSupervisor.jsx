@@ -5,6 +5,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 
 export default function SiteSupervisor() {
   const [deliveries, setDeliveries] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [showReject, setShowReject] = useState(false);
   const [pending, setPending] = useState(pendingCount());
@@ -18,8 +19,12 @@ export default function SiteSupervisor() {
 
   async function load() {
     try {
-      const rows = await apiRequest("/site-supervisor/my-deliveries");
+      const [rows, orderRows] = await Promise.all([
+        apiRequest("/site-supervisor/my-deliveries"),
+        apiRequest("/site-supervisor/my-orders"),
+      ]);
       setDeliveries(rows);
+      setOrders(orderRows);
       // Keep whatever the supervisor currently has selected, as long as it's
       // still in the list. Reading `selectedId` directly here was the bug:
       // this function is captured once by setInterval below, so it always
@@ -49,6 +54,26 @@ export default function SiteSupervisor() {
     await load();
   }
 
+  async function confirmPumpDeparture(orderId) {
+    setError("");
+    try {
+      await apiRequest(`/site-supervisor/orders/${orderId}/confirm-pump-departure`, { method: "POST" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function confirmSiteReady(orderId) {
+    setError("");
+    try {
+      await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (showReject && selected) {
     return (
       <RejectForm
@@ -70,6 +95,42 @@ export default function SiteSupervisor() {
           </div>
         )}
         {pending > 0 && <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>{pending} action(s) waiting to sync</div>}
+
+        {orders.some((o) => o.pump_requirement === "with_pump" && !o.pump_actual_departure_time || !o.site_ready_confirmed) && (
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Today's orders</div>
+            {orders.map((o) => (
+              <div key={o.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 8, fontSize: 12 }}>
+                <div style={{ fontWeight: 600 }}>{o.customer_name} — {o.site_name}</div>
+                <div style={{ color: "var(--slate)" }}>Batching scheduled {o.scheduled_batching_time}</div>
+
+                {o.pump_requirement === "with_pump" && (
+                  <div style={{ marginTop: 6 }}>
+                    {o.pump_actual_departure_time ? (
+                      <div style={{ color: "var(--signal-green)" }}>
+                        Pump left plant {new Date(o.pump_actual_departure_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    ) : (
+                      <button style={{ width: "100%", fontSize: 12, padding: "6px" }} onClick={() => confirmPumpDeparture(o.id)}>
+                        Confirm pump left plant
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ marginTop: 6 }}>
+                  {o.site_ready_confirmed ? (
+                    <div style={{ color: "var(--signal-green)" }}>Site confirmed ready</div>
+                  ) : (
+                    <button style={{ width: "100%", fontSize: 12, padding: "6px" }} onClick={() => confirmSiteReady(o.id)}>
+                      Confirm site ready for batching
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {deliveries.length > 1 && (
           <select

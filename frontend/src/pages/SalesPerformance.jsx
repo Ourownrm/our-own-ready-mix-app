@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import { CreateLeadForm } from "../lib/SalesPanels.jsx";
 
 const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
 
@@ -9,6 +10,7 @@ export default function SalesPerformance() {
   const [rows, setRows] = useState(null);
   const [visits, setVisits] = useState([]);
   const [error, setError] = useState("");
+  const [showAssignLead, setShowAssignLead] = useState(false);
 
   useEffect(() => {
     apiRequest("/sales/performance").then(setRows).catch((err) => setError(err.message));
@@ -20,9 +22,17 @@ export default function SalesPerformance() {
       <TopBar title="Sales Performance" />
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Link to="/leads"><button type="button">Browse all leads</button></Link>
+          <button type="button" onClick={() => setShowAssignLead(!showAssignLead)}>
+            {showAssignLead ? "Hide" : "Assign a lead"}
+          </button>
         </div>
+        {showAssignLead && (
+          <div style={{ marginBottom: 20 }}>
+            <CreateLeadForm setError={setError} onDone={() => setShowAssignLead(false)} />
+          </div>
+        )}
         <div className="card" style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Salespersons — this month</div>
           {!rows ? (

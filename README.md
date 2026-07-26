@@ -662,3 +662,49 @@ Revisit `/setup?key=...` once after deploying — adds location fields to `leads
 makes `customer_visits.customer_id` optional while adding `visited_name`/`visitor_type`
 (existing visits get backfilled with their customer's name automatically, so nothing
 already logged loses its "who").
+
+## Nineteenth round
+
+1. **Rejected trucks now correctly disappear from Active Trucks** and appear in
+   Completed Trips with a visible "rejected" status — fixed the same missing-status
+   pattern found before, this time in Active Trucks, Live Locations, On-Duty Drivers,
+   and Completed Trips (which only showed `completed` before, never `rejected`).
+2. **Lead location sharing** — Manager/Admin can attach a site's GPS coordinates when
+   assigning a lead ("Use my current location" or manual entry), with a
+   "Navigate to site" button for the assigned Sales Executive and a "View site
+   location" link for Admin/Manager oversight.
+3. **Pump dispatch & site-readiness workflow** — genuinely new coordination, not just a
+   display change:
+   - Site Supervisor confirms when the pump has actually left the plant (a new "Today's
+     orders" section on their screen); the actual time is recorded and shown on a new
+     **Pump status** table on the Manager Dashboard, alongside the scheduled time — rows
+     go red if overdue.
+   - **Batching is now blocked** until the assigned Site Supervisor confirms the site is
+     ready to receive concrete — Plant Operator's order dropdown shows which orders are
+     currently blocked, and trying to create a ticket against a not-ready order is
+     rejected with a clear message. Orders with no Site Supervisor assigned (small
+     sites) aren't gated, since there's no one able to confirm.
+   - Two new automatic checks (same 5-minute timer as the existing "truck over 2 hours"
+     alert): **pump departure overdue** and **batching not started by scheduled time**,
+     both notifying Manager, Administrator, and the specific assigned Site Supervisor.
+4. **"Assign a lead" moved** from Administrator's general tab list to the Sales
+   Performance page, alongside "Browse all leads" — sales management lives together now.
+5. **Production Report rate calculation — root cause found and fixed.** "Rate" was
+   derived from the concrete-only amount, but "Amount" displayed the total including
+   pumping charge — so for any pump order, Rate × Quantity didn't match Amount, which
+   is exactly what looks like "the rate is wrong" on inspection. Fixed by making Amount
+   consistent with Rate (concrete only) and adding a transparent **Pumping charge**
+   column plus a **Total** column, in the on-screen table and both exports.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds lead site-location columns, pump
+departure/site-readiness columns on orders, and `order_id` on notifications (for the two
+new order-level alerts).
+
+### Testing the two new scheduled checks
+Same pattern as the existing delayed-trucks test trigger — these run on a 5-minute timer
+so waiting isn't practical for testing. Trigger manually instead:
+```
+https://oorm-backend.onrender.com/setup/run-pump-departure-check?key=YOUR_SETUP_SECRET
+https://oorm-backend.onrender.com/setup/run-batching-not-started-check?key=YOUR_SETUP_SECRET
+```

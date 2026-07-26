@@ -150,6 +150,8 @@ CREATE TABLE leads (
   at_site BOOLEAN,
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
+  site_latitude NUMERIC(10,7),
+  site_longitude NUMERIC(10,7),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -298,6 +300,13 @@ CREATE TABLE customer_orders (
   sales_representative_id INTEGER REFERENCES salespersons(id),
   casting_location VARCHAR(200),
   pump_departure_time TIME,
+  pump_actual_departure_time TIMESTAMPTZ,
+  pump_departure_confirmed_by INTEGER REFERENCES users(id),
+  -- Site Supervisor confirms the site is ready to receive concrete before the
+  -- Plant Operator is allowed to start batching — once per order.
+  site_ready_confirmed BOOLEAN DEFAULT false,
+  site_ready_confirmed_by INTEGER REFERENCES users(id),
+  site_ready_confirmed_at TIMESTAMPTZ,
   remarks TEXT,
   status order_status DEFAULT 'planned',
   created_by INTEGER REFERENCES users(id),
@@ -512,8 +521,10 @@ CREATE TABLE notifications (
   recipient_role user_role NOT NULL DEFAULT 'manager',
   recipient_id INTEGER REFERENCES users(id),
   ticket_id INTEGER REFERENCES delivery_tickets(id),
+  order_id INTEGER REFERENCES customer_orders(id),
   type VARCHAR(50) NOT NULL,  -- left_plant, reached_site, delayed, at_site_over_threshold,
-                              -- concrete_rejected, delivery_completed, driver_off_duty_during_trip
+                              -- concrete_rejected, delivery_completed, driver_off_duty_during_trip,
+                              -- pump_departure_overdue, batching_not_started
   message TEXT NOT NULL,
   is_read BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT now()
