@@ -105,9 +105,9 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
        AND te.event_time < now() - INTERVAL '2 hours'`
     ),
     query(
-      `SELECT COUNT(*) AS count FROM site_qc sq
+      `SELECT COALESCE(SUM(sq.rejected_quantity_m3), 0) AS total FROM site_qc sq
        JOIN delivery_tickets dt ON dt.id = sq.ticket_id
-       WHERE sq.accepted = false AND dt.ticket_date = CURRENT_DATE`
+       WHERE sq.accepted = false AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
     ),
   ]);
 
@@ -116,7 +116,7 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
     monthly_production_m3: month.rows[0].total,
     fleet_status: fleet.rows,
     delayed_trucks: Number(delayed.rows[0].count),
-    rejected_concrete: Number(rejected.rows[0].count),
+    rejected_concrete_month_m3: rejected.rows[0].total,
   });
 });
 
@@ -126,7 +126,7 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
 // visible right on this list, not just as a background count.
 router.get("/active-trucks", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
-    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, dt.created_at,
+    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, dt.created_at, dt.order_id,
             t.truck_number, u.name AS driver_name, c.name AS customer_name, s.name AS site_name,
             rs.event_time AS reached_site_at,
             CASE WHEN dt.status IN ('reached_site', 'unloading') AND rs.event_time IS NOT NULL

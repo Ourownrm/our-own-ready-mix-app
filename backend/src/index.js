@@ -20,7 +20,8 @@ import productionReportRoutes from "./routes/productionReport.js";
 import pushRoutes from "./routes/push.js";
 import fuelRoutes from "./routes/fuel.js";
 import salesRoutes from "./routes/sales.js";
-import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted } from "./lib/scheduledChecks.js";
+import complianceRoutes from "./routes/compliance.js";
+import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries } from "./lib/scheduledChecks.js";
 
 dotenv.config();
 
@@ -53,6 +54,7 @@ app.use("/api/production-report", productionReportRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/fuel", fuelRoutes);
 app.use("/api/sales", salesRoutes);
+app.use("/api/compliance", complianceRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff
@@ -73,4 +75,5 @@ setInterval(() => {
   checkDelayedTrucks().catch((err) => console.error("Delayed-trucks check failed:", err));
   checkPumpDepartureOverdue().catch((err) => console.error("Pump-departure-overdue check failed:", err));
   checkBatchingNotStarted().catch((err) => console.error("Batching-not-started check failed:", err));
+  checkComplianceExpiries().catch((err) => console.error("Compliance-expiry check failed:", err));
 }, 5 * 60 * 1000);

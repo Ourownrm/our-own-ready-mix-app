@@ -19,6 +19,8 @@ import FuelFilling from "./pages/FuelFilling.jsx";
 import SalesExecutive from "./pages/SalesExecutive.jsx";
 import SalesPerformance from "./pages/SalesPerformance.jsx";
 import LeadsBrowser from "./pages/LeadsBrowser.jsx";
+import CustomerFeedback from "./pages/CustomerFeedback.jsx";
+import ComplianceMonitoring from "./pages/ComplianceMonitoring.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -74,7 +76,7 @@ export default function App() {
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>
           } />
           <Route path="/fuel" element={
-            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator"]}><FuelFilling /></ProtectedRoute>
+            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor"]}><FuelFilling /></ProtectedRoute>
           } />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive"]}><SalesExecutive /></ProtectedRoute>
@@ -84,6 +86,12 @@ export default function App() {
           } />
           <Route path="/leads" element={
             <ProtectedRoute roles={["manager", "administrator"]}><LeadsBrowser /></ProtectedRoute>
+          } />
+          <Route path="/customer-feedback" element={
+            <ProtectedRoute roles={["manager", "administrator"]}><CustomerFeedback /></ProtectedRoute>
+          } />
+          <Route path="/compliance" element={
+            <ProtectedRoute roles={["manager"]}><ComplianceMonitoring /></ProtectedRoute>
           } />
 
           <Route path="/" element={<RootRedirect />} />

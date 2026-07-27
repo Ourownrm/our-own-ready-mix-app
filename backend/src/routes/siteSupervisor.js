@@ -64,7 +64,7 @@ router.get("/my-orders", async (req, res) => {
      JOIN sites s ON s.id = o.site_id
      WHERE o.assigned_site_supervisor_id = $1
        AND o.order_date = CURRENT_DATE
-       AND o.status NOT IN ('cancelled', 'closed')
+       AND o.status NOT IN ('cancelled', 'closed', 'completed')
      ORDER BY o.scheduled_batching_time`,
     [req.user.id]
   );
@@ -91,6 +91,23 @@ router.post("/orders/:orderId/confirm-site-ready", async (req, res) => {
     [req.user.id, req.params.orderId]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
+  res.json(rows[0]);
+});
+
+// Site Supervisor flags the work as finished — for cases where the site is
+// satisfied before the full ordered quantity is reached (e.g. they decide
+// they need less than originally ordered), rather than waiting on the
+// automatic completion that only fires once delivered qty reaches the order
+// quantity.
+router.post("/orders/:orderId/mark-work-completed", async (req, res) => {
+  const { rows } = await query(
+    `UPDATE customer_orders SET status = 'completed'
+     WHERE id = $1 AND assigned_site_supervisor_id = $2
+       AND status NOT IN ('cancelled', 'closed', 'completed')
+     RETURNING *`,
+    [req.params.orderId, req.user.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Order not found, not assigned to you, or already closed out." });
   res.json(rows[0]);
 });
 

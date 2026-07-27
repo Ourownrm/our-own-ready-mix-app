@@ -5,6 +5,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel } from "../lib/MasterDataPanels.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
+import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import { BookingsQueue, CreateLeadForm } from "../lib/SalesPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
@@ -136,11 +137,22 @@ export default function ManagerDashboard() {
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
+        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+          <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
+          <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
+          <button onClick={() => setView("leads")}>Assign a lead</button>
+          <Link to="/leads"><button type="button">Browse leads</button></Link>
+          <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
+          <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
+          <Link to="/fuel"><button type="button">Fuel filling</button></Link>
+          <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
+        </div>
+
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
           <Kpi label="Today's production" value={`${stats?.today_production_m3 ?? "–"} m³`} />
           <Kpi label="Monthly production" value={`${stats?.monthly_production_m3 ?? "–"} m³`} />
           <Kpi label="Delayed trucks" value={stats?.delayed_trucks ?? "–"} danger={stats?.delayed_trucks > 0} />
-          <Kpi label="Rejected concrete" value={stats?.rejected_concrete ?? "–"} />
+          <Kpi label="Rejected concrete — month" value={`${stats?.rejected_concrete_month_m3 ?? "–"} m³`} />
         </div>
 
         <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
@@ -152,19 +164,8 @@ export default function ManagerDashboard() {
           ))}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-          <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
-          <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
-          <button onClick={() => setView("leads")}>Assign a lead</button>
-          <Link to="/leads"><button type="button">Browse leads</button></Link>
-          <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
-          <Link to="/fuel"><button type="button">Fuel filling</button></Link>
-        </div>
-
         <BookingsQueue setError={setError} />
-        <OnDutyDriversTable drivers={onDutyDrivers} />
-        <PumpStatusTable orders={today.concat(carriedForward)} />
-        <RawMaterialStockCard />
+        <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} />
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} />
         <CompletedTripsTable trips={completedTrips} />
 
@@ -178,6 +179,10 @@ export default function ManagerDashboard() {
         )}
         <OrderTable title="Running today" rows={today} onClose={closeOrder} onView={setDetailOrderId} />
         <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} />
+
+        <OnDutyDriversTable drivers={onDutyDrivers} />
+        <RawMaterialStockCard />
+        <ComplianceAlertsCard />
       </div>
       <OrderDetailModal orderId={detailOrderId} onClose={() => setDetailOrderId(null)} />
     </>
@@ -308,10 +313,22 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
 }
 
 // Every order that needs a pump today — scheduled vs actual departure time,
-// and whether the site has confirmed ready for batching.
-function PumpStatusTable({ orders }) {
+// live pump status, and whether the site has confirmed ready for batching.
+function PumpStatusTable({ orders, activeTrucks }) {
   const pumpOrders = orders.filter((o) => o.pump_requirement !== "without_pump");
   if (pumpOrders.length === 0) return null;
+
+  function pumpStatus(order) {
+    const overdue = order.pump_departure_time && !order.pump_actual_departure_time &&
+      new Date(`${order.order_date?.slice(0, 10)}T${order.pump_departure_time}`) < new Date();
+    // A delivery note exists for this order and the truck is actively unloading —
+    // that's the pump actually pumping concrete at site right now.
+    const isPumping = activeTrucks.some((t) => t.order_id === order.id && t.status === "unloading");
+    if (isPumping) return { label: "Pumping", cls: "badge-progress" };
+    if (order.pump_actual_departure_time) return { label: "En route", cls: "badge-info" };
+    if (overdue) return { label: "Overdue", cls: "badge-danger" };
+    return { label: "Not yet departed", cls: "badge-neutral" };
+  }
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -319,26 +336,18 @@ function PumpStatusTable({ orders }) {
       <div style={{ overflowX: "auto" }}>
         <table>
           <thead>
-            <tr><th>Customer</th><th>Site</th><th>Scheduled departure</th><th>Actual departure</th><th>Site ready</th></tr>
+            <tr><th>Customer</th><th>Site</th><th>Scheduled departure</th><th>Actual departure</th><th>Pump status</th><th>Site ready</th></tr>
           </thead>
           <tbody>
             {pumpOrders.map((o) => {
-              const overdue = o.pump_departure_time && !o.pump_actual_departure_time &&
-                new Date(`${o.order_date?.slice(0, 10)}T${o.pump_departure_time}`) < new Date();
+              const status = pumpStatus(o);
               return (
-                <tr key={o.id} style={overdue ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                <tr key={o.id} style={status.label === "Overdue" ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
                   <td>{o.customer_name}</td>
                   <td>{o.site_name}</td>
                   <td>{o.pump_departure_time || "–"}</td>
-                  <td>
-                    {o.pump_actual_departure_time ? (
-                      formatTime(o.pump_actual_departure_time)
-                    ) : overdue ? (
-                      <span style={{ color: "var(--alert-red)", fontWeight: 600 }}>Overdue</span>
-                    ) : (
-                      "Not yet departed"
-                    )}
-                  </td>
+                  <td>{o.pump_actual_departure_time ? formatTime(o.pump_actual_departure_time) : "–"}</td>
+                  <td><span className={`badge ${status.cls}`}>{status.label}</span></td>
                   <td>{o.site_ready_confirmed ? <span className="badge badge-success">Ready</span> : <span className="badge badge-warning">Not confirmed</span>}</td>
                 </tr>
               );

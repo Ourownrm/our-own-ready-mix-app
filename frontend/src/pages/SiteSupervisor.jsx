@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
@@ -74,6 +75,17 @@ export default function SiteSupervisor() {
     }
   }
 
+  async function markWorkCompleted(orderId, customerName) {
+    if (!window.confirm(`Mark work completed for ${customerName}? This closes the order out even if it hasn't reached the full ordered quantity.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/site-supervisor/orders/${orderId}/mark-work-completed`, { method: "POST" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (showReject && selected) {
     return (
       <RejectForm
@@ -96,7 +108,7 @@ export default function SiteSupervisor() {
         )}
         {pending > 0 && <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>{pending} action(s) waiting to sync</div>}
 
-        {orders.some((o) => (o.pump_requirement !== "without_pump" && !o.pump_actual_departure_time) || !o.site_ready_confirmed) && (
+        {orders.length > 0 && (
           <div className="card" style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Today's orders</div>
             {orders.map((o) => (
@@ -127,10 +139,20 @@ export default function SiteSupervisor() {
                     </button>
                   )}
                 </div>
+
+                <button
+                  className="btn-danger"
+                  style={{ width: "100%", fontSize: 12, padding: "6px", marginTop: 6 }}
+                  onClick={() => markWorkCompleted(o.id, o.customer_name)}
+                >
+                  Mark work completed
+                </button>
               </div>
             ))}
           </div>
         )}
+
+        <Link to="/fuel"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Fuel filling</button></Link>
 
         {deliveries.length > 1 && (
           <select

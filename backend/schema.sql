@@ -209,6 +209,37 @@ CREATE TABLE aftersales_feedback (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- ===================== STATUTORY COMPLIANCE MONITORING =====================
+-- Manager-only. Tracks expiry dates for vehicle and equipment documents
+-- across every company asset — insurance, permits, AMCs, certifications, etc.
+
+CREATE TYPE compliance_asset_type AS ENUM (
+  'transit_mixer', 'boom_pump', 'batching_plant', 'loader', 'generator',
+  'weighbridge', 'compressor', 'pickup', 'car', 'motor_bike', 'other'
+);
+CREATE TYPE compliance_category AS ENUM ('vehicle', 'equipment');
+
+CREATE TABLE compliance_assets (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  asset_type compliance_asset_type NOT NULL,
+  category compliance_category NOT NULL,
+  is_active BOOLEAN DEFAULT TRUE
+);
+
+-- One row per asset + document type — renewing a document updates this same
+-- row's expiry date (and who/when) rather than piling up history rows.
+CREATE TABLE compliance_documents (
+  id SERIAL PRIMARY KEY,
+  asset_id INTEGER REFERENCES compliance_assets(id) NOT NULL,
+  document_type VARCHAR(50) NOT NULL,
+  document_number VARCHAR(100),
+  expiry_date DATE NOT NULL,
+  updated_by INTEGER REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (asset_id, document_type)
+);
+
 -- A Sales Executive's logged visit to whoever they actually met — an
 -- existing customer, but also a client, consultant, or site engineer who
 -- isn't in the customers list at all. visited_name/visitor_type are the
@@ -522,9 +553,10 @@ CREATE TABLE notifications (
   recipient_id INTEGER REFERENCES users(id),
   ticket_id INTEGER REFERENCES delivery_tickets(id),
   order_id INTEGER REFERENCES customer_orders(id),
+  compliance_document_id INTEGER REFERENCES compliance_documents(id),
   type VARCHAR(50) NOT NULL,  -- left_plant, reached_site, delayed, at_site_over_threshold,
                               -- concrete_rejected, delivery_completed, driver_off_duty_during_trip,
-                              -- pump_departure_overdue, batching_not_started
+                              -- pump_departure_overdue, batching_not_started, compliance_alert
   message TEXT NOT NULL,
   is_read BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT now()

@@ -325,6 +325,38 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (pump departure confirmation and site-readiness gate before batching).");
 
+    // Statutory Compliance Monitoring — Manager-only.
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE compliance_asset_type AS ENUM (
+        'transit_mixer', 'boom_pump', 'batching_plant', 'loader', 'generator',
+        'weighbridge', 'compressor', 'pickup', 'car', 'motor_bike', 'other'
+      );
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`DO $$ BEGIN
+      CREATE TYPE compliance_category AS ENUM ('vehicle', 'equipment');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS compliance_assets (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        asset_type compliance_asset_type NOT NULL,
+        category compliance_category NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE
+      );
+      CREATE TABLE IF NOT EXISTS compliance_documents (
+        id SERIAL PRIMARY KEY,
+        asset_id INTEGER REFERENCES compliance_assets(id) NOT NULL,
+        document_type VARCHAR(50) NOT NULL,
+        document_number VARCHAR(100),
+        expiry_date DATE NOT NULL,
+        updated_by INTEGER REFERENCES users(id),
+        updated_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (asset_id, document_type)
+      );
+      ALTER TABLE notifications ADD COLUMN IF NOT EXISTS compliance_document_id INTEGER REFERENCES compliance_documents(id);
+    `);
+    log.push("Schema migration applied (Statutory Compliance Monitoring — assets, documents, expiry alerts).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
@@ -547,6 +579,21 @@ router.get("/setup/run-batching-not-started-check", async (req, res) => {
     (notified.length
       ? `Notified about ${notified.length} order(s) where batching hasn't started:\n\n` + notified.map((o) => `- ${o.customer_name} — ${o.site_name}`).join("\n")
       : `Nothing overdue right now — nothing to notify.`) +
+    `</pre>`
+  );
+});
+
+router.get("/setup/run-compliance-check", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  const { checkComplianceExpiries } = await import("../lib/scheduledChecks.js");
+  const notified = await checkComplianceExpiries();
+  res.send(
+    `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
+    (notified.length
+      ? `Notified about ${notified.length} document(s):\n\n` + notified.map((d) => `- ${d.asset_name} — ${d.document_type} (expiry ${d.expiry_date?.toISOString?.().slice(0, 10) || d.expiry_date})`).join("\n")
+      : `Nothing due for an alert right now — nothing to notify.`) +
     `</pre>`
   );
 });

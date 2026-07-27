@@ -767,3 +767,71 @@ Site Supervisor's "show today's orders" condition while in there.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Twenty-second round
+
+1. **Pump status shows "Pumping"** once a delivery note exists for the order and the
+   Site Supervisor has confirmed unloading has started — cross-referenced by order,
+   not just guessed from timing. Status now reads: Not yet departed → Overdue (if past
+   scheduled time) → En route (pump confirmed departed) → Pumping (truck actively
+   unloading at site).
+2. **Site Supervisor can flag work completed** — a new "Mark work completed" action on
+   each of today's orders, for when the site is satisfied before the full ordered
+   quantity is reached (rather than only relying on automatic completion once delivered
+   quantity hits the order total).
+3. **Site Supervisor now has Fuel Filling access**, same as Driver/Manager/Accountant.
+4. **"Rejected concrete" KPI fixed** — was showing today's *count* of rejected tickets;
+   now correctly shows **total m³ rejected this month**, labeled "Rejected concrete —
+   month" to match.
+5. **Manager Dashboard reordered**: Menu → KPIs → Pending bookings → Pump status →
+   Active trucks → Completed trips → Running orders today (with carried-forward items
+   directly above) → Scheduled tomorrow → On-duty drivers → Raw material stock.
+   Statutory Compliance Monitoring will slot in at the end once that module is built —
+   not added as a placeholder yet since there's nothing behind it.
+6. **Customer complaints — found the real gap.** Complaints logged via Sales
+   Executive's after-sales feedback were already pushing a notification to Manager, but
+   there was genuinely no page for Manager to go *look* at them — the list only existed
+   on the Sales Executive's own screen. Added a **Customer Feedback** page for Manager
+   (linked from the dashboard menu), filterable by Complaints/Compliments/All.
+
+### Compliance module — noted for the build
+Confirmed: certificate/document number will be optional, not required, when that
+module is built.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.
+
+## Twenty-third round — Statutory Compliance Monitoring
+
+Built exactly per the confirmed mockups. Manager-only, at `/compliance`, linked from
+the dashboard menu and a new **Compliance alerts** card at the bottom of the Manager
+Dashboard (matching the redesigned mockup — grouped Expired/Expiring sections, colored
+left borders, day counts, not a flat list).
+
+- **11 asset types**, each auto-tagged Vehicle or Equipment, which determines which
+  document types apply — the "Add / renew document" form only shows the relevant six
+  for whatever asset you pick.
+- **Vehicle documents**: Insurance, Road Tax, Permit, PUC, Fitness Certificate,
+  Registration Certificate.
+- **Equipment documents**: Insurance, AMC, Calibration Certificate, Inspection
+  Certificate, Load Testing Certificate, Safety Certification.
+- **Certificate/document number is optional**, as confirmed — expiry date is the only
+  required field beyond picking the asset and document type.
+- **Renewing** a document updates the same record's expiry date (and who/when) rather
+  than creating a new row each time — the register always shows the current state, not
+  a growing history.
+- **No file attachments** — dates and certificate numbers only, as confirmed.
+- **Alerts**: 30/15/7 days before expiry, on the expiry date, and daily after until
+  renewed — same recurring 5-minute-timer mechanism as the other scheduled checks, with
+  a per-document-per-day dedup so it only actually sends once a day no matter how often
+  the timer ticks.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds `compliance_assets`,
+`compliance_documents`, and `compliance_document_id` on `notifications`.
+
+### Testing the alert check
+Same manual-trigger pattern as the other scheduled checks:
+```
+https://oorm-backend.onrender.com/setup/run-compliance-check?key=YOUR_SETUP_SECRET
+```

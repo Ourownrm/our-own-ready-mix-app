@@ -112,3 +112,47 @@ export async function checkBatchingNotStarted() {
   }
   return rows;
 }
+
+const DOC_LABELS = {
+  insurance: "Insurance", road_tax: "Road tax", permit: "Permit", puc: "PUC",
+  fitness_certificate: "Fitness certificate", registration_certificate: "Registration certificate",
+  amc: "AMC", calibration_certificate: "Calibration certificate",
+  inspection_certificate: "Inspection certificate", load_testing_certificate: "Load testing certificate",
+  safety_certification: "Safety certification",
+};
+
+// Compliance alerts fire at 30/15/7 days before expiry, on the expiry date
+// itself, and then once a day every day after until renewed. Runs on the
+// same 5-minute timer as the other checks, but a per-document-per-day dedup
+// (via the notifications table) means it only actually sends once a day no
+// matter how often the timer ticks.
+export async function checkComplianceExpiries() {
+  const { rows } = await query(
+    `SELECT cd.id, cd.document_type, cd.expiry_date, ca.name AS asset_name,
+            (cd.expiry_date - CURRENT_DATE) AS days_until_expiry
+     FROM compliance_documents cd
+     JOIN compliance_assets ca ON ca.id = cd.asset_id
+     WHERE ca.is_active
+       AND ((cd.expiry_date - CURRENT_DATE) IN (30, 15, 7, 0) OR (cd.expiry_date - CURRENT_DATE) < 0)
+       AND NOT EXISTS (
+         SELECT 1 FROM notifications n
+         WHERE n.compliance_document_id = cd.id AND n.created_at::date = CURRENT_DATE
+       )`
+  );
+
+  for (const d of rows) {
+    const days = Number(d.days_until_expiry);
+    const docLabel = DOC_LABELS[d.document_type] || d.document_type;
+    const message = days < 0
+      ? `${d.asset_name} — ${docLabel} expired ${Math.abs(days)} day(s) ago`
+      : days === 0
+      ? `${d.asset_name} — ${docLabel} expires today`
+      : `${d.asset_name} — ${docLabel} expires in ${days} day(s)`;
+    await query(
+      `INSERT INTO notifications (recipient_role, compliance_document_id, type, message) VALUES ('manager', $1, 'compliance_alert', $2)`,
+      [d.id, message]
+    );
+    await pushToRole("manager", { title: "Compliance alert", body: message, url: "/compliance" });
+  }
+  return rows;
+}

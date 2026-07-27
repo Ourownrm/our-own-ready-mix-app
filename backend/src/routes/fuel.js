@@ -3,7 +3,7 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("driver", "manager", "accountant", "administrator"));
+router.use(requireAuth, requireRole("driver", "manager", "accountant", "administrator", "site_supervisor"));
 
 const EQUIPMENT_TYPES = ["truck", "pump", "pickup_van", "loader", "generator"];
 
