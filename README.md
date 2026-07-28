@@ -879,3 +879,30 @@ alongside the pump departure and site-ready delay reasons, which had the same ga
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Twenty-sixth round — two real bugs found and fixed
+
+1. **Site Supervisor never saw the delay-reason prompt — root cause: the same
+   timezone bug pattern that's hit this app before, reintroduced in a new spot.**
+   Last round's lateness check used `new Date().toISOString().slice(0,10)` — today's
+   date in UTC — then parsed the scheduled time in the *server's* local timezone
+   (Render defaults to UTC), not IST. That meant the "is this late?" check was
+   comparing against a threshold shifted by the UTC/IST gap, so it almost never
+   evaluated true within any realistic confirmation window — the reason-prompt path
+   just silently never triggered. Fixed by moving the comparison into SQL instead of
+   JavaScript `Date` parsing, same pattern already used reliably elsewhere in this app
+   (the database session is pinned to IST, so date arithmetic done there is correct
+   regardless of what timezone the server itself runs in). Manager's side worked
+   because it never depended on this broken check in the first place — "Add reason" was
+   always available regardless of timing.
+2. **Site-readiness had no visibility at all for orders without a pump.** The overdue
+   highlighting and delay-reason handling only existed in the Pump Status table, which
+   only lists orders that actually need a pump — a real order with no pump requirement
+   could sit indefinitely with an unconfirmed site and nothing on the dashboard would
+   ever show it, regardless of how overdue it got. Fixed: the main order tables
+   (Running today, Scheduled tomorrow, carried-forward) now show site-ready status for
+   every order, turn the row red once it's overdue, and give Manager the same
+   "Add reason" capability that pump departure already had.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

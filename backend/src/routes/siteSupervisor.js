@@ -78,12 +78,12 @@ router.get("/my-orders", async (req, res) => {
 // happening after the scheduled departure time, a reason is required.
 router.post("/orders/:orderId/confirm-pump-departure", async (req, res) => {
   const { rows: check } = await query(
-    "SELECT pump_departure_time FROM customer_orders WHERE id = $1 AND assigned_site_supervisor_id = $2",
+    `SELECT pump_departure_time, (order_date + pump_departure_time) < now() AS is_late
+     FROM customer_orders WHERE id = $1 AND assigned_site_supervisor_id = $2`,
     [req.params.orderId, req.user.id]
   );
   if (!check.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
-  const isLate = check[0].pump_departure_time && new Date(`${new Date().toISOString().slice(0, 10)}T${check[0].pump_departure_time}`) < new Date();
-  if (isLate && !req.body.delay_reason) {
+  if (check[0].pump_departure_time && check[0].is_late && !req.body.delay_reason) {
     return res.status(400).json({ error: "This is past the scheduled departure time — a reason for the delay is required." });
   }
 
@@ -102,12 +102,12 @@ router.post("/orders/:orderId/confirm-pump-departure", async (req, res) => {
 // happening after the scheduled batching time, a reason is required.
 router.post("/orders/:orderId/confirm-site-ready", async (req, res) => {
   const { rows: check } = await query(
-    "SELECT scheduled_batching_time FROM customer_orders WHERE id = $1 AND assigned_site_supervisor_id = $2",
+    `SELECT scheduled_batching_time, (order_date + scheduled_batching_time) < now() AS is_late
+     FROM customer_orders WHERE id = $1 AND assigned_site_supervisor_id = $2`,
     [req.params.orderId, req.user.id]
   );
   if (!check.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
-  const isLate = check[0].scheduled_batching_time && new Date(`${new Date().toISOString().slice(0, 10)}T${check[0].scheduled_batching_time}`) < new Date();
-  if (isLate && !req.body.delay_reason) {
+  if (check[0].scheduled_batching_time && check[0].is_late && !req.body.delay_reason) {
     return res.status(400).json({ error: "This is past the scheduled batching time — a reason for the delay is required." });
   }
 

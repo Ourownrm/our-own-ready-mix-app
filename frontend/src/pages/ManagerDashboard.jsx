@@ -197,10 +197,12 @@ export default function ManagerDashboard() {
             onClose={closeOrder}
             onView={setDetailOrderId}
             onConfirmCompletion={confirmCompletion}
+            setError={setError}
+            onReload={load}
           />
         )}
-        <OrderTable title="Running today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} />
+        <OrderTable title="Running today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
         <RawMaterialStockCard />
@@ -449,7 +451,23 @@ function CompletedTripsTable({ trips }) {
   );
 }
 
-function OrderTable({ title, rows, onClose, onView, onConfirmCompletion }) {
+function OrderTable({ title, rows, onClose, onView, onConfirmCompletion, setError, onReload }) {
+  function isSiteReadyOverdue(o) {
+    if (o.site_ready_confirmed || !o.assigned_site_supervisor_id || !o.scheduled_batching_time) return false;
+    return new Date(`${o.order_date?.slice(0, 10)}T${o.scheduled_batching_time}`) < new Date();
+  }
+
+  async function addSiteReadyReason(orderId) {
+    const reason = window.prompt("Reason the site wasn't confirmed ready on time:");
+    if (!reason) return;
+    try {
+      await apiRequest(`/orders/${orderId}/site-ready-delay-reason`, { method: "POST", body: { reason } });
+      onReload();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
@@ -459,40 +477,58 @@ function OrderTable({ title, rows, onClose, onView, onConfirmCompletion }) {
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead>
-              <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th></th><th></th></tr>
+              <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th>Site ready</th><th></th><th></th></tr>
             </thead>
             <tbody>
-              {rows.map((o) => (
-                <tr key={o.id}>
-                  <td>{o.customer_name}</td>
-                  <td>{o.site_name}</td>
-                  <td>{o.mix_grade_name}</td>
-                  <td>{o.order_quantity_m3} m³</td>
-                  <td>{o.delivered_qty_m3} m³</td>
-                  <td>
-                    <StatusBadge status={o.status} />
-                    {o.supervisor_marked_complete && !["completed", "closed", "cancelled"].includes(o.status) && (
-                      <div style={{ marginTop: 4 }}>
-                        <span className="badge badge-warning" style={{ fontSize: 10 }}>Site marked complete</span>
-                        {o.work_completion_remarks && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>"{o.work_completion_remarks}"</div>}
-                        <button style={{ display: "block", marginTop: 4, padding: "3px 8px", fontSize: 11 }} onClick={() => onConfirmCompletion(o)}>
-                          Confirm completion
+              {rows.map((o) => {
+                const overdue = isSiteReadyOverdue(o);
+                return (
+                  <tr key={o.id} style={overdue ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                    <td>{o.customer_name}</td>
+                    <td>{o.site_name}</td>
+                    <td>{o.mix_grade_name}</td>
+                    <td>{o.order_quantity_m3} m³</td>
+                    <td>{o.delivered_qty_m3} m³</td>
+                    <td>
+                      <StatusBadge status={o.status} />
+                      {o.supervisor_marked_complete && !["completed", "closed", "cancelled"].includes(o.status) && (
+                        <div style={{ marginTop: 4 }}>
+                          <span className="badge badge-warning" style={{ fontSize: 10 }}>Site marked complete</span>
+                          {o.work_completion_remarks && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>"{o.work_completion_remarks}"</div>}
+                          <button style={{ display: "block", marginTop: 4, padding: "3px 8px", fontSize: 11 }} onClick={() => onConfirmCompletion(o)}>
+                            Confirm completion
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      {!o.assigned_site_supervisor_id ? (
+                        <span style={{ color: "var(--slate)", fontSize: 12 }}>No supervisor</span>
+                      ) : o.site_ready_confirmed ? (
+                        <span className="badge badge-success">Ready</span>
+                      ) : (
+                        <>
+                          <span className={`badge ${overdue ? "badge-danger" : "badge-warning"}`}>{overdue ? "Overdue" : "Not confirmed"}</span>
+                          {o.site_ready_delay_reason && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>Delay: {o.site_ready_delay_reason}</div>}
+                          {overdue && !o.site_ready_delay_reason && (
+                            <button style={{ display: "block", marginTop: 2, padding: "2px 6px", fontSize: 10 }} onClick={() => addSiteReadyReason(o.id)}>Add reason</button>
+                          )}
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
+                    </td>
+                    <td>
+                      {!["closed", "cancelled", "completed"].includes(o.status) && (
+                        <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
+                          Close order
                         </button>
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
-                  </td>
-                  <td>
-                    {!["closed", "cancelled", "completed"].includes(o.status) && (
-                      <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
-                        Close order
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
