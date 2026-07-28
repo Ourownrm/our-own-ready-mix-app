@@ -835,3 +835,47 @@ Same manual-trigger pattern as the other scheduled checks:
 ```
 https://oorm-backend.onrender.com/setup/run-compliance-check?key=YOUR_SETUP_SECRET
 ```
+
+## Twenty-fourth round
+
+1. **Delay reasons for pump departure and site-readiness.** If Site Supervisor
+   confirms either one after its scheduled time, a reason is now required (prompted
+   automatically) and shown right on the Manager Dashboard's Pump Status table. Manager
+   can also add or correct a reason directly from that table.
+2. **QC-flagged delay alerts now require a written response, not a silent dismiss.**
+   "Mark reviewed" is now "Add response & mark reviewed" — Manager must write the
+   action taken or reason for letting the truck continue, and that text stays visible
+   on the Active Trucks table (as "QC flag reviewed" + the note) instead of the flag
+   just disappearing.
+3. **"Mark work completed" reworked — it no longer touches order status at all.**
+   This was causing real mistakes because it looked identical to genuine completion.
+   Now it's purely a signal: Site Supervisor flags work complete, Manager sees "Site
+   marked complete" on the order and must explicitly hit **Confirm completion** to
+   actually close it out. Also moved the after-pour-care checkbox and completion
+   comment **out of the per-delivery unloading form and into this new work-completion
+   step** — checking after-pour-care is now mandatory to flag work completed (comment
+   stays optional), rather than being asked on every single delivery.
+4. **Administrator now has full access to Statutory Compliance Monitoring**, alongside
+   Manager.
+5. **Manager now has access to Correct Orders, Correct Tickets, and Concrete Grades
+   and Rates** — these panels were Administrator-only before; moved into the shared
+   panel library so both roles use the identical implementation.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds delay-reason columns, the
+supervisor-completion-signal columns, `after_pour_care_confirmed`/
+`work_completion_remarks` (now at the order level), and `manager_response` on
+notifications.
+
+## Twenty-fifth round — bug fix: work-completion comment had no permanent home
+
+Real gap found from your question: the Site Supervisor's work-completion comment and
+after-pour-care confirmation only showed on the Manager Dashboard's order tables, and
+only *while the order was still awaiting confirmation* — the moment Manager confirmed
+completion, the display condition stopped matching and the comment vanished from view
+(the data was never lost, just not shown anywhere afterward). Fixed by adding it to the
+existing **"View details"** modal (reachable from every order regardless of status),
+alongside the pump departure and site-ready delay reasons, which had the same gap.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

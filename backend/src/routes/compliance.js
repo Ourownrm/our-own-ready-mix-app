@@ -3,7 +3,7 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("manager"));
+router.use(requireAuth, requireRole("manager", "administrator"));
 
 const ASSET_CATEGORY = {
   transit_mixer: "vehicle", boom_pump: "equipment", batching_plant: "equipment",

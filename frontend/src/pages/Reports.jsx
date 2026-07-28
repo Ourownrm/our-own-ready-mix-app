@@ -35,6 +35,7 @@ export default function Reports() {
             <Link to="/production-report"><button type="button">Production report</button></Link>
             <Link to="/sales-performance"><button type="button">Sales performance</button></Link>
             <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
+            <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
           </div>
         )}
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}

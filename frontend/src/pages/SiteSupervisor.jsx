@@ -9,6 +9,7 @@ export default function SiteSupervisor() {
   const [orders, setOrders] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [showReject, setShowReject] = useState(false);
+  const [workCompleteOrderId, setWorkCompleteOrderId] = useState(null);
   const [pending, setPending] = useState(pendingCount());
   const [error, setError] = useState("");
 
@@ -61,7 +62,18 @@ export default function SiteSupervisor() {
       await apiRequest(`/site-supervisor/orders/${orderId}/confirm-pump-departure`, { method: "POST" });
       load();
     } catch (err) {
-      setError(err.message);
+      if (err.message.includes("reason for the delay is required")) {
+        const reason = window.prompt("This is past the scheduled departure time — what caused the delay?");
+        if (!reason) return;
+        try {
+          await apiRequest(`/site-supervisor/orders/${orderId}/confirm-pump-departure`, { method: "POST", body: { delay_reason: reason } });
+          load();
+        } catch (err2) {
+          setError(err2.message);
+        }
+      } else {
+        setError(err.message);
+      }
     }
   }
 
@@ -71,15 +83,29 @@ export default function SiteSupervisor() {
       await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST" });
       load();
     } catch (err) {
-      setError(err.message);
+      if (err.message.includes("reason for the delay is required")) {
+        const reason = window.prompt("This is past the scheduled batching time — what caused the delay?");
+        if (!reason) return;
+        try {
+          await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST", body: { delay_reason: reason } });
+          load();
+        } catch (err2) {
+          setError(err2.message);
+        }
+      } else {
+        setError(err.message);
+      }
     }
   }
 
-  async function markWorkCompleted(orderId, customerName) {
-    if (!window.confirm(`Mark work completed for ${customerName}? This closes the order out even if it hasn't reached the full ordered quantity.`)) return;
+  async function submitWorkCompleted(orderId, afterPourCare, remarks) {
     setError("");
     try {
-      await apiRequest(`/site-supervisor/orders/${orderId}/mark-work-completed`, { method: "POST" });
+      await apiRequest(`/site-supervisor/orders/${orderId}/mark-work-completed`, {
+        method: "POST",
+        body: { after_pour_care_confirmed: afterPourCare, remarks },
+      });
+      setWorkCompleteOrderId(null);
       load();
     } catch (err) {
       setError(err.message);
@@ -121,6 +147,7 @@ export default function SiteSupervisor() {
                     {o.pump_actual_departure_time ? (
                       <div style={{ color: "var(--signal-green)" }}>
                         Pump left plant {new Date(o.pump_actual_departure_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        {o.pump_departure_delay_reason && <div style={{ color: "var(--slate)" }}>Delay reason: {o.pump_departure_delay_reason}</div>}
                       </div>
                     ) : (
                       <button style={{ width: "100%", fontSize: 12, padding: "6px" }} onClick={() => confirmPumpDeparture(o.id)}>
@@ -132,7 +159,10 @@ export default function SiteSupervisor() {
 
                 <div style={{ marginTop: 6 }}>
                   {o.site_ready_confirmed ? (
-                    <div style={{ color: "var(--signal-green)" }}>Site confirmed ready</div>
+                    <div style={{ color: "var(--signal-green)" }}>
+                      Site confirmed ready
+                      {o.site_ready_delay_reason && <div style={{ color: "var(--slate)" }}>Delay reason: {o.site_ready_delay_reason}</div>}
+                    </div>
                   ) : (
                     <button style={{ width: "100%", fontSize: 12, padding: "6px" }} onClick={() => confirmSiteReady(o.id)}>
                       Confirm site ready for batching
@@ -140,13 +170,20 @@ export default function SiteSupervisor() {
                   )}
                 </div>
 
-                <button
-                  className="btn-danger"
-                  style={{ width: "100%", fontSize: 12, padding: "6px", marginTop: 6 }}
-                  onClick={() => markWorkCompleted(o.id, o.customer_name)}
-                >
-                  Mark work completed
-                </button>
+                {workCompleteOrderId === o.id ? (
+                  <WorkCompleteForm
+                    onCancel={() => setWorkCompleteOrderId(null)}
+                    onSubmit={(afterPourCare, remarks) => submitWorkCompleted(o.id, afterPourCare, remarks)}
+                  />
+                ) : (
+                  <button
+                    className="btn-danger"
+                    style={{ width: "100%", fontSize: 12, padding: "6px", marginTop: 6 }}
+                    onClick={() => setWorkCompleteOrderId(o.id)}
+                  >
+                    Flag work completed for Manager
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -214,11 +251,52 @@ function statusLabel(status) {
   }[status] || status;
 }
 
+function WorkCompleteForm({ onSubmit, onCancel }) {
+  const [afterPourCare, setAfterPourCare] = useState(false);
+  const [remarks, setRemarks] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!afterPourCare) return setError("Confirm you've guided the customer on after-pour care before continuing.");
+    setSaving(true); setError("");
+    try {
+      await onSubmit(afterPourCare, remarks);
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 6, padding: 8, background: "var(--surface-2, #fff)", border: "1px solid var(--border, #ccc)", borderRadius: 8, fontSize: 12 }}>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8, cursor: "pointer" }}>
+        <input type="checkbox" checked={afterPourCare} onChange={(e) => setAfterPourCare(e.target.checked)} style={{ marginTop: 2 }} />
+        <span>Guided customer on after-pour care (covering with plastic sheet, curing) — required</span>
+      </label>
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Comments (optional)</div>
+      <textarea
+        rows={2}
+        value={remarks}
+        onChange={(e) => setRemarks(e.target.value)}
+        placeholder="Any notes about how the work wrapped up"
+        style={{ width: "100%", marginBottom: 8 }}
+      />
+      {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button className="btn-danger" onClick={submit} disabled={saving} style={{ flex: 1, fontSize: 12, padding: "6px" }}>
+          {saving ? "Saving..." : "Confirm work completed"}
+        </button>
+        <button onClick={onCancel} style={{ flex: 1, fontSize: 12, padding: "6px" }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+
 function CompleteForm({ onAct }) {
   const [slump, setSlump] = useState("");
   const [noteStatus, setNoteStatus] = useState("pending");
-  const [afterPourCare, setAfterPourCare] = useState(false);
-  const [remarks, setRemarks] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -228,8 +306,6 @@ function CompleteForm({ onAct }) {
       await onAct("unloading-complete", {
         site_slump_mm: slump,
         delivery_note_status: noteStatus,
-        after_pour_care_confirmed: afterPourCare,
-        remarks,
       });
     } catch (err) {
       setError(err.message || "Couldn't save this — try again.");
@@ -249,20 +325,6 @@ function CompleteForm({ onAct }) {
         <option value="signed">Signed</option>
         <option value="refused">Refused</option>
       </select>
-
-      <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
-        <input type="checkbox" checked={afterPourCare} onChange={(e) => setAfterPourCare(e.target.checked)} />
-        <span>Guided customer on after-pour care (covering with plastic sheet, curing)</span>
-      </label>
-
-      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Comments about this supply</div>
-      <textarea
-        rows={3}
-        value={remarks}
-        onChange={(e) => setRemarks(e.target.value)}
-        placeholder="Any notes about this delivery — site conditions, issues, customer requests, etc."
-        style={{ width: "100%", marginBottom: 10 }}
-      />
 
       {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
       <button onClick={submit} disabled={saving} style={{ width: "100%" }}>

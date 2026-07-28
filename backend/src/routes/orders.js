@@ -135,7 +135,12 @@ router.get("/active-trucks", requireRole("manager", "administrator"), async (req
             EXISTS (
               SELECT 1 FROM notifications n
               WHERE n.ticket_id = dt.id AND n.type = 'qc_flagged_delay' AND n.is_read = false
-            ) AS qc_flagged
+            ) AS qc_flagged,
+            (
+              SELECT n.manager_response FROM notifications n
+              WHERE n.ticket_id = dt.id AND n.type = 'qc_flagged_delay' AND n.manager_response IS NOT NULL
+              ORDER BY n.created_at DESC LIMIT 1
+            ) AS qc_flag_response
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN users u ON u.id = dt.driver_id
@@ -155,12 +160,42 @@ router.get("/active-trucks", requireRole("manager", "administrator"), async (req
 
 // Manager clears a QC flag once they've reviewed it.
 router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "administrator"), async (req, res) => {
+  const { response } = req.body;
+  if (!response) return res.status(400).json({ error: "Write the action taken or reason before marking this reviewed." });
   await query(
-    `UPDATE notifications SET is_read = true
+    `UPDATE notifications SET is_read = true, manager_response = $2
      WHERE ticket_id = $1 AND type = 'qc_flagged_delay' AND is_read = false`,
-    [req.params.ticketId]
+    [req.params.ticketId, response]
   );
   res.json({ ok: true });
+});
+
+// Manager/Administrator can add or correct a delay reason directly, in case
+// the Site Supervisor didn't (or Manager wants to add more context).
+router.post("/:orderId/pump-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
+  const { reason } = req.body;
+  await query("UPDATE customer_orders SET pump_departure_delay_reason = $1 WHERE id = $2", [reason || null, req.params.orderId]);
+  res.json({ ok: true });
+});
+
+router.post("/:orderId/site-ready-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
+  const { reason } = req.body;
+  await query("UPDATE customer_orders SET site_ready_delay_reason = $1 WHERE id = $2", [reason || null, req.params.orderId]);
+  res.json({ ok: true });
+});
+
+// Manager reviews the Site Supervisor's "work completed" signal and
+// explicitly confirms — this is the only thing that actually sets the order
+// to completed; the supervisor's signal alone never does.
+router.post("/:orderId/confirm-completion", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `UPDATE customer_orders SET status = 'completed'
+     WHERE id = $1 AND status NOT IN ('cancelled', 'closed', 'completed')
+     RETURNING *`,
+    [req.params.orderId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Order not found or already closed out." });
+  res.json(rows[0]);
 });
 
 // Completed trips today, with the full timeline: batching (ticket created),

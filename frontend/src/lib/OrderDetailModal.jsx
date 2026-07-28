@@ -52,6 +52,15 @@ export default function OrderDetailModal({ orderId, onClose }) {
             <Row label="Casting location" value={order.casting_location || "–"} />
             <Row label="Status" value={order.status?.replace(/_/g, " ")} />
             {order.closure_reason && <Row label="Closure reason" value={order.closure_reason} />}
+            {order.pump_departure_delay_reason && <Row label="Pump departure delay reason" value={order.pump_departure_delay_reason} />}
+            {order.site_ready_delay_reason && <Row label="Site-ready delay reason" value={order.site_ready_delay_reason} />}
+            {order.supervisor_marked_complete && (
+              <>
+                <Row label="Site marked work completed" value={order.supervisor_marked_complete_at ? new Date(order.supervisor_marked_complete_at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "Yes"} />
+                <Row label="Guided customer on after-pour care" value={order.after_pour_care_confirmed ? "Yes" : "No"} />
+                <Row label="Work completion comments" value={order.work_completion_remarks || "–"} />
+              </>
+            )}
             <Row label="Remarks" value={order.remarks || "–"} />
             <Row label="Created by" value={order.created_by_name || "–"} />
           </div>

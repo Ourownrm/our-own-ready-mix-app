@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { confirmArrival, confirmUnloadingStart, confirmUnloadingComplete, confirmRejection } from "../lib/deliveryConfirmation.js";
+import { pushToRole } from "../lib/push.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("site_supervisor"));
@@ -57,7 +58,8 @@ router.post("/:ticketId/reject", async (req, res) => {
 router.get("/my-orders", async (req, res) => {
   const { rows } = await query(
     `SELECT o.id, o.order_date, o.scheduled_batching_time, o.pump_requirement,
-            o.pump_departure_time, o.pump_actual_departure_time, o.site_ready_confirmed,
+            o.pump_departure_time, o.pump_actual_departure_time, o.pump_departure_delay_reason,
+            o.site_ready_confirmed, o.site_ready_delay_reason, o.supervisor_marked_complete,
             c.name AS customer_name, s.name AS site_name
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
@@ -65,49 +67,91 @@ router.get("/my-orders", async (req, res) => {
      WHERE o.assigned_site_supervisor_id = $1
        AND o.order_date = CURRENT_DATE
        AND o.status NOT IN ('cancelled', 'closed', 'completed')
+       AND NOT o.supervisor_marked_complete
      ORDER BY o.scheduled_batching_time`,
     [req.user.id]
   );
   res.json(rows);
 });
 
-// Site Supervisor confirms the pump has actually left the plant.
+// Site Supervisor confirms the pump has actually left the plant. If this is
+// happening after the scheduled departure time, a reason is required.
 router.post("/orders/:orderId/confirm-pump-departure", async (req, res) => {
+  const { rows: check } = await query(
+    "SELECT pump_departure_time FROM customer_orders WHERE id = $1 AND assigned_site_supervisor_id = $2",
+    [req.params.orderId, req.user.id]
+  );
+  if (!check.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
+  const isLate = check[0].pump_departure_time && new Date(`${new Date().toISOString().slice(0, 10)}T${check[0].pump_departure_time}`) < new Date();
+  if (isLate && !req.body.delay_reason) {
+    return res.status(400).json({ error: "This is past the scheduled departure time — a reason for the delay is required." });
+  }
+
   const { rows } = await query(
-    `UPDATE customer_orders SET pump_actual_departure_time = now(), pump_departure_confirmed_by = $1
-     WHERE id = $2 AND assigned_site_supervisor_id = $1 RETURNING *`,
-    [req.user.id, req.params.orderId]
+    `UPDATE customer_orders SET pump_actual_departure_time = now(), pump_departure_confirmed_by = $1,
+       pump_departure_delay_reason = COALESCE($2, pump_departure_delay_reason)
+     WHERE id = $3 AND assigned_site_supervisor_id = $1 RETURNING *`,
+    [req.user.id, req.body.delay_reason || null, req.params.orderId]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
   res.json(rows[0]);
 });
 
 // Site Supervisor confirms the site is ready to receive concrete — required
-// once per order before the Plant Operator can start batching.
+// once per order before the Plant Operator can start batching. If this is
+// happening after the scheduled batching time, a reason is required.
 router.post("/orders/:orderId/confirm-site-ready", async (req, res) => {
+  const { rows: check } = await query(
+    "SELECT scheduled_batching_time FROM customer_orders WHERE id = $1 AND assigned_site_supervisor_id = $2",
+    [req.params.orderId, req.user.id]
+  );
+  if (!check.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
+  const isLate = check[0].scheduled_batching_time && new Date(`${new Date().toISOString().slice(0, 10)}T${check[0].scheduled_batching_time}`) < new Date();
+  if (isLate && !req.body.delay_reason) {
+    return res.status(400).json({ error: "This is past the scheduled batching time — a reason for the delay is required." });
+  }
+
   const { rows } = await query(
-    `UPDATE customer_orders SET site_ready_confirmed = true, site_ready_confirmed_by = $1, site_ready_confirmed_at = now()
-     WHERE id = $2 AND assigned_site_supervisor_id = $1 RETURNING *`,
-    [req.user.id, req.params.orderId]
+    `UPDATE customer_orders SET site_ready_confirmed = true, site_ready_confirmed_by = $1, site_ready_confirmed_at = now(),
+       site_ready_delay_reason = COALESCE($2, site_ready_delay_reason)
+     WHERE id = $3 AND assigned_site_supervisor_id = $1 RETURNING *`,
+    [req.user.id, req.body.delay_reason || null, req.params.orderId]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
   res.json(rows[0]);
 });
 
-// Site Supervisor flags the work as finished — for cases where the site is
-// satisfied before the full ordered quantity is reached (e.g. they decide
-// they need less than originally ordered), rather than waiting on the
-// automatic completion that only fires once delivered qty reaches the order
-// quantity.
+// Site Supervisor flags the work as finished — this is a SIGNAL to Manager,
+// not a status change. It doesn't touch `status` (which already has its own
+// meaning driven by delivered quantity, and reusing it here was confusing —
+// it looked identical to genuine completion). Manager reviews the signal and
+// explicitly confirms completion separately.
 router.post("/orders/:orderId/mark-work-completed", async (req, res) => {
+  const { after_pour_care_confirmed, remarks } = req.body;
+  if (after_pour_care_confirmed !== true) {
+    return res.status(400).json({ error: "Confirm you've guided the customer on after-pour care before marking work completed." });
+  }
   const { rows } = await query(
-    `UPDATE customer_orders SET status = 'completed'
-     WHERE id = $1 AND assigned_site_supervisor_id = $2
+    `UPDATE customer_orders SET supervisor_marked_complete = true, supervisor_marked_complete_by = $1, supervisor_marked_complete_at = now(),
+       after_pour_care_confirmed = true, work_completion_remarks = $2
+     WHERE id = $3 AND assigned_site_supervisor_id = $1
        AND status NOT IN ('cancelled', 'closed', 'completed')
      RETURNING *`,
-    [req.params.orderId, req.user.id]
+    [req.user.id, remarks || null, req.params.orderId]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found, not assigned to you, or already closed out." });
+
+  const { rows: orderInfo } = await query(
+    "SELECT c.name AS customer_name, s.name AS site_name FROM customer_orders o JOIN customers c ON c.id = o.customer_id JOIN sites s ON s.id = o.site_id WHERE o.id = $1",
+    [req.params.orderId]
+  );
+  const label = orderInfo[0] ? `${orderInfo[0].customer_name} — ${orderInfo[0].site_name}` : "an order";
+  await query(
+    `INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('manager', $1, 'work_marked_complete', $2)`,
+    [req.params.orderId, `Site Supervisor marked work completed — ${label}. Review and confirm.`]
+  );
+  await pushToRole("manager", { title: "Work marked completed", body: label, url: "/manager" });
+
   res.json(rows[0]);
 });
 

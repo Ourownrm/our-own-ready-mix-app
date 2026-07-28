@@ -357,6 +357,26 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (Statutory Compliance Monitoring — assets, documents, expiry alerts).");
 
+    // Delay reasons for pump departure / site readiness; separate the Site
+    // Supervisor's "work completed" signal from the order's actual status
+    // (fixes the confusion where it looked identical to real completion);
+    // Manager's written response when clearing a QC-flagged delay.
+    await pool.query(`
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_departure_delay_reason TEXT;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_delay_reason TEXT;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS supervisor_marked_complete BOOLEAN DEFAULT false;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS supervisor_marked_complete_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS supervisor_marked_complete_at TIMESTAMPTZ;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS after_pour_care_confirmed BOOLEAN;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS work_completion_remarks TEXT;
+      ALTER TABLE notifications ADD COLUMN IF NOT EXISTS manager_response TEXT;
+    `);
+    // Any order the old logic already marked 'completed' via the Site
+    // Supervisor's button (rather than by reaching full delivered quantity)
+    // can't be told apart retroactively — left as-is; this only changes
+    // behavior for the button going forward.
+    log.push("Schema migration applied (pump/site-ready delay reasons, supervisor-completion signal separated from order status, manager response on flagged-delay alerts).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

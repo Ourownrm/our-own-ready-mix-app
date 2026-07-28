@@ -139,7 +139,7 @@ router.delete("/trucks/:id", requireRole("administrator"), async (req, res) => {
 // Administrator can actually see what's on file before adding a new one
 // instead of guessing (this visibility gap is what let overlapping/
 // inconsistent rates happen in the first place).
-router.get("/rates", requireRole("administrator", "accountant"), async (req, res) => {
+router.get("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
   const { rows } = await query(
     `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name,
             (rm.effective_from <= CURRENT_DATE AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)) AS currently_active
@@ -151,7 +151,7 @@ router.get("/rates", requireRole("administrator", "accountant"), async (req, res
   res.json(rows);
 });
 
-router.post("/rates", requireRole("administrator", "accountant"), async (req, res) => {
+router.post("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
   const { customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from } = req.body;
   if (!customer_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
     return res.status(400).json({ error: "Customer, mix grade, rate, and effective date are required." });
@@ -167,7 +167,7 @@ router.post("/rates", requireRole("administrator", "accountant"), async (req, re
 // Closes out a rate as of a given date, so it stops being picked up for new
 // deliveries from that point on — use this when replacing a rate instead of
 // just adding a new row and leaving the old one open-ended indefinitely.
-router.post("/rates/:id/end", requireRole("administrator", "accountant"), async (req, res) => {
+router.post("/rates/:id/end", requireRole("administrator", "accountant", "manager"), async (req, res) => {
   const { effective_to } = req.body;
   if (!effective_to) return res.status(400).json({ error: "End date is required." });
   const { rows } = await query(
@@ -318,7 +318,7 @@ router.patch("/salespersons/:id/status", requireRole("administrator"), async (re
 // Nothing is ever hard-deleted (SRS §16) — "delete" here means cancelling, which
 // keeps the record but excludes it from active workflows and dashboards.
 
-router.get("/orders", requireRole("administrator"), async (req, res) => {
+router.get("/orders", requireRole("administrator", "manager"), async (req, res) => {
   const { rows } = await query(
     `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name
@@ -332,7 +332,7 @@ router.get("/orders", requireRole("administrator"), async (req, res) => {
   res.json(rows);
 });
 
-router.patch("/orders/:id", requireRole("administrator"), async (req, res) => {
+router.patch("/orders/:id", requireRole("administrator", "manager"), async (req, res) => {
   const { order_quantity_m3, scheduled_batching_time, remarks } = req.body;
   const { rows } = await query(
     `UPDATE customer_orders SET
@@ -346,12 +346,12 @@ router.patch("/orders/:id", requireRole("administrator"), async (req, res) => {
   res.json(rows[0]);
 });
 
-router.post("/orders/:id/cancel", requireRole("administrator"), async (req, res) => {
+router.post("/orders/:id/cancel", requireRole("administrator", "manager"), async (req, res) => {
   await query("UPDATE customer_orders SET status = 'cancelled' WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
-router.get("/tickets", requireRole("administrator"), async (req, res) => {
+router.get("/tickets", requireRole("administrator", "manager"), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id, dt.ticket_number, dt.loaded_quantity_m3, dt.status, dt.ticket_date,
             t.truck_number, u.name AS driver_name, s.name AS site_name
@@ -366,7 +366,7 @@ router.get("/tickets", requireRole("administrator"), async (req, res) => {
   res.json(rows);
 });
 
-router.patch("/tickets/:id", requireRole("administrator"), async (req, res) => {
+router.patch("/tickets/:id", requireRole("administrator", "manager"), async (req, res) => {
   const { loaded_quantity_m3 } = req.body;
   const { rows } = await query(
     `UPDATE delivery_tickets SET loaded_quantity_m3 = COALESCE($1, loaded_quantity_m3) WHERE id = $2 RETURNING *`,
@@ -376,7 +376,7 @@ router.patch("/tickets/:id", requireRole("administrator"), async (req, res) => {
   res.json(rows[0]);
 });
 
-router.post("/tickets/:id/cancel", requireRole("administrator"), async (req, res) => {
+router.post("/tickets/:id/cancel", requireRole("administrator", "manager"), async (req, res) => {
   await query("UPDATE delivery_tickets SET status = 'cancelled' WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });

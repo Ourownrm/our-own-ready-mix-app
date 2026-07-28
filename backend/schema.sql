@@ -333,11 +333,22 @@ CREATE TABLE customer_orders (
   pump_departure_time TIME,
   pump_actual_departure_time TIMESTAMPTZ,
   pump_departure_confirmed_by INTEGER REFERENCES users(id),
+  pump_departure_delay_reason TEXT,
   -- Site Supervisor confirms the site is ready to receive concrete before the
   -- Plant Operator is allowed to start batching — once per order.
   site_ready_confirmed BOOLEAN DEFAULT false,
   site_ready_confirmed_by INTEGER REFERENCES users(id),
   site_ready_confirmed_at TIMESTAMPTZ,
+  site_ready_delay_reason TEXT,
+  -- Site Supervisor's "work completed" is a signal, not a status change — it
+  -- doesn't touch `status` (which already has its own meaning driven by
+  -- delivered quantity). Manager reviews the signal and explicitly confirms
+  -- completion (setting status='completed') before it's actually closed out.
+  supervisor_marked_complete BOOLEAN DEFAULT false,
+  supervisor_marked_complete_by INTEGER REFERENCES users(id),
+  supervisor_marked_complete_at TIMESTAMPTZ,
+  after_pour_care_confirmed BOOLEAN,
+  work_completion_remarks TEXT,
   remarks TEXT,
   status order_status DEFAULT 'planned',
   created_by INTEGER REFERENCES users(id),
@@ -558,6 +569,7 @@ CREATE TABLE notifications (
                               -- concrete_rejected, delivery_completed, driver_off_duty_during_trip,
                               -- pump_departure_overdue, batching_not_started, compliance_alert
   message TEXT NOT NULL,
+  manager_response TEXT,
   is_read BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT now()
 );

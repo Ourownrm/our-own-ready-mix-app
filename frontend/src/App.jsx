@@ -91,7 +91,7 @@ export default function App() {
             <ProtectedRoute roles={["manager", "administrator"]}><CustomerFeedback /></ProtectedRoute>
           } />
           <Route path="/compliance" element={
-            <ProtectedRoute roles={["manager"]}><ComplianceMonitoring /></ProtectedRoute>
+            <ProtectedRoute roles={["manager", "administrator"]}><ComplianceMonitoring /></ProtectedRoute>
           } />
 
           <Route path="/" element={<RootRedirect />} />

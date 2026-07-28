@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { CustomersPanel, SitesPanel } from "../lib/MasterDataPanels.jsx";
+import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel } from "../lib/MasterDataPanels.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
@@ -67,10 +67,22 @@ export default function ManagerDashboard() {
     }
   }
 
+  async function confirmCompletion(order) {
+    if (!window.confirm(`Confirm ${order.customer_name} · ${order.site_name} is complete? This closes the order out.`)) return;
+    try {
+      await apiRequest(`/orders/${order.id}/confirm-completion`, { method: "POST" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function markReviewed(ticketId) {
+    const response = window.prompt("Action taken or reason for allowing this truck to continue at site:");
+    if (!response) return;
     setError("");
     try {
-      await apiRequest(`/orders/active-trucks/${ticketId}/mark-reviewed`, { method: "POST" });
+      await apiRequest(`/orders/active-trucks/${ticketId}/mark-reviewed`, { method: "POST", body: { response } });
       load();
     } catch (err) {
       setError(err.message);
@@ -88,19 +100,25 @@ export default function ManagerDashboard() {
       </>
     );
   }
-  if (view === "customers" || view === "sites") {
+  if (["customers", "sites", "correct-orders", "correct-tickets", "rates"].includes(view)) {
     return (
       <>
-        <TopBar title="Manager · Customers & Sites" />
+        <TopBar title="Manager · Records" />
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
-          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
             <button onClick={() => setView("dashboard")}>← Back to dashboard</button>
             <button className={`btn-tab ${view === "customers" ? "active" : ""}`} onClick={() => setView("customers")}>Customers</button>
             <button className={`btn-tab ${view === "sites" ? "active" : ""}`} onClick={() => setView("sites")}>Projects and sites</button>
+            <button className={`btn-tab ${view === "correct-orders" ? "active" : ""}`} onClick={() => setView("correct-orders")}>Correct orders</button>
+            <button className={`btn-tab ${view === "correct-tickets" ? "active" : ""}`} onClick={() => setView("correct-tickets")}>Correct tickets</button>
+            <button className={`btn-tab ${view === "rates" ? "active" : ""}`} onClick={() => setView("rates")}>Concrete grades and rates</button>
           </div>
           {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
           {view === "customers" && <CustomersPanel setError={setError} />}
           {view === "sites" && <SitesPanel setError={setError} />}
+          {view === "correct-orders" && <OrdersPanel setError={setError} />}
+          {view === "correct-tickets" && <TicketsPanel setError={setError} />}
+          {view === "rates" && <RatesPanel setError={setError} />}
         </div>
       </>
     );
@@ -140,6 +158,9 @@ export default function ManagerDashboard() {
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
           <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
+          <button onClick={() => setView("correct-orders")}>Correct orders</button>
+          <button onClick={() => setView("correct-tickets")}>Correct tickets</button>
+          <button onClick={() => setView("rates")}>Concrete grades and rates</button>
           <button onClick={() => setView("leads")}>Assign a lead</button>
           <Link to="/leads"><button type="button">Browse leads</button></Link>
           <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
@@ -165,7 +186,7 @@ export default function ManagerDashboard() {
         </div>
 
         <BookingsQueue setError={setError} />
-        <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} />
+        <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} setError={setError} onReload={load} />
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} />
         <CompletedTripsTable trips={completedTrips} />
 
@@ -175,10 +196,11 @@ export default function ManagerDashboard() {
             rows={carriedForward}
             onClose={closeOrder}
             onView={setDetailOrderId}
+            onConfirmCompletion={confirmCompletion}
           />
         )}
-        <OrderTable title="Running today" rows={today} onClose={closeOrder} onView={setDetailOrderId} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} />
+        <OrderTable title="Running today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
         <RawMaterialStockCard />
@@ -284,8 +306,14 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
                             style={{ display: "block", marginTop: 4, padding: "2px 6px", fontSize: 11 }}
                             onClick={() => onMarkReviewed(t.ticket_id)}
                           >
-                            Mark reviewed
+                            Add response &amp; mark reviewed
                           </button>
+                        </div>
+                      )}
+                      {!t.qc_flagged && t.qc_flag_response && (
+                        <div style={{ marginTop: 4, fontSize: 11, color: "var(--slate)" }}>
+                          <span className="badge badge-neutral" style={{ fontSize: 10 }}>QC flag reviewed</span>
+                          <div>{t.qc_flag_response}</div>
                         </div>
                       )}
                     </td>
@@ -314,7 +342,7 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
 
 // Every order that needs a pump today — scheduled vs actual departure time,
 // live pump status, and whether the site has confirmed ready for batching.
-function PumpStatusTable({ orders, activeTrucks }) {
+function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
   const pumpOrders = orders.filter((o) => o.pump_requirement !== "without_pump");
   if (pumpOrders.length === 0) return null;
 
@@ -328,6 +356,17 @@ function PumpStatusTable({ orders, activeTrucks }) {
     if (order.pump_actual_departure_time) return { label: "En route", cls: "badge-info" };
     if (overdue) return { label: "Overdue", cls: "badge-danger" };
     return { label: "Not yet departed", cls: "badge-neutral" };
+  }
+
+  async function addReason(orderId) {
+    const reason = window.prompt("Reason for the pump departure delay:");
+    if (!reason) return;
+    try {
+      await apiRequest(`/orders/${orderId}/pump-delay-reason`, { method: "POST", body: { reason } });
+      onReload();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   return (
@@ -346,9 +385,22 @@ function PumpStatusTable({ orders, activeTrucks }) {
                   <td>{o.customer_name}</td>
                   <td>{o.site_name}</td>
                   <td>{o.pump_departure_time || "–"}</td>
-                  <td>{o.pump_actual_departure_time ? formatTime(o.pump_actual_departure_time) : "–"}</td>
+                  <td>
+                    {o.pump_actual_departure_time ? formatTime(o.pump_actual_departure_time) : "–"}
+                    {o.pump_departure_delay_reason && (
+                      <div style={{ fontSize: 11, color: "var(--slate)" }}>Delay: {o.pump_departure_delay_reason}</div>
+                    )}
+                    {!o.pump_departure_delay_reason && status.label === "Overdue" && (
+                      <button style={{ fontSize: 10, padding: "2px 6px", marginTop: 2 }} onClick={() => addReason(o.id)}>Add reason</button>
+                    )}
+                  </td>
                   <td><span className={`badge ${status.cls}`}>{status.label}</span></td>
-                  <td>{o.site_ready_confirmed ? <span className="badge badge-success">Ready</span> : <span className="badge badge-warning">Not confirmed</span>}</td>
+                  <td>
+                    {o.site_ready_confirmed ? <span className="badge badge-success">Ready</span> : <span className="badge badge-warning">Not confirmed</span>}
+                    {o.site_ready_delay_reason && (
+                      <div style={{ fontSize: 11, color: "var(--slate)" }}>Delay: {o.site_ready_delay_reason}</div>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -397,7 +449,7 @@ function CompletedTripsTable({ trips }) {
   );
 }
 
-function OrderTable({ title, rows, onClose, onView }) {
+function OrderTable({ title, rows, onClose, onView, onConfirmCompletion }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
@@ -417,7 +469,18 @@ function OrderTable({ title, rows, onClose, onView }) {
                   <td>{o.mix_grade_name}</td>
                   <td>{o.order_quantity_m3} m³</td>
                   <td>{o.delivered_qty_m3} m³</td>
-                  <td><StatusBadge status={o.status} /></td>
+                  <td>
+                    <StatusBadge status={o.status} />
+                    {o.supervisor_marked_complete && !["completed", "closed", "cancelled"].includes(o.status) && (
+                      <div style={{ marginTop: 4 }}>
+                        <span className="badge badge-warning" style={{ fontSize: 10 }}>Site marked complete</span>
+                        {o.work_completion_remarks && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>"{o.work_completion_remarks}"</div>}
+                        <button style={{ display: "block", marginTop: 4, padding: "3px 8px", fontSize: 11 }} onClick={() => onConfirmCompletion(o)}>
+                          Confirm completion
+                        </button>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
                   </td>
