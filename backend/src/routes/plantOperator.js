@@ -21,6 +21,8 @@ router.get("/available-orders", async (req, res) => {
     `SELECT co.id, co.order_quantity_m3, c.name AS customer_name, s.name AS site_name,
             m.name AS mix_grade_name,
             (co.assigned_site_supervisor_id IS NOT NULL AND NOT co.site_ready_confirmed) AS blocked_site_not_ready,
+            co.site_ready_confirmed_at,
+            MIN(dt.created_at) AS first_ticket_created_at,
             COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS dispatched_so_far
      FROM customer_orders co
      JOIN customers c ON c.id = co.customer_id
@@ -29,7 +31,7 @@ router.get("/available-orders", async (req, res) => {
      LEFT JOIN delivery_tickets dt ON dt.order_id = co.id AND dt.status != 'cancelled'
      LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE co.order_date = CURRENT_DATE AND co.status IN ('planned', 'in_progress', 'partially_completed')
-     GROUP BY co.id, c.name, s.name, m.name, co.assigned_site_supervisor_id, co.site_ready_confirmed
+     GROUP BY co.id, c.name, s.name, m.name, co.assigned_site_supervisor_id, co.site_ready_confirmed, co.site_ready_confirmed_at
      HAVING COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) < co.order_quantity_m3
      ORDER BY co.scheduled_batching_time`
   );

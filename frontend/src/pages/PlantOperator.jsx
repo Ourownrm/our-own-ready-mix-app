@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 
 export default function PlantOperator() {
   const [orders, setOrders] = useState([]);
@@ -27,7 +28,11 @@ export default function PlantOperator() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 20000);
+    return () => clearInterval(interval);
+  }, []);
 
   async function submitTicket(e) {
     e.preventDefault();
@@ -60,6 +65,12 @@ export default function PlantOperator() {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+
+        {orders.filter((o) => o.site_ready_confirmed_at && !o.first_ticket_created_at).map((o) => (
+          <div key={o.id} style={{ marginBottom: 12 }}>
+            <ElapsedTimer since={o.site_ready_confirmed_at} alertAfterMinutes={12} big label={`${o.customer_name} — site ready, waiting for first DN`} />
+          </div>
+        ))}
 
         <div className="card">
           <div style={{ fontWeight: 600, marginBottom: 10 }}>Create delivery ticket</div>

@@ -12,7 +12,8 @@ router.get("/", async (req, res) => {
   const { rows } = await query(
     `SELECT o.*, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
             COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0)
-              - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS delivered_qty_m3
+              - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS delivered_qty_m3,
+            MIN(dt.created_at) AS first_ticket_created_at
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id

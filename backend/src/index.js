@@ -21,7 +21,7 @@ import pushRoutes from "./routes/push.js";
 import fuelRoutes from "./routes/fuel.js";
 import salesRoutes from "./routes/sales.js";
 import complianceRoutes from "./routes/compliance.js";
-import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries } from "./lib/scheduledChecks.js";
+import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries, checkBatchingDelayAfterSiteReady } from "./lib/scheduledChecks.js";
 
 dotenv.config();
 
@@ -76,4 +76,5 @@ setInterval(() => {
   checkPumpDepartureOverdue().catch((err) => console.error("Pump-departure-overdue check failed:", err));
   checkBatchingNotStarted().catch((err) => console.error("Batching-not-started check failed:", err));
   checkComplianceExpiries().catch((err) => console.error("Compliance-expiry check failed:", err));
+  checkBatchingDelayAfterSiteReady().catch((err) => console.error("Batching-delay-after-site-ready check failed:", err));
 }, 5 * 60 * 1000);

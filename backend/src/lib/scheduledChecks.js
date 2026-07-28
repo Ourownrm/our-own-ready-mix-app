@@ -156,3 +156,32 @@ export async function checkComplianceExpiries() {
   }
   return rows;
 }
+
+// Tracks the time from when Site Supervisor confirms site-ready to when the
+// FIRST delivery ticket is created for that order (first truck only — once
+// any ticket exists, this order is done needing this check). If more than 12
+// minutes pass with no ticket yet, alerts Manager and Plant Operator.
+export async function checkBatchingDelayAfterSiteReady() {
+  const { rows } = await query(
+    `SELECT o.id AS order_id, o.site_ready_confirmed_at, c.name AS customer_name, s.name AS site_name
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     WHERE o.site_ready_confirmed = true
+       AND o.order_date = CURRENT_DATE
+       AND NOT EXISTS (SELECT 1 FROM delivery_tickets dt WHERE dt.order_id = o.id)
+       AND (now() - o.site_ready_confirmed_at) > INTERVAL '12 minutes'
+       AND NOT EXISTS (
+         SELECT 1 FROM notifications n WHERE n.order_id = o.id AND n.type = 'batching_delay_after_site_ready'
+       )`
+  );
+
+  for (const o of rows) {
+    const message = `Site ready for ${o.customer_name} — ${o.site_name} over 12 minutes ago, still no delivery note created.`;
+    await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('manager', $1, 'batching_delay_after_site_ready', $2)`, [o.order_id, message]);
+    await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('plant_operator', $1, 'batching_delay_after_site_ready', $2)`, [o.order_id, message]);
+    await pushToRole("manager", { title: "Batching delayed after site ready", body: message, url: "/manager" });
+    await pushToRole("plant_operator", { title: "Start batching now", body: message, url: "/plant-operator" });
+  }
+  return rows;
+}

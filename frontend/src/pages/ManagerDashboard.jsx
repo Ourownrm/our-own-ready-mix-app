@@ -6,6 +6,7 @@ import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel } fro
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
+import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { BookingsQueue, CreateLeadForm } from "../lib/SalesPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
@@ -505,7 +506,14 @@ function OrderTable({ title, rows, onClose, onView, onConfirmCompletion, setErro
                       {!o.assigned_site_supervisor_id ? (
                         <span style={{ color: "var(--slate)", fontSize: 12 }}>No supervisor</span>
                       ) : o.site_ready_confirmed ? (
-                        <span className="badge badge-success">Ready</span>
+                        o.first_ticket_created_at ? (
+                          <span className="badge badge-success">Ready</span>
+                        ) : (
+                          <>
+                            <span className="badge badge-success" style={{ marginBottom: 2, display: "inline-block" }}>Ready</span>
+                            <ElapsedTimer since={o.site_ready_confirmed_at} alertAfterMinutes={12} label="Waiting for DN" />
+                          </>
+                        )
                       ) : (
                         <>
                           <span className={`badge ${overdue ? "badge-danger" : "badge-warning"}`}>{overdue ? "Overdue" : "Not confirmed"}</span>

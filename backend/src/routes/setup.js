@@ -618,6 +618,21 @@ router.get("/setup/run-compliance-check", async (req, res) => {
   );
 });
 
+router.get("/setup/run-batching-delay-check", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+  const { checkBatchingDelayAfterSiteReady } = await import("../lib/scheduledChecks.js");
+  const notified = await checkBatchingDelayAfterSiteReady();
+  res.send(
+    `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
+    (notified.length
+      ? `Notified about ${notified.length} order(s):\n\n` + notified.map((o) => `- ${o.customer_name} — ${o.site_name}`).join("\n")
+      : `Nothing over 12 minutes right now — nothing to notify.`) +
+    `</pre>`
+  );
+});
+
 // Diagnostic: shows exactly where a push notification chain might be broken —
 // whether VAPID is configured, who has subscribed (by role), and the most
 // recent notifications of each type, so you can tell "did the trigger fire"

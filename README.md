@@ -906,3 +906,34 @@ No schema changes — nothing new to apply via `/setup`.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Twenty-seventh round — batching delay tracking (first truck only)
+
+Tracks the time from Site Supervisor confirming site-ready to Plant Operator creating
+the **first** delivery note for that order — not every truck, just the initial gap.
+
+- **Manager Dashboard**: once site-ready is confirmed and no ticket exists yet, the
+  order's row shows a live count-up timer ("Waiting for DN — 3m 12s") right in the Site
+  Ready column, turning red past 12 minutes. Stops automatically once the first ticket
+  is created.
+- **Plant Operator**: the same wait shows as a large, hard-to-miss timer banner at the
+  top of the screen (bigger text, bold border) — exactly the version you asked to make
+  "a little bit bigger" — for every order currently in this waiting state, with a clear
+  "start batching now" message once past 12 minutes.
+- **Automatic alert**: if 12 minutes pass with no delivery note created, Manager and
+  Plant Operator both get notified (in-app + push), once per order — same recurring
+  5-minute-timer mechanism as the other scheduled checks.
+- Also added: Plant Operator's screen now polls for updates every 20 seconds. It
+  previously only loaded data once when the page opened, which would have meant a
+  newly-site-ready order wouldn't actually show up without a manual reload — defeating
+  the point of a live alert.
+
+### Migration note
+No schema changes — this reads from columns (`site_ready_confirmed_at`) already added
+in an earlier round; nothing new to apply via `/setup`.
+
+### Testing the new alert
+Same manual-trigger pattern as the other scheduled checks:
+```
+https://oorm-backend.onrender.com/setup/run-batching-delay-check?key=YOUR_SETUP_SECRET
+```
