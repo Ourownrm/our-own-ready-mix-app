@@ -21,6 +21,7 @@ import pushRoutes from "./routes/push.js";
 import fuelRoutes from "./routes/fuel.js";
 import salesRoutes from "./routes/sales.js";
 import complianceRoutes from "./routes/compliance.js";
+import notificationsRoutes from "./routes/notifications.js";
 import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries, checkBatchingDelayAfterSiteReady } from "./lib/scheduledChecks.js";
 
 dotenv.config();
@@ -55,6 +56,7 @@ app.use("/api/push", pushRoutes);
 app.use("/api/fuel", fuelRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/compliance", complianceRoutes);
+app.use("/api/notifications", notificationsRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff

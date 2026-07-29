@@ -21,6 +21,7 @@ import SalesPerformance from "./pages/SalesPerformance.jsx";
 import LeadsBrowser from "./pages/LeadsBrowser.jsx";
 import CustomerFeedback from "./pages/CustomerFeedback.jsx";
 import ComplianceMonitoring from "./pages/ComplianceMonitoring.jsx";
+import NotificationsPage from "./pages/NotificationsPage.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -92,6 +93,9 @@ export default function App() {
           } />
           <Route path="/compliance" element={
             <ProtectedRoute roles={["manager", "administrator"]}><ComplianceMonitoring /></ProtectedRoute>
+          } />
+          <Route path="/notifications" element={
+            <ProtectedRoute roles={["manager", "administrator"]}><NotificationsPage /></ProtectedRoute>
           } />
 
           <Route path="/" element={<RootRedirect />} />

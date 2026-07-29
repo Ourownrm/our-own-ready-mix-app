@@ -25,6 +25,8 @@ export default function ManagerDashboard() {
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
 
   async function load() {
     try {
@@ -49,9 +51,19 @@ export default function ManagerDashboard() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 20000); // keep the truck list and map reasonably live
+    loadUnreadCount();
+    const interval = setInterval(() => { load(); loadUnreadCount(); }, 20000); // keep the truck list and map reasonably live
     return () => clearInterval(interval);
   }, []);
+
+  async function loadUnreadCount() {
+    try {
+      const { count } = await apiRequest("/notifications/unread-count");
+      setUnreadCount(count);
+    } catch {
+      // non-critical — don't surface an error banner just for a badge count
+    }
+  }
 
   async function closeOrder(order) {
     const reason = window.prompt(
@@ -156,19 +168,33 @@ export default function ManagerDashboard() {
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
           <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
-          <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
-          <button onClick={() => setView("correct-orders")}>Correct orders</button>
-          <button onClick={() => setView("correct-tickets")}>Correct tickets</button>
-          <button onClick={() => setView("rates")}>Concrete grades and rates</button>
-          <button onClick={() => setView("leads")}>Assign a lead</button>
-          <Link to="/leads"><button type="button">Browse leads</button></Link>
-          <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
-          <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
-          <Link to="/fuel"><button type="button">Fuel filling</button></Link>
-          <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
+          <Link to="/notifications">
+            <button type="button" style={{ position: "relative" }}>
+              Notifications
+              {unreadCount > 0 && (
+                <span className="badge badge-danger" style={{ marginLeft: 6, fontSize: 10 }}>{unreadCount}</span>
+              )}
+            </button>
+          </Link>
+          <button onClick={() => setShowMoreMenu(!showMoreMenu)}>{showMoreMenu ? "Less ▴" : "More ▾"}</button>
         </div>
+
+        {showMoreMenu && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+            <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
+            <button onClick={() => setView("correct-orders")}>Correct orders</button>
+            <button onClick={() => setView("correct-tickets")}>Correct tickets</button>
+            <button onClick={() => setView("rates")}>Concrete grades and rates</button>
+            <button onClick={() => setView("leads")}>Assign a lead</button>
+            <Link to="/leads"><button type="button">Browse leads</button></Link>
+            <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
+            <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
+            <Link to="/fuel"><button type="button">Fuel filling</button></Link>
+            <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
           <Kpi label="Today's production" value={`${stats?.today_production_m3 ?? "–"} m³`} />
