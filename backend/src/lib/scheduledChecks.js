@@ -169,6 +169,7 @@ export async function checkBatchingDelayAfterSiteReady() {
      JOIN sites s ON s.id = o.site_id
      WHERE o.site_ready_confirmed = true
        AND o.order_date = CURRENT_DATE
+       AND o.status NOT IN ('completed', 'closed', 'cancelled')
        AND NOT EXISTS (SELECT 1 FROM delivery_tickets dt WHERE dt.order_id = o.id)
        AND (now() - o.site_ready_confirmed_at) > INTERVAL '12 minutes'
        AND NOT EXISTS (

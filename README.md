@@ -1048,3 +1048,22 @@ without waiting.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Thirty-third round
+
+1. **Bug fix: batching-delay timer/alert kept running on already-closed orders.**
+   Confirmed exactly from your screenshot — the "Waiting for DN" timer's only stop
+   condition was "has a ticket been created," it never checked whether the order itself
+   had already reached a terminal state. An order that gets marked complete (or closed)
+   with zero deliveries — site cancelled the need after site-ready was confirmed, for
+   example — kept counting up and flagging "delayed" forever, since no ticket was ever
+   going to be created for it. Fixed in three places: the Manager Dashboard timer
+   display, the "site not ready" overdue flag (same gap, same fix), and — more
+   importantly — the backend scheduled check itself, so it stops even considering an
+   order for this alert once it's completed, closed, or cancelled, regardless of ticket
+   status.
+2. **DN number now shown in Active Trucks** — was already being fetched by the
+   underlying query, just never displayed.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

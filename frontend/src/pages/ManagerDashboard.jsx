@@ -309,7 +309,7 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead>
-              <tr><th>Truck</th><th>Driver</th><th>Customer</th><th>Loaded at</th><th>Status</th><th>GPS</th></tr>
+              <tr><th>DN No.</th><th>Truck</th><th>Driver</th><th>Customer</th><th>Loaded at</th><th>Status</th><th>GPS</th></tr>
             </thead>
             <tbody>
               {trucks.map((t) => {
@@ -317,6 +317,7 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
                 const delayed = t.minutes_at_site > 120;
                 return (
                   <tr key={t.ticket_id} style={delayed ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                    <td>{t.ticket_number}</td>
                     <td>{t.truck_number}</td>
                     <td>{t.driver_name}</td>
                     <td>{t.customer_name} &middot; {t.site_name}</td>
@@ -483,6 +484,7 @@ function CompletedTripsTable({ trips }) {
 function OrderTable({ title, rows, onClose, onView, onConfirmCompletion, setError, onReload }) {
   function isSiteReadyOverdue(o) {
     if (o.site_ready_confirmed || !o.assigned_site_supervisor_id || !o.scheduled_batching_time) return false;
+    if (["completed", "closed", "cancelled"].includes(o.status)) return false;
     return new Date(`${o.order_date?.slice(0, 10)}T${o.scheduled_batching_time}`) < new Date();
   }
 
@@ -534,7 +536,7 @@ function OrderTable({ title, rows, onClose, onView, onConfirmCompletion, setErro
                       {!o.assigned_site_supervisor_id ? (
                         <span style={{ color: "var(--slate)", fontSize: 12 }}>No supervisor</span>
                       ) : o.site_ready_confirmed ? (
-                        o.first_ticket_created_at ? (
+                        o.first_ticket_created_at || ["completed", "closed", "cancelled"].includes(o.status) ? (
                           <span className="badge badge-success">Ready</span>
                         ) : (
                           <>
