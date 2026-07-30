@@ -63,34 +63,35 @@ router.get("/ledger", async (req, res) => {
 // descending so the biggest amounts owed surface first.
 router.get("/customers-outstanding", async (req, res) => {
   const { rows } = await query(
-    `SELECT c.id AS customer_id, c.name AS customer_name,
-            COALESCE(inv.total_invoiced, 0) + COALESCE(ob.total_opening, 0) AS total_invoiced,
-            COALESCE(inv.total_paid, 0) + COALESCE(ob.total_paid, 0) AS total_paid,
-            (COALESCE(inv.total_invoiced, 0) + COALESCE(ob.total_opening, 0))
-              - (COALESCE(inv.total_paid, 0) + COALESCE(ob.total_paid, 0)) AS balance,
-            LEAST(
-              COALESCE(inv.oldest_unpaid_date, ob.oldest_unpaid_date),
-              COALESCE(ob.oldest_unpaid_date, inv.oldest_unpaid_date)
-            ) AS oldest_unpaid_date
-     FROM customers c
-     LEFT JOIN LATERAL (
-       SELECT SUM(i.total_amount) AS total_invoiced, SUM(COALESCE(p.paid, 0)) AS total_paid,
-              MIN(dt.ticket_date) FILTER (WHERE i.total_amount > COALESCE(p.paid, 0)) AS oldest_unpaid_date
-       FROM invoices i
-       JOIN delivery_tickets dt ON dt.id = i.ticket_id
-       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
-       WHERE i.customer_id = c.id
-     ) inv ON true
-     LEFT JOIN LATERAL (
-       SELECT SUM(ob.amount) AS total_opening, SUM(COALESCE(p.paid, 0)) AS total_paid,
-              MIN(ob.as_of_date) FILTER (WHERE ob.amount > COALESCE(p.paid, 0)) AS oldest_unpaid_date
-       FROM customer_opening_balances ob
-       LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p ON p.opening_balance_id = ob.id
-       WHERE ob.customer_id = c.id
-     ) ob ON true
-     WHERE COALESCE(inv.total_invoiced, 0) > 0 OR COALESCE(ob.total_opening, 0) > 0
-     HAVING (COALESCE(inv.total_invoiced, 0) + COALESCE(ob.total_opening, 0))
-              - (COALESCE(inv.total_paid, 0) + COALESCE(ob.total_paid, 0)) > 0.01
+    `SELECT * FROM (
+       SELECT c.id AS customer_id, c.name AS customer_name,
+              COALESCE(inv.total_invoiced, 0) + COALESCE(ob.total_opening, 0) AS total_invoiced,
+              COALESCE(inv.total_paid, 0) + COALESCE(ob.total_paid, 0) AS total_paid,
+              (COALESCE(inv.total_invoiced, 0) + COALESCE(ob.total_opening, 0))
+                - (COALESCE(inv.total_paid, 0) + COALESCE(ob.total_paid, 0)) AS balance,
+              LEAST(
+                COALESCE(inv.oldest_unpaid_date, ob.oldest_unpaid_date),
+                COALESCE(ob.oldest_unpaid_date, inv.oldest_unpaid_date)
+              ) AS oldest_unpaid_date
+       FROM customers c
+       LEFT JOIN LATERAL (
+         SELECT SUM(i.total_amount) AS total_invoiced, SUM(COALESCE(p.paid, 0)) AS total_paid,
+                MIN(dt.ticket_date) FILTER (WHERE i.total_amount > COALESCE(p.paid, 0)) AS oldest_unpaid_date
+         FROM invoices i
+         JOIN delivery_tickets dt ON dt.id = i.ticket_id
+         LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
+         WHERE i.customer_id = c.id
+       ) inv ON true
+       LEFT JOIN LATERAL (
+         SELECT SUM(ob.amount) AS total_opening, SUM(COALESCE(p.paid, 0)) AS total_paid,
+                MIN(ob.as_of_date) FILTER (WHERE ob.amount > COALESCE(p.paid, 0)) AS oldest_unpaid_date
+         FROM customer_opening_balances ob
+         LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p ON p.opening_balance_id = ob.id
+         WHERE ob.customer_id = c.id
+       ) ob ON true
+       WHERE COALESCE(inv.total_invoiced, 0) > 0 OR COALESCE(ob.total_opening, 0) > 0
+     ) summary
+     WHERE balance > 0.01
      ORDER BY balance DESC`
   );
   res.json(rows);
@@ -242,7 +243,7 @@ router.post("/opening-balances", async (req, res) => {
   }
   const { rows } = await query(
     `INSERT INTO customer_opening_balances (customer_id, amount, as_of_date, notes, entered_by)
-     VALUES ($1, $2, CURRENT_DATE - ($3 || ' days')::interval, $4, $5) RETURNING *`,
+     VALUES ($1, $2, (CURRENT_DATE - ($3 || ' days')::interval)::date, $4, $5) RETURNING *`,
     [customer_id, amount, Number(days_outstanding), notes || null, req.user.id]
   );
   res.status(201).json(rows[0]);
@@ -262,7 +263,7 @@ router.post("/opening-balances/bulk", async (req, res) => {
     if (!r.customer_id || !r.amount || r.days_outstanding === undefined || r.days_outstanding === null) continue;
     const { rows } = await query(
       `INSERT INTO customer_opening_balances (customer_id, amount, as_of_date, notes, entered_by)
-       VALUES ($1, $2, CURRENT_DATE - ($3 || ' days')::interval, $4, $5) RETURNING *`,
+       VALUES ($1, $2, (CURRENT_DATE - ($3 || ' days')::interval)::date, $4, $5) RETURNING *`,
       [r.customer_id, r.amount, Number(r.days_outstanding), r.notes || null, req.user.id]
     );
     inserted.push(rows[0]);

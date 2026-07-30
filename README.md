@@ -1106,3 +1106,33 @@ Revisit `/setup?key=...` once after deploying — adds `customer_opening_balance
 extends `payments` so a payment can apply to either an invoice or an opening balance
 (existing payment rows are untouched — `invoice_id` just becomes optional at the column
 level, existing data keeps working exactly as before).
+
+## Thirty-fifth round — code review: real SQL bug found before it shipped
+
+Reviewed the newest and most complex code first (the bulk-payment/opening-balance
+logic from last round), since financial code deserves the most scrutiny. Found a real
+one:
+
+**`GET /accountant/customers-outstanding`** — the query behind the entire new
+Accountant dashboard's primary view — used `HAVING` with **no `GROUP BY` at all**,
+filtering on plain arithmetic (`balance > 0.01`) rather than an aggregate function.
+This is invalid in that form and would have thrown a database error the moment the
+page loaded, breaking the main feature from last round entirely. Root cause: the query
+was restructured to use `LATERAL` joins (which already produce one row per customer on
+their own), and `HAVING` was left over from an earlier draft that used `GROUP BY`
+instead — a leftover mismatch, not a logic error. Fixed by wrapping the calculation in
+a subquery and filtering on the computed alias with `WHERE` at the outer level, where
+it's valid to reference it.
+
+Cross-checked every other `HAVING` clause and every other `LATERAL` join pattern in the
+backend (Sales Performance dashboard uses a similar shape) to confirm this was an
+isolated mistake, not a systemic one — all others are correctly paired with either a
+proper `GROUP BY` + aggregate, or don't use `HAVING` at all. Also added explicit
+`::date` casts on the opening-balance date arithmetic, which likely worked fine on
+Postgres's implicit assignment casting already, but removes any doubt given this is
+financial data.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`. This is a pure logic fix to a
+query added last round; if you haven't deployed round 34 yet, this fix is already
+folded in and you only need to deploy once.
