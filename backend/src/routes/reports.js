@@ -50,10 +50,11 @@ router.get("/director-dashboard", async (req, res) => {
     query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE date_trunc('month', payment_date) = date_trunc('month', CURRENT_DATE)`),
 
     query(
-      `SELECT COALESCE(SUM(i.total_amount), 0) - COALESCE(SUM(p.paid), 0) AS total
-       FROM invoices i
-       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
-         ON p.invoice_id = i.id`
+      `SELECT
+         (SELECT COALESCE(SUM(i.total_amount), 0) FROM invoices i)
+         + (SELECT COALESCE(SUM(amount), 0) FROM customer_opening_balances)
+         - (SELECT COALESCE(SUM(amount), 0) FROM payments)
+         AS total`
     ),
     query(
       `WITH inv AS (
@@ -62,6 +63,12 @@ router.get("/director-dashboard", async (req, res) => {
          FROM invoices i
          LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
            ON p.invoice_id = i.id
+         UNION ALL
+         SELECT ob.customer_id, ob.amount - COALESCE(p.paid, 0) AS outstanding,
+                (CURRENT_DATE - ob.as_of_date) AS age_days
+         FROM customer_opening_balances ob
+         LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p
+           ON p.opening_balance_id = ob.id
        )
        SELECT c.name AS customer_name,
          COALESCE(SUM(CASE WHEN age_days <= 7 THEN outstanding ELSE 0 END), 0) AS bucket_0_7,

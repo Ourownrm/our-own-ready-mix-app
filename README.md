@@ -1067,3 +1067,42 @@ No schema changes — nothing new to apply via `/setup`.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Thirty-fourth round — Accountant module overhaul
+
+### Bulk customer payments (the main ask)
+Payments were previously invoice-by-invoice only — an accountant with a lump-sum
+payment covering several days of deliveries had to hunt down and pay each delivery
+individually. The Accountant dashboard is now **customer-centric**: one list showing
+each customer's total invoiced, total paid, and balance (sorted by balance, biggest
+first) instead of a flat list of every delivery. "Record payment" now takes one amount
+against a **customer**, with a live preview of exactly which deliveries it'll cover
+(oldest first), and applies it automatically — still creating one line in the payments
+table per delivery touched, so nothing about the underlying data changes, it just saves
+the repeated manual entry. Confirmed: a rejected delivery never generates an invoice in
+the first place, so it was never going to show up as owed — no separate handling needed
+for that part.
+
+### Opening balances (pre-existing outstanding from before this app)
+New: Accountant → **Opening balances**. Two ways to enter historical debt so the
+dashboard is accurate from day one:
+- **Manually**, one customer at a time (customer, amount, days outstanding, notes)
+- **Upload from Excel** — parsed entirely in your browser (reusing the `xlsx` library
+  already in this project for the Production Report export), so no new file-upload
+  infrastructure was needed. Expects columns named something like Customer / Amount /
+  Days Outstanding (flexible matching — "Customer Name" or "Outstanding Amount" work
+  too) plus an optional Notes column. Shows a **preview with customer-name matching**
+  before anything is committed — any row that couldn't be matched automatically gets a
+  dropdown to fix it by hand, so nothing silently attaches to the wrong customer.
+
+Opening balances aren't a separate, disconnected number — they're woven into
+everything: the customer-outstanding list, the bulk-payment FIFO allocation (treated as
+the oldest debt, paid off first), the Director's Dashboard's total outstanding KPI, and
+the aging report (using the "days outstanding" you enter to place it in the right aging
+bucket from the start).
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds `customer_opening_balances`, and
+extends `payments` so a payment can apply to either an invoice or an opening balance
+(existing payment rows are untouched — `invoice_id` just becomes optional at the column
+level, existing data keeps working exactly as before).

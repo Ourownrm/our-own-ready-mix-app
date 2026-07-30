@@ -538,16 +538,35 @@ CREATE TABLE invoices (
 );
 
 -- Supports multiple receipts against the same invoice (Additional Recommendations)
+-- Pre-existing outstanding balances from before this app was in use — so the
+-- accountant dashboard's outstanding/aging figures are accurate from day one,
+-- not just reflecting what's happened since go-live. as_of_date lets these
+-- slot correctly into the aging report alongside real invoices.
+CREATE TABLE customer_opening_balances (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  amount NUMERIC(12,2) NOT NULL,
+  as_of_date DATE NOT NULL,
+  notes TEXT,
+  entered_by INTEGER REFERENCES users(id),
+  entered_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE payments (
   id SERIAL PRIMARY KEY,
-  invoice_id INTEGER REFERENCES invoices(id) NOT NULL,
+  invoice_id INTEGER REFERENCES invoices(id),
+  opening_balance_id INTEGER REFERENCES customer_opening_balances(id),
   payment_date DATE NOT NULL,
   amount NUMERIC(12,2) NOT NULL,
   mode payment_mode NOT NULL,
   reference_number VARCHAR(100),
   remarks TEXT,
   entered_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT payments_target_check CHECK (
+    (invoice_id IS NOT NULL AND opening_balance_id IS NULL) OR
+    (invoice_id IS NULL AND opening_balance_id IS NOT NULL)
+  )
 );
 
 -- Trip allowance payout ledger — only credited when ticket status = completed

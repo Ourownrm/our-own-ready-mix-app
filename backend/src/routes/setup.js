@@ -382,6 +382,32 @@ router.get("/setup", async (req, res) => {
     // behavior for the button going forward.
     log.push("Schema migration applied (pump/site-ready delay reasons, supervisor-completion signal separated from order status, manager response on flagged-delay alerts).");
 
+    // Pre-existing outstanding balances from before this app was in use, and
+    // letting payments apply to those (not just invoices) so old debt can be
+    // paid down through the same bulk-payment flow as everything else.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS customer_opening_balances (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        amount NUMERIC(12,2) NOT NULL,
+        as_of_date DATE NOT NULL,
+        notes TEXT,
+        entered_by INTEGER REFERENCES users(id),
+        entered_at TIMESTAMPTZ DEFAULT now()
+      );
+      ALTER TABLE payments ALTER COLUMN invoice_id DROP NOT NULL;
+      ALTER TABLE payments ADD COLUMN IF NOT EXISTS opening_balance_id INTEGER REFERENCES customer_opening_balances(id);
+    `);
+    // Constraint added separately and guarded, since re-running /setup would
+    // otherwise fail trying to add a constraint that already exists.
+    await pool.query(`DO $$ BEGIN
+      ALTER TABLE payments ADD CONSTRAINT payments_target_check CHECK (
+        (invoice_id IS NOT NULL AND opening_balance_id IS NULL) OR
+        (invoice_id IS NULL AND opening_balance_id IS NOT NULL)
+      );
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    log.push("Schema migration applied (customer opening balances — pre-existing outstanding from before this app was in use).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
