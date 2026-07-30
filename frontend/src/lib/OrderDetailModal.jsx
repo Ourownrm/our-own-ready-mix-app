@@ -52,6 +52,9 @@ export default function OrderDetailModal({ orderId, onClose }) {
             <Row label="Casting location" value={order.casting_location || "–"} />
             <Row label="Status" value={order.status?.replace(/_/g, " ")} />
             {order.closure_reason && <Row label="Closure reason" value={order.closure_reason} />}
+            {order.original_order_date && (
+              <Row label="Rescheduled" value={`From ${new Date(order.original_order_date).toLocaleDateString()}${order.original_scheduled_batching_time ? `, ${order.original_scheduled_batching_time}` : ""} — ${order.reschedule_reason || "no reason given"}`} />
+            )}
             {order.pump_departure_delay_reason && <Row label="Pump departure delay reason" value={order.pump_departure_delay_reason} />}
             {order.site_ready_delay_reason && <Row label="Site-ready delay reason" value={order.site_ready_delay_reason} />}
             {order.supervisor_marked_complete && (

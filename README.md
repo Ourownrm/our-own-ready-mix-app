@@ -952,3 +952,99 @@ https://oorm-backend.onrender.com/setup/run-batching-delay-check?key=YOUR_SETUP_
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Twenty-ninth round — bug fix: closed orders never left Pump Status
+
+**Root cause confirmed**: `PumpStatusTable` filtered orders only by pump requirement —
+`orders.filter(o => o.pump_requirement !== "without_pump")` — with **no status check at
+all**. A completed, closed, or even cancelled order stayed in that table indefinitely,
+which is exactly what you saw: the order you'd already closed kept showing there
+regardless of what happened to it everywhere else. Fixed by excluding
+completed/closed/cancelled orders from Pump Status specifically, so once an order is
+actually finished, it stops appearing there — while still correctly showing in
+"Running Orders Today" (which intentionally keeps a same-day record regardless of
+status, unaffected by this fix).
+
+Also: "Running today" renamed to **"Running Orders Today"**.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Thirtieth round
+
+1. **Order rescheduling with a required reason** — new "Reschedule" button in Correct
+   Orders (Manager and Administrator), separate from the general "Edit" action. Requires
+   both a new date and a reason; the original date is preserved and shown ("Rescheduled
+   from...") both in the orders list and permanently in "View details." Rescheduling
+   also resets the site-ready confirmation, since a new date means the readiness check
+   needs to happen again for that date.
+2. **Rate-availability warning at order creation** — chose the warning approach over
+   blocking DN creation, since blocking could halt legitimate operations for reasons
+   unrelated to billing (e.g. urgent deliveries where paperwork isn't finalized yet).
+   As soon as a customer and grade are both selected on the Create Order form (or the
+   booking-conversion form), it checks live whether a rate is on file and shows an amber
+   warning if not — catching the gap before the order is even placed, rather than only
+   discovering it after a delivery completes with no invoice.
+3. **Production graph bug fixed** — the tallest bar's value label was being pushed
+   completely off the visible chart area. When the highest bar's value equals the
+   chart's max, its height filled the *entire* chart with literally zero room left for
+   the label above it — the label's Y-coordinate came out negative, rendering above the
+   visible canvas. Fixed by reserving a fixed header strip so even the tallest possible
+   bar always has room for its number.
+4. **Admin dashboard menu decluttered** — same pattern as Manager's — "View Manager
+   Dashboard," "Production report," and "Sales performance" stay visible; "Manage
+   users...," "Statutory compliance," and "Notifications" collapse behind "More ▾".
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds the reschedule-tracking columns.
+
+## Thirty-first round — bug fix: reschedule didn't properly handle time-only changes
+
+Real gap: the backend required a new date on every reschedule, even when Manager only
+wanted to change the batching time on the same day — and separately, the "Rescheduled
+from..." history only ever displayed the date, so a time-only reschedule left no visible
+trace of what actually changed. Fixed both: rescheduling now accepts a new date, a new
+time, or both independently (only a reason plus at least one of the two is required),
+and the history — both in Correct Orders and permanently in "View details" — now shows
+the original time alongside the original date whenever either changed.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Thirty-second round — code review: real bug found and fixed, plus a broader sweep
+
+**The reported bug — driver self-service completions silently getting stuck, root
+cause found**: your description (driver confirms everything, moves to the next trip,
+but the dashboard keeps showing the first truck at site, alert with no way to clear it)
+pointed straight at the offline queue. Actions taken with weak/no signal at a delivery
+site get queued locally and only retried in two situations: the next action while
+online, or the browser's `online` *transition* event firing. But that event never fires
+if the app is simply reopened when it's already connected — closed at a low-signal
+site, reopened later somewhere with signal — so a queued completion could sit in local
+storage indefinitely with nothing ever re-attempting it. The driver's own screen showed
+them as done and moved them to the next trip; the server never actually received the
+completion, so the first ticket stayed genuinely active forever on Manager's dashboard.
+
+Fixed by adding a periodic flush (checks every 30 seconds while the app is open,
+regardless of whether an online-transition event fired) plus flushing once immediately
+whenever Driver's or Site Supervisor's screen loads — covering exactly the "reopened
+already-connected" case that was falling through. Also added a manual **"Sync now"**
+button next to the pending-actions count, so there's always a way to force a retry
+without waiting.
+
+**Broader sweep also turned up:**
+- `/tickets/my-trip` (what the Driver app considers their current trip) was missing
+  `rejected` from its exclusion list — every equivalent query elsewhere already had it.
+  A rejected ticket could keep showing as the driver's "current trip" indefinitely,
+  blocking a clean handoff to their next one.
+- Two Manager Dashboard KPI queries (fleet status counts, delayed-trucks count) had the
+  same gap — a rejected ticket could count toward "delayed" forever.
+- Two more instances of the JS-`Date()`-on-the-server timezone bug (same family as
+  several rounds back): the default payment date in Accountant's payment form, and —
+  more importantly — the daily production chart's day-label generation, which could
+  silently misalign which bar was labeled "today" during the UTC/IST boundary gap. Both
+  fixed by moving the date logic into SQL, against the IST-pinned database session,
+  instead of JavaScript running on the server's own (UTC) clock.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

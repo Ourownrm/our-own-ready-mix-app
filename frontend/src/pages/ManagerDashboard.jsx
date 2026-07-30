@@ -228,7 +228,7 @@ export default function ManagerDashboard() {
             onReload={load}
           />
         )}
-        <OrderTable title="Running today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
+        <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
         <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
@@ -372,7 +372,9 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
 // Every order that needs a pump today — scheduled vs actual departure time,
 // live pump status, and whether the site has confirmed ready for batching.
 function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
-  const pumpOrders = orders.filter((o) => o.pump_requirement !== "without_pump");
+  const pumpOrders = orders.filter((o) =>
+    o.pump_requirement !== "without_pump" && !["completed", "closed", "cancelled"].includes(o.status)
+  );
   if (pumpOrders.length === 0) return null;
 
   function pumpStatus(order) {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
-import { queuedRequest, pendingCount } from "../lib/offlineQueue.js";
+import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
 
 export default function SiteSupervisor() {
@@ -47,7 +47,11 @@ export default function SiteSupervisor() {
     // Poll for updates every 15s too, in case someone else (e.g. Plant Operator/QC)
     // changes this ticket's status while the page is open.
     const interval = setInterval(load, 15000);
-    return () => clearInterval(interval);
+    // Same fix as Driver's screen: the 'online' event alone doesn't cover
+    // reopening the app when it's already connected, so a queued action from
+    // a low-signal moment could otherwise sit unsent indefinitely.
+    const flushInterval = startPeriodicFlush();
+    return () => { clearInterval(interval); clearInterval(flushInterval); };
   }, []);
 
   async function act(path, body) {
@@ -132,7 +136,17 @@ export default function SiteSupervisor() {
             No signal — actions are being saved and will sync automatically
           </div>
         )}
-        {pending > 0 && <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>{pending} action(s) waiting to sync</div>}
+        {pending > 0 && (
+          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+            {pending} action(s) waiting to sync
+            <button
+              style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+              onClick={async () => { await flushQueue(); setPending(pendingCount()); load(); }}
+            >
+              Sync now
+            </button>
+          </div>
+        )}
 
         {orders.length > 0 && (
           <div className="card" style={{ marginBottom: 12 }}>

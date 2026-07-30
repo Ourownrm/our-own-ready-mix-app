@@ -369,6 +369,11 @@ router.get("/setup", async (req, res) => {
       ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS supervisor_marked_complete_at TIMESTAMPTZ;
       ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS after_pour_care_confirmed BOOLEAN;
       ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS work_completion_remarks TEXT;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS original_order_date DATE;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS original_scheduled_batching_time TIME;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS reschedule_reason TEXT;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS rescheduled_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS rescheduled_at TIMESTAMPTZ;
       ALTER TABLE notifications ADD COLUMN IF NOT EXISTS manager_response TEXT;
     `);
     // Any order the old logic already marked 'completed' via the Site

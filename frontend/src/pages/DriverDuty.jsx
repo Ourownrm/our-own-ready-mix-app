@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
-import { queuedRequest, pendingCount } from "../lib/offlineQueue.js";
+import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
 
 export default function DriverDuty() {
@@ -35,6 +35,18 @@ export default function DriverDuty() {
         requestWakeLock();
       }
     }).catch(() => {});
+
+    // Catches actions that got queued at a low-signal site and never actually
+    // synced — the browser's 'online' event alone doesn't cover reopening the
+    // app when it's already connected. Also re-check the trip and pending
+    // count after every attempt, so a successful sync updates the screen
+    // right away instead of waiting for the next manual reload.
+    const flushInterval = startPeriodicFlush();
+    const refreshAfterFlush = setInterval(() => {
+      loadTrip();
+      setPending(pendingCount());
+    }, 30000);
+    return () => { clearInterval(flushInterval); clearInterval(refreshAfterFlush); };
   }, []);
 
   useEffect(() => {
@@ -164,6 +176,12 @@ export default function DriverDuty() {
           {pending > 0 && (
             <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
               {pending} action{pending > 1 ? "s" : ""} waiting to sync
+              <button
+                style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+                onClick={async () => { await flushQueue(); setPending(pendingCount()); loadTrip(); }}
+              >
+                Sync now
+              </button>
             </div>
           )}
           {notice && <div style={{ textAlign: "center", fontSize: 12, color: "var(--signal-green)", marginBottom: 12 }}>{notice}</div>}

@@ -43,7 +43,7 @@ router.get("/my-trip", requireRole("driver"), async (req, res) => {
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN sites s ON s.id = co.site_id
      LEFT JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
-     WHERE dt.driver_id = $1 AND dt.status NOT IN ('completed', 'cancelled', 'returned')
+     WHERE dt.driver_id = $1 AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
      ORDER BY dt.created_at DESC LIMIT 1`,
     [req.user.id]
   );

@@ -96,13 +96,13 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
     ),
     query(
       `SELECT status, COUNT(*) AS count FROM delivery_tickets
-       WHERE ticket_date = CURRENT_DATE AND status NOT IN ('completed', 'cancelled')
+       WHERE ticket_date = CURRENT_DATE AND status NOT IN ('completed', 'cancelled', 'rejected')
        GROUP BY status`
     ),
     query(
       `SELECT COUNT(*) AS count FROM delivery_tickets dt
        JOIN trip_events te ON te.ticket_id = dt.id AND te.event_type = 'reached_site'
-       WHERE dt.ticket_date = CURRENT_DATE AND dt.status NOT IN ('completed', 'cancelled')
+       WHERE dt.ticket_date = CURRENT_DATE AND dt.status NOT IN ('completed', 'cancelled', 'rejected')
        AND te.event_time < now() - INTERVAL '2 hours'`
     ),
     query(

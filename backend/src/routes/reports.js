@@ -163,23 +163,25 @@ router.get("/director-dashboard", async (req, res) => {
 // a day with no completed deliveries still shows a bar rather than a hole.
 router.get("/daily-production", async (req, res) => {
   const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
-  const { rows } = await query(
-    `SELECT dt.ticket_date::text AS day,
-            COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS qty_m3
-     FROM delivery_tickets dt
-     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
-     WHERE dt.status != 'cancelled' AND dt.ticket_date >= CURRENT_DATE - ($1 || ' days')::interval
-     GROUP BY dt.ticket_date`,
-    [days - 1]
-  );
+  const [{ rows }, { rows: dayRows }] = await Promise.all([
+    query(
+      `SELECT dt.ticket_date::text AS day,
+              COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS qty_m3
+       FROM delivery_tickets dt
+       LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+       WHERE dt.status != 'cancelled' AND dt.ticket_date >= CURRENT_DATE - ($1 || ' days')::interval
+       GROUP BY dt.ticket_date`,
+      [days - 1]
+    ),
+    // Generating the last N day-keys in SQL (against the IST-pinned session)
+    // instead of a JS Date loop — the JS version ran on the server's own
+    // clock (UTC on Render), which could disagree with the query above about
+    // what "today" actually is during the UTC/IST day-boundary gap, silently
+    // misaligning which bar is labeled "today".
+    query(`SELECT generate_series(CURRENT_DATE - ($1 || ' days')::interval, CURRENT_DATE, '1 day')::date::text AS day`, [days - 1]),
+  ]);
   const byDay = Object.fromEntries(rows.map((r) => [r.day, Number(r.qty_m3)]));
-  const result = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
-    result.push({ day: key, qty_m3: byDay[key] || 0 });
-  }
+  const result = dayRows.map((r) => ({ day: r.day, qty_m3: byDay[r.day] || 0 }));
   res.json(result);
 });
 

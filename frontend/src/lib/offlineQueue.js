@@ -61,3 +61,16 @@ export async function flushQueue() {
 window.addEventListener("online", () => {
   flushQueue();
 });
+
+// The 'online' event only fires on an offline→online *transition* — it never
+// fires if the app is simply reopened while already connected (e.g. closed
+// at a low-signal site, reopened later somewhere with signal). Without this,
+// a queued action could sit in local storage indefinitely with no further
+// attempt to send it, even though the connection is fine. Call this once on
+// app load, and periodically while the app stays open, as a safety net.
+export function startPeriodicFlush(intervalMs = 30000) {
+  if (navigator.onLine) flushQueue();
+  return setInterval(() => {
+    if (navigator.onLine) flushQueue();
+  }, intervalMs);
+}

@@ -64,8 +64,8 @@ router.post("/payments", async (req, res) => {
   }
   const { rows } = await query(
     `INSERT INTO payments (invoice_id, payment_date, amount, mode, reference_number, remarks, entered_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-    [invoice_id, payment_date || new Date().toISOString().slice(0, 10), amount, mode, reference_number, remarks, req.user.id]
+     VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, $7) RETURNING *`,
+    [invoice_id, payment_date || null, amount, mode, reference_number, remarks, req.user.id]
   );
   res.status(201).json(rows[0]);
 });

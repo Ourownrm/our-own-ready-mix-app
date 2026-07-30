@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
 import { apiRequest } from "./api.js";
 
 export function List({ rows, columns }) {
@@ -537,6 +537,8 @@ export function OrdersPanel({ setError }) {
   const [orders, setOrders] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "" });
+  const [rescheduling, setRescheduling] = useState(null);
+  const [rescheduleForm, setRescheduleForm] = useState({ new_order_date: "", new_scheduled_batching_time: "", reason: "" });
   const [saving, setSaving] = useState(false);
 
   async function load() {
@@ -566,6 +568,21 @@ export function OrdersPanel({ setError }) {
     } catch (err) { setError(err.message); }
   }
 
+  function startReschedule(o) {
+    setRescheduling(o.id);
+    setRescheduleForm({ new_order_date: o.order_date?.slice(0, 10) || "", new_scheduled_batching_time: o.scheduled_batching_time || "", reason: "" });
+  }
+
+  async function saveReschedule(id) {
+    if (!rescheduleForm.reason) return setError("A reason is required to reschedule.");
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/orders/${id}/reschedule`, { method: "POST", body: rescheduleForm });
+      setRescheduling(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
   return (
     <div className="card">
       <table>
@@ -574,33 +591,71 @@ export function OrdersPanel({ setError }) {
         </thead>
         <tbody>
           {orders.map((o) => (
-            <tr key={o.id}>
-              <td>{new Date(o.order_date).toLocaleDateString()}</td>
-              <td>{o.customer_name}</td>
-              <td>{o.site_name}</td>
-              <td>{o.mix_grade_name}</td>
-              <td>
-                {editing === o.id ? (
-                  <input type="number" value={form.order_quantity_m3} onChange={(e) => setForm({ ...form, order_quantity_m3: e.target.value })} style={{ width: 70 }} />
-                ) : o.order_quantity_m3}
-              </td>
-              <td><span className={`badge ${o.status === "cancelled" ? "badge-danger" : "badge-neutral"}`}>{o.status.replace("_", " ")}</span></td>
-              <td>
-                {o.status !== "cancelled" && (
-                  editing === o.id ? (
-                    <span style={{ display: "flex", gap: 4 }}>
-                      <button onClick={() => saveEdit(o.id)} disabled={saving}>Save</button>
-                      <button onClick={() => setEditing(null)}>Cancel</button>
-                    </span>
-                  ) : (
-                    <span style={{ display: "flex", gap: 4 }}>
-                      <button onClick={() => startEdit(o)}>Edit</button>
-                      <button className="btn-danger" onClick={() => cancelOrder(o.id)}>Cancel order</button>
-                    </span>
-                  )
-                )}
-              </td>
-            </tr>
+            <Fragment key={o.id}>
+              <tr>
+                <td>
+                  {new Date(o.order_date).toLocaleDateString()}
+                  {o.original_order_date && (
+                    <div style={{ fontSize: 11, color: "var(--slate)" }}>
+                      Rescheduled from {new Date(o.original_order_date).toLocaleDateString()}
+                      {o.original_scheduled_batching_time ? `, ${o.original_scheduled_batching_time}` : ""}
+                    </div>
+                  )}
+                </td>
+                <td>{o.customer_name}</td>
+                <td>{o.site_name}</td>
+                <td>{o.mix_grade_name}</td>
+                <td>
+                  {editing === o.id ? (
+                    <input type="number" value={form.order_quantity_m3} onChange={(e) => setForm({ ...form, order_quantity_m3: e.target.value })} style={{ width: 70 }} />
+                  ) : o.order_quantity_m3}
+                </td>
+                <td><span className={`badge ${o.status === "cancelled" ? "badge-danger" : "badge-neutral"}`}>{o.status.replace("_", " ")}</span></td>
+                <td>
+                  {!["cancelled", "closed", "completed"].includes(o.status) && (
+                    editing === o.id ? (
+                      <span style={{ display: "flex", gap: 4 }}>
+                        <button onClick={() => saveEdit(o.id)} disabled={saving}>Save</button>
+                        <button onClick={() => setEditing(null)}>Cancel</button>
+                      </span>
+                    ) : (
+                      <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <button onClick={() => startEdit(o)}>Edit</button>
+                        <button onClick={() => startReschedule(o)}>Reschedule</button>
+                        <button className="btn-danger" onClick={() => cancelOrder(o.id)}>Cancel order</button>
+                      </span>
+                    )
+                  )}
+                </td>
+              </tr>
+              {rescheduling === o.id && (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 8, fontSize: 13, padding: 10, background: "var(--concrete)", borderRadius: 8, alignItems: "end" }}>
+                      <div>
+                        <div style={{ color: "var(--slate)" }}>New date</div>
+                        <input type="date" value={rescheduleForm.new_order_date} onChange={(e) => setRescheduleForm({ ...rescheduleForm, new_order_date: e.target.value })} />
+                      </div>
+                      <div>
+                        <div style={{ color: "var(--slate)" }}>New batching time</div>
+                        <input type="time" value={rescheduleForm.new_scheduled_batching_time} onChange={(e) => setRescheduleForm({ ...rescheduleForm, new_scheduled_batching_time: e.target.value })} />
+                      </div>
+                      <div>
+                        <div style={{ color: "var(--slate)" }}>Reason (required)</div>
+                        <input value={rescheduleForm.reason} onChange={(e) => setRescheduleForm({ ...rescheduleForm, reason: e.target.value })} placeholder="Customer requested a different date, site not ready, etc." style={{ width: "100%" }} />
+                      </div>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button onClick={() => saveReschedule(o.id)} disabled={saving}>{saving ? "Saving..." : "Confirm"}</button>
+                        <button onClick={() => setRescheduling(null)}>Cancel</button>
+                      </div>
+                      <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)" }}>
+                        Change the date, the time, or both — leaving one unchanged keeps it as-is.
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
           {orders.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
         </tbody>

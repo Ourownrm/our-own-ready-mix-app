@@ -32,6 +32,7 @@ export default function CreateOrder({ onDone }) {
   const [salespersons, setSalespersons] = useState([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [rateWarning, setRateWarning] = useState("");
 
   useEffect(() => {
     Promise.all([
@@ -45,6 +46,15 @@ export default function CreateOrder({ onDone }) {
       setCustomers(c); setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p); setSalespersons(sp);
     }).catch((err) => setError(err.message));
   }, []);
+
+  // Warns before the order is even placed, rather than only discovering the
+  // gap after a delivery completes with no invoice generated.
+  useEffect(() => {
+    if (!form.customer_id || !form.mix_grade_id) { setRateWarning(""); return; }
+    apiRequest(`/master/rate-check?customer_id=${form.customer_id}&mix_grade_id=${form.mix_grade_id}&date=${form.order_date}`)
+      .then((r) => setRateWarning(r.rate_exists ? "" : "No rate is on file for this customer and grade combination as of this order date — deliveries won't generate invoices until one is added (Administrator/Manager → Concrete grades and rates)."))
+      .catch(() => {}); // non-critical — don't block the form over a failed check
+  }, [form.customer_id, form.mix_grade_id, form.order_date]);
 
   function set(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -182,6 +192,11 @@ export default function CreateOrder({ onDone }) {
           </div>
         )}
 
+        {rateWarning && (
+          <div style={{ gridColumn: "1 / -1", color: "var(--amber)", background: "var(--amber-bg)", padding: 10, borderRadius: 8, fontSize: 12 }}>
+            ⚠ {rateWarning}
+          </div>
+        )}
         {error && <div style={{ gridColumn: "1 / -1", color: "var(--alert-red)" }}>{error}</div>}
 
         <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>

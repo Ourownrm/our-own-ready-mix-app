@@ -9,6 +9,7 @@ import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 export default function Reports() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const { user } = useAuth();
 
   async function load() {
@@ -30,14 +31,21 @@ export default function Reports() {
       <TopBar title="Reports & Director's Dashboard" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
         {user?.role === "administrator" && (
-          <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Link to="/administrator"><button type="button">Manage users, customers, sites, fleet, rates...</button></Link>
-            <Link to="/production-report"><button type="button">Production report</button></Link>
-            <Link to="/sales-performance"><button type="button">Sales performance</button></Link>
-            <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
-            <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
-            <Link to="/notifications"><button type="button">Notifications</button></Link>
-          </div>
+          <>
+            <div style={{ marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
+              <Link to="/production-report"><button type="button">Production report</button></Link>
+              <Link to="/sales-performance"><button type="button">Sales performance</button></Link>
+              <button onClick={() => setShowMoreMenu(!showMoreMenu)}>{showMoreMenu ? "Less ▴" : "More ▾"}</button>
+            </div>
+            {showMoreMenu && (
+              <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Link to="/administrator"><button type="button">Manage users, customers, sites, fleet, rates...</button></Link>
+                <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
+                <Link to="/notifications"><button type="button">Notifications</button></Link>
+              </div>
+            )}
+          </>
         )}
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
         {!data ? (

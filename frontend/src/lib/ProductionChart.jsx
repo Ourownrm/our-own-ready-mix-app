@@ -15,6 +15,7 @@ export default function ProductionChart() {
   const gap = days > 14 ? 4 : 8;
   const chartWidth = data.length * (barWidth + gap);
   const chartHeight = 140;
+  const labelHeadroom = 16; // room reserved above the tallest bar for its value label
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -31,7 +32,7 @@ export default function ProductionChart() {
         <div style={{ overflowX: "auto" }}>
           <svg width={Math.max(chartWidth, 280)} height={chartHeight + 30} role="img" aria-label={`Bar chart of daily concrete production over the last ${days} days`}>
             {data.map((d, i) => {
-              const barHeight = (d.qty_m3 / max) * chartHeight;
+              const barHeight = (d.qty_m3 / max) * (chartHeight - labelHeadroom);
               const x = i * (barWidth + gap);
               const label = new Date(d.day).toLocaleDateString([], { day: "2-digit", month: "short" });
               return (

@@ -162,12 +162,20 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     remarks: "",
   });
   const [saving, setSaving] = useState(false);
+  const [rateWarning, setRateWarning] = useState("");
 
   useEffect(() => {
     Promise.all([apiRequest("/master/sites"), apiRequest("/master/mix-grades"), apiRequest("/master/site-supervisors"), apiRequest("/master/pumps")])
       .then(([s, m, sup, p]) => { setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p); })
       .catch((err) => setError(err.message));
   }, []);
+
+  useEffect(() => {
+    if (!form.mix_grade_id) { setRateWarning(""); return; }
+    apiRequest(`/master/rate-check?customer_id=${booking.customer_id}&mix_grade_id=${form.mix_grade_id}&date=${form.order_date}`)
+      .then((r) => setRateWarning(r.rate_exists ? "" : "No rate is on file for this customer and grade combination as of this order date — deliveries won't generate invoices until one is added."))
+      .catch(() => {});
+  }, [form.mix_grade_id, form.order_date]);
 
   const sitesForCustomer = sites.filter((s) => String(s.customer_id) === String(booking.customer_id));
 
@@ -236,6 +244,11 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
           <div style={{ color: "var(--slate)" }}>Remarks</div>
           <textarea rows={2} value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} />
         </div>
+        {rateWarning && (
+          <div style={{ gridColumn: "1 / -1", color: "var(--amber)", background: "var(--amber-bg)", padding: 10, borderRadius: 8, fontSize: 12 }}>
+            ⚠ {rateWarning}
+          </div>
+        )}
         <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>
           <button type="submit" disabled={saving} style={{ flex: 1 }}>{saving ? "Creating..." : "Create order"}</button>
           <button type="button" onClick={onCancel} style={{ flex: 1 }}>Cancel</button>
