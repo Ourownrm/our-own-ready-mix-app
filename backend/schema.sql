@@ -65,6 +65,12 @@ CREATE TABLE sites (
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
   geofence_radius_m INTEGER DEFAULT 150,
+  -- The sales person who owns this project/site relationship — distinct from
+  -- an individual order's sales_representative_id (which is who sold that
+  -- one particular delivery, for attribution/commission reporting). This is
+  -- who's responsible for the site as an ongoing relationship, which is what
+  -- Sales Forecast is actually keyed on. FK added below once salespersons exists.
+  assigned_sales_representative_id INTEGER,
   is_active BOOLEAN DEFAULT TRUE
 );
 
@@ -123,6 +129,9 @@ CREATE TABLE salespersons (
   user_id INTEGER REFERENCES users(id)
 );
 
+ALTER TABLE sites ADD CONSTRAINT sites_assigned_sales_representative_id_fkey
+  FOREIGN KEY (assigned_sales_representative_id) REFERENCES salespersons(id);
+
 -- ===================== SALES MODULE =====================
 
 CREATE TYPE lead_status AS ENUM ('new', 'contacted', 'quoted', 'won', 'lost');
@@ -143,7 +152,7 @@ CREATE TABLE leads (
   status lead_status DEFAULT 'new',
   attribution lead_attribution,
   won_customer_id INTEGER REFERENCES customers(id),
-  won_order_id INTEGER REFERENCES customer_orders(id),
+  won_order_id INTEGER, -- FK to customer_orders added below, once that table exists
   lost_reason TEXT,
   quotation_issued BOOLEAN DEFAULT false,
   latest_quotation_amount NUMERIC(10,2),
@@ -194,7 +203,7 @@ CREATE TABLE bookings (
   site_longitude NUMERIC(10,7),
   requested_by INTEGER REFERENCES users(id) NOT NULL,
   status booking_status DEFAULT 'pending',
-  converted_order_id INTEGER REFERENCES customer_orders(id),
+  converted_order_id INTEGER, -- FK to customer_orders added below, once that table exists
   declined_reason TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -204,7 +213,7 @@ CREATE TYPE feedback_type AS ENUM ('compliment', 'complaint');
 CREATE TABLE aftersales_feedback (
   id SERIAL PRIMARY KEY,
   customer_id INTEGER REFERENCES customers(id) NOT NULL,
-  order_id INTEGER REFERENCES customer_orders(id),
+  order_id INTEGER, -- FK to customer_orders added below, once that table exists
   feedback_type feedback_type NOT NULL,
   comment TEXT NOT NULL,
   recorded_by INTEGER REFERENCES users(id) NOT NULL,
@@ -372,13 +381,17 @@ CREATE TABLE customer_orders (
 
 -- ===================== DELIVERY TICKETS (SRS 6) =====================
 
+ALTER TABLE leads ADD CONSTRAINT leads_won_order_id_fkey FOREIGN KEY (won_order_id) REFERENCES customer_orders(id);
+ALTER TABLE bookings ADD CONSTRAINT bookings_converted_order_id_fkey FOREIGN KEY (converted_order_id) REFERENCES customer_orders(id);
+ALTER TABLE aftersales_feedback ADD CONSTRAINT aftersales_feedback_order_id_fkey FOREIGN KEY (order_id) REFERENCES customer_orders(id);
+
 -- Rolling demand estimate for an ongoing project — planning only, never
 -- becomes an order on its own (that's what a booking is for). One row per
 -- order: editing a forecast re-anchors its window to right now, which is how
 -- an expired forecast gets "refreshed" rather than needing a new record.
 CREATE TABLE sales_forecasts (
   id SERIAL PRIMARY KEY,
-  order_id INTEGER REFERENCES customer_orders(id) NOT NULL UNIQUE,
+  site_id INTEGER REFERENCES sites(id) NOT NULL UNIQUE,
   sales_representative_id INTEGER REFERENCES salespersons(id) NOT NULL,
   expected_qty_m3 NUMERIC(10,2) NOT NULL,
   period_days INTEGER NOT NULL,
@@ -609,6 +622,7 @@ CREATE TABLE notifications (
   ticket_id INTEGER REFERENCES delivery_tickets(id),
   order_id INTEGER REFERENCES customer_orders(id),
   compliance_document_id INTEGER REFERENCES compliance_documents(id),
+  site_id INTEGER REFERENCES sites(id),
   type VARCHAR(50) NOT NULL,  -- left_plant, reached_site, delayed, at_site_over_threshold,
                               -- concrete_rejected, delivery_completed, driver_off_duty_during_trip,
                               -- pump_departure_overdue, batching_not_started, compliance_alert

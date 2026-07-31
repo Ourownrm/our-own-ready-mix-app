@@ -5,6 +5,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
 import ProductionChart from "../lib/ProductionChart.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
+import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 
 export default function Reports() {
   const [data, setData] = useState(null);
@@ -124,6 +125,7 @@ export default function Reports() {
 
             {/* 6. Raw material stock */}
             <RawMaterialStockCard />
+            <ComplianceAlertsCard />
 
             {/* 7. Sales this month by customer */}
             <Section title="Sales this month, by customer">

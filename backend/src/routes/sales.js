@@ -450,20 +450,24 @@ router.get("/performance", requireRole("administrator"), async (req, res) => {
 
 // ===================== SALES FORECASTING =====================
 // Rolling demand estimates for ongoing projects — planning only, never
-// becomes an order on its own (that's what a booking is for).
+// becomes an order on its own (that's what a booking is for). Keyed on the
+// SITE, not any individual order — a project's sales-executive assignment
+// and forecast should persist across its whole lifetime, not reset per
+// delivery. (customer_orders.sales_representative_id is a separate, still-
+// valid concept — who sold that one particular order, for attribution —
+// this is who owns the ongoing project relationship.)
 
 // Sales Executive's own running projects — what the forecast form picks from.
-router.get("/my-running-orders", requireRole("sales_executive"), async (req, res) => {
+router.get("/my-running-projects", requireRole("sales_executive"), async (req, res) => {
   const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
   const salespersonId = spRows[0]?.id;
   if (!salespersonId) return res.json([]);
   const { rows } = await query(
-    `SELECT o.id, c.name AS customer_name, s.name AS site_name
-     FROM customer_orders o
-     JOIN customers c ON c.id = o.customer_id
-     JOIN sites s ON s.id = o.site_id
-     WHERE o.sales_representative_id = $1 AND o.status NOT IN ('completed', 'closed', 'cancelled')
-     ORDER BY o.order_date DESC`,
+    `SELECT s.id, c.name AS customer_name, s.name AS site_name
+     FROM sites s
+     JOIN customers c ON c.id = s.customer_id
+     WHERE s.assigned_sales_representative_id = $1 AND s.is_active
+     ORDER BY s.name`,
     [salespersonId]
   );
   res.json(rows);
@@ -472,8 +476,8 @@ router.get("/my-running-orders", requireRole("sales_executive"), async (req, res
 // Upsert — one forecast per project. Saving (including editing an expired
 // one) re-anchors the window to right now via updated_at.
 router.post("/forecasts", requireRole("sales_executive"), async (req, res) => {
-  const { order_id, expected_qty_m3, period_days, confidence, notes } = req.body;
-  if (!order_id || !expected_qty_m3 || !period_days || !confidence) {
+  const { site_id, expected_qty_m3, period_days, confidence, notes } = req.body;
+  if (!site_id || !expected_qty_m3 || !period_days || !confidence) {
     return res.status(400).json({ error: "Project, expected quantity, period, and confidence are all required." });
   }
   const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
@@ -481,17 +485,17 @@ router.post("/forecasts", requireRole("sales_executive"), async (req, res) => {
   if (!salespersonId) return res.status(400).json({ error: "No salesperson profile linked to your account." });
 
   const { rows } = await query(
-    `INSERT INTO sales_forecasts (order_id, sales_representative_id, expected_qty_m3, period_days, confidence, notes)
+    `INSERT INTO sales_forecasts (site_id, sales_representative_id, expected_qty_m3, period_days, confidence, notes)
      VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (order_id) DO UPDATE SET
+     ON CONFLICT (site_id) DO UPDATE SET
        expected_qty_m3 = $3, period_days = $4, confidence = $5, notes = $6, updated_at = now()
      RETURNING *`,
-    [order_id, salespersonId, expected_qty_m3, period_days, confidence, notes || null]
+    [site_id, salespersonId, expected_qty_m3, period_days, confidence, notes || null]
   );
   await query(
     `UPDATE notifications SET is_read = true
-     WHERE recipient_id = $1 AND order_id = $2 AND type = 'forecast_update_requested' AND is_read = false`,
-    [req.user.id, order_id]
+     WHERE recipient_id = $1 AND site_id = $2 AND type = 'forecast_update_requested' AND is_read = false`,
+    [req.user.id, site_id]
   );
   res.status(201).json(rows[0]);
 });
@@ -510,9 +514,8 @@ router.get("/forecasts", requireRole("sales_executive", "manager", "administrato
             (f.updated_at::date + f.period_days) AS period_end_date,
             (f.updated_at::date + f.period_days) < CURRENT_DATE AS is_expired
      FROM sales_forecasts f
-     JOIN customer_orders o ON o.id = f.order_id
-     JOIN customers c ON c.id = o.customer_id
-     JOIN sites s ON s.id = o.site_id
+     JOIN sites s ON s.id = f.site_id
+     JOIN customers c ON c.id = s.customer_id
      JOIN salespersons sp ON sp.id = f.sales_representative_id
      ${own ? "WHERE f.sales_representative_id = $1" : ""}
      ORDER BY f.updated_at DESC`,
@@ -521,37 +524,36 @@ router.get("/forecasts", requireRole("sales_executive", "manager", "administrato
   res.json(rows);
 });
 
-// Assign a salesperson to an order that doesn't have one yet — the real fix
-// for a project not showing up anywhere in Sales Forecast, since everything
-// here is keyed off that assignment.
-router.post("/orders/:orderId/assign-salesperson", requireRole("manager", "administrator"), async (req, res) => {
+// Assign a salesperson to the project/site — the actual fix for a project
+// not showing up anywhere in Sales Forecast, since everything here is keyed
+// off this assignment. Persists for the site's whole lifetime.
+router.post("/sites/:siteId/assign-salesperson", requireRole("manager", "administrator"), async (req, res) => {
   const { salesperson_id } = req.body;
   if (!salesperson_id) return res.status(400).json({ error: "Select a salesperson." });
   const { rows } = await query(
-    "UPDATE customer_orders SET sales_representative_id = $1 WHERE id = $2 RETURNING *",
-    [salesperson_id, req.params.orderId]
+    "UPDATE sites SET assigned_sales_representative_id = $1 WHERE id = $2 RETURNING *",
+    [salesperson_id, req.params.siteId]
   );
-  if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  if (!rows.length) return res.status(404).json({ error: "Site not found." });
   res.json(rows[0]);
 });
 
-// Every running project that has a sales rep assigned, with its forecast
-// status if any — lets Manager/Administrator see gaps (no forecast at all,
-// or an expired one) and request an update, not just review what's current.
+// Every active site/project, with its forecast status if any — lets
+// Manager/Administrator see gaps (no sales person, no forecast, or an
+// expired one) and request an update, not just review what's current.
 router.get("/running-projects-with-forecast-status", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
-    `SELECT o.id AS order_id, c.name AS customer_name, s.name AS site_name,
+    `SELECT s.id AS site_id, c.name AS customer_name, s.name AS site_name,
             sp.name AS salesperson_name, sp.user_id AS salesperson_user_id,
             f.expected_qty_m3, f.period_days, f.confidence, f.updated_at AS forecast_updated_at,
             (f.id IS NOT NULL) AS has_forecast,
             (f.id IS NOT NULL AND (f.updated_at::date + f.period_days) < CURRENT_DATE) AS is_expired
-     FROM customer_orders o
-     JOIN customers c ON c.id = o.customer_id
-     JOIN sites s ON s.id = o.site_id
-     LEFT JOIN salespersons sp ON sp.id = o.sales_representative_id
-     LEFT JOIN sales_forecasts f ON f.order_id = o.id
-     WHERE o.status NOT IN ('completed', 'closed', 'cancelled')
-     ORDER BY has_forecast ASC, o.order_date DESC`
+     FROM sites s
+     JOIN customers c ON c.id = s.customer_id
+     LEFT JOIN salespersons sp ON sp.id = s.assigned_sales_representative_id
+     LEFT JOIN sales_forecasts f ON f.site_id = s.id
+     WHERE s.is_active
+     ORDER BY has_forecast ASC, s.name`
   );
   res.json(rows);
 });
@@ -559,31 +561,30 @@ router.get("/running-projects-with-forecast-status", requireRole("manager", "adm
 // Manager/Administrator asks the assigned Sales Executive to add or refresh
 // a forecast for a specific project — a direct nudge rather than waiting.
 router.post("/forecasts/request-update", requireRole("manager", "administrator"), async (req, res) => {
-  const { order_id, message } = req.body;
-  if (!order_id) return res.status(400).json({ error: "Select a project." });
+  const { site_id, message } = req.body;
+  if (!site_id) return res.status(400).json({ error: "Select a project." });
 
   const { rows } = await query(
-    `SELECT o.id, sp.user_id AS salesperson_user_id, c.name AS customer_name, s.name AS site_name
-     FROM customer_orders o
-     JOIN customers c ON c.id = o.customer_id
-     JOIN sites s ON s.id = o.site_id
-     LEFT JOIN salespersons sp ON sp.id = o.sales_representative_id
-     WHERE o.id = $1`,
-    [order_id]
+    `SELECT s.id, sp.user_id AS salesperson_user_id, c.name AS customer_name, s.name AS site_name
+     FROM sites s
+     JOIN customers c ON c.id = s.customer_id
+     LEFT JOIN salespersons sp ON sp.id = s.assigned_sales_representative_id
+     WHERE s.id = $1`,
+    [site_id]
   );
-  const order = rows[0];
-  if (!order) return res.status(404).json({ error: "Project not found." });
-  if (!order.salesperson_user_id) return res.status(400).json({ error: "This project has no sales person assigned." });
+  const site = rows[0];
+  if (!site) return res.status(404).json({ error: "Project not found." });
+  if (!site.salesperson_user_id) return res.status(400).json({ error: "This project has no sales person assigned." });
 
-  const label = `${order.customer_name} — ${order.site_name}`;
+  const label = `${site.customer_name} — ${site.site_name}`;
   const text = message
     ? `Manager asked for a forecast update on ${label}: "${message}"`
     : `Manager asked for a forecast update on ${label}.`;
   await query(
-    `INSERT INTO notifications (recipient_role, recipient_id, order_id, type, message) VALUES ('sales_executive', $1, $2, 'forecast_update_requested', $3)`,
-    [order.salesperson_user_id, order_id, text]
+    `INSERT INTO notifications (recipient_role, recipient_id, site_id, type, message) VALUES ('sales_executive', $1, $2, 'forecast_update_requested', $3)`,
+    [site.salesperson_user_id, site_id, text]
   );
-  await pushToUser(order.salesperson_user_id, { title: "Forecast update requested", body: label, url: "/sales-forecast" });
+  await pushToUser(site.salesperson_user_id, { title: "Forecast update requested", body: label, url: "/sales-forecast" });
 
   res.json({ ok: true });
 });
@@ -592,7 +593,7 @@ router.post("/forecasts/request-update", requireRole("manager", "administrator")
 // alert at the top of their forecast screen.
 router.get("/forecast-update-requests", requireRole("sales_executive"), async (req, res) => {
   const { rows } = await query(
-    `SELECT id, order_id, message, created_at FROM notifications
+    `SELECT id, site_id, message, created_at FROM notifications
      WHERE recipient_id = $1 AND type = 'forecast_update_requested' AND is_read = false
      ORDER BY created_at DESC`,
     [req.user.id]
@@ -600,7 +601,7 @@ router.get("/forecast-update-requests", requireRole("sales_executive"), async (r
   res.json(rows);
 });
 
-
+// Weekly aggregate for the Manager/Administrator chart — expected demand
 // this week and next, broken down by confidence level.
 router.get("/forecasts/summary", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(

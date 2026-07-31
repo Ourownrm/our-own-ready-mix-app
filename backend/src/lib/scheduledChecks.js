@@ -152,7 +152,12 @@ export async function checkComplianceExpiries() {
       `INSERT INTO notifications (recipient_role, compliance_document_id, type, message) VALUES ('manager', $1, 'compliance_alert', $2)`,
       [d.id, message]
     );
+    await query(
+      `INSERT INTO notifications (recipient_role, compliance_document_id, type, message) VALUES ('administrator', $1, 'compliance_alert', $2)`,
+      [d.id, message]
+    );
     await pushToRole("manager", { title: "Compliance alert", body: message, url: "/compliance" });
+    await pushToRole("administrator", { title: "Compliance alert", body: message, url: "/compliance" });
   }
   return rows;
 }

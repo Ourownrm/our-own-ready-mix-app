@@ -136,15 +136,21 @@ export function SitesPanel({ setError }) {
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [salespersons, setSalespersons] = useState([]);
   const [form, setForm] = useState({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [assigningId, setAssigningId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
 
   async function load() {
     try {
-      const [s, c, cat] = await Promise.all([
-        apiRequest("/master/sites"), apiRequest("/master/customers"), apiRequest("/master/trip-allowance-categories"),
+      const [s, c, cat, sp] = await Promise.all([
+        apiRequest("/administrator/sites"), apiRequest("/master/customers"),
+        apiRequest("/master/trip-allowance-categories"), apiRequest("/master/salespersons"),
       ]);
-      setSites(s); setCustomers(c); setCategories(cat);
+      setSites(s); setCustomers(c); setCategories(cat); setSalespersons(sp);
     } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
@@ -166,10 +172,114 @@ export function SitesPanel({ setError }) {
     );
   }
 
+  function startEdit(s) {
+    setEditingId(s.id);
+    setEditForm({
+      name: s.name, address: s.address || "", distance_from_plant_km: s.distance_from_plant_km || "",
+      trip_allowance_category_id: s.trip_allowance_category_id || "", latitude: s.latitude || "", longitude: s.longitude || "",
+    });
+  }
+
+  async function saveEdit(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/sites/${id}`, { method: "PATCH", body: editForm });
+      setEditingId(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function toggleActive(s) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/sites/${s.id}/status`, { method: "POST", body: { is_active: !s.is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function remove(s) {
+    if (!window.confirm(`Delete ${s.name}? This only works if it has no orders, forecasts, or other records on file.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/administrator/sites/${s.id}`, { method: "DELETE" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function assignSalesperson(siteId, salespersonId) {
+    if (!salespersonId) return;
+    setError("");
+    try {
+      await apiRequest(`/sales/sites/${siteId}/assign-salesperson`, { method: "POST", body: { salesperson_id: salespersonId } });
+      setAssigningId(null);
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  const visible = showInactive ? sites : sites.filter((s) => s.is_active);
+
   return (
     <div>
-      <List rows={sites} columns={[["name", "Site"], ["distance_from_plant_km", "Distance (km)"], ["trip_allowance_label", "Trip allowance"], ["latitude", "Lat"], ["longitude", "Lng"]]} />
-      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Projects and sites</div>
+        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          Show disabled
+        </label>
+      </div>
+      <div className="card" style={{ marginBottom: 12, overflowX: "auto" }}>
+        <table style={{ fontSize: 13 }}>
+          <thead><tr><th>Site</th><th>Customer</th><th>Distance</th><th>Sales person</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {visible.map((s) => (
+              <tr key={s.id} style={!s.is_active ? { opacity: 0.6 } : undefined}>
+                {editingId === s.id ? (
+                  <>
+                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: "100%" }} /></td>
+                    <td>{s.customer_name}</td>
+                    <td><input type="number" value={editForm.distance_from_plant_km} onChange={(e) => setEditForm({ ...editForm, distance_from_plant_km: e.target.value })} style={{ width: 70 }} /></td>
+                    <td>{s.salesperson_name || "–"}</td>
+                    <td></td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => saveEdit(s.id)} disabled={saving}>Save</button>
+                      <button onClick={() => setEditingId(null)}>Cancel</button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td>{s.name}</td>
+                    <td>{s.customer_name}</td>
+                    <td>{s.distance_from_plant_km ? `${s.distance_from_plant_km} km` : "–"}</td>
+                    <td>
+                      {assigningId === s.id ? (
+                        <select autoFocus onChange={(e) => assignSalesperson(s.id, e.target.value)} onBlur={() => setAssigningId(null)}>
+                          <option value="">Select</option>
+                          {salespersons.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+                        </select>
+                      ) : (
+                        <span>
+                          {s.salesperson_name || <span style={{ color: "var(--slate)" }}>Unassigned</span>}{" "}
+                          <button style={{ fontSize: 10, padding: "1px 6px" }} onClick={() => setAssigningId(s.id)}>
+                            {s.salesperson_name ? "Change" : "Assign"}
+                          </button>
+                        </span>
+                      )}
+                    </td>
+                    <td><span className={`badge ${s.is_active ? "badge-success" : "badge-neutral"}`}>{s.is_active ? "Active" : "Disabled"}</span></td>
+                    <td style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      <button onClick={() => startEdit(s)}>Edit</button>
+                      <button onClick={() => toggleActive(s)}>{s.is_active ? "Disable" : "Enable"}</button>
+                      <button className="btn-danger" onClick={() => remove(s)}>Delete</button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+            {visible.length === 0 && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>No sites.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
         <div>
           <div style={{ color: "var(--slate)" }}>Customer</div>
           <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} required>

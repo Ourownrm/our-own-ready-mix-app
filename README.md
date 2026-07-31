@@ -1235,3 +1235,92 @@ apply via `/setup`.
 ### Migration note
 No schema changes — `customers.is_active` already existed; everything else is logic
 fixes to existing columns. Nothing new to apply via `/setup`.
+
+## Fortieth round — the real fix for Sales Forecast, plus site/project editing
+
+**You correctly diagnosed the root problem** — sales-executive assignment was
+happening at the order level, which meant it reset per delivery instead of persisting
+across a project's whole lifetime. Fixed properly, not just patched:
+
+- **`sites` now has its own `assigned_sales_representative_id`** — a project/site gets
+  a sales person assigned once, and that persists across every order that comes and
+  goes for it. (An individual order's `sales_representative_id` still exists separately
+  — that's a genuinely different concept, who sold that one specific delivery, used for
+  attribution/commission reporting — untouched.)
+- **Sales Forecast is now keyed on the site**, not the order — one forecast per
+  project, matching how your team actually thinks about it.
+- Manager/Administrator's forecast screen now shows **every active site**, with
+  **"Assign salesperson"** right there per row — this is the actual fix, since
+  everything else in the feature depends on that assignment existing.
+
+**Projects and sites now have the same edit/disable/delete you got for customers** —
+edit name/address/distance, disable (reversible, removes from active use everywhere),
+delete (blocked with a clear message if it has any real history), plus assign or
+change the responsible sales person directly from the same screen.
+
+**Also found while I was in there**: schema.sql had three pre-existing forward
+references (`leads.won_order_id`, `bookings.converted_order_id`,
+`aftersales_feedback.order_id` all pointed at `customer_orders` before that table was
+even defined in the file) — the exact same class of bug I introduced and caught in
+myself a few rounds back. This wasn't affecting your live database (which already
+exists and only ever receives incremental `ALTER TABLE` migrations), but it would have
+broken a genuinely fresh install from scratch. Fixed the same way — deferred the FK
+constraints to right after the referenced table is actually defined.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — this one's more involved than usual:
+adds `sites.assigned_sales_representative_id`, converts `sales_forecasts` from
+order-keyed to site-keyed (safely backfills any forecast that was actually saved under
+the old design before switching), and adds `notifications.site_id`.
+
+## Forty-first round — code review: 3 real bugs found
+
+1. **Customer delete safety check was incomplete** — only checked 4 of the 9 tables
+   that actually reference a customer (orders, sites, leads, bookings). Missing: rate
+   history, invoices, after-sales feedback, customer visits, opening balances. In
+   practice this meant a customer with, say, a rate on file but no orders yet could
+   pass the safety check and then fail with a raw, ugly database error instead of the
+   intended friendly message. Fixed — now checks all 9.
+2. **Site delete safety check was missing `notifications`** — same class of issue,
+   smaller blast radius. Fixed.
+3. **The forecast migration itself had an edge case that could break it outright** — if
+   two forecasts from the old order-based design happened to land on the same site
+   (two different orders on one site, each separately forecasted before), converting to
+   "one forecast per site" would hit a uniqueness violation and the whole migration
+   would fail. Added a de-duplication step (keeps the most recently updated one) before
+   the uniqueness constraint gets created.
+
+Also re-verified: every `HAVING` clause in the backend (no new ones added this round —
+all previously confirmed correctly paired with `GROUP BY` and an aggregate), no stale
+references anywhere to the old order-based forecast design after last round's rename,
+and the read-only `/master/customers` and `/master/sites` endpoints (used by every
+dropdown across the app) are unaffected by the new admin-management endpoints.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — this is a safety improvement to last
+round's migration, not a new one; if you already ran it successfully, re-running is a
+no-op.
+
+## Forty-second round — sweep of older, untouched-in-a-while areas
+
+Reviewed Compliance, Fuel, and QC Engineer backend routes (none touched in many
+rounds) against every bug pattern found earlier in this build: missing status
+exclusions, server-side timezone bugs, `HAVING` without proper `GROUP BY`, delete
+safety checks. All clean on those fronts.
+
+**One real gap found and fixed**: compliance expiry alerts only ever notified
+Manager — because that's who the module was originally built for. When Administrator
+was later given equal access to the Compliance module (several rounds back), the
+alert-generation code was never updated to match, so Administrator had full access to
+manage compliance but never actually got notified about anything. Fixed — the
+scheduled check now notifies both roles, and Administrator's own dashboard now shows
+the Compliance Alerts card too (it already had the API access, just never had the
+widget rendered).
+
+Also confirmed, by re-running each check rather than assuming: every ticket-status
+exclusion list across the whole backend still correctly includes `rejected`, zero
+forward schema references, zero server-side `new Date()` used for business-date logic,
+and the equipment-type lists between Fuel's frontend and backend still match.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

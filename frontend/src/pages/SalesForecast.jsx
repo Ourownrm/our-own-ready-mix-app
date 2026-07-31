@@ -26,7 +26,7 @@ export default function SalesForecast() {
       if (isSalesExec) {
         const [f, ro, pr] = await Promise.all([
           apiRequest("/sales/forecasts"),
-          apiRequest("/sales/my-running-orders"),
+          apiRequest("/sales/my-running-projects"),
           apiRequest("/sales/forecast-update-requests"),
         ]);
         setForecasts(f); setRunningOrders(ro); setPendingRequests(pr);
@@ -44,12 +44,12 @@ export default function SalesForecast() {
   }
   useEffect(() => { load(); }, []);
 
-  async function requestUpdate(orderId, customerName) {
+  async function requestUpdate(siteId, customerName) {
     const message = window.prompt(`Ask for a forecast update on ${customerName}? Optional note to include:`);
     if (message === null) return;
     setError("");
     try {
-      await apiRequest("/sales/forecasts/request-update", { method: "POST", body: { order_id: orderId, message } });
+      await apiRequest("/sales/forecasts/request-update", { method: "POST", body: { site_id: siteId, message } });
       setNotice("Request sent.");
       load();
     } catch (err) {
@@ -57,11 +57,11 @@ export default function SalesForecast() {
     }
   }
 
-  async function assignSalesperson(orderId, salespersonId) {
+  async function assignSalesperson(siteId, salespersonId) {
     if (!salespersonId) return;
     setError("");
     try {
-      await apiRequest(`/sales/orders/${orderId}/assign-salesperson`, { method: "POST", body: { salesperson_id: salespersonId } });
+      await apiRequest(`/sales/sites/${siteId}/assign-salesperson`, { method: "POST", body: { salesperson_id: salespersonId } });
       setAssigningOrderId(null);
       setNotice("Salesperson assigned.");
       load();
@@ -143,7 +143,7 @@ export default function SalesForecast() {
                   </thead>
                   <tbody>
                     {projects.map((p) => (
-                      <tr key={p.order_id}>
+                      <tr key={p.site_id}>
                         <td>{p.customer_name} &middot; {p.site_name}</td>
                         <td>{p.salesperson_name || <span style={{ color: "var(--slate)" }}>Unassigned</span>}</td>
                         <td>{p.has_forecast ? `${p.expected_qty_m3} m³ / ${p.period_days}d` : "–"}</td>
@@ -159,18 +159,18 @@ export default function SalesForecast() {
                         </td>
                         <td>
                           {!p.salesperson_name ? (
-                            assigningOrderId === p.order_id ? (
-                              <select autoFocus onChange={(e) => assignSalesperson(p.order_id, e.target.value)} onBlur={() => setAssigningOrderId(null)}>
+                            assigningOrderId === p.site_id ? (
+                              <select autoFocus onChange={(e) => assignSalesperson(p.site_id, e.target.value)} onBlur={() => setAssigningOrderId(null)}>
                                 <option value="">Select salesperson</option>
                                 {salespersons.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
                               </select>
                             ) : (
-                              <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setAssigningOrderId(p.order_id)}>
+                              <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setAssigningOrderId(p.site_id)}>
                                 Assign salesperson
                               </button>
                             )
                           ) : (
-                            <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => requestUpdate(p.order_id, p.customer_name)}>
+                            <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => requestUpdate(p.site_id, p.customer_name)}>
                               Ask for update
                             </button>
                           )}
@@ -189,7 +189,7 @@ export default function SalesForecast() {
 }
 
 function ForecastForm({ runningOrders, setError, onDone }) {
-  const [orderId, setOrderId] = useState("");
+  const [siteId, setSiteId] = useState("");
   const [qty, setQty] = useState("");
   const [days, setDays] = useState("");
   const [confidence, setConfidence] = useState("likely");
@@ -202,7 +202,7 @@ function ForecastForm({ runningOrders, setError, onDone }) {
     try {
       await apiRequest("/sales/forecasts", {
         method: "POST",
-        body: { order_id: orderId, expected_qty_m3: qty, period_days: days, confidence, notes },
+        body: { site_id: siteId, expected_qty_m3: qty, period_days: days, confidence, notes },
       });
       onDone();
     } catch (err) {
@@ -216,7 +216,7 @@ function ForecastForm({ runningOrders, setError, onDone }) {
     <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginBottom: 16 }}>
       <div style={{ gridColumn: "1 / -1" }}>
         <div style={{ color: "var(--slate)" }}>Running project</div>
-        <select value={orderId} onChange={(e) => setOrderId(e.target.value)} required>
+        <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
           <option value="">Select</option>
           {runningOrders.map((o) => <option key={o.id} value={o.id}>{o.customer_name} — {o.site_name}</option>)}
         </select>

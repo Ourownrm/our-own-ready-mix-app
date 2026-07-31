@@ -122,7 +122,12 @@ router.delete("/customers/:id", requireRole("administrator", "manager"), async (
        (SELECT COUNT(*) FROM customer_orders WHERE customer_id = $1) AS orders,
        (SELECT COUNT(*) FROM sites WHERE customer_id = $1) AS sites,
        (SELECT COUNT(*) FROM leads WHERE won_customer_id = $1) AS leads,
-       (SELECT COUNT(*) FROM bookings WHERE customer_id = $1) AS bookings`,
+       (SELECT COUNT(*) FROM bookings WHERE customer_id = $1) AS bookings,
+       (SELECT COUNT(*) FROM rate_master WHERE customer_id = $1) AS rates,
+       (SELECT COUNT(*) FROM invoices WHERE customer_id = $1) AS invoices,
+       (SELECT COUNT(*) FROM aftersales_feedback WHERE customer_id = $1) AS feedback,
+       (SELECT COUNT(*) FROM customer_visits WHERE customer_id = $1) AS visits,
+       (SELECT COUNT(*) FROM customer_opening_balances WHERE customer_id = $1) AS opening_balances`,
     [req.params.id]
   );
   const usage = usageCheck[0];
@@ -137,6 +142,21 @@ router.delete("/customers/:id", requireRole("administrator", "manager"), async (
 
 // ===== Master data: Sites =====
 
+// Every site including disabled ones, with full detail plus its assigned
+// salesperson — for the Administrator management panel.
+router.get("/sites", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT s.*, c.name AS customer_name, sp.name AS salesperson_name,
+            tc.label AS trip_allowance_label
+     FROM sites s
+     JOIN customers c ON c.id = s.customer_id
+     LEFT JOIN salespersons sp ON sp.id = s.assigned_sales_representative_id
+     LEFT JOIN trip_allowance_categories tc ON tc.id = s.trip_allowance_category_id
+     ORDER BY c.name, s.name`
+  );
+  res.json(rows);
+});
+
 router.post("/sites", requireRole("administrator", "manager"), async (req, res) => {
   const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
@@ -146,6 +166,51 @@ router.post("/sites", requireRole("administrator", "manager"), async (req, res) 
     [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null]
   );
   res.status(201).json(rows[0]);
+});
+
+router.patch("/sites/:id", requireRole("administrator", "manager"), async (req, res) => {
+  const { name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude } = req.body;
+  if (!name) return res.status(400).json({ error: "Site name is required." });
+  const { rows } = await query(
+    `UPDATE sites SET name = $1, address = $2, distance_from_plant_km = $3, trip_allowance_category_id = $4,
+       latitude = $5, longitude = $6
+     WHERE id = $7 RETURNING *`,
+    [name, address || null, distance_from_plant_km || null, trip_allowance_category_id || null,
+     latitude || null, longitude || null, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Site not found." });
+  res.json(rows[0]);
+});
+
+router.post("/sites/:id/status", requireRole("administrator", "manager"), async (req, res) => {
+  const { is_active } = req.body;
+  const { rows } = await query(
+    "UPDATE sites SET is_active = $1 WHERE id = $2 RETURNING *",
+    [!!is_active, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Site not found." });
+  res.json(rows[0]);
+});
+
+// Hard delete — only if nothing references this site yet. Disable is the
+// right move for any site with real history.
+router.delete("/sites/:id", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows: usageCheck } = await query(
+    `SELECT
+       (SELECT COUNT(*) FROM customer_orders WHERE site_id = $1) AS orders,
+       (SELECT COUNT(*) FROM sales_forecasts WHERE site_id = $1) AS forecasts,
+       (SELECT COUNT(*) FROM bookings WHERE site_id = $1) AS bookings,
+       (SELECT COUNT(*) FROM notifications WHERE site_id = $1) AS notifications`,
+    [req.params.id]
+  );
+  const usage = usageCheck[0];
+  const inUse = Object.values(usage).some((n) => Number(n) > 0);
+  if (inUse) {
+    return res.status(400).json({ error: "This site has orders, forecasts, or other records on file — disable it instead of deleting." });
+  }
+  const { rowCount } = await query("DELETE FROM sites WHERE id = $1", [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "Site not found." });
+  res.json({ ok: true });
 });
 
 // ===== Master data: Trucks =====

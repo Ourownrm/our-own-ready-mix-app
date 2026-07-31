@@ -441,6 +441,34 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (sales forecasting for running projects).");
 
+    // Move sales-executive assignment from the order level to the site
+    // level — a project/site persists across many orders over its lifetime,
+    // and that's what Sales Forecast should actually track continuity
+    // against, not a single order's one-off attribution.
+    await pool.query(`
+      ALTER TABLE sites ADD COLUMN IF NOT EXISTS assigned_sales_representative_id INTEGER REFERENCES salespersons(id);
+      ALTER TABLE notifications ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
+      ALTER TABLE sales_forecasts ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
+    `);
+    // Backfill site_id on any forecast that was actually saved under the old
+    // order-keyed design, then drop order_id (which takes its unique
+    // constraint with it) and require site_id going forward.
+    await pool.query(`
+      UPDATE sales_forecasts f SET site_id = o.site_id
+      FROM customer_orders o WHERE f.order_id = o.id AND f.site_id IS NULL;
+    `);
+    await pool.query(`DELETE FROM sales_forecasts WHERE site_id IS NULL;`);
+    // If two old order-keyed forecasts happened to land on the same site,
+    // keep only the most recently updated one before enforcing one-per-site.
+    await pool.query(`
+      DELETE FROM sales_forecasts a USING sales_forecasts b
+      WHERE a.site_id = b.site_id AND a.id < b.id;
+    `);
+    await pool.query(`ALTER TABLE sales_forecasts DROP COLUMN IF EXISTS order_id;`);
+    await pool.query(`ALTER TABLE sales_forecasts ALTER COLUMN site_id SET NOT NULL;`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS sales_forecasts_site_id_uidx ON sales_forecasts(site_id);`);
+    log.push("Schema migration applied (sales forecasting now keyed on site/project, not individual order — the actual fix for it showing no running projects).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
