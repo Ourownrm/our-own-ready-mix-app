@@ -1345,3 +1345,25 @@ this file already behaves.
 Revisit `/setup?key=...` once more after deploying this fix — it should now complete
 cleanly. If it was already fully migrated (likely, given the analysis above), this run
 will just confirm that and move on.
+
+## Forty-fourth round — 3 forecast bugs, all confirmed and fixed
+
+1. **Sales Executive had no edit or delete option** — "Your forecasts" was a read-only
+   table; the only way to change anything was to remember to re-open the add form and
+   pick the same project again. Added proper **Edit** (pre-fills the form, locks the
+   project selector since changing it would target a different forecast entirely) and
+   **Delete** buttons directly on each row.
+2. **Forecasts didn't show anywhere on the Sales Executive's own dashboard** — they
+   only existed on the separate Forecast page, easy to forget was there. Added a
+   forecast summary section right on the main Dashboard tab, with an expired-count
+   badge and a link through to the full page.
+3. **Bug confirmed exactly as reported — the weekly chart was double-counting.**
+   130 m³ over 14 days showing as 130 this week *and* 130 next week was real: the query
+   checked whether a forecast's window merely *overlapped* each week and then counted
+   the full amount for every week it touched, rather than splitting it proportionally.
+   A 14-day forecast overlaps both weeks entirely, so it got counted in full, twice.
+   Fixed with a proper day-by-day proportional split — the same test case now correctly
+   shows 65 m³ this week and 65 m³ next week.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

@@ -59,18 +59,20 @@ export default function SalesExecutive() {
   const [bookings, setBookings] = useState([]);
   const [feedback, setFeedback] = useState([]);
   const [visits, setVisits] = useState([]);
+  const [forecasts, setForecasts] = useState([]);
   const [error, setError] = useState("");
 
   async function loadAll() {
     try {
-      const [d, l, b, f, v] = await Promise.all([
+      const [d, l, b, f, v, fc] = await Promise.all([
         apiRequest("/sales/my-dashboard"),
         apiRequest("/sales/leads"),
         apiRequest("/sales/bookings"),
         apiRequest("/sales/feedback"),
         apiRequest("/sales/visits"),
+        apiRequest("/sales/forecasts"),
       ]);
-      setDashboard(d); setLeads(l); setBookings(b); setFeedback(f); setVisits(v);
+      setDashboard(d); setLeads(l); setBookings(b); setFeedback(f); setVisits(v); setForecasts(fc);
     } catch (err) {
       setError(err.message);
     }
@@ -117,7 +119,7 @@ export default function SalesExecutive() {
           <Link to="/sales-forecast"><button className="btn-tab">Forecast</button></Link>
         </div>
 
-        {view === "dashboard" && <Dashboard data={dashboard} />}
+        {view === "dashboard" && <Dashboard data={dashboard} forecasts={forecasts} />}
         {view === "leads" && (
           <LeadsList leads={leads} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
         )}
@@ -135,9 +137,10 @@ export default function SalesExecutive() {
   );
 }
 
-function Dashboard({ data }) {
+function Dashboard({ data, forecasts }) {
   if (!data) return <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>;
   const leadCounts = data.lead_counts || {};
+  const expiredCount = (forecasts || []).filter((f) => f.is_expired).length;
   return (
     <>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
@@ -145,6 +148,30 @@ function Dashboard({ data }) {
         <Kpi label="Orders this month" value={`${data.orders_month_qty} m³`} />
         <Kpi label="Sales value this month" value={inr(data.orders_month_value)} />
         <Kpi label="Outstanding" value={inr(data.outstanding)} danger={Number(data.outstanding) > 0} />
+      </div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>
+            Your forecasts
+            {expiredCount > 0 && <span className="badge badge-warning" style={{ marginLeft: 8 }}>{expiredCount} need refresh</span>}
+          </div>
+          <Link to="/sales-forecast" style={{ fontSize: 12 }}>View / add forecasts</Link>
+        </div>
+        {(!forecasts || forecasts.length === 0) ? (
+          <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing forecasted yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {forecasts.map((f) => (
+              <div key={f.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, background: "var(--concrete)", borderRadius: 8, padding: "6px 10px" }}>
+                <span>{f.customer_name} &middot; {f.site_name}</span>
+                <span>
+                  {f.expected_qty_m3} m³ / {f.period_days}d
+                  {f.is_expired && <span className="badge badge-warning" style={{ marginLeft: 6, fontSize: 10 }}>Expired</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Leads by stage</div>

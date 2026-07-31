@@ -17,6 +17,7 @@ export default function SalesForecast() {
   const [summary, setSummary] = useState([]);
   const [pendingRequests, setPendingRequests] = useState([]);
   const [showForm, setShowForm] = useState(false);
+  const [editingForecast, setEditingForecast] = useState(null);
   const [assigningOrderId, setAssigningOrderId] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -57,6 +58,18 @@ export default function SalesForecast() {
     }
   }
 
+  async function deleteForecast(id) {
+    if (!window.confirm("Delete this forecast?")) return;
+    setError("");
+    try {
+      await apiRequest(`/sales/forecasts/${id}`, { method: "DELETE" });
+      setNotice("Forecast deleted.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function assignSalesperson(siteId, salespersonId) {
     if (!salespersonId) return;
     setError("");
@@ -88,14 +101,15 @@ export default function SalesForecast() {
 
         {isSalesExec && (
           <>
-            <button onClick={() => setShowForm(!showForm)} style={{ marginBottom: 16 }}>
-              {showForm ? "Hide" : "+ Add / update forecast"}
+            <button onClick={() => { setEditingForecast(null); setShowForm(!showForm); }} style={{ marginBottom: 16 }}>
+              {showForm ? "Hide" : "+ Add new forecast"}
             </button>
             {showForm && (
               <ForecastForm
                 runningOrders={runningOrders}
+                editingForecast={editingForecast}
                 setError={setError}
-                onDone={() => { setNotice("Forecast saved."); setShowForm(false); load(); }}
+                onDone={() => { setNotice("Forecast saved."); setShowForm(false); setEditingForecast(null); load(); }}
               />
             )}
           </>
@@ -112,7 +126,7 @@ export default function SalesForecast() {
               <div style={{ overflowX: "auto" }}>
                 <table style={{ fontSize: 13 }}>
                   <thead>
-                    <tr><th>Project</th><th>Expected qty</th><th>Window</th><th>Confidence</th><th>Notes</th><th>Status</th></tr>
+                    <tr><th>Project</th><th>Expected qty</th><th>Window</th><th>Confidence</th><th>Notes</th><th>Status</th><th></th></tr>
                   </thead>
                   <tbody>
                     {forecasts.map((f) => (
@@ -123,6 +137,10 @@ export default function SalesForecast() {
                         <td><span className={`badge ${CONFIDENCE_COLOR[f.confidence]}`}>{CONFIDENCE_LABEL[f.confidence] || f.confidence}</span></td>
                         <td>{f.notes || "–"}</td>
                         <td>{f.is_expired ? <span className="badge badge-warning">Expired — needs refresh</span> : <span className="badge badge-success">Current</span>}</td>
+                        <td style={{ display: "flex", gap: 4 }}>
+                          <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => { setEditingForecast(f); setShowForm(true); }}>Edit</button>
+                          <button className="btn-danger" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => deleteForecast(f.id)}>Delete</button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -188,12 +206,12 @@ export default function SalesForecast() {
   );
 }
 
-function ForecastForm({ runningOrders, setError, onDone }) {
-  const [siteId, setSiteId] = useState("");
-  const [qty, setQty] = useState("");
-  const [days, setDays] = useState("");
-  const [confidence, setConfidence] = useState("likely");
-  const [notes, setNotes] = useState("");
+function ForecastForm({ runningOrders, editingForecast, setError, onDone }) {
+  const [siteId, setSiteId] = useState(editingForecast?.site_id || "");
+  const [qty, setQty] = useState(editingForecast?.expected_qty_m3 || "");
+  const [days, setDays] = useState(editingForecast?.period_days || "");
+  const [confidence, setConfidence] = useState(editingForecast?.confidence || "likely");
+  const [notes, setNotes] = useState(editingForecast?.notes || "");
   const [saving, setSaving] = useState(false);
 
   async function submit(e) {
@@ -216,7 +234,7 @@ function ForecastForm({ runningOrders, setError, onDone }) {
     <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginBottom: 16 }}>
       <div style={{ gridColumn: "1 / -1" }}>
         <div style={{ color: "var(--slate)" }}>Running project</div>
-        <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
+        <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required disabled={!!editingForecast}>
           <option value="">Select</option>
           {runningOrders.map((o) => <option key={o.id} value={o.id}>{o.customer_name} — {o.site_name}</option>)}
         </select>

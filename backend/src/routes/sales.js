@@ -524,6 +524,17 @@ router.get("/forecasts", requireRole("sales_executive", "manager", "administrato
   res.json(rows);
 });
 
+router.delete("/forecasts/:id", requireRole("sales_executive"), async (req, res) => {
+  const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
+  const salespersonId = spRows[0]?.id;
+  const { rowCount } = await query(
+    "DELETE FROM sales_forecasts WHERE id = $1 AND sales_representative_id = $2",
+    [req.params.id, salespersonId]
+  );
+  if (!rowCount) return res.status(404).json({ error: "Forecast not found." });
+  res.json({ ok: true });
+});
+
 // Assign a salesperson to the project/site — the actual fix for a project
 // not showing up anywhere in Sales Forecast, since everything here is keyed
 // off this assignment. Persists for the site's whole lifetime.
@@ -606,13 +617,13 @@ router.get("/forecast-update-requests", requireRole("sales_executive"), async (r
 router.get("/forecasts/summary", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT confidence,
-            COALESCE(SUM(expected_qty_m3) FILTER (
-              WHERE (updated_at::date + period_days) >= CURRENT_DATE
-                AND updated_at::date <= CURRENT_DATE + 7
+            COALESCE(SUM(
+              expected_qty_m3 / NULLIF(period_days, 0) *
+              GREATEST(0, LEAST(updated_at::date + period_days, CURRENT_DATE + 7) - GREATEST(updated_at::date, CURRENT_DATE))
             ), 0) AS this_week,
-            COALESCE(SUM(expected_qty_m3) FILTER (
-              WHERE (updated_at::date + period_days) >= CURRENT_DATE + 7
-                AND updated_at::date <= CURRENT_DATE + 14
+            COALESCE(SUM(
+              expected_qty_m3 / NULLIF(period_days, 0) *
+              GREATEST(0, LEAST(updated_at::date + period_days, CURRENT_DATE + 14) - GREATEST(updated_at::date, CURRENT_DATE + 7))
             ), 0) AS next_week
      FROM sales_forecasts
      WHERE (updated_at::date + period_days) >= CURRENT_DATE
