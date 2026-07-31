@@ -13,9 +13,11 @@ export default function SalesForecast() {
   const [forecasts, setForecasts] = useState([]);
   const [runningOrders, setRunningOrders] = useState([]);
   const [projects, setProjects] = useState([]); // manager/admin: every running project + forecast status
+  const [salespersons, setSalespersons] = useState([]);
   const [summary, setSummary] = useState([]);
   const [pendingRequests, setPendingRequests] = useState([]);
   const [showForm, setShowForm] = useState(false);
+  const [assigningOrderId, setAssigningOrderId] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -29,11 +31,12 @@ export default function SalesForecast() {
         ]);
         setForecasts(f); setRunningOrders(ro); setPendingRequests(pr);
       } else {
-        const [proj, sum] = await Promise.all([
+        const [proj, sum, sp] = await Promise.all([
           apiRequest("/sales/running-projects-with-forecast-status"),
           apiRequest("/sales/forecasts/summary"),
+          apiRequest("/master/salespersons"),
         ]);
-        setProjects(proj); setSummary(sum);
+        setProjects(proj); setSummary(sum); setSalespersons(sp);
       }
     } catch (err) {
       setError(err.message);
@@ -48,6 +51,19 @@ export default function SalesForecast() {
     try {
       await apiRequest("/sales/forecasts/request-update", { method: "POST", body: { order_id: orderId, message } });
       setNotice("Request sent.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function assignSalesperson(orderId, salespersonId) {
+    if (!salespersonId) return;
+    setError("");
+    try {
+      await apiRequest(`/sales/orders/${orderId}/assign-salesperson`, { method: "POST", body: { salesperson_id: salespersonId } });
+      setAssigningOrderId(null);
+      setNotice("Salesperson assigned.");
       load();
     } catch (err) {
       setError(err.message);
@@ -129,7 +145,7 @@ export default function SalesForecast() {
                     {projects.map((p) => (
                       <tr key={p.order_id}>
                         <td>{p.customer_name} &middot; {p.site_name}</td>
-                        <td>{p.salesperson_name}</td>
+                        <td>{p.salesperson_name || <span style={{ color: "var(--slate)" }}>Unassigned</span>}</td>
                         <td>{p.has_forecast ? `${p.expected_qty_m3} m³ / ${p.period_days}d` : "–"}</td>
                         <td>{p.has_forecast ? <span className={`badge ${CONFIDENCE_COLOR[p.confidence]}`}>{CONFIDENCE_LABEL[p.confidence] || p.confidence}</span> : "–"}</td>
                         <td>
@@ -142,9 +158,22 @@ export default function SalesForecast() {
                           )}
                         </td>
                         <td>
-                          <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => requestUpdate(p.order_id, p.customer_name)}>
-                            Ask for update
-                          </button>
+                          {!p.salesperson_name ? (
+                            assigningOrderId === p.order_id ? (
+                              <select autoFocus onChange={(e) => assignSalesperson(p.order_id, e.target.value)} onBlur={() => setAssigningOrderId(null)}>
+                                <option value="">Select salesperson</option>
+                                {salespersons.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+                              </select>
+                            ) : (
+                              <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setAssigningOrderId(p.order_id)}>
+                                Assign salesperson
+                              </button>
+                            )
+                          ) : (
+                            <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => requestUpdate(p.order_id, p.customer_name)}>
+                              Ask for update
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}

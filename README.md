@@ -1208,3 +1208,30 @@ needed.
 ### Migration note
 No schema changes — this reuses the existing `notifications` table. Nothing new to
 apply via `/setup`.
+
+## Thirty-ninth round — 3 bug fixes
+
+1. **Customers: edit, disable, delete.** The customer panel was add-only before — no
+   way to fix a spelling mistake or retire an old customer. Now has full editing,
+   **Disable/Enable** (reversible — instantly removes them from every dropdown across
+   the app, since those already correctly filter to active-only), and **Delete** for
+   genuine mistakes (blocked with a clear message if the customer has any orders,
+   sites, leads, or bookings on file — disable is the right move for anyone with real
+   history, delete is only for a duplicate caught immediately).
+2. **Bug fix: raw material "on order" info wasn't showing.** Root cause: it was only
+   ever displayed when the bin was *currently* below its low-stock threshold. If you
+   added a qty-on-order for a material that wasn't flagged low at the time, it saved
+   correctly but never appeared anywhere on the dashboard. Fixed — it now always shows
+   once entered, regardless of current stock level.
+3. **Bug fix: Sales Forecast showed no running projects at all.** Root cause: the
+   query required a salesperson to already be assigned to an order (`JOIN
+   salespersons`), which silently excluded every order that didn't have one set —
+   likely all of them, since it's an optional field at order creation. Fixed two ways:
+   the list now shows every running project regardless of assignment (unassigned ones
+   clearly marked), and Manager/Administrator can now **assign a salesperson directly
+   from this screen** — the actual fix that lets the responsible Sales Executive start
+   seeing and forecasting it.
+
+### Migration note
+No schema changes — `customers.is_active` already existed; everything else is logic
+fixes to existing columns. Nothing new to apply via `/setup`.

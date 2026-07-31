@@ -521,6 +521,20 @@ router.get("/forecasts", requireRole("sales_executive", "manager", "administrato
   res.json(rows);
 });
 
+// Assign a salesperson to an order that doesn't have one yet — the real fix
+// for a project not showing up anywhere in Sales Forecast, since everything
+// here is keyed off that assignment.
+router.post("/orders/:orderId/assign-salesperson", requireRole("manager", "administrator"), async (req, res) => {
+  const { salesperson_id } = req.body;
+  if (!salesperson_id) return res.status(400).json({ error: "Select a salesperson." });
+  const { rows } = await query(
+    "UPDATE customer_orders SET sales_representative_id = $1 WHERE id = $2 RETURNING *",
+    [salesperson_id, req.params.orderId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  res.json(rows[0]);
+});
+
 // Every running project that has a sales rep assigned, with its forecast
 // status if any — lets Manager/Administrator see gaps (no forecast at all,
 // or an expired one) and request an update, not just review what's current.
@@ -534,7 +548,7 @@ router.get("/running-projects-with-forecast-status", requireRole("manager", "adm
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id
-     JOIN salespersons sp ON sp.id = o.sales_representative_id
+     LEFT JOIN salespersons sp ON sp.id = o.sales_representative_id
      LEFT JOIN sales_forecasts f ON f.order_id = o.id
      WHERE o.status NOT IN ('completed', 'closed', 'cancelled')
      ORDER BY has_forecast ASC, o.order_date DESC`

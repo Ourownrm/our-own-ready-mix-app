@@ -70,6 +70,16 @@ router.post("/users/:id/reset-password", requireRole("administrator"), async (re
 
 // ===== Master data: Customers =====
 
+// Every customer including disabled ones, with full detail — for the
+// Administrator management panel specifically. (The plain /master/customers
+// endpoint stays active-only, id+name — that's what every dropdown across
+// the app uses, and disabling a customer here correctly removes them from
+// all of those automatically.)
+router.get("/customers", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM customers ORDER BY name");
+  res.json(rows);
+});
+
 router.post("/customers", requireRole("administrator", "manager"), async (req, res) => {
   const { name, contact_number, billing_address } = req.body;
   if (!name) return res.status(400).json({ error: "Customer name is required." });
@@ -78,6 +88,51 @@ router.post("/customers", requireRole("administrator", "manager"), async (req, r
     [name, contact_number, billing_address]
   );
   res.status(201).json(rows[0]);
+});
+
+router.patch("/customers/:id", requireRole("administrator", "manager"), async (req, res) => {
+  const { name, contact_number, billing_address } = req.body;
+  if (!name) return res.status(400).json({ error: "Customer name is required." });
+  const { rows } = await query(
+    `UPDATE customers SET name = $1, contact_number = $2, billing_address = $3 WHERE id = $4 RETURNING *`,
+    [name, contact_number || null, billing_address || null, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Customer not found." });
+  res.json(rows[0]);
+});
+
+router.post("/customers/:id/status", requireRole("administrator", "manager"), async (req, res) => {
+  const { is_active } = req.body;
+  const { rows } = await query(
+    "UPDATE customers SET is_active = $1 WHERE id = $2 RETURNING *",
+    [!!is_active, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Customer not found." });
+  res.json(rows[0]);
+});
+
+// Hard delete — only allowed if nothing actually references this customer
+// yet (no orders, sites, leads, or bookings). Almost always the right move
+// for a real, established customer is "Disable" instead, which is reversible
+// and doesn't risk an FK conflict; delete is really for a duplicate or a
+// pure data-entry mistake caught immediately.
+router.delete("/customers/:id", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows: usageCheck } = await query(
+    `SELECT
+       (SELECT COUNT(*) FROM customer_orders WHERE customer_id = $1) AS orders,
+       (SELECT COUNT(*) FROM sites WHERE customer_id = $1) AS sites,
+       (SELECT COUNT(*) FROM leads WHERE won_customer_id = $1) AS leads,
+       (SELECT COUNT(*) FROM bookings WHERE customer_id = $1) AS bookings`,
+    [req.params.id]
+  );
+  const usage = usageCheck[0];
+  const inUse = Object.values(usage).some((n) => Number(n) > 0);
+  if (inUse) {
+    return res.status(400).json({ error: "This customer has orders, sites, or other records on file — disable it instead of deleting." });
+  }
+  const { rowCount } = await query("DELETE FROM customers WHERE id = $1", [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "Customer not found." });
+  res.json({ ok: true });
 });
 
 // ===== Master data: Sites =====

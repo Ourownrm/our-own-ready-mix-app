@@ -66,14 +66,13 @@ export default function RawMaterialStockCard() {
                 <div style={{ fontSize: 13, fontWeight: 600, marginTop: 2, color: low ? "var(--alert-red)" : undefined }}>
                   {r.stock_qty} <span style={{ fontSize: 10, color: low ? "var(--alert-red)" : "var(--slate)", fontWeight: 400 }}>{r.unit}</span>
                 </div>
-                {low && (
-                  Number(r.qty_on_order) > 0 ? (
-                    <div style={{ fontSize: 9, color: "var(--slate)", marginTop: 2 }}>
-                      +{r.qty_on_order} on order{r.expected_delivery_date ? `, due ${new Date(r.expected_delivery_date).toLocaleDateString([], { day: "2-digit", month: "short" })}` : ""}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 9, color: "var(--alert-red)", marginTop: 2, fontWeight: 600 }}>Not on order — at risk</div>
-                  )
+                {Number(r.qty_on_order) > 0 && (
+                  <div style={{ fontSize: 9, color: "var(--slate)", marginTop: 2 }}>
+                    +{r.qty_on_order} on order{r.expected_delivery_date ? `, due ${new Date(r.expected_delivery_date).toLocaleDateString([], { day: "2-digit", month: "short" })}` : ""}
+                  </div>
+                )}
+                {low && Number(r.qty_on_order) === 0 && (
+                  <div style={{ fontSize: 9, color: "var(--alert-red)", marginTop: 2, fontWeight: 600 }}>Not on order — at risk</div>
                 )}
               </div>
             );

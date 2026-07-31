@@ -24,10 +24,13 @@ export function List({ rows, columns }) {
 export function CustomersPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [form, setForm] = useState({ name: "", contact_number: "", billing_address: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", contact_number: "", billing_address: "" });
   const [saving, setSaving] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
 
   async function load() {
-    try { setCustomers(await apiRequest("/master/customers")); } catch (err) { setError(err.message); }
+    try { setCustomers(await apiRequest("/administrator/customers")); } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
 
@@ -41,10 +44,85 @@ export function CustomersPanel({ setError }) {
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
+  function startEdit(c) {
+    setEditingId(c.id);
+    setEditForm({ name: c.name, contact_number: c.contact_number || "", billing_address: c.billing_address || "" });
+  }
+
+  async function saveEdit(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/customers/${id}`, { method: "PATCH", body: editForm });
+      setEditingId(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function toggleActive(c) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/customers/${c.id}/status`, { method: "POST", body: { is_active: !c.is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function remove(c) {
+    if (!window.confirm(`Delete ${c.name}? This only works if they have no orders, sites, or other records on file.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/administrator/customers/${c.id}`, { method: "DELETE" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  const visible = showInactive ? customers : customers.filter((c) => c.is_active);
+
   return (
     <div>
-      <List rows={customers} columns={[["name", "Name"], ["contact_number", "Contact"]]} />
-      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, marginTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Customers</div>
+        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          Show disabled
+        </label>
+      </div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table style={{ fontSize: 13 }}>
+          <thead><tr><th>Name</th><th>Contact</th><th>Billing address</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {visible.map((c) => (
+              <tr key={c.id} style={!c.is_active ? { opacity: 0.6 } : undefined}>
+                {editingId === c.id ? (
+                  <>
+                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: "100%" }} /></td>
+                    <td><input value={editForm.contact_number} onChange={(e) => setEditForm({ ...editForm, contact_number: e.target.value })} style={{ width: "100%" }} /></td>
+                    <td><input value={editForm.billing_address} onChange={(e) => setEditForm({ ...editForm, billing_address: e.target.value })} style={{ width: "100%" }} /></td>
+                    <td></td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => saveEdit(c.id)} disabled={saving}>Save</button>
+                      <button onClick={() => setEditingId(null)}>Cancel</button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td>{c.name}</td>
+                    <td>{c.contact_number || "–"}</td>
+                    <td>{c.billing_address || "–"}</td>
+                    <td><span className={`badge ${c.is_active ? "badge-success" : "badge-neutral"}`}>{c.is_active ? "Active" : "Disabled"}</span></td>
+                    <td style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      <button onClick={() => startEdit(c)}>Edit</button>
+                      <button onClick={() => toggleActive(c)}>{c.is_active ? "Disable" : "Enable"}</button>
+                      <button className="btn-danger" onClick={() => remove(c)}>Delete</button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+            {visible.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No customers.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
         <div><div style={{ color: "var(--slate)" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
         <div><div style={{ color: "var(--slate)" }}>Contact number</div><input value={form.contact_number} onChange={(e) => setForm({ ...form, contact_number: e.target.value })} /></div>
         <div style={{ gridColumn: "1 / -1" }}><div style={{ color: "var(--slate)" }}>Billing address</div><textarea rows={2} value={form.billing_address} onChange={(e) => setForm({ ...form, billing_address: e.target.value })} /></div>
