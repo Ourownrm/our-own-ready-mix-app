@@ -193,6 +193,7 @@ export default function ManagerDashboard() {
             <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
             <Link to="/fuel"><button type="button">Fuel filling</button></Link>
             <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
+            <Link to="/sales-forecast"><button type="button">Sales forecast</button></Link>
           </div>
         )}
 
@@ -309,7 +310,7 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead>
-              <tr><th>DN No.</th><th>Truck</th><th>Driver</th><th>Customer</th><th>Loaded at</th><th>Status</th><th>GPS</th></tr>
+              <tr><th>DN No.</th><th>Truck</th><th>Driver</th><th>Customer</th><th>Qty</th><th>Loaded at</th><th>Status</th><th>GPS</th></tr>
             </thead>
             <tbody>
               {trucks.map((t) => {
@@ -321,6 +322,7 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
                     <td>{t.truck_number}</td>
                     <td>{t.driver_name}</td>
                     <td>{t.customer_name} &middot; {t.site_name}</td>
+                    <td>{t.loaded_quantity_m3} m³</td>
                     <td>{formatTime(t.created_at)}</td>
                     <td>
                       <StatusBadge status={t.status} />

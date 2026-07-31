@@ -190,6 +190,8 @@ CREATE TABLE bookings (
   estimated_qty_m3 NUMERIC(8,2),
   preferred_date DATE,
   notes TEXT,
+  site_latitude NUMERIC(10,7),
+  site_longitude NUMERIC(10,7),
   requested_by INTEGER REFERENCES users(id) NOT NULL,
   status booking_status DEFAULT 'pending',
   converted_order_id INTEGER REFERENCES customer_orders(id),
@@ -272,6 +274,8 @@ CREATE TABLE raw_material_stock (
   unit VARCHAR(20) NOT NULL,
   type_brand VARCHAR(100),
   stock_qty NUMERIC(10,2) NOT NULL DEFAULT 0,
+  qty_on_order NUMERIC(10,2) DEFAULT 0,
+  expected_delivery_date DATE,
   updated_by INTEGER REFERENCES users(id),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -367,6 +371,22 @@ CREATE TABLE customer_orders (
 );
 
 -- ===================== DELIVERY TICKETS (SRS 6) =====================
+
+-- Rolling demand estimate for an ongoing project — planning only, never
+-- becomes an order on its own (that's what a booking is for). One row per
+-- order: editing a forecast re-anchors its window to right now, which is how
+-- an expired forecast gets "refreshed" rather than needing a new record.
+CREATE TABLE sales_forecasts (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER REFERENCES customer_orders(id) NOT NULL UNIQUE,
+  sales_representative_id INTEGER REFERENCES salespersons(id) NOT NULL,
+  expected_qty_m3 NUMERIC(10,2) NOT NULL,
+  period_days INTEGER NOT NULL,
+  confidence VARCHAR(20) NOT NULL, -- confirmed, likely, tentative
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
 
 CREATE TABLE delivery_tickets (
   id SERIAL PRIMARY KEY,

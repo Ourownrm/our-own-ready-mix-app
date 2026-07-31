@@ -43,6 +43,7 @@ export default function Reports() {
                 <Link to="/administrator"><button type="button">Manage users, customers, sites, fleet, rates...</button></Link>
                 <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
                 <Link to="/notifications"><button type="button">Notifications</button></Link>
+                <Link to="/sales-forecast"><button type="button">Sales forecast</button></Link>
               </div>
             )}
           </>

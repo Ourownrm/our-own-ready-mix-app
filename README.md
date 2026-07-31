@@ -1136,3 +1136,75 @@ financial data.
 No schema changes — nothing new to apply via `/setup`. This is a pure logic fix to a
 query added last round; if you haven't deployed round 34 yet, this fix is already
 folded in and you only need to deploy once.
+
+## Thirty-sixth round
+
+1. **Delivery quantity shown in Active Trucks** — was already being tracked, just not displayed.
+2. **Booking-time GPS, carried through to the site**: Sales Executive can attach a site
+   location when placing a booking (same "Use my current location" pattern as leads).
+   When Manager converts that booking, if the site doesn't already have coordinates on
+   file, they're filled in automatically from the booking — so a brand-new site gets a
+   working "navigate to site" for drivers from its very first delivery, without anyone
+   needing to go back and add it separately.
+3. **Raw material stock now tracks qty on order and expected delivery date.** The
+   low-stock display now distinguishes two very different situations: "+40 on order,
+   due 3 Aug" (already being handled) vs. "Not on order — at risk" (genuinely needs
+   attention) — instead of just a bare low-stock warning that can't tell the two apart.
+4. **Lead location** — confirmed already built (a few rounds back): Admin/Manager can
+   attach GPS when assigning a lead, either via "Use my current location" or typing
+   coordinates manually.
+
+### Photo attachments — a question before building, not a build
+You asked about attaching a site photo to a lead. Worth flagging: I deliberately left
+file/photo attachments out of the Statutory Compliance module a while back at your
+request, and the same trade-off applies here — this app has no file-upload
+infrastructure at all currently, and adding it means choosing between storing images
+in Postgres (simple, zero new cost, fine at your current scale) or a dedicated file
+storage service (more scalable, but a new external dependency and monthly cost).
+Photos are also meaningfully larger than the certificate/document files we discussed
+before, which matters more for the "store in Postgres" option specifically. Let me know
+if you want this built, and which storage approach you'd prefer, and I'll take it from
+there.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds `qty_on_order`/
+`expected_delivery_date` on raw material stock, and `site_latitude`/`site_longitude`
+on bookings.
+
+## Thirty-seventh round — Sales Forecast (built for real)
+
+Confirmed distinction: a **forecast** is a rolling planning estimate for an ongoing
+project — never becomes an order on its own. A **booking** is a specific ask for a
+specific delivery that Manager converts directly into a real order. Forecast → (as
+specifics firm up) → Booking → Order.
+
+- Sales Executive picks one of their own running projects, enters expected quantity +
+  over how many days, and a confidence level (Confirmed / Likely / Tentative).
+- **Editing an expired forecast refreshes it** — saving re-anchors the window to start
+  from today, which is the same action whether it's a brand-new entry or a stale one
+  being brought current. No separate "renew" step.
+- **Manager and Administrator both see it** — the aggregate chart (expected demand this
+  week vs. next, broken down by confidence) plus the full table across every sales
+  person, not just Manager.
+- One forecast per project (not a growing history) — keeps it a live current estimate
+  rather than an accumulating log.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds `sales_forecasts`.
+
+## Thirty-eighth round — Manager can ask for a forecast update
+
+Manager/Administrator's forecast page now shows **every running project with a sales
+person assigned** — not just ones that already have a forecast — clearly flagged as
+"No forecast yet," "Expired," or "Current." Each row gets an **"Ask for update"**
+button, with an optional note, that notifies the specific assigned Sales Executive
+(in-app + push).
+
+On the Sales Executive's side, any pending request shows as an alert right at the top
+of their own forecast screen. The request **clears itself automatically** the moment
+they actually save an update for that project — no separate "mark resolved" step
+needed.
+
+### Migration note
+No schema changes — this reuses the existing `notifications` table. Nothing new to
+apply via `/setup`.

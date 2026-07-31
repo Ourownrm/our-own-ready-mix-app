@@ -408,6 +408,39 @@ router.get("/setup", async (req, res) => {
     EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
     log.push("Schema migration applied (customer opening balances — pre-existing outstanding from before this app was in use).");
 
+    // Raw material stock — track what's already on order, so low stock can be
+    // told apart from "already ordered, arriving soon" vs genuinely at risk.
+    await pool.query(`
+      ALTER TABLE raw_material_stock ADD COLUMN IF NOT EXISTS qty_on_order NUMERIC(10,2) DEFAULT 0;
+      ALTER TABLE raw_material_stock ADD COLUMN IF NOT EXISTS expected_delivery_date DATE;
+    `);
+    log.push("Schema migration applied (raw material stock now tracks qty on order and expected delivery date).");
+
+    // Booking GPS — captured at booking time, carried into the site record on
+    // conversion so drivers can navigate correctly from day one.
+    await pool.query(`
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS site_latitude NUMERIC(10,7);
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS site_longitude NUMERIC(10,7);
+    `);
+    log.push("Schema migration applied (bookings can now carry a site GPS location through to conversion).");
+
+    // Sales forecasting — rolling demand estimates for ongoing projects,
+    // planning-only (never becomes an order on its own).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sales_forecasts (
+        id SERIAL PRIMARY KEY,
+        order_id INTEGER REFERENCES customer_orders(id) NOT NULL UNIQUE,
+        sales_representative_id INTEGER REFERENCES salespersons(id) NOT NULL,
+        expected_qty_m3 NUMERIC(10,2) NOT NULL,
+        period_days INTEGER NOT NULL,
+        confidence VARCHAR(20) NOT NULL,
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (sales forecasting for running projects).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

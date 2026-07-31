@@ -33,7 +33,7 @@ export default function QcRawMaterialStock() {
     try {
       const updated = await apiRequest("/qc-engineer/raw-material-stock", {
         method: "PUT",
-        body: { pin, rows: rows.map((r) => ({ id: r.id, type_brand: r.type_brand, stock_qty: r.stock_qty })) },
+        body: { pin, rows: rows.map((r) => ({ id: r.id, type_brand: r.type_brand, stock_qty: r.stock_qty, qty_on_order: r.qty_on_order, expected_delivery_date: r.expected_delivery_date })) },
       });
       setRows(updated);
       setNotice("Stock levels saved.");
@@ -67,7 +67,7 @@ export default function QcRawMaterialStock() {
           {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
           <table style={{ fontSize: 13 }}>
             <thead>
-              <tr><th>Bin</th><th>Type / brand</th><th>Stock qty</th><th>Unit</th></tr>
+              <tr><th>Bin</th><th>Type / brand</th><th>Stock qty</th><th>Unit</th><th>Qty on order</th><th>Expected delivery</th></tr>
             </thead>
             <tbody>
               {rows.map((r) => (
@@ -76,10 +76,15 @@ export default function QcRawMaterialStock() {
                   <td><input type="text" value={r.type_brand || ""} onChange={(e) => update(r.id, "type_brand", e.target.value)} style={{ width: "100%" }} /></td>
                   <td><input type="number" value={r.stock_qty ?? ""} onChange={(e) => update(r.id, "stock_qty", e.target.value)} style={{ width: 80 }} /></td>
                   <td style={{ color: "var(--slate)" }}>{r.unit}</td>
+                  <td><input type="number" value={r.qty_on_order ?? ""} onChange={(e) => update(r.id, "qty_on_order", e.target.value)} style={{ width: 80 }} placeholder="0" /></td>
+                  <td><input type="date" value={r.expected_delivery_date ? r.expected_delivery_date.slice(0, 10) : ""} onChange={(e) => update(r.id, "expected_delivery_date", e.target.value)} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 8 }}>
+            "Qty on order" and "Expected delivery" are optional — fill them in whenever a fresh order has been placed with a supplier, so low stock shows whether more is already on the way or genuinely at risk of running out.
+          </div>
           <button style={{ marginTop: 12, width: "100%" }} onClick={save} disabled={saving}>
             {saving ? "Saving..." : "Save stock levels"}
           </button>

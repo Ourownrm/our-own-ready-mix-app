@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { pushToRole } from "../lib/push.js";
+import { pushToRole, pushToUser } from "../lib/push.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -147,12 +147,13 @@ router.post("/leads/:id/won", requireRole("administrator"), async (req, res) => 
 // ===================== BOOKINGS =====================
 
 router.post("/bookings", requireRole("sales_executive"), async (req, res) => {
-  const { customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, notes } = req.body;
+  const { customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, notes, site_latitude, site_longitude } = req.body;
   if (!customer_id) return res.status(400).json({ error: "Select a customer." });
   const { rows } = await query(
-    `INSERT INTO bookings (customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, notes, requested_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [customer_id, site_id || null, mix_grade_id || null, estimated_qty_m3 || null, preferred_date || null, notes || null, req.user.id]
+    `INSERT INTO bookings (customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, notes, site_latitude, site_longitude, requested_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [customer_id, site_id || null, mix_grade_id || null, estimated_qty_m3 || null, preferred_date || null, notes || null,
+     site_latitude || null, site_longitude || null, req.user.id]
   );
   await pushToRole("manager", {
     title: "New booking submitted",
@@ -207,6 +208,18 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
   const finalSiteId = site_id || booking.site_id;
   const finalMixGradeId = mix_grade_id || booking.mix_grade_id;
   const finalQty = order_quantity_m3 || booking.estimated_qty_m3;
+
+  // Fill in the site's GPS from the booking, if the site doesn't already have
+  // one on file — this is what gets drivers a working "navigate to site"
+  // button from the very first delivery, instead of needing someone to add
+  // it separately after the fact.
+  if (finalSiteId && (booking.site_latitude || booking.site_longitude)) {
+    await query(
+      `UPDATE sites SET latitude = COALESCE(latitude, $1), longitude = COALESCE(longitude, $2) WHERE id = $3`,
+      [booking.site_latitude, booking.site_longitude, finalSiteId]
+    );
+  }
+
   let finalSalesRepId = sales_representative_id || null;
   if (!finalSalesRepId) {
     const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [booking.requested_by]);
@@ -431,6 +444,164 @@ router.get("/performance", requireRole("administrator"), async (req, res) => {
      ) visit_stats ON true
      WHERE sp.is_active
      ORDER BY orders_month_value DESC`
+  );
+  res.json(rows);
+});
+
+// ===================== SALES FORECASTING =====================
+// Rolling demand estimates for ongoing projects — planning only, never
+// becomes an order on its own (that's what a booking is for).
+
+// Sales Executive's own running projects — what the forecast form picks from.
+router.get("/my-running-orders", requireRole("sales_executive"), async (req, res) => {
+  const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
+  const salespersonId = spRows[0]?.id;
+  if (!salespersonId) return res.json([]);
+  const { rows } = await query(
+    `SELECT o.id, c.name AS customer_name, s.name AS site_name
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     WHERE o.sales_representative_id = $1 AND o.status NOT IN ('completed', 'closed', 'cancelled')
+     ORDER BY o.order_date DESC`,
+    [salespersonId]
+  );
+  res.json(rows);
+});
+
+// Upsert — one forecast per project. Saving (including editing an expired
+// one) re-anchors the window to right now via updated_at.
+router.post("/forecasts", requireRole("sales_executive"), async (req, res) => {
+  const { order_id, expected_qty_m3, period_days, confidence, notes } = req.body;
+  if (!order_id || !expected_qty_m3 || !period_days || !confidence) {
+    return res.status(400).json({ error: "Project, expected quantity, period, and confidence are all required." });
+  }
+  const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
+  const salespersonId = spRows[0]?.id;
+  if (!salespersonId) return res.status(400).json({ error: "No salesperson profile linked to your account." });
+
+  const { rows } = await query(
+    `INSERT INTO sales_forecasts (order_id, sales_representative_id, expected_qty_m3, period_days, confidence, notes)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (order_id) DO UPDATE SET
+       expected_qty_m3 = $3, period_days = $4, confidence = $5, notes = $6, updated_at = now()
+     RETURNING *`,
+    [order_id, salespersonId, expected_qty_m3, period_days, confidence, notes || null]
+  );
+  await query(
+    `UPDATE notifications SET is_read = true
+     WHERE recipient_id = $1 AND order_id = $2 AND type = 'forecast_update_requested' AND is_read = false`,
+    [req.user.id, order_id]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// Sales Executive sees their own; Manager/Administrator see everyone's.
+router.get("/forecasts", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+  const own = req.user.role === "sales_executive";
+  let salespersonId = null;
+  if (own) {
+    const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
+    salespersonId = spRows[0]?.id;
+    if (!salespersonId) return res.json([]);
+  }
+  const { rows } = await query(
+    `SELECT f.*, c.name AS customer_name, s.name AS site_name, sp.name AS salesperson_name,
+            (f.updated_at::date + f.period_days) AS period_end_date,
+            (f.updated_at::date + f.period_days) < CURRENT_DATE AS is_expired
+     FROM sales_forecasts f
+     JOIN customer_orders o ON o.id = f.order_id
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     JOIN salespersons sp ON sp.id = f.sales_representative_id
+     ${own ? "WHERE f.sales_representative_id = $1" : ""}
+     ORDER BY f.updated_at DESC`,
+    own ? [salespersonId] : []
+  );
+  res.json(rows);
+});
+
+// Every running project that has a sales rep assigned, with its forecast
+// status if any — lets Manager/Administrator see gaps (no forecast at all,
+// or an expired one) and request an update, not just review what's current.
+router.get("/running-projects-with-forecast-status", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT o.id AS order_id, c.name AS customer_name, s.name AS site_name,
+            sp.name AS salesperson_name, sp.user_id AS salesperson_user_id,
+            f.expected_qty_m3, f.period_days, f.confidence, f.updated_at AS forecast_updated_at,
+            (f.id IS NOT NULL) AS has_forecast,
+            (f.id IS NOT NULL AND (f.updated_at::date + f.period_days) < CURRENT_DATE) AS is_expired
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     JOIN salespersons sp ON sp.id = o.sales_representative_id
+     LEFT JOIN sales_forecasts f ON f.order_id = o.id
+     WHERE o.status NOT IN ('completed', 'closed', 'cancelled')
+     ORDER BY has_forecast ASC, o.order_date DESC`
+  );
+  res.json(rows);
+});
+
+// Manager/Administrator asks the assigned Sales Executive to add or refresh
+// a forecast for a specific project — a direct nudge rather than waiting.
+router.post("/forecasts/request-update", requireRole("manager", "administrator"), async (req, res) => {
+  const { order_id, message } = req.body;
+  if (!order_id) return res.status(400).json({ error: "Select a project." });
+
+  const { rows } = await query(
+    `SELECT o.id, sp.user_id AS salesperson_user_id, c.name AS customer_name, s.name AS site_name
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     LEFT JOIN salespersons sp ON sp.id = o.sales_representative_id
+     WHERE o.id = $1`,
+    [order_id]
+  );
+  const order = rows[0];
+  if (!order) return res.status(404).json({ error: "Project not found." });
+  if (!order.salesperson_user_id) return res.status(400).json({ error: "This project has no sales person assigned." });
+
+  const label = `${order.customer_name} — ${order.site_name}`;
+  const text = message
+    ? `Manager asked for a forecast update on ${label}: "${message}"`
+    : `Manager asked for a forecast update on ${label}.`;
+  await query(
+    `INSERT INTO notifications (recipient_role, recipient_id, order_id, type, message) VALUES ('sales_executive', $1, $2, 'forecast_update_requested', $3)`,
+    [order.salesperson_user_id, order_id, text]
+  );
+  await pushToUser(order.salesperson_user_id, { title: "Forecast update requested", body: label, url: "/sales-forecast" });
+
+  res.json({ ok: true });
+});
+
+// Sales Executive's own pending forecast-update requests — surfaced as an
+// alert at the top of their forecast screen.
+router.get("/forecast-update-requests", requireRole("sales_executive"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, order_id, message, created_at FROM notifications
+     WHERE recipient_id = $1 AND type = 'forecast_update_requested' AND is_read = false
+     ORDER BY created_at DESC`,
+    [req.user.id]
+  );
+  res.json(rows);
+});
+
+
+// this week and next, broken down by confidence level.
+router.get("/forecasts/summary", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT confidence,
+            COALESCE(SUM(expected_qty_m3) FILTER (
+              WHERE (updated_at::date + period_days) >= CURRENT_DATE
+                AND updated_at::date <= CURRENT_DATE + 7
+            ), 0) AS this_week,
+            COALESCE(SUM(expected_qty_m3) FILTER (
+              WHERE (updated_at::date + period_days) >= CURRENT_DATE + 7
+                AND updated_at::date <= CURRENT_DATE + 14
+            ), 0) AS next_week
+     FROM sales_forecasts
+     WHERE (updated_at::date + period_days) >= CURRENT_DATE
+     GROUP BY confidence`
   );
   res.json(rows);
 });

@@ -127,7 +127,7 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
 // visible right on this list, not just as a background count.
 router.get("/active-trucks", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
-    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, dt.created_at, dt.order_id,
+    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, dt.created_at, dt.order_id, dt.loaded_quantity_m3,
             t.truck_number, u.name AS driver_name, c.name AS customer_name, s.name AS site_name,
             rs.event_time AS reached_site_at,
             CASE WHEN dt.status IN ('reached_site', 'unloading') AND rs.event_time IS NOT NULL

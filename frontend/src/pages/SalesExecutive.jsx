@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 
@@ -113,6 +114,7 @@ export default function SalesExecutive() {
               {label}
             </button>
           ))}
+          <Link to="/sales-forecast"><button className="btn-tab">Forecast</button></Link>
         </div>
 
         {view === "dashboard" && <Dashboard data={dashboard} />}
@@ -460,9 +462,10 @@ function NewBookingForm({ onDone, onCancel }) {
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
   const [mixGrades, setMixGrades] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", site_id: "", mix_grade_id: "", estimated_qty_m3: "", preferred_date: "", notes: "" });
+  const [form, setForm] = useState({ customer_id: "", site_id: "", mix_grade_id: "", estimated_qty_m3: "", preferred_date: "", notes: "", site_latitude: "", site_longitude: "" });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [locating, setLocating] = useState(false);
 
   useEffect(() => {
     Promise.all([apiRequest("/master/customers"), apiRequest("/master/sites"), apiRequest("/master/mix-grades")])
@@ -471,6 +474,17 @@ function NewBookingForm({ onDone, onCancel }) {
   }, []);
 
   const sitesForCustomer = form.customer_id ? sites.filter((s) => String(s.customer_id) === String(form.customer_id)) : sites;
+
+  function useCurrentLocation() {
+    setLocating(true);
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => {
+        setForm((f) => ({ ...f, site_latitude: pos.coords.latitude.toFixed(7), site_longitude: pos.coords.longitude.toFixed(7) }));
+        setLocating(false);
+      },
+      () => { setError("Couldn't get current location — enter coordinates manually if you have them."); setLocating(false); }
+    );
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -506,6 +520,19 @@ function NewBookingForm({ onDone, onCancel }) {
                 <option value="">Not decided yet</option>
                 {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Site location (GPS)</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
+                <input type="number" step="any" value={form.site_latitude} onChange={(e) => setForm({ ...form, site_latitude: e.target.value })} placeholder="Latitude" />
+                <input type="number" step="any" value={form.site_longitude} onChange={(e) => setForm({ ...form, site_longitude: e.target.value })} placeholder="Longitude" />
+              </div>
+              <button type="button" onClick={useCurrentLocation} disabled={locating} style={{ fontSize: 12, padding: "5px 10px" }}>
+                {locating ? "Getting location..." : "Use my current location"}
+              </button>
+              <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
+                If this is a new site, this carries through automatically once Manager converts the booking — drivers can navigate there from the first delivery.
+              </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <div>

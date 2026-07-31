@@ -127,6 +127,11 @@ export function BookingsQueue({ setError }) {
                 {b.preferred_date ? ` · Preferred: ${new Date(b.preferred_date).toLocaleDateString([], { day: "2-digit", month: "short" })}` : ""}
               </div>
               {b.notes && <div style={{ color: "var(--slate)", fontStyle: "italic" }}>"{b.notes}"</div>}
+              {(b.site_latitude && b.site_longitude) && (
+                <a href={`https://maps.google.com/?q=${b.site_latitude},${b.site_longitude}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
+                  View site location
+                </a>
+              )}
               <div style={{ color: "var(--slate)", fontSize: 11 }}>From {b.requested_by_name}</div>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button className="btn-primary" style={{ flex: 1, fontSize: 12 }} onClick={() => setConverting(b)}>Convert to order</button>
