@@ -1324,3 +1324,24 @@ and the equipment-type lists between Fuel's frontend and backend still match.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Forty-third round — bug fix: /setup failed on a repeat run
+
+**"column f.order_id does not exist"** — real bug in the sales-forecast migration
+itself, not your data. Every other migration in this file is written to be safely
+re-runnable (guarded with `IF NOT EXISTS` / `IF EXISTS`), but the order-to-site
+conversion wasn't: it unconditionally tried to read `sales_forecasts.order_id` to
+backfill from, without checking whether that column still existed. The first time you
+ran `/setup`, it worked and successfully dropped `order_id` as intended. The second
+time `/setup` got triggered, it tried the same backfill again — except `order_id` was
+already gone, so it failed immediately.
+
+**Your data is fine** — the first run completed the actual migration correctly. Fixed
+by checking whether `order_id` still exists before attempting anything with it, so
+`/setup` is now safe to run any number of times, matching how every other migration in
+this file already behaves.
+
+### Migration note
+Revisit `/setup?key=...` once more after deploying this fix — it should now complete
+cleanly. If it was already fully migrated (likely, given the analysis above), this run
+will just confirm that and move on.

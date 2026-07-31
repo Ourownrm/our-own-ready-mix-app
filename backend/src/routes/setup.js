@@ -452,19 +452,26 @@ router.get("/setup", async (req, res) => {
     `);
     // Backfill site_id on any forecast that was actually saved under the old
     // order-keyed design, then drop order_id (which takes its unique
-    // constraint with it) and require site_id going forward.
-    await pool.query(`
-      UPDATE sales_forecasts f SET site_id = o.site_id
-      FROM customer_orders o WHERE f.order_id = o.id AND f.site_id IS NULL;
-    `);
-    await pool.query(`DELETE FROM sales_forecasts WHERE site_id IS NULL;`);
-    // If two old order-keyed forecasts happened to land on the same site,
-    // keep only the most recently updated one before enforcing one-per-site.
-    await pool.query(`
-      DELETE FROM sales_forecasts a USING sales_forecasts b
-      WHERE a.site_id = b.site_id AND a.id < b.id;
-    `);
-    await pool.query(`ALTER TABLE sales_forecasts DROP COLUMN IF EXISTS order_id;`);
+    // constraint with it) and require site_id going forward. Guarded so this
+    // is safe to run again even after order_id has already been dropped —
+    // re-running /setup shouldn't ever break something that already succeeded.
+    const { rows: orderIdCheck } = await pool.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name = 'sales_forecasts' AND column_name = 'order_id'`
+    );
+    if (orderIdCheck.length > 0) {
+      await pool.query(`
+        UPDATE sales_forecasts f SET site_id = o.site_id
+        FROM customer_orders o WHERE f.order_id = o.id AND f.site_id IS NULL;
+      `);
+      await pool.query(`DELETE FROM sales_forecasts WHERE site_id IS NULL;`);
+      // If two old order-keyed forecasts happened to land on the same site,
+      // keep only the most recently updated one before enforcing one-per-site.
+      await pool.query(`
+        DELETE FROM sales_forecasts a USING sales_forecasts b
+        WHERE a.site_id = b.site_id AND a.id < b.id;
+      `);
+      await pool.query(`ALTER TABLE sales_forecasts DROP COLUMN order_id;`);
+    }
     await pool.query(`ALTER TABLE sales_forecasts ALTER COLUMN site_id SET NOT NULL;`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS sales_forecasts_site_id_uidx ON sales_forecasts(site_id);`);
     log.push("Schema migration applied (sales forecasting now keyed on site/project, not individual order — the actual fix for it showing no running projects).");
