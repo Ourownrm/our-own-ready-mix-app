@@ -1413,3 +1413,45 @@ know who actually owns each existing site's relationship.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Forty-seventh round — a deeper bug: database timezone had a race condition
+
+Your instinct about a date/timezone issue was right, and it led to something more
+fundamental than the salesperson mismatch — a real bug in how every single database
+connection in this app gets its timezone set.
+
+**The bug**: `db.js` set each new connection's timezone via a `pool.on("connect", ...)`
+listener. That listener is fire-and-forget — it fires off the `SET TIME ZONE` command
+but doesn't block the connection pool from handing that same brand-new connection out
+for an actual query. That created a race: a query landing on a freshly-created
+connection could run concurrently with (or even before) the timezone command finished,
+meaning that one query would execute against the database server's default UTC instead
+of IST. Right at a day or month boundary — like just after midnight IST, which is
+exactly when your screenshots were taken (00:15–00:17) — that's precisely the kind of
+moment a query could get miscategorized into the wrong day or even the previous month.
+This isn't something that happens on every query, only on ones unlucky enough to land
+on a connection at the exact moment it's still being set up, which is exactly why it
+would look like sporadic, hard-to-pin-down bad data rather than something consistently
+broken.
+
+**The fix**: instead of a fire-and-forget listener, every connection now has its
+timezone guaranteed set *before* it's ever usable for a query — both for the app's
+normal query path and for `setup.js`'s migrations, which call the database directly
+and would otherwise have bypassed this fix entirely.
+
+I want to be direct about what I can and can't confirm: I don't have access to your
+live database, so I can't directly verify the Dreamflower invoice was actually a victim
+of this exact race. But it's a real, genuine bug I found by reviewing the connection
+code carefully, it's exactly the right shape to explain what you're seeing, and it's
+now fixed regardless.
+
+### What to do about the existing Dreamflower entry
+This fix prevents it from happening again — it doesn't retroactively correct data that
+might already be sitting in the wrong bucket. If that invoice already exists with a
+`created_at` that's genuinely wrong, the cleanest fix is to find it directly:
+Accountant → Customers — outstanding → look for Dreamflower, or Production Report
+filtered specifically to that customer with a wide date range, to locate the exact
+delivery/invoice in question and confirm its real date.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
