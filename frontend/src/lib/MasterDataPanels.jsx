@@ -137,7 +137,7 @@ export function SitesPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [categories, setCategories] = useState([]);
   const [salespersons, setSalespersons] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "" });
+  const [form, setForm] = useState({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "" });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [assigningId, setAssigningId] = useState(null);
@@ -160,7 +160,7 @@ export function SitesPanel({ setError }) {
     setSaving(true); setError("");
     try {
       await apiRequest("/administrator/sites", { method: "POST", body: form });
-      setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "" });
+      setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "" });
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
@@ -288,6 +288,13 @@ export function SitesPanel({ setError }) {
           </select>
         </div>
         <div><div style={{ color: "var(--slate)" }}>Site name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Salesperson (required)</div>
+          <select value={form.assigned_sales_representative_id} onChange={(e) => setForm({ ...form, assigned_sales_representative_id: e.target.value })} required>
+            <option value="">Select</option>
+            {salespersons.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+          </select>
+        </div>
         <div><div style={{ color: "var(--slate)" }}>Distance from plant (km)</div><input type="number" value={form.distance_from_plant_km} onChange={(e) => setForm({ ...form, distance_from_plant_km: e.target.value })} /></div>
         <div>
           <div style={{ color: "var(--slate)" }}>Trip allowance category</div>

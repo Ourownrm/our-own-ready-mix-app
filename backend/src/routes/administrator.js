@@ -158,12 +158,13 @@ router.get("/sites", requireRole("administrator", "manager"), async (req, res) =
 });
 
 router.post("/sites", requireRole("administrator", "manager"), async (req, res) => {
-  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude } = req.body;
+  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
+  if (!assigned_sales_representative_id) return res.status(400).json({ error: "Every site needs a salesperson assigned." });
   const { rows } = await query(
-    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null]
+    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null, assigned_sales_representative_id]
   );
   res.status(201).json(rows[0]);
 });

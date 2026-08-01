@@ -1389,3 +1389,27 @@ No schema changes — nothing new to apply via `/setup`.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Forty-sixth round — root cause of the "Sumesh" vs "Sumesh KV" mismatch
+
+Your explanation made the actual bug clear: orders created *before* your salesperson
+cleanup ("Sumesh" deactivated, "Sumesh KV" now the correct active one) still carry the
+old order-level `sales_representative_id` pointing at "Sumesh." Last round's fix added
+a fallback to the site's assignment, but prioritized the order-level value *first* —
+so any order with that stale leftover reference kept showing "Sumesh" regardless of
+what the site was actually correctly assigned to now.
+
+**Flipped the priority everywhere** (Production Report, Sales Executive's dashboard,
+Sales Performance, Director's Dashboard, order detail) — the site's assigned
+salesperson is now checked first and wins; the order-level value is only used as a
+last-resort fallback for the rare case a site somehow has no assignment at all.
+
+**Site salesperson is now a required field** at creation — the "Add site" form won't
+submit without one selected, and the backend rejects it too. This is enforced going
+forward only: any site that already exists without one assigned will keep showing
+"Unassigned" (in both Sites and Sales Forecast) until someone assigns it manually via
+the existing "Assign" action — I didn't force a retroactive assignment, since only you
+know who actually owns each existing site's relationship.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

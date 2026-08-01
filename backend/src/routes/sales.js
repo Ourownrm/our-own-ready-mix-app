@@ -343,7 +343,7 @@ router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => 
       `SELECT DISTINCT c.id, c.name FROM customer_orders co
        JOIN customers c ON c.id = co.customer_id
        JOIN sites s ON s.id = co.site_id
-       WHERE COALESCE(co.sales_representative_id, s.assigned_sales_representative_id) = $1 ORDER BY c.name`,
+       WHERE COALESCE(s.assigned_sales_representative_id, co.sales_representative_id) = $1 ORDER BY c.name`,
       [spId]
     ),
     query(
@@ -352,7 +352,7 @@ router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => 
        JOIN sites s ON s.id = co.site_id
        JOIN delivery_tickets dt ON dt.order_id = co.id AND dt.status != 'cancelled'
        LEFT JOIN invoices i ON i.ticket_id = dt.id
-       WHERE COALESCE(co.sales_representative_id, s.assigned_sales_representative_id) = $1 AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`,
+       WHERE COALESCE(s.assigned_sales_representative_id, co.sales_representative_id) = $1 AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`,
       [spId]
     ),
     query(
@@ -362,7 +362,7 @@ router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => 
        JOIN customer_orders co ON co.id = dt.order_id
        JOIN sites s ON s.id = co.site_id
        LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
-       WHERE COALESCE(co.sales_representative_id, s.assigned_sales_representative_id) = $1`,
+       WHERE COALESCE(s.assigned_sales_representative_id, co.sales_representative_id) = $1`,
       [spId]
     ),
     query(
@@ -374,7 +374,7 @@ router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => 
        JOIN customers c ON c.id = co.customer_id
        JOIN sites s ON s.id = co.site_id
        LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
-       WHERE COALESCE(co.sales_representative_id, s.assigned_sales_representative_id) = $1
+       WHERE COALESCE(s.assigned_sales_representative_id, co.sales_representative_id) = $1
        GROUP BY c.name
        HAVING COALESCE(SUM(i.total_amount), 0) - COALESCE(SUM(p.paid), 0) > 0.01
        ORDER BY outstanding DESC`,
@@ -418,7 +418,7 @@ router.get("/performance", requireRole("administrator"), async (req, res) => {
        JOIN sites s ON s.id = co.site_id
        JOIN delivery_tickets dt ON dt.order_id = co.id AND dt.status != 'cancelled'
        LEFT JOIN invoices i ON i.ticket_id = dt.id
-       WHERE COALESCE(co.sales_representative_id, s.assigned_sales_representative_id) = sp.id AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
+       WHERE COALESCE(s.assigned_sales_representative_id, co.sales_representative_id) = sp.id AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
      ) month_stats ON true
      LEFT JOIN LATERAL (
        SELECT COALESCE(SUM(i.total_amount), 0) - COALESCE(SUM(p.paid), 0) AS total
@@ -427,7 +427,7 @@ router.get("/performance", requireRole("administrator"), async (req, res) => {
        JOIN customer_orders co ON co.id = dt.order_id
        JOIN sites s ON s.id = co.site_id
        LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
-       WHERE COALESCE(co.sales_representative_id, s.assigned_sales_representative_id) = sp.id
+       WHERE COALESCE(s.assigned_sales_representative_id, co.sales_representative_id) = sp.id
      ) outstanding_stats ON true
      LEFT JOIN LATERAL (
        SELECT COUNT(*) AS total_leads,

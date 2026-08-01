@@ -125,7 +125,6 @@ export default function Reports() {
 
             {/* 6. Raw material stock */}
             <RawMaterialStockCard />
-            <ComplianceAlertsCard />
 
             {/* 7. Sales this month by customer */}
             <Section title="Sales this month, by customer">
@@ -165,6 +164,8 @@ export default function Reports() {
                 empty="No rejections recorded this month."
               />
             </Section>
+
+            <ComplianceAlertsCard />
           </>
         )}
       </div>
