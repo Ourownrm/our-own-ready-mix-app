@@ -132,6 +132,7 @@ export default function Reports() {
                 rows={data.sales_by_customer_month}
                 columns={[["customer_name", "Customer"], [(r) => `${r.total_qty_m3} m³`, "Quantity"], [(r) => inr(r.total), "Sales value"]]}
                 empty="No invoiced sales this month yet."
+                rowLink={(r) => r.customer_id ? `/production-report?customer_id=${r.customer_id}&from_date=${monthStartStr()}&to_date=${todayStr()}` : null}
               />
             </Section>
 
@@ -141,6 +142,7 @@ export default function Reports() {
                 rows={data.salesman_monthly}
                 columns={[["salesman", "Salesman"], [(r) => `${r.total_qty_m3} m³`, "Quantity"], [(r) => inr(r.total), "Sales value"]]}
                 empty="No sales recorded this month."
+                rowLink={(r) => r.salesperson_id ? `/production-report?salesperson_id=${r.salesperson_id}&from_date=${monthStartStr()}&to_date=${todayStr()}` : null}
               />
             </Section>
 
@@ -191,7 +193,7 @@ function Section({ title, children }) {
   );
 }
 
-function SimpleTable({ rows, columns, empty }) {
+function SimpleTable({ rows, columns, empty, rowLink }) {
   if (!rows || rows.length === 0) {
     return <div style={{ fontSize: 13, color: "var(--slate)" }}>{empty}</div>;
   }
@@ -204,15 +206,29 @@ function SimpleTable({ rows, columns, empty }) {
         <tbody>
           {rows.map((row, i) => (
             <tr key={i}>
-              {columns.map(([key], j) => (
-                <td key={j}>{typeof key === "function" ? key(row) : row[key] ?? "–"}</td>
-              ))}
+              {columns.map(([key], j) => {
+                const content = typeof key === "function" ? key(row) : row[key] ?? "–";
+                return (
+                  <td key={j}>
+                    {rowLink && j === 0 && rowLink(row) ? <Link to={rowLink(row)}>{content}</Link> : content}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
       </table>
     </div>
   );
+}
+
+function monthStartStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+}
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function inr(value) {

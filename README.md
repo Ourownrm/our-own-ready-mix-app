@@ -1455,3 +1455,55 @@ delivery/invoice in question and confirm its real date.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Forty-eighth round — a real way to see the underlying data, instead of more guessing
+
+Since the timezone fix didn't resolve it, and I don't have access to your live
+database to inspect the actual rows myself, I built the most useful next thing I
+can: **the Director's Dashboard's "Sales this month, by customer" and
+"Salesman-wise sales this month" rows are now clickable** — each one links straight
+into Production Report, pre-filtered to that exact customer or salesperson, for this
+month's date range, and runs automatically.
+
+Click "Dreamflower" (or whichever entry looks wrong) and you'll land directly on the
+specific delivery ticket(s) actually contributing to that total — the DC number, the
+exact date, the site, everything. That will show us definitively whether this is a
+real data problem (a delivery genuinely mis-dated or mis-attributed) or something the
+Dashboard is computing incorrectly that the Production Report doesn't show — which
+tells us exactly where to look next, instead of me continuing to guess at theories
+from screenshots.
+
+This works for any report/salesperson going forward too — a permanent feature, not a
+one-off diagnostic.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Forty-ninth round — the actual bug, found from your arithmetic
+
+Your math made this conclusive: Pump utilization (33 m³) + without-pump (6.5 m³) = 39.5
+m³, exactly matching this month's total production (all 6 known deliveries). Dreamflower's
+18 m³ doesn't correspond to any of them — meaning it isn't corrupted or phantom data,
+it's a **real invoice, just scoped to the wrong month**.
+
+**Root cause**: "Sales Today," "Sales This Month," "Sales this month by customer," and
+"Salesman-wise sales this month" all filtered by **when the invoice was created**
+(`invoices.created_at`), not when the concrete was actually delivered
+(`delivery_tickets.ticket_date`). An invoice is only generated when someone confirms
+unloading complete — if that confirmation happens later than the actual delivery (even
+by a day, e.g. confirmed the next morning), the invoice's creation timestamp lands in a
+different month than the delivery itself. Production Report was already correctly using
+the real delivery date the whole time, which is exactly why it never showed Dreamflower
+under this month — it was scoped correctly all along; the Dashboard wasn't.
+
+**Fixed all four** to use the actual delivery date, matching Production Report and
+matching what "sales this month" should intuitively mean: concrete delivered this
+month, not paperwork completed this month. (Left the aging report and
+Accountant's "collected" figures alone — those genuinely should reflect invoice/payment
+timing, not delivery date, so they weren't part of this bug.)
+
+The clickable Dashboard rows from last round now stay useful and accurate too, since
+both sides of that link use the same date field.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import QcDetailModal from "../lib/QcDetailModal.jsx";
@@ -31,6 +32,7 @@ function sumTotalAmount(rows) {
 }
 
 export default function ProductionReport() {
+  const [searchParams] = useSearchParams();
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
   const [trucks, setTrucks] = useState([]);
@@ -40,9 +42,10 @@ export default function ProductionReport() {
   const [supervisors, setSupervisors] = useState([]);
 
   const [filters, setFilters] = useState({
-    from_date: todayStr(), to_date: todayStr(),
-    customer_id: "", site_id: "", truck_id: "", driver_id: "",
-    salesperson_id: "", pump_id: "", supervisor_id: "",
+    from_date: searchParams.get("from_date") || todayStr(),
+    to_date: searchParams.get("to_date") || todayStr(),
+    customer_id: searchParams.get("customer_id") || "", site_id: "", truck_id: "", driver_id: "",
+    salesperson_id: searchParams.get("salesperson_id") || "", pump_id: "", supervisor_id: "",
   });
   const [statusFilter, setStatusFilter] = useState(new Set(["All"]));
 
@@ -63,6 +66,9 @@ export default function ProductionReport() {
     ]).then(([c, s, t, d, sp, p, sup]) => {
       setCustomers(c); setSites(s); setTrucks(t); setDrivers(d);
       setSalespersons(sp); setPumps(p); setSupervisors(sup);
+      if (searchParams.get("customer_id") || searchParams.get("salesperson_id")) {
+        generate(1);
+      }
     }).catch((err) => setError(err.message));
   }, []);
 

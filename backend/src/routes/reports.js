@@ -34,16 +34,24 @@ router.get("/director-dashboard", async (req, res) => {
        WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
     ),
 
-    query(`SELECT COALESCE(SUM(total_amount), 0) AS total FROM invoices WHERE created_at::date = CURRENT_DATE`),
-    query(`SELECT COALESCE(SUM(total_amount), 0) AS total FROM invoices WHERE date_trunc('month', created_at) = date_trunc('month', CURRENT_DATE)`),
     query(
-      `SELECT c.name AS customer_name, COALESCE(SUM(i.total_amount), 0) AS total,
+      `SELECT COALESCE(SUM(i.total_amount), 0) AS total FROM invoices i
+       JOIN delivery_tickets dt ON dt.id = i.ticket_id
+       WHERE dt.ticket_date = CURRENT_DATE`
+    ),
+    query(
+      `SELECT COALESCE(SUM(i.total_amount), 0) AS total FROM invoices i
+       JOIN delivery_tickets dt ON dt.id = i.ticket_id
+       WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
+    ),
+    query(
+      `SELECT c.id AS customer_id, c.name AS customer_name, COALESCE(SUM(i.total_amount), 0) AS total,
               COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3
        FROM invoices i
        JOIN customers c ON c.id = i.customer_id
        JOIN delivery_tickets dt ON dt.id = i.ticket_id
-       WHERE date_trunc('month', i.created_at) = date_trunc('month', CURRENT_DATE)
-       GROUP BY c.name ORDER BY total DESC`
+       WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
+       GROUP BY c.id, c.name ORDER BY total DESC`
     ),
 
     query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE payment_date = CURRENT_DATE`),
@@ -113,7 +121,7 @@ router.get("/director-dashboard", async (req, res) => {
     ),
 
     query(
-      `SELECT COALESCE(sp.name, 'Unassigned') AS salesman,
+      `SELECT sp.id AS salesperson_id, COALESCE(sp.name, 'Unassigned') AS salesman,
               COALESCE(SUM(i.total_amount), 0) AS total,
               COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3
        FROM invoices i
@@ -121,8 +129,8 @@ router.get("/director-dashboard", async (req, res) => {
        JOIN customer_orders co ON co.id = dt.order_id
        JOIN sites s ON s.id = co.site_id
        LEFT JOIN salespersons sp ON sp.id = COALESCE(s.assigned_sales_representative_id, co.sales_representative_id)
-       WHERE date_trunc('month', i.created_at) = date_trunc('month', CURRENT_DATE)
-       GROUP BY salesman ORDER BY total DESC`
+       WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
+       GROUP BY sp.id, sp.name ORDER BY total DESC`
     ),
     query(
       `SELECT p.pump_code, p.pump_type,
