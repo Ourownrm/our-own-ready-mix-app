@@ -119,7 +119,8 @@ router.get("/director-dashboard", async (req, res) => {
        FROM invoices i
        JOIN delivery_tickets dt ON dt.id = i.ticket_id
        JOIN customer_orders co ON co.id = dt.order_id
-       LEFT JOIN salespersons sp ON sp.id = co.sales_representative_id
+       JOIN sites s ON s.id = co.site_id
+       LEFT JOIN salespersons sp ON sp.id = COALESCE(co.sales_representative_id, s.assigned_sales_representative_id)
        WHERE date_trunc('month', i.created_at) = date_trunc('month', CURRENT_DATE)
        GROUP BY salesman ORDER BY total DESC`
     ),

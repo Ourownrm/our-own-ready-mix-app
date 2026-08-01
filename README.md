@@ -1367,3 +1367,25 @@ will just confirm that and move on.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Forty-fifth round
+
+1. **Bug fix: salesperson missing wherever it was pulled only from the order, not the
+   site — confirmed exactly from your screenshot.** This turned out to be a bigger gap
+   than just the Production Report: the same "only checks order-level assignment"
+   mistake was also in the Sales Executive's own dashboard (their orders/value/
+   outstanding KPIs), the Admin Sales Performance leaderboard, the Director's Dashboard's
+   sales-by-salesman report, and the single-order detail view. All fixed the same way —
+   fall back to the site's assigned salesperson whenever the order doesn't have an
+   explicit one of its own (an explicit order-level override, if ever set, still takes
+   priority).
+2. **Boom pump now gets both vehicle and equipment compliance documents.** It's
+   mounted on a truck chassis and driven on public roads, so it genuinely needs PUC,
+   Permit, Road Tax, Fitness Certificate, and Registration Certificate — on top of the
+   equipment-side ones (Calibration, Load Testing, Safety Certification) it already had.
+3. **Accountant's customer-wise outstanding report now exports to PDF and Excel** —
+   the report itself already existed (built a few rounds back as the primary Accountant
+   view), just missing the export buttons.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

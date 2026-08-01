@@ -12,6 +12,7 @@ export default function Accountant() {
   const [showRates, setShowRates] = useState(false);
   const [showOpeningBalances, setShowOpeningBalances] = useState(false);
   const [error, setError] = useState("");
+  const [exporting, setExporting] = useState(null);
 
   async function load() {
     try {
@@ -27,6 +28,72 @@ export default function Accountant() {
   }
 
   useEffect(() => { load(); }, []);
+
+  function inrPdf(value) {
+    return `Rs. ${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+  }
+
+  async function exportOutstandingPdf() {
+    if (customers.length === 0) { setError("Nothing outstanding to export."); return; }
+    setExporting("pdf"); setError("");
+    try {
+      const { jsPDF } = await import("jspdf");
+      await import("jspdf-autotable");
+      const doc = new jsPDF();
+      doc.setFontSize(14);
+      doc.text("Our Own Ready Mix", 14, 14);
+      doc.setFontSize(11);
+      doc.text("Customer-wise Outstanding Report", 14, 21);
+      doc.setFontSize(8);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 27);
+
+      const totalInvoiced = customers.reduce((s, c) => s + Number(c.total_invoiced), 0);
+      const totalPaid = customers.reduce((s, c) => s + Number(c.total_paid), 0);
+      const totalBalance = customers.reduce((s, c) => s + Number(c.balance), 0);
+
+      doc.autoTable({
+        startY: 32,
+        head: [["Customer", "Invoiced", "Paid", "Balance", "Oldest unpaid"]],
+        body: customers.map((c) => [
+          c.customer_name, inrPdf(c.total_invoiced), inrPdf(c.total_paid), inrPdf(c.balance),
+          c.oldest_unpaid_date ? new Date(c.oldest_unpaid_date).toLocaleDateString() : "–",
+        ]),
+        foot: [["Total", inrPdf(totalInvoiced), inrPdf(totalPaid), inrPdf(totalBalance), `${customers.length} customers`]],
+        styles: { fontSize: 9 },
+        headStyles: { fillColor: [199, 91, 18] },
+      });
+      doc.save(`Customer_Outstanding_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      setError(err.message || "Couldn't export PDF.");
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function exportOutstandingExcel() {
+    if (customers.length === 0) { setError("Nothing outstanding to export."); return; }
+    setExporting("excel"); setError("");
+    try {
+      const XLSX = await import("xlsx");
+      const sheetRows = customers.map((c) => ({
+        Customer: c.customer_name, Invoiced: Number(c.total_invoiced), Paid: Number(c.total_paid),
+        Balance: Number(c.balance), "Oldest unpaid": c.oldest_unpaid_date ? new Date(c.oldest_unpaid_date).toLocaleDateString() : "",
+      }));
+      sheetRows.push({
+        Customer: "Total", Invoiced: customers.reduce((s, c) => s + Number(c.total_invoiced), 0),
+        Paid: customers.reduce((s, c) => s + Number(c.total_paid), 0),
+        Balance: customers.reduce((s, c) => s + Number(c.balance), 0), "Oldest unpaid": `${customers.length} customers`,
+      });
+      const ws = XLSX.utils.json_to_sheet(sheetRows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Outstanding");
+      XLSX.writeFile(wb, `Customer_Outstanding_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (err) {
+      setError(err.message || "Couldn't export Excel.");
+    } finally {
+      setExporting(null);
+    }
+  }
 
   if (payingCustomer) {
     return (
@@ -83,7 +150,17 @@ export default function Accountant() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Customers — outstanding</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Customers — outstanding</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={exportOutstandingPdf} disabled={exporting} style={{ fontSize: 11, padding: "4px 8px" }}>
+                {exporting === "pdf" ? "..." : "Export PDF"}
+              </button>
+              <button onClick={exportOutstandingExcel} disabled={exporting} style={{ fontSize: 11, padding: "4px 8px" }}>
+                {exporting === "excel" ? "..." : "Export Excel"}
+              </button>
+            </div>
+          </div>
           <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
             Record one payment against a customer — it's applied automatically across their oldest unpaid deliveries first, instead of paying each one individually.
           </div>

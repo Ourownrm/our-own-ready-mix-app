@@ -25,7 +25,7 @@ function buildFilters(q) {
   if (q.site_id) add("co.site_id = ?", q.site_id);
   if (q.truck_id) add("dt.truck_id = ?", q.truck_id);
   if (q.driver_id) add("dt.driver_id = ?", q.driver_id);
-  if (q.salesperson_id) add("co.sales_representative_id = ?", q.salesperson_id);
+  if (q.salesperson_id) add("COALESCE(co.sales_representative_id, s.assigned_sales_representative_id) = ?", q.salesperson_id);
   if (q.pump_id) add("co.pump_id = ?", q.pump_id);
   if (q.supervisor_id) add("co.assigned_site_supervisor_id = ?", q.supervisor_id);
 
@@ -50,7 +50,7 @@ const BASE_FROM = `
   JOIN mix_grades m ON m.id = co.mix_grade_id
   JOIN trucks t ON t.id = dt.truck_id
   JOIN users u_driver ON u_driver.id = dt.driver_id
-  LEFT JOIN salespersons sp ON sp.id = co.sales_representative_id
+  LEFT JOIN salespersons sp ON sp.id = COALESCE(co.sales_representative_id, s.assigned_sales_representative_id)
   LEFT JOIN pumps p ON p.id = co.pump_id
   LEFT JOIN users u_sup ON u_sup.id = co.assigned_site_supervisor_id
   LEFT JOIN site_qc sq ON sq.ticket_id = dt.id

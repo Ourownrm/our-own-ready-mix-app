@@ -18,6 +18,14 @@ const EQUIPMENT_DOCS = [
   ["inspection_certificate", "Inspection certificate"], ["load_testing_certificate", "Load testing certificate"],
   ["safety_certification", "Safety certification"],
 ];
+// Mounted on a truck chassis and driven on public roads, so it needs every
+// vehicle document a truck does, on top of the equipment-side ones (lifting/
+// pumping machinery) — not just one or the other.
+const HYBRID_DOCS = [
+  ...VEHICLE_DOCS,
+  ...EQUIPMENT_DOCS.filter(([val]) => val !== "insurance"),
+];
+const ASSET_TYPES_NEEDING_BOTH = ["boom_pump"];
 const DOC_LABEL = Object.fromEntries([...VEHICLE_DOCS, ...EQUIPMENT_DOCS]);
 
 function statusOf(days) {
@@ -171,7 +179,9 @@ function AddDocumentForm({ assets, setError, onDone }) {
   const [saving, setSaving] = useState(false);
 
   const selectedAsset = assets.find((a) => String(a.id) === String(assetId));
-  const docOptions = selectedAsset?.category === "vehicle" ? VEHICLE_DOCS : EQUIPMENT_DOCS;
+  const docOptions = ASSET_TYPES_NEEDING_BOTH.includes(selectedAsset?.asset_type)
+    ? HYBRID_DOCS
+    : selectedAsset?.category === "vehicle" ? VEHICLE_DOCS : EQUIPMENT_DOCS;
 
   async function submit(e) {
     e.preventDefault();
