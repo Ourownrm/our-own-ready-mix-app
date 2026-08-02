@@ -322,6 +322,7 @@ export function RatesPanel({ setError }) {
   const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", rate_per_m3: "", pumping_charge_lumpsum: "", waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10) });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [recalculatingRateId, setRecalculatingRateId] = useState(null);
 
   async function load() {
     try {
@@ -380,9 +381,12 @@ export function RatesPanel({ setError }) {
                     <td>{r.effective_to ? new Date(r.effective_to).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" }) : "Open-ended"}</td>
                     <td>{r.currently_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-neutral">{r.effective_to ? "Ended" : "Superseded"}</span>}</td>
                     <td>
-                      {!r.effective_to && (
-                        <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => endRate(r.id)}>End this rate</button>
-                      )}
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {!r.effective_to && (
+                          <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => endRate(r.id)}>End this rate</button>
+                        )}
+                        <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setRecalculatingRateId(r.id)}>Recalculate deliveries</button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -391,6 +395,15 @@ export function RatesPanel({ setError }) {
           </div>
         )}
       </div>
+
+      {recalculatingRateId && (
+        <RecalculatePreview
+          rateId={recalculatingRateId}
+          setError={setError}
+          onClose={() => setRecalculatingRateId(null)}
+          onDone={(msg) => { setNotice(msg); setRecalculatingRateId(null); load(); }}
+        />
+      )}
 
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Add a new rate</div>
       <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13, maxWidth: 480 }}>
@@ -418,6 +431,116 @@ export function RatesPanel({ setError }) {
         </div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
       </form>
+    </div>
+  );
+}
+
+function RecalculatePreview({ rateId, setError, onClose, onDone }) {
+  const [data, setData] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    apiRequest(`/accountant/rates/${rateId}/recalculate-preview`)
+      .then((d) => {
+        setData(d);
+        // Default to everything that's actually actionable, so one click
+        // covers the common case — nothing blocked or already-correct gets
+        // pre-selected.
+        setSelected(new Set(d.tickets.filter((t) => !t.blocked && t.action !== "unchanged").map((t) => t.ticket_id)));
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [rateId]);
+
+  function toggle(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function confirm() {
+    if (selected.size === 0) return setError("Select at least one delivery to apply this to.");
+    if (!window.confirm(`Apply this rate to ${selected.size} delivery/deliveries? This will create or correct invoices — it cannot be undone automatically.`)) return;
+    setSaving(true); setError("");
+    try {
+      const result = await apiRequest(`/accountant/rates/${rateId}/recalculate-confirm`, {
+        method: "POST",
+        body: { ticket_ids: Array.from(selected) },
+      });
+      onDone(`Done — ${result.created} invoice(s) created, ${result.updated} corrected, ${result.skipped} skipped.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <div className="card" style={{ marginBottom: 20, fontSize: 13 }}>Loading affected deliveries...</div>;
+  if (!data) return null;
+
+  const creatable = data.tickets.filter((t) => t.action === "create").length;
+  const correctable = data.tickets.filter((t) => t.action === "update" && !t.blocked).length;
+  const blocked = data.tickets.filter((t) => t.blocked).length;
+
+  return (
+    <div className="card" style={{ marginBottom: 20, border: "2px solid var(--rebar)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        Recalculate — {data.rate.customer_name} · {data.rate.mix_grade_name} · ₹{data.rate.rate_per_m3}/m³
+      </div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+        Effective {new Date(data.rate.effective_from).toLocaleDateString()}
+        {data.rate.effective_to ? ` to ${new Date(data.rate.effective_to).toLocaleDateString()}` : " onward"} —
+        {" "}{creatable} delivery/deliveries with no invoice yet, {correctable} with an invoice that doesn't match this rate.
+        {blocked > 0 && <span style={{ color: "var(--alert-red)" }}> {blocked} already have a payment recorded and won't be touched — review those manually.</span>}
+      </div>
+
+      {data.tickets.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No completed deliveries fall in this rate's date range.</div>
+      ) : (
+        <div style={{ overflowX: "auto", marginBottom: 12 }}>
+          <table style={{ fontSize: 12 }}>
+            <thead>
+              <tr><th></th><th>DC No.</th><th>Date</th><th>Qty</th><th>Current</th><th>New</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              {data.tickets.map((t) => (
+                <tr key={t.ticket_id} style={t.blocked ? { opacity: 0.5 } : undefined}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      disabled={t.blocked || t.action === "unchanged"}
+                      checked={selected.has(t.ticket_id)}
+                      onChange={() => toggle(t.ticket_id)}
+                    />
+                  </td>
+                  <td>{t.ticket_number}</td>
+                  <td>{new Date(t.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                  <td>{t.qty} m³</td>
+                  <td>{t.current_amount != null ? `₹${Number(t.current_amount).toLocaleString("en-IN")}` : "–"}</td>
+                  <td style={{ fontWeight: 600 }}>₹{Number(t.new_total_amount).toLocaleString("en-IN")}</td>
+                  <td>
+                    {t.blocked ? <span className="badge badge-danger" style={{ fontSize: 10 }}>Has payment — skip</span>
+                      : t.action === "create" ? <span className="badge badge-warning" style={{ fontSize: 10 }}>Create invoice</span>
+                      : t.action === "update" ? <span className="badge badge-info" style={{ fontSize: 10 }}>Correct amount</span>
+                      : <span className="badge badge-success" style={{ fontSize: 10 }}>Already correct</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={confirm} disabled={saving || selected.size === 0}>
+          {saving ? "Applying..." : `Apply to ${selected.size} selected`}
+        </button>
+        <button onClick={onClose}>Cancel</button>
+      </div>
     </div>
   );
 }

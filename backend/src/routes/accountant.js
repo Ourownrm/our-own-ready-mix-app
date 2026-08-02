@@ -219,7 +219,113 @@ router.post("/payments", async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-// ===================== OPENING BALANCES =====================
+// ===================== RETROACTIVE INVOICE RECALCULATION =====================
+// When a rate is added or corrected with a past effective date, this finds
+// every delivery that rate should apply to and shows exactly what would
+// change before touching anything. Deliveries with no invoice yet get one
+// created; an existing invoice only gets corrected if nothing has been paid
+// against it yet — anything with payments already recorded is left alone and
+// flagged for manual review, since silently changing the amount owed on
+// something a customer may have already paid against isn't safe to automate.
+
+async function buildRecalculationPreview(rateId) {
+  const { rows: rateRows } = await query(
+    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name
+     FROM rate_master rm JOIN customers c ON c.id = rm.customer_id JOIN mix_grades m ON m.id = rm.mix_grade_id
+     WHERE rm.id = $1`,
+    [rateId]
+  );
+  if (!rateRows.length) return null;
+  const rate = rateRows[0];
+
+  const { rows: tickets } = await query(
+    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date, dt.loaded_quantity_m3, dt.order_id,
+            co.pump_requirement,
+            i.id AS invoice_id, i.total_amount AS current_total_amount,
+            COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
+     FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     LEFT JOIN invoices i ON i.ticket_id = dt.id
+     WHERE co.customer_id = $1 AND co.mix_grade_id = $2
+       AND dt.status = 'completed'
+       AND dt.ticket_date >= $3 AND ($4::date IS NULL OR dt.ticket_date <= $4)
+     ORDER BY dt.ticket_date, dt.id`,
+    [rate.customer_id, rate.mix_grade_id, rate.effective_from, rate.effective_to]
+  );
+
+  // An order that already has a pump charge on any of its existing invoices
+  // (whether that ticket is part of this batch or not) shouldn't get charged
+  // again — the lump sum is once per order, not once per delivery.
+  const { rows: alreadyPumpCharged } = await query(
+    `SELECT DISTINCT dt.order_id FROM delivery_tickets dt
+     JOIN invoices i ON i.ticket_id = dt.id
+     WHERE dt.order_id = ANY($1) AND i.pumping_charge > 0`,
+    [[...new Set(tickets.map((t) => t.order_id))]]
+  );
+  const pumpChargedOrders = new Set(alreadyPumpCharged.map((r) => r.order_id));
+
+  const preview = tickets.map((t) => {
+    const concreteAmount = Number(t.loaded_quantity_m3) * Number(rate.rate_per_m3);
+    let pumpingCharge = 0;
+    if (t.pump_requirement !== "without_pump" && !pumpChargedOrders.has(t.order_id)) {
+      pumpingCharge = Number(rate.pumping_charge_lumpsum || 0);
+      pumpChargedOrders.add(t.order_id);
+    }
+    const newTotal = concreteAmount + pumpingCharge;
+    const hasPayments = Number(t.payment_count) > 0;
+    const currentTotal = t.current_total_amount !== null ? Number(t.current_total_amount) : null;
+    const changed = currentTotal === null || Math.abs(currentTotal - newTotal) > 0.01;
+    return {
+      ticket_id: t.ticket_id, ticket_number: t.ticket_number, ticket_date: t.ticket_date,
+      qty: t.loaded_quantity_m3, current_amount: currentTotal, new_concrete_amount: concreteAmount,
+      new_pumping_charge: pumpingCharge, new_total_amount: newTotal,
+      action: !t.invoice_id ? "create" : (changed ? "update" : "unchanged"),
+      blocked: hasPayments && changed,
+    };
+  });
+
+  return { rate, tickets: preview };
+}
+
+router.get("/rates/:rateId/recalculate-preview", async (req, res) => {
+  const result = await buildRecalculationPreview(req.params.rateId);
+  if (!result) return res.status(404).json({ error: "Rate not found." });
+  res.json(result);
+});
+
+router.post("/rates/:rateId/recalculate-confirm", async (req, res) => {
+  const result = await buildRecalculationPreview(req.params.rateId);
+  if (!result) return res.status(404).json({ error: "Rate not found." });
+
+  const requestedIds = new Set((req.body.ticket_ids || []).map(String));
+  let created = 0, updated = 0, skipped = 0;
+
+  for (const t of result.tickets) {
+    if (!requestedIds.has(String(t.ticket_id))) continue;
+    if (t.blocked || t.action === "unchanged") { skipped++; continue; }
+
+    if (t.action === "create") {
+      await query(
+        `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, waiting_charge, total_amount)
+         VALUES ($1, $2, $3, $4, 0, $5)
+         ON CONFLICT DO NOTHING`,
+        [t.ticket_id, result.rate.customer_id, t.new_concrete_amount, t.new_pumping_charge, t.new_total_amount]
+      );
+      created++;
+    } else if (t.action === "update") {
+      await query(
+        `UPDATE invoices SET concrete_amount = $1, pumping_charge = $2, total_amount = $3
+         WHERE ticket_id = $4`,
+        [t.new_concrete_amount, t.new_pumping_charge, t.new_total_amount, t.ticket_id]
+      );
+      updated++;
+    }
+  }
+
+  res.json({ created, updated, skipped });
+});
+
+
 // Pre-existing outstanding from before this app was in use.
 
 router.get("/opening-balances", async (req, res) => {

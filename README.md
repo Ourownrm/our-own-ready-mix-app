@@ -1507,3 +1507,46 @@ both sides of that link use the same date field.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Fiftieth round — the reports are correct; the real issue was unbilled deliveries
+
+Confirmed the numbers now, and they check out: "Pump utilization" (33 m³, KMCT
+Project's 4 deliveries) is production-based and counts every delivery regardless of
+billing status. "Sales this month" is invoice-based and only counts what's actually
+been invoiced. Those 4 deliveries showed blank rate/amount in your very first
+Production Report screenshot — no rate was ever configured for that customer/grade, so
+no invoice was ever generated. That's not a reporting bug; it's 33 m³ of real concrete
+that went out without ever being billed.
+
+That's a serious enough gap that it shouldn't require cross-referencing three different
+tables to notice, so added a new **"Unbilled deliveries this month"** card — a red
+warning box showing exactly which deliveries (DC number, customer, site, date,
+quantity) were delivered this month but never invoiced, with the total called out
+clearly. Whenever "Sales this month" looks lower than actual production going forward,
+this card will show precisely why and exactly which deliveries need a rate added.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Fifty-first round — retroactive invoice recalculation
+
+New action on each rate in the Rate history table: **"Recalculate deliveries"**. Shows
+a preview of every completed delivery that rate's date range applies to, before
+touching anything:
+
+- **No invoice yet** → shows what it would create
+- **Has an invoice, doesn't match this rate** → shows what it would correct
+- **Has an invoice with a payment already recorded** → automatically excluded and
+  flagged, never touched — changing what's owed on something a customer may have
+  already paid against isn't something to automate silently
+- Respects the "pumping charge once per order" rule from a few rounds back — won't
+  double-charge a multi-truck order's pump fee when creating/correcting several of its
+  deliveries at once
+
+Nothing is selected and applied without an explicit review — every affected delivery is
+listed individually (DC number, date, current amount vs. new amount) with a checkbox,
+defaulting to everything actionable pre-checked, and a final confirmation dialog before
+anything is written.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

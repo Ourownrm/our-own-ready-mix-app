@@ -14,7 +14,7 @@ router.get("/director-dashboard", async (req, res) => {
     collectedToday, collectedMonth,
     outstanding, aging,
     runningOrders, upcomingOrders,
-    salesmanMonthly, pumpUtilization, rejections,
+    salesmanMonthly, pumpUtilization, rejections, unbilled,
   ] = await Promise.all([
     // Order Qty Today — how much was ordered for today, regardless of how much has shipped
     query(`SELECT COALESCE(SUM(order_quantity_m3), 0) AS qty FROM customer_orders WHERE order_date = CURRENT_DATE AND status NOT IN ('cancelled', 'closed')`),
@@ -154,6 +154,23 @@ router.get("/director-dashboard", async (req, res) => {
        GROUP BY rr.reason
        ORDER BY total_qty_m3 DESC`
     ),
+    // Delivered this month but never invoiced — usually means no rate was on
+    // file for that customer/grade at the time. Real, uncollected revenue,
+    // not a display quirk — surfaced directly so it can't hide inside a
+    // mismatch between production and sales figures.
+    query(
+      `SELECT c.name AS customer_name, s.name AS site_name, dt.ticket_number, dt.ticket_date,
+              dt.loaded_quantity_m3 AS qty
+       FROM delivery_tickets dt
+       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN customers c ON c.id = co.customer_id
+       JOIN sites s ON s.id = co.site_id
+       LEFT JOIN invoices i ON i.ticket_id = dt.id
+       WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
+         AND dt.status NOT IN ('cancelled', 'rejected')
+         AND i.id IS NULL
+       ORDER BY dt.ticket_date, dt.id`
+    ),
   ]);
 
   res.json({
@@ -172,6 +189,7 @@ router.get("/director-dashboard", async (req, res) => {
     salesman_monthly: salesmanMonthly.rows,
     pump_utilization_month: pumpUtilization.rows,
     rejections_month: rejections.rows,
+    unbilled_deliveries_month: unbilled.rows,
   });
 });
 

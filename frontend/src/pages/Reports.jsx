@@ -126,6 +126,30 @@ export default function Reports() {
             {/* 6. Raw material stock */}
             <RawMaterialStockCard />
 
+            {data.unbilled_deliveries_month && data.unbilled_deliveries_month.length > 0 && (
+              <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--alert-red)", background: "var(--alert-red-bg, #FBEAEA)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                  Unbilled deliveries this month
+                  <span className="badge badge-danger" style={{ marginLeft: 8 }}>
+                    {data.unbilled_deliveries_month.reduce((s, r) => s + Number(r.qty), 0)} m³
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
+                  Delivered but never invoiced — usually means no rate is on file for that customer/grade.
+                  This is real, uncollected revenue, and it's why "Sales this month" can be lower than actual
+                  production — check Concrete grades and rates for these customers.
+                </div>
+                <SimpleTable
+                  rows={data.unbilled_deliveries_month}
+                  columns={[
+                    ["ticket_number", "DC No."], ["customer_name", "Customer"], ["site_name", "Site"],
+                    [(r) => formatDate(r.ticket_date), "Date"], [(r) => `${r.qty} m³`, "Quantity"],
+                  ]}
+                  empty=""
+                />
+              </div>
+            )}
+
             {/* 7. Sales this month by customer */}
             <Section title="Sales this month, by customer">
               <SimpleTable
@@ -229,6 +253,10 @@ function monthStartStr() {
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function formatDate(d) {
+  if (!d) return "–";
+  return new Date(d).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function inr(value) {
