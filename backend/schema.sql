@@ -413,6 +413,10 @@ CREATE TABLE delivery_tickets (
   pump_id INTEGER REFERENCES pumps(id),
   status ticket_status DEFAULT 'created',
   remarks TEXT,
+  -- Client-generated, one per form submission (not per retry) — lets a
+  -- queued/retried submission from a weak-signal moment at the plant safely
+  -- resolve to the same ticket instead of creating a duplicate.
+  idempotency_key VARCHAR(64) UNIQUE,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -458,6 +462,27 @@ CREATE TABLE driver_duty_log (
   longitude NUMERIC(10,7)
 );
 CREATE INDEX idx_gps_pings_driver_time ON gps_pings(driver_id, recorded_at);
+
+-- Sales Executive duty/location tracking — a parallel system to the driver
+-- one above, not a shared table, since the two roles have different
+-- downstream needs (this isn't tied to a delivery ticket).
+CREATE TABLE sales_duty_log (
+  id SERIAL PRIMARY KEY,
+  salesperson_user_id INTEGER REFERENCES users(id) NOT NULL,
+  is_on BOOLEAN NOT NULL,
+  event_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+  latitude NUMERIC(10,7),
+  longitude NUMERIC(10,7)
+);
+CREATE TABLE sales_gps_pings (
+  id SERIAL PRIMARY KEY,
+  salesperson_user_id INTEGER REFERENCES users(id) NOT NULL,
+  latitude NUMERIC(10,7) NOT NULL,
+  longitude NUMERIC(10,7) NOT NULL,
+  accuracy_m NUMERIC(6,2),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_sales_gps_pings_sp_time ON sales_gps_pings(salesperson_user_id, recorded_at);
 
 -- ===================== PLANT QC (SRS §8) =====================
 

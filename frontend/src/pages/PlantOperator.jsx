@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
+
+function newIdempotencyKey() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 export default function PlantOperator() {
   const [orders, setOrders] = useState([]);
@@ -11,8 +16,9 @@ export default function PlantOperator() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [pending, setPending] = useState(pendingCount());
 
-  const [ticketForm, setTicketForm] = useState({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "" });
+  const [ticketForm, setTicketForm] = useState({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "", idempotency_key: newIdempotencyKey() });
 
   async function load() {
     try {
@@ -31,16 +37,27 @@ export default function PlantOperator() {
   useEffect(() => {
     load();
     const interval = setInterval(load, 20000);
-    return () => clearInterval(interval);
+    // Same fix as Driver's and Site Supervisor's screens: catches actions
+    // that got queued at a weak-signal moment and never actually synced —
+    // the 'online' event alone doesn't cover reopening the app when it's
+    // already connected.
+    const flushInterval = startPeriodicFlush();
+    const refreshAfterFlush = setInterval(() => { load(); setPending(pendingCount()); }, 30000);
+    return () => { clearInterval(interval); clearInterval(flushInterval); clearInterval(refreshAfterFlush); };
   }, []);
 
   async function submitTicket(e) {
     e.preventDefault();
     setError(""); setNotice("");
     try {
-      const ticket = await apiRequest("/plant-operator/tickets", { method: "POST", body: ticketForm });
-      setNotice(`Ticket ${ticket.ticket_number} created — now waiting on QC Engineer.`);
-      setTicketForm({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "" });
+      const result = await queuedRequest("/plant-operator/tickets", { method: "POST", body: ticketForm });
+      setPending(pendingCount());
+      if (result?.queued) {
+        setNotice("No signal right now — this delivery note is saved and will be created automatically once you're back online. Don't re-enter it.");
+      } else {
+        setNotice(`Ticket ${result.ticket_number} created — now waiting on QC Engineer.`);
+      }
+      setTicketForm({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "", idempotency_key: newIdempotencyKey() });
       load();
     } catch (err) {
       setError(err.message);
@@ -65,6 +82,17 @@ export default function PlantOperator() {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+        {pending > 0 && (
+          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+            {pending} delivery note(s) waiting to sync
+            <button
+              style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+              onClick={async () => { await flushQueue(); setPending(pendingCount()); load(); }}
+            >
+              Sync now
+            </button>
+          </div>
+        )}
 
         {orders.filter((o) => o.site_ready_confirmed_at && !o.first_ticket_created_at).map((o) => (
           <div key={o.id} style={{ marginBottom: 12 }}>

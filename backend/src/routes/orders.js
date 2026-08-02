@@ -269,6 +269,7 @@ router.get("/on-duty-drivers", requireRole("manager", "administrator"), async (r
      ) dt ON true
      LEFT JOIN trucks t ON t.id = dt.truck_id
      WHERE d.is_on = true
+       AND gp.recorded_at IS NOT NULL AND gp.recorded_at > now() - INTERVAL '12 hours'
      ORDER BY d.driver_id, d.event_time DESC`
   );
   res.json(rows);

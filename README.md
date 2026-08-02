@@ -1550,3 +1550,42 @@ anything is written.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Fifty-second round
+
+1. **Site Ready column now shows "–" once an order is completed/closed/cancelled** —
+   was still showing a stale "Not confirmed" badge on finished orders even though
+   readiness is irrelevant by that point.
+2. **Plant Operator's "missing tickets" — real bug found, not misleading.** Ticket
+   creation had zero offline-queue protection (Driver's and Site Supervisor's screens
+   already had this fixed rounds ago; Plant Operator's never got the same treatment). A
+   lost connection during submission — very plausible near a plant with patchy signal —
+   could fail with the delivery note simply never created, and nothing to retry it
+   automatically. Fixed properly: ticket creation now goes through the same offline
+   queue, made safe against duplicates with a client-generated idempotency key (a
+   retried/queued submission resolves to the same ticket instead of creating a second
+   one), plus a visible pending-sync count and manual "Sync now" button so it's never
+   silent.
+3. **On-duty drivers with no location update in over 12 hours no longer show** — a
+   dead phone or a killed app without properly clocking off was leaving drivers stuck
+   showing as perpetually on duty.
+4. **Pump charge with a zero rate — confirmed correct, no change needed.** Verified in
+   both the invoice-generation code and the recalculation tool: a zero/unset pumping
+   charge always computes to exactly ₹0, never a fallback or default value.
+5. **Sales Executive duty login + location tracking** — a parallel system to Driver's
+   (separate tables, no risk to the existing driver tracking). Toggle on/off duty from
+   the Sales Executive's own screen; while on, location pings every 5 minutes (field
+   visits, not a moving vehicle, so less frequent than a driver's 30-second interval).
+   Manager Dashboard gets a new **"On-duty Sales Executives"** card, same pattern as
+   On-Duty Drivers, with the same 12-hour staleness rule from item 3.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds the idempotency key on delivery
+tickets, and the new `sales_duty_log`/`sales_gps_pings` tables.
+
+### A note on this session
+Partway through this round, my working directory was reset by the environment — I
+caught it immediately (a routine `cd` failed) and recovered by re-extracting the last
+package I'd delivered (`oorm-app_64.zip`) from the outputs folder, which had persisted
+independently. Verified it matched exactly where round 51 left off before continuing,
+so nothing from earlier rounds was lost or silently redone.

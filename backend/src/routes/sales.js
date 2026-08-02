@@ -638,4 +638,62 @@ router.get("/forecasts/summary", requireRole("manager", "administrator"), async 
   res.json(rows);
 });
 
+// ===================== DUTY LOGIN & LOCATION TRACKING =====================
+// Parallel to the Driver duty/GPS system — a Sales Executive's day out in the
+// field, tracked the same way (toggle on/off, periodic pings while on).
+
+router.get("/duty-status", requireRole("sales_executive"), async (req, res) => {
+  const { rows } = await query(
+    "SELECT is_on FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
+    [req.user.id]
+  );
+  res.json({ on_duty: rows[0]?.is_on || false });
+});
+
+router.post("/duty", requireRole("sales_executive"), async (req, res) => {
+  const { on, lat, lng } = req.body;
+  await query(
+    "INSERT INTO sales_duty_log (salesperson_user_id, is_on, latitude, longitude) VALUES ($1, $2, $3, $4)",
+    [req.user.id, !!on, lat || null, lng || null]
+  );
+  res.json({ ok: true });
+});
+
+router.post("/gps-ping", requireRole("sales_executive"), async (req, res) => {
+  const { latitude, longitude, accuracy_m } = req.body;
+  if (latitude === undefined || longitude === undefined) {
+    return res.status(400).json({ error: "Latitude and longitude are required." });
+  }
+  await query(
+    "INSERT INTO sales_gps_pings (salesperson_user_id, latitude, longitude, accuracy_m) VALUES ($1, $2, $3, $4)",
+    [req.user.id, latitude, longitude, accuracy_m || null]
+  );
+  res.json({ ok: true });
+});
+
+// Manager/Administrator view of who's currently out in the field — same
+// >12-hour staleness rule as On-Duty Drivers, so a phone that died or an app
+// that got killed without properly clocking off doesn't show as perpetually
+// "on duty."
+router.get("/on-duty", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT DISTINCT ON (d.salesperson_user_id)
+            d.salesperson_user_id, u.name AS salesperson_name, d.event_time AS duty_since,
+            gp.latitude, gp.longitude, gp.recorded_at
+     FROM (
+       SELECT DISTINCT ON (salesperson_user_id) salesperson_user_id, is_on, event_time
+       FROM sales_duty_log ORDER BY salesperson_user_id, event_time DESC
+     ) d
+     JOIN users u ON u.id = d.salesperson_user_id
+     LEFT JOIN LATERAL (
+       SELECT latitude, longitude, recorded_at FROM sales_gps_pings
+       WHERE salesperson_user_id = d.salesperson_user_id ORDER BY recorded_at DESC LIMIT 1
+     ) gp ON true
+     WHERE d.is_on = true
+       AND gp.recorded_at IS NOT NULL AND gp.recorded_at > now() - INTERVAL '12 hours'
+     ORDER BY d.salesperson_user_id, d.event_time DESC`
+  );
+  res.json(rows);
+});
+
 export default router;

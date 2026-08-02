@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -61,6 +62,10 @@ export default function SalesExecutive() {
   const [visits, setVisits] = useState([]);
   const [forecasts, setForecasts] = useState([]);
   const [error, setError] = useState("");
+  const [onDuty, setOnDuty] = useState(false);
+  const [pending, setPending] = useState(pendingCount());
+  const gpsIntervalRef = useRef(null);
+  const wakeLockRef = useRef("off");
 
   async function loadAll() {
     try {
@@ -77,7 +82,58 @@ export default function SalesExecutive() {
       setError(err.message);
     }
   }
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => {
+    loadAll();
+    apiRequest("/sales/duty-status").then((status) => {
+      setOnDuty(status.on_duty);
+      if (status.on_duty) { startGpsPings(); requestWakeLock(); }
+    }).catch(() => {});
+    // Same fix as Driver's/Site Supervisor's/Plant Operator's screens:
+    // catches actions queued at a low-signal moment that would otherwise sit
+    // unsent until the app happens to see an offline→online transition.
+    const flushInterval = startPeriodicFlush();
+    return () => { clearInterval(flushInterval); clearInterval(gpsIntervalRef.current); };
+  }, []);
+
+  function pingOnce() {
+    navigator.geolocation?.getCurrentPosition((pos) => {
+      queuedRequest("/sales/gps-ping", {
+        method: "POST",
+        body: { latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy_m: pos.coords.accuracy },
+      }).then(() => setPending(pendingCount()));
+    });
+  }
+
+  function startGpsPings() {
+    clearInterval(gpsIntervalRef.current);
+    pingOnce();
+    gpsIntervalRef.current = setInterval(pingOnce, 5 * 60 * 1000); // every 5 min — field visits, not a moving vehicle
+  }
+
+  async function requestWakeLock() {
+    wakeLockRef.current = "on";
+    try {
+      await navigator.wakeLock?.request("screen");
+    } catch {
+      // Not supported, or permission denied — tracking still works while the
+      // app is open and in the foreground.
+    }
+  }
+
+  async function toggleDuty() {
+    const next = !onDuty;
+    setOnDuty(next);
+    if (next) { startGpsPings(); requestWakeLock(); }
+    else { clearInterval(gpsIntervalRef.current); wakeLockRef.current = "off"; }
+
+    navigator.geolocation?.getCurrentPosition(async (pos) => {
+      await queuedRequest("/sales/duty", { method: "POST", body: { on: next, lat: pos.coords.latitude, lng: pos.coords.longitude } });
+      setPending(pendingCount());
+    }, async () => {
+      await queuedRequest("/sales/duty", { method: "POST", body: { on: next } });
+      setPending(pendingCount());
+    });
+  }
 
   if (view === "lead-detail" && selectedLeadId) {
     return (
@@ -105,6 +161,30 @@ export default function SalesExecutive() {
       <TopBar title="Sales Executive" />
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+        <button
+          onClick={toggleDuty}
+          className={onDuty ? "btn-danger" : "btn-primary"}
+          style={{ width: "100%", marginBottom: 8, padding: 12, fontSize: 14, fontWeight: 600 }}
+        >
+          {onDuty ? "On duty — tap to clock off" : "Off duty — tap to clock in"}
+        </button>
+        {onDuty && (
+          <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center", marginBottom: 12 }}>
+            Your location is shared with Manager while on duty, checked every 5 minutes.
+          </div>
+        )}
+        {pending > 0 && (
+          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+            {pending} action(s) waiting to sync
+            <button
+              style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+              onClick={async () => { await flushQueue(); setPending(pendingCount()); }}
+            >
+              Sync now
+            </button>
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           {[["dashboard", "Dashboard"], ["leads", "My leads"], ["bookings", "Bookings"], ["visits", "Visits"], ["feedback", "Feedback"]].map(([key, label]) => (

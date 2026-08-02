@@ -40,9 +40,22 @@ router.get("/available-orders", async (req, res) => {
 
 // Create a delivery ticket against an order
 router.post("/tickets", requireRole("plant_operator", "administrator"), async (req, res) => {
-  const { order_id, loaded_quantity_m3, truck_id, driver_id } = req.body;
+  const { order_id, loaded_quantity_m3, truck_id, driver_id, idempotency_key } = req.body;
   if (!order_id || !loaded_quantity_m3 || !truck_id || !driver_id) {
     return res.status(400).json({ error: "Order, quantity, truck, and driver are all required." });
+  }
+
+  // A queued submission from a weak-signal moment might get retried more
+  // than once (by the offline queue's own retry, and possibly by the
+  // operator resubmitting not realizing the first attempt is queued). If
+  // this exact submission already went through, return that same ticket
+  // instead of creating a second one.
+  if (idempotency_key) {
+    const { rows: existing } = await query(
+      "SELECT * FROM delivery_tickets WHERE idempotency_key = $1",
+      [idempotency_key]
+    );
+    if (existing.length) return res.status(201).json(existing[0]);
   }
 
   // No batching until the assigned Site Supervisor confirms the site is
@@ -72,9 +85,9 @@ router.post("/tickets", requireRole("plant_operator", "administrator"), async (r
       const ticketNumber = `DT-${Number(maxRows[0].max_num) + 1}`;
 
       const { rows } = await query(
-        `INSERT INTO delivery_tickets (ticket_number, order_id, loaded_quantity_m3, truck_id, driver_id, plant_operator_id)
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-        [ticketNumber, order_id, loaded_quantity_m3, truck_id, driver_id, req.user.id]
+        `INSERT INTO delivery_tickets (ticket_number, order_id, loaded_quantity_m3, truck_id, driver_id, plant_operator_id, idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [ticketNumber, order_id, loaded_quantity_m3, truck_id, driver_id, req.user.id, idempotency_key || null]
       );
       await logEvent(rows[0].id, "created", req.user.id);
 

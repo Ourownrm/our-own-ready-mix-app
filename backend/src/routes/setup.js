@@ -476,6 +476,35 @@ router.get("/setup", async (req, res) => {
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS sales_forecasts_site_id_uidx ON sales_forecasts(site_id);`);
     log.push("Schema migration applied (sales forecasting now keyed on site/project, not individual order — the actual fix for it showing no running projects).");
 
+    // Plant Operator's ticket creation now has offline-queue protection like
+    // Driver's and Site Supervisor's screens — this key is what makes a
+    // queued/retried submission safe (resolves to the same ticket instead of
+    // creating a duplicate).
+    await pool.query(`ALTER TABLE delivery_tickets ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64) UNIQUE;`);
+    log.push("Schema migration applied (delivery tickets can now be safely created via a queued/retried offline submission).");
+
+    // Sales Executive duty/location tracking — parallel to the driver system.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sales_duty_log (
+        id SERIAL PRIMARY KEY,
+        salesperson_user_id INTEGER REFERENCES users(id) NOT NULL,
+        is_on BOOLEAN NOT NULL,
+        event_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+        latitude NUMERIC(10,7),
+        longitude NUMERIC(10,7)
+      );
+      CREATE TABLE IF NOT EXISTS sales_gps_pings (
+        id SERIAL PRIMARY KEY,
+        salesperson_user_id INTEGER REFERENCES users(id) NOT NULL,
+        latitude NUMERIC(10,7) NOT NULL,
+        longitude NUMERIC(10,7) NOT NULL,
+        accuracy_m NUMERIC(6,2),
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_sales_gps_pings_sp_time ON sales_gps_pings(salesperson_user_id, recorded_at);
+    `);
+    log.push("Schema migration applied (Sales Executive duty login and location tracking).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
