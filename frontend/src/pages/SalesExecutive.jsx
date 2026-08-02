@@ -63,6 +63,7 @@ export default function SalesExecutive() {
   const [forecasts, setForecasts] = useState([]);
   const [error, setError] = useState("");
   const [onDuty, setOnDuty] = useState(false);
+  const [dutyStatus, setDutyStatus] = useState(null);
   const [pending, setPending] = useState(pendingCount());
   const gpsIntervalRef = useRef(null);
   const wakeLockRef = useRef("off");
@@ -82,12 +83,22 @@ export default function SalesExecutive() {
       setError(err.message);
     }
   }
+  async function loadDutyStatus() {
+    try {
+      const status = await apiRequest("/sales/duty-status");
+      setOnDuty(status.on_duty);
+      setDutyStatus(status);
+      return status;
+    } catch {
+      return null;
+    }
+  }
+
   useEffect(() => {
     loadAll();
-    apiRequest("/sales/duty-status").then((status) => {
-      setOnDuty(status.on_duty);
-      if (status.on_duty) { startGpsPings(); requestWakeLock(); }
-    }).catch(() => {});
+    loadDutyStatus().then((status) => {
+      if (status?.on_duty) { startGpsPings(); requestWakeLock(); }
+    });
     // Same fix as Driver's/Site Supervisor's/Plant Operator's screens:
     // catches actions queued at a low-signal moment that would otherwise sit
     // unsent until the app happens to see an offline→online transition.
@@ -129,9 +140,11 @@ export default function SalesExecutive() {
     navigator.geolocation?.getCurrentPosition(async (pos) => {
       await queuedRequest("/sales/duty", { method: "POST", body: { on: next, lat: pos.coords.latitude, lng: pos.coords.longitude } });
       setPending(pendingCount());
+      loadDutyStatus();
     }, async () => {
       await queuedRequest("/sales/duty", { method: "POST", body: { on: next } });
       setPending(pendingCount());
+      loadDutyStatus();
     });
   }
 
@@ -169,9 +182,20 @@ export default function SalesExecutive() {
         >
           {onDuty ? "On duty — tap to clock off" : "Off duty — tap to clock in"}
         </button>
-        {onDuty && (
-          <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center", marginBottom: 12 }}>
-            Your location is shared with Manager while on duty, checked every 5 minutes.
+        {dutyStatus?.since && (
+          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>
+            {onDuty ? "On duty since " : "Off duty since "}
+            {new Date(dutyStatus.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </div>
+        )}
+        {dutyStatus?.today?.length > 0 && (
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", fontSize: 11, marginBottom: 12 }}>
+            {dutyStatus.today.map((e, i) => (
+              <span key={i} style={{ color: e.is_on ? "var(--signal-green)" : "var(--slate)" }}>
+                {e.is_on ? "In " : "Out "}
+                {new Date(e.event_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            ))}
           </div>
         )}
         {pending > 0 && (
@@ -199,30 +223,36 @@ export default function SalesExecutive() {
           <Link to="/sales-forecast"><button className="btn-tab">Forecast</button></Link>
         </div>
 
-        {view === "dashboard" && <Dashboard data={dashboard} forecasts={forecasts} />}
+        {view === "dashboard" && <Dashboard data={dashboard} forecasts={forecasts} onDuty={onDuty} />}
         {view === "leads" && (
-          <LeadsList leads={leads} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
+          <LeadsList leads={leads} onDuty={onDuty} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
         )}
         {view === "bookings" && (
-          <BookingsList bookings={bookings} onNew={() => setView("new-booking")} />
+          <BookingsList bookings={bookings} onDuty={onDuty} onNew={() => setView("new-booking")} />
         )}
         {view === "visits" && (
-          <VisitsList visits={visits} onNew={() => setView("new-visit")} />
+          <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
         )}
         {view === "feedback" && (
-          <FeedbackList feedback={feedback} onNew={() => setView("new-feedback")} />
+          <FeedbackList feedback={feedback} onDuty={onDuty} onNew={() => setView("new-feedback")} />
         )}
       </div>
     </>
   );
 }
 
-function Dashboard({ data, forecasts }) {
+function Dashboard({ data, forecasts, onDuty }) {
   if (!data) return <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>;
   const leadCounts = data.lead_counts || {};
   const expiredCount = (forecasts || []).filter((f) => f.is_expired).length;
   return (
     <>
+      {!onDuty && (
+        <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>
+          <div style={{ fontSize: 12, color: "var(--slate)" }}>Clock in above to add leads, bookings, visits, feedback, or forecasts.</div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
         <Kpi label="My customers" value={data.customers.length} />
         <Kpi label="Orders this month" value={`${data.orders_month_qty} m³`} />
@@ -282,12 +312,12 @@ function Dashboard({ data, forecasts }) {
   );
 }
 
-function LeadsList({ leads, onOpen, onNew }) {
+function LeadsList({ leads, onOpen, onNew, onDuty }) {
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>My leads</div>
-        <button onClick={onNew} style={{ fontSize: 12, padding: "5px 10px" }}>+ New lead</button>
+        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ New lead</button>
       </div>
       {leads.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No leads yet.</div>
@@ -538,12 +568,12 @@ function LeadDetail({ leadId, onBack }) {
   );
 }
 
-function BookingsList({ bookings, onNew }) {
+function BookingsList({ bookings, onNew, onDuty }) {
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>My bookings</div>
-        <button onClick={onNew} style={{ fontSize: 12, padding: "5px 10px" }}>+ New booking</button>
+        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ New booking</button>
       </div>
       {bookings.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No bookings placed yet.</div>
@@ -676,12 +706,12 @@ function NewBookingForm({ onDone, onCancel }) {
 
 const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
 
-function VisitsList({ visits, onNew }) {
+function VisitsList({ visits, onNew, onDuty }) {
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>Visits</div>
-        <button onClick={onNew} style={{ fontSize: 12, padding: "5px 10px" }}>+ Report visit</button>
+        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ Report visit</button>
       </div>
       {visits.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No visits reported yet.</div>
@@ -795,12 +825,12 @@ function NewVisitForm({ onDone, onCancel }) {
   );
 }
 
-function FeedbackList({ feedback, onNew }) {
+function FeedbackList({ feedback, onNew, onDuty }) {
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>After-sales feedback</div>
-        <button onClick={onNew} style={{ fontSize: 12, padding: "5px 10px" }}>+ New feedback</button>
+        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ New feedback</button>
       </div>
       {feedback.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>None recorded yet.</div>

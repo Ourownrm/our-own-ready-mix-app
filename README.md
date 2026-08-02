@@ -1589,3 +1589,34 @@ caught it immediately (a routine `cd` failed) and recovered by re-extracting the
 package I'd delivered (`oorm-app_64.zip`) from the outputs folder, which had persisted
 independently. Verified it matched exactly where round 51 left off before continuing,
 so nothing from earlier rounds was lost or silently redone.
+
+## Fifty-third round
+
+1. **Removed the location-sharing disclosure line** from the Sales Executive's duty
+   toggle.
+2. **On-duty Sales Executives moved from Manager Dashboard to Administrator's
+   dashboard** (`/reports`, already restricted to administrators only) — removed
+   entirely from Manager's screen, not just duplicated.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Fifty-fourth round — attendance-style duty gating for Sales Executive
+
+**Duty gate, enforced server-side (not just hidden in the UI)**: a Sales Executive
+can't add a lead, log a follow-up, place a booking, log a visit, record feedback, or
+save a forecast until they're actually clocked in. Manager/Administrator acting on a
+lead aren't subject to this — the gate only applies when the Sales Executive is the
+one doing it themselves.
+
+**Attendance-style punch display**: below the duty toggle, shows "On duty since
+HH:MM" while clocked in, and the full day's punch-in/punch-out history as a compact
+list — same idea as a physical attendance register, not just a bare on/off switch.
+
+**Clear, visible off-duty messaging** — not just a disabled-button tooltip (easy to
+miss on mobile): a banner on the Dashboard and on the Forecast page explains plainly
+that clocking in is needed before adding anything.
+
+### Migration note
+No schema changes — reuses the existing `sales_duty_log` table from last round.
+Nothing new to apply via `/setup`.

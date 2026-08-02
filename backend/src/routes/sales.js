@@ -6,6 +6,24 @@ import { pushToRole, pushToUser } from "../lib/push.js";
 const router = Router();
 router.use(requireAuth);
 
+// A Sales Executive can't log any field activity — a lead, a booking, a
+// visit, feedback, a forecast — until they're actually clocked in. Checked
+// server-side (not just hidden in the UI) so it can't be bypassed. Only
+// applies when the actor is the Sales Executive themselves; Manager/
+// Administrator acting on a lead aren't subject to duty tracking at all.
+async function requireOnDuty(req, res) {
+  if (req.user.role !== "sales_executive") return true;
+  const { rows } = await query(
+    "SELECT is_on FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
+    [req.user.id]
+  );
+  if (!rows[0]?.is_on) {
+    res.status(403).json({ error: "Clock in first — you need to be on duty to do this." });
+    return false;
+  }
+  return true;
+}
+
 // Resolves the salespersons.id linked to a logged-in Sales Executive's
 // account -- that's what customer_orders.sales_representative_id actually
 // points at, so every "my sales" query goes through this.
@@ -39,6 +57,7 @@ router.post("/leads", requireRole("manager", "administrator"), async (req, res) 
 // A Sales Executive adding their own lead, not one assigned by Admin/Manager —
 // auto-assigned and attributed to themselves.
 router.post("/leads/self", requireRole("sales_executive"), async (req, res) => {
+  if (!(await requireOnDuty(req, res))) return;
   const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, at_site, latitude, longitude } = req.body;
   if (!prospect_name) return res.status(400).json({ error: "Prospect name is required." });
   if (typeof at_site !== "boolean") {
@@ -88,6 +107,7 @@ router.get("/leads/:id", requireRole("sales_executive", "manager", "administrato
 const ACTIVITY_TYPES = ["note", "quotation_issued", "quotation_followup", "quotation_revised", "meeting", "site_visit"];
 
 router.post("/leads/:id/followup", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+  if (!(await requireOnDuty(req, res))) return;
   const {
     note, activity_type, quotation_amount, revision_reason, persons_met,
     at_site, latitude, longitude,
@@ -147,6 +167,7 @@ router.post("/leads/:id/won", requireRole("administrator"), async (req, res) => 
 // ===================== BOOKINGS =====================
 
 router.post("/bookings", requireRole("sales_executive"), async (req, res) => {
+  if (!(await requireOnDuty(req, res))) return;
   const { customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, notes, site_latitude, site_longitude } = req.body;
   if (!customer_id) return res.status(400).json({ error: "Select a customer." });
   const { rows } = await query(
@@ -257,6 +278,7 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
 // ===================== AFTER-SALES FEEDBACK =====================
 
 router.post("/feedback", requireRole("sales_executive"), async (req, res) => {
+  if (!(await requireOnDuty(req, res))) return;
   const { customer_id, order_id, feedback_type, comment } = req.body;
   if (!customer_id || !feedback_type || !comment) {
     return res.status(400).json({ error: "Customer, feedback type, and a comment are all required." });
@@ -294,6 +316,7 @@ router.get("/feedback", requireRole("sales_executive", "manager", "administrator
 const VISITOR_TYPES = ["customer", "client", "consultant", "site_engineer", "other"];
 
 router.post("/visits", requireRole("sales_executive"), async (req, res) => {
+  if (!(await requireOnDuty(req, res))) return;
   const { customer_id, visited_name, visitor_type, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude } = req.body;
   if (!visited_name || !visit_date || !discussion_outcome) {
     return res.status(400).json({ error: "Who you visited, the date, and the discussion outcome are all required." });
@@ -482,6 +505,7 @@ router.get("/my-running-projects", requireRole("sales_executive"), async (req, r
 // Upsert — one forecast per project. Saving (including editing an expired
 // one) re-anchors the window to right now via updated_at.
 router.post("/forecasts", requireRole("sales_executive"), async (req, res) => {
+  if (!(await requireOnDuty(req, res))) return;
   const { site_id, expected_qty_m3, period_days, confidence, notes } = req.body;
   if (!site_id || !expected_qty_m3 || !period_days || !confidence) {
     return res.status(400).json({ error: "Project, expected quantity, period, and confidence are all required." });
@@ -644,10 +668,20 @@ router.get("/forecasts/summary", requireRole("manager", "administrator"), async 
 
 router.get("/duty-status", requireRole("sales_executive"), async (req, res) => {
   const { rows } = await query(
-    "SELECT is_on FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
+    "SELECT is_on, event_time FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
     [req.user.id]
   );
-  res.json({ on_duty: rows[0]?.is_on || false });
+  const { rows: today } = await query(
+    `SELECT is_on, event_time FROM sales_duty_log
+     WHERE salesperson_user_id = $1 AND event_time::date = CURRENT_DATE
+     ORDER BY event_time`,
+    [req.user.id]
+  );
+  res.json({
+    on_duty: rows[0]?.is_on || false,
+    since: rows[0]?.event_time || null,
+    today,
+  });
 });
 
 router.post("/duty", requireRole("sales_executive"), async (req, res) => {

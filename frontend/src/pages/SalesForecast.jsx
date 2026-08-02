@@ -21,16 +21,18 @@ export default function SalesForecast() {
   const [assigningOrderId, setAssigningOrderId] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [onDuty, setOnDuty] = useState(false);
 
   async function load() {
     try {
       if (isSalesExec) {
-        const [f, ro, pr] = await Promise.all([
+        const [f, ro, pr, duty] = await Promise.all([
           apiRequest("/sales/forecasts"),
           apiRequest("/sales/my-running-projects"),
           apiRequest("/sales/forecast-update-requests"),
+          apiRequest("/sales/duty-status"),
         ]);
-        setForecasts(f); setRunningOrders(ro); setPendingRequests(pr);
+        setForecasts(f); setRunningOrders(ro); setPendingRequests(pr); setOnDuty(duty.on_duty);
       } else {
         const [proj, sum, sp] = await Promise.all([
           apiRequest("/sales/running-projects-with-forecast-status"),
@@ -101,7 +103,16 @@ export default function SalesForecast() {
 
         {isSalesExec && (
           <>
-            <button onClick={() => { setEditingForecast(null); setShowForm(!showForm); }} style={{ marginBottom: 16 }}>
+            {!onDuty && (
+              <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)", fontSize: 12 }}>
+                Clock in from your Dashboard to add or update a forecast.
+              </div>
+            )}
+            <button
+              onClick={() => { setEditingForecast(null); setShowForm(!showForm); }}
+              disabled={!onDuty}
+              style={{ marginBottom: 16 }}
+            >
               {showForm ? "Hide" : "+ Add new forecast"}
             </button>
             {showForm && (

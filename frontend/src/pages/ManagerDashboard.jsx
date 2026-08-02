@@ -22,7 +22,6 @@ export default function ManagerDashboard() {
   const [completedTrips, setCompletedTrips] = useState([]);
   const [liveLocations, setLiveLocations] = useState([]);
   const [onDutyDrivers, setOnDutyDrivers] = useState([]);
-  const [onDutySales, setOnDutySales] = useState([]);
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
@@ -31,14 +30,13 @@ export default function ManagerDashboard() {
 
   async function load() {
     try {
-      const [dashboard, orderList, trucks, trips, locations, drivers, salesOnDuty] = await Promise.all([
+      const [dashboard, orderList, trucks, trips, locations, drivers] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
         apiRequest("/orders/active-trucks"),
         apiRequest("/orders/completed-trips"),
         apiRequest("/orders/live-locations"),
         apiRequest("/orders/on-duty-drivers"),
-        apiRequest("/sales/on-duty"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
@@ -46,7 +44,6 @@ export default function ManagerDashboard() {
       setCompletedTrips(trips);
       setLiveLocations(locations);
       setOnDutyDrivers(drivers);
-      setOnDutySales(salesOnDuty);
     } catch (err) {
       setError(err.message);
     }
@@ -236,7 +233,6 @@ export default function ManagerDashboard() {
         <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
-        <OnDutySalesTable salespeople={onDutySales} />
         <RawMaterialStockCard />
         <ComplianceAlertsCard />
       </div>
@@ -279,42 +275,6 @@ function OnDutyDriversTable({ drivers }) {
                     {d.latitude ? (
                       <a href={`https://maps.google.com/?q=${d.latitude},${d.longitude}`} target="_blank" rel="noreferrer">
                         View location ({minutesAgo(d.recorded_at)})
-                      </a>
-                    ) : (
-                      <span style={{ color: "var(--slate)" }}>No GPS yet</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OnDutySalesTable({ salespeople }) {
-  return (
-    <div className="card" style={{ marginBottom: 20 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>On-duty Sales Executives</div>
-      {salespeople.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>No Sales Executives currently on duty.</div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table>
-            <thead>
-              <tr><th>Sales Executive</th><th>On duty since</th><th>Last location</th></tr>
-            </thead>
-            <tbody>
-              {salespeople.map((s) => (
-                <tr key={s.salesperson_user_id}>
-                  <td>{s.salesperson_name}</td>
-                  <td>{formatTime(s.duty_since)}</td>
-                  <td>
-                    {s.latitude ? (
-                      <a href={`https://maps.google.com/?q=${s.latitude},${s.longitude}`} target="_blank" rel="noreferrer">
-                        View location ({minutesAgo(s.recorded_at)})
                       </a>
                     ) : (
                       <span style={{ color: "var(--slate)" }}>No GPS yet</span>

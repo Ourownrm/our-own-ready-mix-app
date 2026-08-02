@@ -9,13 +9,19 @@ import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 
 export default function Reports() {
   const [data, setData] = useState(null);
+  const [onDutySales, setOnDutySales] = useState([]);
   const [error, setError] = useState("");
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const { user } = useAuth();
 
   async function load() {
     try {
-      setData(await apiRequest("/reports/director-dashboard"));
+      const [d, s] = await Promise.all([
+        apiRequest("/reports/director-dashboard"),
+        apiRequest("/sales/on-duty"),
+      ]);
+      setData(d);
+      setOnDutySales(s);
     } catch (err) {
       setError(err.message);
     }
@@ -125,6 +131,9 @@ export default function Reports() {
 
             {/* 6. Raw material stock */}
             <RawMaterialStockCard />
+
+            {/* On-duty Sales Executives */}
+            <OnDutySalesTable salespeople={onDutySales} />
 
             {data.unbilled_deliveries_month && data.unbilled_deliveries_month.length > 0 && (
               <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--alert-red)", background: "var(--alert-red-bg, #FBEAEA)" }}>
@@ -262,4 +271,49 @@ function formatDate(d) {
 function inr(value) {
   const n = Number(value || 0);
   return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+}
+
+function minutesAgo(isoTime) {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(isoTime).getTime()) / 60000));
+  return mins < 1 ? "just now" : `${mins} min ago`;
+}
+function formatTime(isoTime) {
+  if (!isoTime) return "–";
+  return new Date(isoTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function OnDutySalesTable({ salespeople }) {
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>On-duty Sales Executives</div>
+      {salespeople.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No Sales Executives currently on duty.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr><th>Sales Executive</th><th>On duty since</th><th>Last location</th></tr>
+            </thead>
+            <tbody>
+              {salespeople.map((s) => (
+                <tr key={s.salesperson_user_id}>
+                  <td>{s.salesperson_name}</td>
+                  <td>{formatTime(s.duty_since)}</td>
+                  <td>
+                    {s.latitude ? (
+                      <a href={`https://maps.google.com/?q=${s.latitude},${s.longitude}`} target="_blank" rel="noreferrer">
+                        View location ({minutesAgo(s.recorded_at)})
+                      </a>
+                    ) : (
+                      <span style={{ color: "var(--slate)" }}>No GPS yet</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
