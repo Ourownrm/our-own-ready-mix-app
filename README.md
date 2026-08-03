@@ -1648,3 +1648,40 @@ Updated everywhere a rate gets read or matched:
 ### Migration note
 Revisit `/setup?key=...` once after deploying — adds `site_id` to `rate_master`
 (nullable, so nothing existing breaks).
+
+## Fifty-sixth round — a real, serious bug found from your evidence
+
+Your two pieces of evidence together proved it conclusively: dozens of unrelated
+customers all showing the identical ₹4500/₹1500/₹500 M25 rate is not a coincidence.
+
+**Root cause**: `/setup`'s fresh-install check only ever gated the *table creation*
+step. The sample/seed data underneath it — including a placeholder M25 rate — sat
+completely unguarded and ran on **every single `/setup` call**, not just a genuinely
+fresh install. Every time `/setup` was revisited (which has happened after nearly every
+round in this build), it silently inserted a fake ₹4500/₹1500/₹500 M25 rate for any
+real customer that didn't yet have an M25 rate of their own. Real deliveries for those
+customers could then get invoiced at that made-up number instead of their actual
+agreed rate — this is a genuine billing-accuracy bug, not a cosmetic one.
+
+**Fixed two ways**:
+1. Moved the entire seed-data block (sample customer, sample pumps, the sample rate)
+   inside the fresh-install-only branch — it is now structurally impossible for this to
+   run against a database that already has real data, on any future `/setup` call.
+2. New **"Review sample rates"** button on the Rate history screen — finds every rate
+   still matching that exact fingerprint (₹4500 / ₹1500 pump / ₹500 waiting / M25 /
+   no specific site), shows a rough count of invoices that may have been priced using
+   that number, and lets you review and bulk-delete the ones that were never actually
+   correct for that customer. Nothing is deleted automatically.
+
+### What to do next
+1. Deploy this, then `/setup?key=...` once (safe now — the bug is what you're fixing).
+2. Go to Rate history → **Review sample rates** and check the list against your actual
+   knowledge of each customer's real rate. Delete the ones that are wrong.
+3. For any customer where deliveries were already invoiced at the fake rate, add their
+   correct rate, then use **"Recalculate deliveries"** on it (from a couple rounds back)
+   to fix the affected invoices — that tool already refuses to touch anything with a
+   payment already recorded against it, so it's safe to run.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup` beyond confirming the
+fix took effect.

@@ -300,6 +300,36 @@ router.post("/rates/:id/end", requireRole("administrator", "accountant", "manage
   res.json(rows[0]);
 });
 
+// Cleanup for a bug where /setup's sample-data seeding ran on every call
+// instead of only a fresh install — it silently inserted a ₹4500/₹1500/₹500
+// M25 rate for any real customer that didn't yet have an M25 rate of their
+// own. Finds rows matching that exact fingerprint (generic, no site) so they
+// can be reviewed and removed. Never runs automatically — this only lists
+// candidates for a human to check.
+router.get("/rates/review-seed-pollution", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name,
+            (SELECT COUNT(*) FROM invoices i
+             JOIN delivery_tickets dt ON dt.id = i.ticket_id
+             JOIN customer_orders co ON co.id = dt.order_id
+             WHERE co.customer_id = rm.customer_id AND co.mix_grade_id = rm.mix_grade_id
+               AND i.concrete_amount = dt.loaded_quantity_m3 * rm.rate_per_m3) AS possibly_affected_invoices
+     FROM rate_master rm
+     JOIN customers c ON c.id = rm.customer_id
+     JOIN mix_grades m ON m.id = rm.mix_grade_id
+     WHERE rm.site_id IS NULL AND rm.rate_per_m3 = 4500 AND rm.pumping_charge_lumpsum = 1500
+       AND rm.waiting_charge_per_hour = 500 AND m.name = 'M25'
+     ORDER BY c.name`
+  );
+  res.json(rows);
+});
+
+router.delete("/rates/:id", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+  const { rowCount } = await query("DELETE FROM rate_master WHERE id = $1", [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "Rate not found." });
+  res.json({ ok: true });
+});
+
 // ===== Master data: Pumps =====
 
 router.get("/pumps", requireRole("administrator"), async (req, res) => {

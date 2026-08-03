@@ -26,6 +26,48 @@ router.get("/setup", async (req, res) => {
       const schemaSql = fs.readFileSync(schemaPath, "utf8");
       await pool.query(schemaSql);
       log.push("Database tables created.");
+
+      // Seed/sample data — genuinely only for a brand new install. This used
+      // to run unconditionally on every /setup call (a real bug — see the
+      // note further below where it used to live), which is why it's
+      // deliberately placed here instead, inside the fresh-install-only
+      // branch.
+      await query(
+        `INSERT INTO customers (name)
+         SELECT * FROM (VALUES ('Skyline Builders'), ('Greenfield Infra')) AS v(name)
+         WHERE NOT EXISTS (SELECT 1 FROM customers)`
+      );
+      const { rows: custForSite } = await query("SELECT id FROM customers ORDER BY id LIMIT 1");
+      const { rows: catForSite } = await query("SELECT id FROM trip_allowance_categories WHERE amount = 150 LIMIT 1");
+      if (custForSite.length && catForSite.length) {
+        await query(
+          `INSERT INTO sites (customer_id, name, distance_from_plant_km, trip_allowance_category_id)
+           SELECT $1, 'Sector 12, Site A', 14, $2
+           WHERE NOT EXISTS (SELECT 1 FROM sites)`,
+          [custForSite[0].id, catForSite[0].id]
+        );
+      }
+      log.push("Sample customer and site added.");
+
+      await query(
+        `INSERT INTO pumps (pump_code, pump_type)
+         SELECT * FROM (VALUES ('Boom-1', 'boom_pump'::pump_type), ('Line-1', 'line_pump'::pump_type), ('Line-2', 'line_pump'::pump_type)) AS v(pump_code, pump_type)
+         WHERE NOT EXISTS (SELECT 1 FROM pumps WHERE pumps.pump_code = v.pump_code)`
+      );
+      log.push("Sample pumps added (Boom-1, Line-1, Line-2).");
+
+      const { rows: allCustomers } = await query("SELECT id FROM customers");
+      const { rows: gradeRows } = await query("SELECT id FROM mix_grades WHERE name = 'M25' LIMIT 1");
+      const { rows: siteForRate } = await query("SELECT id, customer_id FROM sites ORDER BY id LIMIT 1");
+      if (allCustomers.length && gradeRows.length && siteForRate.length) {
+        await query(
+          `INSERT INTO rate_master (customer_id, site_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from)
+           SELECT $1, $2, $3, 4500, 1500, 500, CURRENT_DATE
+           WHERE NOT EXISTS (SELECT 1 FROM rate_master WHERE customer_id = $1 AND mix_grade_id = $3)`,
+          [siteForRate[0].customer_id, siteForRate[0].id, gradeRows[0].id]
+        );
+        log.push("Sample M25 rate added for the sample site.");
+      }
     } else {
       log.push("Database tables already exist — skipped.");
     }
@@ -562,44 +604,16 @@ router.get("/setup", async (req, res) => {
     );
     log.push("Sample trip allowance categories and rejection reasons added.");
 
-    await query(
-      `INSERT INTO customers (name)
-       SELECT * FROM (VALUES ('Skyline Builders'), ('Greenfield Infra')) AS v(name)
-       WHERE NOT EXISTS (SELECT 1 FROM customers)`
-    );
-    const { rows: custForSite } = await query("SELECT id FROM customers ORDER BY id LIMIT 1");
-    const { rows: catForSite } = await query("SELECT id FROM trip_allowance_categories WHERE amount = 150 LIMIT 1");
-    if (custForSite.length && catForSite.length) {
-      await query(
-        `INSERT INTO sites (customer_id, name, distance_from_plant_km, trip_allowance_category_id)
-         SELECT $1, 'Sector 12, Site A', 14, $2
-         WHERE NOT EXISTS (SELECT 1 FROM sites)`,
-        [custForSite[0].id, catForSite[0].id]
-      );
-    }
-    log.push("Sample customer and site added.");
-
-    // Sample pumps, so the order form's pump dropdown has something to pick from
-    await query(
-      `INSERT INTO pumps (pump_code, pump_type)
-       SELECT * FROM (VALUES ('Boom-1', 'boom_pump'::pump_type), ('Line-1', 'line_pump'::pump_type), ('Line-2', 'line_pump'::pump_type)) AS v(pump_code, pump_type)
-       WHERE NOT EXISTS (SELECT 1 FROM pumps WHERE pumps.pump_code = v.pump_code)`
-    );
-    log.push("Sample pumps added (Boom-1, Line-1, Line-2).");
-
-    const { rows: allCustomers } = await query("SELECT id FROM customers");
-    const { rows: gradeRows } = await query("SELECT id FROM mix_grades WHERE name = 'M25' LIMIT 1");
-    if (allCustomers.length && gradeRows.length) {
-      for (const c of allCustomers) {
-        await query(
-          `INSERT INTO rate_master (customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from)
-           SELECT $1, $2, 4500, 1500, 500, CURRENT_DATE
-           WHERE NOT EXISTS (SELECT 1 FROM rate_master WHERE customer_id = $1 AND mix_grade_id = $2)`,
-          [c.id, gradeRows[0].id]
-        );
-      }
-      log.push("Sample M25 rate added for all existing customers (pumping charge now a lump sum, not per m³).");
-    }
+    // Seed/sample data (customer, site, pumps, a starter rate) has been
+    // moved to run only on a genuinely fresh install, right after the tables
+    // are first created — see above. It used to run unconditionally on every
+    // /setup call, which meant the sample M25 rate (₹4500/₹1500/₹500) kept
+    // silently getting inserted for any real customer that didn't yet have
+    // an M25 rate of their own, every single time /setup was hit. That's a
+    // real, serious bug — not a display issue — since deliveries would then
+    // get invoiced at that fake rate. See the cleanup tool
+    // (Administrator/Manager/Accountant → Rate history → "Review sample
+    // rates") for finding and removing rates that came from this.
 
     res.send(
       `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +

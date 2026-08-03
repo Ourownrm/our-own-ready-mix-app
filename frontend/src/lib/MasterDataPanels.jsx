@@ -324,6 +324,7 @@ export function RatesPanel({ setError }) {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [recalculatingRateId, setRecalculatingRateId] = useState(null);
+  const [showSeedReview, setShowSeedReview] = useState(false);
 
   async function load() {
     try {
@@ -359,7 +360,13 @@ export function RatesPanel({ setError }) {
 
   return (
     <div>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Rate history — every rate on file, past and current</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Rate history — every rate on file, past and current</div>
+        <button style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setShowSeedReview(true)}>Review sample rates</button>
+      </div>
+      {showSeedReview && (
+        <SeedRateReview setError={setError} onClose={() => setShowSeedReview(false)} onDone={(msg) => { setNotice(msg); setShowSeedReview(false); load(); }} />
+      )}
       <div className="card" style={{ marginBottom: 20 }}>
         {rates.length === 0 ? (
           <div style={{ fontSize: 13, color: "var(--slate)" }}>No rates entered yet.</div>
@@ -442,6 +449,88 @@ export function RatesPanel({ setError }) {
         </div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
       </form>
+    </div>
+  );
+}
+
+function SeedRateReview({ setError, onClose, onDone }) {
+  const [rows, setRows] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    apiRequest("/administrator/rates/review-seed-pollution")
+      .then((r) => { setRows(r); setSelected(new Set(r.map((x) => x.id))); })
+      .catch((err) => setError(err.message));
+  }, []);
+
+  function toggle(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function deleteSelected() {
+    if (selected.size === 0) return;
+    if (!window.confirm(`Delete ${selected.size} rate(s)? This can't be undone. If any deliveries were already invoiced using one of these, you'll need to add the correct rate and use "Recalculate deliveries" on it afterward.`)) return;
+    setDeleting(true); setError("");
+    try {
+      for (const id of selected) {
+        await apiRequest(`/administrator/rates/${id}`, { method: "DELETE" });
+      }
+      onDone(`Deleted ${selected.size} rate(s).`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 20, border: "2px solid var(--alert-red)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Review sample rates</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+        A bug in setup meant a placeholder M25 rate (₹4500/₹1500 pump/₹500 waiting) could get silently
+        added for any customer that didn't already have an M25 rate — this lists every rate matching
+        that exact pattern so you can check and remove the ones that aren't genuinely correct for that
+        customer. "Possibly affected invoices" is a rough count of invoices that were priced using this
+        exact number — worth checking those against the customer's real rate.
+      </div>
+
+      {rows === null ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>Checking...</div>
+      ) : rows.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>None found — nothing to review.</div>
+      ) : (
+        <>
+          <div style={{ overflowX: "auto", marginBottom: 12 }}>
+            <table style={{ fontSize: 12 }}>
+              <thead>
+                <tr><th></th><th>Customer</th><th>Effective from</th><th>Effective to</th><th>Possibly affected invoices</th></tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id}>
+                    <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                    <td>{r.customer_name}</td>
+                    <td>{new Date(r.effective_from).toLocaleDateString()}</td>
+                    <td>{r.effective_to ? new Date(r.effective_to).toLocaleDateString() : "Open-ended"}</td>
+                    <td>{Number(r.possibly_affected_invoices) > 0 ? <span style={{ color: "var(--alert-red)", fontWeight: 600 }}>{r.possibly_affected_invoices}</span> : "0"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-danger" onClick={deleteSelected} disabled={deleting || selected.size === 0}>
+              {deleting ? "Deleting..." : `Delete ${selected.size} selected`}
+            </button>
+            <button onClick={onClose}>Close</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
