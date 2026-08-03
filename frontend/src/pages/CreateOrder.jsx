@@ -50,11 +50,11 @@ export default function CreateOrder({ onDone }) {
   // Warns before the order is even placed, rather than only discovering the
   // gap after a delivery completes with no invoice generated.
   useEffect(() => {
-    if (!form.customer_id || !form.mix_grade_id) { setRateWarning(""); return; }
-    apiRequest(`/master/rate-check?customer_id=${form.customer_id}&mix_grade_id=${form.mix_grade_id}&date=${form.order_date}`)
-      .then((r) => setRateWarning(r.rate_exists ? "" : "No rate is on file for this customer and grade combination as of this order date — deliveries won't generate invoices until one is added (Administrator/Manager → Concrete grades and rates)."))
+    if (!form.customer_id || !form.mix_grade_id || !form.site_id) { setRateWarning(""); return; }
+    apiRequest(`/master/rate-check?customer_id=${form.customer_id}&mix_grade_id=${form.mix_grade_id}&site_id=${form.site_id}&date=${form.order_date}`)
+      .then((r) => setRateWarning(r.rate_exists ? "" : "No rate is on file for this customer, site, and grade combination as of this order date — deliveries won't generate invoices until one is added (Administrator/Manager → Concrete grades and rates)."))
       .catch(() => {}); // non-critical — don't block the form over a failed check
-  }, [form.customer_id, form.mix_grade_id, form.order_date]);
+  }, [form.customer_id, form.mix_grade_id, form.site_id, form.order_date]);
 
   function set(field, value) {
     setForm((f) => ({ ...f, [field]: value }));

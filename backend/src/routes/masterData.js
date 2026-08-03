@@ -24,18 +24,23 @@ router.get("/sites", async (req, res) => {
 // customer/grade before the order is placed, instead of only discovering the
 // gap after a delivery completes with no invoice.
 router.get("/rate-check", async (req, res) => {
-  const { customer_id, mix_grade_id, date } = req.query;
+  const { customer_id, mix_grade_id, site_id, date } = req.query;
   if (!customer_id || !mix_grade_id) {
     return res.status(400).json({ error: "customer_id and mix_grade_id are required." });
   }
   const { rows } = await query(
-    `SELECT rate_per_m3 FROM rate_master
+    `SELECT rate_per_m3, (site_id = $4::int) AS is_site_specific FROM rate_master
      WHERE customer_id = $1 AND mix_grade_id = $2
+       AND (site_id = $4::int OR site_id IS NULL)
        AND effective_from <= COALESCE($3::date, CURRENT_DATE) AND (effective_to IS NULL OR effective_to >= COALESCE($3::date, CURRENT_DATE))
-     ORDER BY effective_from DESC, id DESC LIMIT 1`,
-    [customer_id, mix_grade_id, date || null]
+     ORDER BY (site_id = $4::int) DESC, effective_from DESC, id DESC LIMIT 1`,
+    [customer_id, mix_grade_id, date || null, site_id || null]
   );
-  res.json({ rate_exists: rows.length > 0, rate_per_m3: rows[0]?.rate_per_m3 ?? null });
+  res.json({
+    rate_exists: rows.length > 0,
+    rate_per_m3: rows[0]?.rate_per_m3 ?? null,
+    is_site_specific: rows[0]?.is_site_specific ?? false,
+  });
 });
 
 router.get("/mix-grades", async (req, res) => {

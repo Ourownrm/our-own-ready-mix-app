@@ -108,9 +108,10 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
+       AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
        AND rm.effective_from <= co.order_date AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
      WHERE dt.id = $1
-     ORDER BY rm.effective_from DESC, rm.id DESC LIMIT 1`,
+     ORDER BY (rm.site_id = co.site_id) DESC, rm.effective_from DESC, rm.id DESC LIMIT 1`,
     [ticketId]
   );
   if (rateRows[0]) {

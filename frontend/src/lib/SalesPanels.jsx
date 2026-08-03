@@ -176,11 +176,11 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   }, []);
 
   useEffect(() => {
-    if (!form.mix_grade_id) { setRateWarning(""); return; }
-    apiRequest(`/master/rate-check?customer_id=${booking.customer_id}&mix_grade_id=${form.mix_grade_id}&date=${form.order_date}`)
-      .then((r) => setRateWarning(r.rate_exists ? "" : "No rate is on file for this customer and grade combination as of this order date — deliveries won't generate invoices until one is added."))
+    if (!form.mix_grade_id || !form.site_id) { setRateWarning(""); return; }
+    apiRequest(`/master/rate-check?customer_id=${booking.customer_id}&mix_grade_id=${form.mix_grade_id}&site_id=${form.site_id}&date=${form.order_date}`)
+      .then((r) => setRateWarning(r.rate_exists ? "" : "No rate is on file for this customer, site, and grade combination as of this order date — deliveries won't generate invoices until one is added."))
       .catch(() => {});
-  }, [form.mix_grade_id, form.order_date]);
+  }, [form.mix_grade_id, form.site_id, form.order_date]);
 
   const sitesForCustomer = sites.filter((s) => String(s.customer_id) === String(booking.customer_id));
 

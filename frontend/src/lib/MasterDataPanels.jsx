@@ -318,21 +318,24 @@ export function SitesPanel({ setError }) {
 export function RatesPanel({ setError }) {
   const [rates, setRates] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [sites, setSites] = useState([]);
   const [grades, setGrades] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", rate_per_m3: "", pumping_charge_lumpsum: "", waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10) });
+  const [form, setForm] = useState({ customer_id: "", site_id: "", mix_grade_id: "", rate_per_m3: "", pumping_charge_lumpsum: "", waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10) });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [recalculatingRateId, setRecalculatingRateId] = useState(null);
 
   async function load() {
     try {
-      const [r, c, g] = await Promise.all([
-        apiRequest("/administrator/rates"), apiRequest("/master/customers"), apiRequest("/master/mix-grades"),
+      const [r, c, s, g] = await Promise.all([
+        apiRequest("/administrator/rates"), apiRequest("/master/customers"), apiRequest("/master/sites"), apiRequest("/master/mix-grades"),
       ]);
-      setRates(r); setCustomers(c); setGrades(g);
+      setRates(r); setCustomers(c); setSites(s); setGrades(g);
     } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
+
+  const sitesForCustomer = form.customer_id ? sites.filter((s) => String(s.customer_id) === String(form.customer_id)) : [];
 
   async function submit(e) {
     e.preventDefault();
@@ -365,7 +368,7 @@ export function RatesPanel({ setError }) {
             <table style={{ fontSize: 13 }}>
               <thead>
                 <tr>
-                  <th>Customer</th><th>Grade</th><th>Rate/m³</th><th>Pump charge (one-time/order)</th>
+                  <th>Customer</th><th>Site/Project</th><th>Grade</th><th>Rate/m³</th><th>Pump charge (one-time/order)</th>
                   <th>Waiting/hr</th><th>Effective from</th><th>Effective to</th><th>Status</th><th></th>
                 </tr>
               </thead>
@@ -373,6 +376,7 @@ export function RatesPanel({ setError }) {
                 {rates.map((r) => (
                   <tr key={r.id} style={r.currently_active ? { fontWeight: 600 } : { color: "var(--slate)" }}>
                     <td>{r.customer_name}</td>
+                    <td>{r.site_name || <span style={{ fontStyle: "italic" }}>All sites</span>}</td>
                     <td>{r.mix_grade_name}</td>
                     <td>₹{r.rate_per_m3}</td>
                     <td>{r.pumping_charge_lumpsum > 0 ? `₹${r.pumping_charge_lumpsum}` : "–"}</td>
@@ -410,9 +414,16 @@ export function RatesPanel({ setError }) {
         {notice && <div style={{ gridColumn: "1 / -1", color: "var(--signal-green)" }}>{notice}</div>}
         <div>
           <div style={{ color: "var(--slate)" }}>Customer</div>
-          <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} required>
+          <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value, site_id: "" })} required>
             <option value="">Select</option>
             {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Site/Project</div>
+          <select value={form.site_id} onChange={(e) => setForm({ ...form, site_id: e.target.value })} required disabled={!form.customer_id}>
+            <option value="">{form.customer_id ? "Select" : "Select a customer first"}</option>
+            {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </div>
         <div>
@@ -489,7 +500,7 @@ function RecalculatePreview({ rateId, setError, onClose, onDone }) {
   return (
     <div className="card" style={{ marginBottom: 20, border: "2px solid var(--rebar)" }}>
       <div style={{ fontWeight: 600, marginBottom: 4 }}>
-        Recalculate — {data.rate.customer_name} · {data.rate.mix_grade_name} · ₹{data.rate.rate_per_m3}/m³
+        Recalculate — {data.rate.customer_name} · {data.rate.site_name || "All sites"} · {data.rate.mix_grade_name} · ₹{data.rate.rate_per_m3}/m³
       </div>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
         Effective {new Date(data.rate.effective_from).toLocaleDateString()}

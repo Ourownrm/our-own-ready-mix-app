@@ -505,6 +505,14 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (Sales Executive duty login and location tracking).");
 
+    // Rates now key on customer + site/project + grade, not just customer +
+    // grade — the same customer's different sites can genuinely need
+    // different rates (distance, mix specs, etc.). Existing rates keep their
+    // NULL site_id and continue working as a customer-wide fallback when no
+    // more specific site+grade rate exists.
+    await pool.query(`ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);`);
+    log.push("Schema migration applied (rates now key on customer + site/project + grade).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

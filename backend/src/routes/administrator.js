@@ -262,25 +262,26 @@ router.delete("/trucks/:id", requireRole("administrator"), async (req, res) => {
 // inconsistent rates happen in the first place).
 router.get("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
   const { rows } = await query(
-    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name,
+    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name, s.name AS site_name,
             (rm.effective_from <= CURRENT_DATE AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)) AS currently_active
      FROM rate_master rm
      JOIN customers c ON c.id = rm.customer_id
      JOIN mix_grades m ON m.id = rm.mix_grade_id
-     ORDER BY c.name, m.name, rm.effective_from DESC`
+     LEFT JOIN sites s ON s.id = rm.site_id
+     ORDER BY c.name, s.name, m.name, rm.effective_from DESC`
   );
   res.json(rows);
 });
 
 router.post("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
-  const { customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from } = req.body;
-  if (!customer_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
-    return res.status(400).json({ error: "Customer, mix grade, rate, and effective date are required." });
+  const { customer_id, site_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from } = req.body;
+  if (!customer_id || !site_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
+    return res.status(400).json({ error: "Customer, site/project, mix grade, rate, and effective date are all required." });
   }
   const { rows } = await query(
-    `INSERT INTO rate_master (customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [customer_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum || 0, waiting_charge_per_hour || 0, effective_from]
+    `INSERT INTO rate_master (customer_id, site_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [customer_id, site_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum || 0, waiting_charge_per_hour || 0, effective_from]
   );
   res.status(201).json(rows[0]);
 });

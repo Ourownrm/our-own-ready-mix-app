@@ -230,8 +230,11 @@ router.post("/payments", async (req, res) => {
 
 async function buildRecalculationPreview(rateId) {
   const { rows: rateRows } = await query(
-    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name
-     FROM rate_master rm JOIN customers c ON c.id = rm.customer_id JOIN mix_grades m ON m.id = rm.mix_grade_id
+    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name, s.name AS site_name
+     FROM rate_master rm
+     JOIN customers c ON c.id = rm.customer_id
+     JOIN mix_grades m ON m.id = rm.mix_grade_id
+     LEFT JOIN sites s ON s.id = rm.site_id
      WHERE rm.id = $1`,
     [rateId]
   );
@@ -247,10 +250,11 @@ async function buildRecalculationPreview(rateId) {
      JOIN customer_orders co ON co.id = dt.order_id
      LEFT JOIN invoices i ON i.ticket_id = dt.id
      WHERE co.customer_id = $1 AND co.mix_grade_id = $2
+       AND ($5::int IS NULL OR co.site_id = $5)
        AND dt.status = 'completed'
        AND dt.ticket_date >= $3 AND ($4::date IS NULL OR dt.ticket_date <= $4)
      ORDER BY dt.ticket_date, dt.id`,
-    [rate.customer_id, rate.mix_grade_id, rate.effective_from, rate.effective_to]
+    [rate.customer_id, rate.mix_grade_id, rate.effective_from, rate.effective_to, rate.site_id]
   );
 
   // An order that already has a pump charge on any of its existing invoices

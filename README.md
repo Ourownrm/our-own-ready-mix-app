@@ -1620,3 +1620,31 @@ that clocking in is needed before adding anything.
 ### Migration note
 No schema changes — reuses the existing `sales_duty_log` table from last round.
 Nothing new to apply via `/setup`.
+
+## Fifty-fifth round — rates now key on customer + site/project + grade
+
+Real gap: the same customer can have multiple sites/projects needing genuinely
+different rates for the same grade (distance, mix specs, site conditions). Rates were
+only ever keyed on customer + grade, with no way to differentiate by site at all.
+
+**New rates now require a site/project**, in addition to customer and grade — the "Add
+rate" form won't submit without one. **Existing rates keep working exactly as before**,
+as a customer-wide fallback: everywhere a rate gets looked up (invoice generation, the
+order-creation rate warning, the recalculation tool), a site-specific rate is now
+preferred when one exists, falling back to a generic customer+grade rate only if no
+site-specific one is on file. Nothing about your current invoicing breaks — this is
+additive, not a replacement.
+
+Updated everywhere a rate gets read or matched:
+- Invoice generation (the actual billing logic)
+- The "no rate on file" warning at order creation and booking conversion — now checks
+  the specific site, not just the customer
+- The Rate history table — shows which site/project each rate applies to ("All sites"
+  for a generic one)
+- The retroactive recalculation tool from a few rounds back — a site-specific rate only
+  recalculates that site's deliveries; a generic rate still recalculates across all of
+  a customer's sites
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds `site_id` to `rate_master`
+(nullable, so nothing existing breaks).

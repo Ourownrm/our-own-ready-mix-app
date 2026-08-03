@@ -304,6 +304,11 @@ CREATE TABLE push_subscriptions (
 CREATE TABLE rate_master (
   id SERIAL PRIMARY KEY,
   customer_id INTEGER REFERENCES customers(id),
+  -- Nullable on purpose: a rate with no site set applies to any of that
+  -- customer's sites as a fallback, when no more specific site+grade rate
+  -- exists. New rates should always specify a site — this stays nullable
+  -- only so a rate entered before site-level rates existed keeps working.
+  site_id INTEGER REFERENCES sites(id),
   mix_grade_id INTEGER REFERENCES mix_grades(id),
   rate_per_m3 NUMERIC(10,2) NOT NULL,
   pumping_charge_lumpsum NUMERIC(10,2) DEFAULT 0,  -- flat charge per delivery, not per m³
