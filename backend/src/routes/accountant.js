@@ -243,7 +243,7 @@ async function buildRecalculationPreview(rateId) {
 
   const { rows: tickets } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date, dt.loaded_quantity_m3, dt.order_id,
-            co.pump_requirement,
+            co.pump_charge_applicable, co.pump_charge_amount, co.part_load_applicable, co.part_load_charge_amount,
             i.id AS invoice_id, i.total_amount AS current_total_amount,
             COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
      FROM delivery_tickets dt
@@ -257,32 +257,35 @@ async function buildRecalculationPreview(rateId) {
     [rate.customer_id, rate.mix_grade_id, rate.effective_from, rate.effective_to, rate.site_id]
   );
 
-  // An order that already has a pump charge on any of its existing invoices
-  // (whether that ticket is part of this batch or not) shouldn't get charged
-  // again — the lump sum is once per order, not once per delivery.
-  const { rows: alreadyPumpCharged } = await query(
+  // Pump charge and part load are Manager's own confirmed decision on the
+  // order, not something this tool recalculates — it only corrects the
+  // concrete rate itself. Still only charged once per order regardless of
+  // which ticket ends up carrying it.
+  const { rows: alreadyCharged } = await query(
     `SELECT DISTINCT dt.order_id FROM delivery_tickets dt
      JOIN invoices i ON i.ticket_id = dt.id
-     WHERE dt.order_id = ANY($1) AND i.pumping_charge > 0`,
+     WHERE dt.order_id = ANY($1) AND (i.pumping_charge > 0 OR i.part_load_charge > 0)`,
     [[...new Set(tickets.map((t) => t.order_id))]]
   );
-  const pumpChargedOrders = new Set(alreadyPumpCharged.map((r) => r.order_id));
+  const chargedOrders = new Set(alreadyCharged.map((r) => r.order_id));
 
   const preview = tickets.map((t) => {
     const concreteAmount = Number(t.loaded_quantity_m3) * Number(rate.rate_per_m3);
     let pumpingCharge = 0;
-    if (t.pump_requirement !== "without_pump" && !pumpChargedOrders.has(t.order_id)) {
-      pumpingCharge = Number(rate.pumping_charge_lumpsum || 0);
-      pumpChargedOrders.add(t.order_id);
+    let partLoadCharge = 0;
+    if (!chargedOrders.has(t.order_id)) {
+      if (t.pump_charge_applicable) pumpingCharge = Number(t.pump_charge_amount || 0);
+      if (t.part_load_applicable) partLoadCharge = Number(t.part_load_charge_amount || 0);
+      if (pumpingCharge > 0 || partLoadCharge > 0) chargedOrders.add(t.order_id);
     }
-    const newTotal = concreteAmount + pumpingCharge;
+    const newTotal = concreteAmount + pumpingCharge + partLoadCharge;
     const hasPayments = Number(t.payment_count) > 0;
     const currentTotal = t.current_total_amount !== null ? Number(t.current_total_amount) : null;
     const changed = currentTotal === null || Math.abs(currentTotal - newTotal) > 0.01;
     return {
       ticket_id: t.ticket_id, ticket_number: t.ticket_number, ticket_date: t.ticket_date,
       qty: t.loaded_quantity_m3, current_amount: currentTotal, new_concrete_amount: concreteAmount,
-      new_pumping_charge: pumpingCharge, new_total_amount: newTotal,
+      new_pumping_charge: pumpingCharge, new_part_load_charge: partLoadCharge, new_total_amount: newTotal,
       action: !t.invoice_id ? "create" : (changed ? "update" : "unchanged"),
       blocked: hasPayments && changed,
     };
@@ -310,17 +313,17 @@ router.post("/rates/:rateId/recalculate-confirm", async (req, res) => {
 
     if (t.action === "create") {
       await query(
-        `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, waiting_charge, total_amount)
-         VALUES ($1, $2, $3, $4, 0, $5)
+        `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount)
+         VALUES ($1, $2, $3, $4, $5, 0, $6)
          ON CONFLICT DO NOTHING`,
-        [t.ticket_id, result.rate.customer_id, t.new_concrete_amount, t.new_pumping_charge, t.new_total_amount]
+        [t.ticket_id, result.rate.customer_id, t.new_concrete_amount, t.new_pumping_charge, t.new_part_load_charge, t.new_total_amount]
       );
       created++;
     } else if (t.action === "update") {
       await query(
-        `UPDATE invoices SET concrete_amount = $1, pumping_charge = $2, total_amount = $3
-         WHERE ticket_id = $4`,
-        [t.new_concrete_amount, t.new_pumping_charge, t.new_total_amount, t.ticket_id]
+        `UPDATE invoices SET concrete_amount = $1, pumping_charge = $2, part_load_charge = $3, total_amount = $4
+         WHERE ticket_id = $5`,
+        [t.new_concrete_amount, t.new_pumping_charge, t.new_part_load_charge, t.new_total_amount, t.ticket_id]
       );
       updated++;
     }
@@ -401,6 +404,61 @@ router.get("/trip-allowances", async (req, res) => {
      ORDER BY total DESC`
   );
   res.json(rows);
+});
+
+// ===================== PUMP CHARGE REVIEW =====================
+// Orders flagged because a later delivery pushed cumulative quantity past
+// the pump type's minimum threshold after the charge was already confirmed
+// applicable. Never auto-corrected — a person reviews and decides.
+
+router.get("/pump-charge-review", async (req, res) => {
+  const { rows } = await query(
+    `SELECT co.id AS order_id, c.name AS customer_name, s.name AS site_name, co.pump_requirement,
+            co.order_quantity_m3, co.pump_charge_amount,
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0) AS cumulative_qty,
+            i.id AS invoice_id, i.pumping_charge, dt2.ticket_number AS charged_ticket_number,
+            COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
+     FROM customer_orders co
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     LEFT JOIN delivery_tickets dt ON dt.order_id = co.id
+     LEFT JOIN delivery_tickets dt2 ON dt2.order_id = co.id
+     LEFT JOIN invoices i ON i.ticket_id = dt2.id AND i.pumping_charge > 0
+     WHERE co.pump_charge_needs_review = true
+     GROUP BY co.id, c.name, s.name, i.id, i.pumping_charge, dt2.ticket_number
+     ORDER BY co.id DESC`
+  );
+  res.json(rows);
+});
+
+router.post("/pump-charge-review/:orderId/dismiss", async (req, res) => {
+  const { rowCount } = await query(
+    "UPDATE customer_orders SET pump_charge_needs_review = false WHERE id = $1",
+    [req.params.orderId]
+  );
+  if (!rowCount) return res.status(404).json({ error: "Order not found." });
+  res.json({ ok: true });
+});
+
+router.post("/pump-charge-review/:orderId/remove-charge", async (req, res) => {
+  const { rows: invoiceRows } = await query(
+    `SELECT i.id, i.pumping_charge, i.concrete_amount, i.part_load_charge,
+            COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
+     FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id
+     WHERE dt.order_id = $1 AND i.pumping_charge > 0`,
+    [req.params.orderId]
+  );
+  const inv = invoiceRows[0];
+  if (!inv) return res.status(404).json({ error: "No pump charge found on this order's invoices." });
+  if (Number(inv.payment_count) > 0) {
+    return res.status(400).json({ error: "A payment has already been recorded against this invoice — can't remove the charge automatically." });
+  }
+  await query(
+    `UPDATE invoices SET pumping_charge = 0, total_amount = concrete_amount + part_load_charge WHERE id = $1`,
+    [inv.id]
+  );
+  await query("UPDATE customer_orders SET pump_charge_needs_review = false, pump_charge_applicable = false WHERE id = $1", [req.params.orderId]);
+  res.json({ ok: true });
 });
 
 export default router;

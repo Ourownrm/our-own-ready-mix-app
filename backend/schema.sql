@@ -198,6 +198,7 @@ CREATE TABLE bookings (
   mix_grade_id INTEGER REFERENCES mix_grades(id),
   estimated_qty_m3 NUMERIC(8,2),
   preferred_date DATE,
+  preferred_time TIME,
   notes TEXT,
   site_latitude NUMERIC(10,7),
   site_longitude NUMERIC(10,7),
@@ -311,7 +312,24 @@ CREATE TABLE rate_master (
   site_id INTEGER REFERENCES sites(id),
   mix_grade_id INTEGER REFERENCES mix_grades(id),
   rate_per_m3 NUMERIC(10,2) NOT NULL,
-  pumping_charge_lumpsum NUMERIC(10,2) DEFAULT 0,  -- flat charge per delivery, not per m³
+  -- Legacy single pump charge — kept only as a fallback for rates entered
+  -- before pump charges were split by pump type. New rates use the two
+  -- fields below instead.
+  pumping_charge_lumpsum NUMERIC(10,2) DEFAULT 0,
+  -- Pump mobilization charge is genuinely different by pump type, and only
+  -- ordinarily applies below a minimum order quantity (line pump vs boom
+  -- pump have different thresholds) — Manager still confirms it applies on
+  -- each order rather than this being automatic, but these are what the
+  -- confirmation screen suggests.
+  line_pump_charge NUMERIC(10,2),
+  line_pump_min_qty_m3 NUMERIC(8,2) DEFAULT 20,
+  boom_pump_charge NUMERIC(10,2),
+  boom_pump_min_qty_m3 NUMERIC(8,2) DEFAULT 50,
+  -- Part load: charged per m³ short of the minimum load, when the order
+  -- itself is below that minimum. Also a Manager-confirmed decision, not
+  -- automatic — sometimes sending a part load is the company's own call.
+  part_load_min_qty_m3 NUMERIC(8,2) DEFAULT 5,
+  part_load_charge_per_m3 NUMERIC(10,2),
   waiting_charge_per_hour NUMERIC(10,2) DEFAULT 0,
   effective_from DATE NOT NULL,
   effective_to DATE
@@ -381,7 +399,20 @@ CREATE TABLE customer_orders (
   -- following day automatically until completed or closed here.
   closed_by INTEGER REFERENCES users(id),
   closed_at TIMESTAMPTZ,
-  closure_reason TEXT
+  closure_reason TEXT,
+  -- Manager's confirmed decision at order creation — not automatic, and
+  -- snapshotted so a later rate change never silently alters what was
+  -- confirmed at the time. amount is what actually gets invoiced.
+  pump_charge_applicable BOOLEAN,
+  pump_charge_amount NUMERIC(10,2),
+  part_load_applicable BOOLEAN,
+  part_load_charge_amount NUMERIC(10,2),
+  -- Set when a later delivery pushes the order's cumulative quantity across
+  -- the pump type's minimum threshold after the pump charge was already
+  -- confirmed applicable — flagged for a human to review and decide whether
+  -- to reverse it, never auto-corrected on an invoice that may already be
+  -- in the customer's hands.
+  pump_charge_needs_review BOOLEAN DEFAULT false
 );
 
 -- ===================== DELIVERY TICKETS (SRS 6) =====================
@@ -595,6 +626,7 @@ CREATE TABLE invoices (
   customer_id INTEGER REFERENCES customers(id) NOT NULL,
   concrete_amount NUMERIC(12,2) NOT NULL,
   pumping_charge NUMERIC(12,2) DEFAULT 0,
+  part_load_charge NUMERIC(12,2) DEFAULT 0,
   waiting_charge NUMERIC(12,2) DEFAULT 0,
   total_amount NUMERIC(12,2) NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()

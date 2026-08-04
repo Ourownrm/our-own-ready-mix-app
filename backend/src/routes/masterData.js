@@ -29,17 +29,29 @@ router.get("/rate-check", async (req, res) => {
     return res.status(400).json({ error: "customer_id and mix_grade_id are required." });
   }
   const { rows } = await query(
-    `SELECT rate_per_m3, (site_id = $4::int) AS is_site_specific FROM rate_master
+    `SELECT rate_per_m3, (site_id = $4::int) AS is_site_specific,
+            line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3,
+            part_load_min_qty_m3, part_load_charge_per_m3, pumping_charge_lumpsum
+     FROM rate_master
      WHERE customer_id = $1 AND mix_grade_id = $2
        AND (site_id = $4::int OR site_id IS NULL)
        AND effective_from <= COALESCE($3::date, CURRENT_DATE) AND (effective_to IS NULL OR effective_to >= COALESCE($3::date, CURRENT_DATE))
      ORDER BY (site_id = $4::int) DESC, effective_from DESC, id DESC LIMIT 1`,
     [customer_id, mix_grade_id, date || null, site_id || null]
   );
+  const r = rows[0];
   res.json({
     rate_exists: rows.length > 0,
-    rate_per_m3: rows[0]?.rate_per_m3 ?? null,
-    is_site_specific: rows[0]?.is_site_specific ?? false,
+    rate_per_m3: r?.rate_per_m3 ?? null,
+    is_site_specific: r?.is_site_specific ?? false,
+    // Falls back to the legacy single pump-charge field (as the line pump
+    // charge) for a rate that predates the pump-type split.
+    line_pump_charge: r?.line_pump_charge ?? r?.pumping_charge_lumpsum ?? null,
+    line_pump_min_qty_m3: r?.line_pump_min_qty_m3 ?? 20,
+    boom_pump_charge: r?.boom_pump_charge ?? null,
+    boom_pump_min_qty_m3: r?.boom_pump_min_qty_m3 ?? 50,
+    part_load_min_qty_m3: r?.part_load_min_qty_m3 ?? 5,
+    part_load_charge_per_m3: r?.part_load_charge_per_m3 ?? null,
   });
 });
 

@@ -116,10 +116,10 @@ export default function Reports() {
                     {data.outstanding_aging.map((r, i) => (
                       <tr key={i}>
                         <td>{r.customer_name}</td>
-                        <td>{inr(r.bucket_0_7)}</td>
-                        <td>{inr(r.bucket_8_14)}</td>
-                        <td>{inr(r.bucket_15_30)}</td>
-                        <td style={Number(r.bucket_30_plus) > 0 ? { color: "var(--alert-red)", fontWeight: 600 } : undefined}>{inr(r.bucket_30_plus)}</td>
+                        <td>{Number(r.bucket_0_7) > 0 ? inr(r.bucket_0_7) : ""}</td>
+                        <td>{Number(r.bucket_8_14) > 0 ? inr(r.bucket_8_14) : ""}</td>
+                        <td>{Number(r.bucket_15_30) > 0 ? inr(r.bucket_15_30) : ""}</td>
+                        <td style={Number(r.bucket_30_plus) > 0 ? { color: "var(--alert-red)", fontWeight: 600 } : undefined}>{Number(r.bucket_30_plus) > 0 ? inr(r.bucket_30_plus) : ""}</td>
                         <td style={{ fontWeight: 600 }}>{inr(r.total_outstanding)}</td>
                       </tr>
                     ))}
@@ -153,6 +153,7 @@ export default function Reports() {
                   columns={[
                     ["ticket_number", "DC No."], ["customer_name", "Customer"], ["site_name", "Site"],
                     [(r) => formatDate(r.ticket_date), "Date"], [(r) => `${r.qty} m³`, "Quantity"],
+                    ["likely_reason", "Why"],
                   ]}
                   empty=""
                 />

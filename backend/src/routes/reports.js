@@ -160,12 +160,33 @@ router.get("/director-dashboard", async (req, res) => {
     // mismatch between production and sales figures.
     query(
       `SELECT c.name AS customer_name, s.name AS site_name, dt.ticket_number, dt.ticket_date,
-              dt.loaded_quantity_m3 AS qty
+              dt.loaded_quantity_m3 AS qty, diag.likely_reason
        FROM delivery_tickets dt
        JOIN customer_orders co ON co.id = dt.order_id
        JOIN customers c ON c.id = co.customer_id
        JOIN sites s ON s.id = co.site_id
        LEFT JOIN invoices i ON i.ticket_id = dt.id
+       LEFT JOIN LATERAL (
+         SELECT CASE
+           WHEN NOT EXISTS (
+             SELECT 1 FROM rate_master rm WHERE rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
+           ) THEN 'No rate on file at all for this customer and grade.'
+           WHEN NOT EXISTS (
+             SELECT 1 FROM rate_master rm WHERE rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
+               AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
+           ) THEN 'A rate exists for this customer/grade, but for a different site — and no generic (all-sites) rate either.'
+           WHEN NOT EXISTS (
+             SELECT 1 FROM rate_master rm WHERE rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
+               AND (rm.site_id = co.site_id OR rm.site_id IS NULL) AND rm.effective_from <= co.order_date
+           ) THEN 'The rate on file starts after this order''s date — rates don''t apply retroactively to orders placed before them.'
+           WHEN NOT EXISTS (
+             SELECT 1 FROM rate_master rm WHERE rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
+               AND (rm.site_id = co.site_id OR rm.site_id IS NULL) AND rm.effective_from <= co.order_date
+               AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
+           ) THEN 'The rate on file had already ended before this order''s date.'
+           ELSE 'A rate should match this — worth a manual check.'
+         END AS likely_reason
+       ) diag ON true
        WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
          AND dt.status NOT IN ('cancelled', 'rejected')
          AND i.id IS NULL

@@ -599,7 +599,7 @@ function NewBookingForm({ onDone, onCancel }) {
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
   const [mixGrades, setMixGrades] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", site_id: "", mix_grade_id: "", estimated_qty_m3: "", preferred_date: "", notes: "", site_latitude: "", site_longitude: "" });
+  const [form, setForm] = useState({ customer_id: "", site_id: "", mix_grade_id: "", estimated_qty_m3: "", preferred_date: "", preferred_time: "", notes: "", site_latitude: "", site_longitude: "" });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [locating, setLocating] = useState(false);
@@ -684,9 +684,15 @@ function NewBookingForm({ onDone, onCancel }) {
                 <input type="number" value={form.estimated_qty_m3} onChange={(e) => setForm({ ...form, estimated_qty_m3: e.target.value })} />
               </div>
             </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Preferred date</div>
-              <input type="date" value={form.preferred_date} onChange={(e) => setForm({ ...form, preferred_date: e.target.value })} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <div style={{ color: "var(--slate)" }}>Preferred date</div>
+                <input type="date" value={form.preferred_date} onChange={(e) => setForm({ ...form, preferred_date: e.target.value })} />
+              </div>
+              <div>
+                <div style={{ color: "var(--slate)" }}>Preferred time</div>
+                <input type="time" value={form.preferred_time} onChange={(e) => setForm({ ...form, preferred_time: e.target.value })} />
+              </div>
             </div>
             <div>
               <div style={{ color: "var(--slate)" }}>Notes for manager</div>

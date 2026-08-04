@@ -38,6 +38,61 @@ export async function syncOrderCompletionStatus(orderId) {
   }
 }
 
+// A new delivery on an order that already had its pump charge confirmed
+// applicable can push the order's cumulative quantity across the pump
+// type's minimum threshold — at that point the mobilization charge may no
+// longer be warranted. Never auto-corrected (the invoice may already be in
+// the customer's hands) — just flagged for Accountant/Manager to review and
+// decide.
+export async function checkPumpChargeThreshold(orderId) {
+  if (!orderId) return;
+  const { rows } = await query(
+    `SELECT co.pump_requirement, co.pump_charge_applicable, co.pump_charge_needs_review,
+            co.customer_id, co.site_id, co.mix_grade_id, co.order_date,
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0) AS cumulative_qty
+     FROM customer_orders co
+     LEFT JOIN delivery_tickets dt ON dt.order_id = co.id
+     WHERE co.id = $1
+     GROUP BY co.id`,
+    [orderId]
+  );
+  const o = rows[0];
+  if (!o || !o.pump_charge_applicable || o.pump_charge_needs_review || o.pump_requirement === "without_pump") return;
+
+  const { rows: rateRows } = await query(
+    `SELECT line_pump_min_qty_m3, boom_pump_min_qty_m3 FROM rate_master
+     WHERE customer_id = $1 AND mix_grade_id = $2 AND (site_id = $3 OR site_id IS NULL)
+       AND effective_from <= $4 AND (effective_to IS NULL OR effective_to >= $4)
+     ORDER BY (site_id = $3) DESC, effective_from DESC, id DESC LIMIT 1`,
+    [o.customer_id, o.mix_grade_id, o.site_id, o.order_date]
+  );
+  const threshold = o.pump_requirement === "boom_pump"
+    ? Number(rateRows[0]?.boom_pump_min_qty_m3 ?? 50)
+    : Number(rateRows[0]?.line_pump_min_qty_m3 ?? 20);
+
+  if (Number(o.cumulative_qty) >= threshold) {
+    await query("UPDATE customer_orders SET pump_charge_needs_review = true WHERE id = $1", [orderId]);
+    const { rows: orderInfo } = await query(
+      `SELECT c.name AS customer_name, s.name AS site_name
+       FROM customer_orders co JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+       WHERE co.id = $1`,
+      [orderId]
+    );
+    const label = orderInfo[0] ? `${orderInfo[0].customer_name} — ${orderInfo[0].site_name}` : `Order #${orderId}`;
+    const message = `${label} now totals ${o.cumulative_qty} m³, crossing the ${threshold} m³ minimum — the confirmed pump mobilization charge may no longer apply. Review it.`;
+    await query(
+      `INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('accountant', $1, 'pump_charge_review', $2)`,
+      [orderId, message]
+    );
+    await query(
+      `INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('manager', $1, 'pump_charge_review', $2)`,
+      [orderId, message]
+    );
+    await pushToRole("accountant", { title: "Pump charge needs review", body: message, url: "/accountant" });
+    await pushToRole("manager", { title: "Pump charge needs review", body: message, url: "/manager" });
+  }
+}
+
 export async function logTripEvent(ticketId, eventType, userId) {
   await query(
     `INSERT INTO trip_events (ticket_id, event_type, source, edited_by)
@@ -104,7 +159,9 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
   // placed, not whenever each individual truck happened to finish unloading).
   const { rows: rateRows } = await query(
     `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.order_date,
-            rm.rate_per_m3, rm.pumping_charge_lumpsum, co.pump_requirement
+            rm.rate_per_m3, co.pump_requirement,
+            co.pump_charge_applicable, co.pump_charge_amount,
+            co.part_load_applicable, co.part_load_charge_amount
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
@@ -118,27 +175,30 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
     const r = rateRows[0];
     const concreteAmount = Number(r.loaded_quantity_m3) * Number(r.rate_per_m3);
 
-    // Pumping charge is a one-time cost for the whole order, not per delivery —
-    // only apply it if no earlier ticket on this same order has already been
-    // charged for the pump. (Whichever ticket happens to be invoiced first
-    // carries the full charge; every later one on the same order gets 0.)
+    // Both pump charge and part load are Manager's own confirmed decision at
+    // order creation (not automatic) — still only charged once per order,
+    // on whichever ticket happens to be invoiced first.
     let pumpingCharge = 0;
-    if (r.pump_requirement !== "without_pump") {
+    let partLoadCharge = 0;
+    if (r.pump_charge_applicable || r.part_load_applicable) {
       const { rows: alreadyCharged } = await query(
-        `SELECT 1 FROM invoices i JOIN delivery_tickets dt2 ON dt2.id = i.ticket_id
-         WHERE dt2.order_id = $1 AND i.pumping_charge > 0 LIMIT 1`,
+        `SELECT COALESCE(SUM(pumping_charge), 0) AS pump_total, COALESCE(SUM(part_load_charge), 0) AS part_load_total
+         FROM invoices i JOIN delivery_tickets dt2 ON dt2.id = i.ticket_id
+         WHERE dt2.order_id = $1`,
         [r.order_id]
       );
-      if (alreadyCharged.length === 0) {
-        pumpingCharge = Number(r.pumping_charge_lumpsum || 0);
+      const nothingChargedYet = Number(alreadyCharged[0].pump_total) === 0 && Number(alreadyCharged[0].part_load_total) === 0;
+      if (nothingChargedYet) {
+        if (r.pump_charge_applicable) pumpingCharge = Number(r.pump_charge_amount || 0);
+        if (r.part_load_applicable) partLoadCharge = Number(r.part_load_charge_amount || 0);
       }
     }
 
     await query(
-      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, waiting_charge, total_amount)
-       VALUES ($1, $2, $3, $4, 0, $5)
+      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount)
+       VALUES ($1, $2, $3, $4, $5, 0, $6)
        ON CONFLICT DO NOTHING`,
-      [ticketId, r.customer_id, concreteAmount, pumpingCharge, concreteAmount + pumpingCharge]
+      [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, concreteAmount + pumpingCharge + partLoadCharge]
     );
   } else {
     // No rate on file for this customer/mix-grade combination — this delivery

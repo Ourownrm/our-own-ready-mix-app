@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { syncOrderCompletionStatus } from "../lib/deliveryConfirmation.js";
+import { syncOrderCompletionStatus, checkPumpChargeThreshold } from "../lib/deliveryConfirmation.js";
 import { pushToUser } from "../lib/push.js";
 
 const router = Router();
@@ -117,6 +117,7 @@ router.post("/tickets", requireRole("plant_operator", "administrator"), async (r
         [order_id]
       );
       await syncOrderCompletionStatus(order_id);
+      await checkPumpChargeThreshold(order_id);
 
       // Notify the Site Supervisor actually assigned to this order — a truck
       // is now loaded and headed their way. Nothing to notify if the site

@@ -555,6 +555,30 @@ router.get("/setup", async (req, res) => {
     await pool.query(`ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);`);
     log.push("Schema migration applied (rates now key on customer + site/project + grade).");
 
+    await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS preferred_time TIME;`);
+    log.push("Schema migration applied (bookings can now carry a preferred time, not just a date).");
+
+    // Pump charges split by pump type (with their own minimum-qty
+    // thresholds), part load charge fields on rates, and the Manager's
+    // confirmed pricing decisions on the order itself.
+    await pool.query(`
+      ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS line_pump_charge NUMERIC(10,2);
+      ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS line_pump_min_qty_m3 NUMERIC(8,2) DEFAULT 20;
+      ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS boom_pump_charge NUMERIC(10,2);
+      ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS boom_pump_min_qty_m3 NUMERIC(8,2) DEFAULT 50;
+      ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS part_load_min_qty_m3 NUMERIC(8,2) DEFAULT 5;
+      ALTER TABLE rate_master ADD COLUMN IF NOT EXISTS part_load_charge_per_m3 NUMERIC(10,2);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_charge_applicable BOOLEAN;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_charge_amount NUMERIC(10,2);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS part_load_applicable BOOLEAN;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS part_load_charge_amount NUMERIC(10,2);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_charge_needs_review BOOLEAN DEFAULT false;
+    `);
+    log.push("Schema migration applied (pump charges split by pump type with minimum-qty thresholds, part load charge, and order-level pricing confirmation).");
+
+    await pool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS part_load_charge NUMERIC(12,2) DEFAULT 0;`);
+    log.push("Schema migration applied (invoices can now carry a part load charge line).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

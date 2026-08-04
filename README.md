@@ -1741,3 +1741,98 @@ who logged it, against GPS — the honest, buildable version of the idea.
 ### Migration note
 No schema changes — built entirely on the existing `trip_events` table. Nothing new to
 apply via `/setup`.
+
+## Fifty-eighth round — bookings now carry a time, not just a date
+
+Sales Executive's "New booking" form gets a **preferred time** field alongside the
+date. Carries through the whole flow:
+- Manager's booking queue shows both date and time
+- Converting a booking to an order now pre-fills the scheduled batching time from what
+  was requested (previously hardcoded to 08:00 regardless of what the customer asked
+  for) — Manager can still adjust it before confirming, same as the date already did
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds `preferred_time` to `bookings`.
+
+## Pricing logic — confirmed design, not yet built
+Discussed and confirmed the plan for pump mobilization charges (split by pump type,
+with a minimum-qty threshold per type) and part-load charges (mandatory
+applicable/not-applicable decision, same pattern as pump charge) — implementation
+still pending, will build next.
+
+## Fifty-ninth round — pump charge and part load, built for real
+
+### Rates
+Pump mobilization charge is now split by pump type — line pump and boom pump each get
+their own charge and minimum-qty threshold (defaults: 20 m³ line, 50 m³ boom). Part load
+charge added too: minimum load quantity plus a rate per m³ short of it. Old rates keep
+working via the legacy single pump-charge field as a fallback.
+
+### Order creation (and booking conversion — same treatment, see below)
+Both are Manager's own confirmed decision, never automatic:
+- **Pump charge**: whenever a pump is selected, a mandatory Applicable/Not-applicable
+  choice appears, showing the rate on file for that specific pump type and its usual
+  minimum-qty threshold as context
+- **Part load**: whenever the order quantity is below the rate's minimum load, the same
+  mandatory choice appears, showing the shortfall calculation
+- A running cost summary (concrete + confirmed pump charge + confirmed part load)
+  updates live
+- Both are validated server-side, not just in the form
+
+**Found and fixed while building this**: booking conversion creates an order through a
+completely separate code path from the main order-creation endpoint — it would have
+silently bypassed both confirmations entirely if left alone. Gave it the exact same
+validation and confirmation UI.
+
+### Threshold-crossing review
+When a later delivery pushes an order's cumulative quantity past the pump type's
+threshold after the charge was already confirmed applicable, the order gets flagged —
+never auto-corrected — and both Accountant and Manager are notified. New **"Pump
+charge review"** screen on the Accountant dashboard: **Dismiss** (charge is still
+correct, leave it) or **Remove pump charge** (blocked automatically if a payment has
+already been recorded against that invoice).
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — this one touches three tables
+(`rate_master`, `customer_orders`, `invoices`).
+
+## Sixtieth round
+
+**Unbilled deliveries — now shows exactly why, not just that.** A rate matches only
+when all of these line up: customer, (site-specific rate OR a generic all-sites one),
+grade, AND the rate's effective date is on or before the **order's** date (not today's
+date, not the delivery date). The most common miss: a rate added after these orders
+already existed, with an effective date later than the order — rates don't apply
+retroactively. New **"Why"** column checks each of these conditions individually and
+names the actual one that failed — no rate at all, a rate for a different site, a rate
+that starts too late, or one that already ended — instead of a generic "check your
+rates" pointer.
+
+**Outstanding aging report — zero amounts now show blank** instead of ₹0, so a scan
+down the table only shows numbers where there's actually something outstanding.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Sixtieth round
+
+**Unbilled deliveries — explained, not a bug.** Invoice generation happens exactly
+once, at the moment a delivery is confirmed complete — it isn't a live, ongoing
+calculation. If a delivery was confirmed *before* a rate existed for that customer/
+site/grade, no invoice gets created, and nothing retroactively fixes that later just
+because a rate gets added afterward — the rate now existing doesn't reach back in time.
+That's exactly what those 8 tickets are: confirmed before their rate was on file. The
+fix is the **"Recalculate deliveries"** tool on that rate's row in Rate history (from a
+few rounds back) — it finds exactly these gaps and lets you create the missing
+invoices with a review step first.
+
+**Outstanding aging report zeros** — checked the code directly: it already shows blank
+instead of ₹0 for every bucket. Your screenshot must be from a build before that was
+in place — this round's package has it, no new change needed here.
+
+**Rate history now hides ended/superseded rates by default** — same "Show
+disabled" pattern already used for Customers and Sites, a checkbox reveals them when
+you actually want to see the full history.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

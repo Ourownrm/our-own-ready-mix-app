@@ -53,6 +53,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     site_technician_required, cube_samples_required, assigned_pump_crew,
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
     sales_representative_id, casting_location, pump_departure_time, remarks,
+    pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
   } = req.body;
 
   const required = { order_date, scheduled_batching_time, truck_dispatch_interval_minutes,
@@ -63,18 +64,38 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     }
   }
 
+  // Both are Manager's own decisions, not automatic — enforced here too, not
+  // just in the form, in case anything ever posts to this endpoint directly.
+  if (pump_requirement !== "without_pump" && pump_charge_applicable === undefined) {
+    return res.status(400).json({ error: "Confirm whether the pump mobilization charge applies to this order." });
+  }
+  const { rows: rateCheck } = await query(
+    `SELECT COALESCE(part_load_min_qty_m3, 5) AS part_load_min_qty_m3 FROM rate_master
+     WHERE customer_id = $1 AND mix_grade_id = $2 AND (site_id = $3 OR site_id IS NULL)
+       AND effective_from <= $4 AND (effective_to IS NULL OR effective_to >= $4)
+     ORDER BY (site_id = $3) DESC, effective_from DESC, id DESC LIMIT 1`,
+    [customer_id, mix_grade_id, site_id, order_date]
+  );
+  const partLoadThreshold = Number(rateCheck[0]?.part_load_min_qty_m3 ?? 5);
+  if (Number(order_quantity_m3) < partLoadThreshold && part_load_applicable === undefined) {
+    return res.status(400).json({ error: `Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.` });
+  }
+
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-      sales_representative_id, casting_location, pump_departure_time, remarks, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      sales_representative_id, casting_location, pump_departure_time, remarks, created_by,
+      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, order_quantity_m3,
-     sales_representative_id || null, casting_location || null, pump_departure_time || null, remarks || null, req.user.id]
+     sales_representative_id || null, casting_location || null, pump_departure_time || null, remarks || null, req.user.id,
+     pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
+     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0]
   );
   res.status(201).json(rows[0]);
 });

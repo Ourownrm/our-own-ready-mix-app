@@ -11,6 +11,7 @@ export default function Accountant() {
   const [payingCustomer, setPayingCustomer] = useState(null);
   const [showRates, setShowRates] = useState(false);
   const [showOpeningBalances, setShowOpeningBalances] = useState(false);
+  const [showPumpChargeReview, setShowPumpChargeReview] = useState(false);
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState(null);
 
@@ -118,6 +119,18 @@ export default function Accountant() {
     );
   }
 
+  if (showPumpChargeReview) {
+    return (
+      <>
+        <TopBar title="Accountant · Pump charge review" />
+        <div style={{ maxWidth: 700, margin: "0 auto", padding: "0 16px 32px" }}>
+          <button onClick={() => setShowPumpChargeReview(false)} style={{ marginBottom: 16 }}>← Back to dashboard</button>
+          <PumpChargeReviewPanel />
+        </div>
+      </>
+    );
+  }
+
   if (showRates) {
     return (
       <>
@@ -146,6 +159,7 @@ export default function Accountant() {
 
       <button onClick={() => setShowRates(true)} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
       <button onClick={() => setShowOpeningBalances(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Opening balances</button>
+      <button onClick={() => setShowPumpChargeReview(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Pump charge review</button>
       <Link to="/fuel" style={{ marginLeft: 12, fontSize: 13 }}>Fuel filling</Link>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
@@ -593,6 +607,100 @@ function ExcelUploadForm({ customers, setError, onDone }) {
             {saving ? "Importing..." : `Import ${readyCount} opening balance(s)`}
           </button>
         </>
+      )}
+    </div>
+  );
+}
+
+function PumpChargeReviewPanel() {
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busyId, setBusyId] = useState(null);
+
+  async function load() {
+    try {
+      setRows(await apiRequest("/accountant/pump-charge-review"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function dismiss(orderId) {
+    setBusyId(orderId); setError(""); setNotice("");
+    try {
+      await apiRequest(`/accountant/pump-charge-review/${orderId}/dismiss`, { method: "POST" });
+      setNotice("Dismissed — left as-is.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeCharge(orderId) {
+    if (!window.confirm("Remove the pump mobilization charge from this order's invoice? This can't be undone automatically.")) return;
+    setBusyId(orderId); setError(""); setNotice("");
+    try {
+      await apiRequest(`/accountant/pump-charge-review/${orderId}/remove-charge`, { method: "POST" });
+      setNotice("Pump charge removed.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>
+        Orders where a later delivery pushed the cumulative quantity past the pump type's minimum
+        threshold, after the mobilization charge was already confirmed applicable. Never auto-corrected —
+        review each one and decide whether the charge still makes sense.
+      </div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+      {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 12 }}>{notice}</div>}
+
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing needs review right now.</div>
+      ) : (
+        rows.map((r) => (
+          <div key={r.order_id} className="card" style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>{r.customer_name} — {r.site_name}</div>
+                <div style={{ fontSize: 12, color: "var(--slate)" }}>
+                  {r.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump &middot; Order qty {r.order_quantity_m3} m³ &middot; Delivered so far {r.cumulative_qty} m³
+                </div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 12, color: "var(--slate)" }}>Current pump charge</div>
+                <div style={{ fontWeight: 600 }}>{r.pumping_charge ? `₹${r.pumping_charge}` : "–"}</div>
+              </div>
+            </div>
+            {r.charged_ticket_number && (
+              <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4 }}>
+                Charged on {r.charged_ticket_number}
+                {Number(r.payment_count) > 0 && <span style={{ color: "var(--alert-red)" }}> — payment already recorded, can't remove automatically</span>}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button onClick={() => dismiss(r.order_id)} disabled={busyId === r.order_id}>
+                Dismiss — charge is correct
+              </button>
+              <button
+                className="btn-danger"
+                onClick={() => removeCharge(r.order_id)}
+                disabled={busyId === r.order_id || Number(r.payment_count) > 0 || !r.invoice_id}
+              >
+                Remove pump charge
+              </button>
+            </div>
+          </div>
+        ))
       )}
     </div>
   );

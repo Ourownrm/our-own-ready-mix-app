@@ -320,11 +320,17 @@ export function RatesPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
   const [grades, setGrades] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", site_id: "", mix_grade_id: "", rate_per_m3: "", pumping_charge_lumpsum: "", waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10) });
+  const [form, setForm] = useState({
+    customer_id: "", site_id: "", mix_grade_id: "", rate_per_m3: "",
+    line_pump_charge: "", line_pump_min_qty_m3: "20", boom_pump_charge: "", boom_pump_min_qty_m3: "50",
+    part_load_min_qty_m3: "5", part_load_charge_per_m3: "",
+    waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10),
+  });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [recalculatingRateId, setRecalculatingRateId] = useState(null);
   const [showSeedReview, setShowSeedReview] = useState(false);
+  const [showEnded, setShowEnded] = useState(false);
 
   async function load() {
     try {
@@ -358,35 +364,46 @@ export function RatesPanel({ setError }) {
     } catch (err) { setError(err.message); }
   }
 
+  const visibleRates = showEnded ? rates : rates.filter((r) => r.currently_active);
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Rate history — every rate on file, past and current</div>
-        <button style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setShowSeedReview(true)}>Review sample rates</button>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Rate history</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+            <input type="checkbox" checked={showEnded} onChange={(e) => setShowEnded(e.target.checked)} />
+            Show ended/superseded
+          </label>
+          <button style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setShowSeedReview(true)}>Review sample rates</button>
+        </div>
       </div>
       {showSeedReview && (
         <SeedRateReview setError={setError} onClose={() => setShowSeedReview(false)} onDone={(msg) => { setNotice(msg); setShowSeedReview(false); load(); }} />
       )}
       <div className="card" style={{ marginBottom: 20 }}>
-        {rates.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--slate)" }}>No rates entered yet.</div>
+        {visibleRates.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--slate)" }}>{rates.length === 0 ? "No rates entered yet." : "No active rates — check \"Show ended/superseded\" to see them."}</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ fontSize: 13 }}>
               <thead>
                 <tr>
-                  <th>Customer</th><th>Site/Project</th><th>Grade</th><th>Rate/m³</th><th>Pump charge (one-time/order)</th>
+                  <th>Customer</th><th>Site/Project</th><th>Grade</th><th>Rate/m³</th>
+                  <th>Line pump (min m³)</th><th>Boom pump (min m³)</th><th>Part load (min m³ / rate)</th>
                   <th>Waiting/hr</th><th>Effective from</th><th>Effective to</th><th>Status</th><th></th>
                 </tr>
               </thead>
               <tbody>
-                {rates.map((r) => (
+                {visibleRates.map((r) => (
                   <tr key={r.id} style={r.currently_active ? { fontWeight: 600 } : { color: "var(--slate)" }}>
                     <td>{r.customer_name}</td>
                     <td>{r.site_name || <span style={{ fontStyle: "italic" }}>All sites</span>}</td>
                     <td>{r.mix_grade_name}</td>
                     <td>₹{r.rate_per_m3}</td>
-                    <td>{r.pumping_charge_lumpsum > 0 ? `₹${r.pumping_charge_lumpsum}` : "–"}</td>
+                    <td>{r.line_pump_charge > 0 ? `₹${r.line_pump_charge} (${r.line_pump_min_qty_m3 ?? 20})` : (r.pumping_charge_lumpsum > 0 ? `₹${r.pumping_charge_lumpsum} (legacy)` : "–")}</td>
+                    <td>{r.boom_pump_charge > 0 ? `₹${r.boom_pump_charge} (${r.boom_pump_min_qty_m3 ?? 50})` : "–"}</td>
+                    <td>{r.part_load_charge_per_m3 > 0 ? `${r.part_load_min_qty_m3 ?? 5} m³ / ₹${r.part_load_charge_per_m3}` : "–"}</td>
                     <td>{r.waiting_charge_per_hour > 0 ? `₹${r.waiting_charge_per_hour}` : "–"}</td>
                     <td>{new Date(r.effective_from).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
                     <td>{r.effective_to ? new Date(r.effective_to).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" }) : "Open-ended"}</td>
@@ -441,7 +458,22 @@ export function RatesPanel({ setError }) {
           </select>
         </div>
         <div><div style={{ color: "var(--slate)" }}>Rate per m³ (₹)</div><input type="number" value={form.rate_per_m3} onChange={(e) => setForm({ ...form, rate_per_m3: e.target.value })} required /></div>
-        <div><div style={{ color: "var(--slate)" }}>Pumping charge — one-time per order (₹)</div><input type="number" value={form.pumping_charge_lumpsum} onChange={(e) => setForm({ ...form, pumping_charge_lumpsum: e.target.value })} /></div>
+        <div style={{ gridColumn: "1 / -1", borderTop: "1px solid var(--concrete)", paddingTop: 8, fontSize: 12, fontWeight: 600 }}>Pump mobilization charge</div>
+        <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)", marginTop: -4 }}>
+          Set per pump type — boom and line pump mobilization costs differ, and typically only apply below the minimum order quantity shown.
+        </div>
+        <div><div style={{ color: "var(--slate)" }}>Line pump charge (₹)</div><input type="number" value={form.line_pump_charge} onChange={(e) => setForm({ ...form, line_pump_charge: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Line pump min qty (m³)</div><input type="number" value={form.line_pump_min_qty_m3} onChange={(e) => setForm({ ...form, line_pump_min_qty_m3: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Boom pump charge (₹)</div><input type="number" value={form.boom_pump_charge} onChange={(e) => setForm({ ...form, boom_pump_charge: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Boom pump min qty (m³)</div><input type="number" value={form.boom_pump_min_qty_m3} onChange={(e) => setForm({ ...form, boom_pump_min_qty_m3: e.target.value })} /></div>
+
+        <div style={{ gridColumn: "1 / -1", borderTop: "1px solid var(--concrete)", paddingTop: 8, fontSize: 12, fontWeight: 600 }}>Part load charge</div>
+        <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)", marginTop: -4 }}>
+          Applies when a single order is below the minimum load — charged per m³ short of the minimum.
+        </div>
+        <div><div style={{ color: "var(--slate)" }}>Minimum load (m³)</div><input type="number" value={form.part_load_min_qty_m3} onChange={(e) => setForm({ ...form, part_load_min_qty_m3: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Charge per m³ short (₹)</div><input type="number" value={form.part_load_charge_per_m3} onChange={(e) => setForm({ ...form, part_load_charge_per_m3: e.target.value })} /></div>
+
         <div><div style={{ color: "var(--slate)" }}>Waiting charge per hour (₹)</div><input type="number" value={form.waiting_charge_per_hour} onChange={(e) => setForm({ ...form, waiting_charge_per_hour: e.target.value })} /></div>
         <div><div style={{ color: "var(--slate)" }}>Effective from</div><input type="date" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required /></div>
         <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)" }}>

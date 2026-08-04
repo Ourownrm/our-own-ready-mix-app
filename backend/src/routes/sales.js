@@ -168,12 +168,12 @@ router.post("/leads/:id/won", requireRole("administrator"), async (req, res) => 
 
 router.post("/bookings", requireRole("sales_executive"), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
-  const { customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, notes, site_latitude, site_longitude } = req.body;
+  const { customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, preferred_time, notes, site_latitude, site_longitude } = req.body;
   if (!customer_id) return res.status(400).json({ error: "Select a customer." });
   const { rows } = await query(
-    `INSERT INTO bookings (customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, notes, site_latitude, site_longitude, requested_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [customer_id, site_id || null, mix_grade_id || null, estimated_qty_m3 || null, preferred_date || null, notes || null,
+    `INSERT INTO bookings (customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, preferred_time, notes, site_latitude, site_longitude, requested_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [customer_id, site_id || null, mix_grade_id || null, estimated_qty_m3 || null, preferred_date || null, preferred_time || null, notes || null,
      site_latitude || null, site_longitude || null, req.user.id]
   );
   await pushToRole("manager", {
@@ -224,6 +224,7 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
     site_technician_required, cube_samples_required, assigned_pump_crew,
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
     sales_representative_id, casting_location, pump_departure_time, remarks,
+    pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
   } = req.body;
 
   const finalSiteId = site_id || booking.site_id;
@@ -254,18 +255,39 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
     }
   }
 
+  // Same confirmation requirement as creating an order directly — not
+  // automatic, and this endpoint bypasses that one entirely, so it needs its
+  // own copy of the check.
+  if (pump_requirement !== "without_pump" && pump_charge_applicable === undefined) {
+    return res.status(400).json({ error: "Confirm whether the pump mobilization charge applies to this order." });
+  }
+  const { rows: rateCheck } = await query(
+    `SELECT COALESCE(part_load_min_qty_m3, 5) AS part_load_min_qty_m3 FROM rate_master
+     WHERE customer_id = $1 AND mix_grade_id = $2 AND (site_id = $3 OR site_id IS NULL)
+       AND effective_from <= $4 AND (effective_to IS NULL OR effective_to >= $4)
+     ORDER BY (site_id = $3) DESC, effective_from DESC, id DESC LIMIT 1`,
+    [booking.customer_id, finalMixGradeId, finalSiteId, order_date]
+  );
+  const partLoadThreshold = Number(rateCheck[0]?.part_load_min_qty_m3 ?? 5);
+  if (Number(finalQty) < partLoadThreshold && part_load_applicable === undefined) {
+    return res.status(400).json({ error: `Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.` });
+  }
+
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-      sales_representative_id, casting_location, pump_departure_time, remarks, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      sales_representative_id, casting_location, pump_departure_time, remarks, created_by,
+      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, booking.customer_id, finalSiteId,
      finalMixGradeId, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required || null,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, finalQty,
-     finalSalesRepId, casting_location || null, pump_departure_time || null, remarks || null, req.user.id]
+     finalSalesRepId, casting_location || null, pump_departure_time || null, remarks || null, req.user.id,
+     pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
+     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0]
   );
 
   await query(

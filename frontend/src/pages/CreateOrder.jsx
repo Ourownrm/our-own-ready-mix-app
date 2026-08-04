@@ -32,7 +32,9 @@ export default function CreateOrder({ onDone }) {
   const [salespersons, setSalespersons] = useState([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [rateWarning, setRateWarning] = useState("");
+  const [rateInfo, setRateInfo] = useState(null);
+  const [pumpChargeDecision, setPumpChargeDecision] = useState(null); // null | true | false
+  const [partLoadDecision, setPartLoadDecision] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -47,25 +49,55 @@ export default function CreateOrder({ onDone }) {
     }).catch((err) => setError(err.message));
   }, []);
 
-  // Warns before the order is even placed, rather than only discovering the
-  // gap after a delivery completes with no invoice generated.
+  // Loads full pricing info (rate, pump charges by type, part load) before
+  // the order is even placed, rather than only discovering a gap after a
+  // delivery completes with no invoice generated. Resets both confirmations
+  // whenever the inputs that determine them change, so a stale decision
+  // can't silently carry over onto a different customer/site/grade/qty.
   useEffect(() => {
-    if (!form.customer_id || !form.mix_grade_id || !form.site_id) { setRateWarning(""); return; }
+    setPumpChargeDecision(null); setPartLoadDecision(null);
+    if (!form.customer_id || !form.mix_grade_id || !form.site_id) { setRateInfo(null); return; }
     apiRequest(`/master/rate-check?customer_id=${form.customer_id}&mix_grade_id=${form.mix_grade_id}&site_id=${form.site_id}&date=${form.order_date}`)
-      .then((r) => setRateWarning(r.rate_exists ? "" : "No rate is on file for this customer, site, and grade combination as of this order date — deliveries won't generate invoices until one is added (Administrator/Manager → Concrete grades and rates)."))
-      .catch(() => {}); // non-critical — don't block the form over a failed check
+      .then(setRateInfo)
+      .catch(() => setRateInfo(null));
   }, [form.customer_id, form.mix_grade_id, form.site_id, form.order_date]);
 
   function set(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
   }
 
+  const pumpChargeAmount = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_charge : form.pump_requirement === "line_pump" ? rateInfo?.line_pump_charge : null;
+  const pumpMinQty = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_min_qty_m3 : rateInfo?.line_pump_min_qty_m3;
+  const needsPumpDecision = form.pump_requirement !== "without_pump" && rateInfo;
+  const partLoadThreshold = Number(rateInfo?.part_load_min_qty_m3 ?? 5);
+  const partLoadShortfall = form.order_quantity_m3 ? partLoadThreshold - Number(form.order_quantity_m3) : 0;
+  const needsPartLoadDecision = rateInfo && form.order_quantity_m3 && partLoadShortfall > 0;
+  const partLoadAmount = needsPartLoadDecision && rateInfo?.part_load_charge_per_m3
+    ? partLoadShortfall * Number(rateInfo.part_load_charge_per_m3) : 0;
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+    if (needsPumpDecision && pumpChargeDecision === null) {
+      setError("Confirm whether the pump mobilization charge applies to this order.");
+      return;
+    }
+    if (needsPartLoadDecision && partLoadDecision === null) {
+      setError(`Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.`);
+      return;
+    }
     setSaving(true);
     try {
-      await apiRequest("/orders", { method: "POST", body: form });
+      await apiRequest("/orders", {
+        method: "POST",
+        body: {
+          ...form,
+          pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : undefined,
+          pump_charge_amount: needsPumpDecision && pumpChargeDecision ? pumpChargeAmount : 0,
+          part_load_applicable: needsPartLoadDecision ? partLoadDecision : undefined,
+          part_load_charge_amount: needsPartLoadDecision && partLoadDecision ? partLoadAmount : 0,
+        },
+      });
       onDone();
     } catch (err) {
       setError(err.message);
@@ -192,11 +224,78 @@ export default function CreateOrder({ onDone }) {
           </div>
         )}
 
-        {rateWarning && (
+        {rateInfo && !rateInfo.rate_exists && (
           <div style={{ gridColumn: "1 / -1", color: "var(--amber)", background: "var(--amber-bg)", padding: 10, borderRadius: 8, fontSize: 12 }}>
-            ⚠ {rateWarning}
+            No rate is on file for this customer, site, and grade combination as of this order date — deliveries won't generate invoices until one is added (Administrator/Manager → Concrete grades and rates).
           </div>
         )}
+
+        {needsPumpDecision && (
+          <div style={{ gridColumn: "1 / -1", background: "var(--amber-bg)", border: "1px solid var(--amber)", borderRadius: 8, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Pump mobilization charge (required)</div>
+            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
+              {form.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump rate on file: {pumpChargeAmount ? `₹${pumpChargeAmount}` : "not set"}
+              {pumpMinQty ? ` (usually applies below ${pumpMinQty} m³)` : ""}. Confirm whether it applies to this order.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={() => setPumpChargeDecision(true)} style={pumpChargeDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>
+                Applicable{pumpChargeAmount ? ` — ₹${pumpChargeAmount}` : ""}
+              </button>
+              <button type="button" onClick={() => setPumpChargeDecision(false)} style={pumpChargeDecision === false ? { background: "var(--rebar)", color: "#fff" } : undefined}>
+                Not applicable
+              </button>
+            </div>
+          </div>
+        )}
+
+        {needsPartLoadDecision && (
+          <div style={{ gridColumn: "1 / -1", background: "var(--concrete)", border: "1px solid var(--border-strong, #ccc)", borderRadius: 8, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Part load charge (required)</div>
+            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
+              Minimum load is {partLoadThreshold} m³. This order is {form.order_quantity_m3} m³ — short by {partLoadShortfall.toFixed(2)} m³
+              {rateInfo?.part_load_charge_per_m3 ? ` × ₹${rateInfo.part_load_charge_per_m3} = ₹${partLoadAmount.toFixed(2)}` : " (no part-load rate on file)"}.
+              Confirm whether it applies — sometimes sending a part load is the company's own call.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={() => setPartLoadDecision(true)} style={partLoadDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>
+                Applicable{rateInfo?.part_load_charge_per_m3 ? ` — ₹${partLoadAmount.toFixed(2)}` : ""}
+              </button>
+              <button type="button" onClick={() => setPartLoadDecision(false)} style={partLoadDecision === false ? { background: "var(--rebar)", color: "#fff" } : undefined}>
+                Not applicable
+              </button>
+            </div>
+          </div>
+        )}
+
+        {rateInfo?.rate_exists && form.order_quantity_m3 && (
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, borderTop: "1px solid var(--concrete)", paddingTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "var(--slate)" }}>Concrete ({form.order_quantity_m3} m³ × ₹{rateInfo.rate_per_m3})</span>
+              <span>₹{(Number(form.order_quantity_m3) * Number(rateInfo.rate_per_m3)).toFixed(2)}</span>
+            </div>
+            {pumpChargeDecision === true && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--slate)" }}>Pump mobilization</span><span>₹{pumpChargeAmount}</span>
+              </div>
+            )}
+            {partLoadDecision === true && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--slate)" }}>Part load charge</span><span>₹{partLoadAmount.toFixed(2)}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, borderTop: "1px solid var(--concrete)", marginTop: 4, paddingTop: 4 }}>
+              <span>Estimated total</span>
+              <span>
+                ₹{(
+                  Number(form.order_quantity_m3) * Number(rateInfo.rate_per_m3)
+                  + (pumpChargeDecision === true ? Number(pumpChargeAmount || 0) : 0)
+                  + (partLoadDecision === true ? partLoadAmount : 0)
+                ).toFixed(2)}
+              </span>
+            </div>
+          </div>
+        )}
+
         {error && <div style={{ gridColumn: "1 / -1", color: "var(--alert-red)" }}>{error}</div>}
 
         <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>

@@ -274,14 +274,23 @@ router.get("/rates", requireRole("administrator", "accountant", "manager"), asyn
 });
 
 router.post("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
-  const { customer_id, site_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from } = req.body;
+  const {
+    customer_id, site_id, mix_grade_id, rate_per_m3, waiting_charge_per_hour, effective_from,
+    line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3,
+    part_load_min_qty_m3, part_load_charge_per_m3,
+  } = req.body;
   if (!customer_id || !site_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
     return res.status(400).json({ error: "Customer, site/project, mix grade, rate, and effective date are all required." });
   }
   const { rows } = await query(
-    `INSERT INTO rate_master (customer_id, site_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum, waiting_charge_per_hour, effective_from)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [customer_id, site_id, mix_grade_id, rate_per_m3, pumping_charge_lumpsum || 0, waiting_charge_per_hour || 0, effective_from]
+    `INSERT INTO rate_master
+       (customer_id, site_id, mix_grade_id, rate_per_m3, waiting_charge_per_hour, effective_from,
+        line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3,
+        part_load_min_qty_m3, part_load_charge_per_m3)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [customer_id, site_id, mix_grade_id, rate_per_m3, waiting_charge_per_hour || 0, effective_from,
+     line_pump_charge || null, line_pump_min_qty_m3 || 20, boom_pump_charge || null, boom_pump_min_qty_m3 || 50,
+     part_load_min_qty_m3 || 5, part_load_charge_per_m3 || null]
   );
   res.status(201).json(rows[0]);
 });
