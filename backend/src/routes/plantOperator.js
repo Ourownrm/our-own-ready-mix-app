@@ -7,6 +7,27 @@ import { pushToUser } from "../lib/push.js";
 const router = Router();
 router.use(requireAuth, requireRole("plant_operator", "manager", "administrator"));
 
+// Non-blocking warning at ticket creation — the actual fix for a driver
+// getting a second trip assigned while their first one is still open and
+// unconfirmed. Doesn't stop the assignment (sometimes it's legitimate — the
+// dispatcher knows the first one really is done and just hasn't been
+// confirmed yet), just makes it visible instead of silent.
+router.get("/driver-open-trips", async (req, res) => {
+  const { driver_id } = req.query;
+  if (!driver_id) return res.json([]);
+  const { rows } = await query(
+    `SELECT dt.id, dt.ticket_number, dt.status, dt.created_at, c.name AS customer_name, s.name AS site_name
+     FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     WHERE dt.driver_id = $1 AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
+     ORDER BY dt.created_at DESC`,
+    [driver_id]
+  );
+  res.json(rows);
+});
+
 async function logEvent(ticketId, eventType, userId) {
   await query(
     `INSERT INTO trip_events (ticket_id, event_type, source, edited_by)

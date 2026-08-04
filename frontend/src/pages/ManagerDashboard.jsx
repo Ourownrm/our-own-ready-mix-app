@@ -22,6 +22,7 @@ export default function ManagerDashboard() {
   const [completedTrips, setCompletedTrips] = useState([]);
   const [liveLocations, setLiveLocations] = useState([]);
   const [onDutyDrivers, setOnDutyDrivers] = useState([]);
+  const [crossCheck, setCrossCheck] = useState([]);
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
@@ -30,13 +31,14 @@ export default function ManagerDashboard() {
 
   async function load() {
     try {
-      const [dashboard, orderList, trucks, trips, locations, drivers] = await Promise.all([
+      const [dashboard, orderList, trucks, trips, locations, drivers, crossCheckData] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
         apiRequest("/orders/active-trucks"),
         apiRequest("/orders/completed-trips"),
         apiRequest("/orders/live-locations"),
         apiRequest("/orders/on-duty-drivers"),
+        apiRequest("/orders/trip-time-crosscheck"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
@@ -44,6 +46,7 @@ export default function ManagerDashboard() {
       setCompletedTrips(trips);
       setLiveLocations(locations);
       setOnDutyDrivers(drivers);
+      setCrossCheck(crossCheckData);
     } catch (err) {
       setError(err.message);
     }
@@ -233,6 +236,7 @@ export default function ManagerDashboard() {
         <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
+        <TripTimeCrossCheck rows={crossCheck} />
         <RawMaterialStockCard />
         <ComplianceAlertsCard />
       </div>
@@ -279,6 +283,58 @@ function OnDutyDriversTable({ drivers }) {
                     ) : (
                       <span style={{ color: "var(--slate)" }}>No GPS yet</span>
                     )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TripTimeCrossCheck({ rows }) {
+  const [showAll, setShowAll] = useState(false);
+  const flagged = rows.filter((r) => r.flagged);
+  const visible = showAll ? rows : flagged;
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Trip time cross-check</div>
+        {rows.length > 0 && (
+          <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setShowAll(!showAll)}>
+            {showAll ? "Show flagged only" : `Show all (${rows.length})`}
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 10 }}>
+        Compares the Site In time logged for each trip (by whoever confirmed it — driver or Site Supervisor)
+        against the nearest GPS ping at that moment. A gap over 15 minutes is flagged for a look; small gaps
+        are normal GPS noise and aren't shown unless you ask to see everything.
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>
+          {rows.length === 0 ? "No trips in the last 7 days to check." : "Nothing flagged in the last 7 days."}
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ fontSize: 12 }}>
+            <thead>
+              <tr><th>DC No.</th><th>Driver</th><th>Site</th><th>Logged by</th><th>Site In (logged)</th><th>Nearest GPS</th><th>Gap</th></tr>
+            </thead>
+            <tbody>
+              {visible.map((r) => (
+                <tr key={r.ticket_id} style={r.flagged ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                  <td>{r.ticket_number}</td>
+                  <td>{r.driver_name}</td>
+                  <td>{r.customer_name} &middot; {r.site_name}</td>
+                  <td>{r.site_in_logged_by || "–"}</td>
+                  <td>{formatTime(r.site_in_logged_at)}</td>
+                  <td>{r.nearest_gps_time ? formatTime(r.nearest_gps_time) : <span style={{ color: "var(--alert-red)" }}>No GPS data</span>}</td>
+                  <td style={r.flagged ? { color: "var(--alert-red)", fontWeight: 600 } : undefined}>
+                    {r.gap_minutes != null ? `${r.gap_minutes} min` : "–"}
                   </td>
                 </tr>
               ))}

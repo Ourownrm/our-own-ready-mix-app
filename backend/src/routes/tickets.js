@@ -31,23 +31,46 @@ router.post("/", requireRole("plant_operator", "manager", "administrator"), asyn
   res.status(201).json(rows[0]);
 });
 
-// Driver's currently assigned, not-yet-completed trip — powers the Driver duty screen
-router.get("/my-trip", requireRole("driver"), async (req, res) => {
+// Every trip that still needs driver action, plus today's completed ones —
+// replaces the old single-trip "LIMIT 1" query, which is exactly why a
+// second trip assigned before the first was closed out made the first one
+// silently disappear from the driver's screen with no way to act on it.
+router.get("/my-trips", requireRole("driver"), async (req, res) => {
   const { rows } = await query(
-    `SELECT dt.id, dt.ticket_number, dt.status, t.truck_number, t.id AS truck_id, s.name AS site_name,
-            s.address AS site_address, s.latitude AS site_latitude, s.longitude AS site_longitude,
+    `WITH ticket_stages AS (
+       SELECT ticket_id,
+         MAX(event_time) FILTER (WHERE event_type = 'left_plant') AS plant_out_at,
+         MAX(event_time) FILTER (WHERE event_type = 'reached_site') AS site_in_at,
+         MAX(event_time) FILTER (WHERE event_type = 'unloading_completed') AS site_out_at,
+         MAX(event_time) FILTER (WHERE event_type = 'returned_to_plant') AS plant_in_at
+       FROM trip_events GROUP BY ticket_id
+     )
+     SELECT dt.id, dt.ticket_number, dt.status, dt.created_at, dt.ticket_date,
+            t.truck_number, t.id AS truck_id,
+            c.name AS customer_name, s.name AS site_name,
+            s.latitude AS site_latitude, s.longitude AS site_longitude,
+            s.distance_from_plant_km,
             tac.amount AS trip_allowance_amount,
-            (co.assigned_site_supervisor_id IS NULL) AS no_site_supervisor
+            tap.amount AS allowance_paid,
+            (co.assigned_site_supervisor_id IS NULL) AS no_site_supervisor,
+            ts.plant_out_at, ts.site_in_at, ts.site_out_at, ts.plant_in_at
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      LEFT JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
-     WHERE dt.driver_id = $1 AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
-     ORDER BY dt.created_at DESC LIMIT 1`,
+     LEFT JOIN ticket_stages ts ON ts.ticket_id = dt.id
+     LEFT JOIN trip_allowance_payouts tap ON tap.ticket_id = dt.id
+     WHERE dt.driver_id = $1
+       AND (
+         dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
+         OR dt.ticket_date = CURRENT_DATE
+       )
+     ORDER BY dt.created_at DESC`,
     [req.user.id]
   );
-  res.json(rows[0] || null);
+  res.json(rows);
 });
 
 // Full trip status timeline for one ticket

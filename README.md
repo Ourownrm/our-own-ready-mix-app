@@ -1685,3 +1685,59 @@ agreed rate — this is a genuine billing-accuracy bug, not a cosmetic one.
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup` beyond confirming the
 fix took effect.
+
+## Fifty-seventh round — the driver stuck-trip problem, solved for real
+
+Built out the full design from our mockup session: the driver's trip list, the
+stage-based trip sheet, the Plant Operator warning, and the Manager cross-check.
+
+### Root cause, actually fixed this time
+`/tickets/my-trip` used `ORDER BY created_at DESC LIMIT 1` — a single trip, always the
+most recent. The moment Plant Operator assigned a second trip before the first was
+confirmed, the first one silently vanished from the driver's screen with no way to act
+on it. Replaced with `/tickets/my-trips` — every trip still needing action, plus
+today's completed ones. Structurally, a trip can no longer disappear just because a
+newer one exists.
+
+### Driver's new home screen
+- **Punch IN / Punch OUT** (renamed from Duty ON/OFF)
+- Current trip shown immediately below it — no extra tap to see it — with customer,
+  site, distance, a "Site location" link, and trip allowance, all in one card
+- **Horizontal 4-stage tracker: Plant Out → Site In → Site Out → Plant In**, common
+  driver language instead of technical terms. Sequentially gated — a stage can't be
+  tapped until the one before it is logged; the button is visibly locked until then
+- Every stage tap captures GPS at that exact moment (needed for the cross-check —
+  without it there'd be nothing to compare against)
+- Older trips needing action get a clear red banner and their own list, each with the
+  same tracker
+- Completed-today list shows what was actually earned per trip, plus a running total
+
+**Plant Out / Plant In are genuinely new tracking** (not in the app before), available
+on every trip regardless of whether the site has a Site Supervisor — this is also what
+gives a clean, structural signal for "this truck is actually free again," which was
+completely missing before.
+
+**Site In / Site Out** stay exactly what they were — the existing arrival/unloading
+confirmation flow for sites with no Site Supervisor — just re-surfaced as two stages
+in the tracker instead of a separate flow. Site Out still opens the same slump/delivery
+note/after-pour-care form as before; nothing about the underlying data changed. For
+supervised sites, these two stages show as read-only, filled in once the Site
+Supervisor confirms — the driver isn't asked to duplicate what's already being tracked.
+
+### Plant Operator
+Selecting a driver with a still-open, unconfirmed trip now shows a clear (non-blocking)
+warning naming the ticket — this is the fix for dispatching a second trip
+"unknowingly," without stopping a genuinely legitimate reassignment.
+
+### Manager cross-check
+New card: compares each trip's logged Site In time (clearly attributed to whoever
+logged it — driver or Site Supervisor) against the nearest GPS ping, flagging gaps over
+15 minutes. Worth being upfront about a design reality here: a true 3-way comparison
+(separate driver time *and* separate supervisor time) isn't something the data model
+actually supports — driver and supervisor share the same confirmation step, so there's
+one logged time per stage, not two. This compares that one time, clearly labeled with
+who logged it, against GPS — the honest, buildable version of the idea.
+
+### Migration note
+No schema changes — built entirely on the existing `trip_events` table. Nothing new to
+apply via `/setup`.

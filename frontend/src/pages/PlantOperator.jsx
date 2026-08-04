@@ -17,8 +17,16 @@ export default function PlantOperator() {
   const [notice, setNotice] = useState("");
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [pending, setPending] = useState(pendingCount());
+  const [driverOpenTrips, setDriverOpenTrips] = useState([]);
 
   const [ticketForm, setTicketForm] = useState({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "", idempotency_key: newIdempotencyKey() });
+
+  useEffect(() => {
+    if (!ticketForm.driver_id) { setDriverOpenTrips([]); return; }
+    apiRequest(`/plant-operator/driver-open-trips?driver_id=${ticketForm.driver_id}`)
+      .then(setDriverOpenTrips)
+      .catch(() => {});
+  }, [ticketForm.driver_id]);
 
   async function load() {
     try {
@@ -140,6 +148,12 @@ export default function PlantOperator() {
                 </select>
               </div>
             </div>
+            {driverOpenTrips.length > 0 && (
+              <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "var(--alert-red)", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 6, padding: "8px 10px", marginTop: 4 }}>
+                This driver still has {driverOpenTrips.length} open trip{driverOpenTrips.length > 1 ? "s" : ""} not yet confirmed:{" "}
+                {driverOpenTrips.map((t) => t.ticket_number).join(", ")}. Assigning a new one is fine if the earlier one is genuinely done — it just hasn't been confirmed yet — but worth a quick check first.
+              </div>
+            )}
             <button type="submit" style={{ marginTop: 4 }}>Save ticket</button>
           </form>
         </div>

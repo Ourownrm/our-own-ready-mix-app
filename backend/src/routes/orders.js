@@ -275,6 +275,38 @@ router.get("/on-duty-drivers", requireRole("manager", "administrator"), async (r
   res.json(rows);
 });
 
+// Cross-checks each trip's self-reported stage times (logged by whichever of
+// driver or Site Supervisor actually did it — they share the same
+// confirmation step, so there's one time per stage, not two) against the
+// nearest GPS ping at that moment. A big gap between the two is worth a
+// look; a small one is just normal GPS noise and isn't flagged.
+router.get("/trip-time-crosscheck", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date,
+            u.name AS driver_name, t.truck_number, c.name AS customer_name, s.name AS site_name,
+            si.event_time AS site_in_logged_at, si_user.name AS site_in_logged_by,
+            gp.recorded_at AS nearest_gps_time,
+            ROUND(ABS(EXTRACT(EPOCH FROM (si.event_time - gp.recorded_at))) / 60) AS gap_minutes
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users u ON u.id = dt.driver_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN trip_events si ON si.ticket_id = dt.id AND si.event_type = 'reached_site'
+     LEFT JOIN users si_user ON si_user.id = si.edited_by
+     LEFT JOIN LATERAL (
+       SELECT recorded_at FROM gps_pings
+       WHERE driver_id = dt.driver_id
+       ORDER BY ABS(EXTRACT(EPOCH FROM (recorded_at - si.event_time))) LIMIT 1
+     ) gp ON true
+     WHERE dt.ticket_date >= CURRENT_DATE - 7
+     ORDER BY gap_minutes DESC NULLS LAST
+     LIMIT 100`
+  );
+  res.json(rows.map((r) => ({ ...r, flagged: r.gap_minutes === null || Number(r.gap_minutes) > 15 })));
+});
+
 // Full order detail — every role can view (read-only); editing stays restricted
 // to Administrator's "Correct orders" panel.
 router.get("/:id", async (req, res) => {

@@ -4,30 +4,32 @@ import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
 
+const STAGES = [
+  { key: "plant_out", label: "Plant Out", path: "plant-out", icon: "check" },
+  { key: "site_in", label: "Site In", path: "arrival", icon: "check" },
+  { key: "site_out", label: "Site Out", path: "site-out", icon: "check" },
+  { key: "plant_in", label: "Plant In", path: "plant-in", icon: "check" },
+];
+
 export default function DriverDuty() {
   const [onDuty, setOnDuty] = useState(false);
-  const [trip, setTrip] = useState(null);
+  const [trips, setTrips] = useState([]);
   const [pending, setPending] = useState(pendingCount());
-  const [activeForm, setActiveForm] = useState(null); // null | 'breakdown' | 'reject'
+  const [view, setView] = useState("home"); // 'home' | 'older' | 'breakdown' | 'reject'
+  const [activeTicketId, setActiveTicketId] = useState(null); // which trip a form applies to
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const gpsIntervalRef = useRef(null);
   const wakeLockRef = useRef(null);
-  const tripRef = useRef(null);
-  tripRef.current = trip;
+  const tripsRef = useRef([]);
+  tripsRef.current = trips;
 
-  function loadTrip() {
-    apiRequest("/tickets/my-trip").then(setTrip).catch(() => {});
+  function loadTrips() {
+    apiRequest("/tickets/my-trips").then(setTrips).catch(() => {});
   }
 
-  // On open, read the REAL duty status from the server instead of assuming
-  // "off". A backgrounded Android tab can get suspended by the OS, which
-  // resets React state to its defaults on reload — without this, that made it
-  // look like duty had silently turned off even though the driver never
-  // pressed Duty OFF. If the server says we're still on, resume tracking
-  // immediately.
   useEffect(() => {
-    loadTrip();
+    loadTrips();
     apiRequest("/driver/duty-status").then((status) => {
       setOnDuty(status.on_duty);
       if (status.on_duty) {
@@ -36,14 +38,9 @@ export default function DriverDuty() {
       }
     }).catch(() => {});
 
-    // Catches actions that got queued at a low-signal site and never actually
-    // synced — the browser's 'online' event alone doesn't cover reopening the
-    // app when it's already connected. Also re-check the trip and pending
-    // count after every attempt, so a successful sync updates the screen
-    // right away instead of waiting for the next manual reload.
     const flushInterval = startPeriodicFlush();
     const refreshAfterFlush = setInterval(() => {
-      loadTrip();
+      loadTrips();
       setPending(pendingCount());
     }, 30000);
     return () => { clearInterval(flushInterval); clearInterval(refreshAfterFlush); };
@@ -53,11 +50,6 @@ export default function DriverDuty() {
     return () => { clearInterval(gpsIntervalRef.current); releaseWakeLock(); };
   }, []);
 
-  // Whenever the app comes back to the foreground (switching apps, unlocking
-  // the phone, reopening after the tab was suspended), immediately send a
-  // fresh GPS ping and re-acquire the wake lock — closing the tracking gap as
-  // soon as possible instead of waiting for the next 30s tick, and without
-  // ever declaring "duty off" on our own.
   useEffect(() => {
     function onVisible() {
       if (document.visibilityState === "visible" && wakeLockRef.current === "on") {
@@ -69,12 +61,17 @@ export default function DriverDuty() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
+  function currentTicketId() {
+    const active = tripsRef.current.filter((t) => !["completed", "cancelled", "returned", "rejected"].includes(t.status));
+    return active[0]?.id || null;
+  }
+
   function pingOnce() {
     navigator.geolocation?.getCurrentPosition((pos) => {
       queuedRequest("/driver/gps-ping", {
         method: "POST",
         body: {
-          ticket_id: tripRef.current?.id,
+          ticket_id: currentTicketId(),
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
           speed_kmh: pos.coords.speed ? pos.coords.speed * 3.6 : null,
@@ -96,9 +93,7 @@ export default function DriverDuty() {
       await navigator.wakeLock?.request("screen");
     } catch {
       // Not supported, or permission denied — tracking still works while the
-      // app is open and in the foreground, just without the screen-stay-awake
-      // assist. No native background GPS is possible from a browser tab; a
-      // driver who fully closes the app will need to reopen it to resume.
+      // app is open and in the foreground.
     }
   }
   function releaseWakeLock() {
@@ -114,21 +109,21 @@ export default function DriverDuty() {
     navigator.geolocation?.getCurrentPosition(async (pos) => {
       await queuedRequest("/driver/duty", {
         method: "POST",
-        body: { on: next, ticket_id: trip?.id, lat: pos.coords.latitude, lng: pos.coords.longitude },
+        body: { on: next, ticket_id: currentTicketId(), lat: pos.coords.latitude, lng: pos.coords.longitude },
       });
       setPending(pendingCount());
     }, async () => {
-      await queuedRequest("/driver/duty", { method: "POST", body: { on: next, ticket_id: trip?.id } });
+      await queuedRequest("/driver/duty", { method: "POST", body: { on: next, ticket_id: currentTicketId() } });
       setPending(pendingCount());
     });
   }
 
-  async function act(path, body) {
+  async function act(ticketId, path, body) {
     setError(""); setNotice("");
     try {
-      await queuedRequest(`/driver/tickets/${trip.id}/${path}`, { method: "POST", body });
+      await queuedRequest(`/driver/tickets/${ticketId}/${path}`, { method: "POST", body });
       setPending(pendingCount());
-      loadTrip();
+      loadTrips();
       return true;
     } catch (err) {
       setError(err.message || "Couldn't save this — try again.");
@@ -136,155 +131,281 @@ export default function DriverDuty() {
     }
   }
 
-  if (activeForm === "breakdown") {
+  // Stage taps (Plant Out / Site In / Site Out / Plant In) capture GPS at
+  // that exact moment — that's what makes the manager's cross-check
+  // meaningful; without it there'd be nothing to compare the logged time
+  // against.
+  function actWithLocation(ticketId, path, body = {}) {
+    return new Promise((resolve) => {
+      navigator.geolocation?.getCurrentPosition(
+        (pos) => resolve(act(ticketId, path, { ...body, lat: pos.coords.latitude, lng: pos.coords.longitude })),
+        () => resolve(act(ticketId, path, body)),
+        { timeout: 8000 }
+      );
+      if (!navigator.geolocation) resolve(act(ticketId, path, body));
+    });
+  }
+
+  const activeTrips = trips.filter((t) => !["completed", "cancelled", "returned", "rejected"].includes(t.status));
+  const completedToday = trips.filter((t) => ["completed", "cancelled", "returned", "rejected"].includes(t.status));
+  const current = activeTrips[0] || null;
+  const older = activeTrips.slice(1);
+  const activeTrip = trips.find((t) => t.id === activeTicketId);
+
+  if (view === "breakdown") {
     return (
       <BreakdownForm
-        trip={trip}
-        onDone={(msg) => { setActiveForm(null); setNotice(msg); setPending(pendingCount()); }}
-        onCancel={() => setActiveForm(null)}
+        trip={activeTrip || current}
+        onDone={(msg) => { setView("home"); setNotice(msg); setPending(pendingCount()); }}
+        onCancel={() => setView("home")}
       />
     );
   }
-  if (activeForm === "reject") {
+  if (view === "reject") {
     return (
       <RejectForm
-        trip={trip}
+        trip={activeTrip}
         onAct={act}
         error={error}
-        onDone={() => { setActiveForm(null); loadTrip(); }}
+        onDone={() => { setView("home"); loadTrips(); }}
       />
+    );
+  }
+  if (view === "older") {
+    return (
+      <>
+        <TopBar title="Driver · Older trips" />
+        <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+          <button onClick={() => setView("home")} style={{ marginBottom: 16 }}>&larr; Back</button>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+          {older.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--slate)" }}>No older trips waiting.</div>
+          ) : (
+            older.map((t) => (
+              <TripCard
+                key={t.id}
+                trip={t}
+                onAct={(path, body) => actWithLocation(t.id, path, body)}
+                onSiteOut={() => { setActiveTicketId(t.id); setView("site-out"); }}
+                onReject={() => { setActiveTicketId(t.id); setView("reject"); }}
+                compact
+              />
+            ))
+          )}
+        </div>
+      </>
+    );
+  }
+  if (view === "site-out") {
+    const trip = activeTrip || current;
+    return (
+      <>
+        <TopBar title="Driver · Site Out" />
+        <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+          <button onClick={() => setView(older.some((t) => t.id === trip?.id) ? "older" : "home")} style={{ marginBottom: 16 }}>&larr; Back</button>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{trip?.ticket_number}</div>
+          <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.customer_name} &middot; {trip?.site_name}</div>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+          <SiteOutForm onAct={(body) => actWithLocation(trip.id, "site-out", body)} onDone={() => setView("home")} />
+        </div>
+      </>
     );
   }
 
   return (
     <>
       <TopBar title="Driver" />
-      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
-        <div className="card">
-          <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)" }}>
-            {trip?.truck_number || "No truck assigned"}
-          </div>
-          <div style={{ textAlign: "center", fontSize: 15, fontWeight: 600, margin: "4px 0 16px" }}>
-            {onDuty ? "On duty" : "Off duty"}
-          </div>
+      <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+        <button
+          onClick={toggleDuty}
+          style={{
+            width: "100%", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600,
+            padding: 12, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            background: onDuty ? "var(--alert-red)" : "var(--signal-green)", color: "#fff",
+          }}
+        >
+          {onDuty ? "Punched IN — tap for Punch OUT" : "Punch IN"}
+        </button>
 
-          {!navigator.onLine && (
-            <div style={{ textAlign: "center", fontSize: 12, background: "var(--amber-bg)", color: "var(--amber)", padding: 6, borderRadius: 8, marginBottom: 12 }}>
-              No signal — actions are being saved and will sync automatically
-            </div>
-          )}
-          {pending > 0 && (
-            <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
-              {pending} action{pending > 1 ? "s" : ""} waiting to sync
-              <button
-                style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
-                onClick={async () => { await flushQueue(); setPending(pendingCount()); loadTrip(); }}
-              >
-                Sync now
-              </button>
-            </div>
-          )}
-          {notice && <div style={{ textAlign: "center", fontSize: 12, color: "var(--signal-green)", marginBottom: 12 }}>{notice}</div>}
-          {error && <div style={{ textAlign: "center", fontSize: 12, color: "var(--alert-red)", marginBottom: 12 }}>{error}</div>}
-
-          <div style={{ display: "flex", justifyContent: "center" }}>
+        {!navigator.onLine && (
+          <div style={{ textAlign: "center", fontSize: 12, background: "var(--amber-bg)", color: "var(--amber)", padding: 6, borderRadius: 8, marginBottom: 12 }}>
+            No signal — actions are being saved and will sync automatically
+          </div>
+        )}
+        {pending > 0 && (
+          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+            {pending} action{pending > 1 ? "s" : ""} waiting to sync
             <button
-              onClick={toggleDuty}
-              style={{
-                width: "50%", aspectRatio: "1", borderRadius: "50%", border: "none",
-                background: onDuty ? "var(--alert-red)" : "var(--signal-green)",
-                color: "#fff", fontSize: 16, fontWeight: 600,
-              }}
+              style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+              onClick={async () => { await flushQueue(); setPending(pendingCount()); loadTrips(); }}
             >
-              {onDuty ? "Duty OFF" : "Duty ON"}
+              Sync now
             </button>
           </div>
-          {onDuty && (
-            <div style={{ textAlign: "center", fontSize: 11, color: "var(--slate)", marginTop: 10 }}>
-              Keep this screen open while on duty for the most accurate tracking —
-              reopening the app resumes automatically if it gets interrupted.
-            </div>
-          )}
+        )}
+        {notice && <div style={{ textAlign: "center", fontSize: 12, color: "var(--signal-green)", marginBottom: 12 }}>{notice}</div>}
+        {error && <div style={{ textAlign: "center", fontSize: 12, color: "var(--alert-red)", marginBottom: 12 }}>{error}</div>}
 
-          {trip && (
-            <div style={{ marginTop: 20 }}>
-              <div className="kpi-label" style={{ marginBottom: 8 }}>Assigned trip</div>
-              <div style={{ background: "var(--concrete)", borderRadius: 10, padding: 12, fontSize: 13 }}>
-                <Row label="Ticket" value={trip.ticket_number} />
-                <Row label="Site" value={trip.site_name} />
-                <Row label="Trip allowance" value={`₹${trip.trip_allowance_amount}`} strong />
-                {trip.site_latitude && trip.site_longitude && (
-                  <a
-                    href={`https://maps.google.com/?q=${trip.site_latitude},${trip.site_longitude}`}
-                    target="_blank" rel="noreferrer"
-                    style={{ display: "block", textAlign: "center", marginTop: 10, padding: 10, background: "var(--rebar)", color: "#fff", borderRadius: 8, fontWeight: 600, textDecoration: "none" }}
-                  >
-                    Navigate to site in Google Maps
-                  </a>
-                )}
-              </div>
+        {current ? (
+          <TripCard
+            trip={current}
+            onAct={(path, body) => actWithLocation(current.id, path, body)}
+            onSiteOut={() => { setActiveTicketId(current.id); setView("site-out"); }}
+            onReject={() => { setActiveTicketId(current.id); setView("reject"); }}
+          />
+        ) : (
+          <div className="card" style={{ textAlign: "center", fontSize: 13, color: "var(--slate)", marginBottom: 10 }}>
+            No trip assigned right now.
+          </div>
+        )}
 
-              {trip.no_site_supervisor && (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 6 }}>
-                    No Site Supervisor assigned to this site — confirm delivery yourself.
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <button
-                      disabled={!["created", "batching", "dispatched"].includes(trip.status)}
-                      onClick={() => act("arrival")}
-                    >
-                      Confirm truck arrival
-                    </button>
-                    <button
-                      disabled={trip.status !== "reached_site"}
-                      onClick={() => act("unloading-start")}
-                    >
-                      Confirm unloading start
-                    </button>
-                  </div>
-                  {trip.status === "unloading" && <CompleteForm onAct={act} />}
-                  {(trip.status === "reached_site" || trip.status === "unloading") && (
-                    <button
-                      className="btn-danger"
-                      style={{ width: "100%", marginTop: 8 }}
-                      onClick={() => setActiveForm("reject")}
-                    >
-                      Reject concrete
-                    </button>
-                  )}
-                </div>
+        {older.length > 0 && (
+          <a
+            href="#" onClick={(e) => { e.preventDefault(); setView("older"); }}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: "10px 12px", textDecoration: "none", marginBottom: 16 }}
+          >
+            <span style={{ fontSize: 12, color: "var(--alert-red)", fontWeight: 600 }}>
+              {older.length} older trip{older.length > 1 ? "s" : ""} still need{older.length === 1 ? "s" : ""} action
+            </span>
+            <span style={{ color: "var(--alert-red)" }}>&rsaquo;</span>
+          </a>
+        )}
+
+        {completedToday.length > 0 && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+              Completed today ({completedToday.length})
+              {completedToday.some((t) => t.allowance_paid) && (
+                <span style={{ color: "var(--signal-green)", fontWeight: 400 }}>
+                  {" "}&middot; ₹{completedToday.reduce((s, t) => s + Number(t.allowance_paid || 0), 0)} earned
+                </span>
               )}
             </div>
-          )}
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 16 }}>
-            <button
-              onClick={() => {
-                if (!trip?.truck_id) { setError("No truck assigned yet — can't report this without one."); return; }
-                setError(""); setNotice(""); setActiveForm("breakdown");
-              }}
-            >
-              Report breakdown
-            </button>
-            <Link to="/fuel"><button type="button" style={{ width: "100%" }}>Report fuel filling</button></Link>
+            {completedToday.map((t) => (
+              <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
+                <div>
+                  <div>{t.ticket_number} &middot; {t.customer_name}</div>
+                  <div style={{ fontSize: 10, color: "var(--slate)" }}>
+                    {t.status === "rejected" ? "Rejected" : t.plant_in_at ? `Plant In ${formatTime(t.plant_in_at)}` : `Site Out ${formatTime(t.site_out_at)}`}
+                  </div>
+                </div>
+                {t.allowance_paid ? <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>+₹{t.allowance_paid}</span> : null}
+              </div>
+            ))}
           </div>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <button
+            onClick={() => {
+              if (!current?.truck_id) { setError("No truck assigned yet — can't report this without one."); return; }
+              setError(""); setNotice(""); setView("breakdown");
+            }}
+          >
+            Report breakdown
+          </button>
+          <Link to="/fuel"><button type="button" style={{ width: "100%" }}>Report fuel filling</button></Link>
         </div>
       </div>
     </>
   );
 }
 
-function Row({ label, value, strong }) {
+function formatTime(iso) {
+  if (!iso) return "–";
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
+  const stageState = (key) => {
+    if (trip[`${key}_at`]) return "done";
+    // First not-yet-done stage in order is the actionable one
+    const order = ["plant_out", "site_in", "site_out", "plant_in"];
+    const idx = order.indexOf(key);
+    const priorDone = idx === 0 || trip[`${order[idx - 1]}_at`];
+    return priorDone ? "actionable" : "locked";
+  };
+
+  function tapStage(stage) {
+    if (stage.key === "plant_out") onAct("plant-out", {});
+    else if (stage.key === "site_in") onAct("arrival", {});
+    else if (stage.key === "site_out") onSiteOut();
+    else if (stage.key === "plant_in") onAct("plant-in", {});
+  }
+
+  const canDriverActSiteStages = trip.no_site_supervisor;
+
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-      <span style={{ color: "var(--slate)" }}>{label}</span>
-      <span style={{ fontWeight: strong ? 600 : 400 }}>{value}</span>
+    <div className="card" style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+        <div>
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>{compact ? "Assigned" : "Current trip"}</div>
+          <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600 }}>{trip.ticket_number}</div>
+        </div>
+        {trip.trip_allowance_amount && (
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 11, color: "var(--slate)" }}>Trip allowance</div>
+            <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600, color: "var(--signal-green)" }}>₹{trip.trip_allowance_amount}</div>
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: compact ? 13 : 15, fontWeight: 500 }}>{trip.customer_name}</div>
+      <div style={{ fontSize: compact ? 12 : 14, color: "var(--slate)", marginBottom: 8 }}>{trip.site_name}</div>
+      {trip.site_latitude && trip.site_longitude && (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: compact ? 10 : 20, fontSize: 13 }}>
+          {trip.distance_from_plant_km && <span style={{ color: "var(--slate)" }}>{trip.distance_from_plant_km} km from plant</span>}
+          <a href={`https://maps.google.com/?q=${trip.site_latitude},${trip.site_longitude}`} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>
+            Site location
+          </a>
+        </div>
+      )}
+
+      {!canDriverActSiteStages && (
+        <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
+          Site In / Site Out are confirmed by the Site Supervisor for this project.
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "flex-start" }}>
+        {STAGES.map((stage, i) => {
+          const state = stageState(stage.key);
+          const driverCanTap = (stage.key === "plant_out" || stage.key === "plant_in") ? true : canDriverActSiteStages;
+          const tappable = state === "actionable" && driverCanTap;
+          return (
+            <div key={stage.key} style={{ display: "flex", alignItems: "flex-start", flex: i === STAGES.length - 1 ? "0 0 auto" : 1 }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1, minWidth: compact ? 56 : 70 }}>
+                <button
+                  disabled={!tappable}
+                  onClick={() => tappable && tapStage(stage)}
+                  style={{
+                    width: "100%", border: "none", borderRadius: 8, fontSize: compact ? 11 : 13, fontWeight: 600,
+                    padding: compact ? "8px 2px" : "12px 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                    background: state === "done" ? "var(--signal-green)" : tappable ? "var(--rebar)" : "var(--concrete)",
+                    color: state === "done" || tappable ? "#fff" : "var(--slate)",
+                  }}
+                >
+                  {stage.label}
+                </button>
+                <div style={{ fontSize: 10, color: state === "done" ? "var(--slate)" : tappable ? "var(--rebar)" : "var(--slate)", marginTop: 5 }}>
+                  {trip[`${stage.key}_at`] ? formatTime(trip[`${stage.key}_at`]) : tappable ? "Tap to log" : "Waiting"}
+                </div>
+              </div>
+              {i < STAGES.length - 1 && <div style={{ height: 1, background: "var(--concrete)", flex: "0 0 10px", marginTop: compact ? 18 : 24 }} />}
+            </div>
+          );
+        })}
+      </div>
+
+      {canDriverActSiteStages && stageState("site_in") === "done" && stageState("site_out") !== "done" && (
+        <button className="btn-danger" style={{ width: "100%", marginTop: 10, fontSize: 12 }} onClick={onReject}>
+          Reject concrete
+        </button>
+      )}
     </div>
   );
 }
 
-function CompleteForm({ onAct }) {
+function SiteOutForm({ onAct, onDone }) {
   const [slump, setSlump] = useState("");
   const [noteStatus, setNoteStatus] = useState("pending");
   const [afterPourCare, setAfterPourCare] = useState(false);
@@ -293,17 +414,18 @@ function CompleteForm({ onAct }) {
 
   async function submit() {
     setSaving(true);
-    await onAct("unloading-complete", {
+    const ok = await onAct({
       site_slump_mm: slump,
       delivery_note_status: noteStatus,
       after_pour_care_confirmed: afterPourCare,
       remarks,
     });
     setSaving(false);
+    if (ok) onDone();
   }
 
   return (
-    <div style={{ marginTop: 12, fontSize: 13 }}>
+    <div style={{ fontSize: 13 }}>
       <div style={{ color: "var(--slate)", marginBottom: 4 }}>Site slump (mm)</div>
       <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
@@ -323,7 +445,7 @@ function CompleteForm({ onAct }) {
       <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
       <button onClick={submit} disabled={saving} style={{ width: "100%" }}>
-        {saving ? "Saving..." : "Save completion"}
+        {saving ? "Saving..." : "Log Site Out"}
       </button>
     </div>
   );
@@ -343,7 +465,7 @@ function RejectForm({ trip, onAct, onDone, error }) {
 
   async function submit() {
     setSaving(true);
-    const ok = await onAct("reject", {
+    const ok = await onAct(trip.id, "reject", {
       rejection_reason_id: reasonId || null,
       site_slump_mm: slump,
       rejected_quantity_m3: qty,

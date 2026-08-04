@@ -82,6 +82,47 @@ router.post("/gps-ping", async (req, res) => {
 // keep the QC/handoff a second pair of eyes rather than the driver marking
 // their own delivery. =====
 
+// Sequential gating for the 4-stage trip sheet (Plant Out / Site In / Site
+// Out / Plant In) — a driver can't log a later stage before the one before
+// it, so times can't come back out of order. Checks trip_events directly
+// rather than delivery_tickets.status, since Site In/Out can be logged by a
+// Site Supervisor instead of the driver on a supervised site, and this needs
+// to recognize that either way.
+async function hasStage(ticketId, eventType) {
+  const { rows } = await query(
+    "SELECT 1 FROM trip_events WHERE ticket_id = $1 AND event_type = $2 LIMIT 1",
+    [ticketId, eventType]
+  );
+  return rows.length > 0;
+}
+
+async function logStageEvent(ticketId, eventType, userId, lat, lng) {
+  await query(
+    `INSERT INTO trip_events (ticket_id, event_type, source, edited_by, latitude, longitude)
+     VALUES ($1, $2, 'manual', $3, $4, $5)`,
+    [ticketId, eventType, userId, lat || null, lng || null]
+  );
+}
+
+// Plant Out — available on every trip regardless of whether the site has a
+// Site Supervisor, since it's the driver leaving the plant either way.
+router.post("/tickets/:ticketId/plant-out", async (req, res) => {
+  if (await hasStage(req.params.ticketId, "left_plant")) return res.json({ ok: true, already_logged: true });
+  await logStageEvent(req.params.ticketId, "left_plant", req.user.id, req.body.lat, req.body.lng);
+  res.json({ ok: true });
+});
+
+// Plant In — same, available regardless of supervisor; gated on the site
+// having been marked done (by whoever did it — driver or supervisor).
+router.post("/tickets/:ticketId/plant-in", async (req, res) => {
+  if (!(await hasStage(req.params.ticketId, "unloading_completed"))) {
+    return res.status(400).json({ error: "Log Site Out before Plant In." });
+  }
+  if (await hasStage(req.params.ticketId, "returned_to_plant")) return res.json({ ok: true, already_logged: true });
+  await logStageEvent(req.params.ticketId, "returned_to_plant", req.user.id, req.body.lat, req.body.lng);
+  res.json({ ok: true });
+});
+
 async function requireNoSupervisor(req, res, next) {
   try {
     if (!(await orderHasNoSiteSupervisor(req.params.ticketId))) {
@@ -92,6 +133,9 @@ async function requireNoSupervisor(req, res, next) {
 }
 
 router.post("/tickets/:ticketId/arrival", requireNoSupervisor, async (req, res) => {
+  if (!(await hasStage(req.params.ticketId, "left_plant"))) {
+    return res.status(400).json({ error: "Log Plant Out before Site In." });
+  }
   await confirmArrival(req.params.ticketId, req.user.id);
   res.json({ ok: true });
 });
@@ -102,6 +146,21 @@ router.post("/tickets/:ticketId/unloading-start", requireNoSupervisor, async (re
 });
 
 router.post("/tickets/:ticketId/unloading-complete", requireNoSupervisor, async (req, res) => {
+  await confirmUnloadingComplete(req.params.ticketId, req.user.id, req.body);
+  res.json({ ok: true });
+});
+
+// Site Out — the trip sheet shows this as one stage, but underneath it's
+// still the existing unloading-start-then-complete pair (unloading-start
+// creates the site_qc row that unloading-complete needs to update; skipping
+// straight to complete would silently save nothing). Gated on Site In.
+router.post("/tickets/:ticketId/site-out", requireNoSupervisor, async (req, res) => {
+  if (!(await hasStage(req.params.ticketId, "reached_site"))) {
+    return res.status(400).json({ error: "Log Site In before Site Out." });
+  }
+  if (!(await hasStage(req.params.ticketId, "unloading_started"))) {
+    await confirmUnloadingStart(req.params.ticketId, req.user.id);
+  }
   await confirmUnloadingComplete(req.params.ticketId, req.user.id, req.body);
   res.json({ ok: true });
 });
