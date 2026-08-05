@@ -238,11 +238,12 @@ export default function ManagerDashboard() {
             onConfirmCompletion={confirmCompletion}
             setError={setError}
             onReload={load}
+            showDate
           />
         )}
         <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
         <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
-        <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
+        <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
         <RawMaterialStockCard />
@@ -495,7 +496,7 @@ function CompletedTripsTable({ trips }) {
   );
 }
 
-function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion, setError, onReload }) {
+function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion, setError, onReload, showDate }) {
   function isSiteReadyOverdue(o) {
     if (o.site_ready_confirmed || !o.assigned_site_supervisor_id || !o.scheduled_batching_time) return false;
     if (["completed", "closed", "cancelled"].includes(o.status)) return false;
@@ -522,13 +523,17 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead>
-              <tr><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th>Site ready</th><th></th><th></th><th></th></tr>
+              <tr>
+                {showDate && <th>Date</th>}
+                <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th>Site ready</th><th></th><th></th><th></th>
+              </tr>
             </thead>
             <tbody>
               {rows.map((o) => {
                 const overdue = isSiteReadyOverdue(o);
                 return (
                   <tr key={o.id} style={overdue ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                    {showDate && <td>{new Date(o.order_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>}
                     <td>{o.customer_name}</td>
                     <td>{o.site_name}</td>
                     <td>{o.mix_grade_name}</td>

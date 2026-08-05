@@ -93,6 +93,114 @@ export async function checkPumpChargeThreshold(orderId) {
   }
 }
 
+// Invoicing now follows the exact same principle as production quantity
+// (see syncOrderCompletionStatus above): a delivery note counts the moment
+// it's created — treated as invoiced and due for payment — not only once
+// someone gets around to confirming unloading complete. A pending delivery
+// is assumed accepted until it's explicitly rejected; only an explicit
+// rejection (or cancellation) reverses it. Called at ticket creation, and
+// again at unloading-complete as a safety net (e.g. a rate that didn't
+// exist yet at creation time but does by completion) — idempotent either
+// way via ON CONFLICT DO NOTHING.
+export async function generateInvoiceForTicket(ticketId) {
+  const { rows: rateRows } = await query(
+    `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.order_date,
+            rm.rate_per_m3, co.pump_requirement,
+            co.pump_charge_applicable, co.pump_charge_amount,
+            co.part_load_applicable, co.part_load_charge_amount
+     FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
+       AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
+       AND rm.effective_from <= co.order_date AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
+     WHERE dt.id = $1
+     ORDER BY (rm.site_id = co.site_id) DESC, rm.effective_from DESC, rm.id DESC LIMIT 1`,
+    [ticketId]
+  );
+  if (rateRows[0]) {
+    const r = rateRows[0];
+    const concreteAmount = Number(r.loaded_quantity_m3) * Number(r.rate_per_m3);
+
+    // Both pump charge and part load are Manager's own confirmed decision at
+    // order creation (not automatic) — still only charged once per order,
+    // on whichever ticket happens to be invoiced first.
+    let pumpingCharge = 0;
+    let partLoadCharge = 0;
+    if (r.pump_charge_applicable || r.part_load_applicable) {
+      const { rows: alreadyCharged } = await query(
+        `SELECT COALESCE(SUM(pumping_charge), 0) AS pump_total, COALESCE(SUM(part_load_charge), 0) AS part_load_total
+         FROM invoices i JOIN delivery_tickets dt2 ON dt2.id = i.ticket_id
+         WHERE dt2.order_id = $1`,
+        [r.order_id]
+      );
+      const nothingChargedYet = Number(alreadyCharged[0].pump_total) === 0 && Number(alreadyCharged[0].part_load_total) === 0;
+      if (nothingChargedYet) {
+        if (r.pump_charge_applicable) pumpingCharge = Number(r.pump_charge_amount || 0);
+        if (r.part_load_applicable) partLoadCharge = Number(r.part_load_charge_amount || 0);
+      }
+    }
+
+    await query(
+      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount)
+       VALUES ($1, $2, $3, $4, $5, 0, $6)
+       ON CONFLICT DO NOTHING`,
+      [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, concreteAmount + pumpingCharge + partLoadCharge]
+    );
+    return true;
+  } else {
+    // No rate on file for this customer/mix-grade combination — this delivery
+    // will never show up in Sales/Collections until a rate is added and this
+    // is corrected, so make that visible instead of a silent gap. Guarded so
+    // this notice only fires once (creation attempt), not again at
+    // unloading-complete for the same ticket.
+    const { rows: already } = await query(
+      "SELECT 1 FROM notifications WHERE ticket_id = $1 AND type = 'no_rate_on_file'",
+      [ticketId]
+    );
+    if (already.length) return false;
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+       VALUES ('accountant', $1, 'no_rate_on_file',
+         'Delivery note created but no rate is on file for this customer/grade — invoice not generated')`,
+      [ticketId]
+    );
+    const { rows: t } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
+    await pushToRole("accountant", {
+      title: "No rate on file",
+      body: `${t[0]?.ticket_number || "A delivery"} — invoice not generated`,
+      url: "/accountant",
+    });
+    return false;
+  }
+}
+
+// Reverses an already-generated invoice when a delivery turns out to be
+// rejected or cancelled — never silently, and never touching one a payment
+// has already been recorded against (flagged for Accountant to handle by
+// hand instead, same safety rule used everywhere else money is involved).
+export async function voidInvoiceForTicket(ticketId, reason) {
+  const { rows } = await query(
+    `SELECT i.id, i.total_amount, COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
+     FROM invoices i WHERE i.ticket_id = $1`,
+    [ticketId]
+  );
+  const invoice = rows[0];
+  if (!invoice) return;
+
+  if (Number(invoice.payment_count) > 0) {
+    const { rows: t } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
+    const message = `${t[0]?.ticket_number || "A delivery"} was ${reason}, but a payment has already been recorded against its invoice (₹${invoice.total_amount}) — can't reverse it automatically. Needs manual review.`;
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('accountant', $1, 'invoice_reversal_blocked', $2)`,
+      [ticketId, message]
+    );
+    await pushToRole("accountant", { title: "Invoice reversal needs review", body: message, url: "/accountant" });
+    return;
+  }
+
+  await query("DELETE FROM invoices WHERE id = $1", [invoice.id]);
+}
+
 export async function logTripEvent(ticketId, eventType, userId) {
   await query(
     `INSERT INTO trip_events (ticket_id, event_type, source, edited_by)
@@ -150,73 +258,10 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
     );
   }
 
-  // Generate invoice for the Accountant, based on the customer/grade rate on file.
-  // Rate is looked up against the ORDER's own date, not today's date — using
-  // CURRENT_DATE here was the bug behind different deliveries on the very same
-  // order getting different rates, whenever a rate changed between one
-  // delivery completing and the next (each ticket completes at a different
-  // real-world moment, but they should all be priced as of when the order was
-  // placed, not whenever each individual truck happened to finish unloading).
-  const { rows: rateRows } = await query(
-    `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.order_date,
-            rm.rate_per_m3, co.pump_requirement,
-            co.pump_charge_applicable, co.pump_charge_amount,
-            co.part_load_applicable, co.part_load_charge_amount
-     FROM delivery_tickets dt
-     JOIN customer_orders co ON co.id = dt.order_id
-     JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
-       AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
-       AND rm.effective_from <= co.order_date AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
-     WHERE dt.id = $1
-     ORDER BY (rm.site_id = co.site_id) DESC, rm.effective_from DESC, rm.id DESC LIMIT 1`,
-    [ticketId]
-  );
-  if (rateRows[0]) {
-    const r = rateRows[0];
-    const concreteAmount = Number(r.loaded_quantity_m3) * Number(r.rate_per_m3);
-
-    // Both pump charge and part load are Manager's own confirmed decision at
-    // order creation (not automatic) — still only charged once per order,
-    // on whichever ticket happens to be invoiced first.
-    let pumpingCharge = 0;
-    let partLoadCharge = 0;
-    if (r.pump_charge_applicable || r.part_load_applicable) {
-      const { rows: alreadyCharged } = await query(
-        `SELECT COALESCE(SUM(pumping_charge), 0) AS pump_total, COALESCE(SUM(part_load_charge), 0) AS part_load_total
-         FROM invoices i JOIN delivery_tickets dt2 ON dt2.id = i.ticket_id
-         WHERE dt2.order_id = $1`,
-        [r.order_id]
-      );
-      const nothingChargedYet = Number(alreadyCharged[0].pump_total) === 0 && Number(alreadyCharged[0].part_load_total) === 0;
-      if (nothingChargedYet) {
-        if (r.pump_charge_applicable) pumpingCharge = Number(r.pump_charge_amount || 0);
-        if (r.part_load_applicable) partLoadCharge = Number(r.part_load_charge_amount || 0);
-      }
-    }
-
-    await query(
-      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount)
-       VALUES ($1, $2, $3, $4, $5, 0, $6)
-       ON CONFLICT DO NOTHING`,
-      [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, concreteAmount + pumpingCharge + partLoadCharge]
-    );
-  } else {
-    // No rate on file for this customer/mix-grade combination — this delivery
-    // will never show up in Sales/Collections until a rate is added and this
-    // is corrected, so make that visible instead of a silent gap.
-    await query(
-      `INSERT INTO notifications (recipient_role, ticket_id, type, message)
-       VALUES ('accountant', $1, 'no_rate_on_file',
-         'Delivery completed but no rate is on file for this customer/grade — invoice not generated')`,
-      [ticketId]
-    );
-    const { rows: t } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
-    await pushToRole("accountant", {
-      title: "No rate on file",
-      body: `${t[0]?.ticket_number || "A delivery"} completed with no rate — invoice not generated`,
-      url: "/accountant",
-    });
-  }
+  // Safety net — invoicing normally already happened at ticket creation now.
+  // This only does anything if that first attempt found no rate on file
+  // (ON CONFLICT DO NOTHING makes a repeat call harmless either way).
+  await generateInvoiceForTicket(ticketId);
 
   await syncOrderCompletionStatus(orderId);
 }
@@ -232,6 +277,7 @@ export async function confirmRejection(ticketId, userId, { rejection_reason_id, 
   );
   await query("UPDATE delivery_tickets SET status = 'rejected' WHERE id = $1", [ticketId]);
   await logTripEvent(ticketId, "rejected", userId);
+  await voidInvoiceForTicket(ticketId, "rejected");
 
   await query(
     `INSERT INTO notifications (recipient_role, ticket_id, type, message)

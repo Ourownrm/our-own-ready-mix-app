@@ -2,6 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { voidInvoiceForTicket, generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 
 const router = Router();
 router.use(requireAuth); // per-route role checks below, since customers/sites/rates need broader access
@@ -616,16 +617,44 @@ router.get("/tickets", requireRole("administrator", "manager"), async (req, res)
 
 router.patch("/tickets/:id", requireRole("administrator", "manager"), async (req, res) => {
   const { loaded_quantity_m3 } = req.body;
+
+  const { rows: before } = await query("SELECT loaded_quantity_m3 FROM delivery_tickets WHERE id = $1", [req.params.id]);
+  if (!before.length) return res.status(404).json({ error: "Ticket not found." });
+  const oldQty = Number(before[0].loaded_quantity_m3);
+
   const { rows } = await query(
     `UPDATE delivery_tickets SET loaded_quantity_m3 = COALESCE($1, loaded_quantity_m3) WHERE id = $2 RETURNING *`,
     [loaded_quantity_m3, req.params.id]
   );
-  if (!rows.length) return res.status(404).json({ error: "Ticket not found." });
+
+  if (loaded_quantity_m3 && Number(loaded_quantity_m3) !== oldQty && oldQty > 0) {
+    const { rows: invRows } = await query(
+      `SELECT i.id, i.concrete_amount, i.pumping_charge, i.part_load_charge,
+              COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
+       FROM invoices i WHERE i.ticket_id = $1`,
+      [req.params.id]
+    );
+    const inv = invRows[0];
+    // Skipped automatically (not an error) if there's no invoice yet, or a
+    // payment has already been recorded against it — same safety rule used
+    // everywhere else money is involved.
+    if (inv && Number(inv.payment_count) === 0) {
+      const ratePerM3 = Number(inv.concrete_amount) / oldQty;
+      const newConcreteAmount = ratePerM3 * Number(loaded_quantity_m3);
+      const newTotal = newConcreteAmount + Number(inv.pumping_charge) + Number(inv.part_load_charge);
+      await query(
+        "UPDATE invoices SET concrete_amount = $1, total_amount = $2 WHERE id = $3",
+        [newConcreteAmount, newTotal, inv.id]
+      );
+    }
+  }
+
   res.json(rows[0]);
 });
 
 router.post("/tickets/:id/cancel", requireRole("administrator", "manager"), async (req, res) => {
   await query("UPDATE delivery_tickets SET status = 'cancelled' WHERE id = $1", [req.params.id]);
+  await voidInvoiceForTicket(req.params.id, "cancelled");
   res.json({ ok: true });
 });
 

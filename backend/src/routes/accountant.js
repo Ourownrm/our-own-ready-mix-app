@@ -251,7 +251,7 @@ async function buildRecalculationPreview(rateId) {
      LEFT JOIN invoices i ON i.ticket_id = dt.id
      WHERE co.customer_id = $1 AND co.mix_grade_id = $2
        AND ($5::int IS NULL OR co.site_id = $5)
-       AND dt.status = 'completed'
+       AND dt.status NOT IN ('cancelled', 'rejected')
        AND dt.ticket_date >= $3 AND ($4::date IS NULL OR dt.ticket_date <= $4)
      ORDER BY dt.ticket_date, dt.id`,
     [rate.customer_id, rate.mix_grade_id, rate.effective_from, rate.effective_to, rate.site_id]

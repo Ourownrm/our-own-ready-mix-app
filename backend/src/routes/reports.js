@@ -168,6 +168,8 @@ router.get("/director-dashboard", async (req, res) => {
        LEFT JOIN invoices i ON i.ticket_id = dt.id
        LEFT JOIN LATERAL (
          SELECT CASE
+           WHEN dt.status != 'completed' THEN
+             'This delivery was never marked complete (status: ' || dt.status || ') — invoicing only happens at that point, regardless of whether a rate exists.'
            WHEN NOT EXISTS (
              SELECT 1 FROM rate_master rm WHERE rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
            ) THEN 'No rate on file at all for this customer and grade.'
@@ -184,7 +186,7 @@ router.get("/director-dashboard", async (req, res) => {
                AND (rm.site_id = co.site_id OR rm.site_id IS NULL) AND rm.effective_from <= co.order_date
                AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
            ) THEN 'The rate on file had already ended before this order''s date.'
-           ELSE 'A rate should match this — worth a manual check.'
+           ELSE 'A rate should match this and the delivery is marked complete — genuinely worth a manual check.'
          END AS likely_reason
        ) diag ON true
        WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)

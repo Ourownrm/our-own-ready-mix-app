@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { syncOrderCompletionStatus, checkPumpChargeThreshold } from "../lib/deliveryConfirmation.js";
+import { syncOrderCompletionStatus, checkPumpChargeThreshold, generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { pushToUser } from "../lib/push.js";
 
 const router = Router();
@@ -118,6 +118,12 @@ router.post("/tickets", requireRole("plant_operator", "administrator"), async (r
       );
       await syncOrderCompletionStatus(order_id);
       await checkPumpChargeThreshold(order_id);
+      // A delivery note is treated as invoiced and due for payment the
+      // moment it's created — the same principle already used for counting
+      // production quantity (counted immediately, only reduced by an
+      // explicit rejection later). Pending is assumed accepted until proven
+      // otherwise.
+      await generateInvoiceForTicket(rows[0].id);
 
       // Notify the Site Supervisor actually assigned to this order — a truck
       // is now loaded and headed their way. Nothing to notify if the site

@@ -1900,3 +1900,80 @@ after that, it's a real, separate bug and I'll dig further with fresh evidence.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Sixty-third round — the real explanation for the rate mystery, plus items 1 & 3
+
+### The actual rate-matching bug — found for real this time
+"No duplicates found" ruled out last round's theory. Traced it properly this time by
+comparing your two screenshots line by line: the recalculate tool only ever considers
+tickets with `status = 'completed'` (correct — you shouldn't invoice a delivery that
+hasn't been confirmed done). But the "Unbilled deliveries" diagnostic never checked
+that at all — it only ever checked reasons on the **rate** side (missing, wrong site,
+not yet effective, already ended), and fell back to a vague "worth a manual check"
+whenever none of those applied. If a ticket is simply still sitting at an earlier
+status because nobody's confirmed unloading complete for it yet — which is exactly the
+kind of stuck-trip scenario fixed a couple of rounds ago — invoicing was never going to
+happen regardless of whether the rate is perfect, and the diagnostic had no way to say
+so. Fixed: it now checks ticket status first, and will tell you plainly which specific
+deliveries are stuck rather than pointing at the rate.
+
+**What this means for your two customers**: I'd bet this is why TS Projects' and PM
+Kelukutty's deliveries are showing "worth a manual check" — the diagnostic couldn't see
+this reason before. Redeploy this fix and check "Unbilled deliveries" again — it should
+now tell you directly whether those specific tickets are stuck at an earlier status
+(and if so, whoever's responsible for confirming that project's deliveries — driver on
+a self-service site, or the Site Supervisor — needs to go close them out; nothing about
+the rate needs fixing at all in that case).
+
+### Item 1 — Upcoming orders now show date first
+Both "Upcoming orders" and "carried forward" tables (the two that span multiple
+different dates, unlike the single-day today/tomorrow tables) now show a Date column
+first.
+
+### Item 3 — moved to its own standalone page, not on any dashboard
+New page at **Reports → More → "Trip time cross-check"** — reachable by a direct link,
+not embedded in either Manager's or Administrator's main dashboard view anymore.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Sixty-fourth round — invoicing now matches how production is already counted
+
+Real architecture change, not a report fix. Previously, an invoice was only created
+once someone explicitly confirmed "unloading complete" — a delivery note sitting at
+any earlier status didn't count as sales at all, no matter how long it sat there.
+That's now changed to match the exact principle already used for production quantity:
+**a delivery note is treated as invoiced and due for payment the moment it's
+created** — pending is assumed accepted until it's explicitly rejected, not the
+other way around.
+
+- **Ticket creation** now generates the invoice immediately (if a rate is on file) —
+  not at completion. Completion still tries too, as a safety net, for the rare case
+  a rate didn't exist yet at creation but does by the time it's confirmed.
+- **Rejection now reverses the invoice** — deletes it outright, which automatically
+  removes it from the customer's outstanding total and from "Sales Today" if it was
+  today's delivery, since those figures are computed by summing whatever invoices
+  currently exist. Nothing else needed to change for that part — it falls out
+  naturally from invoices no longer existing.
+- **Cancelling a ticket** (Correct tickets) does the same reversal.
+- **Safety rule preserved everywhere**: if a payment has already been recorded against
+  an invoice, it's never silently reversed — flagged for Accountant to review by hand
+  instead, same rule already used for every other money-touching correction in this
+  app.
+- **Correcting a ticket's quantity** now also corrects its invoice (if one exists and
+  has no payment yet) — this matters more now that invoicing happens this early, since
+  a quantity fix is much more likely to land after the invoice already exists.
+- **"Recalculate deliveries"** updated to match — it used to only consider tickets
+  that had reached `completed`; now it considers anything not cancelled or rejected,
+  consistent with the new rule.
+
+### What this does *not* do
+This doesn't retroactively invoice tickets that already exist in an incomplete status
+from before this change — the trigger only fires on new ticket creation, rejection, or
+cancellation going forward. For any of the currently-stuck deliveries from the last
+couple of rounds, once you confirm the correct rate is in place, run **"Recalculate
+deliveries"** on that rate — it'll now correctly pick them up since it no longer
+requires `completed` status.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
