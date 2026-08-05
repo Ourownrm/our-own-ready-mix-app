@@ -1836,3 +1836,67 @@ you actually want to see the full history.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Sixty-first round — real bug: driver permanently stuck on supervised sites
+
+Confirmed exactly from your screenshot: on a site with a Site Supervisor, "Plant In"
+was gated on "Site Out" — but Site In/Site Out are entirely the Supervisor's own
+confirmation, on their own timing, not something the driver can do or influence at
+all. If the Supervisor was slow, busy, or simply hadn't gotten to it yet, the driver
+had no way to ever close that trip out themselves — permanently stuck in "Older trips,"
+which is exactly the original stuck-trip problem this whole feature was built to fix,
+just arriving through a different door.
+
+**Fixed**: "Plant In" now only requires "Site Out" first on a site with **no**
+Supervisor (where the driver is the one logging Site Out themselves, so keeping their
+own sequence honest still makes sense). On a supervised site, Plant In is tappable as
+soon as Plant Out is logged — the driver reporting "I'm back at the plant" is true
+regardless of what the site paperwork's status is. Fixed on both backend (the actual
+permission check) and frontend (the button's visual lock state), so this should
+immediately un-stick the two trips in your screenshot the next time that driver loads
+the app — no data fix needed, `plant_out_at` is already recorded on both.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Sixty-second round — item 1 built, items 2-4 re-verified
+
+### Item 1 — Upcoming orders on Manager Dashboard, done
+New **"Upcoming orders"** section (anything scheduled beyond tomorrow, not yet
+terminal) — same table component, same styling as Running Orders Today /
+Scheduled tomorrow, not a separate read-only view like Admin's. Every order table
+(today, tomorrow, upcoming, and carried-forward) now has an **Edit** button that jumps
+directly into "Correct orders" with that specific order pre-opened for editing —
+confirmed this correctly covers booking-converted orders too, since the underlying
+`/administrator/orders` endpoint that "Correct orders" runs on has no filter that
+excludes them by origin; there was never a separate code path to fix here, just a way
+to reach it quickly from the dashboard.
+
+### Item 3 — re-verified clean
+Checked directly: zero references to the cross-check anywhere in
+`ManagerDashboard.jsx` now, fully present and working on Administrator's Reports page.
+
+### Item 4 — re-verified, one nuance worth knowing
+Re-traced the duplicate-site merge logic end to end. It's correct, with one edge case
+worth flagging rather than hiding: if both the duplicate and the canonical site
+happened to each have their *own* currently-active rate for the same grade, merging
+leaves two active-looking rate rows behind (the lookup logic still resolves
+deterministically to one of them, so nothing breaks) — the other becomes redundant
+and is worth manually ending via "End this rate" afterward. Not a bug, just something
+to check when merging a pair that both had rates already.
+
+### Item 2 — re-traced thoroughly, most likely explained by item 4
+Went through the entire confirmation flow line by line and could not find a direct
+bug in how the amount is computed, sent, or stored — the code is correct as written.
+My strongest remaining explanation is that this was the same duplicate-site issue as
+item 4: if a booking's site doesn't match the site a rate is actually configured
+against, the lookup can fall through to an incomplete or legacy rate. Made the display
+more robust regardless — a genuinely zero/unset rate now shows "not set" instead of a
+number that could read as "00," so the confirmation screen can no longer *display*
+something confusing even in that edge case. Given I can't fully confirm this without
+live access to your data, **please re-test this specific flow after merging the
+duplicate sites from item 4** and let me know if "00" still shows up — if it does
+after that, it's a real, separate bug and I'll dig further with fresh evidence.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

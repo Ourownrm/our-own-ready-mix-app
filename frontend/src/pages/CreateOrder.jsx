@@ -66,7 +66,7 @@ export default function CreateOrder({ onDone }) {
     setForm((f) => ({ ...f, [field]: value }));
   }
 
-  const pumpChargeAmount = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_charge : form.pump_requirement === "line_pump" ? rateInfo?.line_pump_charge : null;
+  const pumpChargeAmount = form.pump_requirement === "boom_pump" ? Number(rateInfo?.boom_pump_charge || 0) || null : form.pump_requirement === "line_pump" ? Number(rateInfo?.line_pump_charge || 0) || null : null;
   const pumpMinQty = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_min_qty_m3 : rateInfo?.line_pump_min_qty_m3;
   const needsPumpDecision = form.pump_requirement !== "without_pump" && rateInfo;
   const partLoadThreshold = Number(rateInfo?.part_load_min_qty_m3 ?? 5);

@@ -143,6 +143,8 @@ export function SitesPanel({ setError }) {
   const [assigningId, setAssigningId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [notice, setNotice] = useState("");
 
   async function load() {
     try {
@@ -162,7 +164,17 @@ export function SitesPanel({ setError }) {
       await apiRequest("/administrator/sites", { method: "POST", body: form });
       setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "" });
       load();
-    } catch (err) { setError(err.message); } finally { setSaving(false); }
+    } catch (err) {
+      if (err.status === 409 && window.confirm(`${err.message}\n\nCreate it anyway?`)) {
+        try {
+          await apiRequest("/administrator/sites", { method: "POST", body: { ...form, force: true } });
+          setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "" });
+          load();
+        } catch (err2) { setError(err2.message); }
+      } else if (err.status !== 409) {
+        setError(err.message);
+      }
+    } finally { setSaving(false); }
   }
 
   function useCurrentLocation() {
@@ -222,11 +234,18 @@ export function SitesPanel({ setError }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>Projects and sites</div>
-        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-          Show disabled
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+            Show disabled
+          </label>
+          <button style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setShowDuplicates(true)}>Check for duplicate sites</button>
+        </div>
       </div>
+      {showDuplicates && (
+        <DuplicateSitesReview setError={setError} onClose={() => setShowDuplicates(false)} onDone={(msg) => { setNotice(msg); setShowDuplicates(false); load(); }} />
+      )}
+      {notice && <div style={{ color: "var(--signal-green)", fontSize: 12, marginBottom: 8 }}>{notice}</div>}
       <div className="card" style={{ marginBottom: 12, overflowX: "auto" }}>
         <table style={{ fontSize: 13 }}>
           <thead><tr><th>Site</th><th>Customer</th><th>Distance</th><th>Sales person</th><th>Status</th><th></th></tr></thead>
@@ -481,6 +500,99 @@ export function RatesPanel({ setError }) {
         </div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
       </form>
+    </div>
+  );
+}
+
+function DuplicateSitesReview({ setError, onClose, onDone }) {
+  const [rows, setRows] = useState(null);
+  const [canonicalBySite, setCanonicalBySite] = useState({}); // group key -> chosen canonical site id
+  const [merging, setMerging] = useState(null);
+
+  useEffect(() => {
+    apiRequest("/administrator/sites/duplicates")
+      .then(setRows)
+      .catch((err) => setError(err.message));
+  }, []);
+
+  if (rows === null) return <div className="card" style={{ marginBottom: 20, fontSize: 13 }}>Checking for duplicates...</div>;
+
+  const groups = {};
+  for (const r of rows) {
+    const key = `${r.customer_id}:${r.name.trim().toLowerCase()}`;
+    (groups[key] ||= []).push(r);
+  }
+  const groupList = Object.entries(groups);
+
+  async function merge(groupKey, duplicateId) {
+    const canonicalId = canonicalBySite[groupKey];
+    if (!canonicalId) { setError("Pick which one to keep first."); return; }
+    if (String(canonicalId) === String(duplicateId)) return;
+    if (!window.confirm("Merge this site into the one you picked? All its orders, rates, and bookings will move over, and this one will be disabled. This can't be undone automatically.")) return;
+    setMerging(duplicateId); setError("");
+    try {
+      await apiRequest(`/administrator/sites/${duplicateId}/merge-into/${canonicalId}`, { method: "POST" });
+      onDone("Sites merged.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setMerging(null);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 20, border: "2px solid var(--alert-red)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Duplicate sites</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+        Two site records with the same name under the same customer split orders and rates silently
+        between them — a rate set up against one never matches deliveries recorded against the other,
+        even though both look identical everywhere. Pick which one to keep, then merge the other into it.
+      </div>
+      {groupList.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No duplicates found.</div>
+      ) : (
+        groupList.map(([key, group]) => (
+          <div key={key} style={{ marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid var(--concrete)" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{group[0].customer_name} — "{group[0].name}" ({group.length} records)</div>
+            <table style={{ fontSize: 12, width: "100%" }}>
+              <thead><tr><th></th><th>Site ID</th><th>Status</th><th>Orders</th><th>Rates</th><th>Bookings</th><th>Forecasts</th><th></th></tr></thead>
+              <tbody>
+                {group.map((s) => (
+                  <tr key={s.id}>
+                    <td>
+                      <input
+                        type="radio"
+                        name={key}
+                        checked={String(canonicalBySite[key]) === String(s.id)}
+                        onChange={() => setCanonicalBySite({ ...canonicalBySite, [key]: s.id })}
+                      />
+                    </td>
+                    <td>#{s.id}</td>
+                    <td>{s.is_active ? "Active" : "Disabled"}</td>
+                    <td>{s.order_count}</td>
+                    <td>{s.rate_count}</td>
+                    <td>{s.booking_count}</td>
+                    <td>{s.forecast_count}</td>
+                    <td>
+                      {String(canonicalBySite[key]) !== String(s.id) && (
+                        <button
+                          style={{ fontSize: 11, padding: "3px 8px" }}
+                          disabled={!canonicalBySite[key] || merging === s.id}
+                          onClick={() => merge(key, s.id)}
+                        >
+                          {merging === s.id ? "Merging..." : "Merge into selected"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>Select the one to keep, then merge each of the others into it.</div>
+          </div>
+        ))
+      )}
+      <button onClick={onClose}>Close</button>
     </div>
   );
 }
@@ -983,7 +1095,7 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
   );
 }
 
-export function OrdersPanel({ setError }) {
+export function OrdersPanel({ setError, initialEditId }) {
   const [orders, setOrders] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "" });
@@ -992,7 +1104,17 @@ export function OrdersPanel({ setError }) {
   const [saving, setSaving] = useState(false);
 
   async function load() {
-    try { setOrders(await apiRequest("/administrator/orders")); } catch (err) { setError(err.message); }
+    try {
+      const rows = await apiRequest("/administrator/orders");
+      setOrders(rows);
+      if (initialEditId) {
+        const target = rows.find((o) => String(o.id) === String(initialEditId));
+        if (target && !["cancelled", "closed", "completed"].includes(target.status)) {
+          startEdit(target);
+          setTimeout(() => document.getElementById(`order-row-${target.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+        }
+      }
+    } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
 
@@ -1042,7 +1164,7 @@ export function OrdersPanel({ setError }) {
         <tbody>
           {orders.map((o) => (
             <Fragment key={o.id}>
-              <tr>
+              <tr id={`order-row-${o.id}`} style={editing === o.id ? { background: "var(--amber-bg)" } : undefined}>
                 <td>
                   {new Date(o.order_date).toLocaleDateString()}
                   {o.original_order_date && (

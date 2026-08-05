@@ -317,9 +317,18 @@ function formatTime(iso) {
 }
 
 function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
+  const canDriverActSiteStages = trip.no_site_supervisor;
+
   const stageState = (key) => {
     if (trip[`${key}_at`]) return "done";
-    // First not-yet-done stage in order is the actionable one
+    // On a supervised site, Plant In doesn't wait on Site Out — that's the
+    // Supervisor's own confirmation, on their own timing, and a driver
+    // shouldn't be stuck unable to close a trip just because that hasn't
+    // happened yet. Only a no-supervisor site (where the driver logs Site
+    // Out themselves) keeps the full sequential order.
+    if (key === "plant_in" && !canDriverActSiteStages) {
+      return trip.plant_out_at ? "actionable" : "locked";
+    }
     const order = ["plant_out", "site_in", "site_out", "plant_in"];
     const idx = order.indexOf(key);
     const priorDone = idx === 0 || trip[`${order[idx - 1]}_at`];
@@ -332,8 +341,6 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
     else if (stage.key === "site_out") onSiteOut();
     else if (stage.key === "plant_in") onAct("plant-in", {});
   }
-
-  const canDriverActSiteStages = trip.no_site_supervisor;
 
   return (
     <div className="card" style={{ marginBottom: 10 }}>

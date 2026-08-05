@@ -16,7 +16,10 @@ export async function apiRequest(path, { method = "GET", body } = {}) {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || "Something went wrong. Please try again.");
+    const err = new Error(data.error || "Something went wrong. Please try again.");
+    err.data = data;
+    err.status = res.status;
+    throw err;
   }
   return data;
 }

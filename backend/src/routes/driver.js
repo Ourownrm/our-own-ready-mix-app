@@ -115,7 +115,21 @@ router.post("/tickets/:ticketId/plant-out", async (req, res) => {
 // Plant In — same, available regardless of supervisor; gated on the site
 // having been marked done (by whoever did it — driver or supervisor).
 router.post("/tickets/:ticketId/plant-in", async (req, res) => {
-  if (!(await hasStage(req.params.ticketId, "unloading_completed"))) {
+  const { rows } = await query(
+    `SELECT (co.assigned_site_supervisor_id IS NULL) AS no_site_supervisor
+     FROM delivery_tickets dt JOIN customer_orders co ON co.id = dt.order_id
+     WHERE dt.id = $1`,
+    [req.params.ticketId]
+  );
+  const noSupervisor = rows[0]?.no_site_supervisor;
+  // On a site with no Site Supervisor, the driver is the one who logs Site
+  // Out themselves, so requiring it first still makes sense — it keeps
+  // their own stage order honest. On a supervised site, Site In/Out are
+  // entirely the Supervisor's to confirm and on their own timing; gating
+  // Plant In on that would leave a driver permanently unable to close a
+  // trip whenever the Supervisor is slow or misses it. The driver reporting
+  // "I'm back at the plant" is true regardless of that paperwork's status.
+  if (noSupervisor && !(await hasStage(req.params.ticketId, "unloading_completed"))) {
     return res.status(400).json({ error: "Log Site Out before Plant In." });
   }
   if (await hasStage(req.params.ticketId, "returned_to_plant")) return res.json({ ok: true, already_logged: true });

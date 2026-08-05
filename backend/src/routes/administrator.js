@@ -158,9 +158,23 @@ router.get("/sites", requireRole("administrator", "manager"), async (req, res) =
 });
 
 router.post("/sites", requireRole("administrator", "manager"), async (req, res) => {
-  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id } = req.body;
+  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id, force } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   if (!assigned_sales_representative_id) return res.status(400).json({ error: "Every site needs a salesperson assigned." });
+
+  if (!force) {
+    const { rows: dup } = await query(
+      "SELECT id FROM sites WHERE customer_id = $1 AND LOWER(TRIM(name)) = LOWER(TRIM($2))",
+      [customer_id, name]
+    );
+    if (dup.length) {
+      return res.status(409).json({
+        error: `A site named "${name}" already exists for this customer. Creating another with the same name will silently split future orders and rates across two records. Use the existing one, or confirm to create a duplicate anyway.`,
+        duplicate_site_id: dup[0].id,
+      });
+    }
+  }
+
   const { rows } = await query(
     `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
@@ -214,7 +228,59 @@ router.delete("/sites/:id", requireRole("administrator", "manager"), async (req,
   res.json({ ok: true });
 });
 
-// ===== Master data: Trucks =====
+// Two site records with the identical name under the same customer is a
+// real, serious problem, not just a display nuisance — a rate set up
+// against one of them silently never matches orders created against the
+// other, even though both show the same name everywhere. Detects the
+// pattern (case/whitespace-insensitive match) so it can be found before it
+// causes another round of "why isn't this invoicing."
+router.get("/sites/duplicates", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT s.id, s.name, s.customer_id, c.name AS customer_name, s.is_active,
+            (SELECT COUNT(*) FROM customer_orders WHERE site_id = s.id) AS order_count,
+            (SELECT COUNT(*) FROM rate_master WHERE site_id = s.id) AS rate_count,
+            (SELECT COUNT(*) FROM bookings WHERE site_id = s.id) AS booking_count,
+            (SELECT COUNT(*) FROM sales_forecasts WHERE site_id = s.id) AS forecast_count
+     FROM sites s
+     JOIN customers c ON c.id = s.customer_id
+     WHERE EXISTS (
+       SELECT 1 FROM sites s2
+       WHERE s2.customer_id = s.customer_id AND s2.id != s.id
+         AND LOWER(TRIM(s2.name)) = LOWER(TRIM(s.name))
+     )
+     ORDER BY c.name, LOWER(TRIM(s.name)), s.id`
+  );
+  res.json(rows);
+});
+
+// Reassigns every reference from one site to another and disables the one
+// being merged away — the records themselves (past orders, invoices) are
+// never touched or deleted, only which site row they point at.
+router.post("/sites/:duplicateId/merge-into/:canonicalId", requireRole("administrator", "manager"), async (req, res) => {
+  const { duplicateId, canonicalId } = req.params;
+  if (duplicateId === canonicalId) return res.status(400).json({ error: "Can't merge a site into itself." });
+  const { rows: both } = await query("SELECT id, customer_id FROM sites WHERE id IN ($1, $2)", [duplicateId, canonicalId]);
+  if (both.length !== 2) return res.status(404).json({ error: "One of these sites wasn't found." });
+  if (both[0].customer_id !== both[1].customer_id) {
+    return res.status(400).json({ error: "These sites belong to different customers — merging them would move records to the wrong customer." });
+  }
+
+  await query("UPDATE customer_orders SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
+  await query("UPDATE rate_master SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
+  await query("UPDATE bookings SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
+  // A forecast is unique per site — if the canonical site already has one,
+  // the duplicate's would collide, so only move it over if there isn't one.
+  await query(
+    `UPDATE sales_forecasts SET site_id = $1 WHERE site_id = $2
+     AND NOT EXISTS (SELECT 1 FROM sales_forecasts WHERE site_id = $1)`,
+    [canonicalId, duplicateId]
+  );
+  await query("DELETE FROM sales_forecasts WHERE site_id = $2", [duplicateId]); // any leftover (collided) one
+  await query("UPDATE notifications SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
+  await query("UPDATE sites SET is_active = false WHERE id = $1", [duplicateId]);
+
+  res.json({ ok: true });
+});
 
 router.get("/trucks", requireRole("administrator"), async (req, res) => {
   const { rows } = await query("SELECT * FROM trucks ORDER BY truck_number");
