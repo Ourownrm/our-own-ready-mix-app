@@ -592,14 +592,38 @@ router.get("/setup", async (req, res) => {
       SELECT ticket_id, COUNT(*) AS cnt FROM invoices GROUP BY ticket_id HAVING COUNT(*) > 1
     `);
     if (dupeCheck.length > 0) {
+      // Picks a keeper per ticket — preferring whichever duplicate already
+      // has a payment recorded against it (there should never be more than
+      // one with a payment, but if there were, the most recent wins), else
+      // just the most recent. Reassigns any payments pointing at the
+      // other duplicates onto the keeper before deleting them, so this
+      // can never hit the same foreign-key error as before.
       await pool.query(`
-        DELETE FROM invoices i USING (
-          SELECT id, ticket_id, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY id DESC) AS rn
-          FROM invoices
-        ) ranked
-        WHERE i.id = ranked.id AND ranked.rn > 1
+        WITH ranked AS (
+          SELECT i.id, i.ticket_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY i.ticket_id
+              ORDER BY (EXISTS (SELECT 1 FROM payments p WHERE p.invoice_id = i.id)) DESC, i.id DESC
+            ) AS rn
+          FROM invoices i
+        ),
+        keepers AS (SELECT ticket_id, id AS keeper_id FROM ranked WHERE rn = 1)
+        UPDATE payments p SET invoice_id = k.keeper_id
+        FROM invoices dup JOIN keepers k ON k.ticket_id = dup.ticket_id
+        WHERE p.invoice_id = dup.id AND dup.id != k.keeper_id
       `);
-      log.push(`Schema migration applied (removed ${dupeCheck.length} duplicate invoice row group(s) — this is what was causing the Production Report duplication).`);
+      await pool.query(`
+        WITH ranked AS (
+          SELECT i.id,
+            ROW_NUMBER() OVER (
+              PARTITION BY i.ticket_id
+              ORDER BY (EXISTS (SELECT 1 FROM payments p WHERE p.invoice_id = i.id)) DESC, i.id DESC
+            ) AS rn
+          FROM invoices i
+        )
+        DELETE FROM invoices WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+      `);
+      log.push(`Schema migration applied (removed ${dupeCheck.length} duplicate invoice row group(s), preserving any payment history — this is what was causing the Production Report duplication).`);
     }
     await pool.query(`
       DO $$ BEGIN

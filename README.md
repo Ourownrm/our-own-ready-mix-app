@@ -2073,3 +2073,22 @@ statuses now gets its own: planned (grey), in progress (blue), partially complet
 ### Migration note
 Revisit `/setup?key=...` once after deploying — this round's invoice dedup fix is the
 important one.
+
+## Sixty-seventh round — fixed the dedup migration that crashed on deploy
+
+Last round's invoice-dedup migration blindly deleted every duplicate except the most
+recent per ticket, without checking whether one of the *other* duplicates already had
+a payment recorded against it specifically — Postgres correctly refused that delete,
+which is the exact error you hit.
+
+**No data was harmed** — since that was a single SQL statement, Postgres guaranteed
+it either fully applied or not at all, and it didn't, so your duplicate invoices are
+still sitting there untouched, exactly as before.
+
+Fixed properly this time: the migration now picks a keeper per duplicate group
+(preferring whichever one already has a payment against it, since that's the real
+one), reassigns any payments from the others onto that keeper first, and only then
+deletes the now-safe-to-remove duplicates.
+
+### Migration note
+Revisit `/setup?key=...` again — this is the actual fix for last round's crash.
