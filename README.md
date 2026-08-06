@@ -2236,3 +2236,26 @@ already used for `jspdf`/`xlsx`), not bundled into the main app load.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Seventy-first round — iPhone scanner fix
+
+"Camera shows, nothing happens" pointed at the scan loop never actually starting,
+despite the video feed working fine (that's just `getUserMedia`, unrelated to
+whether decoding runs). Two likely causes, fixed together rather than guessing at one:
+
+- **jsQR was dynamically imported** (`await import("jsqr")`) — if that import silently
+  failed or hung on a given mobile browser, the scan loop that depends on it would
+  never start, with no visible error. Switched to a static import, which removes this
+  failure mode entirely.
+- **The frame-readiness check was too strict** — it required `video.readyState ===
+  HAVE_ENOUGH_DATA` before reading a frame, but readiness reporting is inconsistent
+  enough across mobile browsers that this can stall indefinitely even while the video
+  is visibly playing. Now checks `video.videoWidth > 0` instead — more permissive, and
+  the actual signal that matters (a real frame is available to read).
+
+Also added a visible "still looking" hint if nothing decodes within 8 seconds, so a
+genuine problem is never silent — it now suggests falling back to manual code entry
+rather than leaving someone staring at a camera feed with no feedback.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
