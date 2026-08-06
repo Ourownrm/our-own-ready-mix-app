@@ -73,7 +73,7 @@ export default function App() {
             <ProtectedRoute roles={["administrator"]}><Reports /></ProtectedRoute>
           } />
           <Route path="/production-report" element={
-            <ProtectedRoute roles={["administrator"]}><ProductionReport /></ProtectedRoute>
+            <ProtectedRoute roles={["administrator", "manager"]}><ProductionReport /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>

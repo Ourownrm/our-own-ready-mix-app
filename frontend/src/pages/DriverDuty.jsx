@@ -11,6 +11,16 @@ const STAGES = [
   { key: "plant_in", label: "Plant In", path: "plant-in", icon: "check" },
 ];
 
+// A trip is done from the driver's own perspective either when the ticket
+// reaches a terminal status, or — on a supervised site — once the driver
+// has logged Plant In. Site In/Out belong to the Site Supervisor there, so
+// waiting on their confirmation before clearing this from the driver's list
+// left them staring at "needs action" for something that was never theirs
+// to finish.
+function isDriverDone(t) {
+  return ["completed", "cancelled", "returned", "rejected"].includes(t.status) || !!t.plant_in_at;
+}
+
 export default function DriverDuty() {
   const [onDuty, setOnDuty] = useState(false);
   const [trips, setTrips] = useState([]);
@@ -62,7 +72,7 @@ export default function DriverDuty() {
   }, []);
 
   function currentTicketId() {
-    const active = tripsRef.current.filter((t) => !["completed", "cancelled", "returned", "rejected"].includes(t.status));
+    const active = tripsRef.current.filter((t) => !isDriverDone(t));
     return active[0]?.id || null;
   }
 
@@ -146,8 +156,8 @@ export default function DriverDuty() {
     });
   }
 
-  const activeTrips = trips.filter((t) => !["completed", "cancelled", "returned", "rejected"].includes(t.status));
-  const completedToday = trips.filter((t) => ["completed", "cancelled", "returned", "rejected"].includes(t.status));
+  const activeTrips = trips.filter((t) => !isDriverDone(t));
+  const completedToday = trips.filter(isDriverDone);
   const current = activeTrips[0] || null;
   const older = activeTrips.slice(1);
   const activeTrip = trips.find((t) => t.id === activeTicketId);
@@ -274,24 +284,28 @@ export default function DriverDuty() {
         {completedToday.length > 0 && (
           <div className="card" style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
-              Completed today ({completedToday.length})
+              Completed ({completedToday.length})
               {completedToday.some((t) => t.allowance_paid) && (
                 <span style={{ color: "var(--signal-green)", fontWeight: 400 }}>
                   {" "}&middot; ₹{completedToday.reduce((s, t) => s + Number(t.allowance_paid || 0), 0)} earned
                 </span>
               )}
             </div>
-            {completedToday.map((t) => (
-              <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
-                <div>
-                  <div>{t.ticket_number} &middot; {t.customer_name}</div>
-                  <div style={{ fontSize: 10, color: "var(--slate)" }}>
-                    {t.status === "rejected" ? "Rejected" : t.plant_in_at ? `Plant In ${formatTime(t.plant_in_at)}` : `Site Out ${formatTime(t.site_out_at)}`}
+            {completedToday.map((t) => {
+              const isToday = new Date(t.ticket_date).toDateString() === new Date().toDateString();
+              return (
+                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
+                  <div>
+                    <div>{t.ticket_number} &middot; {t.customer_name}</div>
+                    <div style={{ fontSize: 10, color: "var(--slate)" }}>
+                      {!isToday && `${new Date(t.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })} · `}
+                      {t.status === "rejected" ? "Rejected" : t.plant_in_at ? `Plant In ${formatTime(t.plant_in_at)}` : `Site Out ${formatTime(t.site_out_at)}`}
+                    </div>
                   </div>
+                  {t.allowance_paid ? <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>+₹{t.allowance_paid}</span> : null}
                 </div>
-                {t.allowance_paid ? <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>+₹{t.allowance_paid}</span> : null}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

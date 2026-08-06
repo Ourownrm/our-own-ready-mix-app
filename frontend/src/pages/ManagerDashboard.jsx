@@ -108,6 +108,18 @@ export default function ManagerDashboard() {
     }
   }
 
+  async function applyDelayCharge(ticketId) {
+    if (!window.confirm("Apply a waiting/delay charge for this truck? This adds the charge to its invoice — worth confirming the truck is genuinely delayed, not just mid-unload.")) return;
+    setError("");
+    try {
+      const result = await apiRequest(`/orders/tickets/${ticketId}/apply-delay-charge`, { method: "POST" });
+      window.alert(`Applied ₹${result.charge} (${result.hours_charged} hr${result.hours_charged > 1 ? "s" : ""} at ₹${result.rate_per_hour}/hr).`);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (view === "create-order") {
     return (
       <>
@@ -201,6 +213,7 @@ export default function ManagerDashboard() {
             <Link to="/leads"><button type="button">Browse leads</button></Link>
             <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
             <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
+            <Link to="/production-report"><button type="button">Production report</button></Link>
             <Link to="/fuel"><button type="button">Fuel filling</button></Link>
             <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
             <Link to="/sales-forecast"><button type="button">Sales forecast</button></Link>
@@ -225,7 +238,7 @@ export default function ManagerDashboard() {
 
         <BookingsQueue setError={setError} />
         <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} setError={setError} onReload={load} />
-        <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} />
+        <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} onApplyDelayCharge={applyDelayCharge} />
         <CompletedTripsTable trips={completedTrips} />
 
         {carriedForward.length > 0 && (
@@ -303,7 +316,7 @@ function OnDutyDriversTable({ drivers }) {
   );
 }
 
-function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
+function ActiveTrucksTable({ trucks, locations, onMarkReviewed, onApplyDelayCharge }) {
   const locationByTicket = Object.fromEntries(locations.map((l) => [l.ticket_id, l]));
   const delayedCount = trucks.filter((t) => t.minutes_at_site > 120).length;
 
@@ -342,6 +355,12 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed }) {
                       {delayed && (
                         <div style={{ color: "var(--alert-red)", fontSize: 11, fontWeight: 600, marginTop: 2 }}>
                           At site {formatDuration(t.minutes_at_site)} — notify site
+                          <button
+                            style={{ display: "block", marginTop: 4, padding: "2px 6px", fontSize: 11, fontWeight: 400 }}
+                            onClick={() => onApplyDelayCharge(t.ticket_id)}
+                          >
+                            Apply delay charge
+                          </button>
                         </div>
                       )}
                       {t.qc_flagged && (

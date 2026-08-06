@@ -1977,3 +1977,54 @@ requires `completed` status.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Sixty-fifth round
+
+### Item 1 — duplicate tickets in report
+Confirmed DT-2352 exists once in Correct Tickets, and traced the report query end to
+end — every join is primary-key based (customer, site, grade, truck, driver,
+salesperson, pump, supervisor, QC, invoice all match on a unique key), so it
+structurally cannot produce duplicate rows for one ticket. Also confirmed the PDF
+generation code is a plain one-to-one map, no duplication logic there either.
+
+**Important reassurance**: Sales Today, Sales Month, and Monthly Production Qty are
+computed by entirely separate, simple `SUM()` queries straight off `delivery_tickets` —
+none of the report's extra joins. Whatever is causing the report display issue, your
+actual production and sales totals are not affected by it.
+
+Applied a best-effort fix: `rowPageBreak: "avoid"` on the PDF table, since a row
+rendered right at a page-break boundary is a known jsPDF-autotable edge case that can
+make a row appear to repeat. If duplicates still show up after this, it's a different,
+real bug and I'll need to dig further with fresh evidence — but I could not find one
+through code review alone.
+
+### Item 2 — Production Report on Manager Dashboard
+Manager now has full access (was Administrator-only) — same report, not a limited
+version. Also added two columns that were genuinely missing: **Part load charge**
+(never added since part-load charges were introduced) and **Waiting charge** (see
+below — now that it's a real feature, it belongs in this report). New link from
+Manager Dashboard's More menu.
+
+### Item 3 — Waiting/delay charge, made simple
+No automatic time-based calculation — instead, a manual **"Apply delay charge"**
+button now sits directly under the existing "over 2 hrs at site" alert on Active
+Trucks. One click: computes hours past that same 2-hour free allowance (rounded up),
+applies the rate's configured waiting-charge-per-hour, and adds it to the invoice.
+Same payment-safety rule as everywhere else — blocked automatically if a payment's
+already recorded.
+
+**Honest note on what this replaces**: `waiting_charge` previously existed as a field
+on every invoice but was hardcoded to 0 everywhere — the rate form let you set a
+waiting-charge rate, but nothing ever computed or applied an actual charge from it.
+This is the first time it does anything real.
+
+### Item 4 — driver "stuck" trips (fix as you wish)
+On a supervised site, once the driver logs Plant In, the trip now moves out of "needs
+action" regardless of whether the Site Supervisor has confirmed Site In/Out yet —
+there's nothing further for the driver to do, so leaving it in a list literally titled
+"needs action" was actively misleading. Renamed that section to "Completed" and added
+a date to any entry that isn't from today, since it can now include older trips whose
+underlying ticket status is still pending confirmation from the Supervisor's side.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

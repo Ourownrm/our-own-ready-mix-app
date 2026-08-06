@@ -192,7 +192,70 @@ router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "ad
   res.json({ ok: true });
 });
 
-// Manager/Administrator can add or correct a delay reason directly, in case
+// Tags a delayed delivery (from the "over 2 hrs at site" alert already shown
+// on Active Trucks) with a waiting/delay charge — a Manager decision, not
+// automatic. Uses the exact arrival time already driving that alert, and
+// the rate's configured waiting_charge_per_hour. Charges only the time past
+// the same 2-hour free allowance the alert itself uses, rounded up to the
+// next full hour.
+router.post("/tickets/:ticketId/apply-delay-charge", requireRole("manager", "administrator", "accountant"), async (req, res) => {
+  const FREE_MINUTES = 120;
+
+  const { rows } = await query(
+    `SELECT dt.order_id, co.customer_id, co.site_id, co.mix_grade_id, co.order_date,
+            EXTRACT(EPOCH FROM (now() - rs.event_time)) / 60 AS minutes_at_site
+     FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     LEFT JOIN LATERAL (
+       SELECT event_time FROM trip_events
+       WHERE ticket_id = dt.id AND event_type = 'reached_site'
+       ORDER BY event_time DESC LIMIT 1
+     ) rs ON true
+     WHERE dt.id = $1`,
+    [req.params.ticketId]
+  );
+  const t = rows[0];
+  if (!t || t.minutes_at_site === null) {
+    return res.status(400).json({ error: "No arrival time recorded for this delivery yet — can't compute a waiting duration." });
+  }
+  const minutesOver = Number(t.minutes_at_site) - FREE_MINUTES;
+  if (minutesOver <= 0) {
+    return res.status(400).json({ error: `Not past the ${FREE_MINUTES / 60}-hour free waiting allowance yet.` });
+  }
+  const hoursCharged = Math.ceil(minutesOver / 60);
+
+  const { rows: rateRows } = await query(
+    `SELECT waiting_charge_per_hour FROM rate_master
+     WHERE customer_id = $1 AND mix_grade_id = $2 AND (site_id = $3 OR site_id IS NULL)
+       AND effective_from <= $4 AND (effective_to IS NULL OR effective_to >= $4)
+     ORDER BY (site_id = $3) DESC, effective_from DESC, id DESC LIMIT 1`,
+    [t.customer_id, t.mix_grade_id, t.site_id, t.order_date]
+  );
+  const ratePerHour = Number(rateRows[0]?.waiting_charge_per_hour || 0);
+  if (ratePerHour === 0) {
+    return res.status(400).json({ error: "No waiting charge rate is on file for this customer/grade — add one on the rate first." });
+  }
+  const charge = hoursCharged * ratePerHour;
+
+  const { rows: invRows } = await query(
+    `SELECT i.id, i.concrete_amount, i.pumping_charge, i.part_load_charge,
+            COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
+     FROM invoices i WHERE i.ticket_id = $1`,
+    [req.params.ticketId]
+  );
+  const inv = invRows[0];
+  if (!inv) return res.status(400).json({ error: "No invoice exists yet for this delivery — add a rate first." });
+  if (Number(inv.payment_count) > 0) {
+    return res.status(400).json({ error: "A payment has already been recorded against this invoice — can't add a charge automatically." });
+  }
+
+  const newTotal = Number(inv.concrete_amount) + Number(inv.pumping_charge) + Number(inv.part_load_charge) + charge;
+  await query("UPDATE invoices SET waiting_charge = $1, total_amount = $2 WHERE id = $3", [charge, newTotal, inv.id]);
+
+  res.json({ ok: true, hours_charged: hoursCharged, rate_per_hour: ratePerHour, charge });
+});
+
+
 // the Site Supervisor didn't (or Manager wants to add more context).
 router.post("/:orderId/pump-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
   const { reason } = req.body;

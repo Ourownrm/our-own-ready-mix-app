@@ -3,8 +3,8 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-// Same visibility as the Director's Dashboard — Administrator only.
-router.use(requireAuth, requireRole("administrator"));
+// Same visibility as the Director's Dashboard — Administrator and Manager.
+router.use(requireAuth, requireRole("administrator", "manager"));
 
 const VALID_STATUSES = ["signed", "pending", "refused"];
 
@@ -66,6 +66,8 @@ const ROW_COLUMNS = `
        THEN ROUND(i.concrete_amount / dt.loaded_quantity_m3, 2) END AS rate,
   i.concrete_amount AS amount,
   i.pumping_charge AS pumping_charge,
+  i.part_load_charge AS part_load_charge,
+  i.waiting_charge AS waiting_charge,
   i.total_amount AS total_amount
 `;
 
@@ -88,6 +90,8 @@ router.get("/", async (req, res) => {
               COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3,
               COALESCE(SUM(i.concrete_amount), 0) AS total_concrete_amount,
               COALESCE(SUM(i.pumping_charge), 0) AS total_pumping_charge,
+              COALESCE(SUM(i.part_load_charge), 0) AS total_part_load_charge,
+              COALESCE(SUM(i.waiting_charge), 0) AS total_waiting_charge,
               COALESCE(SUM(i.total_amount), 0) AS total_amount
        ${BASE_FROM}
        WHERE ${where}`,
@@ -103,6 +107,8 @@ router.get("/", async (req, res) => {
       total_qty_m3: totalsResult.rows[0].total_qty_m3,
       total_concrete_amount: totalsResult.rows[0].total_concrete_amount,
       total_pumping_charge: totalsResult.rows[0].total_pumping_charge,
+      total_part_load_charge: totalsResult.rows[0].total_part_load_charge,
+      total_waiting_charge: totalsResult.rows[0].total_waiting_charge,
       total_amount: totalsResult.rows[0].total_amount,
     },
   });
