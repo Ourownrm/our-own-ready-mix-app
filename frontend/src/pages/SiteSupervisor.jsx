@@ -222,30 +222,20 @@ export default function SiteSupervisor() {
         {!selected ? (
           <div style={{ fontSize: 13, color: "var(--slate)", textAlign: "center", marginTop: 40 }}>No deliveries need your confirmation right now.</div>
         ) : (
-          <div className="card" style={{ borderRadius: 20, padding: "20px 16px" }}>
+          <div className="card" style={{ borderRadius: 20, padding: "20px 18px" }}>
             <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)" }}>{selected.site_name} &middot; {selected.ticket_number}</div>
             <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)", marginTop: 2 }}>
               {selected.truck_number || "No truck"} &middot; {selected.driver_name || "No driver"}
             </div>
-            <div style={{ textAlign: "center", fontSize: 15, fontWeight: 600, margin: "4px 0 16px" }}>{statusLabel(selected.status)}</div>
+            <div style={{ textAlign: "center", fontSize: 16, fontWeight: 600, margin: "4px 0 18px" }}>{statusLabel(selected.status)}</div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <button disabled={selected.status !== "dispatched" && selected.status !== "created"} onClick={() => act("arrival")}>
-                Confirm truck arrival
-              </button>
-              <button disabled={selected.status !== "reached_site"} onClick={() => act("unloading-start")}>
-                Confirm unloading start
-              </button>
-              <button disabled={selected.status !== "unloading"}>
-                Confirm unloading completion
-              </button>
-            </div>
+            <SupervisorStageTracker status={selected.status} onAct={act} />
 
             {selected.status === "unloading" && <CompleteForm onAct={act} />}
 
             <button
               className="btn-danger"
-              style={{ width: "100%", marginTop: 16 }}
+              style={{ width: "100%", marginTop: 18, padding: "12px", fontSize: 14, fontWeight: 600 }}
               onClick={() => setShowReject(true)}
             >
               Reject concrete
@@ -254,6 +244,46 @@ export default function SiteSupervisor() {
         )}
       </div>
     </>
+  );
+}
+
+function SupervisorStageTracker({ status, onAct }) {
+  const stages = [
+    { key: "arrival", label: "Arrival", action: "arrival", activeWhen: ["created", "batching", "dispatched"], doneWhen: ["reached_site", "unloading", "completed", "rejected"] },
+    { key: "unloading_start", label: "Unloading start", action: "unloading-start", activeWhen: ["reached_site"], doneWhen: ["unloading", "completed", "rejected"] },
+    { key: "unloading_complete", label: "Completion", action: null, activeWhen: ["unloading"], doneWhen: ["completed", "rejected"] },
+  ];
+
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start" }}>
+      {stages.map((stage, i) => {
+        const done = stage.doneWhen.includes(status);
+        const active = stage.activeWhen.includes(status);
+        const tappable = active && stage.action;
+        return (
+          <div key={stage.key} style={{ display: "flex", alignItems: "flex-start", flex: i === stages.length - 1 ? "0 0 auto" : 1 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1, minWidth: 70 }}>
+              <button
+                disabled={!tappable}
+                onClick={() => tappable && onAct(stage.action)}
+                style={{
+                  width: "100%", border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600,
+                  padding: "12px 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                  background: done ? "var(--signal-green)" : tappable ? "var(--rebar)" : "var(--concrete)",
+                  color: done || tappable ? "#fff" : "var(--slate)",
+                }}
+              >
+                {stage.label}
+              </button>
+              <div style={{ fontSize: 10, color: "var(--slate)", marginTop: 5 }}>
+                {done ? "Done" : tappable ? "Tap to confirm" : "Waiting"}
+              </div>
+            </div>
+            {i < stages.length - 1 && <div style={{ height: 1, background: "var(--concrete)", flex: "0 0 10px", marginTop: 20 }} />}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -329,19 +359,20 @@ function CompleteForm({ onAct }) {
   }
 
   return (
-    <div style={{ marginTop: 16, fontSize: 13 }}>
+    <div style={{ marginTop: 16, fontSize: 13, background: "var(--concrete)", borderRadius: 12, padding: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Record completion details</div>
       <div style={{ color: "var(--slate)", marginBottom: 4 }}>Site slump (mm)</div>
       <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
       <div style={{ color: "var(--slate)", marginBottom: 4 }}>Delivery note status</div>
-      <select value={noteStatus} onChange={(e) => setNoteStatus(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
+      <select value={noteStatus} onChange={(e) => setNoteStatus(e.target.value)} style={{ width: "100%", marginBottom: 12 }}>
         <option value="pending">Pending</option>
         <option value="signed">Signed</option>
         <option value="refused">Refused</option>
       </select>
 
       {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
-      <button onClick={submit} disabled={saving} style={{ width: "100%" }}>
+      <button onClick={submit} disabled={saving} style={{ width: "100%", padding: "12px", fontSize: 14, fontWeight: 600, background: "var(--signal-green)", color: "#fff", border: "none" }}>
         {saving ? "Saving..." : "Save completion"}
       </button>
     </div>

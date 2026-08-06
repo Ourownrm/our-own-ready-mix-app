@@ -2092,3 +2092,44 @@ deletes the now-safe-to-remove duplicates.
 
 ### Migration note
 Revisit `/setup?key=...` again — this is the actual fix for last round's crash.
+
+## Sixty-eighth round
+
+### Site Supervisor — real bug fixed, screen redesigned
+Found the exact issue from your screenshot: the "Confirm unloading completion" button
+had no click handler at all — it just looked enabled and did nothing. The real
+completion action was entirely in the form below it ("Save completion"), but nothing
+told the Supervisor that. Removed the dead button and rebuilt the three stages as a
+proper visual tracker — done/active/locked states, same visual language as the
+driver app's stage tracker — plus a cleaner card treatment for the completion form
+and a bigger, clearer save button.
+
+### Site ready — hidden where it doesn't apply
+"Scheduled tomorrow" and "Upcoming orders" no longer show a Site ready column —
+confirming a site is ready to receive concrete only makes sense for today's orders.
+
+### Manager Dashboard — each board now has its own color
+Running Orders Today (green), Scheduled tomorrow (blue), Upcoming orders (violet),
+and the carried-forward "needs attention" board (red) — a left-border accent and
+matching title color on each, so they're distinguishable without reading every
+heading.
+
+### Pie charts, built (not mocked)
+Salesman-wise sales and Pump utilization on Admin's dashboard are now pie charts
+instead of tables, and Manager Dashboard has its own Pump utilization pie chart at
+the bottom. No new dependency added — built as plain SVG, matching this app's
+existing hand-rolled chart (the daily production bar chart already worked the same
+way, no charting library was ever actually installed). Every slice's legend shows
+both the quantity in m³ and the percentage together, for both charts.
+
+**Found and fixed while building this**: pump utilization still required
+`status = 'completed'` to count a delivery — left over from before round 64 changed
+that philosophy everywhere else (a delivery counts once it exists, reduced only by
+rejection). Fixed in both the Admin and new Manager versions.
+
+### AI-assisted scheduling
+Staying pending, as requested — the five ideas from last round are noted for later,
+not built.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

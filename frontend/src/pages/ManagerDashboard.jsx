@@ -4,6 +4,7 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel } from "../lib/MasterDataPanels.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
+import { PieChart } from "../lib/PieChart.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
@@ -22,6 +23,7 @@ export default function ManagerDashboard() {
   const [completedTrips, setCompletedTrips] = useState([]);
   const [liveLocations, setLiveLocations] = useState([]);
   const [onDutyDrivers, setOnDutyDrivers] = useState([]);
+  const [pumpUtilization, setPumpUtilization] = useState([]);
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
@@ -31,13 +33,14 @@ export default function ManagerDashboard() {
 
   async function load() {
     try {
-      const [dashboard, orderList, trucks, trips, locations, drivers] = await Promise.all([
+      const [dashboard, orderList, trucks, trips, locations, drivers, pumpUtil] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
         apiRequest("/orders/active-trucks"),
         apiRequest("/orders/completed-trips"),
         apiRequest("/orders/live-locations"),
         apiRequest("/orders/on-duty-drivers"),
+        apiRequest("/orders/pump-utilization-month"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
@@ -45,6 +48,7 @@ export default function ManagerDashboard() {
       setCompletedTrips(trips);
       setLiveLocations(locations);
       setOnDutyDrivers(drivers);
+      setPumpUtilization(pumpUtil);
     } catch (err) {
       setError(err.message);
     }
@@ -252,15 +256,23 @@ export default function ManagerDashboard() {
             setError={setError}
             onReload={load}
             showDate
+            accentColor="var(--alert-red)"
           />
         )}
-        <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} />
-        <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate />
+        <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} accentColor="var(--signal-green)" />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showSiteReady={false} accentColor="var(--info)" />
+        <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
         <RawMaterialStockCard />
         <ComplianceAlertsCard />
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Pump utilization this month</div>
+          <PieChart
+            data={pumpUtilization.map((r) => ({ label: `${r.pump_code} (${r.pump_type})`, value: r.total_qty_m3 }))}
+            valueLabel={(v) => `${v} m³`}
+          />
+        </div>
       </div>
       <OrderDetailModal orderId={detailOrderId} onClose={() => setDetailOrderId(null)} />
     </>
@@ -515,7 +527,7 @@ function CompletedTripsTable({ trips }) {
   );
 }
 
-function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion, setError, onReload, showDate }) {
+function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion, setError, onReload, showDate, showSiteReady = true, accentColor }) {
   function isSiteReadyOverdue(o) {
     if (o.site_ready_confirmed || !o.assigned_site_supervisor_id || !o.scheduled_batching_time) return false;
     if (["completed", "closed", "cancelled"].includes(o.status)) return false;
@@ -534,8 +546,8 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
   }
 
   return (
-    <div className="card" style={{ marginBottom: 20 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{title}</div>
+    <div className="card" style={{ marginBottom: 20, borderLeft: accentColor ? `4px solid ${accentColor}` : undefined }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: accentColor || undefined }}>{title}</div>
       {rows.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No orders.</div>
       ) : (
@@ -544,7 +556,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
             <thead>
               <tr>
                 {showDate && <th>Date</th>}
-                <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th><th>Site ready</th><th></th><th></th><th></th>
+                <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>{showSiteReady && <th>Site ready</th>}<th></th><th></th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -570,6 +582,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
                         </div>
                       )}
                     </td>
+                    {showSiteReady && (
                     <td>
                       {["completed", "closed", "cancelled"].includes(o.status) ? (
                         <span style={{ color: "var(--slate)", fontSize: 12 }}>–</span>
@@ -594,6 +607,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
                         </>
                       )}
                     </td>
+                    )}
                     <td>
                       <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onView(o.id)}>View details</button>
                     </td>

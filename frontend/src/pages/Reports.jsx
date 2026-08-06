@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { PieChart } from "../lib/PieChart.jsx";
 import ProductionChart from "../lib/ProductionChart.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
@@ -173,23 +174,17 @@ export default function Reports() {
 
             {/* 8. Sales this month by salesman */}
             <Section title="Salesman-wise sales this month">
-              <SimpleTable
-                rows={data.salesman_monthly}
-                columns={[["salesman", "Salesman"], [(r) => `${r.total_qty_m3} m³`, "Quantity"], [(r) => inr(r.total), "Sales value"]]}
-                empty="No sales recorded this month."
-                rowLink={(r) => r.salesperson_id ? `/production-report?salesperson_id=${r.salesperson_id}&from_date=${monthStartStr()}&to_date=${todayStr()}` : null}
+              <PieChart
+                data={data.salesman_monthly.map((r) => ({ label: r.salesman, value: r.total_qty_m3 }))}
+                valueLabel={(v) => `${v} m³`}
               />
             </Section>
 
             {/* 9. Pump utilization */}
             <Section title="Pump utilization this month">
-              <SimpleTable
-                rows={data.pump_utilization_month}
-                columns={[
-                  ["pump_code", "Pump"], ["pump_type", "Type"],
-                  ["deliveries", "Deliveries"], [(r) => `${r.total_qty_m3} m³`, "Total quantity"],
-                ]}
-                empty="No pump-assisted deliveries completed this month."
+              <PieChart
+                data={data.pump_utilization_month.map((r) => ({ label: `${r.pump_code} (${r.pump_type})`, value: r.total_qty_m3 }))}
+                valueLabel={(v) => `${v} m³`}
               />
             </Section>
 

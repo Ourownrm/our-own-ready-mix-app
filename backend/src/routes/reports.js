@@ -139,7 +139,7 @@ router.get("/director-dashboard", async (req, res) => {
        FROM delivery_tickets dt
        JOIN customer_orders co ON co.id = dt.order_id
        JOIN pumps p ON p.id = co.pump_id
-       WHERE dt.status = 'completed' AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
+       WHERE dt.status NOT IN ('cancelled', 'rejected') AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
        GROUP BY p.pump_code, p.pump_type
        ORDER BY total_qty_m3 DESC`
     ),
