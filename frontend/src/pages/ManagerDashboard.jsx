@@ -620,10 +620,13 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
 
 function StatusBadge({ status }) {
   const map = {
-    completed: "badge-success", planned: "badge-neutral", in_progress: "badge-info",
-    partially_completed: "badge-info", cancelled: "badge-danger", closed: "badge-neutral", dispatched: "badge-info",
-    reached_site: "badge-warning", unloading: "badge-progress", created: "badge-neutral",
-    batching: "badge-neutral", returned: "badge-neutral", rejected: "badge-danger",
+    // Order-level statuses — each gets its own distinct color so they're
+    // never confused for one another at a glance.
+    planned: "badge-neutral", in_progress: "badge-info", partially_completed: "badge-warning",
+    completed: "badge-success", closed: "badge-progress", cancelled: "badge-danger",
+    // Ticket-level statuses (delivery notes) — separate context, own scale.
+    created: "badge-neutral", batching: "badge-neutral", dispatched: "badge-info",
+    reached_site: "badge-warning", unloading: "badge-progress", returned: "badge-neutral", rejected: "badge-danger",
   };
   return <span className={`badge ${map[status] || "badge-neutral"}`}>{status.replace(/_/g, " ")}</span>;
 }

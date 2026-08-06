@@ -612,6 +612,41 @@ function NewBookingForm({ onDone, onCancel }) {
 
   const sitesForCustomer = form.customer_id ? sites.filter((s) => String(s.customer_id) === String(form.customer_id)) : sites;
 
+  async function addCustomer() {
+    const name = window.prompt("New customer name:");
+    if (!name || !name.trim()) return;
+    setError("");
+    try {
+      const created = await apiRequest("/sales/quick-customer", { method: "POST", body: { name } });
+      setCustomers((prev) => [...prev, created]);
+      setForm((f) => ({ ...f, customer_id: created.id, site_id: "" }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function addSite() {
+    if (!form.customer_id) { setError("Select a customer first."); return; }
+    const name = window.prompt("New site/project name:");
+    if (!name || !name.trim()) return;
+    setError("");
+    try {
+      const created = await apiRequest("/sales/quick-site", { method: "POST", body: { customer_id: form.customer_id, name } });
+      setSites((prev) => [...prev, created]);
+      setForm((f) => ({ ...f, site_id: created.id }));
+    } catch (err) {
+      if (err.status === 409 && window.confirm(`${err.message}\n\nCreate it anyway?`)) {
+        try {
+          const created = await apiRequest("/sales/quick-site", { method: "POST", body: { customer_id: form.customer_id, name, force: true } });
+          setSites((prev) => [...prev, created]);
+          setForm((f) => ({ ...f, site_id: created.id }));
+        } catch (err2) { setError(err2.message); }
+      } else if (err.status !== 409) {
+        setError(err.message);
+      }
+    }
+  }
+
   function useCurrentLocation() {
     setLocating(true);
     navigator.geolocation?.getCurrentPosition(
@@ -646,17 +681,23 @@ function NewBookingForm({ onDone, onCancel }) {
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
             <div>
               <div style={{ color: "var(--slate)" }}>Customer</div>
-              <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value, site_id: "" })} required>
-                <option value="">Select</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <div style={{ display: "flex", gap: 6 }}>
+                <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value, site_id: "" })} required style={{ flex: 1 }}>
+                  <option value="">Select</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <button type="button" onClick={addCustomer} style={{ fontSize: 12, padding: "4px 10px" }}>+ New</button>
+              </div>
             </div>
             <div>
               <div style={{ color: "var(--slate)" }}>Site (if known)</div>
-              <select value={form.site_id} onChange={(e) => setForm({ ...form, site_id: e.target.value })}>
-                <option value="">Not decided yet</option>
-                {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
+              <div style={{ display: "flex", gap: 6 }}>
+                <select value={form.site_id} onChange={(e) => setForm({ ...form, site_id: e.target.value })} style={{ flex: 1 }}>
+                  <option value="">Not decided yet</option>
+                  {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <button type="button" onClick={addSite} disabled={!form.customer_id} style={{ fontSize: 12, padding: "4px 10px" }}>+ New</button>
+              </div>
             </div>
             <div>
               <div style={{ color: "var(--slate)" }}>Site location (GPS)</div>

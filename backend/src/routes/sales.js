@@ -166,6 +166,49 @@ router.post("/leads/:id/won", requireRole("administrator"), async (req, res) => 
 
 // ===================== BOOKINGS =====================
 
+// Quick-add for a customer/site that doesn't exist yet — a Sales Executive
+// sending a booking for a brand new lead shouldn't have to wait on
+// Manager/Admin just to get a name into the system first. Kept deliberately
+// minimal (name only for the customer; name + optional distance for the
+// site) — Manager/Admin can fill in the fuller detail later when converting
+// the booking to an order.
+router.post("/quick-customer", requireRole("sales_executive"), async (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: "Customer name is required." });
+  const { rows } = await query(
+    "INSERT INTO customers (name) VALUES ($1) RETURNING *",
+    [name.trim()]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.post("/quick-site", requireRole("sales_executive"), async (req, res) => {
+  const { customer_id, name, distance_from_plant_km, force } = req.body;
+  if (!customer_id || !name || !name.trim()) return res.status(400).json({ error: "Customer and site name are required." });
+  const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
+  if (!spRows.length) return res.status(400).json({ error: "No salesperson record linked to your account — ask Manager/Admin to set this up first." });
+
+  if (!force) {
+    const { rows: dup } = await query(
+      "SELECT id FROM sites WHERE customer_id = $1 AND LOWER(TRIM(name)) = LOWER(TRIM($2))",
+      [customer_id, name]
+    );
+    if (dup.length) {
+      return res.status(409).json({
+        error: `A site named "${name}" already exists for this customer. Use the existing one, or confirm to create a duplicate anyway.`,
+        duplicate_site_id: dup[0].id,
+      });
+    }
+  }
+
+  const { rows } = await query(
+    `INSERT INTO sites (customer_id, name, distance_from_plant_km, assigned_sales_representative_id)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [customer_id, name.trim(), distance_from_plant_km || null, spRows[0].id]
+  );
+  res.status(201).json(rows[0]);
+});
+
 router.post("/bookings", requireRole("sales_executive"), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const { customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, preferred_time, notes, site_latitude, site_longitude } = req.body;

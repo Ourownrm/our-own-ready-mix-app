@@ -7,10 +7,15 @@ import { pushToRole } from "../lib/push.js";
 const router = Router();
 router.use(requireAuth, requireRole("site_supervisor"));
 
-// Today's deliveries headed to sites this supervisor is assigned to
+// Deliveries headed to sites this supervisor is assigned to — every one
+// still awaiting their confirmation, not just today's. Restricting this to
+// ticket_date = CURRENT_DATE (as it used to be) meant an older delivery
+// that never got confirmed simply vanished from this list the moment the
+// day rolled over, even though it was still fully pending — the exact same
+// stuck-trip bug already fixed for drivers, just never fixed here too.
 router.get("/my-deliveries", async (req, res) => {
   const { rows } = await query(
-    `SELECT dt.id, dt.ticket_number, dt.status, s.name AS site_name, c.name AS customer_name,
+    `SELECT dt.id, dt.ticket_number, dt.status, dt.ticket_date, s.name AS site_name, c.name AS customer_name,
             m.name AS mix_grade_name, dt.loaded_quantity_m3,
             t.truck_number, u.name AS driver_name
      FROM delivery_tickets dt
@@ -21,9 +26,8 @@ router.get("/my-deliveries", async (req, res) => {
      LEFT JOIN trucks t ON t.id = dt.truck_id
      LEFT JOIN users u ON u.id = dt.driver_id
      WHERE co.assigned_site_supervisor_id = $1
-       AND dt.ticket_date = CURRENT_DATE
        AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
-     ORDER BY dt.created_at`,
+     ORDER BY dt.ticket_date, dt.created_at`,
     [req.user.id]
   );
   res.json(rows);

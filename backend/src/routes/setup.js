@@ -579,6 +579,39 @@ router.get("/setup", async (req, res) => {
     await pool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS part_load_charge NUMERIC(12,2) DEFAULT 0;`);
     log.push("Schema migration applied (invoices can now carry a part load charge line).");
 
+    // Fixes the Production Report showing duplicate delivery notes — traced
+    // to invoices.ticket_id not actually being enforced unique on this
+    // database (only ever declared in the original schema.sql, never
+    // retrofitted onto a database created before that). If duplicate
+    // invoice rows exist for the same ticket, the report's join to
+    // invoices doubles that row. Keeps the most recently-created invoice
+    // per ticket (the one most likely to reflect the current rate/pump/
+    // part-load state) and removes the rest, then adds the constraint so
+    // this can't happen again. Safe to run repeatedly — a no-op once clean.
+    const { rows: dupeCheck } = await pool.query(`
+      SELECT ticket_id, COUNT(*) AS cnt FROM invoices GROUP BY ticket_id HAVING COUNT(*) > 1
+    `);
+    if (dupeCheck.length > 0) {
+      await pool.query(`
+        DELETE FROM invoices i USING (
+          SELECT id, ticket_id, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY id DESC) AS rn
+          FROM invoices
+        ) ranked
+        WHERE i.id = ranked.id AND ranked.rn > 1
+      `);
+      log.push(`Schema migration applied (removed ${dupeCheck.length} duplicate invoice row group(s) — this is what was causing the Production Report duplication).`);
+    }
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'invoices_ticket_id_key'
+        ) THEN
+          ALTER TABLE invoices ADD CONSTRAINT invoices_ticket_id_key UNIQUE (ticket_id);
+        END IF;
+      END $$;
+    `);
+    log.push("Schema migration applied (invoices.ticket_id uniqueness enforced — prevents the duplication from recurring).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

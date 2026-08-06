@@ -213,14 +213,14 @@ export default function SiteSupervisor() {
           >
             {deliveries.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.ticket_number} — {statusLabel(d.status)} — {d.truck_number || "no truck"} · {d.driver_name || "no driver"}
+                {new Date(d.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })} — {d.ticket_number} — {statusLabel(d.status)} — {d.truck_number || "no truck"} · {d.driver_name || "no driver"}
               </option>
             ))}
           </select>
         )}
 
         {!selected ? (
-          <div style={{ fontSize: 13, color: "var(--slate)", textAlign: "center", marginTop: 40 }}>No deliveries assigned today.</div>
+          <div style={{ fontSize: 13, color: "var(--slate)", textAlign: "center", marginTop: 40 }}>No deliveries need your confirmation right now.</div>
         ) : (
           <div className="card" style={{ borderRadius: 20, padding: "20px 16px" }}>
             <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)" }}>{selected.site_name} &middot; {selected.ticket_number}</div>

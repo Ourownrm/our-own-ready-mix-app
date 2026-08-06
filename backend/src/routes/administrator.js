@@ -81,7 +81,7 @@ router.get("/customers", requireRole("administrator", "manager"), async (req, re
   res.json(rows);
 });
 
-router.post("/customers", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/customers", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
   const { name, contact_number, billing_address } = req.body;
   if (!name) return res.status(400).json({ error: "Customer name is required." });
   const { rows } = await query(
@@ -158,7 +158,7 @@ router.get("/sites", requireRole("administrator", "manager"), async (req, res) =
   res.json(rows);
 });
 
-router.post("/sites", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/sites", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
   const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id, force } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   if (!assigned_sales_representative_id) return res.status(400).json({ error: "Every site needs a salesperson assigned." });

@@ -2028,3 +2028,48 @@ underlying ticket status is still pending confirmation from the Supervisor's sid
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Sixty-sixth round — two real, confirmed bugs found and fixed
+
+### Report duplication — actual root cause found this time
+Your list of duplicated DC numbers being all *recent* tickets was the key clue. Traced
+it to `invoices.ticket_id` — declared `UNIQUE` in schema.sql, but that only ever gets
+applied once, the very first time a database is provisioned. If this database was
+first set up before that line existed, the constraint was never actually retrofitted
+onto it — meaning duplicate invoice rows for the same ticket were structurally
+possible all along, just rare, until last round added a second invoice-generation
+trigger point and doubled the odds of it happening. The Production Report's join to
+`invoices` then correctly (if confusingly) doubled that row.
+
+Fixed with a migration that removes any duplicate invoice rows already there (keeping
+the most recent one per ticket) and properly enforces the constraint going forward —
+safe to run repeatedly, a no-op once clean. **Deploy and revisit `/setup?key=...`
+once** — this is the fix, not optional this round.
+
+### The "can't complete these trips" mystery — a real, confirmed bug
+Found it in the Site Supervisor's own delivery list: it was filtered to
+`ticket_date = CURRENT_DATE` — meaning any delivery not confirmed complete by the end
+of its day **silently disappeared from the Supervisor's own dashboard** the moment the
+date rolled over, even though it was still fully pending. This is the exact same
+stuck-trip bug already fixed for drivers several rounds back, just never fixed on the
+Supervisor's side. Neither the driver nor the Supervisor were able to complete those
+trips because the Supervisor's list never showed them once the day passed — not an
+operational gap, a real bug. Fixed the same way: shows every delivery still awaiting
+confirmation regardless of date, with the date now shown when multiple are queued.
+
+### Sales Executive can now create customers and sites
+Two new endpoints, deliberately minimal (name only for a customer; name + optional
+distance for a site) — enough to send a booking for a genuinely new lead without
+waiting on Manager/Admin. Auto-assigns the Sales Executive themselves as the site's
+salesperson. Carries the same duplicate-site warning built a few rounds back, since
+this is a separate code path that would otherwise bypass it entirely.
+
+### Manager Dashboard — order statuses now have distinct colors
+Previously several different statuses (in_progress, partially_completed, dispatched)
+shared the same badge color and were visually indistinguishable. Each of the 6 order
+statuses now gets its own: planned (grey), in progress (blue), partially completed
+(amber), completed (green), closed (violet), cancelled (red).
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — this round's invoice dedup fix is the
+important one.
