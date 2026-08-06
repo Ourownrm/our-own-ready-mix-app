@@ -3,7 +3,7 @@
 
 CREATE TYPE user_role AS ENUM (
   'administrator', 'manager', 'plant_operator', 'qc_engineer',
-  'driver', 'site_supervisor', 'accountant', 'sales_executive'
+  'driver', 'site_supervisor', 'accountant', 'sales_executive', 'store'
 );
 
 CREATE TYPE order_status AS ENUM (
@@ -97,6 +97,11 @@ CREATE TABLE fuel_stations (
   id SERIAL PRIMARY KEY,
   name VARCHAR(150) NOT NULL,
   location TEXT,
+  -- Exactly one station is the plant itself — a request approved against it
+  -- gets a QR code (issued in person at Store); every other station gets a
+  -- shareable approval slip instead, since Store can't hand-issue fuel at a
+  -- third-party pump.
+  is_plant BOOLEAN DEFAULT FALSE,
   is_active BOOLEAN DEFAULT TRUE
 );
 
@@ -591,6 +596,55 @@ CREATE TABLE fuel_logs (
   fuel_station_id INTEGER REFERENCES fuel_stations(id),
   logged_by INTEGER REFERENCES users(id),
   logged_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Lubricants issued internally only — always from Store's own stock, never
+-- an external station, so requests for these never carry a fuel_station_id.
+CREATE TABLE lubricant_types (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  is_active BOOLEAN DEFAULT TRUE
+);
+
+-- The request/approve/issue workflow that replaces self-logged fuel_logs
+-- entries. A driver or machine operator requests; Manager approves (and can
+-- adjust quantity/station); Store issues — at the plant via a single-use QR
+-- whose details stay hidden until Store visits the scan link, or at an
+-- external station via a shareable approval slip Store never touches.
+CREATE TYPE supply_request_type AS ENUM ('fuel', 'lubricant');
+CREATE TYPE supply_request_status AS ENUM ('pending', 'approved', 'rejected', 'issued');
+
+CREATE TABLE supply_requests (
+  id SERIAL PRIMARY KEY,
+  request_type supply_request_type NOT NULL,
+  requested_by INTEGER REFERENCES users(id) NOT NULL,
+  equipment_type fuel_equipment_type NOT NULL,
+  truck_id INTEGER REFERENCES trucks(id),
+  pump_id INTEGER REFERENCES pumps(id),
+  equipment_id INTEGER REFERENCES equipment(id),
+  -- One of these two is required at request time — whichever applies to the
+  -- equipment_type — and is the analysis-critical field the old self-logged
+  -- flow already captured; this keeps that intact.
+  odometer_reading NUMERIC(10,2),
+  hour_meter_reading NUMERIC(10,2),
+  requested_quantity NUMERIC(7,2) NOT NULL,
+  fuel_station_id INTEGER REFERENCES fuel_stations(id), -- fuel requests only; NULL for lubricant
+  lubricant_type_id INTEGER REFERENCES lubricant_types(id), -- lubricant requests only
+  status supply_request_status DEFAULT 'pending',
+  approved_quantity NUMERIC(7,2),
+  approved_station_id INTEGER REFERENCES fuel_stations(id), -- Manager can redirect to a different station
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TIMESTAMPTZ,
+  rejected_reason TEXT,
+  -- Random, unguessable, single-use — the QR encodes a URL containing this,
+  -- and it's cleared the moment Store issues, which is what makes the QR
+  -- disappear from the driver's screen and blocks any re-use.
+  qr_token VARCHAR(64) UNIQUE,
+  issued_by INTEGER REFERENCES users(id),
+  issued_at TIMESTAMPTZ,
+  actual_quantity_issued NUMERIC(7,2),
+  fuel_cost NUMERIC(10,2),
+  requested_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- ===================== BREAKDOWN REPORTING =====================

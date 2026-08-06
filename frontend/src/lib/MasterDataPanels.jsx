@@ -973,15 +973,20 @@ export function SalespersonsPanel({ setError }) {
 export function FuelStationsAndEquipmentPanel({ setError }) {
   const [stations, setStations] = useState([]);
   const [equipment, setEquipment] = useState([]);
+  const [lubricants, setLubricants] = useState([]);
   const [stationForm, setStationForm] = useState({ name: "", location: "" });
   const [equipForm, setEquipForm] = useState({ equipment_type: "pickup_van", name: "" });
+  const [lubricantName, setLubricantName] = useState("");
   const [savingStation, setSavingStation] = useState(false);
   const [savingEquip, setSavingEquip] = useState(false);
+  const [savingLubricant, setSavingLubricant] = useState(false);
 
   async function load() {
     try {
-      const [s, e] = await Promise.all([apiRequest("/administrator/fuel-stations"), apiRequest("/administrator/equipment")]);
-      setStations(s); setEquipment(e);
+      const [s, e, l] = await Promise.all([
+        apiRequest("/administrator/fuel-stations"), apiRequest("/administrator/equipment"), apiRequest("/administrator/lubricant-types"),
+      ]);
+      setStations(s); setEquipment(e); setLubricants(l);
     } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
@@ -1006,6 +1011,25 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
     } catch (err) { setError(err.message); } finally { setSavingEquip(false); }
   }
 
+  async function addLubricant(e) {
+    e.preventDefault();
+    if (!lubricantName.trim()) return;
+    setSavingLubricant(true); setError("");
+    try {
+      await apiRequest("/administrator/lubricant-types", { method: "POST", body: { name: lubricantName } });
+      setLubricantName("");
+      load();
+    } catch (err) { setError(err.message); } finally { setSavingLubricant(false); }
+  }
+
+  async function toggleLubricant(id, is_active) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/lubricant-types/${id}/status`, { method: "PATCH", body: { is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
   async function toggleActive(kind, id, is_active) {
     setError("");
     try {
@@ -1023,6 +1047,14 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
     } catch (err) { setError(err.message); }
   }
 
+  async function setAsPlant(id) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/fuel-stations/${id}/set-plant`, { method: "POST" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
   return (
     <div>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Fuel stations</div>
@@ -1032,10 +1064,15 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
           <tbody>
             {stations.map((s) => (
               <tr key={s.id}>
-                <td>{s.name}</td>
+                <td>{s.name} {s.is_plant && <span className="badge badge-success" style={{ marginLeft: 6, fontSize: 10 }}>Plant</span>}</td>
                 <td>{s.location || "–"}</td>
                 <td>{s.is_active ? "Active" : "Inactive"}</td>
                 <td style={{ display: "flex", gap: 6 }}>
+                  {!s.is_plant && (
+                    <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => setAsPlant(s.id)}>
+                      Set as plant
+                    </button>
+                  )}
                   <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleActive("fuel-stations", s.id, !s.is_active)}>
                     {s.is_active ? "Deactivate" : "Reactivate"}
                   </button>
@@ -1090,6 +1127,34 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
         </div>
         <div><div style={{ color: "var(--slate)" }}>Name</div><input value={equipForm.name} onChange={(e) => setEquipForm({ ...equipForm, name: e.target.value })} placeholder="e.g. Loader-1" required /></div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={savingEquip}>{savingEquip ? "Saving..." : "Add equipment"}</button></div>
+      </form>
+
+      <div style={{ fontSize: 13, fontWeight: 600, margin: "20px 0 8px" }}>Lubricant types</div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table style={{ fontSize: 13 }}>
+          <thead><tr><th>Name</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {lubricants.map((l) => (
+              <tr key={l.id}>
+                <td>{l.name}</td>
+                <td>{l.is_active ? "Active" : "Inactive"}</td>
+                <td>
+                  <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleLubricant(l.id, !l.is_active)}>
+                    {l.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {lubricants.length === 0 && <tr><td colSpan={3} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={addLubricant} className="field-input card" style={{ display: "flex", gap: 8, fontSize: 13, alignItems: "flex-end" }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: "var(--slate)" }}>New lubricant name</div>
+          <input value={lubricantName} onChange={(e) => setLubricantName(e.target.value)} placeholder="e.g. Transmission fluid" required />
+        </div>
+        <button type="submit" disabled={savingLubricant}>{savingLubricant ? "Saving..." : "Add"}</button>
       </form>
     </div>
   );

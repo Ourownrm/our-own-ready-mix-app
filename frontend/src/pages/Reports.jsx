@@ -177,14 +177,16 @@ export default function Reports() {
               <PieChart
                 data={data.salesman_monthly.map((r) => ({ label: r.salesman, value: r.total_qty_m3 }))}
                 valueLabel={(v) => `${v} m³`}
+                monochromeHue={210}
               />
             </Section>
 
             {/* 9. Pump utilization */}
             <Section title="Pump utilization this month">
               <PieChart
-                data={data.pump_utilization_month.map((r) => ({ label: `${r.pump_code} (${r.pump_type})`, value: r.total_qty_m3 }))}
+                data={data.pump_utilization_month.map((r) => ({ label: r.pump_type === "none" ? "Without pump" : `${r.pump_code} (${r.pump_type})`, value: r.total_qty_m3 }))}
                 valueLabel={(v) => `${v} m³`}
+                monochromeHue={165}
               />
             </Section>
 

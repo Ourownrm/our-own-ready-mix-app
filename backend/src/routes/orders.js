@@ -108,12 +108,12 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
 // every other figure in this app counts deliveries.
 router.get("/pump-utilization-month", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
-    `SELECT p.pump_code, p.pump_type,
+    `SELECT COALESCE(p.pump_code, 'Without pump') AS pump_code, COALESCE(p.pump_type::text, 'none') AS pump_type,
             COUNT(dt.id) AS deliveries,
             COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
-     JOIN pumps p ON p.id = co.pump_id
+     LEFT JOIN pumps p ON p.id = co.pump_id
      WHERE dt.status NOT IN ('cancelled', 'rejected') AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)
      GROUP BY p.pump_code, p.pump_type
      ORDER BY total_qty_m3 DESC`

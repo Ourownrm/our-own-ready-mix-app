@@ -636,6 +636,68 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (invoices.ticket_id uniqueness enforced — prevents the duplication from recurring).");
 
+    // Fuel module rebuild — Store role, and the request/approve/issue
+    // workflow replacing self-logged fuel entries.
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'store' AND enumtypid = 'user_role'::regtype) THEN
+          ALTER TYPE user_role ADD VALUE 'store';
+        END IF;
+      END $$;
+    `);
+    await pool.query(`ALTER TABLE fuel_stations ADD COLUMN IF NOT EXISTS is_plant BOOLEAN DEFAULT FALSE;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lubricant_types (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE
+      );
+    `);
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'supply_request_type') THEN
+          CREATE TYPE supply_request_type AS ENUM ('fuel', 'lubricant');
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'supply_request_status') THEN
+          CREATE TYPE supply_request_status AS ENUM ('pending', 'approved', 'rejected', 'issued');
+        END IF;
+      END $$;
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS supply_requests (
+        id SERIAL PRIMARY KEY,
+        request_type supply_request_type NOT NULL,
+        requested_by INTEGER REFERENCES users(id) NOT NULL,
+        equipment_type fuel_equipment_type NOT NULL,
+        truck_id INTEGER REFERENCES trucks(id),
+        pump_id INTEGER REFERENCES pumps(id),
+        equipment_id INTEGER REFERENCES equipment(id),
+        odometer_reading NUMERIC(10,2),
+        hour_meter_reading NUMERIC(10,2),
+        requested_quantity NUMERIC(7,2) NOT NULL,
+        fuel_station_id INTEGER REFERENCES fuel_stations(id),
+        lubricant_type_id INTEGER REFERENCES lubricant_types(id),
+        status supply_request_status DEFAULT 'pending',
+        approved_quantity NUMERIC(7,2),
+        approved_station_id INTEGER REFERENCES fuel_stations(id),
+        approved_by INTEGER REFERENCES users(id),
+        approved_at TIMESTAMPTZ,
+        rejected_reason TEXT,
+        qr_token VARCHAR(64) UNIQUE,
+        issued_by INTEGER REFERENCES users(id),
+        issued_at TIMESTAMPTZ,
+        actual_quantity_issued NUMERIC(7,2),
+        fuel_cost NUMERIC(10,2),
+        requested_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await pool.query(`
+      INSERT INTO lubricant_types (name)
+      SELECT * FROM (VALUES ('Engine oil 15W-40'), ('Gear oil'), ('Hydraulic fluid'), ('Grease'), ('Coolant')) AS v(name)
+      WHERE NOT EXISTS (SELECT 1 FROM lubricant_types)
+    `);
+    log.push("Schema migration applied (fuel module rebuilt — Store role, supply_requests, lubricant_types).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

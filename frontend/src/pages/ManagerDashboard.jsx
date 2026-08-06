@@ -218,6 +218,7 @@ export default function ManagerDashboard() {
             <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
             <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
             <Link to="/production-report"><button type="button">Production report</button></Link>
+            <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
             <Link to="/fuel"><button type="button">Fuel filling</button></Link>
             <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
             <Link to="/sales-forecast"><button type="button">Sales forecast</button></Link>
@@ -269,8 +270,9 @@ export default function ManagerDashboard() {
         <div className="card" style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Pump utilization this month</div>
           <PieChart
-            data={pumpUtilization.map((r) => ({ label: `${r.pump_code} (${r.pump_type})`, value: r.total_qty_m3 }))}
+            data={pumpUtilization.map((r) => ({ label: r.pump_type === "none" ? "Without pump" : `${r.pump_code} (${r.pump_type})`, value: r.total_qty_m3 }))}
             valueLabel={(v) => `${v} m³`}
+            monochromeHue={165}
           />
         </div>
       </div>

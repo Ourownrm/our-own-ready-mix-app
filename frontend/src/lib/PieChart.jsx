@@ -3,6 +3,17 @@ const COLORS = [
   "var(--alert-red)", "var(--slate)", "#0F6E56", "#993C1D",
 ];
 
+// Monochromatic shades of one hue — darkest for the largest slice, fading
+// lighter for smaller ones, rather than a distinct color per category.
+function monochromeShades(hue, count) {
+  const shades = [];
+  for (let i = 0; i < count; i++) {
+    const lightness = 32 + (i * (46 / Math.max(count - 1, 1)));
+    shades.push(`hsl(${hue}, 45%, ${Math.min(lightness, 78)}%)`);
+  }
+  return shades;
+}
+
 function polarToCartesian(cx, cy, r, angleDeg) {
   const angleRad = ((angleDeg - 90) * Math.PI) / 180;
   return { x: cx + r * Math.cos(angleRad), y: cy + r * Math.sin(angleRad) };
@@ -24,7 +35,7 @@ function describeSlice(cx, cy, r, startAngle, endAngle) {
 
 // data: [{ label, value }]. Purely presentational, no external dependency —
 // matches the existing hand-rolled SVG bar chart already used in this app.
-export function PieChart({ data, valueLabel = (v) => v, size = 160 }) {
+export function PieChart({ data, valueLabel = (v) => v, size = 160, monochromeHue }) {
   const total = data.reduce((s, d) => s + Number(d.value), 0);
   const r = size / 2;
 
@@ -32,12 +43,13 @@ export function PieChart({ data, valueLabel = (v) => v, size = 160 }) {
     return <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing to chart yet.</div>;
   }
 
+  const palette = monochromeHue != null ? monochromeShades(monochromeHue, data.length) : COLORS;
   let angle = 0;
   const slices = data.map((d, i) => {
     const sliceAngle = (Number(d.value) / total) * 360;
     const path = describeSlice(r, r, r, angle, angle + sliceAngle);
     angle += sliceAngle;
-    return { ...d, path, color: COLORS[i % COLORS.length], pct: ((Number(d.value) / total) * 100).toFixed(1) };
+    return { ...d, path, color: palette[i % palette.length], pct: ((Number(d.value) / total) * 100).toFixed(1) };
   });
 
   return (

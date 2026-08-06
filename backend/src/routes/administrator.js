@@ -21,7 +21,7 @@ router.post("/users", requireRole("administrator"), async (req, res) => {
   if (!name || !phone || !password || !role) {
     return res.status(400).json({ error: "Name, phone, password, and role are all required." });
   }
-  const validRoles = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant", "sales_executive"];
+  const validRoles = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant", "sales_executive", "store"];
   if (!validRoles.includes(role)) {
     return res.status(400).json({ error: "That role isn't recognized." });
   }
@@ -465,6 +465,15 @@ router.patch("/fuel-stations/:id/status", requireRole("administrator"), async (r
   res.json({ ok: true });
 });
 
+// Exactly one station is ever the plant — marking a new one unmarks any
+// previous one, rather than requiring the admin to remember to do that
+// themselves.
+router.post("/fuel-stations/:id/set-plant", requireRole("administrator"), async (req, res) => {
+  await query("UPDATE fuel_stations SET is_plant = FALSE WHERE is_plant = TRUE");
+  await query("UPDATE fuel_stations SET is_plant = TRUE WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
 router.delete("/fuel-stations/:id", requireRole("administrator"), async (req, res) => {
   try {
     const { rowCount } = await query("DELETE FROM fuel_stations WHERE id = $1", [req.params.id]);
@@ -476,6 +485,26 @@ router.delete("/fuel-stations/:id", requireRole("administrator"), async (req, re
     }
     throw err;
   }
+});
+
+// ===== Master data: Lubricant types =====
+
+router.get("/lubricant-types", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM lubricant_types ORDER BY name");
+  res.json(rows);
+});
+
+router.post("/lubricant-types", requireRole("administrator"), async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "Lubricant name is required." });
+  const { rows } = await query("INSERT INTO lubricant_types (name) VALUES ($1) RETURNING *", [name]);
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/lubricant-types/:id/status", requireRole("administrator"), async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE lubricant_types SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
 });
 
 // ===== Master data: Equipment (pickup vans, loaders, generators) =====

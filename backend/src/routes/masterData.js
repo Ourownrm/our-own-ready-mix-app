@@ -10,6 +10,11 @@ router.get("/customers", async (req, res) => {
   res.json(rows);
 });
 
+router.get("/lubricant-types", async (req, res) => {
+  const { rows } = await query("SELECT id, name FROM lubricant_types WHERE is_active ORDER BY name");
+  res.json(rows);
+});
+
 router.get("/sites", async (req, res) => {
   const { rows } = await query(
     `SELECT s.id, s.name, s.customer_id, s.distance_from_plant_km, s.latitude, s.longitude,
@@ -101,7 +106,7 @@ router.get("/salespersons", async (req, res) => {
 });
 
 router.get("/fuel-stations", async (req, res) => {
-  const { rows } = await query("SELECT id, name, location FROM fuel_stations WHERE is_active ORDER BY name");
+  const { rows } = await query("SELECT id, name, location, is_plant FROM fuel_stations WHERE is_active ORDER BY is_plant DESC, name");
   res.json(rows);
 });
 

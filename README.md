@@ -2133,3 +2133,69 @@ not built.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Sixty-ninth round — the fuel module, rebuilt from scratch
+
+### Pie chart polish
+Sales and pump utilization charts now use a monochromatic palette (shades of one hue
+each, not a rainbow) — sales in blue, pump in teal. Pump utilization also now includes
+a genuine "Without pump" slice — the query used to `INNER JOIN` pumps, silently
+excluding every delivery that didn't use one at all.
+
+### The fuel and lubricant module — full request/approve/issue workflow
+This replaces the old self-logged fuel entry entirely, as confirmed.
+
+- **New Store role** — the custodian who issues fuel and lubricants
+- **Driver/operator requests**: fuel or lubricant, vehicle or machine, odometer or
+  hour-meter reading (required — this is the field that matters most for the
+  efficiency/anomaly analysis discussed earlier), quantity, and station (fuel) or
+  lubricant type (multiple types, seeded with five common ones, Admin can add more)
+- **Manager approves**: can adjust quantity and redirect to a different station before
+  approving, or reject with a reason
+- **Plant fills and all lubricants**: single-use QR code. The QR encodes a URL, not an
+  in-app scanner — Store's own phone camera app opens it directly. Details stay hidden
+  until that link is actually opened; the QR vanishes from the driver's screen the
+  moment Store confirms issuance, and the same link can never be reused after that —
+  enforced server-side, not just visually
+- **External station fills**: a shareable slip instead of a QR, using the device's
+  native share sheet (WhatsApp, SMS, or the station just photographing the driver's
+  screen) — replaces the printed paper slip entirely
+- **Store confirms actual quantity issued** (and cost, for fuel) — this is deliberately
+  a separate field from the approved quantity, so a mismatch between the two becomes a
+  real, visible signal rather than something that has to be inferred later
+
+### What's genuinely still missing
+- **Accountant's fuel cost view is a placeholder only** — the old self-log history
+  report is gone (it was tied to the old flow) and I haven't yet built real reporting
+  on top of `supply_requests`. Worth a dedicated round.
+- **Store's home screen is minimal** — instructions plus a manual link-paste fallback,
+  no dashboard of recent activity yet.
+- The efficiency/anomaly analysis discussed earlier isn't built yet — this round was
+  the data-capture foundation for it, not the analysis itself.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — adds the Store role, `is_plant` on fuel
+stations, `lubricant_types`, and the new `supply_requests` table.
+
+## Sixty-ninth round — pie chart refinements, and one real gap closed
+
+### Pie charts
+Sales and Pump utilization charts now use a monochromatic color scheme (shades of one
+hue per chart) instead of a rainbow of distinct colors. Pump utilization also now
+includes deliveries that used no pump at all as their own "Without pump" slice —
+previously excluded entirely by an inner join, so the chart only ever showed pump-
+assisted deliveries and silently left out the rest.
+
+### Found while reviewing last round's fuel module build
+Checked the whole feature end to end before packaging. Everything from last round —
+driver request flow, Manager approvals, Store's scan/issue screens, routing, role
+setup — was already correctly built and wired. Two real gaps found and closed:
+- **No way to manage lubricant types beyond the five seeded defaults** — Admin now has
+  a proper add/deactivate panel under Fuel stations and equipment, matching the
+  pattern already used for stations and equipment there.
+- Confirmed `store` role selection, `ROLE_HOME`, and the Manager Dashboard link to the
+  approval queue were all already correctly in place — no gap there after all.
+
+### Migration note
+No new schema changes this round beyond what was already noted for the fuel module —
+if you haven't run `/setup?key=...` since that round, do it now.

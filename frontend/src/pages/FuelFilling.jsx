@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import { useAuth } from "../lib/AuthContext.jsx";
 
 const EQUIPMENT_TABS = [
   { type: "truck", label: "Truck" },
@@ -11,19 +12,27 @@ const EQUIPMENT_TABS = [
 ];
 
 export default function FuelFilling() {
+  const { user } = useAuth();
+  const isAccountant = user?.role === "accountant";
+  return isAccountant ? <FuelCostReport /> : <RequestFlow />;
+}
+
+function RequestFlow() {
   const [trucks, setTrucks] = useState([]);
   const [pumps, setPumps] = useState([]);
   const [equipment, setEquipment] = useState([]);
   const [stations, setStations] = useState([]);
-  const [history, setHistory] = useState([]);
+  const [lubricantTypes, setLubricantTypes] = useState([]);
+  const [myRequests, setMyRequests] = useState([]);
 
+  const [requestType, setRequestType] = useState("fuel");
   const [equipmentType, setEquipmentType] = useState("truck");
   const [unitId, setUnitId] = useState("");
   const [odometer, setOdometer] = useState("");
   const [hourMeter, setHourMeter] = useState("");
-  const [litres, setLitres] = useState("");
-  const [cost, setCost] = useState("");
+  const [quantity, setQuantity] = useState("");
   const [stationId, setStationId] = useState("");
+  const [lubricantTypeId, setLubricantTypeId] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -31,19 +40,24 @@ export default function FuelFilling() {
 
   async function load() {
     try {
-      const [t, p, e, s, h] = await Promise.all([
+      const [t, p, e, s, lt, mine] = await Promise.all([
         apiRequest("/master/trucks"),
         apiRequest("/master/pumps"),
         apiRequest("/master/equipment"),
         apiRequest("/master/fuel-stations"),
-        apiRequest("/fuel/history"),
+        apiRequest("/master/lubricant-types"),
+        apiRequest("/supply-requests/mine"),
       ]);
-      setTrucks(t); setPumps(p); setEquipment(e); setStations(s); setHistory(h);
+      setTrucks(t); setPumps(p); setEquipment(e); setStations(s); setLubricantTypes(lt); setMyRequests(mine);
     } catch (err) {
       setError(err.message);
     }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 15000); // so an approval/issue elsewhere shows up, and an issued QR disappears
+    return () => clearInterval(interval);
+  }, []);
 
   const unitOptions = {
     truck: trucks.map((t) => ({ id: t.id, label: t.truck_number })),
@@ -62,16 +76,19 @@ export default function FuelFilling() {
     e.preventDefault();
     setError(""); setNotice("");
     if (!unitId) return setError("Select which unit this is.");
-    if (!litres) return setError("Enter the fuel quantity.");
-    if (!odometer && !hourMeter) return setError("Enter either an odometer reading or an hour meter reading.");
+    if (!odometer && !hourMeter) return setError("Enter either an odometer reading or an hour meter reading — needed for later analysis.");
+    if (!quantity) return setError("Enter the quantity needed.");
+    if (requestType === "fuel" && !stationId) return setError("Select a filling station.");
+    if (requestType === "lubricant" && !lubricantTypeId) return setError("Select which lubricant.");
 
     const body = {
+      request_type: requestType,
       equipment_type: equipmentType,
-      fuel_quantity_litres: litres,
-      fuel_cost: cost || null,
-      fuel_station_id: stationId || null,
       odometer_reading: odometer || null,
       hour_meter_reading: hourMeter || null,
+      requested_quantity: quantity,
+      fuel_station_id: requestType === "fuel" ? stationId : null,
+      lubricant_type_id: requestType === "lubricant" ? lubricantTypeId : null,
     };
     if (equipmentType === "truck") body.truck_id = unitId;
     else if (equipmentType === "pump") body.pump_id = unitId;
@@ -79,9 +96,9 @@ export default function FuelFilling() {
 
     setSaving(true);
     try {
-      await apiRequest("/fuel", { method: "POST", body });
-      setNotice("Fuel entry saved.");
-      setUnitId(""); setOdometer(""); setHourMeter(""); setLitres(""); setCost(""); setStationId("");
+      await apiRequest("/supply-requests", { method: "POST", body });
+      setNotice("Request sent — waiting on Manager approval.");
+      setUnitId(""); setOdometer(""); setHourMeter(""); setQuantity(""); setStationId(""); setLubricantTypeId("");
       load();
     } catch (err) {
       setError(err.message);
@@ -90,14 +107,30 @@ export default function FuelFilling() {
     }
   }
 
+  const active = myRequests.filter((r) => r.status !== "issued");
+  const recentIssued = myRequests.filter((r) => r.status === "issued");
+
   return (
     <>
-      <TopBar title="Fuel Filling" />
+      <TopBar title="Fuel and lubricants" />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>Report fuel filling</div>
 
-          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 6 }}>Equipment type</div>
+        {active.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Your requests</div>
+            {active.map((r) => <RequestStatusCard key={r.id} request={r} />)}
+          </div>
+        )}
+
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>New request</div>
+
+          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+            <button type="button" onClick={() => setRequestType("fuel")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "fuel" ? 600 : 400, background: requestType === "fuel" ? "var(--concrete)" : "transparent" }}>Fuel</button>
+            <button type="button" onClick={() => setRequestType("lubricant")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "lubricant" ? 600 : 400, background: requestType === "lubricant" ? "var(--concrete)" : "transparent" }}>Lubricant</button>
+          </div>
+
+          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 6 }}>Vehicle or machine type</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
             {EQUIPMENT_TABS.map((t) => (
               <button
@@ -123,11 +156,6 @@ export default function FuelFilling() {
                 <option value="">Select</option>
                 {unitOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
               </select>
-              {unitOptions.length === 0 && (
-                <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
-                  None set up yet — Administrator can add these under Fuel stations and equipment.
-                </div>
-              )}
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -142,106 +170,135 @@ export default function FuelFilling() {
             </div>
             <div style={{ fontSize: 11, color: "var(--slate)", marginTop: -4 }}>Enter at least one of the two above.</div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {requestType === "fuel" ? (
               <div>
-                <div style={{ color: "var(--slate)" }}>Fuel quantity (litres)</div>
-                <input type="number" value={litres} onChange={(e) => setLitres(e.target.value)} required />
+                <div style={{ color: "var(--slate)" }}>Filling station</div>
+                <select value={stationId} onChange={(e) => setStationId(e.target.value)} required>
+                  <option value="">Select</option>
+                  {stations.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_plant ? " (plant)" : ""}</option>)}
+                </select>
               </div>
+            ) : (
               <div>
-                <div style={{ color: "var(--slate)" }}>Cost (₹)</div>
-                <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} />
+                <div style={{ color: "var(--slate)" }}>Lubricant</div>
+                <select value={lubricantTypeId} onChange={(e) => setLubricantTypeId(e.target.value)} required>
+                  <option value="">Select</option>
+                  {lubricantTypes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </select>
               </div>
-            </div>
+            )}
 
             <div>
-              <div style={{ color: "var(--slate)" }}>Filled from</div>
-              <select value={stationId} onChange={(e) => setStationId(e.target.value)}>
-                <option value="">Select</option>
-                {stations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
+              <div style={{ color: "var(--slate)" }}>Quantity {requestType === "fuel" ? "(litres)" : "(litres/kg)"}</div>
+              <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
             </div>
 
             {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
             {notice && <div style={{ color: "var(--signal-green)" }}>{notice}</div>}
-            <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save fuel entry"}</button>
+            <button type="submit" disabled={saving}>{saving ? "Sending..." : "Send request"}</button>
           </form>
         </div>
 
-        <FuelHistory history={history} />
+        {recentIssued.length > 0 && (
+          <div className="card">
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>Issued today</div>
+            {recentIssued.map((r) => (
+              <div key={r.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
+                <span>{unitLabel(r)} &middot; {r.request_type === "fuel" ? `${r.actual_quantity_issued} L` : `${r.actual_quantity_issued} ${r.lubricant_type_name}`}</span>
+                <span style={{ color: "var(--slate)" }}>{new Date(r.issued_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </>
   );
 }
 
-function equipmentLabel(row) {
-  return row.truck_number || row.pump_code || row.equipment_name || "—";
+function unitLabel(r) {
+  return r.truck_number || r.pump_code || r.equipment_name || "—";
 }
 
-function FuelHistory({ history }) {
-  const [showAll, setShowAll] = useState(false);
-  const rows = showAll ? history : history.slice(0, 10);
+function RequestStatusCard({ request: r }) {
+  const isFuel = r.request_type === "fuel";
+  const itemLabel = isFuel ? `${r.requested_quantity} L fuel` : `${r.requested_quantity} ${r.lubricant_type_name}`;
 
-  const totals = history.reduce((acc, r) => {
-    const key = `${r.equipment_type}:${equipmentLabel(r)}`;
-    if (!acc[key]) acc[key] = { label: equipmentLabel(r), litres: 0, cost: 0 };
-    acc[key].litres += Number(r.fuel_quantity_litres || 0);
-    acc[key].cost += Number(r.fuel_cost || 0);
-    return acc;
-  }, {});
-  const summary = Object.values(totals).sort((a, b) => b.litres - a.litres);
+  if (r.status === "pending") {
+    return (
+      <div style={{ background: "var(--amber-bg)", border: "1px solid var(--amber)", borderRadius: 10, padding: "10px 12px", marginBottom: 8, fontSize: 12 }}>
+        <div style={{ fontWeight: 600 }}>{unitLabel(r)} &middot; {itemLabel}</div>
+        <div style={{ color: "var(--slate)" }}>Waiting for Manager approval</div>
+      </div>
+    );
+  }
+  if (r.status === "rejected") {
+    return (
+      <div style={{ background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 10, padding: "10px 12px", marginBottom: 8, fontSize: 12 }}>
+        <div style={{ fontWeight: 600 }}>{unitLabel(r)} &middot; {itemLabel}</div>
+        <div style={{ color: "var(--alert-red)" }}>Rejected — {r.rejected_reason}</div>
+      </div>
+    );
+  }
+  // approved
+  const isPlantIssue = !isFuel || r.approved_station_is_plant;
+  const scanUrl = `${window.location.origin}/store/scan/${r.qr_token}`;
+  const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(scanUrl)}`;
+
+  return (
+    <div style={{ background: "var(--surface-2, #fff)", border: "1px solid var(--rebar)", borderRadius: 12, padding: 14, marginBottom: 8, textAlign: "center" }}>
+      <div style={{ display: "inline-block", background: "var(--signal-green)", color: "#fff", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 8 }}>Approved</div>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>{unitLabel(r)}</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>{r.approved_quantity} {isFuel ? "L" : r.lubricant_type_name}{isFuel && r.approved_station_name ? ` · ${r.approved_station_name}` : ""}</div>
+
+      {isPlantIssue ? (
+        <>
+          <img src={qrImgUrl} alt="QR code to show Store" style={{ width: 160, height: 160, margin: "0 auto 8px" }} />
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>Show this to Store to receive it. Disappears once issued.</div>
+        </>
+      ) : (
+        <ShareableSlip request={r} />
+      )}
+    </div>
+  );
+}
+
+function ShareableSlip({ request: r }) {
+  async function share() {
+    const text = `Fuel approval — ${r.approved_station_name}\nVehicle: ${unitLabel(r)}\nQuantity: ${r.approved_quantity} L\nApproved: ${new Date(r.approved_at).toLocaleString()}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: "Fuel approval slip", text }); } catch { /* cancelled */ }
+    } else {
+      await navigator.clipboard?.writeText(text);
+      window.alert("Copied — paste this to share with the station.");
+    }
+  }
+  return (
+    <div style={{ textAlign: "left", fontSize: 12 }}>
+      <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Station</span><span>{r.approved_station_name}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Vehicle</span><span>{unitLabel(r)}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Quantity</span><span>{r.approved_quantity} L</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Approved</span><span>{new Date(r.approved_at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+      </div>
+      <button onClick={share} style={{ width: "100%" }}>Share to station</button>
+    </div>
+  );
+}
+
+function FuelCostReport() {
+  const [requests, setRequests] = useState([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest("/supply-requests/mine").then(setRequests).catch((err) => setError(err.message));
+  }, []);
 
   return (
     <>
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 10 }}>Fuel by equipment</div>
-        {summary.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--slate)" }}>No fuel entries yet.</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ fontSize: 13 }}>
-              <thead><tr><th>Equipment</th><th>Total litres</th><th>Total cost</th></tr></thead>
-              <tbody>
-                {summary.map((s) => (
-                  <tr key={s.label}>
-                    <td>{s.label}</td>
-                    <td>{s.litres.toFixed(1)} L</td>
-                    <td>{s.cost ? `₹${s.cost.toLocaleString("en-IN")}` : "–"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div style={{ fontWeight: 600, marginBottom: 10 }}>Recent fuel entries</div>
-        {rows.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--slate)" }}>None yet.</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ fontSize: 13 }}>
-              <thead><tr><th>Date</th><th>Equipment</th><th>Litres</th><th>Cost</th><th>Reading</th><th>Station</th></tr></thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id}>
-                    <td>{new Date(r.logged_at).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
-                    <td>{equipmentLabel(r)}</td>
-                    <td>{r.fuel_quantity_litres} L</td>
-                    <td>{r.fuel_cost ? `₹${r.fuel_cost}` : "–"}</td>
-                    <td>{r.odometer_reading ? `${r.odometer_reading} km` : r.hour_meter_reading ? `${r.hour_meter_reading} hrs` : "–"}</td>
-                    <td>{r.fuel_station_name || "–"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {history.length > 10 && (
-          <button style={{ marginTop: 10, width: "100%" }} onClick={() => setShowAll(!showAll)}>
-            {showAll ? "Show less" : `Show all ${history.length}`}
-          </button>
-        )}
+      <TopBar title="Fuel and lubricants" />
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>Fuel and lubricant requests are logged by drivers and machine operators now — no self-service entry here.</div>
+        {error && <div style={{ color: "var(--alert-red)", marginTop: 12 }}>{error}</div>}
       </div>
     </>
   );
