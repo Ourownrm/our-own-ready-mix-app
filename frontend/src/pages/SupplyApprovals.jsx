@@ -62,6 +62,18 @@ export default function SupplyApprovals() {
     }
   }
 
+  async function clearRequest(r) {
+    if (!window.confirm(`Clear this request from ${r.requested_by_name}? This removes it entirely — no reason recorded, no notification sent. Use Reject instead if the requester should know why.`)) return;
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/supply-requests/${r.id}`, { method: "DELETE" });
+      setNotice("Cleared.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <>
       <TopBar title="Fuel and lubricant requests" />
@@ -109,6 +121,7 @@ export default function SupplyApprovals() {
                 <div style={{ display: "flex", gap: 8 }}>
                   <button style={{ flex: 1, padding: 8, fontSize: 13, background: "var(--signal-green)", color: "#fff", border: "none" }} onClick={() => approve(r)}>Approve</button>
                   <button style={{ flex: 1, padding: 8, fontSize: 13 }} onClick={() => reject(r)}>Reject</button>
+                  <button style={{ padding: 8, fontSize: 13 }} onClick={() => clearRequest(r)} title="Remove without a reason or notification">Clear</button>
                 </div>
               </div>
             );

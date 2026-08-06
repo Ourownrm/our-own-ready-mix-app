@@ -2199,3 +2199,40 @@ setup — was already correctly built and wired. Two real gaps found and closed:
 ### Migration note
 No new schema changes this round beyond what was already noted for the fuel module —
 if you haven't run `/setup?key=...` since that round, do it now.
+
+## Seventieth round — fixed the QR scan bug, plus three requested additions
+
+### The actual bug behind "scan works but shows not found"
+Traced it precisely: scanning with the phone's own camera app opened the link in a
+**fresh, logged-out browser tab** — a completely separate session from the app.
+`ProtectedRoute` correctly sent that to login, but never remembered where the user was
+trying to go, so after logging in they landed on the generic Store home page and the
+token was silently lost. Not a flaky scan — a structural gap in how deep links and
+auth redirects interacted.
+
+**Fixed by building a real in-app scanner** — new `jsqr`-based component that reads
+the camera feed directly inside the already-authenticated app. No URL, no browser
+switch, no login redirect to lose anything on. The QR itself is simpler now too — it
+just encodes the raw token, not a full link.
+
+### Fuel and lubricant requests — now a real dashboard card
+Pulled out of the buried "More" menu — Manager Dashboard's main view now shows a card
+with the pending count, same visual weight as Active trucks and the other cards there.
+
+### Shareable slip is now an actual image
+`navigator.share({text})` only ever shared plain words, which is why WhatsApp showed
+just text. Now uses `html2canvas` to capture the styled slip as a real PNG and shares
+that file — falls back to downloading the image directly if the browser doesn't
+support sharing files, with a clear note about why.
+
+### Manager can now clear a pending request outright
+Distinct from Reject (which keeps a record and notifies the requester with a reason) —
+Clear just removes it, for duplicate or mistaken requests that don't need either.
+
+### New dependencies
+`jsqr` (QR decoding) and `html2canvas` (image capture for the slip) — both lightweight,
+both loaded only when their specific feature is used (same lazy-loading pattern
+already used for `jspdf`/`xlsx`), not bundled into the main app load.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.

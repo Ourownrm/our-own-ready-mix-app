@@ -24,6 +24,7 @@ export default function ManagerDashboard() {
   const [liveLocations, setLiveLocations] = useState([]);
   const [onDutyDrivers, setOnDutyDrivers] = useState([]);
   const [pumpUtilization, setPumpUtilization] = useState([]);
+  const [pendingSupply, setPendingSupply] = useState([]);
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
@@ -33,7 +34,7 @@ export default function ManagerDashboard() {
 
   async function load() {
     try {
-      const [dashboard, orderList, trucks, trips, locations, drivers, pumpUtil] = await Promise.all([
+      const [dashboard, orderList, trucks, trips, locations, drivers, pumpUtil, supply] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
         apiRequest("/orders/active-trucks"),
@@ -41,6 +42,7 @@ export default function ManagerDashboard() {
         apiRequest("/orders/live-locations"),
         apiRequest("/orders/on-duty-drivers"),
         apiRequest("/orders/pump-utilization-month"),
+        apiRequest("/supply-requests/pending"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
@@ -49,6 +51,7 @@ export default function ManagerDashboard() {
       setLiveLocations(locations);
       setOnDutyDrivers(drivers);
       setPumpUtilization(pumpUtil);
+      setPendingSupply(supply);
     } catch (err) {
       setError(err.message);
     }
@@ -265,6 +268,19 @@ export default function ManagerDashboard() {
         <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
+        <Link to="/supply-approvals" style={{ textDecoration: "none" }}>
+          <div className="card" style={{ marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Fuel and lubricant requests</div>
+              <div style={{ fontSize: 12, color: "var(--slate)" }}>
+                {pendingSupply.length === 0 ? "Nothing waiting on you" : `${pendingSupply.length} pending approval`}
+              </div>
+            </div>
+            {pendingSupply.length > 0 && (
+              <span className="badge badge-warning" style={{ fontSize: 13, padding: "4px 10px" }}>{pendingSupply.length}</span>
+            )}
+          </div>
+        </Link>
         <RawMaterialStockCard />
         <ComplianceAlertsCard />
         <div className="card" style={{ marginBottom: 20 }}>

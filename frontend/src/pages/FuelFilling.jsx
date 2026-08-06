@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
@@ -241,8 +241,7 @@ function RequestStatusCard({ request: r }) {
   }
   // approved
   const isPlantIssue = !isFuel || r.approved_station_is_plant;
-  const scanUrl = `${window.location.origin}/store/scan/${r.qr_token}`;
-  const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(scanUrl)}`;
+  const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(r.qr_token)}`;
 
   return (
     <div style={{ background: "var(--surface-2, #fff)", border: "1px solid var(--rebar)", borderRadius: 12, padding: 14, marginBottom: 8, textAlign: "center" }}>
@@ -263,24 +262,52 @@ function RequestStatusCard({ request: r }) {
 }
 
 function ShareableSlip({ request: r }) {
+  const slipRef = useRef(null);
+  const [sharing, setSharing] = useState(false);
+  const [shareError, setShareError] = useState("");
+
   async function share() {
-    const text = `Fuel approval — ${r.approved_station_name}\nVehicle: ${unitLabel(r)}\nQuantity: ${r.approved_quantity} L\nApproved: ${new Date(r.approved_at).toLocaleString()}`;
-    if (navigator.share) {
-      try { await navigator.share({ title: "Fuel approval slip", text }); } catch { /* cancelled */ }
-    } else {
-      await navigator.clipboard?.writeText(text);
-      window.alert("Copied — paste this to share with the station.");
+    setSharing(true); setShareError("");
+    try {
+      const html2canvas = (await import("html2canvas")).default;
+      const canvas = await html2canvas(slipRef.current, { backgroundColor: "#ffffff", scale: 2 });
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      const file = new File([blob], "fuel-approval-slip.png", { type: "image/png" });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: "Fuel approval slip" });
+        } catch {
+          // cancelled by the user — not an error
+        }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "fuel-approval-slip.png";
+        a.click();
+        URL.revokeObjectURL(url);
+        window.alert("Sharing images isn't supported on this browser — the slip was downloaded instead. Attach it to WhatsApp or however you'd like to send it.");
+      }
+    } catch (err) {
+      setShareError("Couldn't create the slip image — try again.");
+    } finally {
+      setSharing(false);
     }
   }
+
   return (
     <div style={{ textAlign: "left", fontSize: 12 }}>
-      <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Station</span><span>{r.approved_station_name}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Vehicle</span><span>{unitLabel(r)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Quantity</span><span>{r.approved_quantity} L</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: "var(--slate)" }}>Approved</span><span>{new Date(r.approved_at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+      <div ref={slipRef} style={{ background: "#fff", borderRadius: 8, padding: 14, marginBottom: 8, border: "1px solid #ddd" }}>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#111" }}>Our Own Ready Mix — fuel approval</div>
+        <div style={{ display: "inline-block", background: "#E1F5EE", color: "#0F6E56", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 8 }}>Approved</div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Station</span><span>{r.approved_station_name}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Vehicle</span><span>{unitLabel(r)}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Driver</span><span>{r.requested_by_name || ""}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Quantity</span><span>{r.approved_quantity} L</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", borderBottom: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Approved</span><span>{new Date(r.approved_at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
       </div>
-      <button onClick={share} style={{ width: "100%" }}>Share to station</button>
+      {shareError && <div style={{ color: "var(--alert-red)", marginBottom: 6 }}>{shareError}</div>}
+      <button onClick={share} disabled={sharing} style={{ width: "100%" }}>{sharing ? "Preparing..." : "Share to station"}</button>
     </div>
   );
 }

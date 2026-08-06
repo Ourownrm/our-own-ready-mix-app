@@ -62,11 +62,13 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
 // history is still visible.
 router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
   const { rows } = await query(
-    `SELECT sr.*, fs.name AS fuel_station_name, fs.is_plant AS station_is_plant,
+    `SELECT sr.*, u.name AS requested_by_name,
+            fs.name AS fuel_station_name, fs.is_plant AS station_is_plant,
             afs.name AS approved_station_name, afs.is_plant AS approved_station_is_plant,
             lt.name AS lubricant_type_name,
             t.truck_number, p.pump_code, e.name AS equipment_name
      FROM supply_requests sr
+     JOIN users u ON u.id = sr.requested_by
      LEFT JOIN fuel_stations fs ON fs.id = sr.fuel_station_id
      LEFT JOIN fuel_stations afs ON afs.id = sr.approved_station_id
      LEFT JOIN lubricant_types lt ON lt.id = sr.lubricant_type_id
@@ -183,6 +185,15 @@ router.post("/:id/issue", requireRole("store", "administrator"), async (req, res
     [req.user.id, actual_quantity_issued, fuel_cost || null, req.params.id]
   );
   res.json(rows[0]);
+});
+
+// Manager can clear a pending request outright — distinct from reject
+// (which keeps a record and notifies the requester with a reason). This is
+// for duplicate or mistaken requests that don't need either.
+router.delete("/:id", requireRole("manager", "administrator"), async (req, res) => {
+  const { rowCount } = await query("DELETE FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "Request not found or already actioned." });
+  res.json({ ok: true });
 });
 
 export default router;
