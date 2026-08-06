@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
@@ -118,7 +119,7 @@ function RequestFlow() {
         {active.length > 0 && (
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Your requests</div>
-            {active.map((r) => <RequestStatusCard key={r.id} request={r} />)}
+            {active.map((r) => <RequestStatusCard key={r.id} request={r} onReload={load} />)}
           </div>
         )}
 
@@ -219,7 +220,11 @@ function unitLabel(r) {
   return r.truck_number || r.pump_code || r.equipment_name || "—";
 }
 
-function RequestStatusCard({ request: r }) {
+function refNumber(r) {
+  return `${r.request_type === "fuel" ? "FR" : "LR"}-${r.id}`;
+}
+
+function RequestStatusCard({ request: r, onReload }) {
   const isFuel = r.request_type === "fuel";
   const itemLabel = isFuel ? `${r.requested_quantity} L fuel` : `${r.requested_quantity} ${r.lubricant_type_name}`;
 
@@ -245,9 +250,10 @@ function RequestStatusCard({ request: r }) {
 
   return (
     <div style={{ background: "var(--surface-2, #fff)", border: "1px solid var(--rebar)", borderRadius: 12, padding: 14, marginBottom: 8, textAlign: "center" }}>
-      <div style={{ display: "inline-block", background: "var(--signal-green)", color: "#fff", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 8 }}>Approved</div>
-      <div style={{ fontSize: 13, fontWeight: 600 }}>{unitLabel(r)}</div>
-      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>{r.approved_quantity} {isFuel ? "L" : r.lubricant_type_name}{isFuel && r.approved_station_name ? ` · ${r.approved_station_name}` : ""}</div>
+      <div style={{ display: "inline-block", background: "var(--signal-green)", color: "#fff", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 6 }}>Approved</div>
+      <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 0.5, marginBottom: 4 }}>{refNumber(r)}</div>
+      <div style={{ fontSize: 17, fontWeight: 600 }}>{unitLabel(r)}</div>
+      <div style={{ fontSize: 16, color: "var(--slate)", marginBottom: 10 }}>{r.approved_quantity} {isFuel ? "L" : r.lubricant_type_name}{isFuel && r.approved_station_name ? ` · ${r.approved_station_name}` : ""}</div>
 
       {isPlantIssue ? (
         <>
@@ -255,16 +261,37 @@ function RequestStatusCard({ request: r }) {
           <div style={{ fontSize: 11, color: "var(--slate)" }}>Show this to Store to receive it. Disappears once issued.</div>
         </>
       ) : (
-        <ShareableSlip request={r} />
+        <ShareableSlip request={r} onReload={onReload} />
       )}
     </div>
   );
 }
 
-function ShareableSlip({ request: r }) {
+function ShareableSlip({ request: r, onReload }) {
   const slipRef = useRef(null);
   const [sharing, setSharing] = useState(false);
   const [shareError, setShareError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [actualQty, setActualQty] = useState(r.approved_quantity);
+  const [cost, setCost] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [confirmError, setConfirmError] = useState("");
+
+  async function submitFill() {
+    if (!actualQty) { setConfirmError("Enter the actual quantity filled."); return; }
+    setSaving(true); setConfirmError("");
+    try {
+      await apiRequest(`/supply-requests/${r.id}/confirm-external-fill`, {
+        method: "POST",
+        body: { actual_quantity_issued: actualQty, fuel_cost: cost || null },
+      });
+      onReload?.();
+    } catch (err) {
+      setConfirmError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function share() {
     setSharing(true); setShareError("");
@@ -297,35 +324,60 @@ function ShareableSlip({ request: r }) {
 
   return (
     <div style={{ textAlign: "left", fontSize: 12 }}>
-      <div ref={slipRef} style={{ background: "#fff", borderRadius: 8, padding: 14, marginBottom: 8, border: "1px solid #ddd" }}>
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#111" }}>Our Own Ready Mix — fuel approval</div>
-        <div style={{ display: "inline-block", background: "#E1F5EE", color: "#0F6E56", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 8 }}>Approved</div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Station</span><span>{r.approved_station_name}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Vehicle</span><span>{unitLabel(r)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Driver</span><span>{r.requested_by_name || ""}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Quantity</span><span>{r.approved_quantity} L</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", borderBottom: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Approved</span><span>{new Date(r.approved_at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+      <div ref={slipRef} style={{ position: "relative", background: "#fff", borderRadius: 8, padding: 16, marginBottom: 8, border: "1px solid #ddd", overflow: "hidden" }}>
+        <div style={{
+          position: "absolute", inset: 0, backgroundImage: "url(/logo.jpg)",
+          backgroundRepeat: "repeat", backgroundSize: "70px 70px", opacity: 0.06, pointerEvents: "none",
+        }} />
+        <div style={{ position: "relative" }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2, color: "#111" }}>Our Own Ready Mix — fuel approval</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#333", marginBottom: 6 }}>{new Date(r.approved_at).toLocaleString([], { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+          <div style={{ display: "inline-block", background: "#E1F5EE", color: "#0F6E56", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 6 }}>Approved</div>
+          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: 0.5, color: "#111", marginBottom: 8 }}>{refNumber(r)}</div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Station</span><span>{r.approved_station_name}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Vehicle</span><span>{unitLabel(r)}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Driver</span><span>{r.requested_by_name || ""}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", borderBottom: "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Quantity</span><span>{r.approved_quantity} L</span></div>
+
+          <div style={{ marginTop: 8, fontSize: 9, color: "#aaa", textAlign: "center", letterSpacing: 0.5 }}>
+            {refNumber(r)} &middot; {(r.requested_by_name || "").toUpperCase()} &middot; {refNumber(r)} &middot; {(r.requested_by_name || "").toUpperCase()}
+          </div>
+        </div>
       </div>
       {shareError && <div style={{ color: "var(--alert-red)", marginBottom: 6 }}>{shareError}</div>}
-      <button onClick={share} disabled={sharing} style={{ width: "100%" }}>{sharing ? "Preparing..." : "Share to station"}</button>
+      <button onClick={share} disabled={sharing} style={{ width: "100%", marginBottom: 10 }}>{sharing ? "Preparing..." : "Share to station"}</button>
+
+      <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10 }}>
+        {!confirming ? (
+          <button onClick={() => setConfirming(true)} style={{ width: "100%", fontSize: 12 }}>Mark as filled</button>
+        ) : (
+          <>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Confirm what was actually filled</div>
+            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 4 }}>Actual quantity (litres)</div>
+            <input type="number" value={actualQty} onChange={(e) => setActualQty(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 4 }}>Cost (₹, optional)</div>
+            <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+            {confirmError && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{confirmError}</div>}
+            <button onClick={submitFill} disabled={saving} style={{ width: "100%", fontSize: 12, background: "var(--signal-green)", color: "#fff", border: "none" }}>
+              {saving ? "Saving..." : "Confirm"}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
 function FuelCostReport() {
-  const [requests, setRequests] = useState([]);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    apiRequest("/supply-requests/mine").then(setRequests).catch((err) => setError(err.message));
-  }, []);
-
   return (
     <>
       <TopBar title="Fuel and lubricants" />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>Fuel and lubricant requests are logged by drivers and machine operators now — no self-service entry here.</div>
-        {error && <div style={{ color: "var(--alert-red)", marginTop: 12 }}>{error}</div>}
+        <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>
+          Fuel and lubricant requests are logged by drivers and machine operators now — no self-service entry here.
+        </div>
+        <Link to="/fuel-report"><button type="button" style={{ width: "100%" }}>Open fuel and lubricant report</button></Link>
       </div>
     </>
   );

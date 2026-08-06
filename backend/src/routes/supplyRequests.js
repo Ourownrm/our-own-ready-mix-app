@@ -196,4 +196,122 @@ router.delete("/:id", requireRole("manager", "administrator"), async (req, res) 
   res.json({ ok: true });
 });
 
+// ===================== REPORT =====================
+
+function buildReportFilters(q) {
+  const clauses = [];
+  const params = [];
+  function add(clause, value) {
+    params.push(value);
+    clauses.push(clause.replace("?", `$${params.length}`));
+  }
+  if (q.from_date) add("sr.requested_at >= ?::date", q.from_date);
+  if (q.to_date) add("sr.requested_at < ?::date + INTERVAL '1 day'", q.to_date);
+  if (q.request_type) add("sr.request_type = ?", q.request_type);
+  if (q.status) add("sr.status = ?", q.status);
+  if (q.equipment_type) add("sr.equipment_type = ?", q.equipment_type);
+  return { where: clauses.length ? clauses.join(" AND ") : "true", params };
+}
+
+const REPORT_COLUMNS = `
+  sr.id, sr.request_type, sr.status, sr.requested_at, sr.approved_at, sr.issued_at,
+  sr.odometer_reading, sr.hour_meter_reading,
+  sr.requested_quantity, sr.approved_quantity, sr.actual_quantity_issued, sr.fuel_cost,
+  sr.rejected_reason,
+  u.name AS requested_by_name, ub.name AS approved_by_name, ui.name AS issued_by_name,
+  fs.name AS station_name, lt.name AS lubricant_type_name,
+  t.truck_number, p.pump_code, e.name AS equipment_name
+`;
+const REPORT_FROM = `
+  FROM supply_requests sr
+  JOIN users u ON u.id = sr.requested_by
+  LEFT JOIN users ub ON ub.id = sr.approved_by
+  LEFT JOIN users ui ON ui.id = sr.issued_by
+  LEFT JOIN fuel_stations fs ON fs.id = sr.approved_station_id
+  LEFT JOIN lubricant_types lt ON lt.id = sr.lubricant_type_id
+  LEFT JOIN trucks t ON t.id = sr.truck_id
+  LEFT JOIN pumps p ON p.id = sr.pump_id
+  LEFT JOIN equipment e ON e.id = sr.equipment_id
+`;
+
+router.get("/report", requireRole("manager", "administrator", "accountant"), async (req, res) => {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.page_size) || 100));
+  const { where, params } = buildReportFilters(req.query);
+
+  const [rowsResult, totalsResult] = await Promise.all([
+    query(
+      `SELECT ${REPORT_COLUMNS} ${REPORT_FROM}
+       WHERE ${where}
+       ORDER BY sr.requested_at DESC
+       LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+      params
+    ),
+    query(
+      `SELECT COUNT(*) AS request_count,
+              COALESCE(SUM(sr.actual_quantity_issued) FILTER (WHERE sr.request_type = 'fuel'), 0) AS total_fuel_litres,
+              COALESCE(SUM(sr.actual_quantity_issued) FILTER (WHERE sr.request_type = 'lubricant'), 0) AS total_lubricant_qty,
+              COALESCE(SUM(sr.fuel_cost), 0) AS total_cost
+       ${REPORT_FROM}
+       WHERE ${where}`,
+      params
+    ),
+  ]);
+
+  res.json({
+    rows: rowsResult.rows,
+    page, page_size: pageSize,
+    totals: {
+      request_count: Number(totalsResult.rows[0].request_count),
+      total_fuel_litres: totalsResult.rows[0].total_fuel_litres,
+      total_lubricant_qty: totalsResult.rows[0].total_lubricant_qty,
+      total_cost: totalsResult.rows[0].total_cost,
+    },
+  });
+});
+
+router.get("/report/export", requireRole("manager", "administrator", "accountant"), async (req, res) => {
+  const { where, params } = buildReportFilters(req.query);
+  const { rows } = await query(
+    `SELECT ${REPORT_COLUMNS} ${REPORT_FROM}
+     WHERE ${where}
+     ORDER BY sr.requested_at DESC
+     LIMIT 5000`,
+    params
+  );
+  res.json(rows);
+});
+
+// For a plant fill, Store confirms via the QR scan above. But an external
+// station isn't part of this app at all — nobody there ever scans anything,
+// so without this, an external request would sit at 'approved' forever with
+// no way to ever reach 'issued'. The driver, being the one physically at the
+// pump, is the only person who actually knows the real numbers, so they
+// confirm their own external fill here.
+router.post("/:id/confirm-external-fill", requireRole(...REQUESTER_ROLES), async (req, res) => {
+  const { actual_quantity_issued, fuel_cost } = req.body;
+  if (!actual_quantity_issued) return res.status(400).json({ error: "Enter the actual quantity filled." });
+
+  const { rows: existing } = await query(
+    `SELECT sr.*, fs.is_plant FROM supply_requests sr
+     LEFT JOIN fuel_stations fs ON fs.id = sr.approved_station_id
+     WHERE sr.id = $1 AND sr.status = 'approved' AND sr.requested_by = $2`,
+    [req.params.id, req.user.id]
+  );
+  if (!existing.length) return res.status(404).json({ error: "Request not found or not in a confirmable state." });
+  const isPlantIssue = existing[0].request_type !== "fuel" || existing[0].is_plant;
+  if (isPlantIssue) {
+    return res.status(400).json({ error: "This is issued by Store, not confirmed here." });
+  }
+
+  const { rows } = await query(
+    `UPDATE supply_requests SET
+       status = 'issued', issued_by = $1, issued_at = now(),
+       actual_quantity_issued = $2, fuel_cost = $3, qr_token = NULL
+     WHERE id = $4 RETURNING *`,
+    [req.user.id, actual_quantity_issued, fuel_cost || null, req.params.id]
+  );
+  res.json(rows[0]);
+});
+
 export default router;

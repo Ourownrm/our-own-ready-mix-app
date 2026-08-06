@@ -221,6 +221,7 @@ export default function ManagerDashboard() {
             <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
             <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
             <Link to="/production-report"><button type="button">Production report</button></Link>
+            <Link to="/fuel-report"><button type="button">Fuel and lubricant report</button></Link>
             <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
             <Link to="/fuel"><button type="button">Fuel filling</button></Link>
             <Link to="/compliance"><button type="button">Statutory compliance</button></Link>

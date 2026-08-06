@@ -2259,3 +2259,34 @@ rather than leaving someone staring at a camera feed with no feedback.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Seventy-second round — slip anti-duplication, fuel report, and a real gap closed
+
+### Approval slip — refined per feedback
+Removed the validity window. Reference number is now the largest element on the
+slip and on the plant/QR card — it's what filling stations will note on their
+invoices for reconciliation, so it needed to be unmissable. Station name, vehicle,
+and quantity are all larger too; driver name and the repeated security band stay as
+they were. Also added your actual logo as a faint tiled watermark (saved as a real
+static asset at `/logo.jpg`, not inlined into the source), and date/time is now
+prominent near the top of the slip, not buried in a table row.
+
+### New: fuel and lubricant report
+Filterable by date range, type, and status, with PDF and Excel export — same pattern
+as the Production Report. Reachable from Manager Dashboard's More menu, Accountant's
+dashboard, and directly from the old fuel-cost placeholder page (which now just links
+here instead of being a dead end).
+
+### Real gap found and fixed: external fills had no way to ever complete
+Traced this directly from your question about how the system records an external
+fill. It didn't — Store confirms plant fills via the QR scan, but Store never sees an
+external request at all, so there was genuinely no code path that could ever move an
+external fuel request past "approved." It would have sat there forever. Fixed by
+letting the driver — the only person actually at the pump — confirm their own
+external fill with the real quantity and cost, once they have it. Plant fills and
+all lubricants (always internal) still go through Store exclusively; the new
+confirmation path is blocked for both, matching the same logic already used to
+decide which card to show on the driver's screen.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.
