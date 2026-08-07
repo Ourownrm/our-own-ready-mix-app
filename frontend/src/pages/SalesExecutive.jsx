@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
+import FollowupsDue from "../lib/FollowupsDue.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -231,7 +232,10 @@ export default function SalesExecutive() {
           <BookingsList bookings={bookings} onDuty={onDuty} onNew={() => setView("new-booking")} />
         )}
         {view === "visits" && (
-          <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
+          <>
+            <FollowupsDue />
+            <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
+          </>
         )}
         {view === "feedback" && (
           <FeedbackList feedback={feedback} onDuty={onDuty} onNew={() => setView("new-feedback")} />
@@ -768,16 +772,21 @@ function VisitsList({ visits, onNew, onDuty }) {
             <div key={v.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontWeight: 600 }}>{v.visited_name}</span>
-                <span className="badge badge-neutral">{VISITOR_TYPE_LABEL[v.visitor_type] || v.visitor_type}</span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {v.is_new_project != null && (
+                    <span className={v.is_new_project ? "badge badge-info" : "badge badge-success"}>{v.is_new_project ? "New project" : "Existing project"}</span>
+                  )}
+                  <span className="badge badge-neutral">{VISITOR_TYPE_LABEL[v.visitor_type] || v.visitor_type}</span>
+                </div>
               </div>
               <div style={{ color: "var(--slate)" }}>
                 {new Date(v.visit_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}
                 {v.visit_time ? ` · ${v.visit_time.slice(0, 5)}` : ""}
                 {v.contact_person ? ` · ${v.contact_person}` : ""}
-                {v.customer_name ? ` · Linked to ${v.customer_name}` : ""}
+                {v.contact_number ? ` · ${v.contact_number}` : ""}
               </div>
-              <div>{v.discussion_outcome}</div>
-              <div style={{ color: "var(--slate)", fontSize: 11 }}>{v.at_site === false ? "Not updated from site" : v.at_site ? "At site" : ""}</div>
+              {v.discussion_outcome && <div>{v.discussion_outcome}</div>}
+              <div style={{ color: "var(--slate)", fontSize: 11 }}>{v.at_site === false ? "Not at site" : v.at_site ? "At site" : ""}</div>
             </div>
           ))}
         </div>
@@ -786,37 +795,124 @@ function VisitsList({ visits, onNew, onDuty }) {
   );
 }
 
+const NEW_PROJECT_QUESTIONS = [
+  { key: "meeting_outcome", label: "1. How was the meeting?", options: ["Interested", "Comparing prices", "Not ready yet", "Lost to competitor", "Decision maker absent"] },
+  { key: "spoke_to", label: "2. Who did you speak to?", options: ["Client", "Engineer", "Contractor", "Purchase dept.", "Other — need to reach decision maker"] },
+  { key: "decide_when", label: "3. When will they decide?", options: ["Today/tomorrow", "This week", "Next week", "This month", "More than a month", "Not sure"] },
+  { key: "concerns", label: "4. Main concerns", options: ["Price", "Distance from plant", "Delivery timing", "Product quality", "Grade availability", "Pump availability", "Payment terms", "Trust, new supplier", "None"], multi: true },
+  { key: "grades", label: "5. Grade(s) asked about", options: ["M10", "M15", "M20", "M25", "M30", "M35", "M40", "M45", "Not sure yet"], multi: true },
+  { key: "volume", label: "6. Rough volume expected", options: ["Under 50 m³", "50–200 m³", "200–500 m³", "Above 500 m³", "Unsure"] },
+  { key: "project_stage", label: "7. Project stage", options: ["Just planning", "Starting soon", "Excavation", "Foundation ready", "Column/Plinth", "Slab", "Finishing"] },
+  { key: "first_pour", label: "8. Expected first pour", options: ["Within 3 days", "1 week", "2 weeks", "1 month", "Later"] },
+  { key: "competitor_involved", label: "9. Competitor involved?", options: ["No", "Yes — SEDC", "Yes — Supermix", "Yes — Other"] },
+  { key: "competitor_experience", label: "10. Their experience with that competitor", options: ["Happy", "Unhappy", "Minor issues", "None known"], conditional: (a) => a.competitor_involved && a.competitor_involved !== "No" },
+  { key: "quotation_status", label: "11. Quotation status", options: ["Submitted", "Send today", "Revised quote needed", "Not required"] },
+  { key: "technical_visit", label: "12. Technical visit needed?", options: ["Yes", "No"] },
+  { key: "owners_meeting", label: "13. Owners' meeting needed?", options: ["Yes", "No"] },
+];
+const RUNNING_PROJECT_QUESTIONS = [
+  { key: "supply_status", label: "a. How's the supply going?", options: ["All good", "Minor issue", "Serious complaint"] },
+  { key: "volume_trend", label: "b. Volume trend?", options: ["Increasing", "Steady", "Decreasing", "Nearing completion"] },
+  { key: "payment_status", label: "c. Payments up to date?", options: ["Yes", "Needs follow-up", "Overdue, urgent"] },
+  { key: "issues", label: "d. Issues raised", options: ["None", "Late deliveries", "Quality complaint", "Pump crew behaviour", "Driver behaviour", "Other"], multi: true },
+  { key: "project_timeline", label: "e. Project timeline?", options: ["Just started", "Mid-project", "Nearing completion", "Finished"] },
+  { key: "competitor_activity", label: "f. Competitor activity?", options: ["None mentioned", "Competitor approached them"] },
+  { key: "relationship_health", label: "g. Relationship health?", options: ["Strong", "Needs attention", "At risk"] },
+];
+
+function QuestionBlock({ q, value, onChange, highlight }) {
+  const selected = q.multi ? (Array.isArray(value) ? value : []) : value;
+  function tap(opt) {
+    if (q.multi) {
+      const set = new Set(selected);
+      if (set.has(opt)) set.delete(opt); else set.add(opt);
+      onChange([...set]);
+    } else {
+      onChange(opt);
+    }
+  }
+  return (
+    <div style={{ marginBottom: 12, ...(highlight ? { background: "var(--amber-bg)", borderRadius: 8, padding: 8 } : {}) }} id={`q-${q.key}`}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+        {q.label} {q.multi && <span style={{ fontWeight: 400, color: "var(--slate)" }}>(pick any)</span>}
+      </div>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {q.options.map((opt) => {
+          const isSelected = q.multi ? selected.includes(opt) : selected === opt;
+          return (
+            <button
+              key={opt} type="button" onClick={() => tap(opt)}
+              style={{ fontSize: 11, padding: "5px 9px", ...(isSelected ? { background: "var(--rebar)", color: "#fff", border: "none" } : {}) }}
+            >
+              {opt}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function NewVisitForm({ onDone, onCancel }) {
   const [customers, setCustomers] = useState([]);
+  const [sites, setSites] = useState([]);
   const [customerId, setCustomerId] = useState("");
+  const [siteId, setSiteId] = useState("");
   const [visitedName, setVisitedName] = useState("");
   const [visitorType, setVisitorType] = useState("customer");
   const [visitDate, setVisitDate] = useState(new Date().toISOString().slice(0, 10));
-  const [visitTime, setVisitTime] = useState("");
+  const [visitTime, setVisitTime] = useState(new Date().toTimeString().slice(0, 5));
   const [contactPerson, setContactPerson] = useState("");
-  const [outcome, setOutcome] = useState("");
+  const [contactNumber, setContactNumber] = useState("");
   const [atSite, setAtSite] = useState(null);
   const [coords, setCoords] = useState(null);
+  const [isNewProject, setIsNewProject] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [comments, setComments] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [missingKeys, setMissingKeys] = useState([]);
 
   useEffect(() => {
-    apiRequest("/master/customers").then(setCustomers).catch((err) => setError(err.message));
+    Promise.all([apiRequest("/master/customers"), apiRequest("/master/sites")])
+      .then(([c, s]) => { setCustomers(c); setSites(s); })
+      .catch((err) => setError(err.message));
   }, []);
+
+  const sitesForCustomer = customerId ? sites.filter((s) => String(s.customer_id) === String(customerId)) : [];
+  const questions = isNewProject === null ? [] : isNewProject ? NEW_PROJECT_QUESTIONS : RUNNING_PROJECT_QUESTIONS;
+  const visibleQuestions = questions.filter((q) => !q.conditional || q.conditional(answers));
+
+  function setAnswer(key, value) {
+    setAnswers((a) => ({ ...a, [key]: value }));
+  }
 
   async function submit(e) {
     e.preventDefault();
-    setError("");
+    setError(""); setMissingKeys([]);
     if (atSite === null) return setError("Let us know whether you're at site.");
+    if (isNewProject === null) return setError("Confirm whether this is a new or an existing project.");
+
+    const missing = visibleQuestions.filter((q) => {
+      const v = answers[q.key];
+      return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+    });
+    if (missing.length > 0) {
+      setMissingKeys(missing.map((q) => q.key));
+      setError(`${missing.length} question${missing.length > 1 ? "s" : ""} not answered — nothing was saved.`);
+      return;
+    }
+
     setSaving(true);
     try {
       await apiRequest("/sales/visits", {
         method: "POST",
         body: {
-          customer_id: customerId || null, visited_name: visitedName, visitor_type: visitorType,
-          visit_date: visitDate, visit_time: visitTime || null,
-          contact_person: contactPerson || null, discussion_outcome: outcome,
+          customer_id: customerId || null, visited_name: visitedName, site_id: siteId || null,
+          visitor_type: visitorType, visit_date: visitDate, visit_time: visitTime || null,
+          contact_person: contactPerson, contact_number: contactNumber,
           at_site: atSite, latitude: coords?.latitude, longitude: coords?.longitude,
+          is_new_project: isNewProject, answers, comments: comments || null,
         },
       });
       onDone();
@@ -830,41 +926,83 @@ function NewVisitForm({ onDone, onCancel }) {
   return (
     <>
       <TopBar title="Sales Executive · Report visit" />
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+      <div style={{ maxWidth: 420, margin: "0 auto", padding: "0 16px 32px" }}>
         <button onClick={onCancel} style={{ marginBottom: 16 }}>← Back</button>
         <div className="card">
           <div style={{ fontWeight: 600, marginBottom: 10 }}>Report a visit</div>
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
             <div>
-              <div style={{ color: "var(--slate)" }}>Who did you visit</div>
-              <input value={visitedName} onChange={(e) => setVisitedName(e.target.value)} placeholder="Name or company — doesn't need to be an existing customer" required />
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Who is this</div>
-              <select value={visitorType} onChange={(e) => setVisitorType(e.target.value)}>
-                <option value="customer">Customer</option>
-                <option value="client">Client</option>
-                <option value="consultant">Consultant</option>
-                <option value="site_engineer">Site engineer</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Link to an existing customer (optional)</div>
-              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-                <option value="">Not linked</option>
+              <div style={{ color: "var(--slate)" }}>Customer name</div>
+              <input value={visitedName} onChange={(e) => setVisitedName(e.target.value)} placeholder="Search or type a new name" required />
+              <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setSiteId(""); const c = customers.find((x) => String(x.id) === e.target.value); if (c) setVisitedName(c.name); }} style={{ marginTop: 6 }}>
+                <option value="">Or link to an existing customer</option>
                 {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
+            </div>
+            {customerId && (
+              <div>
+                <div style={{ color: "var(--slate)" }}>Site / project</div>
+                <select value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+                  <option value="">Not decided / not applicable</option>
+                  {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+            )}
+            <div>
+              <div style={{ color: "var(--slate)" }}>Whom did you meet</div>
+              <input value={contactPerson} onChange={(e) => setContactPerson(e.target.value)} required />
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Who is he?</div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {[["customer", "Customer"], ["client", "Client"], ["consultant", "Consultant"], ["site_engineer", "Site engineer"], ["other", "Other"]].map(([val, label]) => (
+                  <button key={val} type="button" onClick={() => setVisitorType(val)} style={{ fontSize: 11, padding: "5px 9px", ...(visitorType === val ? { background: "var(--rebar)", color: "#fff", border: "none" } : {}) }}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Contact number <span style={{ color: "var(--alert-red)" }}>(required)</span></div>
+              <input type="tel" value={contactNumber} onChange={(e) => setContactNumber(e.target.value)} required />
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <div><div style={{ color: "var(--slate)" }}>Date</div><input type="date" value={visitDate} onChange={(e) => setVisitDate(e.target.value)} required /></div>
               <div><div style={{ color: "var(--slate)" }}>Time</div><input type="time" value={visitTime} onChange={(e) => setVisitTime(e.target.value)} /></div>
             </div>
-            <div><div style={{ color: "var(--slate)" }}>Additional contact person (optional)</div><input value={contactPerson} onChange={(e) => setContactPerson(e.target.value)} /></div>
-            <div><div style={{ color: "var(--slate)" }}>Discussion outcome</div><textarea rows={3} value={outcome} onChange={(e) => setOutcome(e.target.value)} required /></div>
             <AtSitePrompt atSite={atSite} setAtSite={setAtSite} coords={coords} setCoords={setCoords} />
-            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
-            <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save visit"}</button>
+
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Is this a new project or an existing one?</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={() => { setIsNewProject(true); setAnswers({}); }} style={{ flex: 1, padding: 10, ...(isNewProject === true ? { background: "var(--rebar)", color: "#fff", border: "none" } : {}) }}>New project</button>
+                <button type="button" onClick={() => { setIsNewProject(false); setAnswers({}); }} style={{ flex: 1, padding: 10, ...(isNewProject === false ? { background: "var(--rebar)", color: "#fff", border: "none" } : {}) }}>Existing project</button>
+              </div>
+            </div>
+
+            {visibleQuestions.map((q) => (
+              <QuestionBlock key={q.key} q={q} value={answers[q.key]} onChange={(v) => setAnswer(q.key, v)} highlight={missingKeys.includes(q.key)} />
+            ))}
+
+            {isNewProject !== null && (
+              <div>
+                <div style={{ color: "var(--slate)", marginBottom: 4 }}>Anything else worth noting?</div>
+                <textarea rows={3} value={comments} onChange={(e) => setComments(e.target.value)} />
+              </div>
+            )}
+
+            {error && (
+              <div style={{ background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "var(--alert-red)" }}>
+                {error}
+                {missingKeys.length > 0 && (
+                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                    {missingKeys.map((k) => {
+                      const q = questions.find((qq) => qq.key === k);
+                      return <li key={k}><a href={`#q-${k}`} style={{ color: "var(--alert-red)" }}>{q?.label}</a></li>;
+                    })}
+                  </ul>
+                )}
+              </div>
+            )}
+            <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save visit & generate follow-up"}</button>
           </form>
         </div>
       </div>

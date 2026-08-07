@@ -5,6 +5,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel } from "../lib/MasterDataPanels.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import { PieChart } from "../lib/PieChart.jsx";
+import FollowupsDue from "../lib/FollowupsDue.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
@@ -285,6 +286,7 @@ export default function ManagerDashboard() {
             )}
           </div>
         </Link>
+        <FollowupsDue />
         <RawMaterialStockCard />
         <ComplianceAlertsCard />
         <div className="card" style={{ marginBottom: 20 }}>

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { RatesPanel } from "../lib/MasterDataPanels.jsx";
+import FollowupsDue from "../lib/FollowupsDue.jsx";
 
 export default function Accountant() {
   const [stats, setStats] = useState(null);
@@ -156,6 +157,8 @@ export default function Accountant() {
         <Kpi label="Pumping/waiting due" value={`₹${stats?.pumping_waiting_due ?? "–"}`} />
         <Kpi label="Trip allowance, this month" value={`₹${stats?.trip_allowance_this_month ?? "–"}`} />
       </div>
+
+      <FollowupsDue />
 
       <button onClick={() => setShowRates(true)} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
       <button onClick={() => setShowOpeningBalances(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Opening balances</button>

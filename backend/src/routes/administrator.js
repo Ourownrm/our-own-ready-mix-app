@@ -283,6 +283,49 @@ router.post("/sites/:duplicateId/merge-into/:canonicalId", requireRole("administ
   res.json({ ok: true });
 });
 
+// The real bug behind "rate matches one site, order used another" — an
+// order whose site_id points to a site owned by a DIFFERENT customer than
+// the order itself. This was possible before order creation's site dropdown
+// was filtered by customer; existing broken orders need to be found and
+// fixed by hand, since which site was actually intended can't be inferred
+// automatically.
+router.get("/orders/site-customer-mismatches", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT co.id AS order_id, co.order_date, co.order_quantity_m3, co.status,
+            oc.name AS order_customer_name, co.customer_id AS order_customer_id,
+            s.id AS site_id, s.name AS site_name,
+            sc.name AS site_actual_customer_name, s.customer_id AS site_actual_customer_id,
+            (SELECT COUNT(*) FROM delivery_tickets WHERE order_id = co.id) AS ticket_count
+     FROM customer_orders co
+     JOIN customers oc ON oc.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN customers sc ON sc.id = s.customer_id
+     WHERE co.customer_id != s.customer_id
+     ORDER BY co.order_date DESC`
+  );
+  res.json(rows);
+});
+
+// Reassigns the order to a site that actually belongs to its own customer —
+// the targeted, safe fix (only touches this one order, not the site record
+// or any other order referencing it).
+router.post("/orders/:id/fix-site-mismatch", requireRole("administrator", "manager"), async (req, res) => {
+  const { correct_site_id } = req.body;
+  if (!correct_site_id) return res.status(400).json({ error: "Select the correct site." });
+
+  const { rows: orderRows } = await query("SELECT customer_id FROM customer_orders WHERE id = $1", [req.params.id]);
+  if (!orderRows.length) return res.status(404).json({ error: "Order not found." });
+
+  const { rows: siteRows } = await query("SELECT customer_id FROM sites WHERE id = $1", [correct_site_id]);
+  if (!siteRows.length) return res.status(404).json({ error: "Site not found." });
+  if (siteRows[0].customer_id !== orderRows[0].customer_id) {
+    return res.status(400).json({ error: "That site doesn't belong to this order's customer either." });
+  }
+
+  await query("UPDATE customer_orders SET site_id = $1 WHERE id = $2", [correct_site_id, req.params.id]);
+  res.json({ ok: true });
+});
+
 router.get("/trucks", requireRole("administrator"), async (req, res) => {
   const { rows } = await query("SELECT * FROM trucks ORDER BY truck_number");
   res.json(rows);

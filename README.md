@@ -2346,3 +2346,38 @@ assistant, fuel module analysis) — queued for next round now that these six ar
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Seventy-fourth round — sales module frontend, and the actual site-mismatch fix
+
+### The real bug behind the whole rate-matching saga — found and fixed
+Not the same-customer duplicate checker built earlier — this is different. Built a
+direct diagnostic for orders whose `site_id` points to a site belonging to a
+**different customer entirely**: `Check for wrong-customer orders` on the Sites
+screen. Lists every broken order with enough context (date, ticket count, which
+customer the site actually belongs to) and lets you reassign each one to the correct
+site from that customer's own list — only touches that one order, nothing else. This
+was possible before order creation's site dropdown was filtered by customer (fixed a
+couple rounds back); this tool finds and repairs whatever's still broken from before
+that fix existed.
+
+### Sales visit module — fully rebuilt
+The whole flow from our mockup sessions, built for real: customer/site selection,
+whom you met, their role, mandatory contact number, at-site toggle with automatic GPS,
+an explicit new-vs-existing-project choice (no auto-detection), the full 13/7 tap-only
+question sets with multi-select where it matters (concerns, grades, issues) and the
+conditional competitor-experience question, a comments field, and strict validation —
+every question is required, and the warning names exactly which ones are missing with
+a tap-to-jump link, not a generic "please complete the form."
+
+Follow-ups generate automatically from the answer combinations (not any single
+answer in isolation) with real due dates, and route beyond Sales Executive when the
+action genuinely isn't theirs — owners' meetings and serious complaints go to
+Manager, overdue payments go to Accountant. Immediate push for anything due today or
+tomorrow, plus a daily digest for anything still pending, so nothing goes stale
+silently. New "Follow-ups due" card — overdue, today, and upcoming — now on Sales
+Executive's, Manager's, and Accountant's dashboards, each showing only what's
+assigned to them.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — this round adds the visit module's
+new fields and the follow-ups table.

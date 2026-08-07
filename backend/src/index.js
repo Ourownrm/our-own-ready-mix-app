@@ -23,7 +23,7 @@ import supplyRequestsRoutes from "./routes/supplyRequests.js";
 import salesRoutes from "./routes/sales.js";
 import complianceRoutes from "./routes/compliance.js";
 import notificationsRoutes from "./routes/notifications.js";
-import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries, checkBatchingDelayAfterSiteReady } from "./lib/scheduledChecks.js";
+import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries, checkBatchingDelayAfterSiteReady, checkFollowupsDue } from "./lib/scheduledChecks.js";
 
 dotenv.config();
 
@@ -81,4 +81,5 @@ setInterval(() => {
   checkBatchingNotStarted().catch((err) => console.error("Batching-not-started check failed:", err));
   checkComplianceExpiries().catch((err) => console.error("Compliance-expiry check failed:", err));
   checkBatchingDelayAfterSiteReady().catch((err) => console.error("Batching-delay-after-site-ready check failed:", err));
+  checkFollowupsDue().catch((err) => console.error("Follow-ups-due check failed:", err));
 }, 5 * 60 * 1000);

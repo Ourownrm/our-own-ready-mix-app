@@ -698,6 +698,32 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (fuel module rebuilt — Store role, supply_requests, lubricant_types).");
 
+    // Reworked visit module — structured tap-answer questions instead of a
+    // single free-text summary, explicit new/existing project choice, and
+    // generated follow-ups with due dates.
+    await pool.query(`
+      ALTER TABLE customer_visits ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
+      ALTER TABLE customer_visits ADD COLUMN IF NOT EXISTS is_new_project BOOLEAN;
+      ALTER TABLE customer_visits ADD COLUMN IF NOT EXISTS contact_number VARCHAR(20);
+      ALTER TABLE customer_visits ADD COLUMN IF NOT EXISTS answers JSONB;
+      ALTER TABLE customer_visits ALTER COLUMN discussion_outcome DROP NOT NULL;
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS visit_followups (
+        id SERIAL PRIMARY KEY,
+        visit_id INTEGER REFERENCES customer_visits(id) NOT NULL,
+        customer_id INTEGER REFERENCES customers(id),
+        title VARCHAR(200) NOT NULL,
+        reason TEXT,
+        due_date DATE NOT NULL,
+        assigned_to_role user_role NOT NULL DEFAULT 'sales_executive',
+        assigned_to_user_id INTEGER REFERENCES users(id),
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (visit module reworked — structured questions, follow-ups with due dates).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

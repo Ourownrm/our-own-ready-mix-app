@@ -144,6 +144,7 @@ export function SitesPanel({ setError }) {
   const [saving, setSaving] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [showDuplicates, setShowDuplicates] = useState(false);
+  const [showMismatches, setShowMismatches] = useState(false);
   const [notice, setNotice] = useState("");
 
   async function load() {
@@ -240,10 +241,14 @@ export function SitesPanel({ setError }) {
             Show disabled
           </label>
           <button style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setShowDuplicates(true)}>Check for duplicate sites</button>
+          <button style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setShowMismatches(true)}>Check for wrong-customer orders</button>
         </div>
       </div>
       {showDuplicates && (
         <DuplicateSitesReview setError={setError} onClose={() => setShowDuplicates(false)} onDone={(msg) => { setNotice(msg); setShowDuplicates(false); load(); }} />
+      )}
+      {showMismatches && (
+        <SiteMismatchReview setError={setError} onClose={() => setShowMismatches(false)} onDone={(msg) => { setNotice(msg); setShowMismatches(false); load(); }} />
       )}
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 12, marginBottom: 8 }}>{notice}</div>}
       <div className="card" style={{ marginBottom: 12, overflowX: "auto" }}>
@@ -500,6 +505,83 @@ export function RatesPanel({ setError }) {
         </div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add rate"}</button></div>
       </form>
+    </div>
+  );
+}
+
+function SiteMismatchReview({ setError, onClose, onDone }) {
+  const [rows, setRows] = useState(null);
+  const [sites, setSites] = useState([]);
+  const [fixSelections, setFixSelections] = useState({});
+  const [saving, setSaving] = useState(null);
+
+  useEffect(() => {
+    Promise.all([apiRequest("/administrator/orders/site-customer-mismatches"), apiRequest("/administrator/sites")])
+      .then(([m, s]) => { setRows(m); setSites(s); })
+      .catch((err) => setError(err.message));
+  }, []);
+
+  if (rows === null) return <div className="card" style={{ marginBottom: 20, fontSize: 13 }}>Checking...</div>;
+
+  async function fix(orderId) {
+    const correctSiteId = fixSelections[orderId];
+    if (!correctSiteId) { setError("Pick the correct site first."); return; }
+    if (!window.confirm("Reassign this order to the correct site? This only changes this one order — the site record itself and any other order are untouched.")) return;
+    setSaving(orderId); setError("");
+    try {
+      await apiRequest(`/administrator/orders/${orderId}/fix-site-mismatch`, { method: "POST", body: { correct_site_id: correctSiteId } });
+      onDone("Order reassigned to the correct site.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 20, border: "2px solid var(--alert-red)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Orders pointing at the wrong customer's site</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+        This is the actual bug behind "the rate matched one site, the order used another" — an order whose
+        site belongs to a different customer entirely. Now prevented at order creation, but existing orders
+        created before that fix need to be corrected by hand — pick which of the order's own customer's
+        sites was actually intended.
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>None found.</div>
+      ) : (
+        rows.map((r) => {
+          const ownSites = sites.filter((s) => String(s.customer_id) === String(r.order_customer_id));
+          return (
+            <div key={r.order_id} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid var(--concrete)" }}>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>
+                Order #{r.order_id} — <strong>{r.order_customer_name}</strong> — {new Date(r.order_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })} — {r.ticket_count} ticket{r.ticket_count === 1 ? "" : "s"}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--alert-red)", marginBottom: 8 }}>
+                Currently pointing at "{r.site_name}", which actually belongs to <strong>{r.site_actual_customer_name}</strong>, not {r.order_customer_name}.
+              </div>
+              {ownSites.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--slate)" }}>{r.order_customer_name} has no sites on file yet — add one on this screen first, then come back here.</div>
+              ) : (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <select
+                    style={{ fontSize: 12 }}
+                    value={fixSelections[r.order_id] || ""}
+                    onChange={(e) => setFixSelections({ ...fixSelections, [r.order_id]: e.target.value })}
+                  >
+                    <option value="">Which of {r.order_customer_name}'s sites was this actually for?</option>
+                    {ownSites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <button style={{ fontSize: 12, padding: "4px 10px" }} disabled={saving === r.order_id} onClick={() => fix(r.order_id)}>
+                    {saving === r.order_id ? "Saving..." : "Fix this order"}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+      <button onClick={onClose}>Close</button>
     </div>
   );
 }

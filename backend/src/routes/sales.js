@@ -380,29 +380,182 @@ router.get("/feedback", requireRole("sales_executive", "manager", "administrator
 
 const VISITOR_TYPES = ["customer", "client", "consultant", "site_engineer", "other"];
 
+const NEW_PROJECT_KEYS = [
+  "meeting_outcome", "spoke_to", "decide_when", "concerns", "grades", "volume",
+  "project_stage", "first_pour", "competitor_involved", "quotation_status",
+  "technical_visit", "owners_meeting",
+];
+const RUNNING_PROJECT_KEYS = [
+  "supply_status", "volume_trend", "payment_status", "issues",
+  "project_timeline", "competitor_activity", "relationship_health",
+];
+
+function missingAnswerKeys(isNewProject, answers) {
+  const required = isNewProject ? [...NEW_PROJECT_KEYS] : [...RUNNING_PROJECT_KEYS];
+  // competitor_experience is conditional — only required once a competitor's
+  // actually involved, not asked at all otherwise.
+  if (isNewProject && answers?.competitor_involved && answers.competitor_involved !== "No") {
+    required.push("competitor_experience");
+  }
+  return required.filter((k) => {
+    const v = answers?.[k];
+    return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+  });
+}
+
+function daysFromNow(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// The actual "don't miss the order" logic — reads the combination of
+// answers, not any single one in isolation, and produces specific,
+// separately-actionable follow-ups with their own due dates, some assigned
+// beyond Sales Executive when the action genuinely isn't theirs to take.
+function generateFollowups(isNewProject, answers) {
+  const items = [];
+
+  if (isNewProject) {
+    if (answers.meeting_outcome === "Lost to competitor") return items; // nothing to follow up
+
+    // Base urgency: how soon they need concrete drives how soon we call.
+    let dueInDays = 7;
+    if (answers.first_pour === "Within 3 days") dueInDays = 1;
+    else if (["Today/tomorrow", "This week"].includes(answers.decide_when)) dueInDays = 2;
+    else if (answers.decide_when === "Next week") dueInDays = 5;
+    else if (answers.decide_when === "This month") dueInDays = 10;
+    else dueInDays = 14;
+
+    if (answers.meeting_outcome !== "Not ready yet") {
+      items.push({
+        title: "Call back to check decision",
+        reason: `${answers.meeting_outcome} · deciding ${answers.decide_when?.toLowerCase()}${answers.first_pour === "Within 3 days" ? " · pour expected within 3 days" : ""}`,
+        due_in_days: dueInDays, role: "sales_executive",
+      });
+    }
+    if (answers.quotation_status === "Send today") {
+      items.push({ title: "Send quotation today", reason: "Marked \"send today\"", due_in_days: 0, role: "sales_executive" });
+    } else if (answers.quotation_status === "Revised quote needed") {
+      items.push({ title: "Prepare and send revised quote", reason: "Revised quote requested", due_in_days: 1, role: "sales_executive" });
+    }
+    if (answers.technical_visit === "Yes") {
+      items.push({ title: "Schedule technical visit", reason: "Marked as required", due_in_days: 3, role: "sales_executive" });
+    }
+    if (answers.owners_meeting === "Yes") {
+      items.push({ title: "Arrange owners' meeting", reason: "Requested during visit", due_in_days: 3, role: "manager" });
+    }
+    if (answers.spoke_to && answers.spoke_to !== "Client") {
+      items.push({ title: "Reach the actual decision maker", reason: `Only spoke to ${answers.spoke_to}`, due_in_days: dueInDays, role: "sales_executive" });
+    }
+    if (answers.competitor_involved && answers.competitor_involved !== "No" && answers.competitor_experience === "Unhappy") {
+      items.push({ title: `Highlight our advantages over ${answers.competitor_involved.replace("Yes — ", "")}`, reason: "They're unhappy with their current supplier", due_in_days: dueInDays, role: "sales_executive" });
+    }
+  } else {
+    if (answers.supply_status === "Serious complaint") {
+      items.push({ title: "Urgent: address complaint", reason: "Serious complaint raised", due_in_days: 1, role: "manager" });
+    }
+    if (answers.payment_status === "Overdue, urgent") {
+      items.push({ title: "Follow up on overdue payment", reason: "Marked overdue/urgent", due_in_days: 2, role: "accountant" });
+    } else if (answers.payment_status === "Needs follow-up") {
+      items.push({ title: "Follow up on payment status", reason: "Needs follow-up", due_in_days: 4, role: "accountant" });
+    }
+    if (answers.volume_trend === "Increasing") {
+      items.push({ title: "Explore upsell — volume increasing", reason: "Customer indicated increasing volume", due_in_days: 5, role: "sales_executive" });
+    }
+    if (answers.competitor_activity === "Competitor approached them") {
+      items.push({ title: "Reinforce relationship — competitor approached them", reason: "Competitor activity reported", due_in_days: 3, role: "sales_executive" });
+    }
+    if (answers.relationship_health === "At risk") {
+      items.push({ title: "Relationship at risk — schedule a check-in", reason: "Flagged at risk", due_in_days: 2, role: "manager" });
+    }
+    if (Array.isArray(answers.issues) && answers.issues.length && !answers.issues.includes("None")) {
+      items.push({ title: `Address raised issue(s): ${answers.issues.join(", ")}`, reason: "Issues raised during visit", due_in_days: 2, role: "sales_executive" });
+    }
+  }
+
+  return items;
+}
+
 router.post("/visits", requireRole("sales_executive"), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
-  const { customer_id, visited_name, visitor_type, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude } = req.body;
-  if (!visited_name || !visit_date || !discussion_outcome) {
-    return res.status(400).json({ error: "Who you visited, the date, and the discussion outcome are all required." });
+  const {
+    customer_id, visited_name, site_id, visitor_type, visit_date, visit_time,
+    contact_person, contact_number, at_site, latitude, longitude,
+    is_new_project, answers, comments,
+  } = req.body;
+
+  if (!visited_name || !visit_date) return res.status(400).json({ error: "Customer name and date are required." });
+  if (!contact_person) return res.status(400).json({ error: "Who you met is required." });
+  if (!VISITOR_TYPES.includes(visitor_type)) return res.status(400).json({ error: "Select who this is." });
+  if (!contact_number) return res.status(400).json({ error: "Contact number is required." });
+  if (typeof at_site !== "boolean") return res.status(400).json({ error: "Let us know whether you're at site for this visit." });
+  if (typeof is_new_project !== "boolean") return res.status(400).json({ error: "Confirm whether this is a new or an existing project." });
+
+  const missing = missingAnswerKeys(is_new_project, answers || {});
+  if (missing.length > 0) {
+    return res.status(400).json({ error: `${missing.length} question(s) still need an answer.`, missing_keys: missing });
   }
-  if (!VISITOR_TYPES.includes(visitor_type)) {
-    return res.status(400).json({ error: "Select who this is — customer, client, consultant, site engineer, or other." });
-  }
-  if (typeof at_site !== "boolean") {
-    return res.status(400).json({ error: "Let us know whether you're at site for this visit." });
-  }
+
   const { rows } = await query(
-    `INSERT INTO customer_visits (customer_id, visited_name, visitor_type, visited_by, visit_date, visit_time, contact_person, discussion_outcome, at_site, latitude, longitude)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-    [customer_id || null, visited_name, visitor_type, req.user.id, visit_date, visit_time || null, contact_person || null, discussion_outcome,
-     at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null]
+    `INSERT INTO customer_visits
+       (customer_id, visited_name, site_id, visitor_type, visited_by, visit_date, visit_time,
+        contact_person, contact_number, discussion_outcome, at_site, latitude, longitude,
+        is_new_project, answers)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+    [customer_id || null, visited_name, site_id || null, visitor_type, req.user.id, visit_date, visit_time || null,
+     contact_person, contact_number, comments || null, at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null,
+     is_new_project, JSON.stringify(answers || {})]
   );
-  res.status(201).json(rows[0]);
+  const visit = rows[0];
+
+  const followups = generateFollowups(is_new_project, answers || {});
+  const created = [];
+  for (const f of followups) {
+    const dueDate = daysFromNow(f.due_in_days);
+    const { rows: fRows } = await query(
+      `INSERT INTO visit_followups (visit_id, customer_id, title, reason, due_date, assigned_to_role, assigned_to_user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [visit.id, customer_id || null, f.title, f.reason, dueDate, f.role, f.role === "sales_executive" ? req.user.id : null]
+    );
+    created.push(fRows[0]);
+    // Anything due today or tomorrow gets pushed immediately — this is the
+    // actual fix for orders getting missed on slow follow-up, not just a
+    // list someone has to remember to check.
+    if (f.due_in_days <= 1) {
+      await pushToRole(f.role, { title: "Follow-up due " + (f.due_in_days === 0 ? "today" : "tomorrow"), body: `${visited_name} — ${f.title}`, url: f.role === "sales_executive" ? "/sales" : "/manager" });
+    }
+  }
+
+  res.status(201).json({ visit, followups: created });
 });
 
 // Sales Executive sees their own visits; Manager/Administrator see everyone's
 // (this is the report that shows on Admin's Sales Performance dashboard).
+// Every role that can have a follow-up assigned to them (sales_executive,
+// manager, accountant) sees their own — sorted so overdue is unmissable at
+// the top, matching the actual daily-use pattern this exists for.
+router.get("/followups", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+  const own = req.user.role === "sales_executive";
+  const { rows } = await query(
+    `SELECT vf.*, cv.visited_name, cv.site_id, s.name AS site_name
+     FROM visit_followups vf
+     JOIN customer_visits cv ON cv.id = vf.visit_id
+     LEFT JOIN sites s ON s.id = cv.site_id
+     WHERE vf.status = 'pending'
+       AND vf.assigned_to_role = $1
+       AND ($2::int IS NULL OR vf.assigned_to_user_id = $2)
+     ORDER BY vf.due_date`,
+    [req.user.role, own ? req.user.id : null]
+  );
+  res.json(rows);
+});
+
+router.post("/followups/:id/done", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+  await query("UPDATE visit_followups SET status = 'done' WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
 router.get("/visits", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
   const own = req.user.role === "sales_executive";
   const { rows } = await query(

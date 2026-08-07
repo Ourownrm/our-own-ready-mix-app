@@ -191,3 +191,35 @@ export async function checkBatchingDelayAfterSiteReady() {
   }
   return rows;
 }
+
+// Daily digest of follow-ups due today or overdue — this is what actually
+// prevents a generated follow-up from quietly going stale after its
+// immediate at-creation push (which only fires once, at the moment it's
+// created). Guards against repeating the same notification twice in one day.
+export async function checkFollowupsDue() {
+  const { rows } = await query(
+    `SELECT vf.id, vf.title, vf.due_date, vf.assigned_to_role, vf.assigned_to_user_id, cv.visited_name,
+            (CURRENT_DATE - vf.due_date) AS days_overdue
+     FROM visit_followups vf
+     JOIN customer_visits cv ON cv.id = vf.visit_id
+     WHERE vf.status = 'pending' AND vf.due_date <= CURRENT_DATE
+       AND NOT EXISTS (
+         SELECT 1 FROM notifications n
+         WHERE n.type = 'followup_due' AND n.message LIKE '%#' || vf.id || '#%' AND n.created_at::date = CURRENT_DATE
+       )`
+  );
+  for (const f of rows) {
+    const overdue = Number(f.days_overdue);
+    const message = `#${f.id}# ${f.visited_name} — ${f.title}${overdue > 0 ? ` (${overdue} day${overdue > 1 ? "s" : ""} overdue)` : " (due today)"}`;
+    await query(
+      `INSERT INTO notifications (recipient_role, recipient_id, type, message) VALUES ($1, $2, 'followup_due', $3)`,
+      [f.assigned_to_role, f.assigned_to_user_id, message]
+    );
+    await pushToRole(f.assigned_to_role, {
+      title: overdue > 0 ? "Follow-up overdue" : "Follow-up due today",
+      body: `${f.visited_name} — ${f.title}`,
+      url: f.assigned_to_role === "sales_executive" ? "/sales" : f.assigned_to_role === "accountant" ? "/accountant" : "/manager",
+    });
+  }
+  return rows;
+}
