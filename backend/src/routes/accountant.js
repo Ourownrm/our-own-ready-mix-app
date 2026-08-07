@@ -243,7 +243,8 @@ async function buildRecalculationPreview(rateId) {
 
   const { rows: tickets } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date, dt.loaded_quantity_m3, dt.order_id,
-            co.pump_charge_applicable, co.pump_charge_amount, co.part_load_applicable, co.part_load_charge_amount,
+            co.pump_requirement, co.pump_charge_applicable, co.pump_charge_amount,
+            co.part_load_applicable, co.part_load_charge_amount,
             i.id AS invoice_id, i.total_amount AS current_total_amount,
             COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
      FROM delivery_tickets dt
@@ -261,6 +262,12 @@ async function buildRecalculationPreview(rateId) {
   // order, not something this tool recalculates — it only corrects the
   // concrete rate itself. Still only charged once per order regardless of
   // which ticket ends up carrying it.
+  //
+  // One real exception: if the order confirmed "applicable" but the amount
+  // is zero, that zero was never a meaningful decision — it's what happens
+  // when Manager confirms applicable before any rate exists to show a real
+  // number against. Once a rate does exist (this recalculation), use its
+  // actual pump/part-load charge instead of perpetuating that zero forever.
   const { rows: alreadyCharged } = await query(
     `SELECT DISTINCT dt.order_id FROM delivery_tickets dt
      JOIN invoices i ON i.ticket_id = dt.id
@@ -274,8 +281,15 @@ async function buildRecalculationPreview(rateId) {
     let pumpingCharge = 0;
     let partLoadCharge = 0;
     if (!chargedOrders.has(t.order_id)) {
-      if (t.pump_charge_applicable) pumpingCharge = Number(t.pump_charge_amount || 0);
-      if (t.part_load_applicable) partLoadCharge = Number(t.part_load_charge_amount || 0);
+      if (t.pump_charge_applicable) {
+        const confirmedAmount = Number(t.pump_charge_amount || 0);
+        const rateAmount = t.pump_requirement === "boom_pump" ? Number(rate.boom_pump_charge || 0) : Number(rate.line_pump_charge || 0);
+        pumpingCharge = confirmedAmount > 0 ? confirmedAmount : rateAmount;
+      }
+      if (t.part_load_applicable) {
+        const confirmedAmount = Number(t.part_load_charge_amount || 0);
+        partLoadCharge = confirmedAmount > 0 ? confirmedAmount : Number(rate.part_load_charge_per_m3 || 0);
+      }
       if (pumpingCharge > 0 || partLoadCharge > 0) chargedOrders.add(t.order_id);
     }
     const newTotal = concreteAmount + pumpingCharge + partLoadCharge;
@@ -402,6 +416,60 @@ router.get("/trip-allowances", async (req, res) => {
      WHERE date_trunc('month', tap.earned_at) = date_trunc('month', CURRENT_DATE)
      GROUP BY u.name
      ORDER BY total DESC`
+  );
+  res.json(rows);
+});
+
+// Full trip allowance report — per-trip detail, filterable by date range and
+// driver, for the Driver Trip Allowance report screen (with PDF/Excel export).
+function buildAllowanceFilters(q) {
+  const clauses = ["true"];
+  const params = [];
+  if (q.from_date) { params.push(q.from_date); clauses.push(`tap.earned_at >= $${params.length}::date`); }
+  if (q.to_date) { params.push(q.to_date); clauses.push(`tap.earned_at < $${params.length}::date + INTERVAL '1 day'`); }
+  if (q.driver_id) { params.push(q.driver_id); clauses.push(`tap.driver_id = $${params.length}`); }
+  return { where: clauses.join(" AND "), params };
+}
+const ALLOWANCE_COLUMNS = `
+  tap.id, tap.amount, tap.earned_at, tap.paid_out,
+  u.name AS driver_name, dt.ticket_number, dt.loaded_quantity_m3,
+  c.name AS customer_name, s.name AS site_name, t.truck_number
+`;
+const ALLOWANCE_FROM = `
+  FROM trip_allowance_payouts tap
+  JOIN users u ON u.id = tap.driver_id
+  JOIN delivery_tickets dt ON dt.id = tap.ticket_id
+  JOIN customer_orders co ON co.id = dt.order_id
+  JOIN customers c ON c.id = co.customer_id
+  JOIN sites s ON s.id = co.site_id
+  LEFT JOIN trucks t ON t.id = dt.truck_id
+`;
+
+router.get("/trip-allowance-report", async (req, res) => {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.page_size) || 100));
+  const { where, params } = buildAllowanceFilters(req.query);
+
+  const [rowsResult, totalsResult] = await Promise.all([
+    query(
+      `SELECT ${ALLOWANCE_COLUMNS} ${ALLOWANCE_FROM} WHERE ${where}
+       ORDER BY tap.earned_at DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+      params
+    ),
+    query(`SELECT COUNT(*) AS trip_count, COALESCE(SUM(tap.amount), 0) AS total_amount ${ALLOWANCE_FROM} WHERE ${where}`, params),
+  ]);
+
+  res.json({
+    rows: rowsResult.rows, page, page_size: pageSize,
+    totals: { trip_count: Number(totalsResult.rows[0].trip_count), total_amount: totalsResult.rows[0].total_amount },
+  });
+});
+
+router.get("/trip-allowance-report/export", async (req, res) => {
+  const { where, params } = buildAllowanceFilters(req.query);
+  const { rows } = await query(
+    `SELECT ${ALLOWANCE_COLUMNS} ${ALLOWANCE_FROM} WHERE ${where} ORDER BY tap.earned_at DESC LIMIT 5000`,
+    params
   );
   res.json(rows);
 });

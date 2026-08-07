@@ -122,15 +122,15 @@ export default function CreateOrder({ onDone }) {
           <input type="number" value={form.truck_dispatch_interval_minutes} onChange={(e) => set("truck_dispatch_interval_minutes", e.target.value)} required />
         </Field>
         <Field label="Customer">
-          <select value={form.customer_id} onChange={(e) => set("customer_id", e.target.value)} required>
+          <select value={form.customer_id} onChange={(e) => { set("customer_id", e.target.value); set("site_id", ""); }} required>
             <option value="">Select</option>
             {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </Field>
         <Field label="Project / site">
-          <select value={form.site_id} onChange={(e) => set("site_id", e.target.value)} required>
-            <option value="">Select</option>
-            {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          <select value={form.site_id} onChange={(e) => set("site_id", e.target.value)} required disabled={!form.customer_id}>
+            <option value="">{form.customer_id ? "Select" : "Select a customer first"}</option>
+            {sites.filter((s) => String(s.customer_id) === String(form.customer_id)).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </Field>
         <Field label="Mix grade">

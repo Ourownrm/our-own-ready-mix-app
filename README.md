@@ -2290,3 +2290,59 @@ decide which card to show on the driver's screen.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Seventy-third round — the actual root cause of the whole rate-matching saga
+
+### 1. Found it: order creation's site dropdown was never filtered by customer
+This is what caused every "duplicate site" incident across many rounds. The site
+dropdown on order creation listed **every site from every customer**, unfiltered —
+nothing stopped Manager from picking a site that had nothing to do with the selected
+customer, or from not noticing a customer already had a site under a slightly
+different-looking entry. Confirmed from your screenshot: the dropdown showed dozens of
+unrelated sites (Ananthapuram Factory, ARAMANAPADI, Chengala...) with zero connection
+to whichever customer was selected. Every other site dropdown in this app (rates,
+booking conversion) was already correctly filtered — this was the one gap. Fixed:
+site dropdown now only shows the selected customer's own sites, disabled until a
+customer is chosen.
+
+**For your current stuck case**: use "Check for duplicate sites" (Projects and sites)
+to merge the two "Chattanchal" entries for ARS JASMIN into one, then re-run
+Recalculate.
+
+### 2. Pump charge lost when a rate is added after the order already existed
+Real bug, confirmed. If an order was created before any rate existed, the pump-charge
+confirmation had nothing to show a real number against — Manager could still confirm
+"applicable," but the amount stored was 0, since there was nothing to reference. When
+a rate was added later, Recalculate deliberately left `pump_charge_amount` untouched
+(correctly protecting a *meaningful* confirmed decision) — except this zero was never
+a meaningful decision, just what happens when there's no rate to reference yet. Fixed:
+Recalculate now checks for exactly this case — confirmed applicable, but a zero
+amount — and uses the newly-added rate's real pump/part-load charge instead of
+perpetuating a number that was never real.
+
+### 3. Waiting charge added after an invoice already exists — now notifies Accountant
+"Apply delay charge" already updated the invoice directly (which is what feeds the
+customer's outstanding balance — no separate step needed there). What was missing was
+visibility: Accountant now gets a clear notification whenever this happens, since the
+customer may already have an earlier total in hand before the charge was added.
+
+### 4. Tomorrow's orders no longer double-listed
+A date-only string parsed under IST's +5:30 offset could land just inside "tomorrow"
+even when compared against tomorrow's boundary — causing a tomorrow-dated order to
+show in both "Scheduled tomorrow" and "Upcoming orders." Fixed with an explicit
+same-day exclusion instead of relying on the raw timestamp comparison alone.
+
+### 5. New: Driver trip allowance report
+Per-trip detail (date, driver, truck, customer, site, quantity, allowance), filterable
+by date range and driver, with PDF/Excel export — same pattern as the other reports.
+Reachable from Manager Dashboard and Accountant's dashboard.
+
+### 6. Compliance register — sortable, expiry date still the default
+Added a sort control: Expiry date (default, unchanged) or Vehicle/asset number.
+
+### Still pending, as requested
+Mockups for the three AI-assistant ideas (site-visit follow-up questions, scheduling
+assistant, fuel module analysis) — queued for next round now that these six are done.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { pushToRole } from "../lib/push.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -271,6 +272,20 @@ router.post("/tickets/:ticketId/apply-delay-charge", requireRole("manager", "adm
 
   const newTotal = Number(inv.concrete_amount) + Number(inv.pumping_charge) + Number(inv.part_load_charge) + charge;
   await query("UPDATE invoices SET waiting_charge = $1, total_amount = $2 WHERE id = $3", [charge, newTotal, inv.id]);
+
+  const { rows: ticketInfo } = await query(
+    `SELECT dt.ticket_number, c.name AS customer_name
+     FROM delivery_tickets dt JOIN customer_orders co ON co.id = dt.order_id JOIN customers c ON c.id = co.customer_id
+     WHERE dt.id = $1`,
+    [req.params.ticketId]
+  );
+  const label = ticketInfo[0] ? `${ticketInfo[0].ticket_number} — ${ticketInfo[0].customer_name}` : "A delivery";
+  const message = `Waiting charge of ₹${charge} added to ${label} (already invoiced) — total is now ₹${newTotal.toFixed(2)}. The customer's outstanding balance updates automatically, but they may already have an earlier total in hand — worth flagging when following up.`;
+  await query(
+    `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('accountant', $1, 'waiting_charge_added', $2)`,
+    [req.params.ticketId, message]
+  );
+  await pushToRole("accountant", { title: "Waiting charge added to an invoiced delivery", body: message, url: "/accountant" });
 
   res.json({ ok: true, hours_charged: hoursCharged, rate_per_hour: ratePerHour, charge });
 });

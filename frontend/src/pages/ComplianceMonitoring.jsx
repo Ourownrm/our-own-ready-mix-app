@@ -54,7 +54,12 @@ export default function ComplianceMonitoring() {
   }
   useEffect(() => { load(); }, []);
 
-  const rows = filter === "all" ? documents : documents.filter((d) => d.category === filter);
+  const [sortBy, setSortBy] = useState("expiry_date");
+  const rowsFiltered = filter === "all" ? documents : documents.filter((d) => d.category === filter);
+  const rows = [...rowsFiltered].sort((a, b) => {
+    if (sortBy === "asset_name") return (a.asset_name || "").localeCompare(b.asset_name || "");
+    return new Date(a.expiry_date) - new Date(b.expiry_date);
+  });
   const counts = {
     expired: documents.filter((d) => d.days_until_expiry < 0).length,
     due7: documents.filter((d) => d.days_until_expiry >= 0 && d.days_until_expiry <= 7).length,
@@ -92,7 +97,16 @@ export default function ComplianceMonitoring() {
         )}
 
         <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Compliance register</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Compliance register</div>
+            <div style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: "var(--slate)" }}>Sort by</span>
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ fontSize: 12 }}>
+                <option value="expiry_date">Expiry date</option>
+                <option value="asset_name">Vehicle / asset number</option>
+              </select>
+            </div>
+          </div>
           {rows.length === 0 ? (
             <div style={{ fontSize: 13, color: "var(--slate)" }}>No documents tracked yet.</div>
           ) : (

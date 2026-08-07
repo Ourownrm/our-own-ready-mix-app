@@ -183,6 +183,8 @@ export default function ManagerDashboard() {
   const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && !["cancelled", "closed"].includes(o.status));
   const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && !["cancelled", "closed"].includes(o.status));
   const upcoming = orders.filter((o) =>
+    !isSameDay(o.order_date, new Date()) &&
+    !isSameDay(o.order_date, addDays(new Date(), 1)) &&
     new Date(o.order_date) > addDays(startOfDay(new Date()), 1) &&
     !["completed", "cancelled", "closed"].includes(o.status)
   );
@@ -222,6 +224,7 @@ export default function ManagerDashboard() {
             <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
             <Link to="/production-report"><button type="button">Production report</button></Link>
             <Link to="/fuel-report"><button type="button">Fuel and lubricant report</button></Link>
+            <Link to="/trip-allowance-report"><button type="button">Trip allowance report</button></Link>
             <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
             <Link to="/fuel"><button type="button">Fuel filling</button></Link>
             <Link to="/compliance"><button type="button">Statutory compliance</button></Link>

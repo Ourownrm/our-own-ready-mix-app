@@ -15,6 +15,7 @@ import OrdersSchedule from "./pages/OrdersSchedule.jsx";
 import Reports from "./pages/Reports.jsx";
 import ProductionReport from "./pages/ProductionReport.jsx";
 import FuelReport from "./pages/FuelReport.jsx";
+import TripAllowanceReport from "./pages/TripAllowanceReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
@@ -81,6 +82,9 @@ export default function App() {
           } />
           <Route path="/fuel-report" element={
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><FuelReport /></ProtectedRoute>
+          } />
+          <Route path="/trip-allowance-report" element={
+            <ProtectedRoute roles={["administrator", "manager", "accountant"]}><TripAllowanceReport /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>
