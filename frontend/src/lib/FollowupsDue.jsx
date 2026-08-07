@@ -1,6 +1,21 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "./api.js";
 
+// Groups by (date, customer) so several follow-ups for the same visit show
+// as one header with sub-items underneath, instead of repeating the date
+// and customer name on every single line.
+function groupByDateCustomer(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = `${r.due_date}|${r.visited_name}|${r.site_name || ""}`;
+    if (!groups.has(key)) {
+      groups.set(key, { due_date: r.due_date, visited_name: r.visited_name, site_name: r.site_name, items: [] });
+    }
+    groups.get(key).items.push(r);
+  }
+  return [...groups.values()];
+}
+
 export default function FollowupsDue() {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
@@ -32,19 +47,23 @@ export default function FollowupsDue() {
   const dueToday = rows.filter((r) => new Date(r.due_date).toDateString() === today);
   const upcoming = rows.filter((r) => new Date(r.due_date) > new Date(today));
 
-  function Row({ r }) {
+  function GroupBlock({ group, accentColor }) {
     return (
-      <div style={{ borderLeft: "3px solid var(--alert-red)", background: "var(--concrete)", borderRadius: "0 8px 8px 0", padding: "8px 10px", marginBottom: 8, fontSize: 13 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-          <div>
-            <div style={{ fontWeight: 600 }}>{r.visited_name}{r.site_name ? ` — ${r.site_name}` : ""}</div>
-            <div>{r.title}</div>
-            {r.reason && <div style={{ color: "var(--slate)", fontSize: 11 }}>{r.reason}</div>}
-          </div>
-          <button style={{ fontSize: 11, padding: "3px 8px", whiteSpace: "nowrap" }} disabled={busyId === r.id} onClick={() => markDone(r.id)}>
-            {busyId === r.id ? "..." : "Done"}
-          </button>
+      <div style={{ borderLeft: `3px solid ${accentColor}`, background: "var(--concrete)", borderRadius: "0 8px 8px 0", padding: "8px 10px", marginBottom: 8, fontSize: 13 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>
+          {new Date(group.due_date).toLocaleDateString([], { day: "2-digit", month: "short" })} — {group.visited_name}{group.site_name ? ` — ${group.site_name}` : ""}
         </div>
+        {group.items.map((r) => (
+          <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, padding: "3px 0 3px 10px" }}>
+            <div>
+              <div>{r.title}</div>
+              {r.reason && <div style={{ color: "var(--slate)", fontSize: 11 }}>{r.reason}</div>}
+            </div>
+            <button style={{ fontSize: 11, padding: "3px 8px", whiteSpace: "nowrap" }} disabled={busyId === r.id} onClick={() => markDone(r.id)}>
+              {busyId === r.id ? "..." : "Done"}
+            </button>
+          </div>
+        ))}
       </div>
     );
   }
@@ -60,23 +79,19 @@ export default function FollowupsDue() {
           {overdue.length > 0 && (
             <>
               <div style={{ fontSize: 12, fontWeight: 600, color: "var(--alert-red)", marginBottom: 4 }}>Overdue ({overdue.length})</div>
-              {overdue.map((r) => <Row key={r.id} r={r} />)}
+              {groupByDateCustomer(overdue).map((g, i) => <GroupBlock key={i} group={g} accentColor="var(--alert-red)" />)}
             </>
           )}
           {dueToday.length > 0 && (
             <>
               <div style={{ fontSize: 12, fontWeight: 600, color: "var(--amber)", marginBottom: 4 }}>Today ({dueToday.length})</div>
-              {dueToday.map((r) => <Row key={r.id} r={r} />)}
+              {groupByDateCustomer(dueToday).map((g, i) => <GroupBlock key={i} group={g} accentColor="var(--amber)" />)}
             </>
           )}
           {upcoming.length > 0 && (
             <>
               <div style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)", marginBottom: 4 }}>Upcoming ({upcoming.length})</div>
-              {upcoming.map((r) => (
-                <div key={r.id} style={{ fontSize: 12, color: "var(--slate)", padding: "4px 0", borderTop: "1px solid var(--concrete)" }}>
-                  {new Date(r.due_date).toLocaleDateString([], { day: "2-digit", month: "short" })} — {r.visited_name} — {r.title}
-                </div>
-              ))}
+              {groupByDateCustomer(upcoming).map((g, i) => <GroupBlock key={i} group={g} accentColor="var(--slate)" />)}
             </>
           )}
         </>

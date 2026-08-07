@@ -2381,3 +2381,28 @@ assigned to them.
 ### Migration note
 Revisit `/setup?key=...` once after deploying — this round adds the visit module's
 new fields and the follow-ups table.
+
+## Seventy-fifth round
+
+### Confirmed: the site-mismatch tool fixed the live duplication issue
+Great to hear — that confirms the diagnostic found and fixed the actual root cause,
+not just a related symptom.
+
+### Sales — Follow-ups due moved to the dashboard tab, first thing shown
+Moved off the Visits tab entirely. Also grouped by date + customer now, so several
+follow-ups from the same visit show as one header with the individual items listed
+underneath, instead of repeating the date and customer name on every line.
+
+### Manager Dashboard — pump status redesigned to the 5-state model
+En route (pump departed) → Ready for pumping (site confirmed ready — this single
+state now covers both "just became ready" and "between trucks," since the pump's
+sitting ready at site either way) → Pumping (truck actively unloading) → Completed.
+Overdue kept as a separate pre-departure alert, since it's a different kind of signal
+(a delay warning, not a lifecycle stage) than the other four. Also fixed a related
+gap while at it — completed orders were being filtered out of this table
+*before* the status logic ever ran, so "Completed" could never actually display;
+today's just-finished pump orders now stay visible long enough to show it, without
+older completed orders cluttering the table.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.

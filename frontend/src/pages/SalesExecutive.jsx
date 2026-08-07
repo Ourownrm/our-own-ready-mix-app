@@ -232,10 +232,7 @@ export default function SalesExecutive() {
           <BookingsList bookings={bookings} onDuty={onDuty} onNew={() => setView("new-booking")} />
         )}
         {view === "visits" && (
-          <>
-            <FollowupsDue />
-            <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
-          </>
+          <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
         )}
         {view === "feedback" && (
           <FeedbackList feedback={feedback} onDuty={onDuty} onNew={() => setView("new-feedback")} />
@@ -251,6 +248,7 @@ function Dashboard({ data, forecasts, onDuty }) {
   const expiredCount = (forecasts || []).filter((f) => f.is_expired).length;
   return (
     <>
+      <FollowupsDue />
       {!onDuty && (
         <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>

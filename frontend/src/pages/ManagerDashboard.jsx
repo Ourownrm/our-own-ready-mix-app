@@ -444,7 +444,7 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed, onApplyDelayChar
 // live pump status, and whether the site has confirmed ready for batching.
 function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
   const pumpOrders = orders.filter((o) =>
-    o.pump_requirement !== "without_pump" && !["completed", "closed", "cancelled"].includes(o.status)
+    o.pump_requirement !== "without_pump" && !["closed", "cancelled"].includes(o.status)
   );
   if (pumpOrders.length === 0) return null;
 
@@ -454,7 +454,13 @@ function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
     // A delivery note exists for this order and the truck is actively unloading —
     // that's the pump actually pumping concrete at site right now.
     const isPumping = activeTrucks.some((t) => t.order_id === order.id && t.status === "unloading");
+
+    if (order.status === "completed") return { label: "Completed", cls: "badge-success" };
     if (isPumping) return { label: "Pumping", cls: "badge-progress" };
+    // Covers both "site just confirmed ready, first truck not unloading yet"
+    // and "between trucks" (one done, next not yet unloading) — the pump is
+    // sitting ready at site either way, same status either way.
+    if (order.site_ready_confirmed_at) return { label: "Ready for pumping", cls: "badge-info" };
     if (order.pump_actual_departure_time) return { label: "En route", cls: "badge-info" };
     if (overdue) return { label: "Overdue", cls: "badge-danger" };
     return { label: "Not yet departed", cls: "badge-neutral" };
