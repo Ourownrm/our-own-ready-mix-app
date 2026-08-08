@@ -7,6 +7,77 @@ const router = Router();
 router.use(requireAuth, requireRole("administrator"));
 
 // Everything the Director's Dashboard needs, in one call.
+// Consolidates four different delay signals that each live in a different
+// place — pump departure, site-ready confirmation, batching-not-started
+// alerts, and time spent at site — into one unified report. Each keeps its
+// own planned/actual pairing since what "planned" means differs by type,
+// but all come back in the same row shape.
+router.get("/delay-justification", requireRole("manager", "administrator"), async (req, res) => {
+  const fromDate = req.query.from_date || new Date().toISOString().slice(0, 10);
+  const toDate = req.query.to_date || fromDate;
+
+  const [pumpDelays, siteReadyDelays, batchingNotStarted, atSiteDelays] = await Promise.all([
+    query(
+      `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
+              'Pump departure' AS delay_type,
+              co.pump_departure_time::text AS planned_time,
+              to_char(co.pump_actual_departure_time, 'HH24:MI') AS actual_time,
+              co.pump_departure_delay_reason AS reason, u.name AS reason_by_name, co.pump_departure_delay_reason_at AS reason_at
+       FROM customer_orders co
+       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+       LEFT JOIN users u ON u.id = co.pump_departure_delay_reason_by
+       WHERE co.order_date BETWEEN $1 AND $2 AND co.pump_departure_time IS NOT NULL
+         AND (co.pump_actual_departure_time IS NULL OR co.pump_actual_departure_time::time > co.pump_departure_time)`,
+      [fromDate, toDate]
+    ),
+    query(
+      `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
+              'Site ready' AS delay_type,
+              co.scheduled_batching_time::text AS planned_time,
+              to_char(co.site_ready_confirmed_at, 'HH24:MI') AS actual_time,
+              co.site_ready_delay_reason AS reason, u.name AS reason_by_name, co.site_ready_delay_reason_at AS reason_at
+       FROM customer_orders co
+       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+       LEFT JOIN users u ON u.id = co.site_ready_delay_reason_by
+       WHERE co.order_date BETWEEN $1 AND $2 AND co.site_ready_delay_reason IS NOT NULL`,
+      [fromDate, toDate]
+    ),
+    query(
+      `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
+              'Batching not started' AS delay_type,
+              co.scheduled_batching_time::text AS planned_time,
+              to_char((SELECT MIN(dt.created_at) FROM delivery_tickets dt WHERE dt.order_id = co.id), 'HH24:MI') AS actual_time,
+              n.manager_response AS reason, u.name AS reason_by_name, n.responded_at AS reason_at
+       FROM notifications n
+       JOIN customer_orders co ON co.id = n.order_id
+       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+       LEFT JOIN users u ON u.id = n.responded_by
+       WHERE n.type = 'batching_not_started' AND co.order_date BETWEEN $1 AND $2`,
+      [fromDate, toDate]
+    ),
+    query(
+      `SELECT dt.ticket_date AS date, c.name AS customer_name, s.name AS site_name,
+              'At site over 2 hours' AS delay_type,
+              to_char(rs.event_time, 'HH24:MI') AS planned_time,
+              to_char(dt.site_delay_reason_at, 'HH24:MI') AS actual_time,
+              dt.site_delay_reason AS reason, u.name AS reason_by_name, dt.site_delay_reason_at AS reason_at
+       FROM delivery_tickets dt
+       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+       LEFT JOIN users u ON u.id = dt.site_delay_reason_by
+       LEFT JOIN LATERAL (
+         SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'reached_site' ORDER BY event_time DESC LIMIT 1
+       ) rs ON true
+       WHERE dt.ticket_date BETWEEN $1 AND $2 AND dt.site_delay_reason IS NOT NULL`,
+      [fromDate, toDate]
+    ),
+  ]);
+
+  const rows = [...pumpDelays.rows, ...siteReadyDelays.rows, ...batchingNotStarted.rows, ...atSiteDelays.rows]
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  res.json(rows);
+});
+
 router.get("/director-dashboard", async (req, res) => {
   const [
     orderQtyToday, suppliedTicketQtyToday, todayRejectedQty, monthlyTicketQty, monthlyRejectedQty,

@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel, OrdersPanel as SharedOrdersPanel, TicketsPanel as SharedTicketsPanel } from "../lib/MasterDataPanels.jsx";
+import { CreateLeadForm } from "../lib/SalesPanels.jsx";
+import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 
 const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant", "sales_executive", "store"];
 
@@ -16,28 +18,54 @@ export default function Administrator() {
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        {[
-          ["users", "Users and roles"],
-          ["customers", "Customers"],
-          ["sites", "Projects and sites"],
-          ["fleet", "Trucks and pumps"],
-          ["fuel", "Fuel stations and equipment"],
-          ["salespersons", "Salespersons"],
-          ["rates", "Concrete grades and rates"],
-          ["orders", "Correct orders"],
-          ["tickets", "Correct tickets"],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            className={`btn-tab ${view === key ? "active" : ""}`}
-            onClick={() => setView(key)}
-          >
-            {label}
-          </button>
-        ))}
-        <Link to="/reports"><button type="button">Reports &amp; Director's Dashboard</button></Link>
-        <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <button
+          className={`btn-tab ${view === "users" ? "active" : ""}`}
+          onClick={() => setView("users")}
+        >
+          Users and roles
+        </button>
+        <GroupedMenu
+          label="Reports"
+          items={[
+            { label: "Reports & Director's Dashboard", to: "/reports" },
+            { label: "Production Report", to: "/production-report" },
+            { label: "Time cross check", to: "/trip-time-crosscheck" },
+            { label: "Equipment Breakdowns", to: "/breakdowns" },
+            { label: "Fuel and Lubricant report", to: "/fuel-report" },
+            { label: "Trip Allowance report", to: "/trip-allowance-report" },
+            { label: "Statutory Compliance", to: "/compliance" },
+            { label: "Delay justification report", to: "/delay-justification-report" },
+          ]}
+        />
+        <GroupedMenu
+          label="Masters"
+          items={[
+            { label: "Customer", onClick: () => setView("customers") },
+            { label: "Projects & Sites", onClick: () => setView("sites") },
+            { label: "Concrete Grade & Rates", onClick: () => setView("rates") },
+            { label: "Trucks and Pumps", onClick: () => setView("fleet") },
+            { label: "Sales Persons", onClick: () => setView("salespersons") },
+            { label: "Fuel Stations and Equipment's", onClick: () => setView("fuel") },
+          ]}
+        />
+        <GroupedMenu
+          label="Sales"
+          items={[
+            { label: "Sales Performance", to: "/sales-performance" },
+            { label: "Sales Forecast", to: "/sales-forecast" },
+            { label: "Assign a Lead", onClick: () => setView("assign-lead") },
+            { label: "Browse Leads", to: "/leads" },
+            { label: "Customer Feed Back", to: "/customer-feedback" },
+          ]}
+        />
+        <GroupedMenu
+          label="Manage"
+          items={[
+            { label: "Correct Order", onClick: () => setView("orders") },
+            { label: "Correct Tickets", onClick: () => setView("tickets") },
+          ]}
+        />
       </div>
 
       {view === "users" && <UsersPanel setError={setError} />}
@@ -49,6 +77,12 @@ export default function Administrator() {
       {view === "rates" && <RatesPanel setError={setError} />}
       {view === "orders" && <OrdersPanel setError={setError} />}
       {view === "tickets" && <TicketsPanel setError={setError} />}
+      {view === "assign-lead" && (
+        <div className="card" style={{ maxWidth: 480 }}>
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>Assign a lead</div>
+          <CreateLeadForm setError={setError} onDone={() => setView("users")} />
+        </div>
+      )}
     </div>
     </>
   );

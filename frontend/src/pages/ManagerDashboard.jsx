@@ -6,6 +6,7 @@ import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel } fro
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import { PieChart } from "../lib/PieChart.jsx";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
+import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
@@ -31,7 +32,6 @@ export default function ManagerDashboard() {
   const [detailOrderId, setDetailOrderId] = useState(null);
   const [jumpToOrderId, setJumpToOrderId] = useState(null);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
 
   async function load() {
     try {
@@ -128,6 +128,18 @@ export default function ManagerDashboard() {
     }
   }
 
+  async function addSiteDelayReason(ticketId) {
+    const reason = window.prompt("Reason for this truck's delay at site:");
+    if (!reason) return;
+    setError("");
+    try {
+      await apiRequest(`/orders/tickets/${ticketId}/site-delay-reason`, { method: "POST", body: { reason } });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (view === "create-order") {
     return (
       <>
@@ -210,28 +222,45 @@ export default function ManagerDashboard() {
               )}
             </button>
           </Link>
-          <button onClick={() => setShowMoreMenu(!showMoreMenu)}>{showMoreMenu ? "Less ▴" : "More ▾"}</button>
+          <GroupedMenu
+            label="Reports"
+            items={[
+              { label: "Production Report", to: "/production-report" },
+              { label: "Time cross check", to: "/trip-time-crosscheck" },
+              { label: "Equipment Breakdowns", to: "/breakdowns" },
+              { label: "Fuel and Lubricant report", to: "/fuel-report" },
+              { label: "Trip Allowance report", to: "/trip-allowance-report" },
+              { label: "Statutory Compliance", to: "/compliance" },
+              { label: "Delay justification report", to: "/delay-justification-report" },
+            ]}
+          />
+          <GroupedMenu
+            label="Masters"
+            items={[
+              { label: "Customer", onClick: () => setView("customers") },
+              { label: "Projects & Sites", onClick: () => setView("sites") },
+              { label: "Concrete Grade & Rates", onClick: () => setView("rates") },
+            ]}
+          />
+          <GroupedMenu
+            label="Sales"
+            items={[
+              { label: "Sales Forecast", to: "/sales-forecast" },
+              { label: "Assign a Lead", onClick: () => setView("leads") },
+              { label: "Browse Leads", to: "/leads" },
+              { label: "Customer Feed Back", to: "/customer-feedback" },
+            ]}
+          />
+          <GroupedMenu
+            label="Manage"
+            items={[
+              { label: "Correct Order", onClick: () => setView("correct-orders") },
+              { label: "Correct Tickets", onClick: () => setView("correct-tickets") },
+            ]}
+          />
+          <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
+          <Link to="/fuel"><button type="button">Fuel filling</button></Link>
         </div>
-
-        {showMoreMenu && (
-          <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-            <button onClick={() => setView("customers")}>Manage customers &amp; sites</button>
-            <button onClick={() => setView("correct-orders")}>Correct orders</button>
-            <button onClick={() => setView("correct-tickets")}>Correct tickets</button>
-            <button onClick={() => setView("rates")}>Concrete grades and rates</button>
-            <button onClick={() => setView("leads")}>Assign a lead</button>
-            <Link to="/leads"><button type="button">Browse leads</button></Link>
-            <Link to="/customer-feedback"><button type="button">Customer feedback</button></Link>
-            <Link to="/breakdowns"><button type="button">Equipment breakdowns</button></Link>
-            <Link to="/production-report"><button type="button">Production report</button></Link>
-            <Link to="/fuel-report"><button type="button">Fuel and lubricant report</button></Link>
-            <Link to="/trip-allowance-report"><button type="button">Trip allowance report</button></Link>
-            <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
-            <Link to="/fuel"><button type="button">Fuel filling</button></Link>
-            <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
-            <Link to="/sales-forecast"><button type="button">Sales forecast</button></Link>
-          </div>
-        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
           <Kpi label="Today's production" value={`${stats?.today_production_m3 ?? "–"} m³`} />
@@ -251,7 +280,7 @@ export default function ManagerDashboard() {
 
         <BookingsQueue setError={setError} />
         <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} setError={setError} onReload={load} />
-        <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} onApplyDelayCharge={applyDelayCharge} />
+        <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} onApplyDelayCharge={applyDelayCharge} onAddSiteDelayReason={addSiteDelayReason} />
         <CompletedTripsTable trips={completedTrips} />
 
         {carriedForward.length > 0 && (
@@ -352,7 +381,7 @@ function OnDutyDriversTable({ drivers }) {
   );
 }
 
-function ActiveTrucksTable({ trucks, locations, onMarkReviewed, onApplyDelayCharge }) {
+function ActiveTrucksTable({ trucks, locations, onMarkReviewed, onApplyDelayCharge, onAddSiteDelayReason }) {
   const locationByTicket = Object.fromEntries(locations.map((l) => [l.ticket_id, l]));
   const delayedCount = trucks.filter((t) => t.minutes_at_site > 120).length;
 
@@ -397,6 +426,13 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed, onApplyDelayChar
                           >
                             Apply delay charge
                           </button>
+                          <button
+                            style={{ display: "block", marginTop: 4, padding: "2px 6px", fontSize: 11, fontWeight: 400 }}
+                            onClick={() => onAddSiteDelayReason(t.ticket_id)}
+                          >
+                            {t.site_delay_reason ? "Edit reason" : "Add reason"}
+                          </button>
+                          {t.site_delay_reason && <div style={{ fontSize: 10, color: "var(--slate)", fontWeight: 400, marginTop: 2 }}>{t.site_delay_reason}</div>}
                         </div>
                       )}
                       {t.qc_flagged && (

@@ -183,7 +183,8 @@ router.get("/active-trucks", requireRole("manager", "administrator"), async (req
               SELECT n.manager_response FROM notifications n
               WHERE n.ticket_id = dt.id AND n.type = 'qc_flagged_delay' AND n.manager_response IS NOT NULL
               ORDER BY n.created_at DESC LIMIT 1
-            ) AS qc_flag_response
+            ) AS qc_flag_response,
+            dt.site_delay_reason
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN users u ON u.id = dt.driver_id
@@ -206,9 +207,9 @@ router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "ad
   const { response } = req.body;
   if (!response) return res.status(400).json({ error: "Write the action taken or reason before marking this reviewed." });
   await query(
-    `UPDATE notifications SET is_read = true, manager_response = $2
+    `UPDATE notifications SET is_read = true, manager_response = $2, responded_by = $3, responded_at = now()
      WHERE ticket_id = $1 AND type = 'qc_flagged_delay' AND is_read = false`,
-    [req.params.ticketId, response]
+    [req.params.ticketId, response, req.user.id]
   );
   res.json({ ok: true });
 });
@@ -219,6 +220,19 @@ router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "ad
 // the rate's configured waiting_charge_per_hour. Charges only the time past
 // the same 2-hour free allowance the alert itself uses, rounded up to the
 // next full hour.
+// Records why a truck sat at site past the alert threshold — this alert is
+// purely live/computed with no notification row behind it, so there was
+// nowhere to record a reason at all until now.
+router.post("/tickets/:ticketId/site-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
+  const { reason } = req.body;
+  if (!reason) return res.status(400).json({ error: "Write a reason." });
+  await query(
+    "UPDATE delivery_tickets SET site_delay_reason = $1, site_delay_reason_by = $2, site_delay_reason_at = now() WHERE id = $3",
+    [reason, req.user.id, req.params.ticketId]
+  );
+  res.json({ ok: true });
+});
+
 router.post("/tickets/:ticketId/apply-delay-charge", requireRole("manager", "administrator", "accountant"), async (req, res) => {
   const FREE_MINUTES = 120;
 
@@ -294,13 +308,19 @@ router.post("/tickets/:ticketId/apply-delay-charge", requireRole("manager", "adm
 // the Site Supervisor didn't (or Manager wants to add more context).
 router.post("/:orderId/pump-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
   const { reason } = req.body;
-  await query("UPDATE customer_orders SET pump_departure_delay_reason = $1 WHERE id = $2", [reason || null, req.params.orderId]);
+  await query(
+    "UPDATE customer_orders SET pump_departure_delay_reason = $1, pump_departure_delay_reason_by = $2, pump_departure_delay_reason_at = now() WHERE id = $3",
+    [reason || null, req.user.id, req.params.orderId]
+  );
   res.json({ ok: true });
 });
 
 router.post("/:orderId/site-ready-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
   const { reason } = req.body;
-  await query("UPDATE customer_orders SET site_ready_delay_reason = $1 WHERE id = $2", [reason || null, req.params.orderId]);
+  await query(
+    "UPDATE customer_orders SET site_ready_delay_reason = $1, site_ready_delay_reason_by = $2, site_ready_delay_reason_at = now() WHERE id = $3",
+    [reason || null, req.user.id, req.params.orderId]
+  );
   res.json({ ok: true });
 });
 

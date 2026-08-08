@@ -2406,3 +2406,33 @@ older completed orders cluttering the table.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Seventy-sixth round — delay justification report, and menu reorganization
+
+### New: Delay justification report
+Consolidates four different delay signals that each lived in a different place —
+pump departure, site-ready confirmation timing, batching-not-started alerts, and
+trucks over 2 hours at site — into one report, each with planned vs actual time,
+the reason, who recorded it, and when. PDF and Excel export.
+
+**Real gaps found and closed while building this**: the pump departure and
+site-ready delay reasons had no "who entered this" tracking at all — just the
+reason text, no accountability trail. The at-site-over-2-hours alert had *no*
+reason mechanism whatsoever — it was purely a live computed display with nothing
+persisted. Added who/when tracking to the first two, and a genuinely new "Add
+reason" capability for the third, directly on Active Trucks.
+
+### Menu reorganization — Admin and Manager
+Both dashboards now use four dropdown menus — Reports, Masters, Sales, Manage —
+via a new reusable `GroupedMenu` component, replacing the flat button rows. Admin
+sees everything (including "Assign a Lead," which had backend access but no UI path
+before now); Manager sees only what they actually have access to: all of Reports
+(confirmed Manager already had route access to every item, just no link to some of
+them), Masters limited to Customer/Sites/Rates (Trucks, Salespersons, and Fuel
+Stations stay Admin-only, since Manager never had UI access to those and this round
+didn't grant new access), all of Sales except Sales Performance (Admin-only), and
+both Manage items.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — new who/when tracking columns for
+the delay report.

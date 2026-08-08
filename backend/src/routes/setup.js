@@ -724,6 +724,21 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (visit module reworked — structured questions, follow-ups with due dates).");
 
+    // Who/when tracking on delay reasons — the delay justification report
+    // needs to show who entered a reason, not just the reason text.
+    await pool.query(`
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_departure_delay_reason_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_departure_delay_reason_at TIMESTAMPTZ;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_delay_reason_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_delay_reason_at TIMESTAMPTZ;
+      ALTER TABLE delivery_tickets ADD COLUMN IF NOT EXISTS site_delay_reason TEXT;
+      ALTER TABLE delivery_tickets ADD COLUMN IF NOT EXISTS site_delay_reason_by INTEGER REFERENCES users(id);
+      ALTER TABLE delivery_tickets ADD COLUMN IF NOT EXISTS site_delay_reason_at TIMESTAMPTZ;
+      ALTER TABLE notifications ADD COLUMN IF NOT EXISTS responded_by INTEGER REFERENCES users(id);
+      ALTER TABLE notifications ADD COLUMN IF NOT EXISTS responded_at TIMESTAMPTZ;
+    `);
+    log.push("Schema migration applied (who/when tracking added for delay reasons and notification responses).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
