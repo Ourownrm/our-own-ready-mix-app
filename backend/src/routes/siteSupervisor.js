@@ -93,7 +93,9 @@ router.post("/orders/:orderId/confirm-pump-departure", async (req, res) => {
 
   const { rows } = await query(
     `UPDATE customer_orders SET pump_actual_departure_time = now(), pump_departure_confirmed_by = $1,
-       pump_departure_delay_reason = COALESCE($2, pump_departure_delay_reason)
+       pump_departure_delay_reason = COALESCE($2, pump_departure_delay_reason),
+       pump_departure_delay_reason_by = CASE WHEN $2 IS NOT NULL THEN $1 ELSE pump_departure_delay_reason_by END,
+       pump_departure_delay_reason_at = CASE WHEN $2 IS NOT NULL THEN now() ELSE pump_departure_delay_reason_at END
      WHERE id = $3 AND assigned_site_supervisor_id = $1 RETURNING *`,
     [req.user.id, req.body.delay_reason || null, req.params.orderId]
   );
@@ -117,7 +119,9 @@ router.post("/orders/:orderId/confirm-site-ready", async (req, res) => {
 
   const { rows } = await query(
     `UPDATE customer_orders SET site_ready_confirmed = true, site_ready_confirmed_by = $1, site_ready_confirmed_at = now(),
-       site_ready_delay_reason = COALESCE($2, site_ready_delay_reason)
+       site_ready_delay_reason = COALESCE($2, site_ready_delay_reason),
+       site_ready_delay_reason_by = CASE WHEN $2 IS NOT NULL THEN $1 ELSE site_ready_delay_reason_by END,
+       site_ready_delay_reason_at = CASE WHEN $2 IS NOT NULL THEN now() ELSE site_ready_delay_reason_at END
      WHERE id = $3 AND assigned_site_supervisor_id = $1 RETURNING *`,
     [req.user.id, req.body.delay_reason || null, req.params.orderId]
   );

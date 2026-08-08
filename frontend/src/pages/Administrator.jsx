@@ -9,7 +9,7 @@ import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "driver", "site_supervisor", "accountant", "sales_executive", "store"];
 
 export default function Administrator() {
-  const [view, setView] = useState("users"); // users | customers | sites | trucks | rates
+  const [view, setView] = useState(() => new URLSearchParams(window.location.search).get("view") || "users"); // users | customers | sites | trucks | rates
   const [error, setError] = useState("");
 
   return (

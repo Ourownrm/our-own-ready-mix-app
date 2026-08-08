@@ -7,12 +7,12 @@ import { PieChart } from "../lib/PieChart.jsx";
 import ProductionChart from "../lib/ProductionChart.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
+import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 
 export default function Reports() {
   const [data, setData] = useState(null);
   const [onDutySales, setOnDutySales] = useState([]);
   const [error, setError] = useState("");
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const { user } = useAuth();
 
   async function load() {
@@ -39,23 +39,51 @@ export default function Reports() {
       <TopBar title="Reports & Director's Dashboard" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
         {user?.role === "administrator" && (
-          <>
-            <div style={{ marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
-              <Link to="/production-report"><button type="button">Production report</button></Link>
-              <Link to="/sales-performance"><button type="button">Sales performance</button></Link>
-              <button onClick={() => setShowMoreMenu(!showMoreMenu)}>{showMoreMenu ? "Less ▴" : "More ▾"}</button>
-            </div>
-            {showMoreMenu && (
-              <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Link to="/administrator"><button type="button">Manage users, customers, sites, fleet, rates...</button></Link>
-                <Link to="/compliance"><button type="button">Statutory compliance</button></Link>
-                <Link to="/notifications"><button type="button">Notifications</button></Link>
-                <Link to="/sales-forecast"><button type="button">Sales forecast</button></Link>
-                <Link to="/trip-time-crosscheck"><button type="button">Trip time cross-check</button></Link>
-              </div>
-            )}
-          </>
+          <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
+            <Link to="/administrator"><button type="button">Users and roles</button></Link>
+            <Link to="/notifications"><button type="button">Notifications</button></Link>
+            <GroupedMenu
+              label="Reports"
+              items={[
+                { label: "Production Report", to: "/production-report" },
+                { label: "Time cross check", to: "/trip-time-crosscheck" },
+                { label: "Equipment Breakdowns", to: "/breakdowns" },
+                { label: "Fuel and Lubricant report", to: "/fuel-report" },
+                { label: "Trip Allowance report", to: "/trip-allowance-report" },
+                { label: "Statutory Compliance", to: "/compliance" },
+                { label: "Delay justification report", to: "/delay-justification-report" },
+              ]}
+            />
+            <GroupedMenu
+              label="Masters"
+              items={[
+                { label: "Customer", to: "/administrator?view=customers" },
+                { label: "Projects & Sites", to: "/administrator?view=sites" },
+                { label: "Concrete Grade & Rates", to: "/administrator?view=rates" },
+                { label: "Trucks and Pumps", to: "/administrator?view=fleet" },
+                { label: "Sales Persons", to: "/administrator?view=salespersons" },
+                { label: "Fuel Stations and Equipment's", to: "/administrator?view=fuel" },
+              ]}
+            />
+            <GroupedMenu
+              label="Sales"
+              items={[
+                { label: "Sales Performance", to: "/sales-performance" },
+                { label: "Sales Forecast", to: "/sales-forecast" },
+                { label: "Assign a Lead", to: "/administrator?view=assign-lead" },
+                { label: "Browse Leads", to: "/leads" },
+                { label: "Customer Feed Back", to: "/customer-feedback" },
+              ]}
+            />
+            <GroupedMenu
+              label="Manage"
+              items={[
+                { label: "Correct Order", to: "/administrator?view=orders" },
+                { label: "Correct Tickets", to: "/administrator?view=tickets" },
+              ]}
+            />
+          </div>
         )}
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
         {!data ? (

@@ -2436,3 +2436,43 @@ both Manage items.
 ### Migration note
 Revisit `/setup?key=...` once after deploying — new who/when tracking columns for
 the delay report.
+
+## Seventy-seventh round — fixing last round's menu rollout, and report refinements
+
+### Item 1 — Manager's Delay justification report access
+Checked all three layers (frontend route, backend endpoint, menu link) — all three
+already correctly include Manager. The screenshots were from before this round's
+build had deployed; nothing to fix here, it was already right.
+
+### Item 2 — the actual root cause of the confusing double menu
+`/reports` — the real landing page for Admin (`ROLE_HOME.administrator`) — still had
+its old flat "More/Less" menu, since last round I only reorganized `/administrator`'s
+navigation, not this page's. That's what created the two-tier confusion: Admin lands
+on `/reports` with the old menu, then has to click through "Manage users..." to reach
+`/administrator`'s new menu. Fixed by giving `/reports` the exact same four grouped
+menus, with Masters/Manage items deep-linking straight to the right Administrator
+tab via a URL parameter (`/administrator?view=customers`) instead of dropping the
+user on the generic Users and Roles tab every time.
+
+### Item 3 — Delay type filter
+Added a dropdown: All, or any one of the four delay types specifically.
+
+### Item 4 — Ignore delays under 5 minutes
+Applies to Pump departure and Site ready — the two types with a clean "how many
+minutes late" figure. Defaults to 5, adjustable. Batching-not-started and the
+at-site alert are unaffected by this filter, since neither has a meaningful minutes-
+late number to threshold against — noted directly in the report's own description
+so it's not a silent gap.
+
+### Item 5 — verified, and fixed a real gap
+Traced every place these reason fields get written. Site Supervisor has their own
+endpoints for pump-departure and site-ready delay reasons — confirmed real, and
+confirmed they were writing to the same columns the report reads, so the reason text
+itself was always showing correctly. What wasn't: Site Supervisor's entries never
+set the who/when tracking columns added two rounds ago, so their reasons appeared in
+the report with no attribution. Fixed both endpoints to set them, matching the
+Manager/Admin-facing ones.
+
+### Migration note
+No new schema changes this round — if you've already run `/setup?key=...` since the
+delay-report round, nothing further needed.

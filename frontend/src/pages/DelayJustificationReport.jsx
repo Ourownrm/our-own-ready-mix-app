@@ -7,7 +7,7 @@ function todayStr() {
 }
 
 export default function DelayJustificationReport() {
-  const [filters, setFilters] = useState({ from_date: todayStr(), to_date: todayStr() });
+  const [filters, setFilters] = useState({ from_date: todayStr(), to_date: todayStr(), delay_type: "all", min_delay_minutes: "5" });
   const [rows, setRows] = useState(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState("");
@@ -83,7 +83,8 @@ export default function DelayJustificationReport() {
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
         <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
           Pump departure delays, site-ready timing, batching-not-started alerts, and trucks over 2 hours at
-          site — each with its recorded reason, who recorded it, and when.
+          site — each with its recorded reason, who recorded it, and when. The "ignore delays under" filter
+          applies to pump departure and site ready only — those are the two with a clean minutes-late figure.
         </div>
         <div className="card field-input" style={{ marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", fontSize: 13 }}>
           <div>
@@ -93,6 +94,20 @@ export default function DelayJustificationReport() {
           <div>
             <div style={{ color: "var(--slate)" }}>To</div>
             <input type="date" value={filters.to_date} onChange={(e) => setFilters({ ...filters, to_date: e.target.value })} />
+          </div>
+          <div>
+            <div style={{ color: "var(--slate)" }}>Delay type</div>
+            <select value={filters.delay_type} onChange={(e) => setFilters({ ...filters, delay_type: e.target.value })}>
+              <option value="all">All</option>
+              <option value="Pump departure">Pump departure</option>
+              <option value="Site ready">Site ready</option>
+              <option value="Batching not started">Batching not started</option>
+              <option value="At site over 2 hours">At site over 2 hours</option>
+            </select>
+          </div>
+          <div>
+            <div style={{ color: "var(--slate)" }}>Ignore delays under (min)</div>
+            <input type="number" min="0" style={{ width: 80 }} value={filters.min_delay_minutes} onChange={(e) => setFilters({ ...filters, min_delay_minutes: e.target.value })} />
           </div>
           <button onClick={run} disabled={loading}>{loading ? "Loading..." : "Run report"}</button>
           <button onClick={exportPdf} disabled={exporting !== ""}>{exporting === "pdf" ? "Exporting..." : "Export PDF"}</button>

@@ -15,65 +15,93 @@ router.use(requireAuth, requireRole("administrator"));
 router.get("/delay-justification", requireRole("manager", "administrator"), async (req, res) => {
   const fromDate = req.query.from_date || new Date().toISOString().slice(0, 10);
   const toDate = req.query.to_date || fromDate;
+  const delayType = req.query.delay_type || "all";
+  const minMinutes = Number(req.query.min_delay_minutes) || 0;
 
-  const [pumpDelays, siteReadyDelays, batchingNotStarted, atSiteDelays] = await Promise.all([
-    query(
-      `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
-              'Pump departure' AS delay_type,
-              co.pump_departure_time::text AS planned_time,
-              to_char(co.pump_actual_departure_time, 'HH24:MI') AS actual_time,
-              co.pump_departure_delay_reason AS reason, u.name AS reason_by_name, co.pump_departure_delay_reason_at AS reason_at
-       FROM customer_orders co
-       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
-       LEFT JOIN users u ON u.id = co.pump_departure_delay_reason_by
-       WHERE co.order_date BETWEEN $1 AND $2 AND co.pump_departure_time IS NOT NULL
-         AND (co.pump_actual_departure_time IS NULL OR co.pump_actual_departure_time::time > co.pump_departure_time)`,
-      [fromDate, toDate]
-    ),
-    query(
-      `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
-              'Site ready' AS delay_type,
-              co.scheduled_batching_time::text AS planned_time,
-              to_char(co.site_ready_confirmed_at, 'HH24:MI') AS actual_time,
-              co.site_ready_delay_reason AS reason, u.name AS reason_by_name, co.site_ready_delay_reason_at AS reason_at
-       FROM customer_orders co
-       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
-       LEFT JOIN users u ON u.id = co.site_ready_delay_reason_by
-       WHERE co.order_date BETWEEN $1 AND $2 AND co.site_ready_delay_reason IS NOT NULL`,
-      [fromDate, toDate]
-    ),
-    query(
-      `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
-              'Batching not started' AS delay_type,
-              co.scheduled_batching_time::text AS planned_time,
-              to_char((SELECT MIN(dt.created_at) FROM delivery_tickets dt WHERE dt.order_id = co.id), 'HH24:MI') AS actual_time,
-              n.manager_response AS reason, u.name AS reason_by_name, n.responded_at AS reason_at
-       FROM notifications n
-       JOIN customer_orders co ON co.id = n.order_id
-       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
-       LEFT JOIN users u ON u.id = n.responded_by
-       WHERE n.type = 'batching_not_started' AND co.order_date BETWEEN $1 AND $2`,
-      [fromDate, toDate]
-    ),
-    query(
-      `SELECT dt.ticket_date AS date, c.name AS customer_name, s.name AS site_name,
-              'At site over 2 hours' AS delay_type,
-              to_char(rs.event_time, 'HH24:MI') AS planned_time,
-              to_char(dt.site_delay_reason_at, 'HH24:MI') AS actual_time,
-              dt.site_delay_reason AS reason, u.name AS reason_by_name, dt.site_delay_reason_at AS reason_at
-       FROM delivery_tickets dt
-       JOIN customer_orders co ON co.id = dt.order_id
-       JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
-       LEFT JOIN users u ON u.id = dt.site_delay_reason_by
-       LEFT JOIN LATERAL (
-         SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'reached_site' ORDER BY event_time DESC LIMIT 1
-       ) rs ON true
-       WHERE dt.ticket_date BETWEEN $1 AND $2 AND dt.site_delay_reason IS NOT NULL`,
-      [fromDate, toDate]
-    ),
-  ]);
+  const queries = [];
 
-  const rows = [...pumpDelays.rows, ...siteReadyDelays.rows, ...batchingNotStarted.rows, ...atSiteDelays.rows]
+  if (delayType === "all" || delayType === "Pump departure") {
+    queries.push(
+      query(
+        `SELECT * FROM (
+           SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
+                  'Pump departure' AS delay_type,
+                  co.pump_departure_time::text AS planned_time,
+                  to_char(co.pump_actual_departure_time, 'HH24:MI') AS actual_time,
+                  co.pump_departure_delay_reason AS reason, u.name AS reason_by_name, co.pump_departure_delay_reason_at AS reason_at,
+                  EXTRACT(EPOCH FROM (COALESCE(co.pump_actual_departure_time, now()) - (co.order_date + co.pump_departure_time))) / 60 AS delay_minutes
+           FROM customer_orders co
+           JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+           LEFT JOIN users u ON u.id = co.pump_departure_delay_reason_by
+           WHERE co.order_date BETWEEN $1 AND $2 AND co.pump_departure_time IS NOT NULL
+             AND (co.pump_actual_departure_time IS NULL OR co.pump_actual_departure_time::time > co.pump_departure_time)
+         ) x WHERE delay_minutes >= $3`,
+        [fromDate, toDate, minMinutes]
+      )
+    );
+  }
+  if (delayType === "all" || delayType === "Site ready") {
+    queries.push(
+      query(
+        `SELECT * FROM (
+           SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
+                  'Site ready' AS delay_type,
+                  co.scheduled_batching_time::text AS planned_time,
+                  to_char(co.site_ready_confirmed_at, 'HH24:MI') AS actual_time,
+                  co.site_ready_delay_reason AS reason, u.name AS reason_by_name, co.site_ready_delay_reason_at AS reason_at,
+                  EXTRACT(EPOCH FROM (co.site_ready_confirmed_at - (co.order_date + co.scheduled_batching_time))) / 60 AS delay_minutes
+           FROM customer_orders co
+           JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+           LEFT JOIN users u ON u.id = co.site_ready_delay_reason_by
+           WHERE co.order_date BETWEEN $1 AND $2 AND co.site_ready_delay_reason IS NOT NULL
+         ) x WHERE delay_minutes >= $3`,
+        [fromDate, toDate, minMinutes]
+      )
+    );
+  }
+  if (delayType === "all" || delayType === "Batching not started") {
+    queries.push(
+      query(
+        `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
+                'Batching not started' AS delay_type,
+                co.scheduled_batching_time::text AS planned_time,
+                to_char((SELECT MIN(dt.created_at) FROM delivery_tickets dt WHERE dt.order_id = co.id), 'HH24:MI') AS actual_time,
+                n.manager_response AS reason, u.name AS reason_by_name, n.responded_at AS reason_at,
+                NULL::numeric AS delay_minutes
+         FROM notifications n
+         JOIN customer_orders co ON co.id = n.order_id
+         JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+         LEFT JOIN users u ON u.id = n.responded_by
+         WHERE n.type = 'batching_not_started' AND co.order_date BETWEEN $1 AND $2`,
+        [fromDate, toDate]
+      )
+    );
+  }
+  if (delayType === "all" || delayType === "At site over 2 hours") {
+    queries.push(
+      query(
+        `SELECT dt.ticket_date AS date, c.name AS customer_name, s.name AS site_name,
+                'At site over 2 hours' AS delay_type,
+                to_char(rs.event_time, 'HH24:MI') AS planned_time,
+                to_char(dt.site_delay_reason_at, 'HH24:MI') AS actual_time,
+                dt.site_delay_reason AS reason, u.name AS reason_by_name, dt.site_delay_reason_at AS reason_at,
+                NULL::numeric AS delay_minutes
+         FROM delivery_tickets dt
+         JOIN customer_orders co ON co.id = dt.order_id
+         JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+         LEFT JOIN users u ON u.id = dt.site_delay_reason_by
+         LEFT JOIN LATERAL (
+           SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'reached_site' ORDER BY event_time DESC LIMIT 1
+         ) rs ON true
+         WHERE dt.ticket_date BETWEEN $1 AND $2 AND dt.site_delay_reason IS NOT NULL`,
+        [fromDate, toDate]
+      )
+    );
+  }
+
+  const results = await Promise.all(queries);
+
+  const rows = results.flatMap((r) => r.rows)
     .sort((a, b) => new Date(a.date) - new Date(b.date));
   res.json(rows);
 });
