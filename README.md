@@ -2476,3 +2476,42 @@ Manager/Admin-facing ones.
 ### Migration note
 No new schema changes this round — if you've already run `/setup?key=...` since the
 delay-report round, nothing further needed.
+
+## Seventy-eighth round — Charts (pivot-style analysis), and four fixes
+
+### New: Charts — operations performance analysis
+Genuinely pivot-style, not four fixed reports bolted together — one flexible
+backend endpoint takes any metric (transit time, unloading time, turnaround) crossed
+with any group-by dimension (site, truck, mix grade, driver, day of week), filtered
+by specific trucks/sites/grades and any date range. Tap a bar to drill into the
+individual trips behind that average. A separate scatter view plots unloading time
+against quantity delivered, since quantity doesn't fit the group-by model. Added to
+the Reports menu everywhere it appears.
+
+### 1. Version number in the header
+Every screen now shows "Ver. X.X" next to the app name — directly so everyone can
+confirm at a glance whether their browser is actually on the latest build, since a
+PWA's service worker can otherwise keep an already-open tab on a stale bundle even
+after a new deploy is live on the server.
+
+### 2. Time added after DC number in Production Report
+Shown in the PDF, Excel export, and on-screen table.
+
+### 3. Pump status — Completed now reflects the Site Supervisor's own signal
+Found the real gap: Site Supervisor has their own "work completed" flag, separate
+from the order's official status, which only flips to completed once Manager
+explicitly confirms it separately. Pump Status previously only checked the official
+status, so a site the Supervisor had already marked done could still show "Ready for
+pumping" while waiting on Manager's confirmation. Fixed to treat the Supervisor's
+signal as Completed too.
+
+### 4. Fuel/lubricant approval push — reviewed, and a safety net added
+Traced the push code fully — structurally correct, sends to every Manager device
+with notifications enabled. Most likely explanation for a missed alert: that Manager
+never granted push permission (the request wasn't actually lost — it was always
+showing on the dashboard card and Supply Approvals count). Added a safety-net digest
+regardless: any request still pending after 15 minutes now gets a follow-up push,
+so a missed first notification doesn't mean the request goes unseen.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.

@@ -223,3 +223,30 @@ export async function checkFollowupsDue() {
   }
   return rows;
 }
+
+// Safety net for supply requests still pending after a while — the
+// at-creation push only fires once, and if Manager hadn't enabled
+// notifications yet (or just missed it), the request could otherwise sit
+// unseen with no second signal. Same once-per-day guard pattern as the
+// follow-ups digest.
+export async function checkPendingSupplyRequests() {
+  const { rows } = await query(
+    `SELECT sr.id, sr.request_type, sr.requested_quantity, u.name AS requested_by_name
+     FROM supply_requests sr
+     JOIN users u ON u.id = sr.requested_by
+     WHERE sr.status = 'pending' AND sr.requested_at < now() - INTERVAL '15 minutes'
+       AND NOT EXISTS (
+         SELECT 1 FROM notifications n
+         WHERE n.type = 'supply_request_pending_reminder' AND n.message LIKE '%#' || sr.id || '#%' AND n.created_at::date = CURRENT_DATE
+       )`
+  );
+  for (const r of rows) {
+    const message = `#${r.id}# ${r.requested_by_name} — ${r.requested_quantity} ${r.request_type === "fuel" ? "L fuel" : "lubricant"} still awaiting approval`;
+    await query(
+      `INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'supply_request_pending_reminder', $1)`,
+      [message]
+    );
+    await pushToRole("manager", { title: "Fuel/lubricant request still pending", body: message, url: "/supply-approvals" });
+  }
+  return rows;
+}

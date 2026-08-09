@@ -106,6 +106,116 @@ router.get("/delay-justification", requireRole("manager", "administrator"), asyn
   res.json(rows);
 });
 
+// ===================== TRIP TIMING ANALYSIS (Charts) =====================
+// One flexible endpoint rather than a fixed report per combination — any
+// metric (transit/unloading/turnaround) crossed with any group-by dimension
+// (site/truck/mix grade/driver/day of week), filtered by truck/site/grade
+// and date range. This is what makes it pivot-like instead of a handful of
+// bolted-together fixed charts.
+
+const METRIC_EXPR = {
+  transit: "EXTRACT(EPOCH FROM (tt.site_in - tt.plant_out)) / 60",
+  unloading: "EXTRACT(EPOCH FROM (tt.site_out - tt.site_in)) / 60",
+  turnaround: "EXTRACT(EPOCH FROM (tt.plant_in - tt.plant_out)) / 60",
+};
+const GROUP_EXPR = {
+  site: { key: "tt.site_id", label: "tt.site_name" },
+  truck: { key: "tt.truck_id", label: "tt.truck_number" },
+  mix_grade: { key: "tt.mix_grade_id", label: "tt.mix_grade_name" },
+  driver: { key: "tt.driver_id", label: "tt.driver_name" },
+  day_of_week: { key: "trim(to_char(tt.ticket_date, 'Day'))", label: "trim(to_char(tt.ticket_date, 'Day'))" },
+};
+
+function tripTimesCTE(q, params) {
+  const clauses = ["dt.ticket_date BETWEEN $1 AND $2"];
+  params.push(q.from_date, q.to_date);
+  if (q.truck_ids) { params.push(q.truck_ids.split(",").map(Number)); clauses.push(`dt.truck_id = ANY($${params.length})`); }
+  if (q.site_ids) { params.push(q.site_ids.split(",").map(Number)); clauses.push(`co.site_id = ANY($${params.length})`); }
+  if (q.mix_grade_ids) { params.push(q.mix_grade_ids.split(",").map(Number)); clauses.push(`co.mix_grade_id = ANY($${params.length})`); }
+  return `
+    WITH trip_times AS (
+      SELECT dt.id AS ticket_id, dt.ticket_date, dt.truck_id, dt.driver_id, dt.loaded_quantity_m3,
+             co.site_id, co.mix_grade_id,
+             t.truck_number, s.name AS site_name, m.name AS mix_grade_name, u.name AS driver_name,
+             po.event_time AS plant_out, si.event_time AS site_in, so.event_time AS site_out, pi.event_time AS plant_in
+      FROM delivery_tickets dt
+      JOIN customer_orders co ON co.id = dt.order_id
+      JOIN sites s ON s.id = co.site_id
+      JOIN mix_grades m ON m.id = co.mix_grade_id
+      LEFT JOIN trucks t ON t.id = dt.truck_id
+      LEFT JOIN users u ON u.id = dt.driver_id
+      LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'left_plant' ORDER BY event_time LIMIT 1) po ON true
+      LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'reached_site' ORDER BY event_time LIMIT 1) si ON true
+      LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'unloading_completed' ORDER BY event_time LIMIT 1) so ON true
+      LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'returned_to_plant' ORDER BY event_time LIMIT 1) pi ON true
+      WHERE ${clauses.join(" AND ")}
+    )
+  `;
+}
+
+router.get("/trip-analysis", requireRole("manager", "administrator"), async (req, res) => {
+  const metric = METRIC_EXPR[req.query.metric] ? req.query.metric : "unloading";
+  const groupBy = GROUP_EXPR[req.query.group_by] ? req.query.group_by : "site";
+  const params = [];
+  const cte = tripTimesCTE(req.query, params);
+  const { key, label } = GROUP_EXPR[groupBy];
+
+  const { rows } = await query(
+    `${cte}
+     SELECT ${label} AS group_label, ${key} AS group_key,
+            ROUND(AVG(${METRIC_EXPR[metric]})::numeric, 1) AS avg_minutes,
+            ROUND(MIN(${METRIC_EXPR[metric]})::numeric, 1) AS min_minutes,
+            ROUND(MAX(${METRIC_EXPR[metric]})::numeric, 1) AS max_minutes,
+            COUNT(*) AS trip_count
+     FROM trip_times tt
+     WHERE tt.plant_out IS NOT NULL AND tt.site_in IS NOT NULL AND tt.site_out IS NOT NULL AND tt.plant_in IS NOT NULL
+     GROUP BY ${label}, ${key}
+     HAVING COUNT(*) > 0
+     ORDER BY avg_minutes DESC`,
+    params
+  );
+  res.json(rows);
+});
+
+// Drill-down — the individual trips behind one group's average.
+router.get("/trip-analysis/detail", requireRole("manager", "administrator"), async (req, res) => {
+  const metric = METRIC_EXPR[req.query.metric] ? req.query.metric : "unloading";
+  const groupBy = GROUP_EXPR[req.query.group_by] ? req.query.group_by : "site";
+  const params = [];
+  const cte = tripTimesCTE(req.query, params);
+  const { key } = GROUP_EXPR[groupBy];
+  params.push(req.query.group_key);
+
+  const { rows } = await query(
+    `${cte}
+     SELECT tt.ticket_date, tt.site_name, tt.truck_number, tt.driver_name, tt.mix_grade_name, tt.loaded_quantity_m3,
+            ROUND((${METRIC_EXPR[metric]})::numeric, 1) AS minutes
+     FROM trip_times tt
+     WHERE tt.plant_out IS NOT NULL AND tt.site_in IS NOT NULL AND tt.site_out IS NOT NULL AND tt.plant_in IS NOT NULL
+       AND ${key}::text = $${params.length}
+     ORDER BY tt.ticket_date DESC`,
+    params
+  );
+  res.json(rows);
+});
+
+// Scatter mode — unloading time against quantity delivered, not grouped,
+// since quantity is continuous rather than a natural pivot dimension.
+router.get("/trip-analysis/scatter", requireRole("manager", "administrator"), async (req, res) => {
+  const params = [];
+  const cte = tripTimesCTE(req.query, params);
+  const { rows } = await query(
+    `${cte}
+     SELECT tt.loaded_quantity_m3 AS quantity_m3,
+            ROUND((${METRIC_EXPR.unloading})::numeric, 1) AS unloading_minutes,
+            tt.site_name, tt.truck_number, tt.mix_grade_name
+     FROM trip_times tt
+     WHERE tt.site_in IS NOT NULL AND tt.site_out IS NOT NULL`,
+    params
+  );
+  res.json(rows);
+});
+
 router.get("/director-dashboard", async (req, res) => {
   const [
     orderQtyToday, suppliedTicketQtyToday, todayRejectedQty, monthlyTicketQty, monthlyRejectedQty,
