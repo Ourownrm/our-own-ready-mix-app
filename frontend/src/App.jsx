@@ -17,6 +17,7 @@ import ProductionReport from "./pages/ProductionReport.jsx";
 import FuelReport from "./pages/FuelReport.jsx";
 import TripAllowanceReport from "./pages/TripAllowanceReport.jsx";
 import DelayJustificationReport from "./pages/DelayJustificationReport.jsx";
+import Charts from "./pages/Charts.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
@@ -89,6 +90,9 @@ export default function App() {
           } />
           <Route path="/delay-justification-report" element={
             <ProtectedRoute roles={["administrator", "manager"]}><DelayJustificationReport /></ProtectedRoute>
+          } />
+          <Route path="/charts" element={
+            <ProtectedRoute roles={["administrator", "manager"]}><Charts /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>

@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext.jsx";
 import { ROLE_HOME } from "./roleHome.js";
 import { pushSupported, pushStatus, enablePush } from "./push.js";
+import { APP_VERSION } from "./version.js";
 
 export function TopBar({ title }) {
   const { user, logout } = useAuth();
@@ -28,7 +29,7 @@ export function TopBar({ title }) {
   return (
     <div className="topbar">
       <div className="topbar-title">
-        Our Own Ready Mix <span>&middot; {title}{user?.name ? ` · ${user.name}` : ""}</span>
+        Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span> <span>&middot; {title}{user?.name ? ` · ${user.name}` : ""}</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {notifStatus === "default" && (

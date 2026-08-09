@@ -14,6 +14,10 @@ function formatDate(d) {
   if (!d) return "–";
   return new Date(d).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });
 }
+function formatTime(d) {
+  if (!d) return "";
+  return new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
 function inr(value) {
   if (value === null || value === undefined || value === "") return "–";
   return `₹${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
@@ -189,7 +193,7 @@ export default function ProductionReport() {
         startY: 31 + lines.length * 4,
         head: [["Date", "DC No.", "Customer", "Site", "Truck", "Driver", "Sales Person", "Pump", "Supervisor", "Grade", "Qty (m³)", "Rate", "Amount", "Pump chg", "Part ld", "Wait chg", "Total", "Status"]],
         body: rows.map((r) => [
-          formatDate(r.ticket_date), r.dc_no, r.customer_name, r.site_name, r.truck_number, r.driver_name,
+          formatDate(r.ticket_date), `${r.dc_no}${r.created_at ? " " + formatTime(r.created_at) : ""}`, r.customer_name, r.site_name, r.truck_number, r.driver_name,
           r.salesperson_name || "–", r.pump_code || "–", r.supervisor_name || "–", r.grade_name,
           r.quantity_m3, r.rate != null ? inrPdf(r.rate) : "–", r.amount != null ? inrPdf(r.amount) : "–",
           r.pumping_charge != null && Number(r.pumping_charge) > 0 ? inrPdf(r.pumping_charge) : "–",
@@ -226,7 +230,7 @@ export default function ProductionReport() {
       if (rows.length === 0) { setError("Nothing to export for these filters."); return; }
       const XLSX = await import("xlsx");
       const sheetRows = rows.map((r) => ({
-        Date: formatDate(r.ticket_date), "DC No.": r.dc_no, Customer: r.customer_name, Site: r.site_name,
+        Date: formatDate(r.ticket_date), "DC No.": r.dc_no, "Time": formatTime(r.created_at), Customer: r.customer_name, Site: r.site_name,
         Truck: r.truck_number, Driver: r.driver_name, "Sales Person": r.salesperson_name || "",
         Pump: r.pump_code || "", Supervisor: r.supervisor_name || "", Grade: r.grade_name,
         "Quantity (m³)": Number(r.quantity_m3), Rate: r.rate != null ? Number(r.rate) : "",
@@ -238,7 +242,7 @@ export default function ProductionReport() {
         "Delivery Note Status": r.delivery_note_status || "",
       }));
       sheetRows.push({
-        Date: "", "DC No.": "", Customer: "", Site: "", Truck: "", Driver: "", "Sales Person": "",
+        Date: "", "DC No.": "", "Time": "", Customer: "", Site: "", Truck: "", Driver: "", "Sales Person": "",
         Pump: "", Supervisor: "", Grade: "Total", "Quantity (m³)": Number(sumQty(rows)),
         Rate: "", Amount: Number(sumAmount(rows)), "Pumping charge": Number(sumPumpingCharge(rows)),
         "Part load charge": Number(sumPartLoadCharge(rows)), "Waiting charge": Number(sumWaitingCharge(rows)),
@@ -394,7 +398,7 @@ export default function ProductionReport() {
                     {result.rows.map((r) => (
                       <tr key={r.id}>
                         <td>{formatDate(r.ticket_date)}</td>
-                        <td>{r.dc_no}</td>
+                        <td>{r.dc_no}{r.created_at && <div style={{ fontSize: 10, color: "var(--slate)" }}>{formatTime(r.created_at)}</div>}</td>
                         <td>{r.customer_name}</td>
                         <td>{r.site_name}</td>
                         <td>{r.truck_number}</td>

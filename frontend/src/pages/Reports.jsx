@@ -53,6 +53,7 @@ export default function Reports() {
                 { label: "Trip Allowance report", to: "/trip-allowance-report" },
                 { label: "Statutory Compliance", to: "/compliance" },
                 { label: "Delay justification report", to: "/delay-justification-report" },
+                { label: "Charts", to: "/charts" },
               ]}
             />
             <GroupedMenu

@@ -232,6 +232,7 @@ export default function ManagerDashboard() {
               { label: "Trip Allowance report", to: "/trip-allowance-report" },
               { label: "Statutory Compliance", to: "/compliance" },
               { label: "Delay justification report", to: "/delay-justification-report" },
+                { label: "Charts", to: "/charts" },
             ]}
           />
           <GroupedMenu
@@ -492,6 +493,7 @@ function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
     const isPumping = activeTrucks.some((t) => t.order_id === order.id && t.status === "unloading");
 
     if (order.status === "completed") return { label: "Completed", cls: "badge-success" };
+    if (order.supervisor_marked_complete) return { label: "Completed", cls: "badge-success" };
     if (isPumping) return { label: "Pumping", cls: "badge-progress" };
     // Covers both "site just confirmed ready, first truck not unloading yet"
     // and "between trucks" (one done, next not yet unloading) — the pump is
