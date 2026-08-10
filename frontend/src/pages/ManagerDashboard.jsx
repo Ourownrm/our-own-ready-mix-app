@@ -521,13 +521,14 @@ function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
       <div style={{ overflowX: "auto" }}>
         <table>
           <thead>
-            <tr><th>Customer</th><th>Site</th><th>Scheduled departure</th><th>Actual departure</th><th>Pump status</th><th>Site ready</th></tr>
+            <tr><th>Order #</th><th>Customer</th><th>Site</th><th>Scheduled departure</th><th>Actual departure</th><th>Pump status</th><th>Site ready</th></tr>
           </thead>
           <tbody>
             {pumpOrders.map((o) => {
               const status = pumpStatus(o);
               return (
                 <tr key={o.id} style={status.label === "Overdue" ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                  <td>#{o.id}</td>
                   <td>{o.customer_name}</td>
                   <td>{o.site_name}</td>
                   <td>{o.pump_departure_time || "–"}</td>
@@ -624,7 +625,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
             <thead>
               <tr>
                 {showDate && <th>Date</th>}
-                <th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>{showSiteReady && <th>Site ready</th>}<th></th><th></th><th></th>
+                <th>Order #</th><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>{showSiteReady && <th>Site ready</th>}<th></th><th></th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -633,6 +634,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
                 return (
                   <tr key={o.id} style={overdue ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
                     {showDate && <td>{new Date(o.order_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>}
+                    <td>#{o.id}</td>
                     <td>{o.customer_name}</td>
                     <td>{o.site_name}</td>
                     <td>{o.mix_grade_name}</td>

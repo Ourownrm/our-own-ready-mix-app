@@ -129,7 +129,7 @@ export default function PlantOperator() {
                 <option value="">Select</option>
                 {orders.map((o) => (
                   <option key={o.id} value={o.id}>
-                    {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.scheduled_batching_time?.slice(0, 5)} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
+                    Order #{o.id} — {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.scheduled_batching_time?.slice(0, 5)} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
                     {o.blocked_site_not_ready ? " — site not confirmed ready yet" : ""}
                   </option>
                 ))}
@@ -137,7 +137,7 @@ export default function PlantOperator() {
             </div>
             {selectedOrder && (
               <div style={{ fontSize: 12, color: "var(--slate)", background: "var(--concrete)", padding: 8, borderRadius: 6 }}>
-                Order {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;
+                Order #{selectedOrder.id} — {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;
                 remaining {selectedOrder.order_quantity_m3 - selectedOrder.dispatched_so_far} m³
               </div>
             )}

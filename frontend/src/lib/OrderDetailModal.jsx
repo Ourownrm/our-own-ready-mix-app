@@ -31,6 +31,7 @@ export default function OrderDetailModal({ orderId, onClose }) {
 
         {order && (
           <div style={{ fontSize: 13, display: "flex", flexDirection: "column", gap: 6 }}>
+            <Row label="Order #" value={`#${order.id}`} />
             <Row label="Customer" value={order.customer_name} />
             <Row label="Site" value={order.site_name} />
             {order.site_address && <Row label="Site address" value={order.site_address} />}
