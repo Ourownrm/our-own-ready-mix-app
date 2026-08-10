@@ -72,7 +72,7 @@ router.get("/delay-justification", requireRole("manager", "administrator"), asyn
          JOIN customer_orders co ON co.id = n.order_id
          JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
          LEFT JOIN users u ON u.id = n.responded_by
-         WHERE n.type = 'batching_not_started' AND co.order_date BETWEEN $1 AND $2`,
+         WHERE n.type = 'batching_not_started' AND n.recipient_role = 'manager' AND co.order_date BETWEEN $1 AND $2`,
         [fromDate, toDate]
       )
     );
@@ -136,12 +136,13 @@ function tripTimesCTE(q, params) {
     WITH trip_times AS (
       SELECT dt.id AS ticket_id, dt.ticket_date, dt.truck_id, dt.driver_id, dt.loaded_quantity_m3,
              co.site_id, co.mix_grade_id,
-             t.truck_number, s.name AS site_name, m.name AS mix_grade_name, u.name AS driver_name,
+             t.truck_number, s.name AS site_name, m.name AS mix_grade_name, u.name AS driver_name, c.name AS customer_name,
              po.event_time AS plant_out, si.event_time AS site_in, so.event_time AS site_out, pi.event_time AS plant_in
       FROM delivery_tickets dt
       JOIN customer_orders co ON co.id = dt.order_id
       JOIN sites s ON s.id = co.site_id
       JOIN mix_grades m ON m.id = co.mix_grade_id
+      JOIN customers c ON c.id = co.customer_id
       LEFT JOIN trucks t ON t.id = dt.truck_id
       LEFT JOIN users u ON u.id = dt.driver_id
       LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'left_plant' ORDER BY event_time LIMIT 1) po ON true
@@ -188,7 +189,7 @@ router.get("/trip-analysis/detail", requireRole("manager", "administrator"), asy
 
   const { rows } = await query(
     `${cte}
-     SELECT tt.ticket_date, tt.site_name, tt.truck_number, tt.driver_name, tt.mix_grade_name, tt.loaded_quantity_m3,
+     SELECT tt.ticket_date, tt.customer_name, tt.site_name, tt.truck_number, tt.driver_name, tt.mix_grade_name, tt.loaded_quantity_m3,
             ROUND((${METRIC_EXPR[metric]})::numeric, 1) AS minutes
      FROM trip_times tt
      WHERE tt.plant_out IS NOT NULL AND tt.site_in IS NOT NULL AND tt.site_out IS NOT NULL AND tt.plant_in IS NOT NULL
@@ -208,7 +209,7 @@ router.get("/trip-analysis/scatter", requireRole("manager", "administrator"), as
     `${cte}
      SELECT tt.loaded_quantity_m3 AS quantity_m3,
             ROUND((${METRIC_EXPR.unloading})::numeric, 1) AS unloading_minutes,
-            tt.site_name, tt.truck_number, tt.mix_grade_name
+            tt.site_name, tt.truck_number, tt.mix_grade_name, tt.customer_name
      FROM trip_times tt
      WHERE tt.site_in IS NOT NULL AND tt.site_out IS NOT NULL`,
     params

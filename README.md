@@ -2515,3 +2515,65 @@ so a missed first notification doesn't mean the request goes unseen.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Seventy-ninth round (App 92 / Ver. 9.2)
+
+### Found the exact cause of the delay-report duplication
+`checkBatchingNotStarted` inserts three separate notification rows per order — one
+each for Manager, Administrator, and (if assigned) Site Supervisor. The delay report
+joined on all notifications of that type without filtering by recipient, so it
+picked up all three per order. Matches exactly what you saw: orders with a site
+supervisor assigned showed 3 duplicate rows, the one without showed 2. Fixed by
+filtering the report's query to the manager-role notification only. The Pump
+departure "duplicates" in the same PDF were not a bug — two genuinely separate
+orders for the same customer and site that morning, a minute apart.
+
+### Charts drill-down now shows customer name
+Added to both the drill-down detail table and the scatter view's tooltip.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Eightieth round (App 93 / Ver. 9.3) — the actual cause of the false "no signal" errors
+
+### Found it: real errors were being misdiagnosed as connectivity problems
+`queuedRequest`'s catch block treated *any* failure — a genuine network outage or a
+real HTTP error response (validation failure, expired session, server error) — as
+"offline, queue it for later." Since the same request retried later would fail for
+the exact same reason every time, this is exactly why items sat stuck "waiting to
+sync" forever even with a fine connection: they were never network problems in the
+first place.
+
+Fixed at the source: `apiRequest` already distinguishes these (a real HTTP response
+carries `err.status`; a request that never reached the server doesn't). Only the
+latter now gets queued — a real error is thrown immediately and shown to the person,
+the same turn they hit it, instead of being hidden behind a misleading "no signal"
+message.
+
+Also fixed `flushQueue` the same way — an item that fails with a real error now moves
+to a separate "couldn't be saved" list (visible with a Dismiss option) instead of
+being retried forever alongside genuinely queued items.
+
+**While tracing every call site**: found two more real gaps — `toggleDuty` (both
+Sales Executive and Driver) and Site Supervisor's `act()` had no error handling
+around `queuedRequest` at all, meaning a real failure would previously vanish as an
+unhandled promise rejection with the UI still optimistically showing success. All
+three now show the actual error and correctly revert the optimistic UI state.
+`RejectForm` had the same gap and could get stuck on "Saving..." forever on a real
+error — fixed the same way.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Eighty-first round (App 94 / Ver. 9.4)
+
+### Refresh button on every page
+Added to the header, present everywhere `TopBar` is used — which is every page
+except Login (no data to refresh there) and CreateOrder (an embedded view inside
+Manager Dashboard, which already has its own header). Does more than a plain
+reload: it first asks the service worker to check for a newer version before
+reloading, so a tap here actually has a real chance of picking up the latest
+deploy — not just re-running whatever was already cached.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
