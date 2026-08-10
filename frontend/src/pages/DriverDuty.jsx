@@ -385,8 +385,9 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
       )}
 
       {!canDriverActSiteStages && (
-        <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
-          Site In / Site Out are confirmed by the Site Supervisor for this project.
+        <div style={{ fontSize: 12, color: "var(--rebar)", background: "var(--concrete)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          Site In and Site Out are confirmed by {trip.site_supervisor_name ? <strong>{trip.site_supervisor_name}</strong> : "the Site Supervisor"} for this project, not you —
+          those two will fill in on their own here once they tap it on their end. Nothing for you to do until Plant In.
         </div>
       )}
 
