@@ -112,7 +112,7 @@ export default function SalesExecutive() {
       queuedRequest("/sales/gps-ping", {
         method: "POST",
         body: { latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy_m: pos.coords.accuracy },
-      }).then(() => setPending(pendingCount()));
+      }).then(() => setPending(pendingCount())).catch(() => {});
     });
   }
 
@@ -138,15 +138,20 @@ export default function SalesExecutive() {
     if (next) { startGpsPings(); requestWakeLock(); }
     else { clearInterval(gpsIntervalRef.current); wakeLockRef.current = "off"; }
 
-    navigator.geolocation?.getCurrentPosition(async (pos) => {
-      await queuedRequest("/sales/duty", { method: "POST", body: { on: next, lat: pos.coords.latitude, lng: pos.coords.longitude } });
-      setPending(pendingCount());
-      loadDutyStatus();
-    }, async () => {
-      await queuedRequest("/sales/duty", { method: "POST", body: { on: next } });
-      setPending(pendingCount());
-      loadDutyStatus();
-    });
+    async function sendDuty(coords) {
+      try {
+        await queuedRequest("/sales/duty", { method: "POST", body: { on: next, ...coords } });
+        setPending(pendingCount());
+        loadDutyStatus();
+      } catch (err) {
+        setError(err.message);
+        setOnDuty(!next); // the call actually failed (not just queued) — don't show a duty state that never took effect
+      }
+    }
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => sendDuty({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => sendDuty({})
+    );
   }
 
   if (view === "lead-detail" && selectedLeadId) {

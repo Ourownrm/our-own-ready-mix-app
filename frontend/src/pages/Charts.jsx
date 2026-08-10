@@ -97,7 +97,7 @@ function ScatterChart({ points }) {
         const x = pad + (p.quantity_m3 / maxQty) * (w - pad - 20);
         const y = h - pad - (p.unloading_minutes / maxMin) * (h - pad - 20);
         return <circle key={i} cx={x} cy={y} r="4" fill="var(--signal-green)" fillOpacity="0.7">
-          <title>{p.site_name} · {p.truck_number} · {p.mix_grade_name} · {p.quantity_m3}m³ · {p.unloading_minutes}min</title>
+          <title>{p.customer_name} · {p.site_name} · {p.truck_number} · {p.mix_grade_name} · {p.quantity_m3}m³ · {p.unloading_minutes}min</title>
         </circle>;
       })}
     </svg>
@@ -222,11 +222,12 @@ export default function Charts() {
               <button onClick={() => setDrill(null)} style={{ fontSize: 12 }}>← Back to chart</button>
             </div>
             <table style={{ fontSize: 12 }}>
-              <thead><tr><th>Date</th><th>Site</th><th>Truck</th><th>Driver</th><th>Grade</th><th>Qty</th><th>Minutes</th></tr></thead>
+              <thead><tr><th>Date</th><th>Customer</th><th>Site</th><th>Truck</th><th>Driver</th><th>Grade</th><th>Qty</th><th>Minutes</th></tr></thead>
               <tbody>
                 {drill.detail.map((d, i) => (
                   <tr key={i}>
                     <td>{new Date(d.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                    <td>{d.customer_name}</td>
                     <td>{d.site_name}</td><td>{d.truck_number}</td><td>{d.driver_name}</td><td>{d.mix_grade_name}</td>
                     <td>{d.loaded_quantity_m3} m³</td><td>{d.minutes}</td>
                   </tr>

@@ -87,7 +87,7 @@ export default function DriverDuty() {
           speed_kmh: pos.coords.speed ? pos.coords.speed * 3.6 : null,
           accuracy_m: pos.coords.accuracy,
         },
-      }).then(() => setPending(pendingCount()));
+      }).then(() => setPending(pendingCount())).catch(() => {});
     });
   }
 
@@ -116,16 +116,19 @@ export default function DriverDuty() {
     if (next) { startGpsPings(); requestWakeLock(); }
     else { clearInterval(gpsIntervalRef.current); releaseWakeLock(); }
 
-    navigator.geolocation?.getCurrentPosition(async (pos) => {
-      await queuedRequest("/driver/duty", {
-        method: "POST",
-        body: { on: next, ticket_id: currentTicketId(), lat: pos.coords.latitude, lng: pos.coords.longitude },
-      });
-      setPending(pendingCount());
-    }, async () => {
-      await queuedRequest("/driver/duty", { method: "POST", body: { on: next, ticket_id: currentTicketId() } });
-      setPending(pendingCount());
-    });
+    async function sendDuty(coords) {
+      try {
+        await queuedRequest("/driver/duty", { method: "POST", body: { on: next, ticket_id: currentTicketId(), ...coords } });
+        setPending(pendingCount());
+      } catch (err) {
+        setError(err.message);
+        setOnDuty(!next);
+      }
+    }
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => sendDuty({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => sendDuty({})
+    );
   }
 
   async function act(ticketId, path, body) {

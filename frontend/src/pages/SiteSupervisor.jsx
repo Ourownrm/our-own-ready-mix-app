@@ -55,9 +55,15 @@ export default function SiteSupervisor() {
   }, []);
 
   async function act(path, body) {
-    await queuedRequest(`/site-supervisor/${selected.id}/${path}`, { method: "POST", body });
-    setPending(pendingCount());
-    await load();
+    setError("");
+    try {
+      await queuedRequest(`/site-supervisor/${selected.id}/${path}`, { method: "POST", body });
+      setPending(pendingCount());
+      await load();
+    } catch (err) {
+      setError(err.message);
+      throw err; // let CompleteForm/RejectForm know their own submit didn't actually succeed
+    }
   }
 
   async function confirmPumpDeparture(orderId) {
@@ -386,21 +392,27 @@ function RejectForm({ ticket, onAct, onDone }) {
   const [qty, setQty] = useState("");
   const [remarks, setRemarks] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     apiRequest("/master/rejection-reasons").then(setReasons).catch(() => {});
   }, []);
 
   async function submit() {
-    setSaving(true);
-    await onAct("reject", {
-      rejection_reason_id: reasonId || null,
-      site_slump_mm: slump,
-      rejected_quantity_m3: qty,
-      remarks,
-    });
-    setSaving(false);
-    onDone();
+    setSaving(true); setError("");
+    try {
+      await onAct("reject", {
+        rejection_reason_id: reasonId || null,
+        site_slump_mm: slump,
+        rejected_quantity_m3: qty,
+        remarks,
+      });
+      onDone();
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -426,6 +438,7 @@ function RejectForm({ ticket, onAct, onDone }) {
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Comments</div>
           <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
 
+          {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
           <button className="btn-danger" onClick={submit} disabled={saving} style={{ width: "100%", marginBottom: 8 }}>
             {saving ? "Saving..." : "Confirm rejection"}
           </button>

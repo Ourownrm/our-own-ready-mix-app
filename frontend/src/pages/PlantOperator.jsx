@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
-import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
+import { queuedRequest, pendingCount, failedCount, clearFailed, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 
 function newIdempotencyKey() {
@@ -17,6 +17,7 @@ export default function PlantOperator() {
   const [notice, setNotice] = useState("");
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [pending, setPending] = useState(pendingCount());
+  const [failed, setFailed] = useState(failedCount());
   const [driverOpenTrips, setDriverOpenTrips] = useState([]);
 
   const [ticketForm, setTicketForm] = useState({ order_id: "", loaded_quantity_m3: "", truck_id: "", driver_id: "", idempotency_key: newIdempotencyKey() });
@@ -50,7 +51,7 @@ export default function PlantOperator() {
     // the 'online' event alone doesn't cover reopening the app when it's
     // already connected.
     const flushInterval = startPeriodicFlush();
-    const refreshAfterFlush = setInterval(() => { load(); setPending(pendingCount()); }, 30000);
+    const refreshAfterFlush = setInterval(() => { load(); setPending(pendingCount()); setFailed(failedCount()); }, 30000);
     return () => { clearInterval(interval); clearInterval(flushInterval); clearInterval(refreshAfterFlush); };
   }, []);
 
@@ -90,12 +91,23 @@ export default function PlantOperator() {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+        {failed > 0 && (
+          <div style={{ textAlign: "center", fontSize: 12, color: "var(--alert-red)", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: 10, marginBottom: 12 }}>
+            {failed} delivery note(s) couldn't be saved — this wasn't a signal problem, something about the entry itself needs fixing. Please re-enter manually.
+            <button
+              style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+              onClick={() => { clearFailed(); setFailed(failedCount()); }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {pending > 0 && (
           <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
             {pending} delivery note(s) waiting to sync
             <button
               style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
-              onClick={async () => { await flushQueue(); setPending(pendingCount()); load(); }}
+              onClick={async () => { await flushQueue(); setPending(pendingCount()); setFailed(failedCount()); load(); }}
             >
               Sync now
             </button>

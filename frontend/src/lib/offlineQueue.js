@@ -18,7 +18,13 @@ function writeQueue(queue) {
 }
 
 // Call this instead of apiRequest() for any action a driver/site supervisor
-// might take with no signal. It tries immediately; if that fails, it queues.
+// might take with no signal. It tries immediately; if that fails because the
+// request never reached the server at all, it queues. A real HTTP error
+// response (validation failure, expired session, server error — apiRequest
+// sets err.status for these) is NOT a connectivity problem and must not be
+// queued: retrying the identical request later would just fail the same way
+// every time, leaving it stuck in the queue forever while the person sees a
+// misleading "no signal" message instead of the actual problem.
 export async function queuedRequest(path, options) {
   if (!navigator.onLine) {
     enqueue(path, options);
@@ -27,7 +33,13 @@ export async function queuedRequest(path, options) {
   try {
     return await apiRequest(path, options);
   } catch (err) {
-    // Network failure even though navigator.onLine said we're online (flaky signal)
+    if (err.status !== undefined) {
+      // The server responded — this is a real error, not a signal problem.
+      throw err;
+    }
+    // fetch() itself failed (TypeError, no err.status) — the request never
+    // reached the server at all. This is a genuine network failure even
+    // though navigator.onLine said we're online (flaky signal).
     enqueue(path, options);
     return { queued: true };
   }
@@ -43,17 +55,49 @@ export function pendingCount() {
   return readQueue().length;
 }
 
+const FAILED_KEY = "oorm_offline_failed";
+
+function readFailed() {
+  try {
+    return JSON.parse(localStorage.getItem(FAILED_KEY)) || [];
+  } catch {
+    return [];
+  }
+}
+
+function writeFailed(list) {
+  localStorage.setItem(FAILED_KEY, JSON.stringify(list));
+}
+
+export function failedCount() {
+  return readFailed().length;
+}
+
+export function clearFailed() {
+  writeFailed([]);
+}
+
 export async function flushQueue() {
   let queue = readQueue();
   const remaining = [];
+  const newlyFailed = [];
   for (const item of queue) {
     try {
       await apiRequest(item.path, item.options);
-    } catch {
-      remaining.push(item); // still failing, keep it queued
+    } catch (err) {
+      if (err.status !== undefined) {
+        // A real error, not a connectivity problem — retrying the exact same
+        // request later will just fail the same way forever. Move it out of
+        // the sync queue so it stops claiming to be "waiting for signal,"
+        // but keep it visible rather than losing it silently.
+        newlyFailed.push({ ...item, error: err.message });
+      } else {
+        remaining.push(item); // genuine network failure — still worth retrying
+      }
     }
   }
   writeQueue(remaining);
+  if (newlyFailed.length > 0) writeFailed([...readFailed(), ...newlyFailed]);
   return remaining.length;
 }
 
