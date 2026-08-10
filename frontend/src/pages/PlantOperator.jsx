@@ -129,7 +129,8 @@ export default function PlantOperator() {
                 <option value="">Select</option>
                 {orders.map((o) => (
                   <option key={o.id} value={o.id}>
-                    {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
+                    {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.scheduled_batching_time?.slice(0, 5)} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
+                    {o.blocked_site_not_ready ? " — site not confirmed ready yet" : ""}
                   </option>
                 ))}
               </select>
@@ -138,6 +139,12 @@ export default function PlantOperator() {
               <div style={{ fontSize: 12, color: "var(--slate)", background: "var(--concrete)", padding: 8, borderRadius: 6 }}>
                 Order {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;
                 remaining {selectedOrder.order_quantity_m3 - selectedOrder.dispatched_so_far} m³
+              </div>
+            )}
+            {selectedOrder?.blocked_site_not_ready && (
+              <div style={{ fontSize: 12, color: "var(--alert-red)", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", padding: 8, borderRadius: 6 }}>
+                Site Supervisor hasn't confirmed this specific order's site is ready yet — can't start batching.
+                If another order for the same customer and site is confirmed, this is still a separate order.
               </div>
             )}
             <div>
