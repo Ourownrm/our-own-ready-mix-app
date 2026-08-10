@@ -53,12 +53,14 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
             tac.amount AS trip_allowance_amount,
             tap.amount AS allowance_paid,
             (co.assigned_site_supervisor_id IS NULL) AS no_site_supervisor,
+            sup.name AS site_supervisor_name,
             ts.plant_out_at, ts.site_in_at, ts.site_out_at, ts.plant_in_at
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
+     LEFT JOIN users sup ON sup.id = co.assigned_site_supervisor_id
      LEFT JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
      LEFT JOIN ticket_stages ts ON ts.ticket_id = dt.id
      LEFT JOIN trip_allowance_payouts tap ON tap.ticket_id = dt.id

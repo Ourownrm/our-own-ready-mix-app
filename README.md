@@ -2630,3 +2630,19 @@ carefully.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Eighty-fourth round (App 97 / Ver. 9.7) — clarified driver stage tracker
+
+This was working as designed, not a bug — clarified the messaging since it wasn't
+landing clearly enough. cherkala has a Site Supervisor assigned, so Site In and
+Site Out are their responsibility, not the driver's — the driver only handles Plant
+Out and Plant In on a supervised site. It's genuinely linked: once the Supervisor
+taps their own confirmation, the same underlying timestamp populates here too and
+the driver's tracker updates automatically, no separate driver action needed.
+
+Made this explicit rather than implied: the explanation box is now more visible,
+names the actual Site Supervisor assigned to the project, and says plainly that
+Site In/Out will fill in on their own — nothing for the driver to do until Plant In.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
