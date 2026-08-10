@@ -2601,3 +2601,32 @@ picking one. Fixed by adding the scheduled batching time to each entry, and a cl
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Eighty-third round (App 96 / Ver. 9.6)
+
+### Correcting last round's mistake on the Refresh button fix
+I was wrong — Render doesn't read a `_redirects` file the way Netlify does; that
+file did nothing. Confirmed directly from Render's own documentation: static site
+rewrites are configured exclusively through the Render Dashboard, not from a file in
+the repo. Removed the useless file. **This one needs your action, not mine** — see
+below, I can't configure this myself.
+
+**What you need to do**: in the Render Dashboard, open the `oorm-frontend` static
+site → **Redirects/Rewrites** → add a rule:
+- Source: `/*`
+- Destination: `/index.html`
+- Action: **Rewrite** (not Redirect)
+
+This fixes the Refresh button, and also every other case of direct sub-route
+navigation (bookmarks, browser refresh) that's been silently broken the whole time.
+
+### Order # added everywhere orders are shown
+Site Supervisor's cards, Plant Operator's dropdown (and its selected-order summary),
+Manager Dashboard's main order table and Pump Status table, and the order detail
+modal — all now show a clear "Order #<id>" tag. Directly closes the ambiguity from
+last round: two orders for the same customer, site, and grade are now unmistakably
+different at a glance, not just distinguishable by reading the scheduled time
+carefully.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
