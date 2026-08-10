@@ -39,7 +39,7 @@ async function logEvent(ticketId, eventType, userId) {
 // Orders with remaining quantity still available to dispatch — powers the "Select order" dropdown
 router.get("/available-orders", async (req, res) => {
   const { rows } = await query(
-    `SELECT co.id, co.order_quantity_m3, c.name AS customer_name, s.name AS site_name,
+    `SELECT co.id, co.order_quantity_m3, co.scheduled_batching_time, c.name AS customer_name, s.name AS site_name,
             m.name AS mix_grade_name,
             (co.assigned_site_supervisor_id IS NOT NULL AND NOT co.site_ready_confirmed) AS blocked_site_not_ready,
             co.site_ready_confirmed_at,

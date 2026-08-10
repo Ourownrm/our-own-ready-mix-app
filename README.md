@@ -2577,3 +2577,27 @@ deploy — not just re-running whatever was already cached.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Eighty-second round (App 95 / Ver. 9.5) — two real bugs, one of them pre-existing
+
+### Refresh button caused a 404 and looked like a logout — traced to a pre-existing gap
+Not a bug in the button itself. This app never had a rewrite rule telling Render's
+static hosting to serve `index.html` for every route — direct navigation to any
+sub-page (a bookmark, a hard refresh, or now the Refresh button) has always 404'd
+at the server level, bypassing the React app entirely. A bare 404 page has no access
+to the stored login token, which is why it looked like a logout on top of "not
+found" — it wasn't logging anyone out, the real app just never loaded. Added the
+missing `_redirects` file (`/* /index.html 200`) — this fixes the Refresh button and
+also every other case of direct sub-route navigation that was silently broken before.
+
+### The delivery note confusion — confirmed, and it's a labeling bug, not a data bug
+Traced it exactly: two separate, correctly-tracked orders for the same customer,
+site, and mix grade rendered as **visually identical entries** in Plant Operator's
+order dropdown — no scheduled time, no distinguishing detail at all. The system was
+never picking the wrong order; there was just no way to tell them apart before
+picking one. Fixed by adding the scheduled batching time to each entry, and a clear
+"site not confirmed ready yet" warning that appears the moment an order is selected
+— not only after attempting to submit and getting an error.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
