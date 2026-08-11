@@ -22,7 +22,8 @@ export default function ComplianceAlertsCard() {
   if (alerts.length === 0) return null;
 
   const expired = alerts.filter((a) => a.days_until_expiry < 0);
-  const soon = alerts.filter((a) => a.days_until_expiry >= 0);
+  const thisWeek = alerts.filter((a) => a.days_until_expiry >= 0 && a.days_until_expiry <= 7);
+  const thisMonth = alerts.filter((a) => a.days_until_expiry > 7);
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -37,10 +38,16 @@ export default function ComplianceAlertsCard() {
           {expired.map((a) => <AlertRow key={a.id} a={a} danger />)}
         </>
       )}
-      {soon.length > 0 && (
+      {thisWeek.length > 0 && (
         <>
           <div style={{ fontSize: 11, color: "var(--slate)", textTransform: "uppercase", margin: "10px 0 6px" }}>Expiring within 7 days</div>
-          {soon.map((a) => <AlertRow key={a.id} a={a} />)}
+          {thisWeek.map((a) => <AlertRow key={a.id} a={a} />)}
+        </>
+      )}
+      {thisMonth.length > 0 && (
+        <>
+          <div style={{ fontSize: 11, color: "var(--slate)", textTransform: "uppercase", margin: "10px 0 6px" }}>Expiring within 30 days</div>
+          {thisMonth.map((a) => <AlertRow key={a.id} a={a} />)}
         </>
       )}
 

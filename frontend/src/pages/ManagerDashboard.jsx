@@ -233,6 +233,7 @@ export default function ManagerDashboard() {
               { label: "Statutory Compliance", to: "/compliance" },
               { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
+                { label: "Cycle Time Report", to: "/cycle-time-report" },
             ]}
           />
           <GroupedMenu
@@ -298,7 +299,7 @@ export default function ManagerDashboard() {
             accentColor="var(--alert-red)"
           />
         )}
-        <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} accentColor="var(--signal-green)" />
+        <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} accentColor="var(--signal-green)" activeTrucks={activeTrucks} />
         <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showSiteReady={false} accentColor="var(--info)" />
         <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
 
@@ -479,30 +480,31 @@ function ActiveTrucksTable({ trucks, locations, onMarkReviewed, onApplyDelayChar
 
 // Every order that needs a pump today — scheduled vs actual departure time,
 // live pump status, and whether the site has confirmed ready for batching.
+// Module-level so both PumpStatusTable and OrderTable (Running Orders Today)
+// can show the same unified status - merging what used to be two separate
+// columns (Pump status and Site ready) into one, since they were really
+// describing the same underlying progression.
+function siteStatus(order, activeTrucks) {
+  if (order.pump_requirement === "without_pump") return null; // not applicable - no pump involved
+  const delayed = order.pump_departure_time && !order.pump_actual_departure_time &&
+    new Date(`${order.order_date?.slice(0, 10)}T${order.pump_departure_time}`) < new Date();
+  const isPumping = activeTrucks.some((t) => t.order_id === order.id && t.status === "unloading");
+
+  let label, cls;
+  if (order.status === "completed" || order.supervisor_marked_complete) { label = "Completed"; cls = "badge-success"; }
+  else if (isPumping) { label = "Pumping"; cls = "badge-progress"; }
+  else if (order.site_ready_confirmed_at) { label = "Ready for pumping"; cls = "badge-info"; }
+  else if (order.pump_actual_departure_time) { label = "Pump en route"; cls = "badge-info"; }
+  else if (delayed) { label = "Pump delayed"; cls = "badge-danger"; }
+  else { label = "Not yet dispatched"; cls = "badge-neutral"; }
+  return { label, cls, site_ready_at: order.site_ready_confirmed_at };
+}
+
 function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
   const pumpOrders = orders.filter((o) =>
     o.pump_requirement !== "without_pump" && !["closed", "cancelled"].includes(o.status)
   );
   if (pumpOrders.length === 0) return null;
-
-  function pumpStatus(order) {
-    const overdue = order.pump_departure_time && !order.pump_actual_departure_time &&
-      new Date(`${order.order_date?.slice(0, 10)}T${order.pump_departure_time}`) < new Date();
-    // A delivery note exists for this order and the truck is actively unloading —
-    // that's the pump actually pumping concrete at site right now.
-    const isPumping = activeTrucks.some((t) => t.order_id === order.id && t.status === "unloading");
-
-    if (order.status === "completed") return { label: "Completed", cls: "badge-success" };
-    if (order.supervisor_marked_complete) return { label: "Completed", cls: "badge-success" };
-    if (isPumping) return { label: "Pumping", cls: "badge-progress" };
-    // Covers both "site just confirmed ready, first truck not unloading yet"
-    // and "between trucks" (one done, next not yet unloading) — the pump is
-    // sitting ready at site either way, same status either way.
-    if (order.site_ready_confirmed_at) return { label: "Ready for pumping", cls: "badge-info" };
-    if (order.pump_actual_departure_time) return { label: "En route", cls: "badge-info" };
-    if (overdue) return { label: "Overdue", cls: "badge-danger" };
-    return { label: "Not yet departed", cls: "badge-neutral" };
-  }
 
   async function addReason(orderId) {
     const reason = window.prompt("Reason for the pump departure delay:");
@@ -517,17 +519,17 @@ function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Pump status</div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Site Status</div>
       <div style={{ overflowX: "auto" }}>
         <table>
           <thead>
-            <tr><th>Order #</th><th>Customer</th><th>Site</th><th>Scheduled departure</th><th>Actual departure</th><th>Pump status</th><th>Site ready</th></tr>
+            <tr><th>Order #</th><th>Customer</th><th>Site</th><th>Scheduled departure</th><th>Actual departure</th><th>Site Status</th></tr>
           </thead>
           <tbody>
             {pumpOrders.map((o) => {
-              const status = pumpStatus(o);
+              const status = siteStatus(o, activeTrucks);
               return (
-                <tr key={o.id} style={status.label === "Overdue" ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
+                <tr key={o.id} style={status.label === "Pump delayed" ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
                   <td>#{o.id}</td>
                   <td>{o.customer_name}</td>
                   <td>{o.site_name}</td>
@@ -537,13 +539,15 @@ function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
                     {o.pump_departure_delay_reason && (
                       <div style={{ fontSize: 11, color: "var(--slate)" }}>Delay: {o.pump_departure_delay_reason}</div>
                     )}
-                    {!o.pump_departure_delay_reason && status.label === "Overdue" && (
+                    {!o.pump_departure_delay_reason && status.label === "Pump delayed" && (
                       <button style={{ fontSize: 10, padding: "2px 6px", marginTop: 2 }} onClick={() => addReason(o.id)}>Add reason</button>
                     )}
                   </td>
-                  <td><span className={`badge ${status.cls}`}>{status.label}</span></td>
                   <td>
-                    {o.site_ready_confirmed ? <span className="badge badge-success">Ready</span> : <span className="badge badge-warning">Not confirmed</span>}
+                    <span className={`badge ${status.cls}`}>{status.label}</span>
+                    {status.site_ready_at && (
+                      <div style={{ fontSize: 11, color: "var(--slate)" }}>Site ready {formatTime(status.site_ready_at)}</div>
+                    )}
                     {o.site_ready_delay_reason && (
                       <div style={{ fontSize: 11, color: "var(--slate)" }}>Delay: {o.site_ready_delay_reason}</div>
                     )}
@@ -596,7 +600,7 @@ function CompletedTripsTable({ trips }) {
   );
 }
 
-function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion, setError, onReload, showDate, showSiteReady = true, accentColor }) {
+function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion, setError, onReload, showDate, showSiteReady = true, accentColor, activeTrucks = [] }) {
   function isSiteReadyOverdue(o) {
     if (o.site_ready_confirmed || !o.assigned_site_supervisor_id || !o.scheduled_batching_time) return false;
     if (["completed", "closed", "cancelled"].includes(o.status)) return false;
@@ -625,7 +629,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
             <thead>
               <tr>
                 {showDate && <th>Date</th>}
-                <th>Order #</th><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>{showSiteReady && <th>Site ready</th>}<th></th><th></th><th></th>
+                <th>Order #</th><th>Customer</th><th>Site</th><th>Grade</th><th>Ordered</th><th>Delivered</th><th>Status</th>{showSiteReady && <th>Site Status</th>}<th></th><th></th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -654,6 +658,12 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
                     </td>
                     {showSiteReady && (
                     <td>
+                      {(() => {
+                        const status = siteStatus(o, activeTrucks);
+                        return status && !["completed", "closed", "cancelled"].includes(o.status) ? (
+                          <span className={`badge ${status.cls}`} style={{ marginBottom: 4, display: "inline-block" }}>{status.label}</span>
+                        ) : null;
+                      })()}
                       {["completed", "closed", "cancelled"].includes(o.status) ? (
                         <span style={{ color: "var(--slate)", fontSize: 12 }}>–</span>
                       ) : !o.assigned_site_supervisor_id ? (

@@ -37,6 +37,7 @@ export default function Administrator() {
             { label: "Statutory Compliance", to: "/compliance" },
             { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
+                { label: "Cycle Time Report", to: "/cycle-time-report" },
           ]}
         />
         <GroupedMenu
@@ -53,7 +54,8 @@ export default function Administrator() {
         <GroupedMenu
           label="Sales"
           items={[
-            { label: "Sales Performance", to: "/sales-performance" },
+            { label: "Sales Executive Dashboard", to: "/sales" },
+              { label: "Sales Performance", to: "/sales-performance" },
             { label: "Sales Forecast", to: "/sales-forecast" },
             { label: "Assign a Lead", onClick: () => setView("assign-lead") },
             { label: "Browse Leads", to: "/leads" },

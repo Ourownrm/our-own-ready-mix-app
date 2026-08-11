@@ -159,6 +159,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     order_quantity_m3: booking.estimated_qty_m3 || "",
     pump_requirement: "without_pump",
     pump_id: "",
+    assigned_pump_crew: "",
     site_technician_required: false,
     cube_samples_required: 3,
     assigned_site_supervisor_id: "",
@@ -265,6 +266,12 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
               <option value="">Select</option>
               {pumps.filter((p) => p.pump_type === form.pump_requirement).map((p) => <option key={p.id} value={p.id}>{p.pump_code}</option>)}
             </select>
+          </div>
+        )}
+        {form.pump_requirement !== "without_pump" && (
+          <div>
+            <div style={{ color: "var(--slate)" }}>Assigned pump crew</div>
+            <input type="text" value={form.assigned_pump_crew} onChange={(e) => setForm({ ...form, assigned_pump_crew: e.target.value })} />
           </div>
         )}
         <div><div style={{ color: "var(--slate)" }}>Site contact number</div><input value={form.site_contact_number} onChange={(e) => setForm({ ...form, site_contact_number: e.target.value })} required /></div>

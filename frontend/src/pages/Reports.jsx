@@ -54,6 +54,7 @@ export default function Reports() {
                 { label: "Statutory Compliance", to: "/compliance" },
                 { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
+                { label: "Cycle Time Report", to: "/cycle-time-report" },
               ]}
             />
             <GroupedMenu
@@ -70,7 +71,8 @@ export default function Reports() {
             <GroupedMenu
               label="Sales"
               items={[
-                { label: "Sales Performance", to: "/sales-performance" },
+                { label: "Sales Executive Dashboard", to: "/sales" },
+              { label: "Sales Performance", to: "/sales-performance" },
                 { label: "Sales Forecast", to: "/sales-forecast" },
                 { label: "Assign a Lead", to: "/administrator?view=assign-lead" },
                 { label: "Browse Leads", to: "/leads" },
@@ -101,7 +103,7 @@ export default function Reports() {
               <Kpi label="Monthly production qty" value={`${data.monthly_production_qty} m³`} />
               <Kpi label="Sales today" value={inr(data.sales_today)} />
               <Kpi label="Sales this month" value={inr(data.sales_month)} />
-              <Kpi label="Collected today" value={inr(data.collected_today)} />
+              <Kpi label="Collected yesterday" value={inr(data.collected_yesterday)} />
               <Kpi label="Collected this month" value={inr(data.collected_month)} />
               <Kpi label="Total outstanding" value={inr(data.total_outstanding)} danger={Number(data.total_outstanding) > 0} />
             </div>

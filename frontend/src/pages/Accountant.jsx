@@ -9,6 +9,7 @@ export default function Accountant() {
   const [stats, setStats] = useState(null);
   const [customers, setCustomers] = useState([]);
   const [allowances, setAllowances] = useState([]);
+  const [unbilled, setUnbilled] = useState([]);
   const [payingCustomer, setPayingCustomer] = useState(null);
   const [showRates, setShowRates] = useState(false);
   const [showOpeningBalances, setShowOpeningBalances] = useState(false);
@@ -18,12 +19,13 @@ export default function Accountant() {
 
   async function load() {
     try {
-      const [s, c, a] = await Promise.all([
+      const [s, c, a, d] = await Promise.all([
         apiRequest("/accountant/dashboard"),
         apiRequest("/accountant/customers-outstanding"),
         apiRequest("/accountant/trip-allowances"),
+        apiRequest("/reports/director-dashboard"),
       ]);
-      setStats(s); setCustomers(c); setAllowances(a);
+      setStats(s); setCustomers(c); setAllowances(a); setUnbilled(d.unbilled_deliveries_month || []);
     } catch (err) {
       setError(err.message);
     }
@@ -157,6 +159,30 @@ export default function Accountant() {
         <Kpi label="Pumping/waiting due" value={`₹${stats?.pumping_waiting_due ?? "–"}`} />
         <Kpi label="Trip allowance, this month" value={`₹${stats?.trip_allowance_this_month ?? "–"}`} />
       </div>
+
+      {unbilled.length > 0 && (
+        <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--alert-red)" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Unbilled deliveries this month ({unbilled.length})</div>
+          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
+            Delivered but never invoiced — usually means no rate is on file for that customer/grade. This is real, uncollected revenue.
+          </div>
+          <table style={{ fontSize: 12 }}>
+            <thead><tr><th>DC No.</th><th>Customer</th><th>Site</th><th>Date</th><th>Qty</th><th>Why</th></tr></thead>
+            <tbody>
+              {unbilled.map((u, i) => (
+                <tr key={i}>
+                  <td>{u.ticket_number}</td>
+                  <td>{u.customer_name}</td>
+                  <td>{u.site_name}</td>
+                  <td>{new Date(u.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                  <td>{u.qty} m³</td>
+                  <td style={{ fontSize: 11 }}>{u.likely_reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <FollowupsDue />
 

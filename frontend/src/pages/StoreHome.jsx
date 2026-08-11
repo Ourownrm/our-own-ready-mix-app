@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import QrScanner from "../lib/QrScanner.jsx";
 
@@ -46,6 +46,7 @@ export default function StoreHome() {
             </form>
           </>
         )}
+        <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 20 }}>Fuel and lubricant report</button></Link>
       </div>
     </>
   );

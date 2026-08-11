@@ -339,6 +339,9 @@ function LeadsList({ leads, onOpen, onNew, onDuty }) {
               {l.contact_phone && <div style={{ color: "var(--slate)" }}>{l.contact_phone}</div>}
               {l.site_location && <div style={{ color: "var(--slate)" }}>{l.site_location}</div>}
               {l.quotation_issued && <div style={{ color: "var(--slate)" }}>Quoted ₹{l.latest_quotation_amount}</div>}
+              <div style={{ color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
+                Sent by {l.created_by_name || "Unknown"} &middot; {new Date(l.created_at).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })} &middot; {new Date(l.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </div>
             </div>
           ))}
         </div>
@@ -886,6 +889,43 @@ function NewVisitForm({ onDone, onCancel }) {
   const questions = isNewProject === null ? [] : isNewProject ? NEW_PROJECT_QUESTIONS : RUNNING_PROJECT_QUESTIONS;
   const visibleQuestions = questions.filter((q) => !q.conditional || q.conditional(answers));
 
+  async function addNewCustomer() {
+    const name = window.prompt("New customer name:");
+    if (!name || !name.trim()) return;
+    setError("");
+    try {
+      const created = await apiRequest("/sales/quick-customer", { method: "POST", body: { name } });
+      setCustomers((prev) => [...prev, created]);
+      setCustomerId(created.id);
+      setVisitedName(created.name);
+      setSiteId("");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function addNewSite() {
+    if (!customerId) { setError("Link to a customer first."); return; }
+    const name = window.prompt("New site/project name:");
+    if (!name || !name.trim()) return;
+    setError("");
+    try {
+      const created = await apiRequest("/sales/quick-site", { method: "POST", body: { customer_id: customerId, name } });
+      setSites((prev) => [...prev, created]);
+      setSiteId(created.id);
+    } catch (err) {
+      if (err.status === 409 && window.confirm(`${err.message}\n\nCreate it anyway?`)) {
+        try {
+          const created = await apiRequest("/sales/quick-site", { method: "POST", body: { customer_id: customerId, name, force: true } });
+          setSites((prev) => [...prev, created]);
+          setSiteId(created.id);
+        } catch (err2) { setError(err2.message); }
+      } else if (err.status !== 409) {
+        setError(err.message);
+      }
+    }
+  }
+
   function setAnswer(key, value) {
     setAnswers((a) => ({ ...a, [key]: value }));
   }
@@ -937,18 +977,24 @@ function NewVisitForm({ onDone, onCancel }) {
             <div>
               <div style={{ color: "var(--slate)" }}>Customer name</div>
               <input value={visitedName} onChange={(e) => setVisitedName(e.target.value)} placeholder="Search or type a new name" required />
-              <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setSiteId(""); const c = customers.find((x) => String(x.id) === e.target.value); if (c) setVisitedName(c.name); }} style={{ marginTop: 6 }}>
-                <option value="">Or link to an existing customer</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setSiteId(""); const c = customers.find((x) => String(x.id) === e.target.value); if (c) setVisitedName(c.name); }} style={{ flex: 1 }}>
+                  <option value="">Or link to an existing customer</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <button type="button" onClick={addNewCustomer} style={{ fontSize: 12, padding: "4px 10px" }}>+ New</button>
+              </div>
             </div>
             {customerId && (
               <div>
                 <div style={{ color: "var(--slate)" }}>Site / project</div>
-                <select value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-                  <option value="">Not decided / not applicable</option>
-                  {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <select value={siteId} onChange={(e) => setSiteId(e.target.value)} style={{ flex: 1 }}>
+                    <option value="">Not decided / not applicable</option>
+                    {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <button type="button" onClick={addNewSite} style={{ fontSize: 12, padding: "4px 10px" }}>+ New</button>
+                </div>
               </div>
             )}
             <div>

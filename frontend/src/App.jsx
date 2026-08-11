@@ -18,6 +18,7 @@ import FuelReport from "./pages/FuelReport.jsx";
 import TripAllowanceReport from "./pages/TripAllowanceReport.jsx";
 import DelayJustificationReport from "./pages/DelayJustificationReport.jsx";
 import Charts from "./pages/Charts.jsx";
+import CycleTimeReport from "./pages/CycleTimeReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
@@ -83,7 +84,7 @@ export default function App() {
             <ProtectedRoute roles={["administrator", "manager"]}><ProductionReport /></ProtectedRoute>
           } />
           <Route path="/fuel-report" element={
-            <ProtectedRoute roles={["administrator", "manager", "accountant"]}><FuelReport /></ProtectedRoute>
+            <ProtectedRoute roles={["administrator", "manager", "accountant", "store"]}><FuelReport /></ProtectedRoute>
           } />
           <Route path="/trip-allowance-report" element={
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><TripAllowanceReport /></ProtectedRoute>
@@ -93,6 +94,9 @@ export default function App() {
           } />
           <Route path="/charts" element={
             <ProtectedRoute roles={["administrator", "manager"]}><Charts /></ProtectedRoute>
+          } />
+          <Route path="/cycle-time-report" element={
+            <ProtectedRoute roles={["administrator", "manager"]}><CycleTimeReport /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>
@@ -110,7 +114,7 @@ export default function App() {
             <ProtectedRoute roles={["store", "administrator"]}><StoreScan /></ProtectedRoute>
           } />
           <Route path="/sales" element={
-            <ProtectedRoute roles={["sales_executive"]}><SalesExecutive /></ProtectedRoute>
+            <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>
           } />
           <Route path="/sales-performance" element={
             <ProtectedRoute roles={["administrator"]}><SalesPerformance /></ProtectedRoute>

@@ -117,6 +117,7 @@ export default function PlantOperator() {
         {orders.filter((o) => o.site_ready_confirmed_at && !o.first_ticket_created_at).map((o) => (
           <div key={o.id} style={{ marginBottom: 12 }}>
             <ElapsedTimer since={o.site_ready_confirmed_at} alertAfterMinutes={12} big label={`${o.customer_name} — site ready, waiting for first DN`} />
+            <BatchingDelayReason order={o} onSaved={load} />
           </div>
         ))}
 
@@ -182,6 +183,48 @@ export default function PlantOperator() {
         </button>
       </div>
     </>
+  );
+}
+
+function BatchingDelayReason({ order, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [reason, setReason] = useState(order.batching_delay_reason || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    if (!reason.trim()) { setError("Write a reason first."); return; }
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/plant-operator/orders/${order.id}/batching-delay-reason`, { method: "POST", body: { reason } });
+      setEditing(false);
+      onSaved?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div style={{ textAlign: "center", marginTop: 6 }}>
+        {order.batching_delay_reason && <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 4 }}>Reason: {order.batching_delay_reason}</div>}
+        <button style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => setEditing(true)}>
+          {order.batching_delay_reason ? "Edit reason" : "Add reason for delay"}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 6, textAlign: "center" }}>
+      <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why hasn't batching started?" style={{ width: "80%", fontSize: 12, marginBottom: 6 }} />
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 11, marginBottom: 4 }}>{error}</div>}
+      <div>
+        <button style={{ fontSize: 11, padding: "3px 10px", marginRight: 6 }} onClick={submit} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+        <button style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => setEditing(false)}>Cancel</button>
+      </div>
+    </div>
   );
 }
 
