@@ -13,6 +13,20 @@ const PHASE_COLORS = {
   unload: "#1D7A55",   // green
 };
 
+function earliestTimestamp(rows) {
+  const times = [];
+  for (const r of rows) {
+    for (const key of ["created_at", "left_plant", "reached_site", "unloading_started", "unloading_completed"]) {
+      if (r[key]) times.push(new Date(r[key]).getTime());
+    }
+  }
+  if (times.length === 0) return new Date();
+  // Round down to the nearest 10 minutes for a clean axis start.
+  const earliest = new Date(Math.min(...times));
+  earliest.setMinutes(earliest.getMinutes() - (earliest.getMinutes() % 10), 0, 0);
+  return earliest;
+}
+
 function toMinutes(iso, dayStart) {
   return Math.round((new Date(iso) - dayStart) / 60000);
 }
@@ -98,7 +112,7 @@ export default function CycleTimeReport() {
     }
   }
 
-  const dayStart = new Date(`${fromDate}T00:00:00`);
+  const dayStart = earliestTimestamp(rows || []);
   const nowMin = toMinutes(new Date().toISOString(), dayStart);
   const trips = (rows || []).map((t) => buildTrip(t, dayStart, nowMin));
   const maxMin = trips.length ? Math.max(...trips.map((t) => t.maxTime), 60) : 60;
@@ -183,11 +197,11 @@ export default function CycleTimeReport() {
                 <div style={{ minWidth: "100%" }}>
                   {trips.map((t) => (
                     <div key={t.id} style={{ display: "flex", alignItems: "center", padding: "8px 0", borderBottom: "0.5px solid var(--concrete)", fontSize: 12 }}>
-                      <div style={{ width: 64, flexShrink: 0, fontWeight: 600 }}>{t.ticket_number}</div>
-                      <div style={{ width: 90, flexShrink: 0, color: "var(--slate)" }}>{t.truck_number || "–"}</div>
-                      <div style={{ width: 100, flexShrink: 0, color: "var(--slate)" }}>{t.driver_name || "–"}</div>
-                      <div style={{ width: 44, flexShrink: 0, color: "var(--slate)" }}>{t.loaded_quantity_m3}m³</div>
-                      <div style={{ position: "relative", height: 28, background: "var(--concrete)", borderRadius: 4, width: trackWidth }}>
+                      <div style={{ width: 64, flexShrink: 0, fontWeight: 600, position: "sticky", left: 0, zIndex: 2, background: "var(--surface)" }}>{t.ticket_number}</div>
+                      <div style={{ width: 90, flexShrink: 0, color: "var(--slate)", position: "sticky", left: 64, zIndex: 2, background: "var(--surface)" }}>{t.truck_number || "–"}</div>
+                      <div style={{ width: 100, flexShrink: 0, color: "var(--slate)", position: "sticky", left: 154, zIndex: 2, background: "var(--surface)" }}>{t.driver_name || "–"}</div>
+                      <div style={{ width: 44, flexShrink: 0, color: "var(--slate)", position: "sticky", left: 254, zIndex: 2, background: "var(--surface)", borderRight: "1px solid var(--concrete)" }}>{t.loaded_quantity_m3}m³</div>
+                      <div style={{ position: "relative", height: 28, background: "var(--concrete)", borderRadius: 4, width: trackWidth, marginLeft: 8, flexShrink: 0 }}>
                         <Segment range={t.qc} color={PHASE_COLORS.qc} pxPerMin={zoom} />
                         <Segment range={t.transit} color={PHASE_COLORS.transit} pxPerMin={zoom} />
                         <Segment range={t.waiting} color={PHASE_COLORS.waiting} pxPerMin={zoom} />
