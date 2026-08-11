@@ -64,15 +64,17 @@ router.get("/delay-justification", requireRole("manager", "administrator"), asyn
       query(
         `SELECT co.order_date AS date, c.name AS customer_name, s.name AS site_name,
                 'Batching not started' AS delay_type,
-                co.scheduled_batching_time::text AS planned_time,
+                to_char(co.site_ready_confirmed_at, 'HH24:MI') AS planned_time,
                 to_char((SELECT MIN(dt.created_at) FROM delivery_tickets dt WHERE dt.order_id = co.id), 'HH24:MI') AS actual_time,
-                n.manager_response AS reason, u.name AS reason_by_name, n.responded_at AS reason_at,
+                co.batching_delay_reason AS reason, u.name AS reason_by_name, co.batching_delay_reason_at AS reason_at,
                 NULL::numeric AS delay_minutes
-         FROM notifications n
-         JOIN customer_orders co ON co.id = n.order_id
+         FROM customer_orders co
          JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
-         LEFT JOIN users u ON u.id = n.responded_by
-         WHERE n.type = 'batching_not_started' AND n.recipient_role = 'manager' AND co.order_date BETWEEN $1 AND $2`,
+         LEFT JOIN users u ON u.id = co.batching_delay_reason_by
+         WHERE co.order_date BETWEEN $1 AND $2 AND co.site_ready_confirmed_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM notifications n WHERE n.order_id = co.id AND n.type = 'batching_not_started'
+           )`,
         [fromDate, toDate]
       )
     );
@@ -217,6 +219,43 @@ router.get("/trip-analysis/scatter", requireRole("manager", "administrator"), as
   res.json(rows);
 });
 
+// Cycle time report (Gantt) — per-trip phase boundaries: DN creation (QC
+// checks) through Plant Out, Site In, Unloading Start, and Unloading
+// Complete. Each trip's own timestamps, not aggregated — the frontend draws
+// the actual timeline from these.
+router.get("/cycle-time", requireRole("manager", "administrator"), async (req, res) => {
+  const fromDate = req.query.from_date || new Date().toISOString().slice(0, 10);
+  const toDate = req.query.to_date || fromDate;
+  const sortBy = req.query.sort_by === "truck" ? "t.truck_number" : "dt.ticket_number";
+
+  const clauses = ["dt.ticket_date BETWEEN $1 AND $2", "dt.status NOT IN ('cancelled', 'rejected')"];
+  const params = [fromDate, toDate];
+  if (req.query.customer_id) { params.push(req.query.customer_id); clauses.push(`co.customer_id = $${params.length}`); }
+  if (req.query.site_id) { params.push(req.query.site_id); clauses.push(`co.site_id = $${params.length}`); }
+
+  const { rows } = await query(
+    `SELECT dt.id, dt.ticket_number, dt.status, dt.loaded_quantity_m3, dt.created_at,
+            t.truck_number, u.name AS driver_name, c.name AS customer_name, s.name AS site_name,
+            lp.event_time AS left_plant, rs.event_time AS reached_site,
+            us.event_time AS unloading_started, uc.event_time AS unloading_completed
+     FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     LEFT JOIN trucks t ON t.id = dt.truck_id
+     LEFT JOIN users u ON u.id = dt.driver_id
+     LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'left_plant' ORDER BY event_time LIMIT 1) lp ON true
+     LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'reached_site' ORDER BY event_time LIMIT 1) rs ON true
+     LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'unloading_started' ORDER BY event_time LIMIT 1) us ON true
+     LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'unloading_completed' ORDER BY event_time LIMIT 1) uc ON true
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY ${sortBy}
+     LIMIT 500`,
+    params
+  );
+  res.json(rows);
+});
+
 router.get("/director-dashboard", async (req, res) => {
   const [
     orderQtyToday, suppliedTicketQtyToday, todayRejectedQty, monthlyTicketQty, monthlyRejectedQty,
@@ -264,7 +303,7 @@ router.get("/director-dashboard", async (req, res) => {
        GROUP BY c.id, c.name ORDER BY total DESC`
     ),
 
-    query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE payment_date = CURRENT_DATE`),
+    query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE payment_date = CURRENT_DATE - INTERVAL '1 day'`),
     query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE date_trunc('month', payment_date) = date_trunc('month', CURRENT_DATE)`),
 
     query(
@@ -413,7 +452,7 @@ router.get("/director-dashboard", async (req, res) => {
     sales_today: salesToday.rows[0].total,
     sales_month: salesMonth.rows[0].total,
     sales_by_customer_month: salesByCustomer.rows,
-    collected_today: collectedToday.rows[0].total,
+    collected_yesterday: collectedToday.rows[0].total,
     collected_month: collectedMonth.rows[0].total,
     total_outstanding: outstanding.rows[0].total,
     outstanding_aging: aging.rows,

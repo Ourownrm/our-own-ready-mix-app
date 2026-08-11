@@ -73,7 +73,7 @@ router.get("/alerts", async (req, res) => {
             (cd.expiry_date - CURRENT_DATE) AS days_until_expiry
      FROM compliance_documents cd
      JOIN compliance_assets ca ON ca.id = cd.asset_id
-     WHERE ca.is_active AND (cd.expiry_date - CURRENT_DATE) <= 7
+     WHERE ca.is_active AND (cd.expiry_date - CURRENT_DATE) <= 30
      ORDER BY cd.expiry_date ASC`
   );
   res.json(rows);

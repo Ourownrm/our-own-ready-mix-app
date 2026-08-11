@@ -7,6 +7,20 @@ import { pushToUser } from "../lib/push.js";
 const router = Router();
 router.use(requireAuth, requireRole("plant_operator", "manager", "administrator"));
 
+// Plant Operator's own reason for why batching hasn't started yet on an
+// order the site-ready-past-12-min alert has already flagged — this is
+// what actually appears in the delay justification report, since Plant
+// Operator is the one who knows why, not Manager reviewing after the fact.
+router.post("/orders/:orderId/batching-delay-reason", async (req, res) => {
+  const { reason } = req.body;
+  if (!reason) return res.status(400).json({ error: "Write a reason." });
+  await query(
+    "UPDATE customer_orders SET batching_delay_reason = $1, batching_delay_reason_by = $2, batching_delay_reason_at = now() WHERE id = $3",
+    [reason, req.user.id, req.params.orderId]
+  );
+  res.json({ ok: true });
+});
+
 // Non-blocking warning at ticket creation — the actual fix for a driver
 // getting a second trip assigned while their first one is still open and
 // unconfirmed. Doesn't stop the assignment (sometimes it's legitimate — the
@@ -42,7 +56,7 @@ router.get("/available-orders", async (req, res) => {
     `SELECT co.id, co.order_quantity_m3, co.scheduled_batching_time, c.name AS customer_name, s.name AS site_name,
             m.name AS mix_grade_name,
             (co.assigned_site_supervisor_id IS NOT NULL AND NOT co.site_ready_confirmed) AS blocked_site_not_ready,
-            co.site_ready_confirmed_at,
+            co.site_ready_confirmed_at, co.batching_delay_reason,
             MIN(dt.created_at) AS first_ticket_created_at,
             COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS dispatched_so_far
      FROM customer_orders co

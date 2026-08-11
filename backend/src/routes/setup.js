@@ -739,6 +739,16 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (who/when tracking added for delay reasons and notification responses).");
 
+    // Plant Operator's own reason for a batching delay — distinct from
+    // Manager's response to the alert, since Plant Operator is the one who
+    // actually knows why batching hasn't started yet.
+    await pool.query(`
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS batching_delay_reason TEXT;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS batching_delay_reason_by INTEGER REFERENCES users(id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS batching_delay_reason_at TIMESTAMPTZ;
+    `);
+    log.push("Schema migration applied (Plant Operator batching delay reason).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

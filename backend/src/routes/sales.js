@@ -573,7 +573,7 @@ router.get("/visits", requireRole("sales_executive", "manager", "administrator")
 
 // ===================== SALES EXECUTIVE'S OWN DASHBOARD =====================
 
-router.get("/my-dashboard", requireRole("sales_executive"), async (req, res) => {
+router.get("/my-dashboard", requireRole("sales_executive", "administrator"), async (req, res) => {
   const spId = await mySalespersonId(req.user.id);
   if (!spId) {
     return res.json({ customers: [], orders_month_qty: 0, orders_month_value: 0, outstanding: 0, outstanding_by_customer: [], lead_counts: {} });
@@ -884,7 +884,7 @@ router.get("/forecasts/summary", requireRole("manager", "administrator"), async 
 // Parallel to the Driver duty/GPS system — a Sales Executive's day out in the
 // field, tracked the same way (toggle on/off, periodic pings while on).
 
-router.get("/duty-status", requireRole("sales_executive"), async (req, res) => {
+router.get("/duty-status", requireRole("sales_executive", "administrator"), async (req, res) => {
   const { rows } = await query(
     "SELECT is_on, event_time FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
     [req.user.id]

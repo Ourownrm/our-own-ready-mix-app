@@ -2646,3 +2646,48 @@ Site In/Out will fill in on their own — nothing for the driver to do until Pla
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Eighty-fifth round (App 98 / Ver. 9.8)
+
+1. Admin now has direct access to the Sales Executive dashboard, with a menu entry in both Reports.jsx and Administrator.jsx's Sales group.
+2. Quick-add customer/site restored in the newer visit form — present in the booking flow the whole time, just missing from the visit form rebuild.
+3. My Leads now shows who sent each lead and when — the data already existed, this was a frontend display gap only.
+4-6. Pump Status and Site Ready merged into one unified "Site Status" column — Pump delayed, Pump en route, Ready for pumping, Pumping, Completed — with the site-ready time shown directly, now on both the dedicated status table and Running Orders Today.
+7. Store now has access to the Fuel and Lubricant report.
+8. Unbilled deliveries now shown on Accountant's dashboard.
+9. Collected Today replaced with Collected Yesterday — same-day collection figures were rarely meaningful; a full prior day's total is actually settled.
+10. Batching-not-started now triggers 12 minutes after site-ready confirmation, matching the exact threshold already used on Plant Operator's own screen — not from scheduled time, and never before site is actually ready.
+11. Plant Operator can now record their own reason for a batching delay, which the delay justification report shows instead of Manager's after-the-fact response.
+
+**Also found while checking the booking-conversion flow**: it already correctly captures pump requirement, the specific pump unit, and site supervisor — but was missing the separate "assigned pump crew" text field that order creation has always had. Backend already supported it end-to-end; only the form itself was missing the input.
+
+### Migration note
+Revisit `/setup?key=...` once after deploying — new columns for Plant Operator's batching delay reason.
+
+## Eighty-sixth round (App 99 / Ver. 9.9)
+
+### New: Cycle Time Report (Gantt)
+Built for real, matching the confirmed mockup — each trip as one row, DN/truck/driver/
+quantity flowing directly into a colorful zoomable, scrollable timeline (QC checks,
+transit to site, waiting at site, unloading), each segment labeled with its duration
+in minutes. Filterable by customer, site, and date range; sortable by DN or truck.
+An in-progress trip shows its current open phase as a dashed, lighter segment
+extending to now. Added to the Reports menu everywhere it appears (Reports.jsx,
+Administrator.jsx, ManagerDashboard.jsx).
+
+Phase boundaries use the trip_events already recorded for every delivery — QC checks
+runs from ticket creation to Plant Out (confirmed this is genuinely when the plant-
+side QC check happens), transit is Plant Out to Site In, waiting is Site In to
+Unloading Started (a real, separately-tracked event, distinct from Site In), and
+unloading is Unloading Started to Unloading Completed.
+
+### Compliance alerts — confirmed fixed
+Verified directly: the dashboard card's own endpoint was the only place with the
+overly tight 7-day cutoff (fixed last round) — the register page and the scheduled
+push notifications were already correctly using a 30-day window. Also split the
+dashboard card into three distinct buckets (Expired / Expiring within 7 days /
+Expiring within 30 days) instead of two, since lumping everything past a week into
+one label would have been confusing once the window widened.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.

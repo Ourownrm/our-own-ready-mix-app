@@ -82,13 +82,14 @@ export async function checkPumpDepartureOverdue() {
 // notify Manager, Administrator, and the assigned Site Supervisor.
 export async function checkBatchingNotStarted() {
   const { rows } = await query(
-    `SELECT o.id AS order_id, o.scheduled_batching_time, s.name AS site_name, c.name AS customer_name,
+    `SELECT o.id AS order_id, o.scheduled_batching_time, o.site_ready_confirmed_at, s.name AS site_name, c.name AS customer_name,
             o.assigned_site_supervisor_id
      FROM customer_orders o
      JOIN sites s ON s.id = o.site_id
      JOIN customers c ON c.id = o.customer_id
      WHERE o.order_date = CURRENT_DATE
-       AND (o.order_date + o.scheduled_batching_time) < now()
+       AND o.site_ready_confirmed_at IS NOT NULL
+       AND o.site_ready_confirmed_at < now() - INTERVAL '12 minutes'
        AND o.status = 'planned'
        AND NOT EXISTS (SELECT 1 FROM delivery_tickets dt WHERE dt.order_id = o.id)
        AND NOT EXISTS (
@@ -97,7 +98,7 @@ export async function checkBatchingNotStarted() {
   );
 
   for (const o of rows) {
-    const message = `Batching hasn't started for ${o.customer_name} — ${o.site_name} (scheduled ${o.scheduled_batching_time})`;
+    const message = `Batching hasn't started for ${o.customer_name} — ${o.site_name} (site confirmed ready over 12 min ago)`;
     await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('manager', $1, 'batching_not_started', $2)`, [o.order_id, message]);
     await query(`INSERT INTO notifications (recipient_role, order_id, type, message) VALUES ('administrator', $1, 'batching_not_started', $2)`, [o.order_id, message]);
     await pushToRole("manager", { title: "Batching not started", body: message, url: "/manager" });

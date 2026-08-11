@@ -234,7 +234,7 @@ const REPORT_FROM = `
   LEFT JOIN equipment e ON e.id = sr.equipment_id
 `;
 
-router.get("/report", requireRole("manager", "administrator", "accountant"), async (req, res) => {
+router.get("/report", requireRole("manager", "administrator", "accountant", "store"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(req.query.page_size) || 100));
   const { where, params } = buildReportFilters(req.query);
@@ -270,7 +270,7 @@ router.get("/report", requireRole("manager", "administrator", "accountant"), asy
   });
 });
 
-router.get("/report/export", requireRole("manager", "administrator", "accountant"), async (req, res) => {
+router.get("/report/export", requireRole("manager", "administrator", "accountant", "store"), async (req, res) => {
   const { where, params } = buildReportFilters(req.query);
   const { rows } = await query(
     `SELECT ${REPORT_COLUMNS} ${REPORT_FROM}
