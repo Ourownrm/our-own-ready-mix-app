@@ -2691,3 +2691,21 @@ one label would have been confusing once the window widened.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Eighty-seventh round (App 100 / Ver. 9.10) — two Cycle Time Report fixes
+
+### The big gap before the chart
+The timeline was anchored to midnight of the "From" date, but trips typically start
+hours after that — so every row's track began with hours of dead, empty space before
+the first bar, and the actual bars only appeared after scrolling far to the right.
+Fixed by anchoring the timeline to the earliest actual event across the whole result
+set instead (rounded down to a clean 10-minute mark), so the first bar starts right
+at the beginning of the visible track.
+
+### Frozen columns
+DN, Truck, Driver, and Qty now stay pinned in place while only the timeline itself
+scrolls horizontally — previously the whole row scrolled together, so the labels
+disappeared off-screen the moment you scrolled the chart.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
