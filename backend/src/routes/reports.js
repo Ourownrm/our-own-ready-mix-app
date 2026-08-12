@@ -3,8 +3,11 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-// Director's Dashboard carries full company financials — Administrator only.
-router.use(requireAuth, requireRole("administrator"));
+// Each route below sets its own role list explicitly — no blanket
+// restriction here, since different reports in this file are genuinely
+// meant for different roles (Manager needs several of these; Accountant
+// needs director-dashboard specifically for unbilled deliveries).
+router.use(requireAuth);
 
 // Everything the Director's Dashboard needs, in one call.
 // Consolidates four different delay signals that each live in a different
@@ -12,7 +15,7 @@ router.use(requireAuth, requireRole("administrator"));
 // alerts, and time spent at site — into one unified report. Each keeps its
 // own planned/actual pairing since what "planned" means differs by type,
 // but all come back in the same row shape.
-router.get("/delay-justification", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/delay-justification", requireRole("manager", "administrator", "site_supervisor", "plant_operator"), async (req, res) => {
   const fromDate = req.query.from_date || new Date().toISOString().slice(0, 10);
   const toDate = req.query.to_date || fromDate;
   const delayType = req.query.delay_type || "all";
@@ -256,7 +259,7 @@ router.get("/cycle-time", requireRole("manager", "administrator"), async (req, r
   res.json(rows);
 });
 
-router.get("/director-dashboard", async (req, res) => {
+router.get("/director-dashboard", requireRole("administrator", "manager", "accountant"), async (req, res) => {
   const [
     orderQtyToday, suppliedTicketQtyToday, todayRejectedQty, monthlyTicketQty, monthlyRejectedQty,
     salesToday, salesMonth, salesByCustomer,
@@ -467,7 +470,7 @@ router.get("/director-dashboard", async (req, res) => {
 
 // Daily production for the last N days (default 7) — fills in gaps with 0 so
 // a day with no completed deliveries still shows a bar rather than a hole.
-router.get("/daily-production", async (req, res) => {
+router.get("/daily-production", requireRole("administrator"), async (req, res) => {
   const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
   const [{ rows }, { rows: dayRows }] = await Promise.all([
     query(

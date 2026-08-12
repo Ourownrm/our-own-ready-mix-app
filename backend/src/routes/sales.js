@@ -32,6 +32,23 @@ async function mySalespersonId(userId) {
   return rows[0]?.id || null;
 }
 
+// Admin/Manager can view a specific Sales Executive's own dashboard via
+// ?as_user=<id> — needed once there's more than one Sales Executive, since
+// otherwise Admin's own (empty) view was all there was to see. Only honored
+// for admin/manager; a Sales Executive always sees their own regardless of
+// what's passed.
+function targetUserId(req) {
+  if (["administrator", "manager"].includes(req.user.role) && req.query.as_user) {
+    return Number(req.query.as_user);
+  }
+  return req.user.id;
+}
+
+router.get("/executives", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows } = await query("SELECT id, name FROM users WHERE role = 'sales_executive' AND is_active ORDER BY name");
+  res.json(rows);
+});
+
 // ===================== LEADS =====================
 
 router.post("/leads", requireRole("manager", "administrator"), async (req, res) => {
@@ -536,7 +553,9 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
 // manager, accountant) sees their own — sorted so overdue is unmissable at
 // the top, matching the actual daily-use pattern this exists for.
 router.get("/followups", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
-  const own = req.user.role === "sales_executive";
+  const viewingAs = ["administrator", "manager"].includes(req.user.role) && req.query.as_user;
+  const role = viewingAs ? "sales_executive" : req.user.role;
+  const userFilter = viewingAs ? Number(req.query.as_user) : (req.user.role === "sales_executive" ? req.user.id : null);
   const { rows } = await query(
     `SELECT vf.*, cv.visited_name, cv.site_id, s.name AS site_name
      FROM visit_followups vf
@@ -546,7 +565,7 @@ router.get("/followups", requireRole("sales_executive", "manager", "accountant",
        AND vf.assigned_to_role = $1
        AND ($2::int IS NULL OR vf.assigned_to_user_id = $2)
      ORDER BY vf.due_date`,
-    [req.user.role, own ? req.user.id : null]
+    [role, userFilter]
   );
   res.json(rows);
 });
@@ -573,8 +592,8 @@ router.get("/visits", requireRole("sales_executive", "manager", "administrator")
 
 // ===================== SALES EXECUTIVE'S OWN DASHBOARD =====================
 
-router.get("/my-dashboard", requireRole("sales_executive", "administrator"), async (req, res) => {
-  const spId = await mySalespersonId(req.user.id);
+router.get("/my-dashboard", requireRole("sales_executive", "administrator", "manager"), async (req, res) => {
+  const spId = await mySalespersonId(targetUserId(req));
   if (!spId) {
     return res.json({ customers: [], orders_month_qty: 0, orders_month_value: 0, outstanding: 0, outstanding_by_customer: [], lead_counts: {} });
   }
@@ -884,16 +903,17 @@ router.get("/forecasts/summary", requireRole("manager", "administrator"), async 
 // Parallel to the Driver duty/GPS system — a Sales Executive's day out in the
 // field, tracked the same way (toggle on/off, periodic pings while on).
 
-router.get("/duty-status", requireRole("sales_executive", "administrator"), async (req, res) => {
+router.get("/duty-status", requireRole("sales_executive", "administrator", "manager"), async (req, res) => {
+  const uid = targetUserId(req);
   const { rows } = await query(
     "SELECT is_on, event_time FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
-    [req.user.id]
+    [uid]
   );
   const { rows: today } = await query(
     `SELECT is_on, event_time FROM sales_duty_log
      WHERE salesperson_user_id = $1 AND event_time::date = CURRENT_DATE
      ORDER BY event_time`,
-    [req.user.id]
+    [uid]
   );
   res.json({
     on_duty: rows[0]?.is_on || false,

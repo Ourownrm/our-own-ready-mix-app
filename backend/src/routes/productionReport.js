@@ -58,7 +58,7 @@ const BASE_FROM = `
 `;
 
 const ROW_COLUMNS = `
-  dt.id, dt.ticket_number AS dc_no, dt.ticket_date, dt.created_at, dt.loaded_quantity_m3 AS quantity_m3,
+  dt.id, dt.ticket_number AS dc_no, dt.order_id, dt.ticket_date, dt.created_at, dt.loaded_quantity_m3 AS quantity_m3,
   c.name AS customer_name, s.name AS site_name, t.truck_number, u_driver.name AS driver_name,
   sp.name AS salesperson_name, p.pump_code, u_sup.name AS supervisor_name, m.name AS grade_name,
   sq.delivery_note_status,

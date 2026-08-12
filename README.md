@@ -2709,3 +2709,45 @@ disappeared off-screen the moment you scrolled the chart.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Eighty-eighth round (App 101 / Ver. 9.11)
+
+### The real root cause behind the whole Accountant/Manager reports problem
+`reports.js` had a router-level `requireRole("administrator")` applied before every
+individual route — silently overriding each route's own, correctly-written role list
+underneath it. This meant Manager has never actually been able to reach Delay
+Justification, Charts, or Cycle Time Report despite the menu and route code being
+right the whole time, and Accountant's `director-dashboard` call (added for unbilled
+deliveries) was 403ing — which broke their entire dashboard's `Promise.all`, so
+nothing loaded at all. Fixed by removing the blanket rule and giving each route
+(`director-dashboard`, `daily-production`) its own explicit, correct role list.
+Item 1 (Manager access to all reports) turned out to need zero menu changes — it was
+purely this backend fix.
+
+Also fixed while in there: removed a dead-end "Fuel filling" link from Accountant's
+dashboard (it led to a placeholder that just pointed back to the report they already
+have a direct link to), and cleared a shared error state when entering Rates so a
+stale error from elsewhere on the page can't wrongly appear there too.
+
+**What "Follow-ups Due" is, for anyone wondering**: it's not a bug — sales visits can
+generate follow-up tasks routed to whichever role actually needs to act (an overdue
+payment goes to Accountant, an owners' meeting request goes to Manager). Accountant's
+dashboard only ever shows follow-ups actually assigned to them.
+
+### Site Supervisor and Plant Operator now see the Delay Justification Report
+Both roles added to the report's access, with a visible link on each of their own
+dashboards — the idea being that awareness of delays is what drives the improvement
+in the first place.
+
+### Multi-Sales-Executive support
+Admin's Sales Executive Dashboard was showing Admin's own (always empty) data, with
+no way to pick whose dashboard to actually view. Added a "Viewing as" selector, shown
+only for Admin, listing every active Sales Executive — selecting one now correctly
+loads that person's own stats, duty status, and follow-ups (all three previously
+scoped to whoever's logged in, which was meaningless for Admin specifically).
+
+### Order # added to Production Report
+Backend query, PDF, Excel, and on-screen table.
+
+### Migration note
+No schema changes this round — nothing new to apply via `/setup`.
