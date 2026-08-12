@@ -16,19 +16,19 @@ function groupByDateCustomer(rows) {
   return [...groups.values()];
 }
 
-export default function FollowupsDue() {
+export default function FollowupsDue({ asUser }) {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState(null);
 
   async function load() {
     try {
-      setRows(await apiRequest("/sales/followups"));
+      setRows(await apiRequest(`/sales/followups${asUser ? `?as_user=${asUser}` : ""}`));
     } catch (err) {
       setError(err.message);
     }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [asUser]);
 
   async function markDone(id) {
     setBusyId(id); setError("");

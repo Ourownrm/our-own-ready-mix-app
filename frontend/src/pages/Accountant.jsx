@@ -186,10 +186,9 @@ export default function Accountant() {
 
       <FollowupsDue />
 
-      <button onClick={() => setShowRates(true)} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
+      <button onClick={() => { setError(""); setShowRates(true); }} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
       <button onClick={() => setShowOpeningBalances(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Opening balances</button>
       <button onClick={() => setShowPumpChargeReview(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Pump charge review</button>
-      <Link to="/fuel" style={{ marginLeft: 12, fontSize: 13 }}>Fuel filling</Link>
       <Link to="/fuel-report" style={{ marginLeft: 12, fontSize: 13 }}>Fuel and lubricant report</Link>
       <Link to="/trip-allowance-report" style={{ marginLeft: 12, fontSize: 13 }}>Trip allowance report</Link>
 

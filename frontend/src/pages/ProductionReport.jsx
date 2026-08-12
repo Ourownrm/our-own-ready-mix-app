@@ -191,9 +191,9 @@ export default function ProductionReport() {
 
       doc.autoTable({
         startY: 31 + lines.length * 4,
-        head: [["Date", "DC No.", "Customer", "Site", "Truck", "Driver", "Sales Person", "Pump", "Supervisor", "Grade", "Qty (m³)", "Rate", "Amount", "Pump chg", "Part ld", "Wait chg", "Total", "Status"]],
+        head: [["Date", "DC No.", "Order #", "Customer", "Site", "Truck", "Driver", "Sales Person", "Pump", "Supervisor", "Grade", "Qty (m³)", "Rate", "Amount", "Pump chg", "Part ld", "Wait chg", "Total", "Status"]],
         body: rows.map((r) => [
-          formatDate(r.ticket_date), `${r.dc_no}${r.created_at ? " " + formatTime(r.created_at) : ""}`, r.customer_name, r.site_name, r.truck_number, r.driver_name,
+          formatDate(r.ticket_date), `${r.dc_no}${r.created_at ? " " + formatTime(r.created_at) : ""}`, `#${r.order_id}`, r.customer_name, r.site_name, r.truck_number, r.driver_name,
           r.salesperson_name || "–", r.pump_code || "–", r.supervisor_name || "–", r.grade_name,
           r.quantity_m3, r.rate != null ? inrPdf(r.rate) : "–", r.amount != null ? inrPdf(r.amount) : "–",
           r.pumping_charge != null && Number(r.pumping_charge) > 0 ? inrPdf(r.pumping_charge) : "–",
@@ -206,13 +206,13 @@ export default function ProductionReport() {
         rowPageBreak: "avoid", // a row split across a page boundary can otherwise appear to repeat
         headStyles: { fillColor: [199, 91, 18] },
         columnStyles: {
-          10: { cellWidth: 16 },  // Qty
-          11: { cellWidth: 18 },  // Rate
-          12: { cellWidth: 20 },  // Amount
-          13: { cellWidth: 18 },  // Pumping charge
-          14: { cellWidth: 18 },  // Part load charge
-          15: { cellWidth: 18 },  // Waiting charge
-          16: { cellWidth: 20 },  // Total — was getting clipped before
+          11: { cellWidth: 16 },  // Qty
+          12: { cellWidth: 18 },  // Rate
+          13: { cellWidth: 20 },  // Amount
+          14: { cellWidth: 18 },  // Pumping charge
+          15: { cellWidth: 18 },  // Part load charge
+          16: { cellWidth: 18 },  // Waiting charge
+          17: { cellWidth: 20 },  // Total — was getting clipped before
         },
       });
       doc.save(`Production_Report_${filters.from_date}to${filters.to_date}.pdf`);
@@ -230,7 +230,7 @@ export default function ProductionReport() {
       if (rows.length === 0) { setError("Nothing to export for these filters."); return; }
       const XLSX = await import("xlsx");
       const sheetRows = rows.map((r) => ({
-        Date: formatDate(r.ticket_date), "DC No.": r.dc_no, "Time": formatTime(r.created_at), Customer: r.customer_name, Site: r.site_name,
+        Date: formatDate(r.ticket_date), "DC No.": r.dc_no, "Time": formatTime(r.created_at), "Order #": r.order_id, Customer: r.customer_name, Site: r.site_name,
         Truck: r.truck_number, Driver: r.driver_name, "Sales Person": r.salesperson_name || "",
         Pump: r.pump_code || "", Supervisor: r.supervisor_name || "", Grade: r.grade_name,
         "Quantity (m³)": Number(r.quantity_m3), Rate: r.rate != null ? Number(r.rate) : "",
@@ -242,7 +242,7 @@ export default function ProductionReport() {
         "Delivery Note Status": r.delivery_note_status || "",
       }));
       sheetRows.push({
-        Date: "", "DC No.": "", "Time": "", Customer: "", Site: "", Truck: "", Driver: "", "Sales Person": "",
+        Date: "", "DC No.": "", "Time": "", "Order #": "", Customer: "", Site: "", Truck: "", Driver: "", "Sales Person": "",
         Pump: "", Supervisor: "", Grade: "Total", "Quantity (m³)": Number(sumQty(rows)),
         Rate: "", Amount: Number(sumAmount(rows)), "Pumping charge": Number(sumPumpingCharge(rows)),
         "Part load charge": Number(sumPartLoadCharge(rows)), "Waiting charge": Number(sumWaitingCharge(rows)),
@@ -389,7 +389,7 @@ export default function ProductionReport() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Date</th><th>DC No.</th><th>Customer</th><th>Site</th><th>Truck</th><th>Driver</th>
+                      <th>Date</th><th>DC No.</th><th>Order #</th><th>Customer</th><th>Site</th><th>Truck</th><th>Driver</th>
                       <th>Sales Person</th><th>Pump</th><th>Supervisor</th><th>Grade</th><th>Quantity</th>
                       <th>Rate</th><th>Amount</th><th>Pumping charge</th><th>Part load charge</th><th>Waiting charge</th><th>Total</th><th>Status</th><th></th>
                     </tr>
@@ -399,6 +399,7 @@ export default function ProductionReport() {
                       <tr key={r.id}>
                         <td>{formatDate(r.ticket_date)}</td>
                         <td>{r.dc_no}{r.created_at && <div style={{ fontSize: 10, color: "var(--slate)" }}>{formatTime(r.created_at)}</div>}</td>
+                        <td>#{r.order_id}</td>
                         <td>{r.customer_name}</td>
                         <td>{r.site_name}</td>
                         <td>{r.truck_number}</td>
@@ -425,7 +426,7 @@ export default function ProductionReport() {
                   </tbody>
                   <tfoot>
                     <tr style={{ fontWeight: 600 }}>
-                      <td colSpan={10}>Totals ({result.totals.delivery_count} deliveries)</td>
+                      <td colSpan={11}>Totals ({result.totals.delivery_count} deliveries)</td>
                       <td>{result.totals.total_qty_m3} m³</td>
                       <td></td>
                       <td>{inr(result.totals.total_concrete_amount)}</td>

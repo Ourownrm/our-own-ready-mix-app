@@ -90,7 +90,7 @@ export default function App() {
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><TripAllowanceReport /></ProtectedRoute>
           } />
           <Route path="/delay-justification-report" element={
-            <ProtectedRoute roles={["administrator", "manager"]}><DelayJustificationReport /></ProtectedRoute>
+            <ProtectedRoute roles={["administrator", "manager", "site_supervisor", "plant_operator"]}><DelayJustificationReport /></ProtectedRoute>
           } />
           <Route path="/charts" element={
             <ProtectedRoute roles={["administrator", "manager"]}><Charts /></ProtectedRoute>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, failedCount, clearFailed, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
@@ -178,6 +179,7 @@ export default function PlantOperator() {
           </form>
         </div>
 
+        <Link to="/delay-justification-report"><button style={{ width: "100%", marginTop: 16 }}>Delay report</button></Link>
         <button style={{ width: "100%", marginTop: 16 }} className="btn-danger" onClick={() => { setError(""); setNotice(""); setShowBreakdown(true); }}>
           Report pump / plant breakdown
         </button>

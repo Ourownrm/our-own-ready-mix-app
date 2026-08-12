@@ -4,6 +4,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
+import { useAuth } from "../lib/AuthContext.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -54,6 +55,10 @@ function AtSitePrompt({ atSite, setAtSite, coords, setCoords }) {
 }
 
 export default function SalesExecutive() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "administrator";
+  const [executives, setExecutives] = useState([]);
+  const [viewAsUser, setViewAsUser] = useState("");
   const [view, setView] = useState("dashboard");
   const [selectedLeadId, setSelectedLeadId] = useState(null);
   const [dashboard, setDashboard] = useState(null);
@@ -69,10 +74,18 @@ export default function SalesExecutive() {
   const gpsIntervalRef = useRef(null);
   const wakeLockRef = useRef("off");
 
+  useEffect(() => {
+    if (isAdmin) {
+      apiRequest("/sales/executives").then(setExecutives).catch(() => {});
+    }
+  }, [isAdmin]);
+
+  const asUserParam = isAdmin && viewAsUser ? `?as_user=${viewAsUser}` : "";
+
   async function loadAll() {
     try {
       const [d, l, b, f, v, fc] = await Promise.all([
-        apiRequest("/sales/my-dashboard"),
+        apiRequest(`/sales/my-dashboard${asUserParam}`),
         apiRequest("/sales/leads"),
         apiRequest("/sales/bookings"),
         apiRequest("/sales/feedback"),
@@ -86,7 +99,7 @@ export default function SalesExecutive() {
   }
   async function loadDutyStatus() {
     try {
-      const status = await apiRequest("/sales/duty-status");
+      const status = await apiRequest(`/sales/duty-status${asUserParam}`);
       setOnDuty(status.on_duty);
       setDutyStatus(status);
       return status;
@@ -106,6 +119,10 @@ export default function SalesExecutive() {
     const flushInterval = startPeriodicFlush();
     return () => { clearInterval(flushInterval); clearInterval(gpsIntervalRef.current); };
   }, []);
+
+  useEffect(() => {
+    if (isAdmin) loadAll();
+  }, [viewAsUser]);
 
   function pingOnce() {
     navigator.geolocation?.getCurrentPosition((pos) => {
@@ -181,6 +198,17 @@ export default function SalesExecutive() {
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
+        {isAdmin && (
+          <div className="card" style={{ marginBottom: 12, fontSize: 13 }}>
+            <div style={{ color: "var(--slate)", marginBottom: 4 }}>Viewing as</div>
+            <select value={viewAsUser} onChange={(e) => setViewAsUser(e.target.value)} style={{ width: "100%" }}>
+              <option value="">Select a Sales Executive</option>
+              {executives.map((ex) => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
+            </select>
+          </div>
+        )}
+
+        {!isAdmin && (
         <button
           onClick={toggleDuty}
           className={onDuty ? "btn-danger" : "btn-primary"}
@@ -188,7 +216,8 @@ export default function SalesExecutive() {
         >
           {onDuty ? "On duty — tap to clock off" : "Off duty — tap to clock in"}
         </button>
-        {dutyStatus?.since && (
+        )}
+        {!isAdmin && dutyStatus?.since && (
           <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>
             {onDuty ? "On duty since " : "Off duty since "}
             {new Date(dutyStatus.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -229,7 +258,7 @@ export default function SalesExecutive() {
           <Link to="/sales-forecast"><button className="btn-tab">Forecast</button></Link>
         </div>
 
-        {view === "dashboard" && <Dashboard data={dashboard} forecasts={forecasts} onDuty={onDuty} />}
+        {view === "dashboard" && <Dashboard data={dashboard} forecasts={forecasts} onDuty={onDuty} isAdmin={isAdmin} viewAsUser={viewAsUser} />}
         {view === "leads" && (
           <LeadsList leads={leads} onDuty={onDuty} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
         )}
@@ -247,13 +276,13 @@ export default function SalesExecutive() {
   );
 }
 
-function Dashboard({ data, forecasts, onDuty }) {
+function Dashboard({ data, forecasts, onDuty, isAdmin, viewAsUser }) {
   if (!data) return <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>;
   const leadCounts = data.lead_counts || {};
   const expiredCount = (forecasts || []).filter((f) => f.is_expired).length;
   return (
     <>
-      <FollowupsDue />
+      <FollowupsDue asUser={isAdmin ? viewAsUser : undefined} />
       {!onDuty && (
         <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>
