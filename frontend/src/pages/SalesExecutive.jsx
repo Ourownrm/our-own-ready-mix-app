@@ -5,6 +5,7 @@ import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
+import ShareableVisitReport from "../lib/ShareableVisitReport.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -793,6 +794,7 @@ function NewBookingForm({ onDone, onCancel }) {
 const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
 
 function VisitsList({ visits, onNew, onDuty }) {
+  const [shareOpenId, setShareOpenId] = useState(null);
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -822,6 +824,17 @@ function VisitsList({ visits, onNew, onDuty }) {
               </div>
               {v.discussion_outcome && <div>{v.discussion_outcome}</div>}
               <div style={{ color: "var(--slate)", fontSize: 11 }}>{v.at_site === false ? "Not at site" : v.at_site ? "At site" : ""}</div>
+              <button
+                style={{ fontSize: 11, padding: "4px 10px", marginTop: 6 }}
+                onClick={() => setShareOpenId(shareOpenId === v.id ? null : v.id)}
+              >
+                {shareOpenId === v.id ? "Hide report" : "Share report"}
+              </button>
+              {shareOpenId === v.id && (
+                <div style={{ marginTop: 8 }}>
+                  <ShareableVisitReport visit={v} />
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -832,18 +845,17 @@ function VisitsList({ visits, onNew, onDuty }) {
 
 const NEW_PROJECT_QUESTIONS = [
   { key: "meeting_outcome", label: "1. How was the meeting?", options: ["Interested", "Comparing prices", "Not ready yet", "Lost to competitor", "Decision maker absent"] },
-  { key: "spoke_to", label: "2. Who did you speak to?", options: ["Client", "Engineer", "Contractor", "Purchase dept.", "Other — need to reach decision maker"] },
-  { key: "decide_when", label: "3. When will they decide?", options: ["Today/tomorrow", "This week", "Next week", "This month", "More than a month", "Not sure"] },
-  { key: "concerns", label: "4. Main concerns", options: ["Price", "Distance from plant", "Delivery timing", "Product quality", "Grade availability", "Pump availability", "Payment terms", "Trust, new supplier", "None"], multi: true },
-  { key: "grades", label: "5. Grade(s) asked about", options: ["M10", "M15", "M20", "M25", "M30", "M35", "M40", "M45", "Not sure yet"], multi: true },
-  { key: "volume", label: "6. Rough volume expected", options: ["Under 50 m³", "50–200 m³", "200–500 m³", "Above 500 m³", "Unsure"] },
-  { key: "project_stage", label: "7. Project stage", options: ["Just planning", "Starting soon", "Excavation", "Foundation ready", "Column/Plinth", "Slab", "Finishing"] },
-  { key: "first_pour", label: "8. Expected first pour", options: ["Within 3 days", "1 week", "2 weeks", "1 month", "Later"] },
-  { key: "competitor_involved", label: "9. Competitor involved?", options: ["No", "Yes — SEDC", "Yes — Supermix", "Yes — Other"] },
-  { key: "competitor_experience", label: "10. Their experience with that competitor", options: ["Happy", "Unhappy", "Minor issues", "None known"], conditional: (a) => a.competitor_involved && a.competitor_involved !== "No" },
-  { key: "quotation_status", label: "11. Quotation status", options: ["Submitted", "Send today", "Revised quote needed", "Not required"] },
-  { key: "technical_visit", label: "12. Technical visit needed?", options: ["Yes", "No"] },
-  { key: "owners_meeting", label: "13. Owners' meeting needed?", options: ["Yes", "No"] },
+  { key: "decide_when", label: "2. When will they decide?", options: ["Today/tomorrow", "This week", "Next week", "This month", "More than a month", "Not sure"] },
+  { key: "concerns", label: "3. Main concerns", options: ["Price", "Distance from plant", "Delivery timing", "Product quality", "Grade availability", "Pump availability", "Payment terms", "Trust, new supplier", "None"], multi: true },
+  { key: "grades", label: "4. Grade(s) asked about", options: ["M10", "M15", "M20", "M25", "M30", "M35", "M40", "M45", "Not sure yet"], multi: true },
+  { key: "volume", label: "5. Rough volume expected", options: ["Under 50 m³", "50–200 m³", "200–500 m³", "Above 500 m³", "Unsure"] },
+  { key: "project_stage", label: "6. Project stage", options: ["Just planning", "Starting soon", "Excavation", "Foundation ready", "Column/Plinth", "Slab", "Finishing"] },
+  { key: "first_pour", label: "7. Expected first pour", options: ["Within 3 days", "1 week", "2 weeks", "1 month", "Later"] },
+  { key: "competitor_involved", label: "8. Competitor involved?", options: ["No", "Yes — SEDC", "Yes — Supermix", "Yes — Other"] },
+  { key: "competitor_experience", label: "9. Their experience with that competitor", options: ["Happy", "Unhappy", "Minor issues", "None known"], conditional: (a) => a.competitor_involved && a.competitor_involved !== "No" },
+  { key: "quotation_status", label: "10. Quotation status", options: ["Submitted", "Send today", "Revised quote needed", "Not required"] },
+  { key: "technical_visit", label: "11. Technical visit needed?", options: ["Yes", "No"] },
+  { key: "owners_meeting", label: "12. Owners' meeting needed?", options: ["Yes", "No"] },
 ];
 const RUNNING_PROJECT_QUESTIONS = [
   { key: "supply_status", label: "a. How's the supply going?", options: ["All good", "Minor issue", "Serious complaint"] },
