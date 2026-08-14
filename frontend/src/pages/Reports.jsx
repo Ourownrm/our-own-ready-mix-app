@@ -12,6 +12,7 @@ import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 export default function Reports() {
   const [data, setData] = useState(null);
   const [onDutySales, setOnDutySales] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [error, setError] = useState("");
   const { user } = useAuth();
 
@@ -30,7 +31,11 @@ export default function Reports() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 60000);
+    apiRequest("/notifications/unread-count").then(({ count }) => setUnreadCount(count)).catch(() => {});
+    const interval = setInterval(() => {
+      load();
+      apiRequest("/notifications/unread-count").then(({ count }) => setUnreadCount(count)).catch(() => {});
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -42,7 +47,14 @@ export default function Reports() {
           <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
             <Link to="/administrator"><button type="button">Users and roles</button></Link>
-            <Link to="/notifications"><button type="button">Notifications</button></Link>
+            <Link to="/notifications">
+              <button type="button" style={{ position: "relative" }}>
+                Notifications
+                {unreadCount > 0 && (
+                  <span className="badge badge-danger" style={{ marginLeft: 6, fontSize: 10 }}>{unreadCount}</span>
+                )}
+              </button>
+            </Link>
             <GroupedMenu
               label="Reports"
               items={[
@@ -55,6 +67,7 @@ export default function Reports() {
                 { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
+                { label: "Outstanding Collection", to: "/outstanding-collection-report" },
               ]}
             />
             <GroupedMenu
@@ -105,7 +118,7 @@ export default function Reports() {
               <Kpi label="Sales this month" value={inr(data.sales_month)} />
               <Kpi label="Collected yesterday" value={inr(data.collected_yesterday)} />
               <Kpi label="Collected this month" value={inr(data.collected_month)} />
-              <Kpi label="Total outstanding" value={inr(data.total_outstanding)} danger={Number(data.total_outstanding) > 0} />
+              <Kpi label="Total outstanding" value={inr(data.total_outstanding)} danger={Number(data.total_outstanding) > 0} to="/outstanding-collection-report" />
             </div>
 
             {/* 3. Running orders */}
@@ -133,33 +146,6 @@ export default function Reports() {
                 ]}
                 empty="Nothing scheduled beyond today/tomorrow."
               />
-            </Section>
-
-            {/* 5. Outstanding aging */}
-            <Section title="Outstanding — aging report (by customer)">
-              {data.outstanding_aging.length === 0 ? (
-                <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing outstanding.</div>
-              ) : (
-                <div style={{ overflowX: "auto" }}>
-                <table>
-                  <thead>
-                    <tr><th>Customer</th><th>0–7 days</th><th>8–14 days</th><th>15–30 days</th><th>30+ days</th><th>Total</th></tr>
-                  </thead>
-                  <tbody>
-                    {data.outstanding_aging.map((r, i) => (
-                      <tr key={i}>
-                        <td>{r.customer_name}</td>
-                        <td>{Number(r.bucket_0_7) > 0 ? inr(r.bucket_0_7) : ""}</td>
-                        <td>{Number(r.bucket_8_14) > 0 ? inr(r.bucket_8_14) : ""}</td>
-                        <td>{Number(r.bucket_15_30) > 0 ? inr(r.bucket_15_30) : ""}</td>
-                        <td style={Number(r.bucket_30_plus) > 0 ? { color: "var(--alert-red)", fontWeight: 600 } : undefined}>{Number(r.bucket_30_plus) > 0 ? inr(r.bucket_30_plus) : ""}</td>
-                        <td style={{ fontWeight: 600 }}>{inr(r.total_outstanding)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </div>
-              )}
             </Section>
 
             {/* 6. Raw material stock */}
@@ -238,13 +224,14 @@ export default function Reports() {
   );
 }
 
-function Kpi({ label, value, danger }) {
-  return (
-    <div className="kpi">
+function Kpi({ label, value, danger, to }) {
+  const content = (
+    <div className="kpi" style={to ? { cursor: "pointer" } : undefined}>
       <div className="kpi-label">{label}</div>
       <div className={`kpi-value ${danger ? "danger" : ""}`} style={{ fontSize: 18 }}>{value}</div>
     </div>
   );
+  return to ? <Link to={to} style={{ textDecoration: "none", color: "inherit" }}>{content}</Link> : content;
 }
 
 function Section({ title, children }) {

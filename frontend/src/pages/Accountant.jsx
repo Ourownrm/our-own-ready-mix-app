@@ -190,6 +190,7 @@ export default function Accountant() {
       <button onClick={() => setShowOpeningBalances(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Opening balances</button>
       <button onClick={() => setShowPumpChargeReview(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Pump charge review</button>
       <Link to="/fuel-report" style={{ marginLeft: 12, fontSize: 13 }}>Fuel and lubricant report</Link>
+      <Link to="/outstanding-collection-report" style={{ marginLeft: 12, fontSize: 13 }}>Outstanding Collection</Link>
       <Link to="/trip-allowance-report" style={{ marginLeft: 12, fontSize: 13 }}>Trip allowance report</Link>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>

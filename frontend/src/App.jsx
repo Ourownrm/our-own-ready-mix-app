@@ -19,6 +19,7 @@ import TripAllowanceReport from "./pages/TripAllowanceReport.jsx";
 import DelayJustificationReport from "./pages/DelayJustificationReport.jsx";
 import Charts from "./pages/Charts.jsx";
 import CycleTimeReport from "./pages/CycleTimeReport.jsx";
+import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
@@ -97,6 +98,9 @@ export default function App() {
           } />
           <Route path="/cycle-time-report" element={
             <ProtectedRoute roles={["administrator", "manager"]}><CycleTimeReport /></ProtectedRoute>
+          } />
+          <Route path="/outstanding-collection-report" element={
+            <ProtectedRoute roles={["administrator", "manager", "accountant"]}><OutstandingCollectionReport /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>

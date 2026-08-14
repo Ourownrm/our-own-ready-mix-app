@@ -234,6 +234,7 @@ export default function ManagerDashboard() {
               { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
+                { label: "Outstanding Collection", to: "/outstanding-collection-report" },
             ]}
           />
           <GroupedMenu
