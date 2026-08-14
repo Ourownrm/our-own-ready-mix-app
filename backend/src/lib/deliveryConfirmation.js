@@ -31,9 +31,14 @@ export async function syncOrderCompletionStatus(orderId) {
   if (!order || ["cancelled", "closed"].includes(order.status)) return;
 
   const reached = Number(order.delivered_qty_m3) >= Number(order.order_quantity_m3);
-  if (reached && order.status !== "completed") {
-    await query("UPDATE customer_orders SET status = 'completed' WHERE id = $1", [orderId]);
-  } else if (!reached && order.status === "completed") {
+  // Reaching the ordered quantity does NOT auto-complete the order — the
+  // last truck unloading is not the same as the site confirming the pour is
+  // actually done, and only Manager's explicit confirm-completion sets
+  // status to 'completed'. This only handles the reverse case: if a late
+  // ticket cancellation drops delivered quantity back below target after
+  // completion was confirmed, correctly un-complete the order rather than
+  // leave a status that no longer reflects reality.
+  if (!reached && order.status === "completed") {
     await query("UPDATE customer_orders SET status = 'in_progress' WHERE id = $1", [orderId]);
   }
 }

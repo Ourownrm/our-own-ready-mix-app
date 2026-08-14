@@ -2751,3 +2751,17 @@ Backend query, PDF, Excel, and on-screen table.
 
 ### Migration note
 No schema changes this round — nothing new to apply via `/setup`.
+
+## Eighty-ninth round (App 102 / Ver. 9.12)
+
+### Shareable Site Visit Report — built for real
+Same pattern as the fuel approval slip (html2canvas image + native share sheet),
+now colorful: an orange header band, a blue/green pill for New vs Existing project,
+and each visit-summary value shown as its own color-coded pill (green for positive
+signals, red for negative, amber for uncertain, blue neutral) — not just plain text.
+An amber callout appears only when a technical visit or owners' meeting was actually
+requested. "Share report" toggle added to each visit card on Sales Executive's own
+Visits list.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.

@@ -398,7 +398,7 @@ router.get("/feedback", requireRole("sales_executive", "manager", "administrator
 const VISITOR_TYPES = ["customer", "client", "consultant", "site_engineer", "other"];
 
 const NEW_PROJECT_KEYS = [
-  "meeting_outcome", "spoke_to", "decide_when", "concerns", "grades", "volume",
+  "meeting_outcome", "decide_when", "concerns", "grades", "volume",
   "project_stage", "first_pour", "competitor_involved", "quotation_status",
   "technical_visit", "owners_meeting",
 ];
@@ -430,7 +430,7 @@ function daysFromNow(n) {
 // answers, not any single one in isolation, and produces specific,
 // separately-actionable follow-ups with their own due dates, some assigned
 // beyond Sales Executive when the action genuinely isn't theirs to take.
-function generateFollowups(isNewProject, answers) {
+function generateFollowups(isNewProject, answers, visitorType) {
   const items = [];
 
   if (isNewProject) {
@@ -462,8 +462,8 @@ function generateFollowups(isNewProject, answers) {
     if (answers.owners_meeting === "Yes") {
       items.push({ title: "Arrange owners' meeting", reason: "Requested during visit", due_in_days: 3, role: "manager" });
     }
-    if (answers.spoke_to && answers.spoke_to !== "Client") {
-      items.push({ title: "Reach the actual decision maker", reason: `Only spoke to ${answers.spoke_to}`, due_in_days: dueInDays, role: "sales_executive" });
+    if (visitorType && !["customer", "client"].includes(visitorType)) {
+      items.push({ title: "Reach the actual decision maker", reason: `Only spoke to a ${visitorType.replace("_", " ")}`, due_in_days: dueInDays, role: "sales_executive" });
     }
     if (answers.competitor_involved && answers.competitor_involved !== "No" && answers.competitor_experience === "Unhappy") {
       items.push({ title: `Highlight our advantages over ${answers.competitor_involved.replace("Yes — ", "")}`, reason: "They're unhappy with their current supplier", due_in_days: dueInDays, role: "sales_executive" });
@@ -526,7 +526,22 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
   );
   const visit = rows[0];
 
-  const followups = generateFollowups(is_new_project, answers || {});
+  if (answers?.owners_meeting === "Yes") {
+    const msg = `${visited_name} asked for an owners' meeting`;
+    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'owners_meeting_requested', $1)`, [msg]);
+    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'owners_meeting_requested', $1)`, [msg]);
+    await pushToRole("manager", { title: "Owners' meeting requested", body: msg, url: "/manager" });
+    await pushToRole("administrator", { title: "Owners' meeting requested", body: msg, url: "/reports" });
+  }
+  if (answers?.technical_visit === "Yes") {
+    const msg = `${visited_name} needs a technical visit`;
+    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'technical_visit_requested', $1)`, [msg]);
+    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'technical_visit_requested', $1)`, [msg]);
+    await pushToRole("manager", { title: "Technical visit requested", body: msg, url: "/manager" });
+    await pushToRole("administrator", { title: "Technical visit requested", body: msg, url: "/reports" });
+  }
+
+  const followups = generateFollowups(is_new_project, answers || {}, visitor_type);
   const created = [];
   for (const f of followups) {
     const dueDate = daysFromNow(f.due_in_days);
