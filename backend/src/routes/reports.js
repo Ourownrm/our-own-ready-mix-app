@@ -259,12 +259,44 @@ router.get("/cycle-time", requireRole("manager", "administrator"), async (req, r
   res.json(rows);
 });
 
+// Outstanding Collection report — as-of-today snapshot, every customer with
+// a balance, broken into aging buckets. Shared with Accountant, not just
+// Admin/Manager, since chasing collections is squarely their job too.
+router.get("/outstanding-collection", requireRole("administrator", "manager", "accountant"), async (req, res) => {
+  const { rows } = await query(
+    `WITH inv AS (
+       SELECT i.customer_id, i.total_amount - COALESCE(p.paid, 0) AS outstanding,
+              (CURRENT_DATE - i.created_at::date) AS age_days
+       FROM invoices i
+       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
+         ON p.invoice_id = i.id
+       UNION ALL
+       SELECT ob.customer_id, ob.amount - COALESCE(p.paid, 0) AS outstanding,
+              (CURRENT_DATE - ob.as_of_date) AS age_days
+       FROM customer_opening_balances ob
+       LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p
+         ON p.opening_balance_id = ob.id
+     )
+     SELECT c.name AS customer_name,
+       COALESCE(SUM(CASE WHEN age_days <= 7 THEN outstanding ELSE 0 END), 0) AS bucket_0_7,
+       COALESCE(SUM(CASE WHEN age_days > 7 AND age_days <= 14 THEN outstanding ELSE 0 END), 0) AS bucket_8_14,
+       COALESCE(SUM(CASE WHEN age_days > 14 AND age_days <= 30 THEN outstanding ELSE 0 END), 0) AS bucket_15_30,
+       COALESCE(SUM(CASE WHEN age_days > 30 THEN outstanding ELSE 0 END), 0) AS bucket_30_plus,
+       COALESCE(SUM(outstanding), 0) AS total_outstanding
+     FROM inv JOIN customers c ON c.id = inv.customer_id
+     GROUP BY c.name
+     HAVING COALESCE(SUM(outstanding), 0) > 0.01
+     ORDER BY total_outstanding DESC`
+  );
+  res.json(rows);
+});
+
 router.get("/director-dashboard", requireRole("administrator", "manager", "accountant"), async (req, res) => {
   const [
     orderQtyToday, suppliedTicketQtyToday, todayRejectedQty, monthlyTicketQty, monthlyRejectedQty,
     salesToday, salesMonth, salesByCustomer,
     collectedToday, collectedMonth,
-    outstanding, aging,
+    outstanding,
     runningOrders, upcomingOrders,
     salesmanMonthly, pumpUtilization, rejections, unbilled,
   ] = await Promise.all([
@@ -315,31 +347,6 @@ router.get("/director-dashboard", requireRole("administrator", "manager", "accou
          + (SELECT COALESCE(SUM(amount), 0) FROM customer_opening_balances)
          - (SELECT COALESCE(SUM(amount), 0) FROM payments)
          AS total`
-    ),
-    query(
-      `WITH inv AS (
-         SELECT i.customer_id, i.total_amount - COALESCE(p.paid, 0) AS outstanding,
-                (CURRENT_DATE - i.created_at::date) AS age_days
-         FROM invoices i
-         LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
-           ON p.invoice_id = i.id
-         UNION ALL
-         SELECT ob.customer_id, ob.amount - COALESCE(p.paid, 0) AS outstanding,
-                (CURRENT_DATE - ob.as_of_date) AS age_days
-         FROM customer_opening_balances ob
-         LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p
-           ON p.opening_balance_id = ob.id
-       )
-       SELECT c.name AS customer_name,
-         COALESCE(SUM(CASE WHEN age_days <= 7 THEN outstanding ELSE 0 END), 0) AS bucket_0_7,
-         COALESCE(SUM(CASE WHEN age_days > 7 AND age_days <= 14 THEN outstanding ELSE 0 END), 0) AS bucket_8_14,
-         COALESCE(SUM(CASE WHEN age_days > 14 AND age_days <= 30 THEN outstanding ELSE 0 END), 0) AS bucket_15_30,
-         COALESCE(SUM(CASE WHEN age_days > 30 THEN outstanding ELSE 0 END), 0) AS bucket_30_plus,
-         COALESCE(SUM(outstanding), 0) AS total_outstanding
-       FROM inv JOIN customers c ON c.id = inv.customer_id
-       GROUP BY c.name
-       HAVING COALESCE(SUM(outstanding), 0) > 0.01
-       ORDER BY total_outstanding DESC`
     ),
 
     query(
@@ -458,7 +465,6 @@ router.get("/director-dashboard", requireRole("administrator", "manager", "accou
     collected_yesterday: collectedToday.rows[0].total,
     collected_month: collectedMonth.rows[0].total,
     total_outstanding: outstanding.rows[0].total,
-    outstanding_aging: aging.rows,
     running_orders: runningOrders.rows,
     upcoming_orders: upcomingOrders.rows,
     salesman_monthly: salesmanMonthly.rows,

@@ -528,7 +528,11 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
 
   if (answers?.owners_meeting === "Yes") {
     const msg = `${visited_name} asked for an owners' meeting`;
-    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'owners_meeting_requested', $1)`, [msg]);
+    // Not persisted for Manager — the "Arrange owners' meeting" follow-up
+    // task already routes to Manager and shows on their Follow-ups Due, so
+    // a separate notification row here would just show the same thing
+    // twice. The immediate push still fires, for prompt awareness ahead of
+    // the follow-up's own due date.
     await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'owners_meeting_requested', $1)`, [msg]);
     await pushToRole("manager", { title: "Owners' meeting requested", body: msg, url: "/manager" });
     await pushToRole("administrator", { title: "Owners' meeting requested", body: msg, url: "/reports" });

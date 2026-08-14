@@ -2765,3 +2765,26 @@ Visits list.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Ninetieth round (App 103 / Ver. 9.13)
+
+### Notification fixes
+Manager's "shows twice" traced exactly: the "Arrange owners' meeting" follow-up task
+already routes to Manager and shows on their Follow-ups Due — the notification I'd
+added last round was showing the same information a second time via a different
+widget. Removed the redundant persisted notification for Manager on owners_meeting
+specifically (the immediate push still fires); kept both for Administrator, who has
+no other visibility into this at all. Separately, Admin's "not showing" turned out to
+mean not noticing — Manager's dashboard has an unread-count badge next to
+Notifications, Admin's didn't. Added the same badge to Admin's dashboard.
+
+### New: Outstanding Collection report
+Extracted from the inline aging table on Admin's Director's Dashboard into its own
+report — colorful (orange header, color-coded aging-bucket pills matching the visit
+report's pattern), with a bolded total row at the bottom, PDF and Excel export. Kept
+the "Total outstanding" KPI card on the dashboard as agreed, now linking through to
+the full report. Shared with Accountant, with a direct link on their own dashboard
+since they don't use the same Reports menu structure as Admin/Manager.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
