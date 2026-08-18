@@ -530,6 +530,53 @@ router.delete("/fuel-stations/:id", requireRole("administrator"), async (req, re
   }
 });
 
+// ===== Plant location — the geofence anchor used to auto-detect Plant Out /
+// Plant In (see lib/scheduledChecks.js's checkGeofenceEvents). Exactly one
+// active plant at a time, same "set-active unmarks any previous one" pattern
+// already used for fuel_stations.is_plant just above. =====
+
+router.get("/plant-locations", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM plant_locations ORDER BY is_active DESC, name");
+  res.json(rows);
+});
+
+router.post("/plant-locations", requireRole("administrator"), async (req, res) => {
+  const { name, latitude, longitude, geofence_radius_m } = req.body;
+  if (latitude === undefined || longitude === undefined || latitude === null || longitude === null) {
+    return res.status(400).json({ error: "Latitude and longitude are required." });
+  }
+  const { rows } = await query(
+    `INSERT INTO plant_locations (name, latitude, longitude, geofence_radius_m)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [name || "Main plant", latitude, longitude, geofence_radius_m || 200]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/plant-locations/:id", requireRole("administrator"), async (req, res) => {
+  const { name, latitude, longitude, geofence_radius_m } = req.body;
+  const { rows } = await query(
+    `UPDATE plant_locations SET
+       name = COALESCE($1, name), latitude = COALESCE($2, latitude),
+       longitude = COALESCE($3, longitude), geofence_radius_m = COALESCE($4, geofence_radius_m)
+     WHERE id = $5 RETURNING *`,
+    [name || null, latitude ?? null, longitude ?? null, geofence_radius_m || null, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Plant location not found." });
+  res.json(rows[0]);
+});
+
+router.post("/plant-locations/:id/set-active", requireRole("administrator"), async (req, res) => {
+  await query("UPDATE plant_locations SET is_active = FALSE WHERE is_active = TRUE");
+  await query("UPDATE plant_locations SET is_active = TRUE WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+router.delete("/plant-locations/:id", requireRole("administrator"), async (req, res) => {
+  await query("DELETE FROM plant_locations WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
 // ===== Master data: Lubricant types =====
 
 router.get("/lubricant-types", requireRole("administrator"), async (req, res) => {
@@ -547,6 +594,35 @@ router.post("/lubricant-types", requireRole("administrator"), async (req, res) =
 router.patch("/lubricant-types/:id/status", requireRole("administrator"), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE lubricant_types SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
+  res.json({ ok: true });
+});
+
+// ===== Master data: Visit outcome reasons (why a visit-generated
+// opportunity didn't convert — "Lost to competitor", "Project cancelled",
+// etc.) — same admin-manageable-list pattern as lubricant types, so this
+// stays a controlled vocabulary usable for reporting, not free text. =====
+
+router.get("/visit-outcome-reasons", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM visit_outcome_reasons ORDER BY outcome_type, reason");
+  res.json(rows);
+});
+
+router.post("/visit-outcome-reasons", requireRole("administrator"), async (req, res) => {
+  const { outcome_type, reason } = req.body;
+  if (!["lost", "closed"].includes(outcome_type)) {
+    return res.status(400).json({ error: "Outcome type must be lost or closed." });
+  }
+  if (!reason) return res.status(400).json({ error: "Reason text is required." });
+  const { rows } = await query(
+    "INSERT INTO visit_outcome_reasons (outcome_type, reason) VALUES ($1,$2) RETURNING *",
+    [outcome_type, reason]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/visit-outcome-reasons/:id/status", requireRole("administrator"), async (req, res) => {
+  const { is_active } = req.body;
+  await query("UPDATE visit_outcome_reasons SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
 });
 
@@ -668,7 +744,7 @@ router.post("/orders/:id/reschedule", requireRole("administrator", "manager"), a
 });
 
 router.post("/orders/:id/cancel", requireRole("administrator", "manager"), async (req, res) => {
-  await query("UPDATE customer_orders SET status = 'cancelled' WHERE id = $1", [req.params.id]);
+  await query("UPDATE customer_orders SET status = 'cancelled', terminal_at = now() WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 

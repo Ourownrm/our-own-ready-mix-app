@@ -272,12 +272,51 @@ CREATE TABLE customer_visits (
   visit_date DATE NOT NULL,
   visit_time TIME,
   contact_person VARCHAR(150),
-  discussion_outcome TEXT NOT NULL,
+  contact_number VARCHAR(20),
+  -- Nullable — the reworked visit form (structured tap-answer questions)
+  -- doesn't always produce a single free-text summary the way the old form did.
+  discussion_outcome TEXT,
+  site_id INTEGER REFERENCES sites(id),
+  is_new_project BOOLEAN,
+  -- Structured tap-answer responses from the reworked visit form.
+  answers JSONB,
   at_site BOOLEAN,
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Follow-ups generated from a visit (e.g. "call back in 3 days"), plus the
+-- eventual outcome — Won/Lost/Closed, with a reason for Lost/Closed drawn
+-- from visit_outcome_reasons below.
+CREATE TABLE visit_followups (
+  id SERIAL PRIMARY KEY,
+  visit_id INTEGER REFERENCES customer_visits(id) NOT NULL,
+  customer_id INTEGER REFERENCES customers(id),
+  title VARCHAR(200) NOT NULL,
+  reason TEXT,
+  due_date DATE NOT NULL,
+  assigned_to_role user_role NOT NULL DEFAULT 'sales_executive',
+  assigned_to_user_id INTEGER REFERENCES users(id),
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  outcome VARCHAR(20),
+  outcome_reason_id INTEGER,
+  outcome_notes TEXT,
+  outcome_by INTEGER REFERENCES users(id),
+  outcome_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Admin-managed reason list shown when a follow-up is marked Lost or Closed.
+CREATE TABLE visit_outcome_reasons (
+  id SERIAL PRIMARY KEY,
+  outcome_type VARCHAR(20) NOT NULL CHECK (outcome_type IN ('lost', 'closed')),
+  reason VARCHAR(150) NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT true
+);
+
+ALTER TABLE visit_followups ADD CONSTRAINT visit_followups_outcome_reason_id_fkey
+  FOREIGN KEY (outcome_reason_id) REFERENCES visit_outcome_reasons(id);
 
 -- Raw material stock — one row per bin, entered/updated by QC Engineer and
 -- shown read-only on the Manager and Administrator dashboards until QC
@@ -381,6 +420,18 @@ CREATE TABLE customer_orders (
   site_ready_confirmed_by INTEGER REFERENCES users(id),
   site_ready_confirmed_at TIMESTAMPTZ,
   site_ready_delay_reason TEXT,
+  -- Supervisor's device location at the moment they tapped Site Ready — 99.9%
+  -- of the time that's genuinely at the site, making it a fresher geofence
+  -- anchor than the site's own saved (and sometimes stale) coordinate. If the
+  -- tap location is implausibly far from the site's saved point, it's still
+  -- recorded but flagged suspect and the geofence check falls back to the
+  -- site's own coordinate instead.
+  site_ready_latitude NUMERIC(10,7),
+  site_ready_longitude NUMERIC(10,7),
+  site_ready_location_suspect BOOLEAN NOT NULL DEFAULT false,
+  -- Set the moment an order becomes terminal (completed/closed/cancelled) —
+  -- drives the customer tracking link's 3-hour post-completion grace period.
+  terminal_at TIMESTAMPTZ,
   -- Site Supervisor's "work completed" is a signal, not a status change — it
   -- doesn't touch `status` (which already has its own meaning driven by
   -- delivered quantity). Manager reviews the signal and explicitly confirms
@@ -476,6 +527,60 @@ CREATE TABLE trip_events (
   manager_approved_by INTEGER REFERENCES users(id), -- SRS §7: manual edits require manager approval
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7)
+);
+
+-- Saved plant location(s), used as the geofence anchor for auto-detecting
+-- Plant Out / Plant In. Exactly one row is is_active at a time (admin-managed
+-- via Administrator → Masters → Plant Location).
+CREATE TABLE plant_locations (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL DEFAULT 'Main plant',
+  latitude NUMERIC(10,7) NOT NULL,
+  longitude NUMERIC(10,7) NOT NULL,
+  geofence_radius_m INTEGER NOT NULL DEFAULT 200,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Geofence-detected hints (left_plant, reached_site, left_site,
+-- returned_to_plant) — a scheduled check writes here from GPS pings, and the
+-- driver/site-supervisor UI surfaces these as a nudge to confirm the real
+-- trip_events stage. Never written to trip_events or delivery_tickets.status
+-- directly — this table is purely additive, alongside the existing
+-- manual-confirmation flow, never replacing it.
+CREATE TABLE geofence_events (
+  id SERIAL PRIMARY KEY,
+  ticket_id INTEGER REFERENCES delivery_tickets(id) NOT NULL,
+  event_type VARCHAR(30) NOT NULL,
+  detected_at TIMESTAMPTZ DEFAULT now(),
+  latitude NUMERIC(10,7),
+  longitude NUMERIC(10,7),
+  UNIQUE (ticket_id, event_type)
+);
+
+-- Great-circle distance in meters — used by the scheduled geofence check.
+CREATE OR REPLACE FUNCTION geo_distance_m(lat1 NUMERIC, lon1 NUMERIC, lat2 NUMERIC, lon2 NUMERIC)
+RETURNS NUMERIC AS $$
+  SELECT 6371000 * 2 * ASIN(SQRT(
+    POWER(SIN(RADIANS(lat2 - lat1) / 2), 2) +
+    COS(RADIANS(lat1)) * COS(RADIANS(lat2)) * POWER(SIN(RADIANS(lon2 - lon1) / 2), 2)
+  ));
+$$ LANGUAGE SQL IMMUTABLE;
+
+-- Unauthenticated, token-scoped tracking links customers can be sent — the
+-- token itself is the access boundary (no login, no listing, no browsing).
+-- Creating a new link for an order auto-revokes any prior active one, so a
+-- link shared to the wrong person can be invalidated by generating a fresh
+-- one. Stays valid for 3 hours after the order becomes terminal (see
+-- customer_orders.terminal_at).
+CREATE TABLE order_tracking_links (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER REFERENCES customer_orders(id) NOT NULL,
+  token VARCHAR(64) UNIQUE NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  revoked_at TIMESTAMPTZ,
+  revoked_by INTEGER REFERENCES users(id)
 );
 
 -- ===================== GPS TRACKING (SRS §4) =====================

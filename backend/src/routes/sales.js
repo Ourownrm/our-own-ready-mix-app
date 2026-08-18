@@ -594,6 +594,46 @@ router.post("/followups/:id/done", requireRole("sales_executive", "manager", "ac
   res.json({ ok: true });
 });
 
+// Admin-manageable reason lists for the two "didn't convert" outcomes —
+// same pattern as rejection_reasons/lubricant_types, so "Lost to competitor"
+// or "Project cancelled" can be added/retired without a code change, and
+// reporting on why deals are lost stays clean (no free-text drift).
+router.get("/visit-outcome-reasons", async (req, res) => {
+  const outcomeType = req.query.outcome_type;
+  const { rows } = await query(
+    `SELECT id, outcome_type, reason FROM visit_outcome_reasons
+     WHERE is_active ${outcomeType ? "AND outcome_type = $1" : ""} ORDER BY reason`,
+    outcomeType ? [outcomeType] : []
+  );
+  res.json(rows);
+});
+
+// Marking an opportunity's outcome resolves every still-open follow-up task
+// generated from that same visit at once — "did we bag it" is a question
+// about the visit/opportunity as a whole, not any one reminder task. Leaving
+// a follow-up's outcome unset (the default) is exactly "still active, there's
+// a chance" — no action needed to represent that state, it's just what
+// "pending" already means.
+const OUTCOMES = ["won", "lost", "closed"];
+router.post("/visits/:visitId/outcome", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+  const { outcome, outcome_reason_id, outcome_notes } = req.body;
+  if (!OUTCOMES.includes(outcome)) {
+    return res.status(400).json({ error: "Outcome must be won, lost, or closed." });
+  }
+  if ((outcome === "lost" || outcome === "closed") && !outcome_reason_id) {
+    return res.status(400).json({ error: "A reason is required when marking a visit lost or closed." });
+  }
+  const { rows } = await query(
+    `UPDATE visit_followups
+     SET status = 'done', outcome = $1, outcome_reason_id = $2, outcome_notes = $3,
+         outcome_by = $4, outcome_at = now()
+     WHERE visit_id = $5 AND status = 'pending'
+     RETURNING id`,
+    [outcome, outcome_reason_id || null, outcome_notes || null, req.user.id, req.params.visitId]
+  );
+  res.json({ ok: true, resolved_count: rows.length });
+});
+
 router.get("/visits", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
   const own = req.user.role === "sales_executive";
   const { rows } = await query(
@@ -607,6 +647,51 @@ router.get("/visits", requireRole("sales_executive", "manager", "administrator")
     own ? [req.user.id] : []
   );
   res.json(rows);
+});
+
+// A Sales Executive visiting a genuinely new prospect often only knows who
+// they met — a person or a site name — not the exact legal/billing name a
+// customer will eventually be invoiced under. Forcing that guess up front is
+// what causes duplicate/wrong-customer messes later (the same class of
+// problem already found in the site-mismatch saga). visited_name stays free
+// text and customer_id stays optional at visit time (unchanged); this just
+// surfaces every visit that never got linked to a real customer record, so
+// Admin/Manager can reconcile it once the real billing identity is known —
+// e.g. right when the visit turns into a booking/order.
+router.get("/visits/unlinked-names", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT LOWER(TRIM(cv.visited_name)) AS name_key,
+            (ARRAY_AGG(cv.visited_name ORDER BY cv.created_at DESC))[1] AS visited_name,
+            COUNT(*) AS visit_count,
+            MAX(cv.visit_date) AS last_visit_date,
+            (ARRAY_AGG(cv.contact_person ORDER BY cv.created_at DESC))[1] AS last_contact_person,
+            (ARRAY_AGG(cv.contact_number ORDER BY cv.created_at DESC))[1] AS last_contact_number,
+            (ARRAY_AGG(u.name ORDER BY cv.created_at DESC))[1] AS last_visited_by_name
+     FROM customer_visits cv
+     JOIN users u ON u.id = cv.visited_by
+     WHERE cv.customer_id IS NULL
+     GROUP BY LOWER(TRIM(cv.visited_name))
+     ORDER BY MAX(cv.visit_date) DESC`
+  );
+  res.json(rows);
+});
+
+// Links every still-unlinked visit under this exact (case/whitespace-
+// insensitive) visited name to a real customer in one go — a visitor
+// usually gets referred to the same way across visits, so reconciling once
+// per name is the natural unit, not per individual visit row.
+router.post("/visits/link-customer", requireRole("manager", "administrator"), async (req, res) => {
+  const { visited_name, customer_id } = req.body;
+  if (!visited_name || !customer_id) {
+    return res.status(400).json({ error: "visited_name and customer_id are required." });
+  }
+  const { rows } = await query(
+    `UPDATE customer_visits SET customer_id = $1
+     WHERE customer_id IS NULL AND LOWER(TRIM(visited_name)) = LOWER(TRIM($2))
+     RETURNING id`,
+    [customer_id, visited_name]
+  );
+  res.json({ ok: true, linked_visit_count: rows.length });
 });
 
 // ===================== SALES EXECUTIVE'S OWN DASHBOARD =====================

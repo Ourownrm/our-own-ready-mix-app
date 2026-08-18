@@ -23,7 +23,11 @@ import supplyRequestsRoutes from "./routes/supplyRequests.js";
 import salesRoutes from "./routes/sales.js";
 import complianceRoutes from "./routes/compliance.js";
 import notificationsRoutes from "./routes/notifications.js";
-import { checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries, checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests } from "./lib/scheduledChecks.js";
+import trackingRoutes from "./routes/tracking.js";
+import {
+  checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
+  checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
+} from "./lib/scheduledChecks.js";
 
 dotenv.config();
 
@@ -59,6 +63,9 @@ app.use("/api/supply-requests", supplyRequestsRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/compliance", complianceRoutes);
 app.use("/api/notifications", notificationsRoutes);
+// Deliberately NOT behind requireAuth — this is the public, token-scoped
+// customer tracking link (see routes/tracking.js for why that's safe).
+app.use("/api/track", trackingRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff
@@ -83,4 +90,5 @@ setInterval(() => {
   checkBatchingDelayAfterSiteReady().catch((err) => console.error("Batching-delay-after-site-ready check failed:", err));
   checkFollowupsDue().catch((err) => console.error("Follow-ups-due check failed:", err));
   checkPendingSupplyRequests().catch((err) => console.error("Pending-supply-requests check failed:", err));
+  checkGeofenceEvents().catch((err) => console.error("Geofence-events check failed:", err));
 }, 5 * 60 * 1000);

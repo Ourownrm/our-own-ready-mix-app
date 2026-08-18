@@ -44,6 +44,12 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
          MAX(event_time) FILTER (WHERE event_type = 'unloading_completed') AS site_out_at,
          MAX(event_time) FILTER (WHERE event_type = 'returned_to_plant') AS plant_in_at
        FROM trip_events GROUP BY ticket_id
+     ),
+     geofence_hints AS (
+       SELECT ticket_id,
+         MAX(detected_at) FILTER (WHERE event_type = 'left_plant') AS hint_plant_out_at,
+         MAX(detected_at) FILTER (WHERE event_type = 'returned_to_plant') AS hint_plant_in_at
+       FROM geofence_events GROUP BY ticket_id
      )
      SELECT dt.id, dt.ticket_number, dt.status, dt.created_at, dt.ticket_date,
             t.truck_number, t.id AS truck_id,
@@ -54,7 +60,11 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
             tap.amount AS allowance_paid,
             (co.assigned_site_supervisor_id IS NULL) AS no_site_supervisor,
             sup.name AS site_supervisor_name,
-            ts.plant_out_at, ts.site_in_at, ts.site_out_at, ts.plant_in_at
+            ts.plant_out_at, ts.site_in_at, ts.site_out_at, ts.plant_in_at,
+            -- Only meaningful while the real stage is still unconfirmed — once
+            -- the driver taps it for real, the earlier hint no longer matters.
+            CASE WHEN ts.plant_out_at IS NULL THEN gh.hint_plant_out_at END AS hint_plant_out_at,
+            CASE WHEN ts.plant_in_at IS NULL THEN gh.hint_plant_in_at END AS hint_plant_in_at
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN customer_orders co ON co.id = dt.order_id
@@ -63,6 +73,7 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
      LEFT JOIN users sup ON sup.id = co.assigned_site_supervisor_id
      LEFT JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
      LEFT JOIN ticket_stages ts ON ts.ticket_id = dt.id
+     LEFT JOIN geofence_hints gh ON gh.ticket_id = dt.id
      LEFT JOIN trip_allowance_payouts tap ON tap.ticket_id = dt.id
      WHERE dt.driver_id = $1
        AND (

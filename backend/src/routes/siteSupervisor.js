@@ -15,9 +15,26 @@ router.use(requireAuth, requireRole("site_supervisor"));
 // stuck-trip bug already fixed for drivers, just never fixed here too.
 router.get("/my-deliveries", async (req, res) => {
   const { rows } = await query(
-    `SELECT dt.id, dt.ticket_number, dt.status, dt.ticket_date, s.name AS site_name, c.name AS customer_name,
+    `WITH ticket_stages AS (
+       SELECT ticket_id,
+         MAX(event_time) FILTER (WHERE event_type = 'reached_site') AS site_in_at,
+         MAX(event_time) FILTER (WHERE event_type = 'unloading_completed') AS site_out_at
+       FROM trip_events GROUP BY ticket_id
+     ),
+     geofence_hints AS (
+       SELECT ticket_id,
+         MAX(detected_at) FILTER (WHERE event_type = 'reached_site') AS hint_reached_site_at,
+         MAX(detected_at) FILTER (WHERE event_type = 'left_site') AS hint_left_site_at
+       FROM geofence_events GROUP BY ticket_id
+     )
+     SELECT dt.id, dt.ticket_number, dt.status, dt.ticket_date, s.name AS site_name, c.name AS customer_name,
             m.name AS mix_grade_name, dt.loaded_quantity_m3,
-            t.truck_number, u.name AS driver_name
+            t.truck_number, u.name AS driver_name,
+            -- Only meaningful while the real stage is still unconfirmed — once
+            -- the supervisor taps arrival/unloading-complete for real, the
+            -- earlier geofence hint no longer matters.
+            CASE WHEN ts.site_in_at IS NULL THEN gh.hint_reached_site_at END AS hint_reached_site_at,
+            CASE WHEN ts.site_out_at IS NULL THEN gh.hint_left_site_at END AS hint_left_site_at
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN sites s ON s.id = co.site_id
@@ -25,6 +42,8 @@ router.get("/my-deliveries", async (req, res) => {
      JOIN mix_grades m ON m.id = co.mix_grade_id
      LEFT JOIN trucks t ON t.id = dt.truck_id
      LEFT JOIN users u ON u.id = dt.driver_id
+     LEFT JOIN ticket_stages ts ON ts.ticket_id = dt.id
+     LEFT JOIN geofence_hints gh ON gh.ticket_id = dt.id
      WHERE co.assigned_site_supervisor_id = $1
        AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
      ORDER BY dt.ticket_date, dt.created_at`,
@@ -103,13 +122,38 @@ router.post("/orders/:orderId/confirm-pump-departure", async (req, res) => {
   res.json(rows[0]);
 });
 
+// Distance in meters between two lat/lng points (small-scale approximation —
+// fine at the few-hundred-metre range this is used for; the real precision
+// work happens in Postgres's geo_distance_m for the scheduled geofence check).
+function roughDistanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
 // Site Supervisor confirms the site is ready to receive concrete — required
 // once per order before the Plant Operator can start batching. If this is
 // happening after the scheduled batching time, a reason is required.
+//
+// Also captures the Supervisor's own device location at this exact moment,
+// if given — 99.9% of the time this tap happens from the actual site, which
+// makes it a fresher, more precise geofence anchor for auto-detecting truck
+// arrival than the site's own saved coordinate (which can be stale, or just
+// a rough pin for a large site). Sanity-checked against the site's saved
+// coordinate (when one exists): if the tap location is implausibly far from
+// it, it's still recorded but flagged suspect and NOT used as the geofence
+// anchor — the scheduled check falls back to the site's own coordinate
+// instead of trusting a reading that's probably wrong (e.g. confirmed before
+// actually leaving for site).
 router.post("/orders/:orderId/confirm-site-ready", async (req, res) => {
   const { rows: check } = await query(
-    `SELECT scheduled_batching_time, (order_date + scheduled_batching_time) < now() AS is_late
-     FROM customer_orders WHERE id = $1 AND assigned_site_supervisor_id = $2`,
+    `SELECT co.scheduled_batching_time, (co.order_date + co.scheduled_batching_time) < now() AS is_late,
+            s.latitude AS site_latitude, s.longitude AS site_longitude
+     FROM customer_orders co JOIN sites s ON s.id = co.site_id
+     WHERE co.id = $1 AND co.assigned_site_supervisor_id = $2`,
     [req.params.orderId, req.user.id]
   );
   if (!check.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
@@ -117,13 +161,23 @@ router.post("/orders/:orderId/confirm-site-ready", async (req, res) => {
     return res.status(400).json({ error: "This is past the scheduled batching time — a reason for the delay is required." });
   }
 
+  const { latitude, longitude } = req.body;
+  let suspect = false;
+  if (latitude != null && longitude != null && check[0].site_latitude != null && check[0].site_longitude != null) {
+    const distance = roughDistanceMeters(latitude, longitude, check[0].site_latitude, check[0].site_longitude);
+    suspect = distance > 500; // implausibly far from the site's own saved point
+  }
+
   const { rows } = await query(
     `UPDATE customer_orders SET site_ready_confirmed = true, site_ready_confirmed_by = $1, site_ready_confirmed_at = now(),
        site_ready_delay_reason = COALESCE($2, site_ready_delay_reason),
        site_ready_delay_reason_by = CASE WHEN $2 IS NOT NULL THEN $1 ELSE site_ready_delay_reason_by END,
-       site_ready_delay_reason_at = CASE WHEN $2 IS NOT NULL THEN now() ELSE site_ready_delay_reason_at END
+       site_ready_delay_reason_at = CASE WHEN $2 IS NOT NULL THEN now() ELSE site_ready_delay_reason_at END,
+       site_ready_latitude = COALESCE($4, site_ready_latitude),
+       site_ready_longitude = COALESCE($5, site_ready_longitude),
+       site_ready_location_suspect = $6
      WHERE id = $3 AND assigned_site_supervisor_id = $1 RETURNING *`,
-    [req.user.id, req.body.delay_reason || null, req.params.orderId]
+    [req.user.id, req.body.delay_reason || null, req.params.orderId, latitude ?? null, longitude ?? null, suspect]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found or not assigned to you." });
   res.json(rows[0]);

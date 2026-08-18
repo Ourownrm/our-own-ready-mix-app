@@ -225,6 +225,201 @@ export async function checkFollowupsDue() {
   return rows;
 }
 
+// ===================== GEOFENCE-BASED TRUCK STATUS DETECTION =====================
+// Compares each active trip's most recent GPS pings against fixed points
+// (the plant, and the Site Supervisor's own location captured when they
+// confirmed site-ready — falling back to the site's own saved coordinates)
+// to catch a truck arriving/leaving without anyone remembering to tap a
+// button. Deliberately additive: this writes to `geofence_events`, a
+// separate table from `trip_events` — it never touches the real
+// confirmation flow (driver.js's hasStage/trip_events gating, invoicing,
+// trip-allowance payout, etc. all stay exactly as they were). All this does
+// is record a candidate detected time and nudge the right person to make
+// the real, human-confirmed tap — same "suggest, don't auto-decide"
+// principle as everywhere else money or status changes in this app.
+//
+// Requires the 2 most recent pings (within the last 15 minutes) to agree,
+// so a single noisy/boundary reading can't fire a false detection.
+const RECENT_PING_WINDOW = "15 minutes";
+
+// The site-ready anchor (captured from the Site Supervisor's own device when
+// they confirmed site-ready) is preferred over the site's saved coordinate —
+// but only when it wasn't flagged suspect (implausibly far from the site's
+// own saved point at capture time, see siteSupervisor.js). A suspect anchor
+// falls back to the plain site coordinate instead of being trusted.
+const SITE_ANCHOR_LAT = "COALESCE(CASE WHEN co.site_ready_location_suspect THEN NULL ELSE co.site_ready_latitude END, s.latitude)";
+const SITE_ANCHOR_LNG = "COALESCE(CASE WHEN co.site_ready_location_suspect THEN NULL ELSE co.site_ready_longitude END, s.longitude)";
+
+async function detectAndNotify({ eventType, sql, params, buildMessage, pushTo }) {
+  const { rows } = await query(sql, params);
+  for (const r of rows) {
+    const { rows: inserted } = await query(
+      `INSERT INTO geofence_events (ticket_id, event_type, latitude, longitude)
+       VALUES ($1, $2, $3, $4) ON CONFLICT (ticket_id, event_type) DO NOTHING RETURNING id`,
+      [r.ticket_id, eventType, r.latitude, r.longitude]
+    );
+    if (!inserted.length) continue; // already detected earlier — don't re-notify
+    const { title, body, role, userId, url } = buildMessage(r);
+    await query(
+      `INSERT INTO notifications (recipient_role, recipient_id, ticket_id, type, message)
+       VALUES ($1, $2, $3, 'geofence_hint', $4)`,
+      [role, userId || null, r.ticket_id, body]
+    );
+    if (userId) await pushToUser(userId, { title, body, url });
+    else await pushToRole(role, { title, body, url });
+  }
+  return rows;
+}
+
+export async function checkGeofenceEvents() {
+  const results = [];
+
+  // Plant Out — driver's ping has moved outside the plant radius but they
+  // never tapped "Plant Out" themselves.
+  results.push(await detectAndNotify({
+    eventType: "left_plant",
+    sql: `
+      WITH plant AS (SELECT latitude, longitude, geofence_radius_m FROM plant_locations WHERE is_active LIMIT 1),
+      recent AS (
+        SELECT ticket_id, latitude, longitude,
+               ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY recorded_at DESC) AS rn
+        FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
+      )
+      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude
+      FROM delivery_tickets dt
+      JOIN trucks t ON t.id = dt.truck_id
+      JOIN plant ON true
+      JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
+      WHERE dt.ticket_date = CURRENT_DATE
+        AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
+        AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = dt.id AND te.event_type = 'left_plant')
+        AND (SELECT COUNT(*) FROM recent WHERE ticket_id = dt.id AND rn <= 2
+               AND geo_distance_m(latitude, longitude, plant.latitude, plant.longitude) > plant.geofence_radius_m) = 2`,
+    params: [],
+    buildMessage: (r) => ({
+      title: "Looks like you've left the plant",
+      body: `${r.ticket_number} (${r.truck_number}) — tap to log Plant Out`,
+      role: "driver", userId: r.driver_id, url: "/driver",
+    }),
+  }));
+
+  // Site In — driver's ping is now inside the site-ready anchor point (or
+  // the site's own saved coordinate if no fresher one was captured), and
+  // arrival hasn't been confirmed yet. Notifies whoever actually owns that
+  // confirmation: the assigned Site Supervisor, or the driver themselves on
+  // a self-service site — same split used everywhere else in this app.
+  results.push(await detectAndNotify({
+    eventType: "reached_site",
+    sql: `
+      WITH recent AS (
+        SELECT ticket_id, latitude, longitude,
+               ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY recorded_at DESC) AS rn
+        FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
+      )
+      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude,
+             co.assigned_site_supervisor_id
+      FROM delivery_tickets dt
+      JOIN trucks t ON t.id = dt.truck_id
+      JOIN customer_orders co ON co.id = dt.order_id
+      JOIN sites s ON s.id = co.site_id
+      JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
+      WHERE dt.ticket_date = CURRENT_DATE
+        AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
+        AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = dt.id AND te.event_type = 'reached_site')
+        AND ${SITE_ANCHOR_LAT} IS NOT NULL
+        AND (SELECT COUNT(*) FROM recent re WHERE re.ticket_id = dt.id AND re.rn <= 2
+               AND geo_distance_m(re.latitude, re.longitude, ${SITE_ANCHOR_LAT}, ${SITE_ANCHOR_LNG})
+                   <= COALESCE(s.geofence_radius_m, 150)) = 2`,
+    params: [],
+    buildMessage: (r) => r.assigned_site_supervisor_id
+      ? {
+          title: "Truck appears to have reached site",
+          body: `${r.truck_number} — confirm arrival for ${r.ticket_number}`,
+          role: "site_supervisor", userId: r.assigned_site_supervisor_id, url: "/site-supervisor",
+        }
+      : {
+          title: "Looks like you've reached site",
+          body: `${r.ticket_number} — tap to confirm Site In`,
+          role: "driver", userId: r.driver_id, url: "/driver",
+        },
+  }));
+
+  // Left site — ticket reached site (and may or may not have started
+  // unloading — most will have, by the time they actually leave) but never
+  // got unloading_completed, and the driver's ping has now moved back
+  // outside the site radius. This is a nudge only — it can't tell "finished
+  // unloading" from "left without finishing," it just flags that the truck
+  // is no longer physically there so someone closes the trip out properly.
+  results.push(await detectAndNotify({
+    eventType: "left_site",
+    sql: `
+      WITH recent AS (
+        SELECT ticket_id, latitude, longitude,
+               ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY recorded_at DESC) AS rn
+        FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
+      )
+      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude,
+             co.assigned_site_supervisor_id
+      FROM delivery_tickets dt
+      JOIN trucks t ON t.id = dt.truck_id
+      JOIN customer_orders co ON co.id = dt.order_id
+      JOIN sites s ON s.id = co.site_id
+      JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
+      WHERE dt.ticket_date >= CURRENT_DATE - INTERVAL '2 days'
+        AND dt.status IN ('reached_site', 'unloading')
+        AND EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = dt.id AND te.event_type = 'reached_site')
+        AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = dt.id AND te.event_type = 'unloading_completed')
+        AND ${SITE_ANCHOR_LAT} IS NOT NULL
+        AND (SELECT COUNT(*) FROM recent re WHERE re.ticket_id = dt.id AND re.rn <= 2
+               AND geo_distance_m(re.latitude, re.longitude, ${SITE_ANCHOR_LAT}, ${SITE_ANCHOR_LNG})
+                   > COALESCE(s.geofence_radius_m, 150)) = 2`,
+    params: [],
+    buildMessage: (r) => r.assigned_site_supervisor_id
+      ? {
+          title: "Truck appears to have left site",
+          body: `${r.truck_number} — confirm unloading is complete for ${r.ticket_number}`,
+          role: "site_supervisor", userId: r.assigned_site_supervisor_id, url: "/site-supervisor",
+        }
+      : {
+          title: "Looks like you've left site",
+          body: `${r.ticket_number} — confirm Site Out if unloading's done`,
+          role: "driver", userId: r.driver_id, url: "/driver",
+        },
+  }));
+
+  // Plant In — driver has an open trip and their ping is back inside the
+  // plant radius, but Plant In was never tapped.
+  results.push(await detectAndNotify({
+    eventType: "returned_to_plant",
+    sql: `
+      WITH plant AS (SELECT latitude, longitude, geofence_radius_m FROM plant_locations WHERE is_active LIMIT 1),
+      recent AS (
+        SELECT ticket_id, latitude, longitude,
+               ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY recorded_at DESC) AS rn
+        FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
+      )
+      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude
+      FROM delivery_tickets dt
+      JOIN trucks t ON t.id = dt.truck_id
+      JOIN plant ON true
+      JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
+      WHERE dt.ticket_date = CURRENT_DATE
+        AND dt.status NOT IN ('cancelled')
+        AND EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = dt.id AND te.event_type = 'left_plant')
+        AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = dt.id AND te.event_type = 'returned_to_plant')
+        AND (SELECT COUNT(*) FROM recent WHERE ticket_id = dt.id AND rn <= 2
+               AND geo_distance_m(latitude, longitude, plant.latitude, plant.longitude) <= plant.geofence_radius_m) = 2`,
+    params: [],
+    buildMessage: (r) => ({
+      title: "Looks like you're back at the plant",
+      body: `${r.ticket_number} (${r.truck_number}) — tap to log Plant In`,
+      role: "driver", userId: r.driver_id, url: "/driver",
+    }),
+  }));
+
+  return results.flat();
+}
+
 // Safety net for supply requests still pending after a while — the
 // at-creation push only fires once, and if Manager hadn't enabled
 // notifications yet (or just missed it), the request could otherwise sit

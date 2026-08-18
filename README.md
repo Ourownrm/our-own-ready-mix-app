@@ -2788,3 +2788,72 @@ since they don't use the same Reports menu structure as Admin/Manager.
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Ninety-first round (App 104 / Ver. 9.14)
+
+### Geofence-based arrival/departure hints — additive, never replacing manual confirmation
+Built out the design discussed and approved last round: when a Site Supervisor taps
+Site Ready, their device's own location (captured 99.9% of the time actually standing
+at site) is saved as a fresher geofence anchor than the site's own saved coordinate.
+If that tap location is implausibly far (>500m) from the site's saved point, it's
+still recorded but flagged suspect, and the geofence check quietly falls back to the
+site's own coordinate instead of trusting a reading that's probably wrong. A new
+admin-managed Plant Location (Administrator → Masters → Plant Location, with a
+"use my current location" button) gives the same treatment to the plant end.
+
+A scheduled check (every 5 minutes, alongside the existing delay/compliance checks)
+compares each active trip's last two GPS pings against these geofence anchors and, on
+a consistent in/out transition, writes a `geofence_events` row and a nudge
+notification — never a `trip_events` row, never a `delivery_tickets.status` change.
+Drivers see "Looks like you left/reached the plant — tap to confirm" banners on their
+trip card; Site Supervisors see the equivalent for site arrival/departure. Every hint
+disappears the instant the real stage is confirmed for real, and nothing here alters
+the invoicing, trip-allowance, or stage-gating logic those confirmations already
+drive — this is a suggestion layer sitting entirely alongside the existing
+human-confirms system, exactly as scoped.
+
+### Sales visit — customer-name linking made a real, working screen
+The gap flagged last round (a new prospect's name gets typed in on the spot, and
+later never gets tied back to the real customer once one is created) now has an
+actual fix. The visit form's customer field is a live-filtered suggestion list as you
+type, with "+ New customer" and a fallback "browse full list" toggle — but the bigger
+piece is Sales Performance's new "Unlinked visit names" panel: every distinct
+unmatched name across all visits, with visit count, last contact, and a one-tap
+"link to customer" that retroactively updates every visit under that name at once.
+
+### Visit follow-up outcome — Won / Lost / Closed
+Follow-Ups Due now carries a Won/Lost/Closed picker per visit. Lost and Closed
+require a reason, pulled from a new admin-managed list (seeded with Lost to
+competitor / Lost on price / Not interested, and Project delayed / Project cancelled
+/ Budget not approved) — optional notes on top. Marking an outcome closes out every
+still-pending follow-up generated from that visit in one action, so a rep doesn't
+have to hunt down and individually dismiss three related tasks.
+
+### Customer tracking link — mockup, then the real thing, plus admin control
+Built the mockup first (order header, live progress bar, per-truck stage cards) to
+confirm the shape before coding. The real page is a public, unauthenticated
+`/track/:token` route — the token itself is the entire access boundary, no login, no
+listing, so one customer's link can never expose a second order or a second
+customer's data. Manager/Administrator get a panel on the order detail view to
+generate, share (native share sheet with clipboard/prompt fallback), or revoke the
+link. Per this round's request: generating a new link automatically revokes whatever
+link came before it for that order, so a link accidentally sent to the wrong person
+is neutralized the moment a fresh one is issued — no separate "revoke" step required,
+though a manual revoke button exists too. Links also stay valid for 3 hours after the
+order is closed/completed/cancelled (a new `terminal_at` timestamp drives this), so a
+customer checking shortly after delivery isn't staring at a dead link. Past that
+window — or on a revoked link — the page shows a plain, contact-us message rather
+than an error.
+
+### Migration note
+Run `/setup` after deploying. New tables: `plant_locations`, `geofence_events`,
+`order_tracking_links`, `visit_outcome_reasons` (seeded with default Lost/Closed
+reasons). New columns: `customer_orders.site_ready_latitude/longitude/location_suspect`
+and `customer_orders.terminal_at`; `visit_followups.outcome/outcome_reason_id/
+outcome_notes/outcome_by/outcome_at`. Also backfilled `schema.sql` itself, which had
+drifted from what `/setup`'s migrations actually built on a live database — a fresh
+install now correctly includes `visit_followups` and the full `customer_visits`
+column set (`site_id`, `is_new_project`, `contact_number`, `answers`) without needing
+`/setup` to patch it in afterward. None of this touches `trip_events`,
+`delivery_tickets.status`, or any existing confirmation/invoicing logic — every new
+column and table is additive.

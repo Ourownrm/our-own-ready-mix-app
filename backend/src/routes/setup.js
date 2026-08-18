@@ -749,6 +749,97 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (Plant Operator batching delay reason).");
 
+    // Geofence-based arrival/departure detection (Site Supervisor's
+    // site-ready tap as a geofence anchor, plus a saved plant location) —
+    // purely additive hints, never auto-confirmed. See
+    // lib/scheduledChecks.js's checkGeofenceEvents.
+    await pool.query(`
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_latitude NUMERIC(10,7);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_longitude NUMERIC(10,7);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS site_ready_location_suspect BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS terminal_at TIMESTAMPTZ;
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS plant_locations (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL DEFAULT 'Main plant',
+        latitude NUMERIC(10,7) NOT NULL,
+        longitude NUMERIC(10,7) NOT NULL,
+        geofence_radius_m INTEGER NOT NULL DEFAULT 200,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS geofence_events (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER REFERENCES delivery_tickets(id) NOT NULL,
+        event_type VARCHAR(30) NOT NULL,
+        detected_at TIMESTAMPTZ DEFAULT now(),
+        latitude NUMERIC(10,7),
+        longitude NUMERIC(10,7),
+        UNIQUE (ticket_id, event_type)
+      );
+    `);
+    // Great-circle distance in meters — IMMUTABLE so it's safe to use in
+    // index expressions later if that's ever needed; used today by the
+    // scheduled geofence check as a plain function call.
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION geo_distance_m(lat1 NUMERIC, lon1 NUMERIC, lat2 NUMERIC, lon2 NUMERIC)
+      RETURNS NUMERIC AS $$
+        SELECT 6371000 * 2 * ASIN(SQRT(
+          POWER(SIN(RADIANS(lat2 - lat1) / 2), 2) +
+          COS(RADIANS(lat1)) * COS(RADIANS(lat2)) * POWER(SIN(RADIANS(lon2 - lon1) / 2), 2)
+        ));
+      $$ LANGUAGE SQL IMMUTABLE;
+    `);
+    log.push("Schema migration applied (geofence-based arrival/departure detection — plant location, geofence events, site-ready GPS capture).");
+
+    // Customer tracking links — unauthenticated, token-scoped, per-order.
+    // Creating a new link auto-revokes any prior active one for the same
+    // order (see routes/orders.js), so a link shared to the wrong person can
+    // be invalidated by simply generating a fresh one.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS order_tracking_links (
+        id SERIAL PRIMARY KEY,
+        order_id INTEGER REFERENCES customer_orders(id) NOT NULL,
+        token VARCHAR(64) UNIQUE NOT NULL,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT now(),
+        revoked_at TIMESTAMPTZ,
+        revoked_by INTEGER REFERENCES users(id)
+      );
+    `);
+    log.push("Schema migration applied (customer order tracking links).");
+
+    // Visit follow-up outcome — Won/Lost/Closed, with an admin-managed
+    // reason list for Lost/Closed so the sales performance report can show
+    // *why*, not just that it didn't convert.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS visit_outcome_reasons (
+        id SERIAL PRIMARY KEY,
+        outcome_type VARCHAR(20) NOT NULL CHECK (outcome_type IN ('lost', 'closed')),
+        reason VARCHAR(150) NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT true
+      );
+    `);
+    await pool.query(`
+      INSERT INTO visit_outcome_reasons (outcome_type, reason)
+      SELECT * FROM (VALUES
+        ('lost', 'Lost to competitor'), ('lost', 'Lost on price'), ('lost', 'Not interested'),
+        ('closed', 'Project delayed/on hold'), ('closed', 'Project cancelled'), ('closed', 'Budget not approved')
+      ) AS v(outcome_type, reason)
+      WHERE NOT EXISTS (SELECT 1 FROM visit_outcome_reasons)
+    `);
+    await pool.query(`
+      ALTER TABLE visit_followups ADD COLUMN IF NOT EXISTS outcome VARCHAR(20);
+      ALTER TABLE visit_followups ADD COLUMN IF NOT EXISTS outcome_reason_id INTEGER REFERENCES visit_outcome_reasons(id);
+      ALTER TABLE visit_followups ADD COLUMN IF NOT EXISTS outcome_notes TEXT;
+      ALTER TABLE visit_followups ADD COLUMN IF NOT EXISTS outcome_by INTEGER REFERENCES users(id);
+      ALTER TABLE visit_followups ADD COLUMN IF NOT EXISTS outcome_at TIMESTAMPTZ;
+    `);
+    log.push("Schema migration applied (visit follow-up outcome tracking — Won/Lost/Closed with reasons).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomBytes } from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { pushToRole } from "../lib/push.js";
@@ -37,7 +38,7 @@ router.post("/:id/close", requireRole("manager", "administrator"), async (req, r
   const { reason } = req.body;
   const { rows } = await query(
     `UPDATE customer_orders
-     SET status = 'closed', closed_by = $1, closed_at = now(),
+     SET status = 'closed', closed_by = $1, closed_at = now(), terminal_at = now(),
          closure_reason = COALESCE($2, closure_reason)
      WHERE id = $3 RETURNING *`,
     [req.user.id, reason || null, req.params.id]
@@ -329,13 +330,60 @@ router.post("/:orderId/site-ready-delay-reason", requireRole("manager", "adminis
 // to completed; the supervisor's signal alone never does.
 router.post("/:orderId/confirm-completion", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
-    `UPDATE customer_orders SET status = 'completed'
+    `UPDATE customer_orders SET status = 'completed', terminal_at = now()
      WHERE id = $1 AND status NOT IN ('cancelled', 'closed', 'completed')
      RETURNING *`,
     [req.params.orderId]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found or already closed out." });
   res.json(rows[0]);
+});
+
+// ===================== CUSTOMER-FACING TRACKING LINK =====================
+// A shareable, single-order link (no login) the customer's own site agent can
+// open to see just that order's trucks — nothing else, not even a different
+// order for the same customer.
+function newToken() {
+  return randomBytes(24).toString("base64url");
+}
+
+router.get("/:orderId/tracking-link", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, token, created_at FROM order_tracking_links
+     WHERE order_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+    [req.params.orderId]
+  );
+  res.json({ active_link: rows[0] || null });
+});
+
+// Creating a new link automatically revokes whatever link was active before —
+// this is the actual fix for "shared it to the wrong person by mistake": there
+// is deliberately no way for two links to be valid for the same order at
+// once, so making a fresh one is itself the safe way to kill the old one.
+router.post("/:orderId/tracking-link", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows: orderCheck } = await query("SELECT id FROM customer_orders WHERE id = $1", [req.params.orderId]);
+  if (!orderCheck.length) return res.status(404).json({ error: "Order not found." });
+
+  await query(
+    `UPDATE order_tracking_links SET revoked_at = now(), revoked_by = $1
+     WHERE order_id = $2 AND revoked_at IS NULL`,
+    [req.user.id, req.params.orderId]
+  );
+  const { rows } = await query(
+    `INSERT INTO order_tracking_links (order_id, token, created_by) VALUES ($1, $2, $3) RETURNING id, token, created_at`,
+    [req.params.orderId, newToken(), req.user.id]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// Revoke without replacing — for "just kill it, I'll decide about a new one later."
+router.post("/:orderId/tracking-link/revoke", requireRole("manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `UPDATE order_tracking_links SET revoked_at = now(), revoked_by = $1
+     WHERE order_id = $2 AND revoked_at IS NULL RETURNING id`,
+    [req.user.id, req.params.orderId]
+  );
+  res.json({ ok: true, revoked_count: rows.length });
 });
 
 // Completed trips today, with the full timeline: batching (ticket created),
