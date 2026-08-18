@@ -87,17 +87,36 @@ export default function SiteSupervisor() {
     }
   }
 
+  // 99.9% of the time this tap happens standing at the actual site — capturing
+  // where the device is right now gives the geofence-based arrival detection a
+  // fresher, more precise anchor than the site's own saved (and sometimes
+  // stale or rough) coordinate. Best-effort: if location isn't available or
+  // permission isn't granted, site-ready confirmation still proceeds exactly
+  // as before — this is a bonus signal, never a requirement.
+  function currentLocation() {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve({});
+      const timer = setTimeout(() => resolve({}), 4000);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => { clearTimeout(timer); resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); },
+        () => { clearTimeout(timer); resolve({}); },
+        { timeout: 4000, maximumAge: 60000 }
+      );
+    });
+  }
+
   async function confirmSiteReady(orderId) {
     setError("");
+    const loc = await currentLocation();
     try {
-      await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST" });
+      await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST", body: loc });
       load();
     } catch (err) {
       if (err.message.includes("reason for the delay is required")) {
         const reason = window.prompt("This is past the scheduled batching time — what caused the delay?");
         if (!reason) return;
         try {
-          await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST", body: { delay_reason: reason } });
+          await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST", body: { delay_reason: reason, ...loc } });
           load();
         } catch (err2) {
           setError(err2.message);
@@ -236,6 +255,21 @@ export default function SiteSupervisor() {
               {selected.truck_number || "No truck"} &middot; {selected.driver_name || "No driver"}
             </div>
             <div style={{ textAlign: "center", fontSize: 16, fontWeight: 600, margin: "4px 0 18px" }}>{statusLabel(selected.status)}</div>
+
+            {/* Geofence hints — GPS movement suggests this happened, but
+                nothing is auto-confirmed; purely a nudge to tap the real
+                stage below. Server only sends these while the real
+                trip_events timestamp is still null. */}
+            {selected.hint_reached_site_at && (
+              <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
+                Looks like the truck reached site around {new Date(selected.hint_reached_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — tap <strong>Arrival</strong> below to confirm.
+              </div>
+            )}
+            {selected.hint_left_site_at && (
+              <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
+                Looks like the truck left site around {new Date(selected.hint_left_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — if unloading is done, tap <strong>Completion</strong> below to confirm.
+              </div>
+            )}
 
             <SupervisorStageTracker status={selected.status} onAct={act} />
 

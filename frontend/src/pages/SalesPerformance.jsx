@@ -17,6 +17,10 @@ export default function SalesPerformance() {
     apiRequest("/sales/visits").then(setVisits).catch((err) => setError(err.message));
   }, []);
 
+  function reload() {
+    apiRequest("/sales/visits").then(setVisits).catch((err) => setError(err.message));
+  }
+
   return (
     <>
       <TopBar title="Sales Performance" />
@@ -71,6 +75,8 @@ export default function SalesPerformance() {
           )}
         </div>
 
+        <UnlinkedVisitNames onLinked={reload} />
+
         <div className="card">
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Customer visits report</div>
           {visits.length === 0 ? (
@@ -104,6 +110,102 @@ export default function SalesPerformance() {
         </div>
       </div>
     </>
+  );
+}
+
+// Visit names never linked to a real customer record — the sales exec only
+// knew who/what they visited, not the eventual billing identity. Lets Admin/
+// Manager reconcile once the real customer is known (e.g. once a booking or
+// order actually gets created against it), rather than that guess sitting
+// unresolved forever.
+function UnlinkedVisitNames({ onLinked }) {
+  const [rows, setRows] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [picked, setPicked] = useState({});
+  const [busyKey, setBusyKey] = useState(null);
+  const [error, setError] = useState("");
+  const [collapsed, setCollapsed] = useState(true);
+
+  function load() {
+    Promise.all([apiRequest("/sales/visits/unlinked-names"), apiRequest("/master/customers")])
+      .then(([u, c]) => { setRows(u); setCustomers(c); })
+      .catch((err) => setError(err.message));
+  }
+  useEffect(() => { load(); }, []);
+
+  async function link(nameKey, visitedName) {
+    const customerId = picked[nameKey];
+    if (!customerId) { setError("Pick a customer to link first."); return; }
+    setBusyKey(nameKey); setError("");
+    try {
+      await apiRequest("/sales/visits/link-customer", { method: "POST", body: { visited_name: visitedName, customer_id: customerId } });
+      load();
+      onLinked?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--amber)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setCollapsed((c) => !c)}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>
+          Unlinked visit names <span className="badge badge-warning">{rows.length}</span>
+        </div>
+        <span style={{ fontSize: 12, color: "var(--slate)" }}>{collapsed ? "Show ▾" : "Hide ▴"}</span>
+      </div>
+      {!collapsed && (
+        <>
+          <div style={{ fontSize: 12, color: "var(--slate)", margin: "6px 0 10px" }}>
+            These visits were logged against a name that was never matched to a real customer record —
+            usually because the exact billing name wasn't known yet at the time of the visit. Link each
+            one to the correct customer once it's known (this updates every past visit under that name).
+          </div>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 8 }}>{error}</div>}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ fontSize: 13 }}>
+              <thead>
+                <tr><th>Visited as</th><th>Visits</th><th>Last visit</th><th>Contact</th><th>Link to</th><th></th></tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.name_key}>
+                    <td>{r.visited_name}</td>
+                    <td>{r.visit_count}</td>
+                    <td>{new Date(r.last_visit_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                    <td>{r.last_contact_person || "–"}{r.last_contact_number ? ` · ${r.last_contact_number}` : ""}</td>
+                    <td>
+                      <select
+                        value={picked[r.name_key] || ""}
+                        onChange={(e) => setPicked((p) => ({ ...p, [r.name_key]: e.target.value }))}
+                        style={{ fontSize: 12 }}
+                      >
+                        <option value="">Select customer...</option>
+                        {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        disabled={busyKey === r.name_key}
+                        onClick={() => link(r.name_key, r.visited_name)}
+                        style={{ fontSize: 12, padding: "3px 8px" }}
+                      >
+                        {busyKey === r.name_key ? "..." : "Link"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

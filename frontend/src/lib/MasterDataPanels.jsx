@@ -1242,6 +1242,108 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
   );
 }
 
+// Plant location(s) — the geofence anchor the scheduled check
+// (checkGeofenceEvents in scheduledChecks.js) uses to auto-detect Plant Out /
+// Plant In and nudge drivers to confirm. Exactly one location is "active" at
+// a time; keeping past ones around (inactive) is harmless and lets you swap
+// back if a plant move turns out to be temporary.
+export function PlantLocationsPanel({ setError }) {
+  const [plants, setPlants] = useState([]);
+  const [form, setForm] = useState({ name: "Main plant", latitude: "", longitude: "", geofence_radius_m: 200 });
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setPlants(await apiRequest("/administrator/plant-locations")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  function useMyLocation() {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setForm((f) => ({ ...f, latitude: pos.coords.latitude, longitude: pos.coords.longitude })),
+      () => setError("Couldn't get your current location — enter latitude/longitude manually.")
+    );
+  }
+
+  async function addPlant(e) {
+    e.preventDefault();
+    if (form.latitude === "" || form.longitude === "") {
+      setError("Latitude and longitude are required.");
+      return;
+    }
+    setSaving(true); setError("");
+    try {
+      await apiRequest("/administrator/plant-locations", { method: "POST", body: form });
+      setForm({ name: "Main plant", latitude: "", longitude: "", geofence_radius_m: 200 });
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function setActive(id) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/plant-locations/${id}/set-active`, { method: "POST" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function remove(p) {
+    if (!window.confirm(`Delete plant location "${p.name}"? This can't be undone.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/administrator/plant-locations/${p.id}`, { method: "DELETE" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Plant location (geofence anchor)</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+        Used to auto-detect when a truck leaves or returns to the plant, so drivers get a nudge to confirm Plant Out / Plant In.
+        This never confirms anything by itself — the driver still has to tap it.
+      </div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <table>
+          <thead><tr><th>Name</th><th>Latitude</th><th>Longitude</th><th>Radius (m)</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {plants.map((p) => (
+              <tr key={p.id}>
+                <td>{p.name}</td>
+                <td>{p.latitude}</td>
+                <td>{p.longitude}</td>
+                <td>{p.geofence_radius_m}</td>
+                <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-neutral">Inactive</span>}</td>
+                <td style={{ display: "flex", gap: 6 }}>
+                  {!p.is_active && (
+                    <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => setActive(p.id)}>
+                      Set active
+                    </button>
+                  )}
+                  <button className="btn-danger" style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => remove(p)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {plants.length === 0 && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>No plant location set yet — geofence-based nudges are off until one is added.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <form onSubmit={addPlant} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
+        <div><div style={{ color: "var(--slate)" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Geofence radius (m)</div><input type="number" value={form.geofence_radius_m} onChange={(e) => setForm({ ...form, geofence_radius_m: e.target.value })} /></div>
+        <div><div style={{ color: "var(--slate)" }}>Latitude</div><input type="number" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Longitude</div><input type="number" step="any" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} required /></div>
+        <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>
+          <button type="button" onClick={useMyLocation}>Use my current location</button>
+          <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add plant location"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export function OrdersPanel({ setError, initialEditId }) {
   const [orders, setOrders] = useState([]);
   const [editing, setEditing] = useState(null);

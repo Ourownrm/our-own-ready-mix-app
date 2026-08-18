@@ -1,6 +1,94 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "./api.js";
 
+const OUTCOME_LABEL = { won: "Won", lost: "Lost", closed: "Closed — not pursuing" };
+
+// Compact inline control for "couldn't bag it" — resolves every open
+// follow-up from the same visit at once (that's the actual unit of "did we
+// get the deal or not", not any single reminder task). Leaving this alone
+// entirely is exactly "still active, there's a chance" — no action needed
+// to represent that, it's just what a pending follow-up already means.
+function OutcomePicker({ visitId, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [outcome, setOutcome] = useState("");
+  const [reasons, setReasons] = useState([]);
+  const [reasonId, setReasonId] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (outcome === "lost" || outcome === "closed") {
+      apiRequest(`/sales/visit-outcome-reasons?outcome_type=${outcome}`).then(setReasons).catch(() => setReasons([]));
+      setReasonId("");
+    }
+  }, [outcome]);
+
+  async function save() {
+    if (!outcome) return;
+    if ((outcome === "lost" || outcome === "closed") && !reasonId) { setError("Pick a reason."); return; }
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/sales/visits/${visitId}/outcome`, {
+        method: "POST",
+        body: { outcome, outcome_reason_id: reasonId || null, outcome_notes: notes || null },
+      });
+      setOpen(false);
+      onSaved?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} style={{ fontSize: 10, padding: "2px 7px", color: "var(--slate)" }}>
+        Didn't bag it? Update outcome
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 6, padding: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 6, fontSize: 12 }}>
+      {error && <div style={{ color: "var(--alert-red)", marginBottom: 6 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+        {["won", "lost", "closed"].map((o) => (
+          <button
+            key={o}
+            type="button"
+            onClick={() => setOutcome(o)}
+            style={{ fontSize: 11, padding: "3px 8px", background: outcome === o ? "var(--charcoal)" : undefined, color: outcome === o ? "#fff" : undefined, borderColor: outcome === o ? "var(--charcoal)" : undefined }}
+          >
+            {OUTCOME_LABEL[o]}
+          </button>
+        ))}
+      </div>
+      {(outcome === "lost" || outcome === "closed") && (
+        <select value={reasonId} onChange={(e) => setReasonId(e.target.value)} style={{ width: "100%", marginBottom: 6, fontSize: 12 }}>
+          <option value="">Select reason...</option>
+          {reasons.map((r) => <option key={r.id} value={r.id}>{r.reason}</option>)}
+        </select>
+      )}
+      {outcome && (
+        <input
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Notes (optional)"
+          style={{ width: "100%", marginBottom: 6, fontSize: 12, padding: "5px 7px" }}
+        />
+      )}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button type="button" disabled={!outcome || saving} onClick={save} style={{ fontSize: 11, padding: "3px 8px" }}>
+          {saving ? "Saving..." : "Save outcome"}
+        </button>
+        <button type="button" onClick={() => setOpen(false)} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 // Groups by (date, customer) so several follow-ups for the same visit show
 // as one header with sub-items underneath, instead of repeating the date
 // and customer name on every single line.
@@ -48,6 +136,10 @@ export default function FollowupsDue({ asUser }) {
   const upcoming = rows.filter((r) => new Date(r.due_date) > new Date(today));
 
   function GroupBlock({ group, accentColor }) {
+    // Items in one visual group usually all come from the same visit — the
+    // outcome control operates on that visit's remaining open follow-ups, so
+    // it's shown once per group rather than repeated per line item.
+    const visitId = group.items[0]?.visit_id;
     return (
       <div style={{ borderLeft: `3px solid ${accentColor}`, background: "var(--concrete)", borderRadius: "0 8px 8px 0", padding: "8px 10px", marginBottom: 8, fontSize: 13 }}>
         <div style={{ fontWeight: 600, marginBottom: 4 }}>
@@ -64,6 +156,11 @@ export default function FollowupsDue({ asUser }) {
             </button>
           </div>
         ))}
+        {visitId && (
+          <div style={{ paddingLeft: 10 }}>
+            <OutcomePicker visitId={visitId} onSaved={load} />
+          </div>
+        )}
       </div>
     );
   }

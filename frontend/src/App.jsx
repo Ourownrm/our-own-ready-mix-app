@@ -33,6 +33,7 @@ import ComplianceMonitoring from "./pages/ComplianceMonitoring.jsx";
 import NotificationsPage from "./pages/NotificationsPage.jsx";
 import SalesForecast from "./pages/SalesForecast.jsx";
 import TripTimeCrossCheckPage from "./pages/TripTimeCrossCheckPage.jsx";
+import CustomerTracking from "./pages/CustomerTracking.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -49,6 +50,9 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+
+          {/* Public, no login — reached only via a shared per-order link. */}
+          <Route path="/track/:token" element={<CustomerTracking />} />
 
           <Route path="/driver" element={
             <ProtectedRoute roles={["driver"]}><DriverDuty /></ProtectedRoute>

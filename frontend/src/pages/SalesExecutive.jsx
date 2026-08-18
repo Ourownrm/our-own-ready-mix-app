@@ -905,6 +905,7 @@ function NewVisitForm({ onDone, onCancel }) {
   const [sites, setSites] = useState([]);
   const [customerId, setCustomerId] = useState("");
   const [siteId, setSiteId] = useState("");
+  const [browseAll, setBrowseAll] = useState(false);
   const [visitedName, setVisitedName] = useState("");
   const [visitorType, setVisitorType] = useState("customer");
   const [visitDate, setVisitDate] = useState(new Date().toISOString().slice(0, 10));
@@ -1017,14 +1018,68 @@ function NewVisitForm({ onDone, onCancel }) {
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
             <div>
               <div style={{ color: "var(--slate)" }}>Customer name</div>
-              <input value={visitedName} onChange={(e) => setVisitedName(e.target.value)} placeholder="Search or type a new name" required />
+              <input
+                value={visitedName}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setVisitedName(v);
+                  // If they'd linked a customer and then keep editing away from
+                  // that exact name, the link no longer reflects what's typed —
+                  // unlink rather than silently keep a stale customer_id.
+                  const linked = customers.find((c) => String(c.id) === String(customerId));
+                  if (customerId && linked && linked.name !== v) { setCustomerId(""); setSiteId(""); }
+                }}
+                placeholder="Who did you visit? (type to search existing customers)"
+                required
+                autoComplete="off"
+              />
+              {/* Live suggestions instead of one giant dropdown — this is the
+                  actual fix for the "guessed the wrong billing name" problem:
+                  surfacing a likely existing-customer match while they type,
+                  instead of only offering to browse everyone alphabetically. */}
+              {!customerId && visitedName.trim().length >= 2 && (
+                <div style={{ marginTop: 4 }}>
+                  {customers
+                    .filter((c) => c.name.toLowerCase().includes(visitedName.trim().toLowerCase()))
+                    .slice(0, 5)
+                    .map((c) => (
+                      <div
+                        key={c.id}
+                        onClick={() => { setCustomerId(c.id); setVisitedName(c.name); setSiteId(""); }}
+                        style={{ padding: "6px 8px", fontSize: 12, border: "1px solid var(--border)", borderTop: "none", cursor: "pointer", background: "var(--surface)" }}
+                      >
+                        🔗 Link to existing customer: <strong>{c.name}</strong>
+                      </div>
+                    ))}
+                </div>
+              )}
+              {customerId && (
+                <div style={{ fontSize: 11, color: "var(--signal-green)", marginTop: 4 }}>
+                  ✓ Linked to existing customer — this visit will count toward their record.
+                </div>
+              )}
+              {!customerId && visitedName.trim().length >= 2 && customers.filter((c) => c.name.toLowerCase().includes(visitedName.trim().toLowerCase())).length === 0 && (
+                <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
+                  No matching existing customer — this will be saved as a new, unlinked name. An Admin can link it to the
+                  real billing customer later once that's known (Sales Performance → Unlinked visit names).
+                </div>
+              )}
               <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setSiteId(""); const c = customers.find((x) => String(x.id) === e.target.value); if (c) setVisitedName(c.name); }} style={{ flex: 1 }}>
-                  <option value="">Or link to an existing customer</option>
+                <button type="button" onClick={addNewCustomer} style={{ fontSize: 12, padding: "4px 10px" }}>+ New customer</button>
+                <button type="button" onClick={() => setBrowseAll((b) => !b)} style={{ fontSize: 12, padding: "4px 10px" }}>
+                  {browseAll ? "Hide full list" : "Browse full customer list"}
+                </button>
+              </div>
+              {browseAll && (
+                <select
+                  value={customerId}
+                  onChange={(e) => { setCustomerId(e.target.value); setSiteId(""); const c = customers.find((x) => String(x.id) === e.target.value); if (c) setVisitedName(c.name); }}
+                  style={{ marginTop: 6, width: "100%" }}
+                >
+                  <option value="">Or pick from the full list</option>
                   {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
-                <button type="button" onClick={addNewCustomer} style={{ fontSize: 12, padding: "4px 10px" }}>+ New</button>
-              </div>
+              )}
             </div>
             {customerId && (
               <div>

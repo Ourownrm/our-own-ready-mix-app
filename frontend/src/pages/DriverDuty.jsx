@@ -391,6 +391,21 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
         </div>
       )}
 
+      {/* Geofence hints — the app noticed GPS movement suggesting this stage
+          happened, but nothing is auto-confirmed. Purely a nudge to tap the
+          real button below; disappears the moment that stage is logged for
+          real (server only sends the hint while the real timestamp is null). */}
+      {trip.hint_plant_out_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          Looks like you left the plant around {formatTime(trip.hint_plant_out_at)} — tap <strong>Plant Out</strong> below to confirm.
+        </div>
+      )}
+      {trip.hint_plant_in_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          Looks like you're back at the plant around {formatTime(trip.hint_plant_in_at)} — tap <strong>Plant In</strong> below to confirm.
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "flex-start" }}>
         {STAGES.map((stage, i) => {
           const state = stageState(stage.key);
