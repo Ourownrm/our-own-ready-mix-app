@@ -54,7 +54,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     customer_id, site_id, mix_grade_id, pump_requirement, pump_id,
     site_technician_required, cube_samples_required, assigned_pump_crew,
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-    sales_representative_id, casting_location, pump_departure_time, remarks,
+    sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks,
     pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
   } = req.body;
 
@@ -88,14 +88,14 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-      sales_representative_id, casting_location, pump_departure_time, remarks, created_by,
+      sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
       pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, order_quantity_m3,
-     sales_representative_id || null, casting_location || null, pump_departure_time || null, remarks || null, req.user.id,
+     sales_representative_id || null, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
      pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
      part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0]
   );

@@ -840,6 +840,11 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (visit follow-up outcome tracking — Won/Lost/Closed with reasons).");
 
+    await pool.query(`
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS specified_slump_mm NUMERIC(5,1);
+    `);
+    log.push("Schema migration applied (specified slump added to orders — feeds the Delivery Challan's Workability field).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

@@ -410,6 +410,11 @@ CREATE TABLE customer_orders (
   sales_representative VARCHAR(150),  -- deprecated free-text field, kept for old records only
   sales_representative_id INTEGER REFERENCES salespersons(id),
   casting_location VARCHAR(200),
+  -- Specified/target slump for this order, set at booking time — feeds the
+  -- "Workability" field on the printed Delivery Challan. Distinct from the
+  -- slump actually measured later at plant QC (plant_qc.slump_mm) or on
+  -- arrival at site (site_qc.arrival_slump_mm).
+  specified_slump_mm NUMERIC(5,1),
   pump_departure_time TIME,
   pump_actual_departure_time TIMESTAMPTZ,
   pump_departure_confirmed_by INTEGER REFERENCES users(id),

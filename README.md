@@ -2857,3 +2857,63 @@ column set (`site_id`, `is_new_project`, `contact_number`, `answers`) without ne
 `/setup` to patch it in afterward. None of this touches `trip_events`,
 `delivery_tickets.status`, or any existing confirmation/invoicing logic — every new
 column and table is additive.
+
+## Ninety-second round (App 105 / Ver. 9.15) — Masters menu is duplicated three times, not one
+
+### Fixed: "Plant Location (geofence)" missing from Masters on two of three screens
+Round 91 added the new Plant Location menu entry to `Administrator.jsx` only. Turns out
+the "Masters" dropdown isn't a single shared menu — it's copy-pasted separately into
+`Administrator.jsx`, `Reports.jsx` (the Director's Dashboard — what most Admins actually
+land on and use day to day), and `ManagerDashboard.jsx`. Missed updating the other two,
+so anyone navigating from the Director's Dashboard (the common case) never saw the new
+entry at all, no matter how hard the browser cache was cleared. Added it to `Reports.jsx`
+too (links through to `/administrator?view=plant-locations`, same as its other Masters
+entries do). Left it out of `ManagerDashboard.jsx` on purpose — that menu is already a
+deliberately narrower subset (no Trucks and Pumps, no Sales Persons, no Fuel Stations
+either), matching Plant Location being an Administrator-only screen on the backend.
+
+Worth flagging for future rounds: any new Administrator-only menu item needs to be added
+to all three copies (`Administrator.jsx`, `Reports.jsx`, and — only if it should be
+Manager-visible — `ManagerDashboard.jsx`), not just the Administrator page itself.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Ninety-third round (App 106 / Ver. 9.16) — Delivery Challan PDF
+
+### Added: printable Delivery Challan ("Gate Pass & Delivery Note")
+Administrator → Correct Tickets now has a "Delivery Challan" button on every non-cancelled
+ticket, generating an A4 PDF the driver can carry with the truck before it leaves the
+plant. The layout, field set, fixed mix-design defaults, and the full Terms & Conditions
+text all replicate the company's approved `OORM_DeliveryNote_V2.01.docx` template exactly
+— confirmed with the business over a mock before this round's real implementation. All
+data values render in blue, all labels stay black, matching the template's convention.
+This is a pre-dispatch document by design: the Site Checks section (Time Arrived,
+Workability, Pouring Completed At) and the customer's Received & Accepted signature are
+left blank on the printed page for manual completion at site — nothing on this form is
+collected electronically from the field.
+
+Admin-only for now, per business decision (other roles may get access to this screen
+later). Built with `frontend/src/lib/deliveryChallanPdf.js` using jsPDF's native vector
+drawing API (not html2canvas), so the printed text stays crisp instead of rasterized. New
+backend endpoint `GET /administrator/tickets/:id/challan` (`administrator` role only)
+assembles every field the PDF needs in one call — nothing is stored or pre-rendered
+server-side.
+
+Two computed fields worth noting: Mix Code shows as "OR" + the mix grade name with no
+space (e.g. grade "M30" → "ORM30"), and Method of Pouring reads "With Pump" whenever the
+order's pump requirement isn't `without_pump`, otherwise "Direct" — both are derived at
+print time, not stored. "Delivered Qty" on the form is the sum of every *other* ticket
+already raised against the same order (this ticket's own load is reported separately as
+"This Load"), and "Balance" is Ordered minus that Delivered figure minus This Load —
+correct for a document that accompanies an outbound truck rather than a completed
+delivery.
+
+Also added a new "Specified Slump (mm)" field to Create Order (feeds the challan's
+Workability field) — optional, distinct from the slump actually measured later at plant
+QC or on site arrival.
+
+### Migration note
+Run `/setup` after deploying. Adds `customer_orders.specified_slump_mm` (nullable —
+existing orders are unaffected; the challan just prints Workability blank for tickets
+against orders that predate this column).

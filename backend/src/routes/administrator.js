@@ -763,6 +763,58 @@ router.get("/tickets", requireRole("administrator", "manager"), async (req, res)
   res.json(rows);
 });
 
+// Delivery Challan (Gate Pass & Delivery Note) — printed A4 document handed to
+// the driver before the truck leaves the plant. Admin-only for now (per
+// business decision — other roles may get access later). Returns every field
+// the frontend PDF generator (deliveryChallanPdf.js) needs; the PDF itself is
+// built client-side so there's nothing to store or regenerate server-side.
+router.get("/tickets/:id/challan", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.id, dt.ticket_number, dt.ticket_date, dt.loaded_quantity_m3, dt.created_at,
+            t.truck_number,
+            drv.name AS driver_name,
+            po.name AS plant_operator_name,
+            p.pump_code,
+            co.id AS order_id, co.order_quantity_m3, co.casting_location, co.specified_slump_mm,
+            co.pump_requirement, co.site_contact_number,
+            c.name AS customer_name,
+            s.name AS site_name, s.address AS site_address,
+            m.name AS mix_grade_name
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users drv ON drv.id = dt.driver_id
+     LEFT JOIN users po ON po.id = dt.plant_operator_id
+     LEFT JOIN pumps p ON p.id = dt.pump_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     WHERE dt.id = $1`,
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Ticket not found." });
+  const ticket = rows[0];
+
+  // "Delivered Qty" = quantity already sent out on OTHER tickets against this
+  // same order (this document accompanies an outbound truck, so the current
+  // ticket's own load is reported separately as "This Load", not folded in).
+  const { rows: priorRows } = await query(
+    `SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS delivered_prior_m3
+     FROM delivery_tickets
+     WHERE order_id = $1 AND id != $2 AND status != 'cancelled'`,
+    [ticket.order_id, ticket.id]
+  );
+  const deliveredPrior = Number(priorRows[0].delivered_prior_m3);
+  const ordered = Number(ticket.order_quantity_m3);
+  const thisLoad = Number(ticket.loaded_quantity_m3 || 0);
+
+  res.json({
+    ...ticket,
+    delivered_prior_m3: deliveredPrior,
+    balance_m3: Math.max(0, ordered - deliveredPrior - thisLoad),
+  });
+});
+
 router.patch("/tickets/:id", requireRole("administrator", "manager"), async (req, res) => {
   const { loaded_quantity_m3 } = req.body;
 
