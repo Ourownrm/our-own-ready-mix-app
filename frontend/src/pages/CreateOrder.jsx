@@ -18,6 +18,7 @@ const initialForm = {
   order_quantity_m3: "",
   sales_representative_id: "",
   casting_location: "",
+  specified_slump_mm: "",
   pump_departure_time: "",
   remarks: "",
 };
@@ -207,6 +208,9 @@ export default function CreateOrder({ onDone }) {
         </Field>
         <Field label="Structure / casting location">
           <input type="text" value={form.casting_location} onChange={(e) => set("casting_location", e.target.value)} />
+        </Field>
+        <Field label="Specified Slump (mm)">
+          <input type="number" min="0" step="1" value={form.specified_slump_mm} onChange={(e) => set("specified_slump_mm", e.target.value)} />
         </Field>
         <Field label="Pump departure time">
           <input type="time" value={form.pump_departure_time} onChange={(e) => set("pump_departure_time", e.target.value)} />

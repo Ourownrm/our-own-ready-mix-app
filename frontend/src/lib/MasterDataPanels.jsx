@@ -1485,11 +1485,12 @@ export function OrdersPanel({ setError, initialEditId }) {
   );
 }
 
-export function TicketsPanel({ setError }) {
+export function TicketsPanel({ setError, showChallan }) {
   const [tickets, setTickets] = useState([]);
   const [editing, setEditing] = useState(null);
   const [qty, setQty] = useState("");
   const [saving, setSaving] = useState(false);
+  const [printing, setPrinting] = useState(null);
 
   async function load() {
     try { setTickets(await apiRequest("/administrator/tickets")); } catch (err) { setError(err.message); }
@@ -1511,6 +1512,14 @@ export function TicketsPanel({ setError }) {
       await apiRequest(`/administrator/tickets/${id}/cancel`, { method: "POST" });
       load();
     } catch (err) { setError(err.message); }
+  }
+
+  async function printChallan(id) {
+    setPrinting(id); setError("");
+    try {
+      const { generateDeliveryChallanPdf } = await import("./deliveryChallanPdf.js");
+      await generateDeliveryChallanPdf(id);
+    } catch (err) { setError(err.message); } finally { setPrinting(null); }
   }
 
   return (
@@ -1540,9 +1549,14 @@ export function TicketsPanel({ setError }) {
                       <button onClick={() => setEditing(null)}>Cancel</button>
                     </span>
                   ) : (
-                    <span style={{ display: "flex", gap: 4 }}>
+                    <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                       <button onClick={() => { setEditing(t.id); setQty(t.loaded_quantity_m3); }}>Edit</button>
                       <button className="btn-danger" onClick={() => cancelTicket(t.id)}>Cancel ticket</button>
+                      {showChallan && (
+                        <button onClick={() => printChallan(t.id)} disabled={printing === t.id}>
+                          {printing === t.id ? "Generating…" : "Delivery Challan"}
+                        </button>
+                      )}
                     </span>
                   )
                 )}

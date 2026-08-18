@@ -197,5 +197,5 @@ function OrdersPanel({ setError }) {
 }
 
 function TicketsPanel({ setError }) {
-  return <SharedTicketsPanel setError={setError} />;
+  return <SharedTicketsPanel setError={setError} showChallan />;
 }

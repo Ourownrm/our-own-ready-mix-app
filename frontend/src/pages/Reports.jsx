@@ -79,6 +79,7 @@ export default function Reports() {
                 { label: "Trucks and Pumps", to: "/administrator?view=fleet" },
                 { label: "Sales Persons", to: "/administrator?view=salespersons" },
                 { label: "Fuel Stations and Equipment's", to: "/administrator?view=fuel" },
+                { label: "Plant Location (geofence)", to: "/administrator?view=plant-locations" },
               ]}
             />
             <GroupedMenu
