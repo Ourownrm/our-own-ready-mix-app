@@ -784,8 +784,14 @@ router.get("/tickets/:id/challan", requireRole("administrator"), async (req, res
      JOIN trucks t ON t.id = dt.truck_id
      JOIN users drv ON drv.id = dt.driver_id
      LEFT JOIN users po ON po.id = dt.plant_operator_id
-     LEFT JOIN pumps p ON p.id = dt.pump_id
      JOIN customer_orders co ON co.id = dt.order_id
+     -- Pump is assigned at order-creation time (customer_orders.pump_id) — the
+     -- Plant Operator's normal ticket-creation flow never sets a per-ticket
+     -- pump_id, so joining on dt.pump_id alone left "Pump No." blank on every
+     -- real ticket even when the order clearly had a pump (Method of Pouring
+     -- showed "With Pump" from co.pump_requirement while Pump No. stayed
+     -- empty). Falling back to the order's pump_id fixes that.
+     LEFT JOIN pumps p ON p.id = COALESCE(dt.pump_id, co.pump_id)
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id

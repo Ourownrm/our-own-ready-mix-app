@@ -2917,3 +2917,28 @@ QC or on site arrival.
 Run `/setup` after deploying. Adds `customer_orders.specified_slump_mm` (nullable —
 existing orders are unaffected; the challan just prints Workability blank for tickets
 against orders that predate this column).
+
+## Ninety-fourth round (App 107 / Ver. 9.17) — Delivery Challan polish
+
+### Fixed: "Pump No." always blank on the printed challan
+The challan's pump lookup joined `pumps` on `delivery_tickets.pump_id`, but the Plant
+Operator's normal ticket-creation flow never sets that column — pump assignment lives
+entirely on the order (`customer_orders.pump_id`), which is exactly where "Method of
+Pouring" was already correctly reading its With Pump/Direct answer from. So every real
+ticket showed "With Pump" next to a blank Pump No. Query now falls back to the order's
+pump when the ticket doesn't have its own (`COALESCE(dt.pump_id, co.pump_id)`).
+
+### Adjusted: layout and type-size feedback from the first real print
+- Moved "Method of Pouring" up next to "Free Water/Cement Ratio" (both are known before
+  dispatch) instead of leaving Free Water/Cement Ratio as a lone, mostly-blank full-width
+  row — closes the dead space that left on the page.
+- "This Load m³" now prints in bold — it's the one number a driver needs to find fastest.
+- "Signed for and on behalf of Our Own Ready Mix" (and "Site Checks" alongside it) is
+  noticeably larger now.
+- Every blue data value across the form is larger for readability. Narrow cells (Site
+  Contact, Pump No.) got a shrink-to-fit safety net so a long phone number can't silently
+  truncate the way it briefly did in testing — it scales the font down just enough to fit
+  instead.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
