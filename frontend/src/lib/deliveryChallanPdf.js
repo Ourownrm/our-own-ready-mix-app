@@ -133,7 +133,23 @@ export async function generateDeliveryChallanPdf(ticketId) {
   y += 4;
 
   // ---------------- Info grid ----------------
-  const rowH = 7;
+  const rowH = 7.6;
+  const LABEL_SIZE = 8;
+  const VALUE_SIZE = 9.3; // bumped up from the label size so blue data reads easily
+  const VALUE_MIN_SIZE = 7; // floor for the shrink-to-fit below, so a long value never overlaps the next cell
+
+  // Long real data (a full phone number, a long customer/site name) can be
+  // wider than a narrow cell at VALUE_SIZE — shrink the font just enough to
+  // fit rather than silently truncating it.
+  function fitValueFontSize(text, maxW) {
+    let size = VALUE_SIZE;
+    doc.setFontSize(size);
+    while (size > VALUE_MIN_SIZE && doc.getTextWidth(text) > maxW) {
+      size -= 0.5;
+      doc.setFontSize(size);
+    }
+    return size;
+  }
 
   function drawRow(cells) {
     y = ensureSpace(y, rowH);
@@ -145,17 +161,19 @@ export async function generateDeliveryChallanPdf(ticketId) {
       if (i > 0) doc.line(x, y, x, y + rowH);
       const padX = x + 2;
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(8);
+      doc.setFontSize(LABEL_SIZE);
       doc.setTextColor(...BLACK);
-      doc.text(cell.label, padX, y + rowH / 2 + 1.2);
+      doc.text(cell.label, padX, y + rowH / 2 + 1.3);
       const labelW = doc.getTextWidth(cell.label);
-      doc.setFont("helvetica", "normal");
+      doc.setFont("helvetica", cell.valueBold ? "bold" : "normal");
       doc.setTextColor(...BLUE);
-      const valueX = padX + labelW + 1.5;
+      const valueX = padX + labelW + 1.8;
       const maxValueW = cell.w - labelW - 5;
       const valueText = String(cell.value ?? "");
+      const fittedSize = maxValueW > 0 ? fitValueFontSize(valueText, maxValueW) : VALUE_SIZE;
+      doc.setFontSize(fittedSize);
       const fitted = maxValueW > 0 ? doc.splitTextToSize(valueText, maxValueW)[0] || "" : valueText;
-      doc.text(fitted, valueX, y + rowH / 2 + 1.2);
+      doc.text(fitted, valueX, y + rowH / 2 + 1.3);
       x += cell.w;
     });
     y += rowH;
@@ -190,7 +208,7 @@ export async function generateDeliveryChallanPdf(ticketId) {
     { label: "Ordered Qty m3: ", value: fmtQty(data.order_quantity_m3), w: w4 },
     { label: "Delivered Qty m3: ", value: fmtQty(data.delivered_prior_m3), w: w4 },
     { label: "Balance Qty m3: ", value: fmtQty(data.balance_m3), w: w4 },
-    { label: "This Load m3: ", value: fmtQty(data.loaded_quantity_m3), w: w4 },
+    { label: "This Load m3: ", value: fmtQty(data.loaded_quantity_m3), w: w4, valueBold: true },
   ]);
   drawRow([
     { label: "Mix Code: ", value: mixCode, w: w4 },
@@ -215,14 +233,15 @@ export async function generateDeliveryChallanPdf(ticketId) {
     { label: "Admixture Type/Brand: ", value: "PC200", w: w4 },
   ]);
   drawRow([
-    { label: "Free Water/Cement Ratio: ", value: "", w: CONTENT_W },
+    { label: "Free Water/Cement Ratio: ", value: "", w: w2 },
+    { label: "Method of Pouring: ", value: methodOfPouring, w: w2 },
   ]);
 
   y += 3;
 
   // ---------------- Signed-for / Site Checks block ----------------
   const halfW = CONTENT_W / 2;
-  const blockH = 30;
+  const blockH = 27;
   y = ensureSpace(y, blockH + 6);
   const blockTop = y;
   doc.setDrawColor(...BORDER);
@@ -230,12 +249,12 @@ export async function generateDeliveryChallanPdf(ticketId) {
   doc.line(MARGIN_X + halfW, blockTop, MARGIN_X + halfW, blockTop + blockH);
 
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
+  doc.setFontSize(10.5);
   doc.setTextColor(...BLACK);
-  doc.text("Signed for and on behalf of Our Own Ready Mix", MARGIN_X + 2, blockTop + 5);
-  doc.text("Site Checks", MARGIN_X + halfW + 2, blockTop + 5);
+  doc.text("Signed for and on behalf of Our Own Ready Mix", MARGIN_X + 2, blockTop + 6);
+  doc.text("Site Checks", MARGIN_X + halfW + 2, blockTop + 6);
 
-  function labelValueLine(x, yy, label, value) {
+  function labelValueLine(x, yy, label, value, opts = {}) {
     const trimmedLabel = label.trimEnd();
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7.5);
@@ -245,30 +264,30 @@ export async function generateDeliveryChallanPdf(ticketId) {
     // switching to normal first (as an earlier version did) under-measures
     // bold text and lets long labels visually collide with the value.
     const labelW = doc.getTextWidth(trimmedLabel);
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", opts.valueBold ? "bold" : "normal");
+    doc.setFontSize(9);
     doc.setTextColor(...BLUE);
     doc.text(String(value ?? ""), x + labelW + 2.2, yy);
   }
 
-  labelValueLine(MARGIN_X + 2, blockTop + 12, "Prepared by: ", data.plant_operator_name || "");
-  labelValueLine(MARGIN_X + 2, blockTop + 19, "Quality Control: ", "");
-  labelValueLine(MARGIN_X + 2, blockTop + 26, "Method of Pouring: ", methodOfPouring);
+  labelValueLine(MARGIN_X + 2, blockTop + 13, "Prepared by: ", data.plant_operator_name || "");
+  labelValueLine(MARGIN_X + 2, blockTop + 20, "Quality Control: ", "");
 
   labelValueLine(MARGIN_X + halfW + 2, blockTop + 12, "Time Arrived: ", "");
-  labelValueLine(MARGIN_X + halfW + 2, blockTop + 19, "Workability: ", "");
-  labelValueLine(MARGIN_X + halfW + 2, blockTop + 26, "Pouring Completed At: ", "");
+  labelValueLine(MARGIN_X + halfW + 2, blockTop + 18, "Workability: ", "");
+  labelValueLine(MARGIN_X + halfW + 2, blockTop + 24, "Pouring Completed At: ", "");
 
-  y = blockTop + blockH + 5;
+  y = blockTop + blockH + 4;
 
   // ---------------- Remarks ----------------
-  y = ensureSpace(y, 8);
+  y = ensureSpace(y, 7);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8);
   doc.setTextColor(...BLACK);
   doc.text("Remarks: ", MARGIN_X, y);
   doc.setDrawColor(...BORDER);
   doc.line(MARGIN_X + doc.getTextWidth("Remarks: ") + 2, y, PAGE_W - MARGIN_X, y);
-  y += 8;
+  y += 7;
 
   // ---------------- Terms & Conditions ----------------
   y = ensureSpace(y, 10);
@@ -276,52 +295,53 @@ export async function generateDeliveryChallanPdf(ticketId) {
   doc.setFontSize(9.5);
   doc.setTextColor(...BLACK);
   doc.text("Terms And Conditions for Supply of Ready-Mix Concrete", MARGIN_X, y);
-  y += 5;
+  y += 4.5;
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.3);
   const termIndent = 5;
   const termTextW = CONTENT_W - termIndent;
+  const termLineH = 3.2;
 
   TERMS.forEach((term, idx) => {
     const lines = doc.splitTextToSize(`${idx + 1}. ${term}`, termTextW);
-    y = ensureSpace(y, lines.length * 3.4 + 1);
+    y = ensureSpace(y, lines.length * termLineH + 1);
     doc.setTextColor(...BLACK);
     lines.forEach((line, li) => {
       doc.text(line, MARGIN_X + (li === 0 ? 0 : termIndent), y);
-      y += 3.4;
+      y += termLineH;
     });
-    y += 0.6;
+    y += 0.4;
   });
 
   // Item 9 — "Pour Instructions" heading with a-h sub-items
   const headingLines = doc.splitTextToSize("9. Pour Instructions", termTextW);
-  y = ensureSpace(y, headingLines.length * 3.4 + 1);
+  y = ensureSpace(y, headingLines.length * termLineH + 1);
   doc.setFont("helvetica", "bold");
-  headingLines.forEach((line) => { doc.text(line, MARGIN_X, y); y += 3.4; });
-  y += 0.6;
+  headingLines.forEach((line) => { doc.text(line, MARGIN_X, y); y += termLineH; });
+  y += 0.4;
 
   doc.setFont("helvetica", "normal");
   const letters = ["a", "b", "c", "d", "e", "f", "g", "h"];
   POUR_INSTRUCTIONS.forEach((item, idx) => {
     const lines = doc.splitTextToSize(`${letters[idx]}. ${item}`, termTextW - termIndent);
-    y = ensureSpace(y, lines.length * 3.4 + 1);
+    y = ensureSpace(y, lines.length * termLineH + 1);
     lines.forEach((line) => {
       doc.text(line, MARGIN_X + termIndent, y);
-      y += 3.4;
+      y += termLineH;
     });
-    y += 0.6;
+    y += 0.4;
   });
 
-  y += 4;
+  y += 3;
 
   // ---------------- Received & Accepted ----------------
-  y = ensureSpace(y, 22);
+  y = ensureSpace(y, 18);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(...BLACK);
   doc.text("Received & Accepted – In Accordance with the above details.", MARGIN_X, y);
-  y += 16;
+  y += 12;
   doc.setDrawColor(...BORDER);
   doc.line(MARGIN_X, y, MARGIN_X + 80, y);
   y += 4;
