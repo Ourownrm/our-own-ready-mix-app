@@ -6,7 +6,8 @@ import { apiRequest } from "../lib/api.js";
 export default function StoreScan() {
   const { token } = useParams();
   const [request, setRequest] = useState(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(""); // page-level: bad/expired token, load failure
+  const [formError, setFormError] = useState(""); // issue-form validation, shown inline without hiding the form
   const [actualQty, setActualQty] = useState("");
   const [cost, setCost] = useState("");
   const [saving, setSaving] = useState(false);
@@ -19,8 +20,12 @@ export default function StoreScan() {
   }, [token]);
 
   async function confirmIssue() {
-    if (!actualQty) { setError("Enter the actual quantity issued."); return; }
-    setSaving(true); setError("");
+    if (!actualQty) { setFormError("Enter the actual quantity issued."); return; }
+    if (Number(actualQty) > Number(request.approved_quantity)) {
+      setFormError(`Can't issue more than the approved quantity (${request.approved_quantity}). Enter that amount or less.`);
+      return;
+    }
+    setSaving(true); setFormError("");
     try {
       await apiRequest(`/supply-requests/${request.id}/issue`, {
         method: "POST",
@@ -28,7 +33,7 @@ export default function StoreScan() {
       });
       setDone(true);
     } catch (err) {
-      setError(err.message);
+      setFormError(err.message);
     } finally {
       setSaving(false);
     }
@@ -67,8 +72,10 @@ export default function StoreScan() {
               {request.request_type === "fuel" && <Row label="Station" value={request.approved_station_name} />}
             </div>
 
-            <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>Actual quantity issued</div>
-            <input type="number" value={actualQty} onChange={(e) => setActualQty(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+            <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>
+              Actual quantity issued <span style={{ color: "var(--slate)" }}>(max {request.approved_quantity} — less is fine if stock is short)</span>
+            </div>
+            <input type="number" max={request.approved_quantity} value={actualQty} onChange={(e) => setActualQty(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
             {request.request_type === "fuel" && (
               <>
@@ -76,6 +83,8 @@ export default function StoreScan() {
                 <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} style={{ width: "100%", marginBottom: 14 }} />
               </>
             )}
+
+            {formError && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 10 }}>{formError}</div>}
 
             <button onClick={confirmIssue} disabled={saving} style={{ width: "100%", padding: 12, fontSize: 14, fontWeight: 600, background: "var(--signal-green)", color: "#fff", border: "none" }}>
               {saving ? "Saving..." : "Confirm issued"}

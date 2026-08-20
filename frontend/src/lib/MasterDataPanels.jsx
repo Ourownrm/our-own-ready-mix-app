@@ -1346,8 +1346,9 @@ export function PlantLocationsPanel({ setError }) {
 
 export function OrdersPanel({ setError, initialEditId }) {
   const [orders, setOrders] = useState([]);
+  const [mixGrades, setMixGrades] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "" });
+  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "", mix_grade_id: "" });
   const [rescheduling, setRescheduling] = useState(null);
   const [rescheduleForm, setRescheduleForm] = useState({ new_order_date: "", new_scheduled_batching_time: "", reason: "" });
   const [saving, setSaving] = useState(false);
@@ -1365,11 +1366,14 @@ export function OrdersPanel({ setError, initialEditId }) {
       }
     } catch (err) { setError(err.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    apiRequest("/master/mix-grades").then(setMixGrades).catch((err) => setError(err.message));
+  }, []);
 
   function startEdit(o) {
     setEditing(o.id);
-    setForm({ order_quantity_m3: o.order_quantity_m3, scheduled_batching_time: o.scheduled_batching_time || "", remarks: "" });
+    setForm({ order_quantity_m3: o.order_quantity_m3, scheduled_batching_time: o.scheduled_batching_time || "", remarks: "", mix_grade_id: o.mix_grade_id || "" });
   }
 
   async function saveEdit(id) {
@@ -1425,7 +1429,19 @@ export function OrdersPanel({ setError, initialEditId }) {
                 </td>
                 <td>{o.customer_name}</td>
                 <td>{o.site_name}</td>
-                <td>{o.mix_grade_name}</td>
+                <td>
+                  {editing === o.id ? (
+                    o.has_tickets ? (
+                      <span title="A delivery ticket already exists for this order, so the grade is locked.">
+                        {o.mix_grade_name} <span style={{ fontSize: 11, color: "var(--slate)" }}>(locked)</span>
+                      </span>
+                    ) : (
+                      <select value={form.mix_grade_id} onChange={(e) => setForm({ ...form, mix_grade_id: e.target.value })}>
+                        {mixGrades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                      </select>
+                    )
+                  ) : o.mix_grade_name}
+                </td>
                 <td>
                   {editing === o.id ? (
                     <input type="number" value={form.order_quantity_m3} onChange={(e) => setForm({ ...form, order_quantity_m3: e.target.value })} style={{ width: 70 }} />
@@ -1566,6 +1582,155 @@ export function TicketsPanel({ setError, showChallan }) {
           {tickets.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No tickets yet.</td></tr>}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Site Contacts directory (round 96, item 7) — Administrator-only browse/
+// correct screen. Day-to-day additions happen from Create Order itself
+// (autofill + auto-save of anything newly typed); this is for fixing a typo
+// or retiring a contact who's moved on, per the business's own answer.
+export function SiteContactsPanel({ setError }) {
+  const [contacts, setContacts] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setContacts(await apiRequest("/administrator/site-contacts")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  function startEdit(c) {
+    setEditing(c.id);
+    setForm({ contact_name: c.contact_name, phone_number: c.phone_number, role_label: c.role_label || "" });
+  }
+
+  async function saveEdit(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/site-contacts/${id}`, { method: "PATCH", body: form });
+      setEditing(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function toggleActive(id, is_active) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/site-contacts/${id}`, { method: "PATCH", body: { is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <table>
+        <thead><tr><th>Customer</th><th>Site</th><th>Name</th><th>Role</th><th>Phone</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {contacts.map((c) => (
+            <tr key={c.id}>
+              <td>{c.customer_name}</td>
+              <td>{c.site_name}</td>
+              {editing === c.id ? (
+                <>
+                  <td><input value={form.contact_name} onChange={(e) => setForm((f) => ({ ...f, contact_name: e.target.value }))} style={{ width: 120 }} /></td>
+                  <td><input value={form.role_label} onChange={(e) => setForm((f) => ({ ...f, role_label: e.target.value }))} style={{ width: 100 }} /></td>
+                  <td><input value={form.phone_number} onChange={(e) => setForm((f) => ({ ...f, phone_number: e.target.value }))} style={{ width: 110 }} /></td>
+                  <td>{c.is_active ? "Active" : "Inactive"}</td>
+                  <td style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => saveEdit(c.id)} disabled={saving}>Save</button>
+                    <button onClick={() => setEditing(null)}>Cancel</button>
+                  </td>
+                </>
+              ) : (
+                <>
+                  <td>{c.contact_name}</td>
+                  <td>{c.role_label || "—"}</td>
+                  <td>{c.phone_number}</td>
+                  <td>{c.is_active ? "Active" : "Inactive"}</td>
+                  <td style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => startEdit(c)}>Edit</button>
+                    <button onClick={() => toggleActive(c.id, !c.is_active)}>{c.is_active ? "Deactivate" : "Reactivate"}</button>
+                  </td>
+                </>
+              )}
+            </tr>
+          ))}
+          {contacts.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>None yet — contacts are added automatically the first time they're typed on an order.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+// Monthly production target (round 96, item 8) — Administrator sets it here;
+// the Manager dashboard's Achieved %/Balance/Required-per-day KPI reads
+// whatever's on file for the current month via GET /orders/dashboard.
+export function ProductionTargetPanel({ setError }) {
+  const now = new Date();
+  const [history, setHistory] = useState([]);
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [targetM3, setTargetM3] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  async function load() {
+    try { setHistory(await apiRequest("/administrator/production-targets")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest("/administrator/production-targets", { method: "POST", body: { year, month, target_m3: targetM3 } });
+      setNotice("Saved.");
+      setTargetM3("");
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  return (
+    <div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", fontSize: 13, marginBottom: 12 }}>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Month</div>
+          <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+            {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Year</div>
+          <input type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} style={{ width: 90 }} />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Target (m³)</div>
+          <input type="number" value={targetM3} onChange={(e) => setTargetM3(e.target.value)} required style={{ width: 120 }} />
+        </div>
+        <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+        {notice && <span style={{ color: "var(--signal-green)" }}>{notice}</span>}
+      </form>
+
+      <div className="card">
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>History</div>
+        <table>
+          <thead><tr><th>Month</th><th>Target</th><th>Last updated</th></tr></thead>
+          <tbody>
+            {history.map((h) => (
+              <tr key={h.id}>
+                <td>{MONTH_NAMES[h.month - 1]} {h.year}</td>
+                <td>{h.target_m3} m³</td>
+                <td>{new Date(h.updated_at).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
+              </tr>
+            ))}
+            {history.length === 0 && <tr><td colSpan={3} style={{ color: "var(--slate)" }}>No target set yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

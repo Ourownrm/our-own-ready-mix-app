@@ -13,11 +13,6 @@ import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { BookingsQueue, CreateLeadForm } from "../lib/SalesPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
-const FLEET_LABELS = {
-  created: "At plant", batching: "At plant", dispatched: "Running",
-  reached_site: "At site", unloading: "At site", returned: "Returning",
-};
-
 export default function ManagerDashboard() {
   const [stats, setStats] = useState(null);
   const [orders, setOrders] = useState([]);
@@ -187,12 +182,6 @@ export default function ManagerDashboard() {
     );
   }
 
-  const fleetCounts = { "At plant": 0, Running: 0, "At site": 0, Returning: 0 };
-  stats?.fleet_status?.forEach((row) => {
-    const label = FLEET_LABELS[row.status];
-    if (label) fleetCounts[label] += Number(row.count);
-  });
-
   const today = orders.filter((o) => isSameDay(o.order_date, new Date()) && !["cancelled", "closed"].includes(o.status));
   const tomorrow = orders.filter((o) => isSameDay(o.order_date, addDays(new Date(), 1)) && !["cancelled", "closed"].includes(o.status));
   const upcoming = orders.filter((o) =>
@@ -272,14 +261,23 @@ export default function ManagerDashboard() {
           <Kpi label="Rejected concrete — month" value={`${stats?.rejected_concrete_month_m3 ?? "–"} m³`} />
         </div>
 
-        <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
-          {Object.entries(fleetCounts).map(([label, count]) => (
-            <div key={label} className="card" style={{ flex: 1, textAlign: "center" }}>
-              <div className="kpi-label">{label}</div>
-              <div style={{ fontSize: 20, fontWeight: 600, marginTop: 2 }}>{count}</div>
-            </div>
-          ))}
-        </div>
+        {/* Round 96, item 8 — monthly production target. Only shown once
+            Administrator has set a target for the current month (via
+            Masters -> Production Target); before that, stats.target_m3 is
+            null and this row simply doesn't render rather than showing a
+            confusing "0 of nothing". */}
+        {stats?.target_m3 != null && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
+            <Kpi label="Monthly target" value={`${stats.target_m3} m³`} />
+            <Kpi
+              label="Achieved"
+              value={`${stats.achieved_pct}% (${stats.monthly_production_m3} m³)`}
+              danger={stats.achieved_pct != null && stats.achieved_pct < 60 && stats.days_remaining <= 10}
+            />
+            <Kpi label="Balance to go" value={`${stats.balance_m3} m³ · ${stats.days_remaining} day${stats.days_remaining === 1 ? "" : "s"} left`} />
+            <Kpi label="Required / day" value={`${stats.required_per_day_m3} m³`} />
+          </div>
+        )}
 
         <BookingsQueue setError={setError} />
         <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} setError={setError} onReload={load} />

@@ -80,6 +80,8 @@ export default function Reports() {
                 { label: "Sales Persons", to: "/administrator?view=salespersons" },
                 { label: "Fuel Stations and Equipment's", to: "/administrator?view=fuel" },
                 { label: "Plant Location (geofence)", to: "/administrator?view=plant-locations" },
+                { label: "Site Contacts", to: "/administrator?view=site-contacts" },
+                { label: "Production Target", to: "/administrator?view=production-target" },
               ]}
             />
             <GroupedMenu

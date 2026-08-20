@@ -4,6 +4,7 @@ import { ROLE_HOME } from "./lib/roleHome.js";
 import ProtectedRoute from "./lib/ProtectedRoute.jsx";
 import Login from "./pages/Login.jsx";
 import DriverDuty from "./pages/DriverDuty.jsx";
+import DriverSettings from "./pages/DriverSettings.jsx";
 import ManagerDashboard from "./pages/ManagerDashboard.jsx";
 import SiteSupervisor from "./pages/SiteSupervisor.jsx";
 import PlantOperator from "./pages/PlantOperator.jsx";
@@ -56,6 +57,9 @@ export default function App() {
 
           <Route path="/driver" element={
             <ProtectedRoute roles={["driver"]}><DriverDuty /></ProtectedRoute>
+          } />
+          <Route path="/driver/settings" element={
+            <ProtectedRoute roles={["driver"]}><DriverSettings /></ProtectedRoute>
           } />
 
           <Route path="/manager" element={

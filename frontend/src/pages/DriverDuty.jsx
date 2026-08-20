@@ -3,12 +3,13 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { useT } from "../lib/i18n.js";
 
 const STAGES = [
-  { key: "plant_out", label: "Plant Out", path: "plant-out", icon: "check" },
-  { key: "site_in", label: "Site In", path: "arrival", icon: "check" },
-  { key: "site_out", label: "Site Out", path: "site-out", icon: "check" },
-  { key: "plant_in", label: "Plant In", path: "plant-in", icon: "check" },
+  { key: "plant_out", labelKey: "stage_plant_out", path: "plant-out", icon: "check" },
+  { key: "site_in", labelKey: "stage_site_in", path: "arrival", icon: "check" },
+  { key: "site_out", labelKey: "stage_site_out", path: "site-out", icon: "check" },
+  { key: "plant_in", labelKey: "stage_plant_in", path: "plant-in", icon: "check" },
 ];
 
 // A trip is done from the driver's own perspective either when the ticket
@@ -21,7 +22,19 @@ function isDriverDone(t) {
   return ["completed", "cancelled", "returned", "rejected"].includes(t.status) || !!t.plant_in_at;
 }
 
+// Item 9 (geofence popup): the four possible hint keys, in the order a real
+// trip would move through them, so if more than one is somehow set at once
+// (shouldn't normally happen — each hint clears itself the moment the real
+// stage is confirmed) the earliest unconfirmed stage wins.
+const HINT_STAGES = [
+  { hintKey: "hint_plant_out_at", stageKey: "plant_out", path: "plant-out", hintTextKey: "hint_left_plant", selfServiceOnly: false },
+  { hintKey: "hint_site_in_at", stageKey: "site_in", path: "arrival", hintTextKey: "hint_reached_site", selfServiceOnly: true },
+  { hintKey: "hint_site_out_at", stageKey: "site_out", path: "site-out", hintTextKey: "hint_left_site", selfServiceOnly: true },
+  { hintKey: "hint_plant_in_at", stageKey: "plant_in", path: "plant-in", hintTextKey: "hint_returned_to_plant", selfServiceOnly: false },
+];
+
 export default function DriverDuty() {
+  const t = useT();
   const [onDuty, setOnDuty] = useState(false);
   const [trips, setTrips] = useState([]);
   const [pending, setPending] = useState(pendingCount());
@@ -29,6 +42,7 @@ export default function DriverDuty() {
   const [activeTicketId, setActiveTicketId] = useState(null); // which trip a form applies to
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [dismissedHints, setDismissedHints] = useState({}); // `${ticketId}:${hintKey}` -> timestamp string that was dismissed
   const gpsIntervalRef = useRef(null);
   const wakeLockRef = useRef(null);
   const tripsRef = useRef([]);
@@ -165,6 +179,44 @@ export default function DriverDuty() {
   const older = activeTrips.slice(1);
   const activeTrip = trips.find((t) => t.id === activeTicketId);
 
+  // Item 9: the geofence popup is interruptive (a modal, not just a passive
+  // banner) — it's shown for whichever active trip has the earliest
+  // still-unconfirmed hint, across ALL active trips, not just the one
+  // currently on screen, so a hint on an "older" trip still gets surfaced.
+  // Site In/Out hints only apply on a self-service site (no_site_supervisor)
+  // — on a supervised site those are the Site Supervisor's own to confirm.
+  let popupHint = null;
+  for (const trip of activeTrips) {
+    for (const h of HINT_STAGES) {
+      if (h.selfServiceOnly && !trip.no_site_supervisor) continue;
+      const ts = trip[h.hintKey];
+      if (!ts) continue;
+      const dismissKey = `${trip.id}:${h.hintKey}`;
+      if (dismissedHints[dismissKey] === ts) continue; // already dismissed this exact hint
+      popupHint = { trip, ...h, ts };
+      break;
+    }
+    if (popupHint) break;
+  }
+
+  function dismissPopup() {
+    if (!popupHint) return;
+    setDismissedHints((prev) => ({ ...prev, [`${popupHint.trip.id}:${popupHint.hintKey}`]: popupHint.ts }));
+  }
+
+  async function confirmPopup() {
+    if (!popupHint) return;
+    if (popupHint.stageKey === "site_out") {
+      // Site Out needs the slump/notes form, not a blind one-tap confirm.
+      dismissPopup();
+      setActiveTicketId(popupHint.trip.id);
+      setView("site-out");
+      return;
+    }
+    dismissPopup();
+    await actWithLocation(popupHint.trip.id, popupHint.path, {});
+  }
+
   if (view === "breakdown") {
     return (
       <BreakdownForm
@@ -187,9 +239,9 @@ export default function DriverDuty() {
   if (view === "older") {
     return (
       <>
-        <TopBar title="Driver · Older trips" />
+        <TopBar title={`${t("driver_title")} · Older trips`} />
         <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
-          <button onClick={() => setView("home")} style={{ marginBottom: 16 }}>&larr; Back</button>
+          <button onClick={() => setView("home")} style={{ marginBottom: 16 }}>&larr; {t("back")}</button>
           {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
           {older.length === 0 ? (
             <div style={{ fontSize: 13, color: "var(--slate)" }}>No older trips waiting.</div>
@@ -213,9 +265,9 @@ export default function DriverDuty() {
     const trip = activeTrip || current;
     return (
       <>
-        <TopBar title="Driver · Site Out" />
+        <TopBar title={`${t("driver_title")} · ${t("stage_site_out")}`} />
         <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
-          <button onClick={() => setView(older.some((t) => t.id === trip?.id) ? "older" : "home")} style={{ marginBottom: 16 }}>&larr; Back</button>
+          <button onClick={() => setView(older.some((t) => t.id === trip?.id) ? "older" : "home")} style={{ marginBottom: 16 }}>&larr; {t("back")}</button>
           <div style={{ fontSize: 15, fontWeight: 600 }}>{trip?.ticket_number}</div>
           <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.customer_name} &middot; {trip?.site_name}</div>
           {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
@@ -227,8 +279,13 @@ export default function DriverDuty() {
 
   return (
     <>
-      <TopBar title="Driver" />
+      <TopBar title={t("driver_title")} />
       <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
+          <Link to="/driver/settings" style={{ fontSize: 12, color: "var(--slate)", textDecoration: "none" }}>
+            ⚙ {t("settings")}
+          </Link>
+        </div>
         <button
           onClick={toggleDuty}
           style={{
@@ -237,22 +294,22 @@ export default function DriverDuty() {
             background: onDuty ? "var(--alert-red)" : "var(--signal-green)", color: "#fff",
           }}
         >
-          {onDuty ? "Punched IN — tap for Punch OUT" : "Punch IN"}
+          {onDuty ? t("punched_in") : t("punch_in")}
         </button>
 
         {!navigator.onLine && (
           <div style={{ textAlign: "center", fontSize: 12, background: "var(--amber-bg)", color: "var(--amber)", padding: 6, borderRadius: 8, marginBottom: 12 }}>
-            No signal — actions are being saved and will sync automatically
+            {t("offline_notice")}
           </div>
         )}
         {pending > 0 && (
           <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
-            {pending} action{pending > 1 ? "s" : ""} waiting to sync
+            {t("pending_actions", { count: pending })}
             <button
               style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
               onClick={async () => { await flushQueue(); setPending(pendingCount()); loadTrips(); }}
             >
-              Sync now
+              {t("sync_now")}
             </button>
           </div>
         )}
@@ -268,7 +325,7 @@ export default function DriverDuty() {
           />
         ) : (
           <div className="card" style={{ textAlign: "center", fontSize: 13, color: "var(--slate)", marginBottom: 10 }}>
-            No trip assigned right now.
+            {t("no_trip")}
           </div>
         )}
 
@@ -278,7 +335,7 @@ export default function DriverDuty() {
             style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: "10px 12px", textDecoration: "none", marginBottom: 16 }}
           >
             <span style={{ fontSize: 12, color: "var(--alert-red)", fontWeight: 600 }}>
-              {older.length} older trip{older.length > 1 ? "s" : ""} still need{older.length === 1 ? "s" : ""} action
+              {t("older_trips_need_action", { count: older.length })}
             </span>
             <span style={{ color: "var(--alert-red)" }}>&rsaquo;</span>
           </a>
@@ -287,25 +344,25 @@ export default function DriverDuty() {
         {completedToday.length > 0 && (
           <div className="card" style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
-              Completed ({completedToday.length})
+              {t("completed_label")} ({completedToday.length})
               {completedToday.some((t) => t.allowance_paid) && (
                 <span style={{ color: "var(--signal-green)", fontWeight: 400 }}>
-                  {" "}&middot; ₹{completedToday.reduce((s, t) => s + Number(t.allowance_paid || 0), 0)} earned
+                  {" "}&middot; ₹{completedToday.reduce((s, t) => s + Number(t.allowance_paid || 0), 0)} {t("earned_suffix")}
                 </span>
               )}
             </div>
-            {completedToday.map((t) => {
-              const isToday = new Date(t.ticket_date).toDateString() === new Date().toDateString();
+            {completedToday.map((tr) => {
+              const isToday = new Date(tr.ticket_date).toDateString() === new Date().toDateString();
               return (
-                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
+                <div key={tr.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
                   <div>
-                    <div>{t.ticket_number} &middot; {t.customer_name}</div>
+                    <div>{tr.ticket_number} &middot; {tr.customer_name}</div>
                     <div style={{ fontSize: 10, color: "var(--slate)" }}>
-                      {!isToday && `${new Date(t.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })} · `}
-                      {t.status === "rejected" ? "Rejected" : t.plant_in_at ? `Plant In ${formatTime(t.plant_in_at)}` : `Site Out ${formatTime(t.site_out_at)}`}
+                      {!isToday && `${new Date(tr.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })} · `}
+                      {tr.status === "rejected" ? "Rejected" : tr.plant_in_at ? `Plant In ${formatTime(tr.plant_in_at)}` : `Site Out ${formatTime(tr.site_out_at)}`}
                     </div>
                   </div>
-                  {t.allowance_paid ? <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>+₹{t.allowance_paid}</span> : null}
+                  {tr.allowance_paid ? <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>+₹{tr.allowance_paid}</span> : null}
                 </div>
               );
             })}
@@ -319,12 +376,55 @@ export default function DriverDuty() {
               setError(""); setNotice(""); setView("breakdown");
             }}
           >
-            Report breakdown
+            {t("report_breakdown")}
           </button>
-          <Link to="/fuel"><button type="button" style={{ width: "100%" }}>Report fuel filling</button></Link>
+          <Link to="/fuel"><button type="button" style={{ width: "100%" }}>{t("report_fuel")}</button></Link>
         </div>
       </div>
+
+      {popupHint && (
+        <GeofenceHintModal
+          trip={popupHint.trip}
+          text={t(popupHint.hintTextKey, { time: formatTime(popupHint.ts) })}
+          stageLabel={t(STAGES.find((s) => s.key === popupHint.stageKey)?.labelKey)}
+          onConfirm={confirmPopup}
+          onDismiss={dismissPopup}
+          t={t}
+        />
+      )}
     </>
+  );
+}
+
+// Item 9: an actual interruptive popup (not a passive banner) shown when the
+// app is open in the foreground and a geofence hint fires for a stage
+// nobody's confirmed yet. Purely a nudge either way — nothing is
+// auto-confirmed by showing this; "Confirm" just does exactly what tapping
+// the real stage button would.
+function GeofenceHintModal({ text, stageLabel, onConfirm, onDismiss, t }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex",
+        alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20,
+      }}
+    >
+      <div className="card" style={{ maxWidth: 320, width: "100%", textAlign: "center" }}>
+        <div style={{ fontSize: 14, marginBottom: 16 }}>{text}</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ flex: 1 }} onClick={onDismiss} disabled={busy}>{t("not_yet")}</button>
+          <button
+            className="btn-primary"
+            style={{ flex: 1, background: "var(--signal-green)", color: "#fff", border: "none" }}
+            disabled={busy}
+            onClick={async () => { setBusy(true); await onConfirm(); setBusy(false); }}
+          >
+            {t("confirm_stage", { stage: stageLabel })}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -334,6 +434,7 @@ function formatTime(iso) {
 }
 
 function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
+  const t = useT();
   const canDriverActSiteStages = trip.no_site_supervisor;
 
   const stageState = (key) => {
@@ -363,12 +464,12 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
     <div className="card" style={{ marginBottom: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
         <div>
-          <div style={{ fontSize: 11, color: "var(--slate)" }}>{compact ? "Assigned" : "Current trip"}</div>
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>{compact ? t("assigned") : t("current_trip")}</div>
           <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600 }}>{trip.ticket_number}</div>
         </div>
         {trip.trip_allowance_amount && (
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, color: "var(--slate)" }}>Trip allowance</div>
+            <div style={{ fontSize: 11, color: "var(--slate)" }}>{t("trip_allowance")}</div>
             <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600, color: "var(--signal-green)" }}>₹{trip.trip_allowance_amount}</div>
           </div>
         )}
@@ -377,32 +478,45 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
       <div style={{ fontSize: compact ? 12 : 14, color: "var(--slate)", marginBottom: 8 }}>{trip.site_name}</div>
       {trip.site_latitude && trip.site_longitude && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: compact ? 10 : 20, fontSize: 13 }}>
-          {trip.distance_from_plant_km && <span style={{ color: "var(--slate)" }}>{trip.distance_from_plant_km} km from plant</span>}
+          {trip.distance_from_plant_km && <span style={{ color: "var(--slate)" }}>{trip.distance_from_plant_km} {t("km_from_plant")}</span>}
           <a href={`https://maps.google.com/?q=${trip.site_latitude},${trip.site_longitude}`} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>
-            Site location
+            {t("site_location")}
           </a>
         </div>
       )}
 
       {!canDriverActSiteStages && (
         <div style={{ fontSize: 12, color: "var(--rebar)", background: "var(--concrete)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
-          Site In and Site Out are confirmed by {trip.site_supervisor_name ? <strong>{trip.site_supervisor_name}</strong> : "the Site Supervisor"} for this project, not you —
-          those two will fill in on their own here once they tap it on their end. Nothing for you to do until Plant In.
+          {t("site_supervisor_note", { name: trip.site_supervisor_name || t("the_site_supervisor") })}
         </div>
       )}
 
       {/* Geofence hints — the app noticed GPS movement suggesting this stage
           happened, but nothing is auto-confirmed. Purely a nudge to tap the
           real button below; disappears the moment that stage is logged for
-          real (server only sends the hint while the real timestamp is null). */}
+          real (server only sends the hint while the real timestamp is null).
+          The same hint also pops up as an interruptive modal (see
+          GeofenceHintModal above) — this banner stays too, since a trip
+          further down the "older trips" list won't be the one shown in the
+          modal at any given moment. */}
       {trip.hint_plant_out_at && (
         <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
-          Looks like you left the plant around {formatTime(trip.hint_plant_out_at)} — tap <strong>Plant Out</strong> below to confirm.
+          {t("hint_left_plant", { time: formatTime(trip.hint_plant_out_at) })}
+        </div>
+      )}
+      {canDriverActSiteStages && trip.hint_site_in_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          {t("hint_reached_site", { time: formatTime(trip.hint_site_in_at) })}
+        </div>
+      )}
+      {canDriverActSiteStages && trip.hint_site_out_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          {t("hint_left_site", { time: formatTime(trip.hint_site_out_at) })}
         </div>
       )}
       {trip.hint_plant_in_at && (
         <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
-          Looks like you're back at the plant around {formatTime(trip.hint_plant_in_at)} — tap <strong>Plant In</strong> below to confirm.
+          {t("hint_returned_to_plant", { time: formatTime(trip.hint_plant_in_at) })}
         </div>
       )}
 
@@ -424,10 +538,10 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
                     color: state === "done" || tappable ? "#fff" : "var(--slate)",
                   }}
                 >
-                  {stage.label}
+                  {t(stage.labelKey)}
                 </button>
                 <div style={{ fontSize: 10, color: state === "done" ? "var(--slate)" : tappable ? "var(--rebar)" : "var(--slate)", marginTop: 5 }}>
-                  {trip[`${stage.key}_at`] ? formatTime(trip[`${stage.key}_at`]) : tappable ? "Tap to log" : "Waiting"}
+                  {trip[`${stage.key}_at`] ? formatTime(trip[`${stage.key}_at`]) : tappable ? t("tap_to_log") : t("waiting")}
                 </div>
               </div>
               {i < STAGES.length - 1 && <div style={{ height: 1, background: "var(--concrete)", flex: "0 0 10px", marginTop: compact ? 18 : 24 }} />}
@@ -438,7 +552,7 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
 
       {canDriverActSiteStages && stageState("site_in") === "done" && stageState("site_out") !== "done" && (
         <button className="btn-danger" style={{ width: "100%", marginTop: 10, fontSize: 12 }} onClick={onReject}>
-          Reject concrete
+          {t("reject_concrete")}
         </button>
       )}
     </div>

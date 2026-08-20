@@ -37,6 +37,13 @@ export default function CreateOrder({ onDone }) {
   const [pumpChargeDecision, setPumpChargeDecision] = useState(null); // null | true | false
   const [partLoadDecision, setPartLoadDecision] = useState(null);
 
+  // Site Contacts directory (round 96, item 7) — autofills from any contact
+  // already on file for this exact customer+site, and saves a newly-typed
+  // one so the next order for the same site has it available too.
+  const [siteContacts, setSiteContacts] = useState([]);
+  const [contactChoice, setContactChoice] = useState(""); // "" | a site_contacts id | "__new__"
+  const [newContactName, setNewContactName] = useState("");
+
   useEffect(() => {
     Promise.all([
       apiRequest("/master/customers"),
@@ -63,8 +70,31 @@ export default function CreateOrder({ onDone }) {
       .catch(() => setRateInfo(null));
   }, [form.customer_id, form.mix_grade_id, form.site_id, form.order_date]);
 
+  // Reload the contact list whenever customer+site changes, and reset the
+  // in-progress selection — a contact picked for a different site shouldn't
+  // silently carry over.
+  useEffect(() => {
+    setContactChoice(""); setNewContactName(""); set("site_contact_number", "");
+    if (!form.customer_id || !form.site_id) { setSiteContacts([]); return; }
+    apiRequest(`/master/site-contacts?customer_id=${form.customer_id}&site_id=${form.site_id}`)
+      .then(setSiteContacts)
+      .catch(() => setSiteContacts([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.customer_id, form.site_id]);
+
   function set(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
+  }
+
+  function chooseContact(value) {
+    setContactChoice(value);
+    if (value === "__new__" || value === "") {
+      set("site_contact_number", "");
+      setNewContactName("");
+    } else {
+      const c = siteContacts.find((sc) => String(sc.id) === String(value));
+      set("site_contact_number", c?.phone_number || "");
+    }
   }
 
   const pumpChargeAmount = form.pump_requirement === "boom_pump" ? Number(rateInfo?.boom_pump_charge || 0) || null : form.pump_requirement === "line_pump" ? Number(rateInfo?.line_pump_charge || 0) || null : null;
@@ -79,6 +109,10 @@ export default function CreateOrder({ onDone }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+    if (!form.site_contact_number) {
+      setError("Select a site contact on file, or add a new one.");
+      return;
+    }
     if (needsPumpDecision && pumpChargeDecision === null) {
       setError("Confirm whether the pump mobilization charge applies to this order.");
       return;
@@ -99,6 +133,19 @@ export default function CreateOrder({ onDone }) {
           part_load_charge_amount: needsPartLoadDecision && partLoadDecision ? partLoadAmount : 0,
         },
       });
+      // Save a newly-typed site contact to the directory so it's already on
+      // file for the next order to this same customer+site — best-effort,
+      // never blocks placing the order if it fails.
+      if (contactChoice === "__new__" && form.site_contact_number) {
+        apiRequest("/master/site-contacts", {
+          method: "POST",
+          body: {
+            customer_id: form.customer_id, site_id: form.site_id,
+            contact_name: newContactName.trim() || undefined,
+            phone_number: form.site_contact_number,
+          },
+        }).catch(() => {});
+      }
       onDone();
     } catch (err) {
       setError(err.message);
@@ -175,8 +222,32 @@ export default function CreateOrder({ onDone }) {
             {supervisors.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </Field>
-        <Field label="Site contact number">
-          <input type="tel" value={form.site_contact_number} onChange={(e) => set("site_contact_number", e.target.value)} required />
+        <Field label="Site contact">
+          {siteContacts.length > 0 && (
+            <select value={contactChoice} onChange={(e) => chooseContact(e.target.value)} style={{ marginBottom: contactChoice === "__new__" || contactChoice === "" ? 6 : 0 }}>
+              <option value="">Select a contact on file</option>
+              {siteContacts.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.contact_name}{c.role_label ? ` — ${c.role_label}` : ""} — {c.phone_number}
+                </option>
+              ))}
+              <option value="__new__">+ Add a new contact</option>
+            </select>
+          )}
+          {(siteContacts.length === 0 || contactChoice === "__new__") && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                type="text" placeholder="Name (optional)" value={newContactName}
+                onChange={(e) => { setNewContactName(e.target.value); if (contactChoice !== "__new__") setContactChoice("__new__"); }}
+                style={{ flex: 1 }}
+              />
+              <input
+                type="tel" placeholder="Phone number" value={form.site_contact_number}
+                onChange={(e) => { set("site_contact_number", e.target.value); if (contactChoice !== "__new__") setContactChoice("__new__"); }}
+                required style={{ flex: 1 }}
+              />
+            </div>
+          )}
         </Field>
         <Field label="Order quantity (m³)">
           <input type="number" value={form.order_quantity_m3} onChange={(e) => set("order_quantity_m3", e.target.value)} required />

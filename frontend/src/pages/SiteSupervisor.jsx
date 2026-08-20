@@ -12,6 +12,10 @@ export default function SiteSupervisor() {
   const [workCompleteOrderId, setWorkCompleteOrderId] = useState(null);
   const [pending, setPending] = useState(pendingCount());
   const [error, setError] = useState("");
+  // Item 9: same interruptive-popup treatment as the Driver app, not just a
+  // passive banner. Keyed by ticket+hint so "Not Yet" only suppresses that
+  // exact hint, not every future one.
+  const [dismissedHints, setDismissedHints] = useState({});
 
   // Deriving `selected` from the live `deliveries` list (rather than storing a
   // separate stale copy) is what fixes the "doesn't update until I refresh" bug —
@@ -96,11 +100,15 @@ export default function SiteSupervisor() {
   function currentLocation() {
     return new Promise((resolve) => {
       if (!navigator.geolocation) return resolve({});
-      const timer = setTimeout(() => resolve({}), 4000);
+      // Construction sites often have weaker GPS signal than the plant or
+      // office — 4s was cutting off before a fix could be acquired often
+      // enough that this looked broken. 10s gives a real shot at a lock
+      // while still keeping the tap-to-confirm flow snappy.
+      const timer = setTimeout(() => resolve({}), 10000);
       navigator.geolocation.getCurrentPosition(
         (pos) => { clearTimeout(timer); resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); },
         () => { clearTimeout(timer); resolve({}); },
-        { timeout: 4000, maximumAge: 60000 }
+        { timeout: 10000, maximumAge: 60000 }
       );
     });
   }
@@ -151,9 +159,50 @@ export default function SiteSupervisor() {
     );
   }
 
+  // Item 9: interruptive popup for whichever hint fired first on the
+  // currently-selected ticket. Reached-site -> a plain one-tap confirm
+  // (arrival has no extra fields). Left-site -> the Completion form still
+  // needs to be filled in properly (quantity/remarks), so "Confirm" here
+  // just dismisses the popup and leaves the existing form below in view,
+  // same tradeoff made on the Driver app's Site Out popup.
+  let popupHint = null;
+  if (selected) {
+    if (selected.hint_reached_site_at && dismissedHints[`${selected.id}:reached`] !== selected.hint_reached_site_at) {
+      popupHint = { key: "reached", ts: selected.hint_reached_site_at, text: `Looks like the truck reached site around ${new Date(selected.hint_reached_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — confirm Arrival?`, instant: true, action: "arrival" };
+    } else if (selected.hint_left_site_at && dismissedHints[`${selected.id}:left`] !== selected.hint_left_site_at) {
+      popupHint = { key: "left", ts: selected.hint_left_site_at, text: `Looks like the truck left site around ${new Date(selected.hint_left_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — if unloading is done, confirm Completion below.`, instant: false };
+    }
+  }
+  function dismissPopup() {
+    if (!popupHint) return;
+    setDismissedHints((prev) => ({ ...prev, [`${selected.id}:${popupHint.key}`]: popupHint.ts }));
+  }
+  async function confirmPopup() {
+    if (!popupHint) return;
+    if (popupHint.instant) {
+      dismissPopup();
+      await act(popupHint.action, {});
+    } else {
+      dismissPopup(); // Completion form is already visible below once status is 'unloading'
+    }
+  }
+
   return (
     <>
       <TopBar title="Site Supervisor" />
+      {popupHint && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+          <div className="card" style={{ maxWidth: 320, width: "100%", textAlign: "center" }}>
+            <div style={{ fontSize: 14, marginBottom: 16 }}>{popupHint.text}</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ flex: 1 }} onClick={dismissPopup}>Not Yet</button>
+              <button style={{ flex: 1, background: "var(--signal-green)", color: "#fff", border: "none" }} onClick={confirmPopup}>
+                {popupHint.instant ? "Confirm Arrival" : "OK"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {!navigator.onLine && (
@@ -202,6 +251,13 @@ export default function SiteSupervisor() {
                     <div style={{ color: "var(--signal-green)" }}>
                       Site confirmed ready
                       {o.site_ready_delay_reason && <div style={{ color: "var(--slate)" }}>Delay reason: {o.site_ready_delay_reason}</div>}
+                      <div style={{ color: "var(--slate)", fontSize: 11 }}>
+                        {o.site_ready_latitude && o.site_ready_longitude
+                          ? o.site_ready_location_suspect
+                            ? "Location captured, but it looked far from the saved site — using the site's saved location instead."
+                            : "Location captured."
+                          : "Location wasn't available on your device for this confirmation — that's fine, it's optional."}
+                      </div>
                     </div>
                   ) : (
                     <button style={{ width: "100%", fontSize: 12, padding: "6px" }} onClick={() => confirmSiteReady(o.id)}>
