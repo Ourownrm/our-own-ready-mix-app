@@ -1347,8 +1347,9 @@ export function PlantLocationsPanel({ setError }) {
 export function OrdersPanel({ setError, initialEditId }) {
   const [orders, setOrders] = useState([]);
   const [mixGrades, setMixGrades] = useState([]);
+  const [pumps, setPumps] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "", mix_grade_id: "" });
+  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "", mix_grade_id: "", pump_requirement: "without_pump", pump_id: "" });
   const [rescheduling, setRescheduling] = useState(null);
   const [rescheduleForm, setRescheduleForm] = useState({ new_order_date: "", new_scheduled_batching_time: "", reason: "" });
   const [saving, setSaving] = useState(false);
@@ -1369,14 +1370,30 @@ export function OrdersPanel({ setError, initialEditId }) {
   useEffect(() => {
     load();
     apiRequest("/master/mix-grades").then(setMixGrades).catch((err) => setError(err.message));
+    apiRequest("/master/pumps").then(setPumps).catch((err) => setError(err.message));
   }, []);
 
   function startEdit(o) {
     setEditing(o.id);
-    setForm({ order_quantity_m3: o.order_quantity_m3, scheduled_batching_time: o.scheduled_batching_time || "", remarks: "", mix_grade_id: o.mix_grade_id || "" });
+    setForm({
+      order_quantity_m3: o.order_quantity_m3,
+      scheduled_batching_time: o.scheduled_batching_time || "",
+      remarks: "",
+      mix_grade_id: o.mix_grade_id || "",
+      pump_requirement: o.pump_requirement || "without_pump",
+      pump_id: o.pump_id || "",
+    });
   }
 
   async function saveEdit(id) {
+    // Round 97, item 5 — the pump can be corrected here regardless of
+    // whether a delivery ticket exists (unlike grade, which stays locked
+    // once a DN is raised): during pouring the pump actually used can
+    // change for operational reasons, and this needs to stay editable.
+    if (form.pump_requirement !== "without_pump" && !form.pump_id) {
+      setError("Select which pump is assigned to this order.");
+      return;
+    }
     setSaving(true); setError("");
     try {
       await apiRequest(`/administrator/orders/${id}`, { method: "PATCH", body: form });
@@ -1412,7 +1429,7 @@ export function OrdersPanel({ setError, initialEditId }) {
     <div className="card">
       <table>
         <thead>
-          <tr><th>Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Qty (m³)</th><th>Status</th><th></th></tr>
+          <tr><th>Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Qty (m³)</th><th>Pump</th><th>Status</th><th></th></tr>
         </thead>
         <tbody>
           {orders.map((o) => (
@@ -1447,6 +1464,33 @@ export function OrdersPanel({ setError, initialEditId }) {
                     <input type="number" value={form.order_quantity_m3} onChange={(e) => setForm({ ...form, order_quantity_m3: e.target.value })} style={{ width: 70 }} />
                   ) : o.order_quantity_m3}
                 </td>
+                <td>
+                  {editing === o.id ? (
+                    // Deliberately never locked by has_tickets — the pump
+                    // actually used can change mid-pour for operational
+                    // reasons, so this stays editable even after a delivery
+                    // ticket exists (round 97, item 5).
+                    <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <select
+                        value={form.pump_requirement}
+                        onChange={(e) => setForm({ ...form, pump_requirement: e.target.value, pump_id: "" })}
+                        style={{ fontSize: 12 }}
+                      >
+                        <option value="without_pump">Without pump</option>
+                        <option value="boom_pump">Boom pump</option>
+                        <option value="line_pump">Line pump</option>
+                      </select>
+                      {form.pump_requirement !== "without_pump" && (
+                        <select value={form.pump_id} onChange={(e) => setForm({ ...form, pump_id: e.target.value })} style={{ fontSize: 12 }}>
+                          <option value="">Select pump</option>
+                          {pumps.filter((p) => p.pump_type === form.pump_requirement).map((p) => (
+                            <option key={p.id} value={p.id}>{p.pump_code}</option>
+                          ))}
+                        </select>
+                      )}
+                    </span>
+                  ) : o.pump_requirement && o.pump_requirement !== "without_pump" ? (o.pump_code || "—") : "—"}
+                </td>
                 <td><span className={`badge ${o.status === "cancelled" ? "badge-danger" : "badge-neutral"}`}>{o.status.replace("_", " ")}</span></td>
                 <td>
                   {!["cancelled", "closed", "completed"].includes(o.status) && (
@@ -1467,7 +1511,7 @@ export function OrdersPanel({ setError, initialEditId }) {
               </tr>
               {rescheduling === o.id && (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <div className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 8, fontSize: 13, padding: 10, background: "var(--concrete)", borderRadius: 8, alignItems: "end" }}>
                       <div>
                         <div style={{ color: "var(--slate)" }}>New date</div>
@@ -1494,7 +1538,7 @@ export function OrdersPanel({ setError, initialEditId }) {
               )}
             </Fragment>
           ))}
-          {orders.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
+          {orders.length === 0 && <tr><td colSpan={8} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
         </tbody>
       </table>
     </div>

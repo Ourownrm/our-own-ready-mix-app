@@ -673,9 +673,20 @@ function BreakdownForm({ trip, onDone, onCancel }) {
     e.preventDefault();
     setSaving(true); setError("");
     try {
+      // Round 97, item 2 — capture GPS at the moment of reporting, same
+      // pattern as actWithLocation() above: best-effort, never blocks the
+      // report on a GPS failure/timeout.
+      const coords = await new Promise((resolve) => {
+        if (!navigator.geolocation) return resolve({});
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+          () => resolve({}),
+          { timeout: 8000 }
+        );
+      });
       await queuedRequest("/driver/breakdown", {
         method: "POST",
-        body: { truck_id: trip.truck_id, location, remarks },
+        body: { truck_id: trip.truck_id, location, remarks, ...coords },
       });
       onDone("Breakdown reported. The manager has been notified.");
     } catch (err) {

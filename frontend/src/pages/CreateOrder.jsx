@@ -113,6 +113,10 @@ export default function CreateOrder({ onDone }) {
       setError("Select a site contact on file, or add a new one.");
       return;
     }
+    if (form.pump_requirement !== "without_pump" && !form.pump_id) {
+      setError("Select which pump will be used for this order.");
+      return;
+    }
     if (needsPumpDecision && pumpChargeDecision === null) {
       setError("Confirm whether the pump mobilization charge applies to this order.");
       return;
@@ -196,7 +200,7 @@ export default function CreateOrder({ onDone }) {
         </Field>
         {form.pump_requirement !== "without_pump" && (
           <Field label="Which pump">
-            <select value={form.pump_id} onChange={(e) => set("pump_id", e.target.value)}>
+            <select value={form.pump_id} onChange={(e) => set("pump_id", e.target.value)} required>
               <option value="">Select</option>
               {pumps.filter((p) => p.pump_type === form.pump_requirement).map((p) => (
                 <option key={p.id} value={p.id}>{p.pump_code}</option>

@@ -261,23 +261,13 @@ export default function ManagerDashboard() {
           <Kpi label="Rejected concrete — month" value={`${stats?.rejected_concrete_month_m3 ?? "–"} m³`} />
         </div>
 
-        {/* Round 96, item 8 — monthly production target. Only shown once
-            Administrator has set a target for the current month (via
-            Masters -> Production Target); before that, stats.target_m3 is
-            null and this row simply doesn't render rather than showing a
-            confusing "0 of nothing". */}
-        {stats?.target_m3 != null && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
-            <Kpi label="Monthly target" value={`${stats.target_m3} m³`} />
-            <Kpi
-              label="Achieved"
-              value={`${stats.achieved_pct}% (${stats.monthly_production_m3} m³)`}
-              danger={stats.achieved_pct != null && stats.achieved_pct < 60 && stats.days_remaining <= 10}
-            />
-            <Kpi label="Balance to go" value={`${stats.balance_m3} m³ · ${stats.days_remaining} day${stats.days_remaining === 1 ? "" : "s"} left`} />
-            <Kpi label="Required / day" value={`${stats.required_per_day_m3} m³`} />
-          </div>
-        )}
+        {/* Round 96, item 8 (redesigned round 97 per feedback) — monthly
+            production target. Only shown once Administrator has set a
+            target for the current month (via Masters -> Production
+            Target); before that, stats.target_m3 is null and this row
+            simply doesn't render rather than showing a confusing "0 of
+            nothing". */}
+        {stats?.target_m3 != null && <MonthlyTargetPanel stats={stats} />}
 
         <BookingsQueue setError={setError} />
         <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} setError={setError} onReload={load} />
@@ -338,6 +328,61 @@ function Kpi({ label, value, danger }) {
     <div className="kpi">
       <div className="kpi-label">{label}</div>
       <div className={`kpi-value ${danger ? "danger" : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+// Round 97, item 3 — colorful/graphical redesign of the monthly-target KPI
+// row, replacing the old 4-tile version. Two cards:
+//  - "Achieved" shows only the percentage (no m3 figure — Monthly production
+//    already has its own KPI tile above, per the user's explicit request) as
+//    a meter whose fill color is driven by stats.pace_status ("good" /
+//    "watch" / "behind"), following the dataviz skill's Meter contract: the
+//    fill carries severity, the track is a lighter neutral step. Colors are
+//    the app's own existing status tokens, not the dataviz skill's generic
+//    reference palette, to stay consistent with the rest of the UI.
+//  - "Balance to go" combines balance/days-left/required-per-day into one
+//    card, per the user's explicit request to club those three together.
+const PACE_STYLES = {
+  good: { fill: "var(--signal-green)", bg: "var(--signal-green-bg)", text: "var(--signal-green)", label: "On pace" },
+  watch: { fill: "var(--amber)", bg: "var(--amber-bg)", text: "var(--amber)", label: "Watch pace" },
+  behind: { fill: "var(--alert-red)", bg: "var(--alert-red-bg)", text: "var(--alert-red)", label: "Behind pace" },
+};
+
+function MonthlyTargetPanel({ stats }) {
+  const pace = PACE_STYLES[stats.pace_status] || PACE_STYLES.watch;
+  const pct = Math.max(0, Math.min(100, stats.achieved_pct ?? 0));
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 20 }}>
+      <div className="kpi">
+        <div className="kpi-label">Monthly target — achieved</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 2 }}>
+          <div className="kpi-value">{stats.achieved_pct != null ? `${stats.achieved_pct}%` : "–"}</div>
+          <span className="badge" style={{ background: pace.bg, color: pace.text, fontSize: 11, padding: "2px 8px" }}>
+            {pace.label}
+          </span>
+        </div>
+        <div style={{ marginTop: 10, height: 8, borderRadius: 4, background: "var(--concrete)", overflow: "hidden" }}>
+          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, background: pace.fill, transition: "width 0.3s ease" }} />
+        </div>
+        <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 6 }}>Target {stats.target_m3} m³</div>
+      </div>
+
+      <div className="kpi">
+        <div className="kpi-label">Balance to go</div>
+        <div className="kpi-value">{stats.balance_m3} m³</div>
+        <div style={{ display: "flex", gap: 20, marginTop: 8 }}>
+          <div>
+            <div style={{ fontWeight: 600, color: "var(--charcoal)", fontSize: 15 }}>{stats.days_remaining}</div>
+            <div style={{ fontSize: 11, color: "var(--slate)" }}>day{stats.days_remaining === 1 ? "" : "s"} left</div>
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, color: "var(--charcoal)", fontSize: 15 }}>{stats.required_per_day_m3} m³</div>
+            <div style={{ fontSize: 11, color: "var(--slate)" }}>required / day</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
