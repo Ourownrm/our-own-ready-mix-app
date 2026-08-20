@@ -35,6 +35,9 @@ import NotificationsPage from "./pages/NotificationsPage.jsx";
 import SalesForecast from "./pages/SalesForecast.jsx";
 import TripTimeCrossCheckPage from "./pages/TripTimeCrossCheckPage.jsx";
 import CustomerTracking from "./pages/CustomerTracking.jsx";
+import Maintenance from "./pages/Maintenance.jsx";
+import CustomerBooking from "./pages/CustomerBooking.jsx";
+import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -54,6 +57,8 @@ export default function App() {
 
           {/* Public, no login — reached only via a shared per-order link. */}
           <Route path="/track/:token" element={<CustomerTracking />} />
+          {/* Public, no login — reached only via a shared per-customer+site booking link. */}
+          <Route path="/book/:token" element={<CustomerBookingForm />} />
 
           <Route path="/driver" element={
             <ProtectedRoute roles={["driver"]}><DriverDuty /></ProtectedRoute>
@@ -112,6 +117,12 @@ export default function App() {
           } />
           <Route path="/breakdowns" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>
+          } />
+          <Route path="/maintenance" element={
+            <ProtectedRoute roles={["manager", "administrator"]}><Maintenance /></ProtectedRoute>
+          } />
+          <Route path="/customer-booking" element={
+            <ProtectedRoute roles={["manager", "administrator"]}><CustomerBooking /></ProtectedRoute>
           } />
           <Route path="/fuel" element={
             <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator"]}><FuelFilling /></ProtectedRoute>

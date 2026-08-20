@@ -1778,3 +1778,105 @@ export function ProductionTargetPanel({ setError }) {
     </div>
   );
 }
+
+// Round 98, item 10 — Maintenance action points, Administrator-only (the
+// due list / logging / repair flow built from these lives at
+// Manager+Administrator's "Maintenance" screen — see pages/Maintenance.jsx).
+export function MaintenanceActionPointsPanel({ setError }) {
+  const [points, setPoints] = useState([]);
+  const [form, setForm] = useState({ name: "", interval_days: "", interval_hours: "" });
+  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", interval_days: "", interval_hours: "", is_active: true });
+
+  async function load() {
+    try { setPoints(await apiRequest("/administrator/maintenance-action-points")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function add(e) {
+    e.preventDefault();
+    if (!form.interval_days && !form.interval_hours) return setError("Set at least one of interval days / interval hours.");
+    setSaving(true); setError("");
+    try {
+      await apiRequest("/administrator/maintenance-action-points", { method: "POST", body: form });
+      setForm({ name: "", interval_days: "", interval_hours: "" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  function startEdit(p) {
+    setEditing(p.id);
+    setEditForm({ name: p.name, interval_days: p.interval_days || "", interval_hours: p.interval_hours || "", is_active: p.is_active });
+  }
+
+  async function saveEdit(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/maintenance-action-points/${id}`, { method: "PATCH", body: editForm });
+      setEditing(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  return (
+    <div>
+      <form onSubmit={add} className="field-input card" style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", fontSize: 13, marginBottom: 12 }}>
+        <div style={{ flex: "1 1 220px" }}>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Action point name</div>
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Mixer arm replacement" required />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Interval (days)</div>
+          <input type="number" value={form.interval_days} onChange={(e) => setForm({ ...form, interval_days: e.target.value })} style={{ width: 100 }} />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Interval (hours)</div>
+          <input type="number" value={form.interval_hours} onChange={(e) => setForm({ ...form, interval_hours: e.target.value })} style={{ width: 100 }} />
+        </div>
+        <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add"}</button>
+      </form>
+      <p style={{ fontSize: 11.5, color: "var(--slate)", margin: "0 0 12px" }}>
+        Whichever interval trips first applies. An action point applies to every active truck (no per-vehicle overrides in this first version).
+      </p>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <table>
+          <thead><tr><th>Name</th><th>Days</th><th>Hours</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {points.map((p) => (
+              <tr key={p.id}>
+                {editing === p.id ? (
+                  <>
+                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: 180 }} /></td>
+                    <td><input type="number" value={editForm.interval_days} onChange={(e) => setEditForm({ ...editForm, interval_days: e.target.value })} style={{ width: 70 }} /></td>
+                    <td><input type="number" value={editForm.interval_hours} onChange={(e) => setEditForm({ ...editForm, interval_hours: e.target.value })} style={{ width: 70 }} /></td>
+                    <td>
+                      <select value={editForm.is_active} onChange={(e) => setEditForm({ ...editForm, is_active: e.target.value === "true" })}>
+                        <option value="true">Active</option>
+                        <option value="false">Inactive</option>
+                      </select>
+                    </td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => saveEdit(p.id)} disabled={saving}>Save</button>
+                      <button type="button" onClick={() => setEditing(null)}>Cancel</button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td>{p.name}</td>
+                    <td>{p.interval_days || "—"}</td>
+                    <td>{p.interval_hours || "—"}</td>
+                    <td><span className={`badge ${p.is_active ? "badge-success" : "badge-neutral"}`}>{p.is_active ? "Active" : "Inactive"}</span></td>
+                    <td><button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => startEdit(p)}>Edit</button></td>
+                  </>
+                )}
+              </tr>
+            ))}
+            {points.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No action points defined yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

@@ -61,6 +61,7 @@ export default function Reports() {
                 { label: "Production Report", to: "/production-report" },
                 { label: "Time cross check", to: "/trip-time-crosscheck" },
                 { label: "Equipment Breakdowns", to: "/breakdowns" },
+                { label: "Maintenance & Best Driver of the Month", to: "/maintenance" },
                 { label: "Fuel and Lubricant report", to: "/fuel-report" },
                 { label: "Trip Allowance report", to: "/trip-allowance-report" },
                 { label: "Statutory Compliance", to: "/compliance" },
@@ -100,6 +101,12 @@ export default function Reports() {
               items={[
                 { label: "Correct Order", to: "/administrator?view=orders" },
                 { label: "Correct Tickets", to: "/administrator?view=tickets" },
+              ]}
+            />
+            <GroupedMenu
+              label="Customer Booking"
+              items={[
+                { label: "Booking Links & Requests", to: "/customer-booking" },
               ]}
             />
           </div>

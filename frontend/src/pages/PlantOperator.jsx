@@ -34,7 +34,9 @@ export default function PlantOperator() {
     try {
       const [o, t, d, p] = await Promise.all([
         apiRequest("/plant-operator/available-orders"),
-        apiRequest("/master/trucks"),
+        // Round 98, item 10 sub-requirement 3 — a truck currently away at an
+        // external workshop can't be picked for a new delivery ticket.
+        apiRequest("/master/trucks?exclude_in_repair=true"),
         apiRequest("/master/drivers"),
         apiRequest("/master/pumps"),
       ]);

@@ -138,3 +138,51 @@ tr:last-child td { border-bottom: none; }
 }
 
 a { color: var(--rebar); }
+
+/* ===== Maintenance module / Best Driver of the Month (round 98) =====
+   Meter/stacked-bar follow the dataviz skill's contracts: a meter's fill
+   carries severity with the track a lighter neutral step; a stacked bar's
+   segments are a fixed-order categorical palette with a 2px surface gap
+   between segments (never a border) so touching segments stay legible. */
+.meter-track { height: 8px; border-radius: 4px; background: var(--concrete); overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+
+.stack-bar { display: flex; height: 14px; border-radius: 4px; overflow: hidden; width: 100%; }
+.stack-seg { height: 100%; }
+.stack-seg + .stack-seg { margin-left: 2px; }
+
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--slate); margin: 10px 0 4px; }
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; display: inline-block; }
+
+.kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.kanban-col { background: var(--concrete); border-radius: var(--radius); padding: 10px; min-width: 0; }
+.kanban-col-head { font-size: 11.5px; font-weight: 600; color: var(--slate); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+.kanban-count { background: var(--surface); color: var(--slate); border-radius: 10px; padding: 1px 7px; font-size: 10.5px; border: 1px solid var(--border); }
+.kanban-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 11px; margin-bottom: 8px; box-shadow: var(--shadow); }
+.kanban-card .veh { font-weight: 600; font-size: 12.5px; }
+.kanban-card .meta { font-size: 11px; color: var(--slate); margin-top: 3px; line-height: 1.5; }
+
+.timeline { position: relative; padding-left: 20px; }
+.timeline::before { content: ""; position: absolute; left: 5px; top: 4px; bottom: 4px; width: 2px; background: var(--border-strong); }
+.timeline-item { position: relative; padding-bottom: 16px; }
+.timeline-item:last-child { padding-bottom: 0; }
+.timeline-dot { position: absolute; left: -20px; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--signal-green); border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border-strong); }
+.timeline-date { font-size: 11px; color: var(--slate); font-weight: 600; }
+.timeline-action { font-size: 13px; margin-top: 1px; }
+.timeline-meta { font-size: 11.5px; color: var(--slate); margin-top: 1px; }
+
+.spotlight { display: flex; gap: 20px; align-items: center; background: linear-gradient(135deg, #2A2117 0%, var(--charcoal) 55%); color: #fff; border-radius: var(--radius); padding: 22px 24px; box-shadow: var(--shadow); }
+.spotlight-badge { width: 56px; height: 56px; border-radius: 50%; background: var(--rebar); display: flex; align-items: center; justify-content: center; font-size: 24px; flex: none; }
+.spotlight-name { font-size: 19px; font-weight: 700; }
+.spotlight-sub { font-size: 12px; color: #C9CDD2; margin-top: 2px; }
+.spotlight-score { margin-left: auto; text-align: right; }
+.spotlight-score .num { font-size: 36px; font-weight: 700; line-height: 1; }
+.spotlight-score .lbl { font-size: 11px; color: #C9CDD2; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+.open-q { background: var(--info-bg); border: 1px solid #BFD8E5; border-radius: var(--radius); padding: 12px 14px; font-size: 12.5px; line-height: 1.55; }
+.open-q b { color: var(--charcoal); }
+
+@media (max-width: 720px) {
+  .kanban { grid-template-columns: repeat(2, 1fr); }
+}

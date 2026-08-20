@@ -38,7 +38,7 @@ export default function DriverDuty() {
   const [onDuty, setOnDuty] = useState(false);
   const [trips, setTrips] = useState([]);
   const [pending, setPending] = useState(pendingCount());
-  const [view, setView] = useState("home"); // 'home' | 'older' | 'breakdown' | 'reject'
+  const [view, setView] = useState("home"); // 'home' | 'older' | 'breakdown' | 'reject' | 'repair'
   const [activeTicketId, setActiveTicketId] = useState(null); // which trip a form applies to
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -226,6 +226,15 @@ export default function DriverDuty() {
       />
     );
   }
+  if (view === "repair") {
+    return (
+      <RequestRepairForm
+        trip={activeTrip || current}
+        onDone={(msg) => { setView("home"); setNotice(msg); setPending(pendingCount()); }}
+        onCancel={() => setView("home")}
+      />
+    );
+  }
   if (view === "reject") {
     return (
       <RejectForm
@@ -380,6 +389,16 @@ export default function DriverDuty() {
           </button>
           <Link to="/fuel"><button type="button" style={{ width: "100%" }}>{t("report_fuel")}</button></Link>
         </div>
+        <button
+          type="button"
+          style={{ width: "100%", marginTop: 8 }}
+          onClick={() => {
+            if (!current?.truck_id) { setError("No truck assigned yet — can't request this without one."); return; }
+            setError(""); setNotice(""); setView("repair");
+          }}
+        >
+          {t("request_repair")}
+        </button>
       </div>
 
       {popupHint && (
@@ -664,29 +683,37 @@ function RejectForm({ trip, onAct, onDone, error }) {
 }
 
 function BreakdownForm({ trip, onDone, onCancel }) {
-  const [location, setLocation] = useState("");
+  const [issueTypes, setIssueTypes] = useState([]);
+  const [issueType, setIssueType] = useState("");
   const [remarks, setRemarks] = useState("");
+  const [gpsStatus, setGpsStatus] = useState("locating"); // 'locating' | 'ok' | 'failed'
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    apiRequest("/master/breakdown-issue-types").then(setIssueTypes).catch(() => {});
+  }, []);
+
   async function submit(e) {
     e.preventDefault();
+    if (!issueType) { setError("Select what happened."); return; }
+    if (issueType === "other" && !remarks.trim()) { setError("Add a short description."); return; }
     setSaving(true); setError("");
     try {
-      // Round 97, item 2 — capture GPS at the moment of reporting, same
-      // pattern as actWithLocation() above: best-effort, never blocks the
-      // report on a GPS failure/timeout.
+      // Round 97, item 2 (kept, round 99 item 3 — this is now the ONLY way
+      // location is captured; the manual text field is gone): best-effort
+      // GPS, never blocks the report on a GPS failure/timeout.
       const coords = await new Promise((resolve) => {
         if (!navigator.geolocation) return resolve({});
         navigator.geolocation.getCurrentPosition(
-          (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
-          () => resolve({}),
+          (pos) => { setGpsStatus("ok"); resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); },
+          () => { setGpsStatus("failed"); resolve({}); },
           { timeout: 8000 }
         );
       });
       await queuedRequest("/driver/breakdown", {
         method: "POST",
-        body: { truck_id: trip.truck_id, location, remarks, ...coords },
+        body: { truck_id: trip.truck_id, issue_type: issueType, remarks, ...coords },
       });
       onDone("Breakdown reported. The manager has been notified.");
     } catch (err) {
@@ -705,12 +732,74 @@ function BreakdownForm({ trip, onDone, onCancel }) {
           <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.truck_number}</div>
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
             <div>
-              <div style={{ color: "var(--slate)" }}>Location</div>
-              <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Near Sector 12 signal" />
+              <div style={{ color: "var(--slate)" }}>What happened</div>
+              <select value={issueType} onChange={(e) => setIssueType(e.target.value)} required>
+                <option value="">Select an issue</option>
+                {issueTypes.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+              </select>
             </div>
             <div>
-              <div style={{ color: "var(--slate)" }}>What happened</div>
-              <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} required />
+              <div style={{ color: "var(--slate)" }}>
+                {issueType === "other" ? "Describe what happened" : "Additional details (optional)"}
+              </div>
+              <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} required={issueType === "other"} />
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--slate)" }}>
+              {gpsStatus === "ok" && "📍 Location captured."}
+              {gpsStatus === "locating" && "📍 Your current location is captured automatically when you submit."}
+              {gpsStatus === "failed" && "📍 Couldn't get your location — you can still submit."}
+            </div>
+            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="submit" disabled={saving}>{saving ? "Saving..." : "Submit"}</button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Round 98, item 10 sub-requirement 2 — driver-initiated request for an
+// external-workshop repair (distinct from Report Breakdown, which is the
+// immediate/reactive report Manager reacts to right away; this is the
+// request that starts the approve → send out → return flow tracked on the
+// Manager's Maintenance screen). Left untranslated like BreakdownForm
+// above — same deliberate scope decision (round 96/97: only the entry
+// button is localized, not every internal form).
+function RequestRepairForm({ trip, onDone, onCancel }) {
+  const [issueDescription, setIssueDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError("");
+    try {
+      await queuedRequest("/driver/external-repair", {
+        method: "POST",
+        body: { truck_id: trip.truck_id, issue_description: issueDescription },
+      });
+      onDone("Repair request sent. The manager has been notified.");
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <TopBar title="Driver · Request repair" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Request external repair</div>
+          <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.truck_number}</div>
+          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            <div>
+              <div style={{ color: "var(--slate)" }}>What's wrong with the vehicle</div>
+              <textarea rows={3} value={issueDescription} onChange={(e) => setIssueDescription(e.target.value)} required />
             </div>
             {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
             <div style={{ display: "flex", gap: 8 }}>

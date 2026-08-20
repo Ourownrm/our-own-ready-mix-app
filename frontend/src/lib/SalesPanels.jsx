@@ -71,6 +71,8 @@ export function CreateLeadForm({ setError, onDone }) {
   );
 }
 
+const PUMP_LABELS = { boom_pump: "Boom pump", line_pump: "Line pump", without_pump: "Without pump" };
+
 export function BookingsQueue({ setError }) {
   const [bookings, setBookings] = useState([]);
   const [converting, setConverting] = useState(null);
@@ -121,18 +123,36 @@ export function BookingsQueue({ setError }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {pending.map((b) => (
             <div key={b.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ fontWeight: 600 }}>{b.customer_name}</div>
+              <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                {b.customer_name}
+                {b.booking_link_id && (
+                  <span className="badge" style={{ background: "var(--info-bg)", color: "var(--info)", fontSize: 10 }}>Customer booking</span>
+                )}
+              </div>
               <div style={{ color: "var(--slate)" }}>
                 {b.site_name || "Site TBD"} · {b.mix_grade_name || "Grade TBD"} · {b.estimated_qty_m3 ? `${b.estimated_qty_m3} m³` : "Qty TBD"}
                 {b.preferred_date ? ` · Preferred: ${new Date(b.preferred_date).toLocaleDateString([], { day: "2-digit", month: "short" })}${b.preferred_time ? ` ${b.preferred_time.slice(0, 5)}` : ""}` : ""}
               </div>
-              {b.notes && <div style={{ color: "var(--slate)", fontStyle: "italic" }}>"{b.notes}"</div>}
+              {b.pump_requirement && (
+                <div style={{ color: "var(--slate)" }}>
+                  Pump: {PUMP_LABELS[b.pump_requirement] || b.pump_requirement}
+                  {b.casting_location ? ` · Casting location: ${b.casting_location}` : ""}
+                </div>
+              )}
+              {(b.site_contact_name || b.site_contact_number) && (
+                <div style={{ color: "var(--slate)" }}>
+                  Site contact: {b.site_contact_name || "—"}{b.site_contact_number ? ` · ${b.site_contact_number}` : ""}
+                </div>
+              )}
+              {(b.notes || b.remarks) && <div style={{ color: "var(--slate)", fontStyle: "italic" }}>"{b.notes || b.remarks}"</div>}
               {(b.site_latitude && b.site_longitude) && (
                 <a href={`https://maps.google.com/?q=${b.site_latitude},${b.site_longitude}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
                   View site location
                 </a>
               )}
-              <div style={{ color: "var(--slate)", fontSize: 11 }}>From {b.requested_by_name}</div>
+              <div style={{ color: "var(--slate)", fontSize: 11 }}>
+                {b.booking_link_id ? "Submitted directly by the customer via their booking link" : `From ${b.requested_by_name}`}
+              </div>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button className="btn-primary" style={{ flex: 1, fontSize: 12 }} onClick={() => setConverting(b)}>Convert to order</button>
                 <button className="btn-danger" style={{ flex: 1, fontSize: 12 }} onClick={() => decline(b.id)}>Decline</button>
@@ -157,15 +177,15 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     site_id: booking.site_id || "",
     mix_grade_id: booking.mix_grade_id || "",
     order_quantity_m3: booking.estimated_qty_m3 || "",
-    pump_requirement: "without_pump",
+    pump_requirement: booking.pump_requirement || "without_pump",
     pump_id: "",
     assigned_pump_crew: "",
     site_technician_required: false,
     cube_samples_required: 3,
     assigned_site_supervisor_id: "",
-    site_contact_number: "",
-    casting_location: "",
-    remarks: "",
+    site_contact_number: booking.site_contact_number || "",
+    casting_location: booking.casting_location || "",
+    remarks: booking.remarks || booking.notes || "",
   });
   const [saving, setSaving] = useState(false);
   const [rateInfo, setRateInfo] = useState(null);
@@ -200,6 +220,10 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   async function submit(e) {
     e.preventDefault();
     setError("");
+    if (form.pump_requirement !== "without_pump" && !form.pump_id) {
+      setError("Select which pump will be used for this order.");
+      return;
+    }
     if (needsPumpDecision && pumpChargeDecision === null) {
       setError("Confirm whether the pump mobilization charge applies to this order.");
       return;
@@ -231,7 +255,13 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Convert booking to order</div>
-      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>{booking.customer_name}</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>{booking.customer_name}</div>
+      {booking.booking_link_id && (
+        <div style={{ fontSize: 11, color: "var(--slate)", background: "var(--concrete)", borderRadius: 6, padding: "6px 8px", marginBottom: 12 }}>
+          Submitted directly by the customer via their booking link — the fields below are pre-filled with what they
+          gave; everything is still yours to adjust before creating the order.
+        </div>
+      )}
       <form onSubmit={submit} className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
         <div><div style={{ color: "var(--slate)" }}>Order date</div><input type="date" value={form.order_date} onChange={(e) => setForm({ ...form, order_date: e.target.value })} required /></div>
         <div><div style={{ color: "var(--slate)" }}>Scheduled batching time</div><input type="time" value={form.scheduled_batching_time} onChange={(e) => setForm({ ...form, scheduled_batching_time: e.target.value })} required /></div>
@@ -261,8 +291,8 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
         </div>
         {form.pump_requirement !== "without_pump" && (
           <div>
-            <div style={{ color: "var(--slate)" }}>Pump</div>
-            <select value={form.pump_id} onChange={(e) => setForm({ ...form, pump_id: e.target.value })}>
+            <div style={{ color: "var(--slate)" }}>Which pump</div>
+            <select value={form.pump_id} onChange={(e) => setForm({ ...form, pump_id: e.target.value })} required>
               <option value="">Select</option>
               {pumps.filter((p) => p.pump_type === form.pump_requirement).map((p) => <option key={p.id} value={p.id}>{p.pump_code}</option>)}
             </select>

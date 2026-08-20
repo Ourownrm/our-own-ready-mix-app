@@ -6,6 +6,7 @@ const EQUIPMENT_LABEL = { truck: "Truck", pump: "Pump", plant: "Batching plant" 
 
 export default function Breakdowns() {
   const [rows, setRows] = useState([]);
+  const [issueLabels, setIssueLabels] = useState({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -20,8 +21,21 @@ export default function Breakdowns() {
   useEffect(() => {
     load();
     const interval = setInterval(load, 20000);
+    // Round 99, item 3 — issue_type picklist labels, fetched once (same
+    // single-source-of-truth as backend/src/lib/breakdownIssueTypes.js).
+    apiRequest("/master/breakdown-issue-types")
+      .then((list) => setIssueLabels(Object.fromEntries(list.map((i) => [i.value, i.label]))))
+      .catch(() => {});
     return () => clearInterval(interval);
   }, []);
+
+  function details(r) {
+    const bits = [];
+    if (r.issue_type) bits.push(issueLabels[r.issue_type] || r.issue_type);
+    if (r.remarks) bits.push(r.remarks);
+    if (r.location) bits.push(r.location); // pump/plant reports only — driver flow no longer sets this
+    return bits.join(" — ") || "—";
+  }
 
   async function markRepaired(id) {
     try {
@@ -61,7 +75,17 @@ export default function Breakdowns() {
                     </td>
                     <td>{new Date(r.breakdown_time).toLocaleString()}</td>
                     <td>{r.reported_by_name || "–"}</td>
-                    <td style={{ maxWidth: 300 }}>{r.remarks}{r.location ? ` — ${r.location}` : ""}</td>
+                    <td style={{ maxWidth: 300 }}>
+                      {details(r)}
+                      {r.latitude && r.longitude && (
+                        <>
+                          {" "}
+                          <a href={`https://maps.google.com/?q=${r.latitude},${r.longitude}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
+                            view location
+                          </a>
+                        </>
+                      )}
+                    </td>
                     <td>
                       <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => markRepaired(r.id)}>
                         Mark repaired
