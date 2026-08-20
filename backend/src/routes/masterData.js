@@ -25,6 +25,51 @@ router.get("/sites", async (req, res) => {
   res.json(rows);
 });
 
+// Site Contacts directory (round 96, item 7) — feeds Create Order's autofill.
+// Scoped to customer+site, since a contact is normally specific to a site,
+// not the customer as a whole. Any role that can reach Create Order (Manager
+// or Administrator) can read/add here.
+router.get("/site-contacts", async (req, res) => {
+  const { customer_id, site_id } = req.query;
+  if (!customer_id || !site_id) return res.json([]);
+  const { rows } = await query(
+    `SELECT id, contact_name, phone_number, role_label
+     FROM site_contacts
+     WHERE customer_id = $1 AND site_id = $2 AND is_active
+     ORDER BY contact_name`,
+    [customer_id, site_id]
+  );
+  res.json(rows);
+});
+
+// Saves a newly-typed contact so the next order for the same customer+site
+// already has it on file — called from Create Order right when the order is
+// submitted, not as a separate data-entry step. Silently reuses an existing
+// row with the same phone number for this customer+site instead of creating
+// a duplicate (e.g. the same contact typed slightly differently by name).
+router.post("/site-contacts", async (req, res) => {
+  const { customer_id, site_id, contact_name, phone_number, role_label } = req.body;
+  if (!customer_id || !site_id || !phone_number) {
+    return res.status(400).json({ error: "Customer, site, and phone number are required." });
+  }
+  const { rows: existing } = await query(
+    `SELECT id FROM site_contacts WHERE customer_id = $1 AND site_id = $2 AND phone_number = $3`,
+    [customer_id, site_id, phone_number]
+  );
+  if (existing.length) {
+    if (contact_name) {
+      await query(`UPDATE site_contacts SET contact_name = $1 WHERE id = $2`, [contact_name, existing[0].id]);
+    }
+    return res.json({ id: existing[0].id, reused: true });
+  }
+  const { rows } = await query(
+    `INSERT INTO site_contacts (customer_id, site_id, contact_name, phone_number, role_label)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id, contact_name, phone_number, role_label`,
+    [customer_id, site_id, contact_name || "Site contact", phone_number, role_label || null]
+  );
+  res.status(201).json(rows[0]);
+});
+
 // Lets the order-creation form check whether a rate is actually on file for a
 // customer/grade before the order is placed, instead of only discovering the
 // gap after a delivery completes with no invoice.

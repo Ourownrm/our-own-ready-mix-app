@@ -124,7 +124,7 @@ router.get("/pump-utilization-month", requireRole("manager", "administrator"), a
 });
 
 router.get("/dashboard", requireRole("manager", "administrator"), async (req, res) => {
-  const [today, month, fleet, delayed, rejected] = await Promise.all([
+  const [today, month, fleet, delayed, rejected, target] = await Promise.all([
     query(
       `SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS total
        FROM delivery_tickets dt
@@ -153,7 +153,38 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
        JOIN delivery_tickets dt ON dt.id = sq.ticket_id
        WHERE sq.accepted = false AND date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
     ),
+    // Round 96, item 8 — monthly production target. Looked up by the DB's
+    // own idea of "this month" (not the Node process's), same reasoning as
+    // every other date-sensitive query in this app (see recurring bug
+    // pattern #1 in the project notes — never trust server-side JS Date()
+    // for business-date logic).
+    query(
+      `SELECT target_m3,
+              EXTRACT(DAY FROM (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month - 1 day'))::int AS days_in_month,
+              EXTRACT(DAY FROM CURRENT_DATE)::int AS day_of_month
+       FROM monthly_production_targets
+       WHERE year = EXTRACT(YEAR FROM CURRENT_DATE) AND month = EXTRACT(MONTH FROM CURRENT_DATE)`
+    ),
   ]);
+
+  const t = target.rows[0];
+  const monthlyProduction = Number(month.rows[0].total);
+  let targetInfo = { target_m3: null, achieved_pct: null, balance_m3: null, required_per_day_m3: null, days_remaining: null };
+  if (t) {
+    // "Today counted as remaining" — confirmed with the business — so a
+    // target set and checked on the last day of the month still shows 1 day
+    // left, not 0 (which would divide by zero).
+    const daysRemaining = Math.max(t.days_in_month - t.day_of_month + 1, 1);
+    const targetM3 = Number(t.target_m3);
+    const balance = Math.max(targetM3 - monthlyProduction, 0);
+    targetInfo = {
+      target_m3: targetM3,
+      achieved_pct: targetM3 > 0 ? Math.round((monthlyProduction / targetM3) * 1000) / 10 : null,
+      balance_m3: Math.round(balance * 10) / 10,
+      required_per_day_m3: Math.round((balance / daysRemaining) * 10) / 10,
+      days_remaining: daysRemaining,
+    };
+  }
 
   res.json({
     today_production_m3: today.rows[0].total,
@@ -161,6 +192,7 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
     fleet_status: fleet.rows,
     delayed_trucks: Number(delayed.rows[0].count),
     rejected_concrete_month_m3: rejected.rows[0].total,
+    ...targetInfo,
   });
 });
 

@@ -1,5 +1,6 @@
 import { query } from "../db.js";
 import { pushToRole, pushToUser } from "./push.js";
+import { pushText, actionLabel } from "./i18n.js";
 
 // Runs on a timer (see index.js) rather than being tied to a user action,
 // since nobody "does" anything at the 2-hour mark — it's a passive
@@ -259,14 +260,21 @@ async function detectAndNotify({ eventType, sql, params, buildMessage, pushTo })
       [r.ticket_id, eventType, r.latitude, r.longitude]
     );
     if (!inserted.length) continue; // already detected earlier — don't re-notify
-    const { title, body, role, userId, url } = buildMessage(r);
+    // `action` (round 96, item 9), when present, lets the service worker log
+    // the stage directly from a notification action button — no need to
+    // open the app first. Only wired up for the four driver stages and the
+    // two Site Supervisor stages that have a plain "confirm this" endpoint;
+    // omitted anywhere a form's actually needed (nothing today needs that
+    // for these six).
+    const { title, body, role, userId, url, action, actionText } = buildMessage(r);
     await query(
       `INSERT INTO notifications (recipient_role, recipient_id, ticket_id, type, message)
        VALUES ($1, $2, $3, 'geofence_hint', $4)`,
       [role, userId || null, r.ticket_id, body]
     );
-    if (userId) await pushToUser(userId, { title, body, url });
-    else await pushToRole(role, { title, body, url });
+    const payload = { title, body, url, ...(action ? { action, actionText } : {}) };
+    if (userId) await pushToUser(userId, payload);
+    else await pushToRole(role, payload);
   }
   return rows;
 }
@@ -285,10 +293,12 @@ export async function checkGeofenceEvents() {
                ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY recorded_at DESC) AS rn
         FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
       )
-      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude
+      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude,
+             COALESCE(du.preferred_language, 'en') AS driver_lang
       FROM delivery_tickets dt
       JOIN trucks t ON t.id = dt.truck_id
       JOIN plant ON true
+      JOIN users du ON du.id = dt.driver_id
       JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
       WHERE dt.ticket_date = CURRENT_DATE
         AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
@@ -297,9 +307,11 @@ export async function checkGeofenceEvents() {
                AND geo_distance_m(latitude, longitude, plant.latitude, plant.longitude) > plant.geofence_radius_m) = 2`,
     params: [],
     buildMessage: (r) => ({
-      title: "Looks like you've left the plant",
-      body: `${r.ticket_number} (${r.truck_number}) — tap to log Plant Out`,
+      title: pushText("left_plant", r.driver_lang, "title"),
+      body: pushText("left_plant", r.driver_lang, "body", [r.ticket_number, r.truck_number]),
       role: "driver", userId: r.driver_id, url: "/driver",
+      action: { path: `/driver/tickets/${r.ticket_id}/plant-out`, method: "POST" },
+      actionText: actionLabel("plant_out", r.driver_lang),
     }),
   }));
 
@@ -317,11 +329,12 @@ export async function checkGeofenceEvents() {
         FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
       )
       SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude,
-             co.assigned_site_supervisor_id
+             co.assigned_site_supervisor_id, COALESCE(du.preferred_language, 'en') AS driver_lang
       FROM delivery_tickets dt
       JOIN trucks t ON t.id = dt.truck_id
       JOIN customer_orders co ON co.id = dt.order_id
       JOIN sites s ON s.id = co.site_id
+      JOIN users du ON du.id = dt.driver_id
       JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
       WHERE dt.ticket_date = CURRENT_DATE
         AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
@@ -336,11 +349,15 @@ export async function checkGeofenceEvents() {
           title: "Truck appears to have reached site",
           body: `${r.truck_number} — confirm arrival for ${r.ticket_number}`,
           role: "site_supervisor", userId: r.assigned_site_supervisor_id, url: "/site-supervisor",
+          action: { path: `/site-supervisor/${r.ticket_id}/arrival`, method: "POST" },
+          actionText: "Arrival",
         }
       : {
-          title: "Looks like you've reached site",
-          body: `${r.ticket_number} — tap to confirm Site In`,
+          title: pushText("reached_site", r.driver_lang, "title"),
+          body: pushText("reached_site", r.driver_lang, "body", [r.ticket_number]),
           role: "driver", userId: r.driver_id, url: "/driver",
+          action: { path: `/driver/tickets/${r.ticket_id}/arrival`, method: "POST" },
+          actionText: actionLabel("site_in", r.driver_lang),
         },
   }));
 
@@ -359,11 +376,12 @@ export async function checkGeofenceEvents() {
         FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
       )
       SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude,
-             co.assigned_site_supervisor_id
+             co.assigned_site_supervisor_id, COALESCE(du.preferred_language, 'en') AS driver_lang
       FROM delivery_tickets dt
       JOIN trucks t ON t.id = dt.truck_id
       JOIN customer_orders co ON co.id = dt.order_id
       JOIN sites s ON s.id = co.site_id
+      JOIN users du ON du.id = dt.driver_id
       JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
       WHERE dt.ticket_date >= CURRENT_DATE - INTERVAL '2 days'
         AND dt.status IN ('reached_site', 'unloading')
@@ -379,11 +397,15 @@ export async function checkGeofenceEvents() {
           title: "Truck appears to have left site",
           body: `${r.truck_number} — confirm unloading is complete for ${r.ticket_number}`,
           role: "site_supervisor", userId: r.assigned_site_supervisor_id, url: "/site-supervisor",
+          action: { path: `/site-supervisor/${r.ticket_id}/unloading-complete`, method: "POST" },
+          actionText: "Completion",
         }
       : {
-          title: "Looks like you've left site",
-          body: `${r.ticket_number} — confirm Site Out if unloading's done`,
+          title: pushText("left_site", r.driver_lang, "title"),
+          body: pushText("left_site", r.driver_lang, "body", [r.ticket_number]),
           role: "driver", userId: r.driver_id, url: "/driver",
+          action: { path: `/driver/tickets/${r.ticket_id}/site-out`, method: "POST" },
+          actionText: actionLabel("site_out", r.driver_lang),
         },
   }));
 
@@ -398,10 +420,12 @@ export async function checkGeofenceEvents() {
                ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY recorded_at DESC) AS rn
         FROM gps_pings WHERE ticket_id IS NOT NULL AND recorded_at > now() - INTERVAL '${RECENT_PING_WINDOW}'
       )
-      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude
+      SELECT dt.id AS ticket_id, dt.ticket_number, dt.driver_id, t.truck_number, r.latitude, r.longitude,
+             COALESCE(du.preferred_language, 'en') AS driver_lang
       FROM delivery_tickets dt
       JOIN trucks t ON t.id = dt.truck_id
       JOIN plant ON true
+      JOIN users du ON du.id = dt.driver_id
       JOIN LATERAL (SELECT latitude, longitude FROM recent WHERE ticket_id = dt.id AND rn = 1) r ON true
       WHERE dt.ticket_date = CURRENT_DATE
         AND dt.status NOT IN ('cancelled')
@@ -411,9 +435,11 @@ export async function checkGeofenceEvents() {
                AND geo_distance_m(latitude, longitude, plant.latitude, plant.longitude) <= plant.geofence_radius_m) = 2`,
     params: [],
     buildMessage: (r) => ({
-      title: "Looks like you're back at the plant",
-      body: `${r.ticket_number} (${r.truck_number}) — tap to log Plant In`,
+      title: pushText("returned_to_plant", r.driver_lang, "title"),
+      body: pushText("returned_to_plant", r.driver_lang, "body", [r.ticket_number, r.truck_number]),
       role: "driver", userId: r.driver_id, url: "/driver",
+      action: { path: `/driver/tickets/${r.ticket_id}/plant-in`, method: "POST" },
+      actionText: actionLabel("plant_in", r.driver_lang),
     }),
   }));
 
@@ -445,4 +471,25 @@ export async function checkPendingSupplyRequests() {
     await pushToRole("manager", { title: "Fuel/lubricant request still pending", body: message, url: "/supply-approvals" });
   }
   return rows;
+}
+
+// Notifications accumulate forever otherwise, making the notifications tab a
+// growing wall of stale, long-actioned alerts. Read notifications are pure
+// history at that point — safe to drop after a shorter window. Unread ones
+// are kept longer on purpose (someone may still need to see and act on an
+// old one), but even those age out eventually so the list can't grow
+// unbounded if nobody's clearing their inbox.
+const NOTIFICATION_RETENTION = {
+  read: "30 days",
+  unread: "90 days",
+};
+
+export async function cleanupOldNotifications() {
+  const { rowCount: readDeleted } = await query(
+    `DELETE FROM notifications WHERE is_read = true AND created_at < now() - INTERVAL '${NOTIFICATION_RETENTION.read}'`
+  );
+  const { rowCount: unreadDeleted } = await query(
+    `DELETE FROM notifications WHERE is_read = false AND created_at < now() - INTERVAL '${NOTIFICATION_RETENTION.unread}'`
+  );
+  return { readDeleted, unreadDeleted };
 }

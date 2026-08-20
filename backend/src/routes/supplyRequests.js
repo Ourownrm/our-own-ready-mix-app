@@ -177,6 +177,13 @@ router.post("/:id/issue", requireRole("store", "administrator"), async (req, res
   const { rows: existing } = await query("SELECT * FROM supply_requests WHERE id = $1 AND status = 'approved'", [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Request not found or not in an issuable state." });
 
+  // Store can issue less than approved (stock shortage on the day) but never
+  // more — the Manager's approved figure is the ceiling for what leaves the
+  // plant store against this request.
+  if (Number(actual_quantity_issued) > Number(existing[0].approved_quantity)) {
+    return res.status(400).json({ error: `Can't issue more than the approved quantity (${existing[0].approved_quantity}).` });
+  }
+
   const { rows } = await query(
     `UPDATE supply_requests SET
        status = 'issued', issued_by = $1, issued_at = now(),

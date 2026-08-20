@@ -845,6 +845,39 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (specified slump added to orders — feeds the Delivery Challan's Workability field).");
 
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(10) NOT NULL DEFAULT 'en';
+    `);
+    log.push("Schema migration applied (driver language preference — 'en' | 'ml' | 'hi' — added to users).");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS site_contacts (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER NOT NULL REFERENCES customers(id),
+        site_id INTEGER NOT NULL REFERENCES sites(id),
+        contact_name VARCHAR(150) NOT NULL,
+        phone_number VARCHAR(20) NOT NULL,
+        role_label VARCHAR(50),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_site_contacts_customer_site ON site_contacts(customer_id, site_id);
+    `);
+    log.push("Schema migration applied (Site Contacts directory — customer+site keyed, autofill on Create Order).");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS monthly_production_targets (
+        id SERIAL PRIMARY KEY,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        target_m3 NUMERIC(10,1) NOT NULL,
+        set_by INTEGER REFERENCES users(id),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(year, month)
+      );
+    `);
+    log.push("Schema migration applied (monthly production target — feeds the Manager dashboard's Achieved %/Balance/Required-per-day KPI).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

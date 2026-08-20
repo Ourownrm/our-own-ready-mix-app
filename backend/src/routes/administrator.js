@@ -697,7 +697,9 @@ router.patch("/salespersons/:id/status", requireRole("administrator"), async (re
 router.get("/orders", requireRole("administrator", "manager"), async (req, res) => {
   const { rows } = await query(
     `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time,
-            c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name
+            o.mix_grade_id,
+            c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            EXISTS (SELECT 1 FROM delivery_tickets dt WHERE dt.order_id = o.id) AS has_tickets
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id
@@ -709,14 +711,36 @@ router.get("/orders", requireRole("administrator", "manager"), async (req, res) 
 });
 
 router.patch("/orders/:id", requireRole("administrator", "manager"), async (req, res) => {
-  const { order_quantity_m3, scheduled_batching_time, remarks } = req.body;
+  const { order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id } = req.body;
+
+  // Grade can only be corrected before any delivery ticket (DN) has been
+  // raised against the order — once a DN exists it references the original
+  // grade (invoices, QC records, and the printed challan all key off it), so
+  // changing the grade after the fact would silently desync those records.
+  // Only checked when the request actually asks to change the grade (the
+  // panel always includes the current mix_grade_id in a quantity-only save,
+  // so a same-value submit must never trip this).
+  if (mix_grade_id !== undefined && mix_grade_id !== null && mix_grade_id !== "") {
+    const { rows: current } = await query("SELECT mix_grade_id FROM customer_orders WHERE id = $1", [req.params.id]);
+    if (current.length && String(current[0].mix_grade_id) !== String(mix_grade_id)) {
+      const { rows: ticketCheck } = await query(
+        "SELECT 1 FROM delivery_tickets WHERE order_id = $1 LIMIT 1",
+        [req.params.id]
+      );
+      if (ticketCheck.length) {
+        return res.status(400).json({ error: "Grade can't be changed — a delivery ticket has already been created against this order." });
+      }
+    }
+  }
+
   const { rows } = await query(
     `UPDATE customer_orders SET
        order_quantity_m3 = COALESCE($1, order_quantity_m3),
        scheduled_batching_time = COALESCE($2, scheduled_batching_time),
-       remarks = COALESCE($3, remarks)
-     WHERE id = $4 RETURNING *`,
-    [order_quantity_m3, scheduled_batching_time, remarks, req.params.id]
+       remarks = COALESCE($3, remarks),
+       mix_grade_id = COALESCE($4, mix_grade_id)
+     WHERE id = $5 RETURNING *`,
+    [order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id || null, req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found." });
   res.json(rows[0]);
@@ -862,6 +886,66 @@ router.post("/tickets/:id/cancel", requireRole("administrator", "manager"), asyn
   await query("UPDATE delivery_tickets SET status = 'cancelled' WHERE id = $1", [req.params.id]);
   await voidInvoiceForTicket(req.params.id, "cancelled");
   res.json({ ok: true });
+});
+
+// ===== Site Contacts directory (round 96, item 7) =====
+// Full management screen — Administrator only, per the business's answer
+// ("admin should be able to edit if required, and manager will modify when
+// creating also" — that day-to-day edit-while-creating path is
+// /master/site-contacts, used from Create Order; this is the dedicated
+// browse/correct-mistakes screen).
+router.get("/site-contacts", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT sc.id, sc.contact_name, sc.phone_number, sc.role_label, sc.is_active, sc.created_at,
+            c.name AS customer_name, s.name AS site_name
+     FROM site_contacts sc
+     JOIN customers c ON c.id = sc.customer_id
+     JOIN sites s ON s.id = sc.site_id
+     ORDER BY c.name, s.name, sc.contact_name`
+  );
+  res.json(rows);
+});
+
+// ===== Monthly production target (round 96, item 8) =====
+// One row per calendar month, so past months keep their own historical
+// target rather than a single value silently drifting. Manager dashboard
+// reads the resulting KPI via GET /orders/dashboard (see orders.js).
+router.get("/production-targets", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, year, month, target_m3, updated_at FROM monthly_production_targets
+     ORDER BY year DESC, month DESC LIMIT 24`
+  );
+  res.json(rows);
+});
+
+router.post("/production-targets", requireRole("administrator"), async (req, res) => {
+  const { year, month, target_m3 } = req.body;
+  if (!year || !month || !target_m3) {
+    return res.status(400).json({ error: "Year, month, and target quantity are required." });
+  }
+  const { rows } = await query(
+    `INSERT INTO monthly_production_targets (year, month, target_m3, set_by, updated_at)
+     VALUES ($1,$2,$3,$4, now())
+     ON CONFLICT (year, month) DO UPDATE SET target_m3 = $3, set_by = $4, updated_at = now()
+     RETURNING *`,
+    [year, month, target_m3, req.user.id]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/site-contacts/:id", requireRole("administrator"), async (req, res) => {
+  const { contact_name, phone_number, role_label, is_active } = req.body;
+  const { rows } = await query(
+    `UPDATE site_contacts SET
+       contact_name = COALESCE($1, contact_name),
+       phone_number = COALESCE($2, phone_number),
+       role_label = COALESCE($3, role_label),
+       is_active = COALESCE($4, is_active)
+     WHERE id = $5 RETURNING *`,
+    [contact_name || null, phone_number || null, role_label || null, is_active, req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Contact not found." });
+  res.json(rows[0]);
 });
 
 export default router;

@@ -208,4 +208,17 @@ router.post("/breakdown", async (req, res) => {
 // Fuel filling moved to the shared /api/fuel route (covers any equipment,
 // not just this driver's truck) — see routes/fuel.js.
 
+// Driver's own app-language preference (round 96) — drives both the UI text
+// on driver-facing screens and the language used for push notifications sent
+// to this driver (see backend/src/lib/i18n.js).
+const SUPPORTED_LANGUAGES = ["en", "ml", "hi"];
+router.patch("/language", async (req, res) => {
+  const { preferred_language } = req.body;
+  if (!SUPPORTED_LANGUAGES.includes(preferred_language)) {
+    return res.status(400).json({ error: "Unsupported language." });
+  }
+  await query("UPDATE users SET preferred_language = $1 WHERE id = $2", [preferred_language, req.user.id]);
+  res.json({ ok: true, preferred_language });
+});
+
 export default router;

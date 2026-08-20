@@ -48,13 +48,29 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
      geofence_hints AS (
        SELECT ticket_id,
          MAX(detected_at) FILTER (WHERE event_type = 'left_plant') AS hint_plant_out_at,
-         MAX(detected_at) FILTER (WHERE event_type = 'returned_to_plant') AS hint_plant_in_at
+         MAX(detected_at) FILTER (WHERE event_type = 'returned_to_plant') AS hint_plant_in_at,
+         MAX(detected_at) FILTER (WHERE event_type = 'reached_site') AS hint_site_in_at,
+         MAX(detected_at) FILTER (WHERE event_type = 'left_site') AS hint_site_out_at
        FROM geofence_events GROUP BY ticket_id
      )
      SELECT dt.id, dt.ticket_number, dt.status, dt.created_at, dt.ticket_date,
             t.truck_number, t.id AS truck_id,
             c.name AS customer_name, s.name AS site_name,
-            s.latitude AS site_latitude, s.longitude AS site_longitude,
+            -- The site's saved coordinate is often unset or rough. Prefer the
+            -- Site Supervisor's fresh GPS capture from their Site Ready tap
+            -- on this order when it's available and wasn't flagged as
+            -- implausibly far from the saved site — that's the more precise,
+            -- more current point, and without this fallback the "Site
+            -- location" link simply never showed for any site missing a
+            -- saved coordinate, which is most of them.
+            COALESCE(
+              CASE WHEN co.site_ready_location_suspect THEN NULL ELSE co.site_ready_latitude END,
+              s.latitude
+            ) AS site_latitude,
+            COALESCE(
+              CASE WHEN co.site_ready_location_suspect THEN NULL ELSE co.site_ready_longitude END,
+              s.longitude
+            ) AS site_longitude,
             s.distance_from_plant_km,
             tac.amount AS trip_allowance_amount,
             tap.amount AS allowance_paid,
@@ -63,8 +79,16 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
             ts.plant_out_at, ts.site_in_at, ts.site_out_at, ts.plant_in_at,
             -- Only meaningful while the real stage is still unconfirmed — once
             -- the driver taps it for real, the earlier hint no longer matters.
+            -- Site In/Out hints are only ever actionable by the driver on a
+            -- self-service site (no_site_supervisor) — on a supervised site
+            -- these two stages are the Supervisor's own to confirm (they get
+            -- the matching hint on their own screen, see siteSupervisor.js),
+            -- so the frontend gates display on no_site_supervisor even though
+            -- the raw hint is included here either way.
             CASE WHEN ts.plant_out_at IS NULL THEN gh.hint_plant_out_at END AS hint_plant_out_at,
-            CASE WHEN ts.plant_in_at IS NULL THEN gh.hint_plant_in_at END AS hint_plant_in_at
+            CASE WHEN ts.plant_in_at IS NULL THEN gh.hint_plant_in_at END AS hint_plant_in_at,
+            CASE WHEN ts.site_in_at IS NULL THEN gh.hint_site_in_at END AS hint_site_in_at,
+            CASE WHEN ts.site_out_at IS NULL THEN gh.hint_site_out_at END AS hint_site_out_at
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN customer_orders co ON co.id = dt.order_id

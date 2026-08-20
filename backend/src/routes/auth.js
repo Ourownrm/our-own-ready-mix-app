@@ -13,7 +13,7 @@ router.post("/login", async (req, res) => {
   }
 
   const { rows } = await query(
-    "SELECT id, name, phone, role, password_hash, is_active FROM users WHERE phone = $1",
+    "SELECT id, name, phone, role, password_hash, is_active, preferred_language FROM users WHERE phone = $1",
     [phone]
   );
   const user = rows[0];
@@ -32,7 +32,7 @@ router.post("/login", async (req, res) => {
     { expiresIn: "30d" } // long-lived: field staff shouldn't need to re-login constantly
   );
 
-  res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+  res.json({ token, user: { id: user.id, name: user.name, role: user.role, preferred_language: user.preferred_language || "en" } });
 });
 
 export default router;

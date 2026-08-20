@@ -27,6 +27,7 @@ import trackingRoutes from "./routes/tracking.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
+  cleanupOldNotifications,
 } from "./lib/scheduledChecks.js";
 
 dotenv.config();
@@ -92,3 +93,11 @@ setInterval(() => {
   checkPendingSupplyRequests().catch((err) => console.error("Pending-supply-requests check failed:", err));
   checkGeofenceEvents().catch((err) => console.error("Geofence-events check failed:", err));
 }, 5 * 60 * 1000);
+
+// Purges old notifications (see cleanupOldNotifications for the retention
+// rule) so the notifications tab doesn't grow into an endless scroll of
+// long-actioned alerts. Doesn't need 5-minute freshness like the checks
+// above — hourly is plenty for a housekeeping pass.
+setInterval(() => {
+  cleanupOldNotifications().catch((err) => console.error("Notification cleanup failed:", err));
+}, 60 * 60 * 1000);

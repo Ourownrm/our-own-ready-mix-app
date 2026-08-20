@@ -2942,3 +2942,138 @@ pump when the ticket doesn't have its own (`COALESCE(dt.pump_id, co.pump_id)`).
 
 ### Migration note
 No schema changes — nothing new to apply via `/setup`.
+
+## Ninety-fifth round (App 108 / Ver. 9.18)
+
+### Removed: Truck status KPI from Manager dashboard
+The "At plant / Running / At site / Returning" row of tiles is gone from the Manager
+dashboard, per request. The backend `fleet_status` stat this fed from is left in place
+(harmless, unused) in case a future round wants to re-surface it differently.
+
+### Added: Grade correction on an order, only before the first delivery ticket
+Administrator/Manager → Manage → Correct Order can now change an order's Grade — but only
+while no delivery ticket (DN) has been raised against it yet. Once the first ticket exists,
+the grade shows as locked in the edit row instead of an editable dropdown, and the backend
+rejects a grade change on that order outright even if attempted directly against the API.
+Reasoning: once a DN exists it references the original grade — invoicing, QC records, and
+the printed Delivery Challan all key off it, so changing the grade after the fact would
+silently desync those records from what was actually batched and delivered.
+
+### Added: Issued quantity control on Store's fuel/lubricant issuance, capped at approved
+Store's "Actual quantity issued" field (shown when scanning a driver's approval QR at the
+plant) already existed, but nothing stopped it from being set higher than what the Manager
+approved. Now capped both in the form (with a note showing the ceiling) and on the backend
+— Store can issue less than approved when stock is short on the day, but never more.
+
+### Fixed: Site Ready location — capturing was invisible, and rarely reached the driver
+Two separate gaps, both closed:
+- The Site Supervisor's own screen never showed whether their Site Ready tap actually
+  captured a device location — it silently succeeded or silently failed with zero
+  feedback either way, which is exactly what "doesn't seem to be working" looks like from
+  the outside. Now shows "Location captured", a flagged-as-implausible note, or "location
+  wasn't available" right under the confirmation. Also raised the GPS timeout from 4s to
+  10s — construction sites often have weaker signal than the plant, and 4s was cutting off
+  before a fix could be acquired often enough to matter.
+- The driver's "Site location" map link only ever read the site's own saved master
+  coordinate (`sites.latitude/longitude`), which is unset or rough for a large share of
+  sites — never falling back to the fresher GPS the Site Supervisor had just captured on
+  that exact order. So the link silently never appeared for any site missing a saved
+  coordinate, even moments after a good capture. Driver's trip list now prefers the Site
+  Ready capture (when present and not flagged as implausibly far from the saved point),
+  falling back to the site's saved coordinate — same `COALESCE`/suspect-flag pattern
+  already used by the round-91 geofence-hint job, just not previously applied here too.
+
+### Added: old notifications are cleaned up automatically
+Read notifications older than 30 days, and unread ones older than 90 days, are now purged
+by an hourly background job (`cleanupOldNotifications`) — the notifications tab no longer
+grows into an endless scroll of long-actioned alerts.
+
+### Migration note
+No schema changes — nothing new to apply via `/setup`.
+
+## Ninety-sixth round (App 109 / Ver. 9.19) — items 6, 7, 8, 9 of the mocked-up feature list
+
+The business reviewed the round-95 mockup document (`OORM_Feature_Mockups_Items6to11.docx`)
+and answered its open questions directly in the file, plus sent the Transit Mixer weekly
+inspection checklist that had been missing. This round builds items 6 (driver language), 7
+(Site Contacts directory), 8 (monthly production target KPI), and 9 (geofence popup/
+notification), all confirmed with no remaining open questions. Items 10 (Maintenance
+module) and 11 (driver evaluation / Best Driver of the Month, using the now-received
+checklist) grew in scope from the business's answers — item 10 picked up three new
+sub-requirements (equipment-specific maintenance action points, an external-workshop
+repair/approval flow, and excluding in-repair vehicles from Plant Operator's ticket list)
+— and are carried to the next round rather than rushed.
+
+### Added: driver language option — Malayalam & Hindi
+`users.preferred_language` (`'en' | 'ml' | 'hi'`, default `'en'`), settable from a new
+Driver -> Settings screen (`frontend/src/pages/DriverSettings.jsx`, `PATCH
+/driver/language`). Scope, confirmed by the business: driver-facing screens only — the
+Duty screen, trip cards, stage labels, geofence hint text, and the fuel/lubricant module
+when a driver uses it (Manager/Admin/Office/QC/Store screens stay English, since the fuel
+screen is shared and only a driver can ever have a non-English preference). Built as a
+small translation dictionary (`frontend/src/lib/i18n.js`, `useT()` hook) rather than a
+full i18n library — a missing key always falls back to English instead of breaking a
+screen. The business flagged that the Malayalam/Hindi phrasing is a first pass and asked
+for it to be spot-checked by a native speaker on their team before wide rollout — this is
+not yet done. Push notification text for the four geofence hint events (see item 9 below)
+is also localized per-driver, via a parallel server-side dictionary
+(`backend/src/lib/i18n.js` — kept separate from the frontend one since backend/frontend
+are different bundles in this app).
+
+### Added: Site Contacts directory
+New `site_contacts` table, keyed on customer + site (confirmed match key). Create Order's
+"Site contact" field is now a dropdown of contacts already on file for the selected
+customer + site, with a "+ Add a new contact" option; anything newly typed is saved to the
+directory automatically when the order is submitted, so the next order for the same site
+already has it available — no separate data-entry step. `customer_orders.site_contact_number`
+is unchanged (still the number actually used on that order); the directory is a lookup/
+autofill layer, not a replacement. Administrator -> Masters -> "Site Contacts" is the
+dedicated browse/correct screen (edit a typo, deactivate someone who's moved on) — per the
+business's answer, day-to-day additions happen from Create Order itself, this screen is for
+fixing mistakes. Backend: `GET/POST /master/site-contacts` (autofill + save, any
+authenticated role that reaches Create Order), `GET/PATCH /administrator/site-contacts`
+(management screen, Administrator only).
+
+### Added: monthly production target KPI
+New `monthly_production_targets` table (one row per year+month, so past months keep their
+own historical target). Administrator -> Masters -> "Production Target" sets the figure for
+a given month (e.g. 2000 m³ for August 2026 — nothing is pre-seeded, set it once via this
+screen). Manager dashboard shows four new KPI tiles once a target exists for the current
+month: Monthly Target, Achieved (% and m³), Balance to Go (m³ and days remaining), and
+Required/Day. Confirmed with the business: "days remaining" counts every calendar day, not
+just working days. The tiles simply don't render if no target has been set yet for the
+current month, rather than showing a confusing "0 of nothing".
+
+### Added: geofence popup/notification — now covers all four stages, both roles
+Investigated before building and found the underlying detection was already more complete
+than the round-95 mockup assumed: `checkGeofenceEvents` already detects and pushes for all
+four stages (Plant Out, Site In, Site Out, Plant In) for the driver, and already pushes Site
+In/Out hints to the assigned Site Supervisor too — this round's actual new work was the
+*interruptive* treatment and the two things genuinely missing, not the detection itself:
+- **Driver app**: the passive on-screen banner is now backed by an actual interruptive
+  popup (a modal, not just a quiet line of text) with "Confirm {stage}" / "Not Yet"
+  buttons — shown the moment a hint fires while the app is open. Site In/Site Out hints
+  (`GET /tickets/my-trips` now also returns `hint_site_in_at`/`hint_site_out_at`) were
+  previously detected and pushed but never actually surfaced anywhere on the driver's own
+  screen — that gap is now closed, gated to self-service sites only (a supervised site's
+  Site In/Out remain the Site Supervisor's to confirm, same split used everywhere else).
+- **Site Supervisor app**: same interruptive-popup treatment added for their existing
+  reached-site/left-site hints (previously a passive banner only).
+- **Notification action buttons**: confirmed by the business — tapping a stage button
+  directly on the phone's notification (app in background) logs it instantly, no
+  confirm screen first. The service worker (`sw.js`) now shows a notification action
+  button when the push payload includes one, and calls the relevant API endpoint directly
+  using an auth token mirrored into IndexedDB at login (`frontend/src/lib/authDb.js` —
+  service workers can't read `localStorage`). Falls back to opening the app if the call
+  fails for any reason (no stored token, offline, stage already moved on). Wired for Plant
+  Out/Site In/Site Out/Plant In (driver) and Arrival/Completion (Site Supervisor).
+- **Scope confirmed by the business**: extend beyond the original Plant Out/Site Out pair
+  to all four driver stages, and apply the same popup+notification-action treatment to Site
+  Supervisor's own Site In/Site Out — both done above.
+
+### Migration note
+Run `/setup` after deploying — adds `users.preferred_language`, the `site_contacts` table,
+and the `monthly_production_targets` table (see recurring bug pattern #10: a query against
+any of these throws the generic "Something went wrong" error until `/setup` is re-visited).
+No pre-seeded monthly target — set the first one via Administrator -> Masters -> Production
+Target after this deploy.

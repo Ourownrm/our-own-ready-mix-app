@@ -83,6 +83,7 @@ router.get("/my-orders", async (req, res) => {
     `SELECT o.id, o.order_date, o.scheduled_batching_time, o.pump_requirement,
             o.pump_departure_time, o.pump_actual_departure_time, o.pump_departure_delay_reason,
             o.site_ready_confirmed, o.site_ready_delay_reason, o.supervisor_marked_complete,
+            o.site_ready_latitude, o.site_ready_longitude, o.site_ready_location_suspect,
             c.name AS customer_name, s.name AS site_name
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id

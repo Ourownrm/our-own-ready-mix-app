@@ -31,6 +31,8 @@ CREATE TABLE users (
   password_hash TEXT NOT NULL,
   role user_role NOT NULL,
   is_active BOOLEAN DEFAULT TRUE,
+  -- Driver-facing screens/notifications only ('en' | 'ml' | 'hi') — round 96
+  preferred_language VARCHAR(10) NOT NULL DEFAULT 'en',
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -72,6 +74,36 @@ CREATE TABLE sites (
   -- Sales Forecast is actually keyed on. FK added below once salespersons exists.
   assigned_sales_representative_id INTEGER,
   is_active BOOLEAN DEFAULT TRUE
+);
+
+-- Site Contacts directory (round 96) — keyed on customer+site, not the order.
+-- Create Order autofills from here once customer+site are picked, and saves
+-- any newly-typed contact back to it, so the next order for the same site
+-- already has it on file. customer_orders.site_contact_number (below) stays
+-- a plain free-text field recording what was actually used on that order.
+CREATE TABLE site_contacts (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER NOT NULL REFERENCES customers(id),
+  site_id INTEGER NOT NULL REFERENCES sites(id),
+  contact_name VARCHAR(150) NOT NULL,
+  phone_number VARCHAR(20) NOT NULL,
+  role_label VARCHAR(50),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_site_contacts_customer_site ON site_contacts(customer_id, site_id);
+
+-- Monthly production target (round 96) — feeds the Manager dashboard's
+-- Achieved %/Balance/Required-per-day KPI. One row per calendar month so
+-- past months keep their own historical target.
+CREATE TABLE monthly_production_targets (
+  id SERIAL PRIMARY KEY,
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  target_m3 NUMERIC(10,1) NOT NULL,
+  set_by INTEGER REFERENCES users(id),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(year, month)
 );
 
 CREATE TABLE mix_grades (
