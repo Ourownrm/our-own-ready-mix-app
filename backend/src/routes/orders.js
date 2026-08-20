@@ -169,7 +169,7 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
 
   const t = target.rows[0];
   const monthlyProduction = Number(month.rows[0].total);
-  let targetInfo = { target_m3: null, achieved_pct: null, balance_m3: null, required_per_day_m3: null, days_remaining: null };
+  let targetInfo = { target_m3: null, achieved_pct: null, balance_m3: null, required_per_day_m3: null, days_remaining: null, pace_status: null };
   if (t) {
     // "Today counted as remaining" — confirmed with the business — so a
     // target set and checked on the last day of the month still shows 1 day
@@ -177,12 +177,21 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
     const daysRemaining = Math.max(t.days_in_month - t.day_of_month + 1, 1);
     const targetM3 = Number(t.target_m3);
     const balance = Math.max(targetM3 - monthlyProduction, 0);
+    const requiredPerDay = Math.round((balance / daysRemaining) * 10) / 10;
+    // Pace indicator for the Manager dashboard's colored meter — compares the
+    // average daily rate actually achieved so far this month against what's
+    // now required for the rest of it, rather than just showing a flat
+    // percentage with no sense of whether that's on track or not.
+    const avgDailySoFar = monthlyProduction / t.day_of_month;
+    const paceRatio = requiredPerDay > 0 ? avgDailySoFar / requiredPerDay : 1;
+    const paceStatus = balance <= 0 ? "good" : paceRatio >= 1 ? "good" : paceRatio >= 0.85 ? "watch" : "behind";
     targetInfo = {
       target_m3: targetM3,
       achieved_pct: targetM3 > 0 ? Math.round((monthlyProduction / targetM3) * 1000) / 10 : null,
       balance_m3: Math.round(balance * 10) / 10,
-      required_per_day_m3: Math.round((balance / daysRemaining) * 10) / 10,
+      required_per_day_m3: requiredPerDay,
       days_remaining: daysRemaining,
+      pace_status: paceStatus,
     };
   }
 

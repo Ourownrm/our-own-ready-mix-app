@@ -3077,3 +3077,54 @@ and the `monthly_production_targets` table (see recurring bug pattern #10: a que
 any of these throws the generic "Something went wrong" error until `/setup` is re-visited).
 No pre-seeded monthly target — set the first one via Administrator -> Masters -> Production
 Target after this deploy.
+
+## Ninety-seventh round (App 110 / Ver. 9.20) — quick fixes after round 96 usage
+
+Five small follow-ups from the business after trying round 96 in the field.
+
+### Fixed: breakdown report now captures GPS location
+`POST /driver/breakdown` already accepted and stored `latitude`/`longitude` — that part was
+built earlier but the driver's own Report Breakdown form never captured or sent them. Fixed
+on the frontend only (`BreakdownForm` in `DriverDuty.jsx`): captures GPS the same
+best-effort way as every other stage action in this file (`navigator.geolocation`, 8s
+timeout, silently proceeds without coordinates if it fails) at the moment the report is
+submitted, alongside the driver's own typed description of the location.
+
+### Redesigned: Manager dashboard monthly-target KPIs — colorful + graphical
+Per feedback, the plain four-tile round-96 version is replaced with two cards
+(`MonthlyTargetPanel` in `ManagerDashboard.jsx`):
+- **Achieved** — shows only the percentage (the `monthly_production_m3` figure was dropped
+  from this tile since Monthly Production already has its own KPI tile above it) as a
+  colored meter/progress bar. The fill color is driven by a new `pace_status` field
+  (`"good" | "watch" | "behind"`) computed server-side in `GET /orders/dashboard` —
+  average daily rate achieved so far vs. required-per-day-to-hit-target — using this app's
+  own existing status tokens (`--signal-green` / `--amber` / `--alert-red`), not a new
+  palette, so it stays visually consistent with the rest of the UI.
+- **Balance to go** — Balance (m³), Days left, and Required/day are combined into one card
+  instead of three separate tiles, per the business's explicit request.
+
+### Answered: how to modify a translation
+`frontend/src/lib/i18n.js` is the file — each language (`en`/`ml`/`hi`) is a flat
+key -> string map, with `{placeholder}` syntax for interpolated values (e.g.
+`{count}`, `{name}`, `{time}`). A correction there needs a new build + deploy to take
+effect; it isn't something the business can hot-edit themselves in production.
+
+### Answered: where's the Site Contacts admin screen
+Administrator -> Masters -> "Site Contacts" (also reachable from Reports -> Masters for
+anyone who lands on the Director's Dashboard instead) — added in round 96, item 7.
+
+### Added: pump is mandatory on order creation, and stays editable after a delivery ticket exists
+Two related fixes to `pump_requirement`/`pump_id` on `customer_orders`:
+- **Create Order**: "Which pump" is now a required field once a pump requirement (boom/line)
+  is selected — both as a native `required` select and as an explicit check before submit.
+- **Correct Orders** (`Administrator -> Manage -> Correct Order`, `OrdersPanel` in
+  `MasterDataPanels.jsx`): a new Pump column lets the pump requirement and specific pump be
+  changed on an existing order at any time — **deliberately not locked by `has_tickets`**,
+  unlike Grade. The business's reasoning: the pump actually in use can change mid-pour for
+  operational reasons (breakdown, site access, etc.), so this needs to stay correctable
+  after a delivery ticket/DN has already been raised, not just before. `PATCH
+  /administrator/orders/:id` accepts `pump_requirement`/`pump_id` with no ticket-lock check;
+  selecting "Without pump" clears `pump_id`. Scope note: this corrects the *order's* own
+  pump assignment — it does not retroactively rewrite `pump_id` on delivery tickets already
+  printed; if the business also wants a pump change to update an in-progress ticket's own
+  record, that's a follow-up, not assumed here.

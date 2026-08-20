@@ -697,13 +697,14 @@ router.patch("/salespersons/:id/status", requireRole("administrator"), async (re
 router.get("/orders", requireRole("administrator", "manager"), async (req, res) => {
   const { rows } = await query(
     `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time,
-            o.mix_grade_id,
+            o.mix_grade_id, o.pump_requirement, o.pump_id, p.pump_code,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
             EXISTS (SELECT 1 FROM delivery_tickets dt WHERE dt.order_id = o.id) AS has_tickets
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id
      JOIN mix_grades m ON m.id = o.mix_grade_id
+     LEFT JOIN pumps p ON p.id = o.pump_id
      ORDER BY o.order_date DESC, o.id DESC
      LIMIT 100`
   );
@@ -711,7 +712,18 @@ router.get("/orders", requireRole("administrator", "manager"), async (req, res) 
 });
 
 router.patch("/orders/:id", requireRole("administrator", "manager"), async (req, res) => {
-  const { order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id } = req.body;
+  const { order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id, pump_requirement, pump_id } = req.body;
+
+  // Unlike grade, the pump is deliberately editable at any time — even after
+  // a delivery ticket (DN) exists — because the pump actually used can
+  // change mid-pour for operational reasons (breakdown, site access, etc.).
+  // This only corrects the order's own record; it does not rewrite pump_id
+  // on tickets already printed.
+  if (pump_requirement === "without_pump") {
+    // no pump involved — pump_id is cleared below via the explicit null branch
+  } else if (pump_requirement !== undefined && !pump_id) {
+    return res.status(400).json({ error: "Select which pump is assigned to this order." });
+  }
 
   // Grade can only be corrected before any delivery ticket (DN) has been
   // raised against the order — once a DN exists it references the original
@@ -738,9 +750,11 @@ router.patch("/orders/:id", requireRole("administrator", "manager"), async (req,
        order_quantity_m3 = COALESCE($1, order_quantity_m3),
        scheduled_batching_time = COALESCE($2, scheduled_batching_time),
        remarks = COALESCE($3, remarks),
-       mix_grade_id = COALESCE($4, mix_grade_id)
-     WHERE id = $5 RETURNING *`,
-    [order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id || null, req.params.id]
+       mix_grade_id = COALESCE($4, mix_grade_id),
+       pump_requirement = COALESCE($5, pump_requirement),
+       pump_id = CASE WHEN $5::text IS NULL THEN pump_id WHEN $5 = 'without_pump' THEN NULL ELSE $6 END
+     WHERE id = $7 RETURNING *`,
+    [order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id || null, pump_requirement || null, pump_id || null, req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found." });
   res.json(rows[0]);
