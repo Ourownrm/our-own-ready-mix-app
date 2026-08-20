@@ -878,6 +878,109 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (monthly production target — feeds the Manager dashboard's Achieved %/Balance/Required-per-day KPI).");
 
+    // Round 98 — Maintenance module (item 10) & Best Driver of the Month (item 11).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_action_points (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(150) NOT NULL,
+        interval_days INTEGER,
+        interval_hours INTEGER,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (maintenance_action_points — Administrator-defined checklist of scheduled maintenance items, days-OR-hours-of-operation basis).");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_logs (
+        id SERIAL PRIMARY KEY,
+        action_point_id INTEGER NOT NULL REFERENCES maintenance_action_points(id),
+        truck_id INTEGER NOT NULL REFERENCES trucks(id),
+        done_at DATE NOT NULL DEFAULT CURRENT_DATE,
+        hours_at_service NUMERIC(10,2),
+        performed_by INTEGER REFERENCES users(id),
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_maintenance_logs_truck_action ON maintenance_logs(truck_id, action_point_id, done_at DESC);
+    `);
+    log.push("Schema migration applied (maintenance_logs — completion history feeding the due list and per-vehicle service history).");
+
+    await pool.query(`
+      DO $$ BEGIN
+        CREATE TYPE external_repair_status AS ENUM ('requested', 'approved', 'rejected', 'sent_out', 'returned');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS external_repairs (
+        id SERIAL PRIMARY KEY,
+        truck_id INTEGER NOT NULL REFERENCES trucks(id),
+        requested_by INTEGER NOT NULL REFERENCES users(id),
+        requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        issue_description TEXT NOT NULL,
+        status external_repair_status NOT NULL DEFAULT 'requested',
+        workshop_name VARCHAR(150),
+        approved_by INTEGER REFERENCES users(id),
+        approved_at TIMESTAMPTZ,
+        rejection_reason TEXT,
+        sent_out_at TIMESTAMPTZ,
+        returned_at TIMESTAMPTZ,
+        notes TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_external_repairs_status ON external_repairs(status);
+      CREATE INDEX IF NOT EXISTS idx_external_repairs_truck ON external_repairs(truck_id);
+    `);
+    log.push("Schema migration applied (external_repairs — driver-requested / Manager-approved external workshop flow; a truck sitting at 'sent_out' is excluded from Plant Operator's ticket-creation truck list).");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS truck_inspections (
+        id SERIAL PRIMARY KEY,
+        truck_id INTEGER NOT NULL REFERENCES trucks(id),
+        driver_id INTEGER REFERENCES users(id),
+        cleaner_name VARCHAR(100),
+        inspection_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        ratings JSONB NOT NULL,
+        observations TEXT,
+        filled_by INTEGER NOT NULL REFERENCES users(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_truck_inspections_truck_date ON truck_inspections(truck_id, inspection_date DESC);
+    `);
+    log.push("Schema migration applied (truck_inspections — the digitized Transit Mixer Weekly Inspection Checklist, filled by Manager; ratings stored as JSONB, 1=Poor..4=Very Good per item; feeds Best Driver of the Month's checklist component).");
+
+    await pool.query(`
+      ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS issue_type VARCHAR(40);
+    `);
+    log.push("Schema migration applied (breakdown_reports.issue_type — picklist value for the driver breakdown report, round 99).");
+
+    // Round 100, item 4 — customer concrete booking form, built for real.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS customer_booking_links (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        site_id INTEGER REFERENCES sites(id) NOT NULL,
+        token VARCHAR(64) UNIQUE NOT NULL,
+        tracking_enabled BOOLEAN NOT NULL DEFAULT false,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_by INTEGER REFERENCES users(id) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        revoked_by INTEGER REFERENCES users(id),
+        revoked_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_customer_booking_links_token ON customer_booking_links(token);
+      CREATE INDEX IF NOT EXISTS idx_customer_booking_links_customer_site ON customer_booking_links(customer_id, site_id);
+    `);
+    await pool.query(`
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS booking_link_id INTEGER REFERENCES customer_booking_links(id);
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pump_requirement pump_type;
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS casting_location VARCHAR(200);
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS site_contact_name VARCHAR(150);
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS site_contact_number VARCHAR(20);
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS remarks TEXT;
+      ALTER TABLE bookings ALTER COLUMN requested_by DROP NOT NULL;
+    `);
+    log.push("Schema migration applied (customer_booking_links — Manager/Admin-generated per customer+site token; bookings can now originate from a customer directly, not just a Sales Executive — requested_by is NULL for those, booking_link_id points at the link instead).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

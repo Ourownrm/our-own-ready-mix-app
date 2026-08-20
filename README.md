@@ -3128,3 +3128,234 @@ Two related fixes to `pump_requirement`/`pump_id` on `customer_orders`:
   pump assignment — it does not retroactively rewrite `pump_id` on delivery tickets already
   printed; if the business also wants a pump change to update an in-progress ticket's own
   record, that's a follow-up, not assumed here.
+
+## Ninety-eighth round (App 111 / Ver. 9.21) — items 10 & 11 built: Maintenance module & Best Driver of the Month
+
+Sent an HTML mockup of both screens for review before writing any code (following the round-95
+pattern for items 6-11); the business approved it as-is ("looks very good, code it now"). This
+round builds the real thing — new tables, five new backend endpoints groups, and a new
+Manager/Administrator screen — reusing the mockup's exact layout and colors (kanban, meter,
+stacked bar, timeline) now wired to live data instead of sample rows.
+
+### Added: Maintenance module (item 10)
+New tables: `maintenance_action_points` (Administrator-defined, days-OR-hours-of-operation
+basis, applies to every active truck — no per-vehicle overrides in this first version),
+`maintenance_logs` (completion history), `external_repairs` (the workshop flow below).
+Administrator -> Masters -> "Maintenance Action Points" manages the checklist itself; the due
+list, logging, and repair flow live at Manager/Administrator -> Reports -> "Maintenance & Best
+Driver of the Month" (`GET/POST /api/maintenance/*`). Whichever of days-elapsed or
+hours-of-operation trips first determines due status (overdue / due this week / upcoming /
+not yet logged) — hours read off the truck's most recent `fuel_logs.hour_meter_reading`,
+already captured today by the fuel module, no new data entry required. All three
+business-added sub-requirements are in:
+1. **Per-equipment action points on a days-OR-hours basis** — `maintenance_action_points`,
+   both intervals optional but at least one required; the due list takes whichever is closer.
+2. **External-workshop repair/approval flow** — driver requests (`POST
+   /driver/external-repair`, a new "Request external repair" button on the Duty screen,
+   distinct from Report Breakdown), Manager approves/rejects, then logs sent-out/returned as
+   the truck actually goes (`PATCH /api/maintenance/external-repairs/:id/{approve,reject,
+   sent-out,returned}`), tracked as a 4-column kanban (Requested / Approved / Sent out /
+   Returned) matching the approved mockup.
+3. **A truck away for repair drops off Plant Operator's ticket-creation list** — `GET
+   /master/trucks?exclude_in_repair=true` (only Plant Operator's own truck picker passes this
+   flag; every other caller of that endpoint still sees the full active fleet). A truck
+   re-appears the moment its repair is marked Returned.
+
+Per-vehicle service history (standard maintenance + external repairs, merged into one
+timeline) is a drilldown on the same screen.
+
+### Added: Best Driver of the Month (item 11)
+The weekly Transit Mixer Inspection Checklist — the exact 5 sections / 36 items transcribed
+from the business's own `TM_Check_list_for_Plant_Incharge.pdf` (re-read from the original
+upload rather than relying on an earlier summary, to make sure nothing was mistranscribed) —
+is now a real digital form (`truck_inspections`, filled by Manager per the business's
+confirmed answer, Poor/Satisfactory/Good/Very Good per item) at "+ New weekly inspection" on
+the Best Driver tab. Composite score per driver, computed monthly:
+- **Checklist** — average of that driver's weekly inspection scores this month.
+- **On-time** — reuses the exact ">2 hours at site" threshold the Manager dashboard's own
+  "delayed trucks" KPI already uses (`GET /orders/dashboard`), applied retrospectively per
+  completed ticket instead of as a live check. A ticket missing geofence timestamps (e.g. a
+  self-service site) is excluded from this one component rather than guessed, and the
+  composite reweights across the remaining three so a data gap doesn't just zero a driver out.
+- **Quality** — 100 minus the rejection rate (rejected m³ / loaded m³) across the driver's
+  completed tickets that month.
+- **Volume** — completed trip count, normalized against the month's top performer. No minimum
+  trip count, per the business's confirmed answer — every driver is eligible.
+- **Open question, flagged directly on the page**: the weighting used (Checklist 30% /
+  On-time 25% / Quality 25% / Volume 20%, `WEIGHTS` in `backend/src/routes/maintenance.js`)
+  is a starting proposal carried over from the mockup, not a finalized decision.
+
+A driver with no completed trips or no checklist filled that month shows in a separate "Not
+yet ranked" list with the specific reason, rather than being silently scored as zero.
+
+### Migration note
+Run `/setup` after deploying — adds `maintenance_action_points`, `maintenance_logs`,
+`external_repairs` (+ the `external_repair_status` enum), and `truck_inspections`. Verified
+against a fresh local Postgres 16 instance this round: full `schema.sql` install, the
+incremental `/setup` migration path against an already-existing database (twice, to confirm
+idempotency), and every new endpoint exercised end-to-end with seeded data (due-list
+overdue/due-soon classification, the full external-repair lifecycle including the
+ticket-creation exclusion taking effect and clearing on return, and the best-driver composite
+score) before packaging this round.
+
+## Ninety-ninth round (App 112 / Ver. 9.22) — Best Driver rework, breakdown report rework, customer booking mockup
+
+Business feedback on round 98's Best Driver of the Month, plus two more items: the driver
+breakdown report's location capture, and a first mockup of a customer-facing booking form.
+
+### Changed: Best Driver weighting confirmed, "on-time" redefined as transit efficiency (item 1, 2)
+Two related pieces of feedback on the round-98 mockup-turned-real feature:
+
+1. **Weighting confirmed**: Checklist 40% / On-time 15% / Quality 20% / Volume 25%
+   (`WEIGHTS` in `backend/src/routes/maintenance.js`) — no longer an open question on the page.
+2. **"On-time" redefined.** Business pushback: total time at site isn't on the driver — it
+   depends on site conditions (queueing, pump availability, other trucks at the same site).
+   What IS on the driver is the two transit legs: plant-out → site-in, and site-out →
+   plant-in. Those legs also vary a lot by which site a driver was sent to, so a driver isn't
+   scored against a fixed clock — they're scored against how other drivers did on trips to the
+   **same site** that month (`computeTransitRows()` groups by `sites.id`, needs at least 2
+   trips at a site before scoring kicks in; a ticket with nothing to compare against is
+   excluded rather than guessed, same reweighting pattern as before).
+
+   While rebuilding this, found and fixed a real round-98 bug: the old on-time calculation
+   read `trip_events.event_type = 'left_site'` as the "site out" marker — but the app never
+   actually writes a `left_site` row to `trip_events` (it only ever appears as a geofence
+   *hint* in `geofence_events`, surfaced to Site Supervisor/Driver as a nudge, never confirmed
+   into the real timeline). So on-time silently had zero data for every driver all of round 98.
+   Fixed to use `unloading_completed`, which is the event the rest of the app
+   (`siteSupervisor.js`, `tickets.js`) already treats as "site out".
+
+### Added: Site Efficiency tab (item 1 follow-up)
+New third tab on the Maintenance/Best Driver screen (`GET /api/maintenance/site-efficiency`):
+for each site, every driver's average plant-out/site-in and site-out/plant-in time this month,
+sorted fastest first, with a "vs site avg" percentage. This is the per-site detail behind the
+Best Driver on-time score — lets a manager tell apart "this driver is slow" from "this driver
+keeps getting sent to a far/slow site."
+
+### Changed: Driver breakdown report — no more free-text location, added an issue picklist (item 3)
+The manual "Location" text field is gone from the driver's Report Breakdown form
+(`DriverDuty.jsx`) — location is now GPS-only, using the same best-effort auto-capture added
+last round (`navigator.geolocation`, 8s timeout, never blocks submission). Manager's
+Breakdowns screen shows a "view location" Google Maps link (same pattern already used
+elsewhere in the app — SalesPanels, LeadsBrowser, etc.) instead of the old typed-in text.
+
+Also added a fixed picklist of common Transit Mixer issues (tyre puncture, engine trouble,
+overheating, drum/mixer fault, hydraulic failure, battery/electrical, brake failure, fuel
+issue, clutch/gearbox, accident, other) — single source of truth in
+`backend/src/lib/breakdownIssueTypes.js`, fetched by the frontend via
+`GET /api/master/breakdown-issue-types` (same pattern as round 98's inspection checklist).
+"Other" requires a short free-text description; every other option leaves the "additional
+details" field optional. New `breakdown_reports.issue_type` column.
+
+### Added: Customer concrete booking form — mockup only (item 4)
+Sent as a standalone HTML mockup (`customer-booking-mockup.html`) for review, not built yet —
+same two-step process as items 6-11 (mockup first, "code it now" before real
+backend/frontend work starts). Covers the full loop the business described: Manager/Admin
+generates a booking link scoped to one customer + one site (same unguessable-token pattern
+the app already uses for customer delivery-tracking links); customer opens the link on their
+phone and submits grade, quantity, pump requirement, casting location, site contact, and
+special instructions (fields mirror what Create Order already captures); the request appears
+in a new Manager Dashboard queue where Manager can adjust the scheduled date/time before
+converting it into a real order, or decline with a reason; the customer re-opens the same
+link afterward to see status, with the confirmed date & time front and center once accepted.
+
+Note: the actual Order Form / Terms & Conditions PDF referenced in the request didn't sync
+into this session, so the form fields are drawn from the app's own existing order-capture
+fields and the Terms & Conditions text is a placeholder, clearly marked as such on the mockup
+itself. Swap in the real wording once available — no other part of the mockup depends on it.
+
+### Migration note
+Run `/setup` after deploying — adds `breakdown_reports.issue_type`. Verified this round
+against a fresh local Postgres 16 instance: full `schema.sql` install, the incremental
+`/setup` path (twice, idempotency), and every changed/new endpoint exercised end-to-end with
+seeded data — including a same-site, two-driver transit scenario to hand-check the new
+site-relative on-time math (`50 + (site_avg / driver_time - 1) * 100`, clamped 0-100) and the
+site-efficiency endpoint's per-site averages against the same numbers.
+
+## Hundredth round (App 113 / Ver. 9.23) — Customer concrete booking form, built for real (item 4)
+
+Round 99's mockup, coded up after two more rounds of feedback: the manager needs to be able
+to complete the rest of the order form on conversion (not just adjust date/time), and Manager
+**and** Administrator both need this reachable from their own dashboards, in its own menu —
+not folded into the existing "Reports" group like round 98's Maintenance module was.
+
+### Added: customer_booking_links — a per customer+site token, independent of tracking
+New table `customer_booking_links` (`customer_id`, `site_id`, `token`, `tracking_enabled`,
+`is_active`). Same unguessable-token pattern as round 91's `order_tracking_links`
+(`randomBytes(24).toString("base64url")`), and the same "generating a new one revokes the old"
+rule for a given customer+site. The point of a *separate* `tracking_enabled` boolean from
+`is_active` is the second question this round answered: **how do you turn off just the
+delivery-status view without killing the booking link?** — `PATCH /api/booking-links/:id/tracking`
+flips it on its own; the link itself, and the customer's ability to see their booking status,
+keep working either way. `POST /api/booking-links/:id/revoke` is the only thing that kills both,
+because without the link there's nothing left to show regardless.
+
+Backend: `backend/src/routes/bookingLinks.js` (new, mounted at `/api/booking-links`,
+`requireRole("manager","administrator")` — generate/list/toggle-tracking/revoke).
+
+### Added: bookings can now come from a customer directly, not just a Sales Executive
+Rather than build a second parallel "customer booking request" table and a second conversion
+flow, the existing `bookings` table (Sales Executive leads → booking → order, from the sales
+module) was extended: `requested_by` is now nullable, and a new `booking_link_id` FK plus
+`pump_requirement` / `casting_location` / `site_contact_name` / `site_contact_number` /
+`remarks` columns were added. A customer-submitted booking has `requested_by = NULL` and
+`booking_link_id` set instead. This means the **entire existing manager review/convert
+flow — `GET /sales/bookings`, `POST /sales/bookings/:id/decline`,
+`POST /sales/bookings/:id/convert`, and the `BookingsQueue`/`ConvertBookingForm` components
+already on the Manager Dashboard — needed no new endpoints at all**, just wider field support.
+`ConvertBookingForm` now pre-fills pump requirement, casting location, and site contact from
+whatever the customer submitted (shown as pre-filled fields the manager can still change, not
+locked), and — matching round 97's "which pump" requirement for direct order creation — now
+also requires picking a specific pump before creating the order, which it didn't before.
+
+Backend: `backend/src/routes/customerBooking.js` (new, public, mounted at
+`/api/customer-booking`, no `requireAuth` — same reasoning as `routes/tracking.js`, the token
+alone is the access boundary). `GET /:token` returns the link's customer/site name, the mix
+grade list, the latest request's status, and (only once converted **and** tracking is enabled
+on the link) a live delivery-tracking payload for that order. `POST /:token` submits a new
+request, blocked with 409 while a request from the same link is still pending, so a customer
+double-tapping Send doesn't queue duplicates.
+
+### Added: live delivery tracking, bundled into the same booking link
+The per-truck stage query (Left Plant → At Site → Unloading → Delivered) used to live only in
+`routes/tracking.js`. Pulled out into `backend/src/lib/orderTracking.js`
+(`getOrderTrackingPayload(orderId)`) so both the round-91 standalone tracking link and this
+round's booking-link-with-embedded-tracking use the exact same query and stage logic — verified
+no regression on the existing `/api/track/:token` endpoint after the refactor. When a booking
+link has tracking enabled and its request has been converted, the customer's *same* booking link
+shows live truck-by-truck status beneath the booking confirmation, instead of needing a second
+link.
+
+Frontend: `frontend/src/pages/CustomerBookingForm.jsx` (new, public, no login, `/book/:token`)
+— combined form + status view + embedded tracking, following `CustomerTracking.jsx`'s existing
+conventions (own `Shell`, 20s poll, no `TopBar`/`ProtectedRoute`). The Terms & Conditions
+section is a single line ("governed by your existing Supply Agreement") rather than a full T&C
+block, since this link only ever reaches a customer who already has one on file.
+
+### Added: "Customer Booking" — its own top-level menu, not folded into Reports
+Per this round's feedback, this is deliberately **not** added as another item inside the
+existing "Reports" `GroupedMenu` (the round-98 Maintenance precedent) — it's its own menu,
+`Customer Booking`, with one item ("Booking Links & Requests" → `/customer-booking`), added to
+all three places that duplicate the top nav bar: `Administrator.jsx`, `ManagerDashboard.jsx`,
+and `Reports.jsx` (recurring bug pattern #7 — a nav item added to only one of these silently
+doesn't show up for users who reach the same role from a different page).
+
+`frontend/src/pages/CustomerBooking.jsx` (new, `/customer-booking`,
+`roles={["manager","administrator"]}`) is the link-management console: generate a link,
+see/copy/toggle-tracking/revoke existing links, and — since Manager already saw the incoming
+bookings queue on their dashboard (`BookingsQueue` was already rendered there, and it's now
+also **visible to Administrator**, since `/manager` has always allowed both roles) — the same
+`BookingsQueue` component is reused at the bottom of this page too, rather than duplicating
+that list a third time.
+
+### Migration note
+Run `/setup` after deploying — adds `customer_booking_links` and the new `bookings` columns.
+Verified this round against a fresh local Postgres 16 instance: full `schema.sql` install, the
+incremental `/setup` path (twice, idempotency), and the complete loop exercised end-to-end over
+HTTP — generate a link, submit a booking as the customer (including the duplicate-while-pending
+409 check), review and convert it as Administrator (with a real pump/site-contact/casting-location
+round trip), confirm the customer's own link immediately reflects "converted", toggle tracking on
+and off independent of revoking, seed a dispatched truck and confirm the live tracking payload
+appears on the customer's link, revoke the link and confirm it goes to `expired`, and re-verified
+the existing round-91 `/api/track/:token` endpoint still returns identical data after being
+refactored onto the new shared `orderTracking.js` helper.

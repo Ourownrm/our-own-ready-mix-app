@@ -6,6 +6,7 @@ import {
   orderHasNoSiteSupervisor,
 } from "../lib/deliveryConfirmation.js";
 import { pushToRole } from "../lib/push.js";
+import { BREAKDOWN_ISSUE_LABELS } from "../lib/breakdownIssueTypes.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("driver"));
@@ -185,21 +186,28 @@ router.post("/tickets/:ticketId/reject", requireNoSupervisor, async (req, res) =
 });
 
 router.post("/breakdown", async (req, res) => {
-  const { truck_id, location, latitude, longitude, remarks } = req.body;
+  // Round 99, item 3 — the manual "Location" text field is gone. Location is
+  // now GPS only (latitude/longitude, best-effort captured by the frontend
+  // at submit time — same pattern as everywhere else in the app). issue_type
+  // is a picklist value from breakdownIssueTypes.js; remarks stays free text
+  // (required by the frontend only when issue_type === 'other').
+  const { truck_id, issue_type, latitude, longitude, remarks } = req.body;
+  if (!issue_type) return res.status(400).json({ error: "Select what happened." });
   await query(
-    `INSERT INTO breakdown_reports (equipment_type, truck_id, driver_id, reported_by, location, latitude, longitude, remarks)
+    `INSERT INTO breakdown_reports (equipment_type, truck_id, driver_id, reported_by, issue_type, latitude, longitude, remarks)
      VALUES ('truck', $1,$2,$2,$3,$4,$5,$6)`,
-    [truck_id, req.user.id, location, latitude, longitude, remarks]
+    [truck_id, req.user.id, issue_type, latitude || null, longitude || null, remarks || null]
   );
   const { rows } = await query("SELECT truck_number FROM trucks WHERE id = $1", [truck_id]);
+  const issueLabel = BREAKDOWN_ISSUE_LABELS[issue_type] || issue_type;
   await query(
     `INSERT INTO notifications (recipient_role, type, message)
      VALUES ('manager', 'breakdown_reported', $1)`,
-    [`Breakdown reported: truck ${rows[0]?.truck_number || truck_id}${location ? ` near ${location}` : ""}`]
+    [`Breakdown reported: truck ${rows[0]?.truck_number || truck_id} — ${issueLabel}`]
   );
   await pushToRole("manager", {
     title: "Truck breakdown reported",
-    body: `${rows[0]?.truck_number || "A truck"}${location ? ` — ${location}` : ""}`,
+    body: `${rows[0]?.truck_number || "A truck"} — ${issueLabel}`,
     url: "/manager",
   });
   res.json({ ok: true });
@@ -207,6 +215,48 @@ router.post("/breakdown", async (req, res) => {
 
 // Fuel filling moved to the shared /api/fuel route (covers any equipment,
 // not just this driver's truck) — see routes/fuel.js.
+
+// Round 98, item 10 sub-requirement 2 — driver requests an external-workshop
+// repair; Manager approves/rejects, then logs sent-out/returned as the truck
+// actually goes. See backend/src/routes/maintenance.js for the Manager side.
+router.post("/external-repair", async (req, res) => {
+  const { truck_id, issue_description } = req.body;
+  if (!truck_id || !issue_description) {
+    return res.status(400).json({ error: "Truck and a description of the issue are required." });
+  }
+  const { rows } = await query(
+    `INSERT INTO external_repairs (truck_id, requested_by, issue_description)
+     VALUES ($1,$2,$3) RETURNING *`,
+    [truck_id, req.user.id, issue_description]
+  );
+  const { rows: truckRows } = await query("SELECT truck_number FROM trucks WHERE id = $1", [truck_id]);
+  await query(
+    `INSERT INTO notifications (recipient_role, type, message)
+     VALUES ('manager', 'external_repair_requested', $1)`,
+    [`External repair requested: truck ${truckRows[0]?.truck_number || truck_id} — ${issue_description}`]
+  );
+  await pushToRole("manager", {
+    title: "External repair requested",
+    body: `${truckRows[0]?.truck_number || "A truck"} — ${issue_description}`,
+    url: "/manager",
+  });
+  res.status(201).json(rows[0]);
+});
+
+// Driver's own request history — so they can see whether a request they
+// made was approved/rejected, without needing Manager access.
+router.get("/external-repair", async (req, res) => {
+  const { rows } = await query(
+    `SELECT er.id, er.status, er.issue_description, er.requested_at, er.workshop_name,
+            er.sent_out_at, er.returned_at, er.rejection_reason, t.truck_number
+     FROM external_repairs er
+     JOIN trucks t ON t.id = er.truck_id
+     WHERE er.requested_by = $1
+     ORDER BY er.requested_at DESC LIMIT 20`,
+    [req.user.id]
+  );
+  res.json(rows);
+});
 
 // Driver's own app-language preference (round 96) — drives both the UI text
 // on driver-facing screens and the language used for push notifications sent

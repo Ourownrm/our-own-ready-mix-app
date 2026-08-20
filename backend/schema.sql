@@ -223,9 +223,34 @@ CREATE TABLE lead_followups (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- A booking is a lighter-weight commitment than a real order — a Sales
--- Executive places one, and it sits pending until Manager confirms site
--- readiness and payment terms, then converts it into a real customer_orders row.
+-- Round 100, item 4 — a customer booking link: an unguessable token scoped to
+-- exactly one customer + one site (same pattern as order_tracking_links
+-- below), shared with a customer who already has a signed supply agreement.
+-- Opening it lets them submit a booking request without logging in.
+-- tracking_enabled is independent of is_active — Manager/Admin can turn the
+-- live delivery-status view on/off for a link without revoking the booking
+-- link itself (revoke kills both, since without the link there's nothing to
+-- show either way).
+CREATE TABLE customer_booking_links (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  site_id INTEGER REFERENCES sites(id) NOT NULL,
+  token VARCHAR(64) UNIQUE NOT NULL,
+  tracking_enabled BOOLEAN NOT NULL DEFAULT false,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_by INTEGER REFERENCES users(id) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_by INTEGER REFERENCES users(id),
+  revoked_at TIMESTAMPTZ
+);
+CREATE INDEX idx_customer_booking_links_token ON customer_booking_links(token);
+CREATE INDEX idx_customer_booking_links_customer_site ON customer_booking_links(customer_id, site_id);
+
+-- A booking is a lighter-weight commitment than a real order — placed either
+-- by a Sales Executive, or (round 100) by a customer themselves via a
+-- customer_booking_links token (booking_link_id set, requested_by NULL in
+-- that case). It sits pending until Manager confirms site readiness and
+-- payment terms, then converts it into a real customer_orders row.
 CREATE TYPE booking_status AS ENUM ('pending', 'converted', 'declined');
 
 CREATE TABLE bookings (
@@ -239,7 +264,13 @@ CREATE TABLE bookings (
   notes TEXT,
   site_latitude NUMERIC(10,7),
   site_longitude NUMERIC(10,7),
-  requested_by INTEGER REFERENCES users(id) NOT NULL,
+  requested_by INTEGER REFERENCES users(id), -- NULL for a customer-submitted booking (see booking_link_id)
+  booking_link_id INTEGER REFERENCES customer_booking_links(id),
+  pump_requirement pump_type,
+  casting_location VARCHAR(200),
+  site_contact_name VARCHAR(150),
+  site_contact_number VARCHAR(20),
+  remarks TEXT,
   status booking_status DEFAULT 'pending',
   converted_order_id INTEGER, -- FK to customer_orders added below, once that table exists
   declined_reason TEXT,
@@ -805,14 +836,94 @@ CREATE TABLE breakdown_reports (
   reported_by INTEGER REFERENCES users(id) NOT NULL,
   driver_id INTEGER REFERENCES users(id),
   breakdown_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Free-text location kept for pump/plant breakdowns (reported by staff who
+  -- aren't standing at a truck's exact GPS point). Round 99: no longer set
+  -- by the driver truck-breakdown flow, which now relies solely on
+  -- latitude/longitude auto-captured at submit time — see issue_type below.
   location TEXT,
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
+  -- Round 99, item 3 — picklist value from breakdownIssueTypes.js (driver
+  -- flow only; NULL for pump/plant reports which don't use the picklist).
+  issue_type VARCHAR(40),
   remarks TEXT,
   resolved BOOLEAN DEFAULT FALSE,
   repaired_by INTEGER REFERENCES users(id),
   repaired_at TIMESTAMPTZ
 );
+
+-- ===================== MAINTENANCE MODULE (round 98, item 10) =====================
+-- Preventive/scheduled maintenance, complementary to the purely reactive
+-- breakdown_reports above. Action points apply uniformly to every active
+-- truck (no per-vehicle overrides in this first version) and trip on
+-- whichever of interval_days / interval_hours comes first — hours read off
+-- the truck's most recent fuel_logs.hour_meter_reading.
+
+CREATE TABLE maintenance_action_points (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(150) NOT NULL,
+  interval_days INTEGER,
+  interval_hours INTEGER,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE maintenance_logs (
+  id SERIAL PRIMARY KEY,
+  action_point_id INTEGER NOT NULL REFERENCES maintenance_action_points(id),
+  truck_id INTEGER NOT NULL REFERENCES trucks(id),
+  done_at DATE NOT NULL DEFAULT CURRENT_DATE,
+  hours_at_service NUMERIC(10,2),
+  performed_by INTEGER REFERENCES users(id),
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_maintenance_logs_truck_action ON maintenance_logs(truck_id, action_point_id, done_at DESC);
+
+-- Sub-requirement 2 — driver requests an external-workshop repair, Manager
+-- approves, sent-out/returned timestamps logged. A truck sitting at
+-- 'sent_out' is excluded from Plant Operator's ticket-creation truck list
+-- (sub-requirement 3) — see GET /master/trucks?exclude_in_repair=true.
+CREATE TYPE external_repair_status AS ENUM ('requested', 'approved', 'rejected', 'sent_out', 'returned');
+
+CREATE TABLE external_repairs (
+  id SERIAL PRIMARY KEY,
+  truck_id INTEGER NOT NULL REFERENCES trucks(id),
+  requested_by INTEGER NOT NULL REFERENCES users(id),
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  issue_description TEXT NOT NULL,
+  status external_repair_status NOT NULL DEFAULT 'requested',
+  workshop_name VARCHAR(150),
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TIMESTAMPTZ,
+  rejection_reason TEXT,
+  sent_out_at TIMESTAMPTZ,
+  returned_at TIMESTAMPTZ,
+  notes TEXT
+);
+CREATE INDEX idx_external_repairs_status ON external_repairs(status);
+CREATE INDEX idx_external_repairs_truck ON external_repairs(truck_id);
+
+-- ===================== DRIVER EVALUATION (round 98, item 11) =====================
+-- The digitized "Transit Mixer Weekly Inspection Checklist" — filled by
+-- Manager (confirmed by the business, not Plant Operator despite the source
+-- PDF's own "Plant In-Charge Signature" label). ratings is keyed by the
+-- ~36 fixed item keys in backend/src/lib/inspectionChecklist.js, each
+-- 1 (Poor) .. 4 (Very Good). Feeds the Checklist component of Best Driver
+-- of the Month, alongside on-time/quality/volume computed from existing
+-- trip data.
+CREATE TABLE truck_inspections (
+  id SERIAL PRIMARY KEY,
+  truck_id INTEGER NOT NULL REFERENCES trucks(id),
+  driver_id INTEGER REFERENCES users(id),
+  cleaner_name VARCHAR(100),
+  inspection_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  ratings JSONB NOT NULL,
+  observations TEXT,
+  filled_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_truck_inspections_truck_date ON truck_inspections(truck_id, inspection_date DESC);
 
 -- ===================== ACCOUNTS (SRS §2, §16 — restricted visibility) =====================
 

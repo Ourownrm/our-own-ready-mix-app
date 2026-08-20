@@ -24,6 +24,9 @@ import salesRoutes from "./routes/sales.js";
 import complianceRoutes from "./routes/compliance.js";
 import notificationsRoutes from "./routes/notifications.js";
 import trackingRoutes from "./routes/tracking.js";
+import maintenanceRoutes from "./routes/maintenance.js";
+import bookingLinksRoutes from "./routes/bookingLinks.js";
+import customerBookingRoutes from "./routes/customerBooking.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -64,9 +67,13 @@ app.use("/api/supply-requests", supplyRequestsRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/compliance", complianceRoutes);
 app.use("/api/notifications", notificationsRoutes);
-// Deliberately NOT behind requireAuth — this is the public, token-scoped
-// customer tracking link (see routes/tracking.js for why that's safe).
+app.use("/api/maintenance", maintenanceRoutes);
+app.use("/api/booking-links", bookingLinksRoutes);
+// Deliberately NOT behind requireAuth — these are the public, token-scoped
+// customer-facing links (see routes/tracking.js and routes/customerBooking.js
+// for why that's safe).
 app.use("/api/track", trackingRoutes);
+app.use("/api/customer-booking", customerBookingRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff

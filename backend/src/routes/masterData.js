@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
+import { BREAKDOWN_ISSUE_TYPES } from "../lib/breakdownIssueTypes.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -8,6 +9,11 @@ router.use(requireAuth);
 router.get("/customers", async (req, res) => {
   const { rows } = await query("SELECT id, name FROM customers WHERE is_active ORDER BY name");
   res.json(rows);
+});
+
+// Round 99, item 3 — fixed picklist for the driver breakdown report.
+router.get("/breakdown-issue-types", (req, res) => {
+  res.json(BREAKDOWN_ISSUE_TYPES);
 });
 
 router.get("/lubricant-types", async (req, res) => {
@@ -111,7 +117,27 @@ router.get("/mix-grades", async (req, res) => {
 });
 
 router.get("/trucks", async (req, res) => {
-  const { rows } = await query("SELECT id, truck_number FROM trucks WHERE is_active ORDER BY truck_number");
+  // Round 98, item 10 sub-requirement 3 — a truck currently away at an
+  // external workshop (external_repairs.status = 'sent_out') can't be
+  // selected for a new delivery ticket. Only Plant Operator's ticket-
+  // creation truck picker passes this flag; every other caller of this
+  // endpoint (reports, filters, fuel logging) still sees the full active
+  // fleet, since a truck away for repair may still legitimately need those.
+  const excludeInRepair = req.query.exclude_in_repair === "true";
+  const { rows } = await query(
+    excludeInRepair
+      ? `SELECT id, truck_number FROM trucks
+         WHERE is_active AND id NOT IN (SELECT truck_id FROM external_repairs WHERE status = 'sent_out')
+         ORDER BY truck_number`
+      : "SELECT id, truck_number FROM trucks WHERE is_active ORDER BY truck_number"
+  );
+  res.json(rows);
+});
+
+router.get("/maintenance-action-points", async (req, res) => {
+  const { rows } = await query(
+    "SELECT id, name, interval_days, interval_hours FROM maintenance_action_points WHERE is_active ORDER BY name"
+  );
   res.json(rows);
 });
 

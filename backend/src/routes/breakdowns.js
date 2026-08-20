@@ -56,7 +56,7 @@ router.post(
 router.get("/", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT b.id, b.equipment_type, b.breakdown_time, b.location, b.latitude, b.longitude,
-            b.remarks, b.resolved, b.repaired_at,
+            b.issue_type, b.remarks, b.resolved, b.repaired_at,
             t.truck_number, p.pump_code, b.equipment_label,
             reporter.name AS reported_by_name, repairer.name AS repaired_by_name
      FROM breakdown_reports b

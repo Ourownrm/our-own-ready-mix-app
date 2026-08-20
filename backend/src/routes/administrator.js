@@ -962,4 +962,46 @@ router.patch("/site-contacts/:id", requireRole("administrator"), async (req, res
   res.json(rows[0]);
 });
 
+// ===== Maintenance action points (round 98, item 10) =====
+// Administrator-defined checklist of scheduled maintenance items — applies
+// uniformly to every active truck (no per-vehicle overrides in this first
+// version). Each point trips on whichever of interval_days /
+// interval_hours comes first; at least one of the two is required.
+// Manager-facing due list / logging lives under /api/maintenance.
+router.get("/maintenance-action-points", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, name, interval_days, interval_hours, is_active, created_at
+     FROM maintenance_action_points ORDER BY name`
+  );
+  res.json(rows);
+});
+
+router.post("/maintenance-action-points", requireRole("administrator"), async (req, res) => {
+  const { name, interval_days, interval_hours } = req.body;
+  if (!name || (!interval_days && !interval_hours)) {
+    return res.status(400).json({ error: "Name and at least one of interval days / interval hours are required." });
+  }
+  const { rows } = await query(
+    `INSERT INTO maintenance_action_points (name, interval_days, interval_hours)
+     VALUES ($1,$2,$3) RETURNING *`,
+    [name, interval_days || null, interval_hours || null]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/maintenance-action-points/:id", requireRole("administrator"), async (req, res) => {
+  const { name, interval_days, interval_hours, is_active } = req.body;
+  const { rows } = await query(
+    `UPDATE maintenance_action_points SET
+       name = COALESCE($1, name),
+       interval_days = $2,
+       interval_hours = $3,
+       is_active = COALESCE($4, is_active)
+     WHERE id = $5 RETURNING *`,
+    [name || null, interval_days ?? null, interval_hours ?? null, is_active, req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Action point not found." });
+  res.json(rows[0]);
+});
+
 export default router;
