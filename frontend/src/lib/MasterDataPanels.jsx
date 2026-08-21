@@ -137,7 +137,7 @@ export function SitesPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [categories, setCategories] = useState([]);
   const [salespersons, setSalespersons] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "" });
+  const [form, setForm] = useState({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "", plant_out_grace_minutes: "" });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [assigningId, setAssigningId] = useState(null);
@@ -163,13 +163,13 @@ export function SitesPanel({ setError }) {
     setSaving(true); setError("");
     try {
       await apiRequest("/administrator/sites", { method: "POST", body: form });
-      setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "" });
+      setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "", plant_out_grace_minutes: "" });
       load();
     } catch (err) {
       if (err.status === 409 && window.confirm(`${err.message}\n\nCreate it anyway?`)) {
         try {
           await apiRequest("/administrator/sites", { method: "POST", body: { ...form, force: true } });
-          setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "" });
+          setForm({ customer_id: "", name: "", address: "", distance_from_plant_km: "", trip_allowance_category_id: "", latitude: "", longitude: "", assigned_sales_representative_id: "", plant_out_grace_minutes: "" });
           load();
         } catch (err2) { setError(err2.message); }
       } else if (err.status !== 409) {
@@ -190,6 +190,7 @@ export function SitesPanel({ setError }) {
     setEditForm({
       name: s.name, address: s.address || "", distance_from_plant_km: s.distance_from_plant_km || "",
       trip_allowance_category_id: s.trip_allowance_category_id || "", latitude: s.latitude || "", longitude: s.longitude || "",
+      plant_out_grace_minutes: s.plant_out_grace_minutes || "",
     });
   }
 
@@ -253,7 +254,7 @@ export function SitesPanel({ setError }) {
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 12, marginBottom: 8 }}>{notice}</div>}
       <div className="card" style={{ marginBottom: 12, overflowX: "auto" }}>
         <table style={{ fontSize: 13 }}>
-          <thead><tr><th>Site</th><th>Customer</th><th>Distance</th><th>Sales person</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Site</th><th>Customer</th><th>Distance</th><th>Plant-out grace</th><th>Sales person</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {visible.map((s) => (
               <tr key={s.id} style={!s.is_active ? { opacity: 0.6 } : undefined}>
@@ -262,6 +263,7 @@ export function SitesPanel({ setError }) {
                     <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: "100%" }} /></td>
                     <td>{s.customer_name}</td>
                     <td><input type="number" value={editForm.distance_from_plant_km} onChange={(e) => setEditForm({ ...editForm, distance_from_plant_km: e.target.value })} style={{ width: 70 }} /></td>
+                    <td><input type="number" min="1" placeholder="12" value={editForm.plant_out_grace_minutes} onChange={(e) => setEditForm({ ...editForm, plant_out_grace_minutes: e.target.value })} style={{ width: 60 }} /></td>
                     <td>{s.salesperson_name || "–"}</td>
                     <td></td>
                     <td style={{ display: "flex", gap: 4 }}>
@@ -274,6 +276,7 @@ export function SitesPanel({ setError }) {
                     <td>{s.name}</td>
                     <td>{s.customer_name}</td>
                     <td>{s.distance_from_plant_km ? `${s.distance_from_plant_km} km` : "–"}</td>
+                    <td>{s.plant_out_grace_minutes ? `${s.plant_out_grace_minutes} min` : "Default (12 min)"}</td>
                     <td>
                       {assigningId === s.id ? (
                         <select autoFocus onChange={(e) => assignSalesperson(s.id, e.target.value)} onBlur={() => setAssigningId(null)}>
@@ -299,7 +302,7 @@ export function SitesPanel({ setError }) {
                 )}
               </tr>
             ))}
-            {visible.length === 0 && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>No sites.</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No sites.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -329,6 +332,13 @@ export function SitesPanel({ setError }) {
         </div>
         <div><div style={{ color: "var(--slate)" }}>Latitude</div><input type="number" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} placeholder="e.g. 8.5241" /></div>
         <div><div style={{ color: "var(--slate)" }}>Longitude</div><input type="number" step="any" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} placeholder="e.g. 76.9366" /></div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Plant-out grace (minutes)</div>
+          <input type="number" min="1" value={form.plant_out_grace_minutes} onChange={(e) => setForm({ ...form, plant_out_grace_minutes: e.target.value })} placeholder="Default: 12" />
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>
+            If a driver doesn't respond after GPS detects Plant Out, it's auto-recorded this many minutes later. Leave blank to use the default (12 min) — set lower for a short-travel-time site.
+          </div>
+        </div>
         <div style={{ gridColumn: "1 / -1" }}>
           <button type="button" onClick={useCurrentLocation} style={{ fontSize: 12, padding: "6px 10px" }}>Use my current location</button>
         </div>
@@ -1790,7 +1800,7 @@ export function MaintenanceActionPointsPanel({ setError }) {
   const [editForm, setEditForm] = useState({ name: "", interval_days: "", interval_hours: "", is_active: true });
 
   async function load() {
-    try { setPoints(await apiRequest("/administrator/maintenance-action-points")); } catch (err) { setError(err.message); }
+    try { setPoints(await apiRequest("/maintenance/action-points")); } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
 
@@ -1799,7 +1809,7 @@ export function MaintenanceActionPointsPanel({ setError }) {
     if (!form.interval_days && !form.interval_hours) return setError("Set at least one of interval days / interval hours.");
     setSaving(true); setError("");
     try {
-      await apiRequest("/administrator/maintenance-action-points", { method: "POST", body: form });
+      await apiRequest("/maintenance/action-points", { method: "POST", body: form });
       setForm({ name: "", interval_days: "", interval_hours: "" });
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
@@ -1813,7 +1823,7 @@ export function MaintenanceActionPointsPanel({ setError }) {
   async function saveEdit(id) {
     setSaving(true); setError("");
     try {
-      await apiRequest(`/administrator/maintenance-action-points/${id}`, { method: "PATCH", body: editForm });
+      await apiRequest(`/maintenance/action-points/${id}`, { method: "PATCH", body: editForm });
       setEditing(null);
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }

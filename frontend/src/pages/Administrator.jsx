@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel, PlantLocationsPanel, SiteContactsPanel, ProductionTargetPanel, MaintenanceActionPointsPanel, OrdersPanel as SharedOrdersPanel, TicketsPanel as SharedTicketsPanel } from "../lib/MasterDataPanels.jsx";
+import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel, PlantLocationsPanel, SiteContactsPanel, ProductionTargetPanel, OrdersPanel as SharedOrdersPanel, TicketsPanel as SharedTicketsPanel } from "../lib/MasterDataPanels.jsx";
 import { CreateLeadForm } from "../lib/SalesPanels.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 
@@ -54,7 +54,6 @@ export default function Administrator() {
             { label: "Plant Location (geofence)", onClick: () => setView("plant-locations") },
             { label: "Site Contacts", onClick: () => setView("site-contacts") },
             { label: "Production Target", onClick: () => setView("production-target") },
-            { label: "Maintenance Action Points", onClick: () => setView("maintenance-action-points") },
           ]}
         />
         <GroupedMenu
@@ -91,7 +90,6 @@ export default function Administrator() {
       {view === "plant-locations" && <PlantLocationsPanel setError={setError} />}
       {view === "site-contacts" && <SiteContactsPanel setError={setError} />}
       {view === "production-target" && <ProductionTargetPanel setError={setError} />}
-      {view === "maintenance-action-points" && <MaintenanceActionPointsPanel setError={setError} />}
       {view === "salespersons" && <SalespersonsPanel setError={setError} />}
       {view === "rates" && <RatesPanel setError={setError} />}
       {view === "orders" && <OrdersPanel setError={setError} />}

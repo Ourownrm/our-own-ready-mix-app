@@ -34,7 +34,8 @@ export default function TripTimeCrossCheckPage() {
           <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 10 }}>
             Compares the Site In time logged for each trip (by whoever confirmed it — driver or Site Supervisor)
             against the nearest GPS ping at that moment. A gap over 15 minutes is flagged for a look; small gaps
-            are normal GPS noise and aren't shown unless you ask to see everything.
+            are normal GPS noise and aren't shown unless you ask to see everything. A Plant Out time marked
+            <strong> A</strong> was auto-recorded from GPS because the driver didn't respond to the notification.
           </div>
           {visible.length === 0 ? (
             <div style={{ fontSize: 13, color: "var(--slate)" }}>
@@ -44,7 +45,7 @@ export default function TripTimeCrossCheckPage() {
             <div style={{ overflowX: "auto" }}>
               <table style={{ fontSize: 12 }}>
                 <thead>
-                  <tr><th>DC No.</th><th>Driver</th><th>Site</th><th>Logged by</th><th>Site In (logged)</th><th>Nearest GPS</th><th>Gap</th></tr>
+                  <tr><th>DC No.</th><th>Driver</th><th>Site</th><th>Plant Out</th><th>Logged by</th><th>Site In (logged)</th><th>Nearest GPS</th><th>Gap</th></tr>
                 </thead>
                 <tbody>
                   {visible.map((r) => (
@@ -52,6 +53,12 @@ export default function TripTimeCrossCheckPage() {
                       <td>{r.ticket_number}</td>
                       <td>{r.driver_name}</td>
                       <td>{r.customer_name} &middot; {r.site_name}</td>
+                      <td>
+                        {formatTime(r.plant_out_logged_at)}
+                        {r.plant_out_source === "auto" && (
+                          <span title="Auto-recorded from GPS — driver didn't respond" style={{ color: "var(--slate)", fontWeight: 700 }}> A</span>
+                        )}
+                      </td>
                       <td>{r.site_in_logged_by || "–"}</td>
                       <td>{formatTime(r.site_in_logged_at)}</td>
                       <td>{r.nearest_gps_time ? formatTime(r.nearest_gps_time) : <span style={{ color: "var(--alert-red)" }}>No GPS data</span>}</td>

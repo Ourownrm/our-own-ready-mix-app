@@ -432,7 +432,7 @@ function BestDriverTab({ setError }) {
       )}
 
       {data.unranked.length > 0 && (
-        <div className="card">
+        <div className="card" style={{ marginBottom: 18 }}>
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Not yet ranked this month</div>
           {data.unranked.map((d) => (
             <div key={d.driver_id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderTop: "1px solid var(--concrete)" }}>
@@ -440,6 +440,82 @@ function BestDriverTab({ setError }) {
               <span style={{ color: "var(--slate)" }}>{d.reason}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      <InspectionActionItemsPanel setError={setError} />
+    </div>
+  );
+}
+
+// Round 101, item 2 — "Action required" remarks against individual checklist
+// items on the weekly inspection, tracked here as open maintenance action
+// items until Manager marks them resolved.
+function InspectionActionItemsPanel({ setError }) {
+  const [items, setItems] = useState([]);
+  const [showResolved, setShowResolved] = useState(false);
+  const [resolvingId, setResolvingId] = useState(null);
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function load(status) {
+    try { setItems(await apiRequest(`/maintenance/action-items?status=${status}`)); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(showResolved ? "resolved" : "open"); }, [showResolved]);
+
+  async function resolve(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/maintenance/action-items/${id}/resolve`, { method: "PATCH", body: { resolution_notes: notes || undefined } });
+      setResolvingId(null); setNotes("");
+      load(showResolved ? "resolved" : "open");
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>Action items from weekly inspections</div>
+        <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setShowResolved(!showResolved)}>
+          {showResolved ? "Show open" : "Show resolved"}
+        </button>
+      </div>
+      {items.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>
+          {showResolved ? "No resolved action items yet." : "No open action items — nothing flagged on recent checklists."}
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ fontSize: 12.5 }}>
+            <thead>
+              <tr><th>Vehicle</th><th>Inspection date</th><th>Item</th><th>Remark</th><th>Raised by</th>{showResolved ? <><th>Resolved by</th><th>Notes</th></> : <th></th>}</tr>
+            </thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id}>
+                  <td>{it.truck_number}</td>
+                  <td>{fmtDate(it.inspection_date)}</td>
+                  <td>{it.item_label}</td>
+                  <td>{it.remark}</td>
+                  <td>{it.raised_by_name}</td>
+                  {showResolved ? (
+                    <>
+                      <td>{it.resolved_by_name}</td>
+                      <td>{it.resolution_notes || "–"}</td>
+                    </>
+                  ) : resolvingId === it.id ? (
+                    <td style={{ display: "flex", gap: 4 }}>
+                      <input placeholder="Resolution notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} style={{ fontSize: 11, width: 140 }} />
+                      <button onClick={() => resolve(it.id)} disabled={saving}>Save</button>
+                      <button onClick={() => { setResolvingId(null); setNotes(""); }}>Cancel</button>
+                    </td>
+                  ) : (
+                    <td><button style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => setResolvingId(it.id)}>Resolve</button></td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -531,6 +607,7 @@ function InspectionForm({ setError, onCancel, onDone }) {
   const [cleanerName, setCleanerName] = useState("");
   const [inspectionDate, setInspectionDate] = useState("");
   const [ratings, setRatings] = useState({});
+  const [actionRequired, setActionRequired] = useState({}); // item_key -> remark text
   const [observations, setObservations] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -546,6 +623,10 @@ function InspectionForm({ setError, onCancel, onDone }) {
     setRatings((r) => ({ ...r, [itemKey]: value }));
   }
 
+  function setActionRemark(itemKey, value) {
+    setActionRequired((a) => ({ ...a, [itemKey]: value }));
+  }
+
   const totalItems = def ? def.sections.reduce((s, sec) => s + sec.items.length, 0) : 0;
   const scoredItems = Object.keys(ratings).length;
 
@@ -555,9 +636,14 @@ function InspectionForm({ setError, onCancel, onDone }) {
     if (scoredItems < totalItems) return setError(`${totalItems - scoredItems} checklist item(s) still need a rating.`);
     setSaving(true); setError("");
     try {
+      const itemLabels = {};
+      def.sections.forEach((sec) => sec.items.forEach((item) => { itemLabels[item.key] = item.label; }));
+      const action_items = Object.entries(actionRequired)
+        .filter(([, remark]) => remark && remark.trim())
+        .map(([item_key, remark]) => ({ item_key, item_label: itemLabels[item_key] || item_key, remark: remark.trim() }));
       await apiRequest("/maintenance/inspections", {
         method: "POST",
-        body: { truck_id: truckId, driver_id: driverId || undefined, cleaner_name: cleanerName || undefined, inspection_date: inspectionDate || undefined, ratings, observations },
+        body: { truck_id: truckId, driver_id: driverId || undefined, cleaner_name: cleanerName || undefined, inspection_date: inspectionDate || undefined, ratings, observations, action_items },
       });
       onDone();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
@@ -605,6 +691,7 @@ function InspectionForm({ setError, onCancel, onDone }) {
               <tr>
                 <th>Inspection item</th>
                 {def.rating_scale.map((r) => <th key={r.value} style={{ textAlign: "center" }}>{r.label}</th>)}
+                <th>Action required</th>
               </tr>
             </thead>
             <tbody>
@@ -621,6 +708,15 @@ function InspectionForm({ setError, onCancel, onDone }) {
                       />
                     </td>
                   ))}
+                  <td>
+                    <input
+                      type="text"
+                      placeholder="Remark, if action is needed"
+                      value={actionRequired[item.key] || ""}
+                      onChange={(e) => setActionRemark(item.key, e.target.value)}
+                      style={{ width: "100%", fontSize: 12 }}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>

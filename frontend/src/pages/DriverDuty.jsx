@@ -27,10 +27,10 @@ function isDriverDone(t) {
 // (shouldn't normally happen — each hint clears itself the moment the real
 // stage is confirmed) the earliest unconfirmed stage wins.
 const HINT_STAGES = [
-  { hintKey: "hint_plant_out_at", stageKey: "plant_out", path: "plant-out", hintTextKey: "hint_left_plant", selfServiceOnly: false },
-  { hintKey: "hint_site_in_at", stageKey: "site_in", path: "arrival", hintTextKey: "hint_reached_site", selfServiceOnly: true },
-  { hintKey: "hint_site_out_at", stageKey: "site_out", path: "site-out", hintTextKey: "hint_left_site", selfServiceOnly: true },
-  { hintKey: "hint_plant_in_at", stageKey: "plant_in", path: "plant-in", hintTextKey: "hint_returned_to_plant", selfServiceOnly: false },
+  { hintKey: "hint_plant_out_at", stageKey: "plant_out", path: "plant-out", hintTextKey: "hint_left_plant", selfServiceOnly: false, eventType: "left_plant" },
+  { hintKey: "hint_site_in_at", stageKey: "site_in", path: "arrival", hintTextKey: "hint_reached_site", selfServiceOnly: true, eventType: "reached_site" },
+  { hintKey: "hint_site_out_at", stageKey: "site_out", path: "site-out", hintTextKey: "hint_left_site", selfServiceOnly: true, eventType: "left_site" },
+  { hintKey: "hint_plant_in_at", stageKey: "plant_in", path: "plant-in", hintTextKey: "hint_returned_to_plant", selfServiceOnly: false, eventType: "returned_to_plant" },
 ];
 
 export default function DriverDuty() {
@@ -202,6 +202,15 @@ export default function DriverDuty() {
   function dismissPopup() {
     if (!popupHint) return;
     setDismissedHints((prev) => ({ ...prev, [`${popupHint.trip.id}:${popupHint.hintKey}`]: popupHint.ts }));
+    // Item 1 (round 101): tell the server the driver actively said "not yet"
+    // for this hint — for Plant Out specifically, this restarts the
+    // auto-record grace period from now instead of the original GPS
+    // detection (see checkPlantOutAutoRecord in scheduledChecks.js).
+    // Queued like the other driver actions so it still lands if offline.
+    queuedRequest(`/driver/tickets/${popupHint.trip.id}/geofence-response`, {
+      method: "POST",
+      body: { event_type: popupHint.eventType },
+    }).then(() => setPending(pendingCount())).catch(() => {});
   }
 
   async function confirmPopup() {
@@ -380,10 +389,7 @@ export default function DriverDuty() {
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <button
-            onClick={() => {
-              if (!current?.truck_id) { setError("No truck assigned yet — can't report this without one."); return; }
-              setError(""); setNotice(""); setView("breakdown");
-            }}
+            onClick={() => { setError(""); setNotice(""); setView("breakdown"); }}
           >
             {t("report_breakdown")}
           </button>
@@ -392,10 +398,7 @@ export default function DriverDuty() {
         <button
           type="button"
           style={{ width: "100%", marginTop: 8 }}
-          onClick={() => {
-            if (!current?.truck_id) { setError("No truck assigned yet — can't request this without one."); return; }
-            setError(""); setNotice(""); setView("repair");
-          }}
+          onClick={() => { setError(""); setNotice(""); setView("repair"); }}
         >
           {t("request_repair")}
         </button>
@@ -682,10 +685,34 @@ function RejectForm({ trip, onAct, onDone, error }) {
   );
 }
 
+// Round 101, item 4 — before loading concrete, a driver has no active trip
+// yet, so there's no `trip.truck_id` to fall back on. Rather than block
+// reporting entirely (the actual bug being fixed here), both BreakdownForm
+// and RequestRepairForm fall back to this simple picker whenever there's no
+// active trip — same truck list Plant Operator's own ticket-creation picker
+// uses, `exclude_in_repair=true` so a truck already sent out for repair
+// doesn't show up as pickable a second time.
+function TruckPicker({ truckId, onChange }) {
+  const [trucks, setTrucks] = useState([]);
+  useEffect(() => {
+    apiRequest("/master/trucks?exclude_in_repair=true").then(setTrucks).catch(() => {});
+  }, []);
+  return (
+    <div>
+      <div style={{ color: "var(--slate)" }}>Which truck</div>
+      <select value={truckId} onChange={(e) => onChange(e.target.value)} required>
+        <option value="">Select a truck</option>
+        {trucks.map((tr) => <option key={tr.id} value={tr.id}>{tr.truck_number}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function BreakdownForm({ trip, onDone, onCancel }) {
   const [issueTypes, setIssueTypes] = useState([]);
   const [issueType, setIssueType] = useState("");
   const [remarks, setRemarks] = useState("");
+  const [truckId, setTruckId] = useState(trip?.truck_id || "");
   const [gpsStatus, setGpsStatus] = useState("locating"); // 'locating' | 'ok' | 'failed'
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -696,6 +723,7 @@ function BreakdownForm({ trip, onDone, onCancel }) {
 
   async function submit(e) {
     e.preventDefault();
+    if (!truckId) { setError("Select which truck this is about."); return; }
     if (!issueType) { setError("Select what happened."); return; }
     if (issueType === "other" && !remarks.trim()) { setError("Add a short description."); return; }
     setSaving(true); setError("");
@@ -713,7 +741,7 @@ function BreakdownForm({ trip, onDone, onCancel }) {
       });
       await queuedRequest("/driver/breakdown", {
         method: "POST",
-        body: { truck_id: trip.truck_id, issue_type: issueType, remarks, ...coords },
+        body: { truck_id: truckId, issue_type: issueType, remarks, ...coords },
       });
       onDone("Breakdown reported. The manager has been notified.");
     } catch (err) {
@@ -729,8 +757,9 @@ function BreakdownForm({ trip, onDone, onCancel }) {
       <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
         <div className="card">
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Report breakdown</div>
-          <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.truck_number}</div>
+          {trip?.truck_number && <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip.truck_number}</div>}
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            {!trip?.truck_id && <TruckPicker truckId={truckId} onChange={setTruckId} />}
             <div>
               <div style={{ color: "var(--slate)" }}>What happened</div>
               <select value={issueType} onChange={(e) => setIssueType(e.target.value)} required>
@@ -770,16 +799,18 @@ function BreakdownForm({ trip, onDone, onCancel }) {
 // button is localized, not every internal form).
 function RequestRepairForm({ trip, onDone, onCancel }) {
   const [issueDescription, setIssueDescription] = useState("");
+  const [truckId, setTruckId] = useState(trip?.truck_id || "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function submit(e) {
     e.preventDefault();
+    if (!truckId) { setError("Select which truck this is about."); return; }
     setSaving(true); setError("");
     try {
       await queuedRequest("/driver/external-repair", {
         method: "POST",
-        body: { truck_id: trip.truck_id, issue_description: issueDescription },
+        body: { truck_id: truckId, issue_description: issueDescription },
       });
       onDone("Repair request sent. The manager has been notified.");
     } catch (err) {
@@ -795,8 +826,9 @@ function RequestRepairForm({ trip, onDone, onCancel }) {
       <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
         <div className="card">
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Request external repair</div>
-          <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.truck_number}</div>
+          {trip?.truck_number && <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip.truck_number}</div>}
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            {!trip?.truck_id && <TruckPicker truckId={truckId} onChange={setTruckId} />}
             <div>
               <div style={{ color: "var(--slate)" }}>What's wrong with the vehicle</div>
               <textarea rows={3} value={issueDescription} onChange={(e) => setIssueDescription(e.target.value)} required />
