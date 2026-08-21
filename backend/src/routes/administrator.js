@@ -159,7 +159,7 @@ router.get("/sites", requireRole("administrator", "manager"), async (req, res) =
 });
 
 router.post("/sites", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
-  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id, force } = req.body;
+  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id, plant_out_grace_minutes, force } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   if (!assigned_sales_representative_id) return res.status(400).json({ error: "Every site needs a salesperson assigned." });
 
@@ -177,22 +177,22 @@ router.post("/sites", requireRole("administrator", "manager", "sales_executive")
   }
 
   const { rows } = await query(
-    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null, assigned_sales_representative_id]
+    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id, plant_out_grace_minutes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null, assigned_sales_representative_id, plant_out_grace_minutes || null]
   );
   res.status(201).json(rows[0]);
 });
 
 router.patch("/sites/:id", requireRole("administrator", "manager"), async (req, res) => {
-  const { name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude } = req.body;
+  const { name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, plant_out_grace_minutes } = req.body;
   if (!name) return res.status(400).json({ error: "Site name is required." });
   const { rows } = await query(
     `UPDATE sites SET name = $1, address = $2, distance_from_plant_km = $3, trip_allowance_category_id = $4,
-       latitude = $5, longitude = $6
-     WHERE id = $7 RETURNING *`,
+       latitude = $5, longitude = $6, plant_out_grace_minutes = $7
+     WHERE id = $8 RETURNING *`,
     [name, address || null, distance_from_plant_km || null, trip_allowance_category_id || null,
-     latitude || null, longitude || null, req.params.id]
+     latitude || null, longitude || null, plant_out_grace_minutes || null, req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Site not found." });
   res.json(rows[0]);
@@ -962,46 +962,9 @@ router.patch("/site-contacts/:id", requireRole("administrator"), async (req, res
   res.json(rows[0]);
 });
 
-// ===== Maintenance action points (round 98, item 10) =====
-// Administrator-defined checklist of scheduled maintenance items — applies
-// uniformly to every active truck (no per-vehicle overrides in this first
-// version). Each point trips on whichever of interval_days /
-// interval_hours comes first; at least one of the two is required.
-// Manager-facing due list / logging lives under /api/maintenance.
-router.get("/maintenance-action-points", requireRole("administrator"), async (req, res) => {
-  const { rows } = await query(
-    `SELECT id, name, interval_days, interval_hours, is_active, created_at
-     FROM maintenance_action_points ORDER BY name`
-  );
-  res.json(rows);
-});
-
-router.post("/maintenance-action-points", requireRole("administrator"), async (req, res) => {
-  const { name, interval_days, interval_hours } = req.body;
-  if (!name || (!interval_days && !interval_hours)) {
-    return res.status(400).json({ error: "Name and at least one of interval days / interval hours are required." });
-  }
-  const { rows } = await query(
-    `INSERT INTO maintenance_action_points (name, interval_days, interval_hours)
-     VALUES ($1,$2,$3) RETURNING *`,
-    [name, interval_days || null, interval_hours || null]
-  );
-  res.status(201).json(rows[0]);
-});
-
-router.patch("/maintenance-action-points/:id", requireRole("administrator"), async (req, res) => {
-  const { name, interval_days, interval_hours, is_active } = req.body;
-  const { rows } = await query(
-    `UPDATE maintenance_action_points SET
-       name = COALESCE($1, name),
-       interval_days = $2,
-       interval_hours = $3,
-       is_active = COALESCE($4, is_active)
-     WHERE id = $5 RETURNING *`,
-    [name || null, interval_days ?? null, interval_hours ?? null, is_active, req.params.id]
-  );
-  if (!rows[0]) return res.status(404).json({ error: "Action point not found." });
-  res.json(rows[0]);
-});
+// Maintenance action points (round 98, item 10) moved to
+// routes/maintenance.js in round 101 — the business asked for this master
+// data to be Manager's, not Administrator's, to manage. See that file for
+// GET/POST/PATCH /api/maintenance/action-points.
 
 export default router;

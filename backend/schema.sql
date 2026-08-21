@@ -67,6 +67,13 @@ CREATE TABLE sites (
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
   geofence_radius_m INTEGER DEFAULT 150,
+  -- Round 101, item 1: how long to wait after GPS detects the truck has left
+  -- the plant before auto-recording Plant Out if the driver never responds
+  -- to the notification. NULL means "use the system default" (12 minutes,
+  -- see scheduledChecks.js PLANT_OUT_DEFAULT_GRACE_MINUTES) — set per-site
+  -- because a 15-minute-travel-time site needs a shorter grace window than a
+  -- flat 12-minute default would allow, per business request.
+  plant_out_grace_minutes INTEGER,
   -- The sales person who owns this project/site relationship — distinct from
   -- an individual order's sales_representative_id (which is who sold that
   -- one particular delivery, for attribution/commission reporting). This is
@@ -623,6 +630,11 @@ CREATE TABLE geofence_events (
   detected_at TIMESTAMPTZ DEFAULT now(),
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
+  -- Round 101, item 1: set when the driver taps "Not yet" on the geofence
+  -- popup for this exact hint — the plant-out grace period (see sites.
+  -- plant_out_grace_minutes) counts from here instead of detected_at when
+  -- present, since the driver has actively said "not yet, still here."
+  last_response_at TIMESTAMPTZ,
   UNIQUE (ticket_id, event_type)
 );
 
@@ -924,6 +936,28 @@ CREATE TABLE truck_inspections (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_truck_inspections_truck_date ON truck_inspections(truck_id, inspection_date DESC);
+
+-- Round 101, item 2: an "Action required" remark against a specific
+-- checklist item on a weekly inspection becomes an open maintenance action
+-- point to follow up on — separate from maintenance_action_points (the
+-- fixed, recurring master list like "Oil change every 90 days"), since these
+-- are ad-hoc findings from a specific inspection ("Front tyres — worn,
+-- needs replacement") rather than a scheduled recurring task.
+CREATE TABLE inspection_action_items (
+  id SERIAL PRIMARY KEY,
+  inspection_id INTEGER NOT NULL REFERENCES truck_inspections(id),
+  truck_id INTEGER NOT NULL REFERENCES trucks(id),
+  item_key VARCHAR(80) NOT NULL,
+  item_label VARCHAR(200) NOT NULL,
+  remark TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'open', -- open | resolved
+  raised_by INTEGER NOT NULL REFERENCES users(id),
+  raised_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_by INTEGER REFERENCES users(id),
+  resolved_at TIMESTAMPTZ,
+  resolution_notes TEXT
+);
+CREATE INDEX idx_inspection_action_items_status ON inspection_action_items(status, truck_id);
 
 -- ===================== ACCOUNTS (SRS §2, §16 — restricted visibility) =====================
 

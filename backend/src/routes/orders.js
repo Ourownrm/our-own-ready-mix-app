@@ -514,7 +514,12 @@ router.get("/trip-time-crosscheck", requireRole("manager", "administrator"), asy
             u.name AS driver_name, t.truck_number, c.name AS customer_name, s.name AS site_name,
             si.event_time AS site_in_logged_at, si_user.name AS site_in_logged_by,
             gp.recorded_at AS nearest_gps_time,
-            ROUND(ABS(EXTRACT(EPOCH FROM (si.event_time - gp.recorded_at))) / 60) AS gap_minutes
+            ROUND(ABS(EXTRACT(EPOCH FROM (si.event_time - gp.recorded_at))) / 60) AS gap_minutes,
+            -- Round 101, item 1: Plant Out is marked when it was auto-recorded
+            -- (driver didn't respond to the geofence popup within the grace
+            -- period) rather than a real driver/supervisor tap, so a manager
+            -- reviewing this report knows which times are GPS-inferred.
+            po.event_time AS plant_out_logged_at, po.source AS plant_out_source
      FROM delivery_tickets dt
      JOIN trucks t ON t.id = dt.truck_id
      JOIN users u ON u.id = dt.driver_id
@@ -528,6 +533,10 @@ router.get("/trip-time-crosscheck", requireRole("manager", "administrator"), asy
        WHERE driver_id = dt.driver_id
        ORDER BY ABS(EXTRACT(EPOCH FROM (recorded_at - si.event_time))) LIMIT 1
      ) gp ON true
+     LEFT JOIN LATERAL (
+       SELECT event_time, source FROM trip_events
+       WHERE ticket_id = dt.id AND event_type = 'left_plant' ORDER BY event_time LIMIT 1
+     ) po ON true
      WHERE dt.ticket_date >= CURRENT_DATE - 7
      ORDER BY gap_minutes DESC NULLS LAST
      LIMIT 100`

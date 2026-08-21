@@ -8,6 +8,51 @@ router.use(requireAuth);
 
 const STAFF_ROLES = ["manager", "administrator"];
 
+// ===== Maintenance action points (round 98, item 10; moved here from
+// Administrator round 101) =====
+// A checklist of scheduled maintenance items, defined by Manager — applies
+// uniformly to every active truck (no per-vehicle overrides in this first
+// version). Each point trips on whichever of interval_days /
+// interval_hours comes first; at least one of the two is required.
+// Deliberately Manager-only (not Administrator) per round 101 — this used to
+// live under /api/administrator, moved wholesale rather than shared, per
+// business request.
+router.get("/action-points", requireRole("manager"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, name, interval_days, interval_hours, is_active, created_at
+     FROM maintenance_action_points ORDER BY name`
+  );
+  res.json(rows);
+});
+
+router.post("/action-points", requireRole("manager"), async (req, res) => {
+  const { name, interval_days, interval_hours } = req.body;
+  if (!name || (!interval_days && !interval_hours)) {
+    return res.status(400).json({ error: "Name and at least one of interval days / interval hours are required." });
+  }
+  const { rows } = await query(
+    `INSERT INTO maintenance_action_points (name, interval_days, interval_hours)
+     VALUES ($1,$2,$3) RETURNING *`,
+    [name, interval_days || null, interval_hours || null]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/action-points/:id", requireRole("manager"), async (req, res) => {
+  const { name, interval_days, interval_hours, is_active } = req.body;
+  const { rows } = await query(
+    `UPDATE maintenance_action_points SET
+       name = COALESCE($1, name),
+       interval_days = $2,
+       interval_hours = $3,
+       is_active = COALESCE($4, is_active)
+     WHERE id = $5 RETURNING *`,
+    [name || null, interval_days ?? null, interval_hours ?? null, is_active, req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Action point not found." });
+  res.json(rows[0]);
+});
+
 // ===================== MAINTENANCE MODULE (round 98, item 10) =====================
 
 // Due list — every active truck x active action point (minus trucks
@@ -207,7 +252,7 @@ router.get("/checklist-definition", requireRole(...STAFF_ROLES), async (req, res
 });
 
 router.post("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
-  const { truck_id, driver_id, cleaner_name, inspection_date, ratings, observations } = req.body;
+  const { truck_id, driver_id, cleaner_name, inspection_date, ratings, observations, action_items } = req.body;
   if (!truck_id || !ratings) {
     return res.status(400).json({ error: "Truck and the completed checklist are required." });
   }
@@ -220,7 +265,58 @@ router.post("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
      VALUES ($1,$2,$3,COALESCE($4, CURRENT_DATE),$5,$6,$7) RETURNING *`,
     [truck_id, driver_id || null, cleaner_name || null, inspection_date || null, JSON.stringify(ratings), observations || null, req.user.id]
   );
+
+  // Round 101, item 2: an "Action required" remark against any checklist
+  // item becomes an open maintenance action item — one row per item that
+  // was actually flagged, not one per checklist item, since most items on
+  // most inspections need no action.
+  for (const item of action_items || []) {
+    if (!item.item_key || !item.remark || !item.remark.trim()) continue;
+    await query(
+      `INSERT INTO inspection_action_items (inspection_id, truck_id, item_key, item_label, remark, raised_by)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [rows[0].id, truck_id, item.item_key, item.item_label || item.item_key, item.remark.trim(), req.user.id]
+    );
+  }
+
   res.status(201).json(rows[0]);
+});
+
+// Open (and, on request, resolved) maintenance action items raised from
+// weekly inspections — this is Manager's follow-up list, separate from the
+// fixed maintenance_action_points master schedule above.
+router.get("/action-items", requireRole(...STAFF_ROLES), async (req, res) => {
+  const status = req.query.status === "resolved" ? "resolved" : req.query.status === "all" ? null : "open";
+  const params = [];
+  let where = "";
+  if (status) { params.push(status); where = `WHERE ia.status = $${params.length}`; }
+  const { rows } = await query(
+    `SELECT ia.id, ia.inspection_id, ia.truck_id, t.truck_number, ia.item_key, ia.item_label, ia.remark,
+            ia.status, ia.raised_at, ru.name AS raised_by_name,
+            ia.resolved_at, res_u.name AS resolved_by_name, ia.resolution_notes,
+            ti.inspection_date
+     FROM inspection_action_items ia
+     JOIN trucks t ON t.id = ia.truck_id
+     JOIN users ru ON ru.id = ia.raised_by
+     LEFT JOIN users res_u ON res_u.id = ia.resolved_by
+     JOIN truck_inspections ti ON ti.id = ia.inspection_id
+     ${where}
+     ORDER BY ia.status ASC, ia.raised_at DESC
+     LIMIT 200`,
+    params
+  );
+  res.json(rows);
+});
+
+router.patch("/action-items/:id/resolve", requireRole(...STAFF_ROLES), async (req, res) => {
+  const { resolution_notes } = req.body;
+  const { rows } = await query(
+    `UPDATE inspection_action_items SET status = 'resolved', resolved_by = $1, resolved_at = now(), resolution_notes = $2
+     WHERE id = $3 AND status = 'open' RETURNING *`,
+    [req.user.id, resolution_notes || null, req.params.id]
+  );
+  if (!rows.length) return res.status(400).json({ error: "This action item isn't open." });
+  res.json(rows[0]);
 });
 
 router.get("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
@@ -273,6 +369,8 @@ async function computeTransitRows(year, month, driverIds) {
   const { rows } = await query(
     `SELECT dt.id AS ticket_id, dt.driver_id, co.site_id, s.name AS site_name,
             MAX(CASE WHEN te.event_type = 'left_plant' THEN te.event_time END) AS left_plant_at,
+            MAX(CASE WHEN te.event_type = 'left_plant' THEN te.source END) AS left_plant_source,
+            MAX(CASE WHEN te.event_type = 'left_plant' THEN ge.detected_at END) AS left_plant_detected_at,
             MAX(CASE WHEN te.event_type = 'reached_site' THEN te.event_time END) AS reached_site_at,
             MAX(CASE WHEN te.event_type = 'unloading_completed' THEN te.event_time END) AS site_out_at,
             MAX(CASE WHEN te.event_type = 'returned_to_plant' THEN te.event_time END) AS plant_in_at
@@ -280,6 +378,7 @@ async function computeTransitRows(year, month, driverIds) {
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN sites s ON s.id = co.site_id
      JOIN trip_events te ON te.ticket_id = dt.id
+     LEFT JOIN geofence_events ge ON ge.ticket_id = dt.id AND ge.event_type = 'left_plant'
      WHERE dt.status IN ('completed', 'returned')
        AND EXTRACT(YEAR FROM dt.ticket_date) = $1 AND EXTRACT(MONTH FROM dt.ticket_date) = $2
        ${driverIds ? "AND dt.driver_id = ANY($3)" : ""}
@@ -290,7 +389,15 @@ async function computeTransitRows(year, month, driverIds) {
   const out = [];
   for (const r of rows) {
     if (!r.left_plant_at || !r.reached_site_at || !r.site_out_at || !r.plant_in_at) continue; // incomplete timeline — excluded, not guessed
-    const outMin = (new Date(r.reached_site_at) - new Date(r.left_plant_at)) / 60000;
+    // Round 101, item 1: a source='auto' Plant Out is the GPS-grace-period
+    // deadline (detected + up to plant_out_grace_minutes), not the moment
+    // the truck actually left — using it as-is would shrink this driver's
+    // out-leg time by up to the grace period, unfairly inflating their
+    // score (and skewing the site average other drivers are compared
+    // against). Use the geofence hint's own detected_at instead — the true
+    // GPS-observed departure moment — whenever it's available.
+    const leftPlantAt = r.left_plant_source === "auto" && r.left_plant_detected_at ? r.left_plant_detected_at : r.left_plant_at;
+    const outMin = (new Date(r.reached_site_at) - new Date(leftPlantAt)) / 60000;
     const returnMin = (new Date(r.plant_in_at) - new Date(r.site_out_at)) / 60000;
     if (outMin <= 0 || returnMin <= 0) continue; // bad/out-of-order timestamps — excluded
     out.push({ ticket_id: r.ticket_id, driver_id: r.driver_id, site_id: r.site_id, site_name: r.site_name, out_min: outMin, return_min: returnMin, total_min: outMin + returnMin });

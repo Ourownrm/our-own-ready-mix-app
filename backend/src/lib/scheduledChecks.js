@@ -446,6 +446,88 @@ export async function checkGeofenceEvents() {
   return results.flat();
 }
 
+// Round 101, item 1 — if GPS has detected the truck leaving the plant
+// (geofence_events, event_type='left_plant') but the driver never taps the
+// real Plant Out button and never responds to the popup either, Plant Out
+// is auto-recorded so the trip doesn't sit stuck with no plant-out time —
+// and so the customer's tracking link isn't left showing nothing for a
+// truck that has plainly already left. Grace period is per-site
+// (sites.plant_out_grace_minutes), falling back to this default; it counts
+// from the driver's last "not yet" response if there was one, else from the
+// original GPS detection. The recorded event_time is the exact computed
+// deadline (detection/response + grace), not "whenever this check happens
+// to run" — matching the business's own worked example (detect 10:10, no
+// response by 10:22 -> 10:22 recorded, even if this check next runs at
+// 10:25). Written with source='auto' so reports and Best Driver scoring can
+// tell it apart from a driver's own confirmed tap (see computeTransitRows
+// in maintenance.js for why that distinction matters for fairness).
+const PLANT_OUT_DEFAULT_GRACE_MINUTES = 12;
+
+export async function checkPlantOutAutoRecord() {
+  const { rows } = await query(
+    `SELECT ge.ticket_id, ge.latitude, ge.longitude,
+            COALESCE(ge.last_response_at, ge.detected_at)
+              + (COALESCE(s.plant_out_grace_minutes, ${PLANT_OUT_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+              AS auto_event_time,
+            dt.ticket_number, dt.driver_id,
+            to_char(
+              COALESCE(ge.last_response_at, ge.detected_at)
+                + (COALESCE(s.plant_out_grace_minutes, ${PLANT_OUT_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval,
+              'HH24:MI'
+            ) AS auto_event_time_label,
+            COALESCE(du.preferred_language, 'en') AS driver_lang
+     FROM geofence_events ge
+     JOIN delivery_tickets dt ON dt.id = ge.ticket_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN users du ON du.id = dt.driver_id
+     WHERE ge.event_type = 'left_plant'
+       AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
+       AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'left_plant')
+       AND COALESCE(ge.last_response_at, ge.detected_at)
+             + (COALESCE(s.plant_out_grace_minutes, ${PLANT_OUT_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+           <= now()`
+  );
+
+  for (const r of rows) {
+    // Defensive re-check — a driver could confirm the real stage in the gap
+    // between the SELECT above and this INSERT (the interval between
+    // scheduled-check runs is long enough for that to matter in theory).
+    const { rows: already } = await query(
+      "SELECT 1 FROM trip_events WHERE ticket_id = $1 AND event_type = 'left_plant' LIMIT 1",
+      [r.ticket_id]
+    );
+    if (already.length) continue;
+
+    await query(
+      `INSERT INTO trip_events (ticket_id, event_type, event_time, source, latitude, longitude)
+       VALUES ($1, 'left_plant', $2, 'auto', $3, $4)`,
+      [r.ticket_id, r.auto_event_time, r.latitude, r.longitude]
+    );
+
+    const message = `${r.ticket_number} — Plant Out auto-recorded at ${r.auto_event_time_label} (driver didn't respond)`;
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('driver', $1, 'plant_out_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('manager', $1, 'plant_out_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await pushToUser(r.driver_id, {
+      title: pushText("plant_out_auto_recorded", r.driver_lang, "title"),
+      body: pushText("plant_out_auto_recorded", r.driver_lang, "body", [r.ticket_number, r.auto_event_time_label]),
+      url: "/driver",
+    });
+    await pushToRole("manager", {
+      title: "Plant Out auto-recorded",
+      body: message,
+      url: "/manager",
+    });
+  }
+  return rows;
+}
+
 // Safety net for supply requests still pending after a while — the
 // at-creation push only fires once, and if Manager hadn't enabled
 // notifications yet (or just missed it), the request could otherwise sit

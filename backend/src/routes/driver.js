@@ -113,6 +113,23 @@ router.post("/tickets/:ticketId/plant-out", async (req, res) => {
   res.json({ ok: true });
 });
 
+// Round 101, item 1: driver tapped "Not yet" on a geofence hint popup — the
+// grace period before auto-recording that stage (currently only wired up for
+// Plant Out — see checkPlantOutAutoRecord in scheduledChecks.js) restarts
+// from this response instead of the original GPS detection, since the
+// driver has actively confirmed they're still there. A no-op if there's no
+// matching geofence_events row yet (e.g. a stale/duplicate tap) — nothing to
+// update, and nothing to error about either.
+router.post("/tickets/:ticketId/geofence-response", async (req, res) => {
+  const { event_type } = req.body;
+  if (!event_type) return res.status(400).json({ error: "event_type is required." });
+  await query(
+    `UPDATE geofence_events SET last_response_at = now() WHERE ticket_id = $1 AND event_type = $2`,
+    [req.params.ticketId, event_type]
+  );
+  res.json({ ok: true });
+});
+
 // Plant In — same, available regardless of supervisor; gated on the site
 // having been marked done (by whoever did it — driver or supervisor).
 router.post("/tickets/:ticketId/plant-in", async (req, res) => {

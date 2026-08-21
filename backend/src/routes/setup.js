@@ -981,6 +981,35 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (customer_booking_links — Manager/Admin-generated per customer+site token; bookings can now originate from a customer directly, not just a Sales Executive — requested_by is NULL for those, booking_link_id points at the link instead).");
 
+    // Round 101, item 1 — plant-out auto-record after a per-site grace period
+    // if the driver never responds to the geofence "left plant" notification.
+    await pool.query(`
+      ALTER TABLE sites ADD COLUMN IF NOT EXISTS plant_out_grace_minutes INTEGER;
+      ALTER TABLE geofence_events ADD COLUMN IF NOT EXISTS last_response_at TIMESTAMPTZ;
+    `);
+    log.push("Schema migration applied (sites.plant_out_grace_minutes — per-site grace period before Plant Out is auto-recorded; geofence_events.last_response_at — restarts the grace period when a driver taps 'Not yet').");
+
+    // Round 101, item 2 — "Action required" remark per checklist item on the
+    // weekly inspection, recorded as an open maintenance action item.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inspection_action_items (
+        id SERIAL PRIMARY KEY,
+        inspection_id INTEGER NOT NULL REFERENCES truck_inspections(id),
+        truck_id INTEGER NOT NULL REFERENCES trucks(id),
+        item_key VARCHAR(80) NOT NULL,
+        item_label VARCHAR(200) NOT NULL,
+        remark TEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'open',
+        raised_by INTEGER NOT NULL REFERENCES users(id),
+        raised_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        resolved_by INTEGER REFERENCES users(id),
+        resolved_at TIMESTAMPTZ,
+        resolution_notes TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_inspection_action_items_status ON inspection_action_items(status, truck_id);
+    `);
+    log.push("Schema migration applied (inspection_action_items — per-checklist-item 'Action required' remarks from the weekly inspection, tracked open/resolved as maintenance action items).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

@@ -30,7 +30,7 @@ import customerBookingRoutes from "./routes/customerBooking.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
-  cleanupOldNotifications,
+  checkPlantOutAutoRecord, cleanupOldNotifications,
 } from "./lib/scheduledChecks.js";
 
 dotenv.config();
@@ -99,6 +99,7 @@ setInterval(() => {
   checkFollowupsDue().catch((err) => console.error("Follow-ups-due check failed:", err));
   checkPendingSupplyRequests().catch((err) => console.error("Pending-supply-requests check failed:", err));
   checkGeofenceEvents().catch((err) => console.error("Geofence-events check failed:", err));
+  checkPlantOutAutoRecord().catch((err) => console.error("Plant-out-auto-record check failed:", err));
 }, 5 * 60 * 1000);
 
 // Purges old notifications (see cleanupOldNotifications for the retention

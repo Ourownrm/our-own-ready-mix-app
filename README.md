@@ -3359,3 +3359,92 @@ and off independent of revoking, seed a dispatched truck and confirm the live tr
 appears on the customer's link, revoke the link and confirm it goes to `expired`, and re-verified
 the existing round-91 `/api/track/:token` endpoint still returns identical data after being
 refactored onto the new shared `orderTracking.js` helper.
+
+## Hundred-and-first round (App 114 / Ver. 9.24) — Plant Out auto-record, inspection action items, maintenance ownership, breakdown/repair before loading
+
+### Added: Plant Out auto-recorded from GPS if the driver never responds (item 1)
+The customer tracking link (round 91/100) depends on the driver confirming Plant Out — if they
+never tap the button and never answer the geofence popup, the customer's tracking view sits
+with no Plant Out time at all. Fixed with a per-site grace period: `sites.plant_out_grace_minutes`
+(nullable — `NULL` falls back to a 12-minute system default, `PLANT_OUT_DEFAULT_GRACE_MINUTES`
+in `scheduledChecks.js`), editable from Administrator/Manager → Masters → Projects & Sites, since
+a short-travel-time site needs a shorter grace window than a flat 12 minutes would allow.
+
+New scheduled check `checkPlantOutAutoRecord()` (same 5-minute timer as the existing geofence
+checks) finds tickets where GPS already detected `left_plant` (`geofence_events`) but no real
+`trip_events` row exists yet, and the grace period — counted from `geofence_events.last_response_at`
+if the driver tapped "Not yet" on the popup, else from `detected_at` — has passed. It inserts the
+`trip_events` row itself, with `event_time` set to the *exact computed deadline* (detection/response
++ grace), not whenever the check happens to run — so "detected 10:10, no response by 10:22" records
+10:22 even if the check itself doesn't execute until 10:25 — and `source = 'auto'` so it's
+distinguishable from a real tap. New endpoint `POST /driver/tickets/:id/geofence-response`
+(`{event_type}`) lets the driver's "Not yet" tap restart the clock server-side — previously
+`dismissPopup()` in `DriverDuty.jsx` was pure client state with nothing recorded on the backend.
+
+**Fairness fix, since this touches Best Driver scoring:** an auto-recorded Plant Out is the
+grace-period *deadline*, not the moment the truck actually left — feeding it as-is into
+`computeTransitRows` (maintenance.js) would shrink that trip's plant-out→site-in leg by up to the
+grace period, unfairly inflating the driver's transit-efficiency score (and skewing the site
+average every other driver at that site is compared against). Fixed by having `computeTransitRows`
+prefer `geofence_events.detected_at` — the true GPS-observed departure moment — over the padded
+`trip_events.event_time` whenever `source = 'auto'`. Verified with a real Postgres instance: same
+ticket scored ~3 min transit using the true GPS time vs. ~2 min if the padded auto time had been
+used unchanged.
+
+An auto-recorded Plant Out is marked wherever it matters for a human reviewing it: the customer's
+own tracking link shows the plain time (per the business's own spec — a customer doesn't need to
+know it was GPS-inferred), but the internal Time Cross Check report
+(`GET /orders/trip-time-crosscheck`, `TripTimeCrossCheckPage.jsx`) now shows a superscript **A**
+next to an auto-recorded Plant Out time, with a legend explaining it.
+
+### Added: "Action required" column on the weekly inspection checklist (item 2)
+Each of the ~36 checklist items on the Transit Mixer Weekly Inspection now has its own remark
+field. A non-empty remark becomes an open **maintenance action item** — a new table,
+`inspection_action_items`, deliberately separate from the existing `maintenance_action_points`
+(the fixed, recurring master schedule — "Oil change every 90 days") since these are one-off
+findings tied to a specific inspection ("Front tyres — worn, needs replacement"), not a recurring
+task. `POST /api/maintenance/inspections` now also accepts an `action_items` array (only remarks
+that were actually filled in are stored — most checklist items on most inspections need no
+action). New `GET /api/maintenance/action-items?status=open|resolved|all` and
+`PATCH /api/maintenance/action-items/:id/resolve` (optional `resolution_notes`) round out the
+follow-up flow. Surfaced as a new panel at the bottom of Maintenance → Best Driver of the Month
+(`InspectionActionItemsPanel`), open by default with a toggle to see resolved ones — reachable by
+both Manager and Administrator, same as the rest of that tab.
+
+### Changed: Maintenance Action Points moved from Administrator to Manager (item 3)
+Per direct business request — this master list (the recurring service schedule, round 98 item
+10) moves wholesale from Administrator's Masters menu to Manager Dashboard's records/masters
+view. The three routes (`GET`/`POST`/`PATCH /action-points`) moved from `administrator.js` to
+`maintenance.js`, now `requireRole("manager")` only (not Administrator) — Administrator's old
+routes were removed outright, not duplicated, since the ask was specifically to hand this over,
+not share it. `MaintenanceActionPointsPanel` (`MasterDataPanels.jsx`) itself didn't need to
+change — only which page imports it and which API path it calls (`/administrator/maintenance-
+action-points` → `/maintenance/action-points`). This is the deliberate exception to recurring bug
+pattern #7 (duplicate a nav item to every dashboard) — here the business explicitly asked for a
+move, not a duplication, so it's now Manager-only by design.
+
+### Fixed: driver couldn't report a breakdown or request external repair before loading (item 4)
+`BreakdownForm` and `RequestRepairForm` in `DriverDuty.jsx` both gated their trigger button on
+`current?.truck_id` — a truck only becomes associated with a driver once a delivery ticket exists
+for them, so a driver who finds their assigned vehicle broken down *before* it's even been loaded
+(no ticket yet) had no way to report it at all. Both buttons are now always available, and each
+form gained a `TruckPicker` — a truck dropdown (`GET /master/trucks?exclude_in_repair=true`,
+the same exclusion already used elsewhere so a truck already sent out for repair doesn't appear
+twice) — that only renders when there's no active trip's truck to default to. Backend needed no
+changes: `POST /driver/breakdown` and `POST /driver/external-repair` already accepted any
+`truck_id` from the request body with no ownership/trip check.
+
+### Migration note
+Run `/setup` after deploying — adds `sites.plant_out_grace_minutes`,
+`geofence_events.last_response_at`, and the new `inspection_action_items` table. Verified this
+round against a fresh local Postgres 16 instance: full `schema.sql` install, the incremental
+`/setup` path (twice, idempotency), and the full loop exercised end-to-end over HTTP — GPS-detects
+Plant Out, confirmed no auto-record fires before the grace period, confirmed a driver's "Not yet"
+tap restarts the clock (re-tested the deadline lands exactly on `response + grace`, not
+`detection + grace`), confirmed the auto-record check is a no-op once the driver's real tap (or an
+earlier auto-record) already exists, confirmed the Best Driver transit score uses the true GPS
+detection time rather than the padded auto time, confirmed the Time Cross Check report flags the
+auto-recorded row, filled a full weekly inspection with one flagged item and confirmed it appears
+as an open action item and can be resolved, confirmed Administrator can no longer reach maintenance
+action points while Manager can, and confirmed a driver can report a breakdown/external-repair with
+an explicitly chosen truck and no active trip.

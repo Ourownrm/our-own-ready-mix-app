@@ -18,6 +18,8 @@ const DICT = {
     action_site_in: "Site In",
     action_site_out: "Site Out",
     action_plant_in: "Plant In",
+    plant_out_auto_recorded_title: "Plant Out was auto-recorded",
+    plant_out_auto_recorded_body: (ticket, time) => `${ticket} — you didn't respond, so Plant Out was recorded at ${time} from GPS`,
   },
   ml: {
     left_plant_title: "നിങ്ങൾ പ്ലാന്റ് വിട്ടതായി തോന്നുന്നു",
@@ -32,6 +34,8 @@ const DICT = {
     action_site_in: "സൈറ്റ് ഇൻ",
     action_site_out: "സൈറ്റ് ഔട്ട്",
     action_plant_in: "പ്ലാന്റ് ഇൻ",
+    plant_out_auto_recorded_title: "പ്ലാന്റ് ഔട്ട് സ്വയമേവ രേഖപ്പെടുത്തി",
+    plant_out_auto_recorded_body: (ticket, time) => `${ticket} — നിങ്ങൾ പ്രതികരിക്കാത്തതിനാൽ, GPS പ്രകാരം ${time} ന് പ്ലാന്റ് ഔട്ട് രേഖപ്പെടുത്തി`,
   },
   hi: {
     left_plant_title: "लगता है आपने प्लांट छोड़ दिया है",
@@ -46,6 +50,8 @@ const DICT = {
     action_site_in: "साइट इन",
     action_site_out: "साइट आउट",
     action_plant_in: "प्लांट इन",
+    plant_out_auto_recorded_title: "प्लांट आउट अपने आप दर्ज हो गया",
+    plant_out_auto_recorded_body: (ticket, time) => `${ticket} — आपने जवाब नहीं दिया, इसलिए GPS के अनुसार ${time} पर प्लांट आउट दर्ज कर दिया गया`,
   },
 };
 
