@@ -226,6 +226,15 @@ CREATE TABLE lead_followups (
   at_site BOOLEAN,
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
+  -- Round 115: an activity_type = 'site_visit' update now requires the same
+  -- structured questionnaire used on the Visits tab (is_new_project + the
+  -- matching NEW_PROJECT/RUNNING_PROJECT answer set) — can't be marked
+  -- "Site visit done" with nothing behind it. When answered, a
+  -- customer_visits row is created alongside this activity log entry (same
+  -- follow-up generation as a visit logged directly), and related_visit_id
+  -- (added below, once customer_visits exists) points at it.
+  is_new_project BOOLEAN,
+  answers JSONB,
   created_by INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -387,6 +396,24 @@ CREATE TABLE visit_outcome_reasons (
 
 ALTER TABLE visit_followups ADD CONSTRAINT visit_followups_outcome_reason_id_fkey
   FOREIGN KEY (outcome_reason_id) REFERENCES visit_outcome_reasons(id);
+
+ALTER TABLE lead_followups ADD COLUMN related_visit_id INTEGER REFERENCES customer_visits(id);
+
+-- Round 115: a running log of what was actually done against one follow-up
+-- task, without closing it out (that's still what marking it "done" is for).
+-- Several of these can accumulate against the same visit_followups row —
+-- e.g. "called, no answer, will retry" then "called again, asked for 2 more
+-- days" — so a customer/visit's open follow-ups read as a thread with a
+-- history, not a single reminder that either exists or doesn't.
+CREATE TABLE followup_actions (
+  id SERIAL PRIMARY KEY,
+  followup_id INTEGER REFERENCES visit_followups(id) NOT NULL,
+  note TEXT NOT NULL,
+  next_due_date DATE,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_followup_actions_followup ON followup_actions(followup_id);
 
 -- Raw material stock — one row per bin, entered/updated by QC Engineer and
 -- shown read-only on the Manager and Administrator dashboards until QC

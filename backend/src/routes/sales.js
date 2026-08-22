@@ -93,10 +93,13 @@ router.post("/leads/self", requireRole("sales_executive"), async (req, res) => {
 router.get("/leads", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
   const own = req.user.role === "sales_executive";
   const { rows } = await query(
-    `SELECT l.*, u.name AS assigned_to_name, creator.name AS created_by_name
+    `SELECT l.*, u.name AS assigned_to_name, creator.name AS created_by_name, latest.activity_type AS latest_activity_type
      FROM leads l
      LEFT JOIN users u ON u.id = l.assigned_to
      LEFT JOIN users creator ON creator.id = l.created_by
+     LEFT JOIN LATERAL (
+       SELECT activity_type FROM lead_followups WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1
+     ) latest ON true
      ${own ? "WHERE l.assigned_to = $1" : ""}
      ORDER BY l.status = 'won', l.status = 'lost', l.updated_at DESC`,
     own ? [req.user.id] : []
@@ -128,6 +131,7 @@ router.post("/leads/:id/followup", requireRole("sales_executive", "manager", "ad
   const {
     note, activity_type, quotation_amount, revision_reason, persons_met,
     at_site, latitude, longitude,
+    is_new_project, answers, visitor_type,
   } = req.body;
   if (!note) return res.status(400).json({ error: "Enter a note describing this update." });
   const type = ACTIVITY_TYPES.includes(activity_type) ? activity_type : "note";
@@ -135,15 +139,63 @@ router.post("/leads/:id/followup", requireRole("sales_executive", "manager", "ad
     return res.status(400).json({ error: "Let us know whether you're at site for this update." });
   }
 
+  // A "Site visit" update can't be saved as "Site visit done" with nothing
+  // behind it — same mandatory questionnaire as the Visits tab, answered
+  // inline here instead. Answering it also creates a real customer_visits
+  // row (visited_name from the lead, since a lead isn't linked to a
+  // customer/site record until it's won), so the same follow-up generation
+  // and owners'-meeting/technical-visit notifications apply either way.
+  let relatedVisitId = null;
+  let createdFollowups = [];
+  if (type === "site_visit") {
+    if (typeof is_new_project !== "boolean") {
+      return res.status(400).json({ error: "Confirm whether this is a new or an existing project." });
+    }
+    const missing = missingAnswerKeys(is_new_project, answers || {});
+    if (missing.length > 0) {
+      return res.status(400).json({ error: `${missing.length} question(s) still need an answer.`, missing_keys: missing });
+    }
+
+    const { rows: leadRows } = await query("SELECT * FROM leads WHERE id = $1", [req.params.id]);
+    const lead = leadRows[0];
+    if (!lead) return res.status(404).json({ error: "Lead not found." });
+
+    const vType = VISITOR_TYPES.includes(visitor_type) ? visitor_type : "customer";
+    const { rows: visitRows } = await query(
+      `INSERT INTO customer_visits
+         (customer_id, visited_name, site_id, visitor_type, visited_by, visit_date, contact_person, contact_number,
+          discussion_outcome, at_site, latitude, longitude, is_new_project, answers)
+       VALUES ($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [lead.won_customer_id || null, lead.prospect_name, null, vType, req.user.id,
+       persons_met || lead.contact_person || null, lead.contact_phone || null,
+       note, at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null,
+       is_new_project, JSON.stringify(answers || {})]
+    );
+    const visit = visitRows[0];
+    relatedVisitId = visit.id;
+    createdFollowups = await applyVisitFollowupsAndNotifications({
+      visit, isNewProject: is_new_project, answers, visitorType: vType,
+      customerId: lead.won_customer_id || null, visitedName: lead.prospect_name, actorId: req.user.id,
+    });
+  }
+
   await query(
     `INSERT INTO lead_followups
-     (lead_id, activity_type, note, quotation_amount, revision_reason, persons_met, at_site, latitude, longitude, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+     (lead_id, activity_type, note, quotation_amount, revision_reason, persons_met, at_site, latitude, longitude,
+      is_new_project, answers, related_visit_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
     [req.params.id, type, note, quotation_amount || null, revision_reason || null, persons_met || null,
-     at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null, req.user.id]
+     at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null,
+     type === "site_visit" ? is_new_project : null, type === "site_visit" ? JSON.stringify(answers || {}) : null,
+     relatedVisitId, req.user.id]
   );
 
-  const statusBump = type === "note" ? "CASE WHEN status = 'new' THEN 'contacted' ELSE status END" : "status";
+  // lead_status has no dedicated "site visit done" value — status still just
+  // advances new -> contacted the same way a note does. "Site visit done" is
+  // shown as a derived badge (latest activity_type === 'site_visit'), not a
+  // status of its own — see LeadsList in SalesExecutive.jsx.
+  const statusBump = (type === "note" || type === "site_visit") ? "CASE WHEN status = 'new' THEN 'contacted' ELSE status END"
+    : "status";
   if (type === "quotation_issued" || type === "quotation_revised") {
     await query(
       `UPDATE leads SET status = ${statusBump}, quotation_issued = true,
@@ -154,7 +206,7 @@ router.post("/leads/:id/followup", requireRole("sales_executive", "manager", "ad
   } else {
     await query(`UPDATE leads SET status = ${statusBump}, updated_at = now() WHERE id = $1`, [req.params.id]);
   }
-  res.json({ ok: true });
+  res.json({ ok: true, related_visit_id: relatedVisitId, followups: createdFollowups });
 });
 
 router.post("/leads/:id/lost", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
@@ -491,7 +543,68 @@ function generateFollowups(isNewProject, answers, visitorType) {
     }
   }
 
+  // Round 115: a visit used to be able to save with zero follow-up items —
+  // e.g. a routine existing-project check-in with no red flags. That left
+  // the visit with no next action at all. A default check-in reminder now
+  // always fills that gap, so "no follow-up was generated" never silently
+  // means "nothing happens next" — it means "check back in 2 weeks." This
+  // doesn't apply to "Lost to competitor" above, which already returns
+  // before reaching here — that's a deliberate dead end, not a gap.
+  if (items.length === 0) {
+    items.push({ title: "Check in — routine follow-up", reason: "No specific flags from this visit; default 14-day check-in", due_in_days: 14, role: "sales_executive" });
+  }
+
   return items;
+}
+
+// Shared by POST /visits and POST /leads/:id/followup (site_visit updates) —
+// same owners'-meeting/technical-visit notifications, same rule-driven
+// follow-ups (with the guaranteed fallback from generateFollowups above),
+// plus an optional one-off follow-up the Sales Executive typed in themselves
+// for anything the fixed rule set doesn't anticipate.
+async function applyVisitFollowupsAndNotifications({ visit, isNewProject, answers, visitorType, customerId, visitedName, manualFollowup, actorId }) {
+  if (answers?.owners_meeting === "Yes") {
+    const msg = `${visitedName} asked for an owners' meeting`;
+    // Not persisted for Manager — the "Arrange owners' meeting" follow-up
+    // task already routes to Manager and shows on their Follow-ups Due, so
+    // a separate notification row here would just show the same thing
+    // twice. The immediate push still fires, for prompt awareness ahead of
+    // the follow-up's own due date.
+    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'owners_meeting_requested', $1)`, [msg]);
+    await pushToRole("manager", { title: "Owners' meeting requested", body: msg, url: "/manager" });
+    await pushToRole("administrator", { title: "Owners' meeting requested", body: msg, url: "/reports" });
+  }
+  if (answers?.technical_visit === "Yes") {
+    const msg = `${visitedName} needs a technical visit`;
+    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'technical_visit_requested', $1)`, [msg]);
+    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'technical_visit_requested', $1)`, [msg]);
+    await pushToRole("manager", { title: "Technical visit requested", body: msg, url: "/manager" });
+    await pushToRole("administrator", { title: "Technical visit requested", body: msg, url: "/reports" });
+  }
+
+  const followups = generateFollowups(isNewProject, answers || {}, visitorType);
+  if (manualFollowup?.title && manualFollowup?.due_date) {
+    followups.push({ title: manualFollowup.title, reason: "Added manually by the Sales Executive", due_in_days: null, due_date: manualFollowup.due_date, role: "sales_executive" });
+  }
+
+  const created = [];
+  for (const f of followups) {
+    const dueDate = f.due_date || daysFromNow(f.due_in_days);
+    const { rows: fRows } = await query(
+      `INSERT INTO visit_followups (visit_id, customer_id, title, reason, due_date, assigned_to_role, assigned_to_user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [visit.id, customerId || null, f.title, f.reason, dueDate, f.role, f.role === "sales_executive" ? actorId : null]
+    );
+    created.push(fRows[0]);
+    // Anything due today or tomorrow gets pushed immediately — this is the
+    // actual fix for orders getting missed on slow follow-up, not just a
+    // list someone has to remember to check.
+    const dueInDays = f.due_in_days ?? Math.round((new Date(dueDate) - new Date(new Date().toISOString().slice(0, 10))) / 86400000);
+    if (dueInDays <= 1) {
+      await pushToRole(f.role, { title: "Follow-up due " + (dueInDays <= 0 ? "today" : "tomorrow"), body: `${visitedName} — ${f.title}`, url: f.role === "sales_executive" ? "/sales" : "/manager" });
+    }
+  }
+  return created;
 }
 
 router.post("/visits", requireRole("sales_executive"), async (req, res) => {
@@ -499,7 +612,8 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
   const {
     customer_id, visited_name, site_id, visitor_type, visit_date, visit_time,
     contact_person, contact_number, at_site, latitude, longitude,
-    is_new_project, answers, comments,
+    is_new_project, answers, comments, manual_followup,
+    post_delivery_feedback,
   } = req.body;
 
   if (!visited_name || !visit_date) return res.status(400).json({ error: "Customer name and date are required." });
@@ -526,42 +640,22 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
   );
   const visit = rows[0];
 
-  if (answers?.owners_meeting === "Yes") {
-    const msg = `${visited_name} asked for an owners' meeting`;
-    // Not persisted for Manager — the "Arrange owners' meeting" follow-up
-    // task already routes to Manager and shows on their Follow-ups Due, so
-    // a separate notification row here would just show the same thing
-    // twice. The immediate push still fires, for prompt awareness ahead of
-    // the follow-up's own due date.
-    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'owners_meeting_requested', $1)`, [msg]);
-    await pushToRole("manager", { title: "Owners' meeting requested", body: msg, url: "/manager" });
-    await pushToRole("administrator", { title: "Owners' meeting requested", body: msg, url: "/reports" });
-  }
-  if (answers?.technical_visit === "Yes") {
-    const msg = `${visited_name} needs a technical visit`;
-    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'technical_visit_requested', $1)`, [msg]);
-    await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'technical_visit_requested', $1)`, [msg]);
-    await pushToRole("manager", { title: "Technical visit requested", body: msg, url: "/manager" });
-    await pushToRole("administrator", { title: "Technical visit requested", body: msg, url: "/reports" });
+  // Post-delivery feedback, optionally logged in the same step as the visit
+  // that prompted it — folds the old standalone Feedback tab into here
+  // instead of it being a disconnected action with no link to which visit
+  // surfaced it.
+  if (post_delivery_feedback?.feedback_type && post_delivery_feedback?.comment && customer_id) {
+    await query(
+      `INSERT INTO aftersales_feedback (customer_id, order_id, feedback_type, comment, recorded_by)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [customer_id, post_delivery_feedback.order_id || null, post_delivery_feedback.feedback_type, post_delivery_feedback.comment, req.user.id]
+    );
   }
 
-  const followups = generateFollowups(is_new_project, answers || {}, visitor_type);
-  const created = [];
-  for (const f of followups) {
-    const dueDate = daysFromNow(f.due_in_days);
-    const { rows: fRows } = await query(
-      `INSERT INTO visit_followups (visit_id, customer_id, title, reason, due_date, assigned_to_role, assigned_to_user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [visit.id, customer_id || null, f.title, f.reason, dueDate, f.role, f.role === "sales_executive" ? req.user.id : null]
-    );
-    created.push(fRows[0]);
-    // Anything due today or tomorrow gets pushed immediately — this is the
-    // actual fix for orders getting missed on slow follow-up, not just a
-    // list someone has to remember to check.
-    if (f.due_in_days <= 1) {
-      await pushToRole(f.role, { title: "Follow-up due " + (f.due_in_days === 0 ? "today" : "tomorrow"), body: `${visited_name} — ${f.title}`, url: f.role === "sales_executive" ? "/sales" : "/manager" });
-    }
-  }
+  const created = await applyVisitFollowupsAndNotifications({
+    visit, isNewProject: is_new_project, answers, visitorType: visitor_type,
+    customerId: customer_id, visitedName: visited_name, manualFollowup: manual_followup, actorId: req.user.id,
+  });
 
   res.status(201).json({ visit, followups: created });
 });
@@ -576,7 +670,7 @@ router.get("/followups", requireRole("sales_executive", "manager", "accountant",
   const role = viewingAs ? "sales_executive" : req.user.role;
   const userFilter = viewingAs ? Number(req.query.as_user) : (req.user.role === "sales_executive" ? req.user.id : null);
   const { rows } = await query(
-    `SELECT vf.*, cv.visited_name, cv.site_id, s.name AS site_name
+    `SELECT vf.*, cv.visited_name, cv.site_id, cv.visit_date, s.name AS site_name
      FROM visit_followups vf
      JOIN customer_visits cv ON cv.id = vf.visit_id
      LEFT JOIN sites s ON s.id = cv.site_id
@@ -592,6 +686,41 @@ router.get("/followups", requireRole("sales_executive", "manager", "accountant",
 router.post("/followups/:id/done", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
   await query("UPDATE visit_followups SET status = 'done' WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
+});
+
+// Round 115 — logs what was actually done against a follow-up without
+// closing it out (several of these can build up on the same item before it
+// eventually gets marked Done). Optionally reschedules the due date in the
+// same step, so "called, they asked for 2 more days" both records the call
+// and pushes the reminder out, in one action instead of two.
+router.post("/followups/:id/log-action", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+  const { note, next_due_date } = req.body;
+  if (!note || !note.trim()) return res.status(400).json({ error: "Enter what you did." });
+  const { rows } = await query(
+    `INSERT INTO followup_actions (followup_id, note, next_due_date, created_by)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [req.params.id, note.trim(), next_due_date || null, req.user.id]
+  );
+  if (next_due_date) {
+    await query("UPDATE visit_followups SET due_date = $1 WHERE id = $2 AND status = 'pending'", [next_due_date, req.params.id]);
+  }
+  res.status(201).json(rows[0]);
+});
+
+// Action history for one or more follow-ups at once (comma-separated ids) —
+// used to render a thread's log without an N+1 request per item.
+router.get("/followups/actions", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+  const ids = (req.query.followup_ids || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
+  if (!ids.length) return res.json([]);
+  const { rows } = await query(
+    `SELECT fa.*, u.name AS created_by_name
+     FROM followup_actions fa
+     LEFT JOIN users u ON u.id = fa.created_by
+     WHERE fa.followup_id = ANY($1::int[])
+     ORDER BY fa.created_at DESC`,
+    [ids]
+  );
+  res.json(rows);
 });
 
 // Admin-manageable reason lists for the two "didn't convert" outcomes —
@@ -694,15 +823,81 @@ router.post("/visits/link-customer", requireRole("manager", "administrator"), as
   res.json({ ok: true, linked_visit_count: rows.length });
 });
 
+// Per-day visit counts for one salesperson over the trailing `days` days,
+// plus whether they were on duty at all that day (sales_duty_log clocking
+// in at least once) — a day with 0 visits only means something if they were
+// actually on duty; a day off is a day off, not a missed visit.
+async function dailyVisitCadence(userId, days) {
+  const { rows } = await query(
+    `SELECT d::date AS date,
+            COUNT(cv.id) AS visits,
+            EXISTS(
+              SELECT 1 FROM sales_duty_log sdl
+              WHERE sdl.salesperson_user_id = $1 AND sdl.is_on = true AND sdl.event_time::date = d::date
+            ) AS on_duty
+     FROM generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, interval '1 day') d
+     LEFT JOIN customer_visits cv ON cv.visited_by = $1 AND cv.visit_date = d::date
+     GROUP BY d
+     ORDER BY d`,
+    [userId, days]
+  );
+  return rows.map((r) => ({ ...r, visits: Number(r.visits) }));
+}
+
+// Sales Executive's own visit summary — the "days without a visit" strip on
+// their Visits tab. Manager/Administrator can pass ?as_user= to preview a
+// specific rep's, same convention as /my-dashboard.
+router.get("/visits/summary", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
+  res.json(await dailyVisitCadence(targetUserId(req), days));
+});
+
+// Manager/Administrator view across every active Sales Executive — the
+// visit-cadence accountability piece, added to the Sales Performance page
+// rather than a new report.
+router.get("/visits/cadence", requireRole("manager", "administrator"), async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
+  const { rows: reps } = await query("SELECT id, name FROM users WHERE role = 'sales_executive' AND is_active ORDER BY name");
+  const result = [];
+  for (const rep of reps) {
+    result.push({ user_id: rep.id, name: rep.name, days: await dailyVisitCadence(rep.id, days) });
+  }
+  res.json(result);
+});
+
+// Follow-up threads (grouped by visit — several items can share one) with
+// their latest logged action, across every Sales Executive — the
+// accountability/report half of the mandatory-follow-up change, added to
+// the Sales Performance page.
+router.get("/followups/report", requireRole("manager", "administrator"), async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 180);
+  const { rows } = await query(
+    `SELECT vf.id, vf.visit_id, vf.title, vf.reason, vf.due_date, vf.status,
+            cv.visited_name, cv.visit_date, cv.customer_id,
+            rep.name AS rep_name,
+            latest_action.note AS latest_action_note, latest_action.created_at AS latest_action_at
+     FROM visit_followups vf
+     JOIN customer_visits cv ON cv.id = vf.visit_id
+     LEFT JOIN users rep ON rep.id = cv.visited_by
+     LEFT JOIN LATERAL (
+       SELECT note, created_at FROM followup_actions WHERE followup_id = vf.id ORDER BY created_at DESC LIMIT 1
+     ) latest_action ON true
+     WHERE cv.visit_date >= CURRENT_DATE - $1::int
+     ORDER BY cv.visited_name, cv.visit_date DESC, vf.due_date`,
+    [days]
+  );
+  res.json(rows);
+});
+
 // ===================== SALES EXECUTIVE'S OWN DASHBOARD =====================
 
 router.get("/my-dashboard", requireRole("sales_executive", "administrator", "manager"), async (req, res) => {
   const spId = await mySalespersonId(targetUserId(req));
   if (!spId) {
-    return res.json({ customers: [], orders_month_qty: 0, orders_month_value: 0, outstanding: 0, outstanding_by_customer: [], lead_counts: {} });
+    return res.json({ customers: [], orders_month_qty: 0, orders_month_value: 0, outstanding: 0, outstanding_by_customer: [], lead_counts: {}, sites_overdue_visit: 0 });
   }
 
-  const [customers, ordersMonth, outstanding, outstandingByCustomer, leadCounts] = await Promise.all([
+  const [customers, ordersMonth, outstanding, outstandingByCustomer, leadCounts, sitesOverdueVisit] = await Promise.all([
     query(
       `SELECT DISTINCT c.id, c.name FROM customer_orders co
        JOIN customers c ON c.id = co.customer_id
@@ -748,6 +943,19 @@ router.get("/my-dashboard", requireRole("sales_executive", "administrator", "man
       `SELECT status, COUNT(*) AS count FROM leads WHERE assigned_to = $1 GROUP BY status`,
       [req.user.id]
     ),
+    // Round 115 — "sites overdue a visit": among the sites this rep owns,
+    // how many have gone 14+ days with no customer_visits logged (or none
+    // ever). This is the forcing-function KPI — visit cadence made visible
+    // on their own landing view, not just in a report someone else checks.
+    query(
+      `SELECT COUNT(*) AS total FROM sites s
+       WHERE s.assigned_sales_representative_id = $1 AND s.is_active
+         AND NOT EXISTS (
+           SELECT 1 FROM customer_visits cv
+           WHERE cv.site_id = s.id AND cv.visit_date >= CURRENT_DATE - INTERVAL '14 days'
+         )`,
+      [spId]
+    ),
   ]);
 
   res.json({
@@ -757,6 +965,7 @@ router.get("/my-dashboard", requireRole("sales_executive", "administrator", "man
     outstanding: outstanding.rows[0].total,
     outstanding_by_customer: outstandingByCustomer.rows,
     lead_counts: Object.fromEntries(leadCounts.rows.map((r) => [r.status, Number(r.count)])),
+    sites_overdue_visit: Number(sitesOverdueVisit.rows[0].total),
   });
 });
 
@@ -868,6 +1077,21 @@ router.post("/forecasts", requireRole("sales_executive"), async (req, res) => {
      WHERE recipient_id = $1 AND site_id = $2 AND type = 'forecast_update_requested' AND is_read = false`,
     [req.user.id, site_id]
   );
+
+  // Round 115 — a forecast update is only useful to Operations if they
+  // actually see it happen, not just if they happen to open this tab. Same
+  // immediate-push pattern as an owners'-meeting/technical-visit request.
+  const { rows: siteRows } = await query(
+    `SELECT s.name AS site_name, c.name AS customer_name FROM sites s JOIN customers c ON c.id = s.customer_id WHERE s.id = $1`,
+    [site_id]
+  );
+  const siteLabel = siteRows[0] ? `${siteRows[0].customer_name} — ${siteRows[0].site_name}` : "a project";
+  const msg = `${req.user.name} updated the forecast for ${siteLabel}: ${expected_qty_m3} m³ over ${period_days} days (${confidence})`;
+  await query(`INSERT INTO notifications (recipient_role, type, message, site_id) VALUES ('manager', 'forecast_updated', $1, $2)`, [msg, site_id]);
+  await query(`INSERT INTO notifications (recipient_role, type, message, site_id) VALUES ('administrator', 'forecast_updated', $1, $2)`, [msg, site_id]);
+  await pushToRole("manager", { title: "Sales forecast updated", body: msg, url: "/manager" });
+  await pushToRole("administrator", { title: "Sales forecast updated", body: msg, url: "/reports" });
+
   res.status(201).json(rows[0]);
 });
 

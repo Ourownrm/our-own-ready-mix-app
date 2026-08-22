@@ -3448,3 +3448,196 @@ auto-recorded row, filled a full weekly inspection with one flagged item and con
 as an open action item and can be resolved, confirmed Administrator can no longer reach maintenance
 action points while Manager can, and confirmed a driver can report a breakdown/external-repair with
 an explicitly chosen truck and no active trip.
+
+## Hundred-and-second round (App 115 / Ver. 9.25) — Sales module rework: simplified dashboard, follow-up threads, customer booking multi-request
+
+Full rework of the Sales Executive experience, requested because the module had grown confusing:
+too many tabs (Dashboard, Bookings, My leads, Visits, Feedback) for what a rep actually needs day
+to day — track customer visits, respond to leads, and forecast running projects. Went through five
+rounds of mockup review (`sales-customer-module-mockup.html`) before this round's "good, start
+coding" approval. Several items below turned out to already exist in the real app (the visit
+questionnaire, "sent by" on leads, achieved sales/outstanding) — the mockup's own earlier
+simplification had dropped them, so "bring back X" meant restoring them in the mockup, not building
+them fresh here.
+
+### Changed: Sales Executive dashboard down to three tabs — Leads, Visits, Forecast
+Booking and Feedback move to the Customer module (see below); the standalone Dashboard tab is gone,
+replaced by a KPI strip pinned above the tabs so the numbers that matter are visible without a
+click: open leads, visits this week, **sites overdue a visit** (new — sites this rep owns with no
+`customer_visits` row in the trailing 14 days), forecast status, achieved sales this month (m³),
+and outstanding payments (collapsible breakdown by customer). The whole restructure is built around
+one idea from the request: force the rep to visit more sites and feed forecasts back to Operations,
+so visit cadence and forecast currency are now front and center instead of buried in a report.
+
+### Added: date-wise visit summary with no-visit days flagged
+New `dailyVisitCadence(userId, days)` helper (`sales.js`) joins `generate_series` against
+`sales_duty_log` and `customer_visits` — a day only counts as "missed" if the rep was actually on
+duty that day and logged zero visits; a day off is a day off. Surfaced three ways from one helper:
+the rep's own trailing-7-day strip on their Visits tab (`GET /sales/visits/summary`, shared
+component `lib/VisitCadenceStrip.jsx`), the same strip per rep on the Sales Performance page
+(`GET /sales/visits/cadence`, Manager/Administrator), and folded into the "Visits this week" KPI
+tile.
+
+### Restored: full visit questionnaire, now also mandatory on a lead's "Site visit" update
+The 12/7 structured tap-answer questionnaire (new-project vs. running-project) was already built —
+it just needed to render correctly and now also gates a lead update. When a Sales Executive logs a
+lead activity as "Site visit", the same `QuestionBlock` UI renders inline and Save stays disabled
+until every question is answered (`missingAnswerKeysClient` mirrors the backend's
+`missingAnswerKeys`). Answering it now does real work, not just gate-keeping: `POST
+/sales/leads/:id/followup` creates a genuine `customer_visits` row (`visited_name` from the lead's
+`prospect_name`, `customer_id` from `leads.won_customer_id` if already linked) and runs it through
+the same follow-up generation and notification logic as a normal visit, via a new shared
+`applyVisitFollowupsAndNotifications()` helper — a lead's site visit is now a real visit, not a
+disconnected checkbox. No new lead status was added: `lead_status` is a fixed Postgres ENUM with no
+"site visit done" value, so that's a **derived frontend badge** (from the lead's most recent
+`lead_followups.activity_type`) shown next to the lead's real status, not a stored value. "My
+leads" already showed who sent each lead (`created_by_name`) — untouched this round.
+
+### Added: follow-up threads — multiple follow-ups from one visit clubbed together, with a logged action history
+A visit can generate several follow-up items at once (e.g. "call back to check decision" + "send
+revised quotation") — these now display as one thread per visit (grouped by `visit_followups.
+visit_id`, already the natural link) instead of scattering across separate date rows. New
+`followup_actions` table (followup_id, note, next_due_date, created_by) lets a rep log what they
+actually did against a follow-up — a call, an email — without closing it out, via `POST
+/sales/followups/:id/log-action` (optionally reschedules the due date in the same step) and `GET
+/sales/followups/actions?followup_ids=...` for batch history. `generateFollowups()` also gained a
+fallback: a visit that raises no specific flags now still produces a default 14-day check-in
+follow-up, so "no red flags" no longer means silently dropping the customer — every visit leaves a
+thread. `FollowupsDue.jsx` (the widget pinned above the Sales Executive's tabs) and the new report
+below both consume this the same way.
+
+### Added: visit cadence & follow-up thread report on the existing Sales Performance page
+Per correction from an earlier mockup round — not a new report/menu item, appended below the
+existing "Salespersons — this month" and "Customer visits report" tables on
+`/sales-performance`. "Visit cadence — by sales rep" shows one day-strip per active Sales
+Executive (`GET /sales/visits/cadence`). "Follow-up threads & actions taken" groups
+`GET /sales/followups/report` by visit client-side, showing customer/site, origin visit date, rep,
+open-thread count, latest logged action, and a status badge (Overdue / Due today / Upcoming /
+Closed).
+
+### Fixed: customer booking only allowed one open request at a time
+Root cause traced to `routes/customerBooking.js`: the public booking-link `POST` hard-blocked a
+second submission while any request on that link was still `status = 'pending'`. Removed — a
+customer can now have several open requests on the same site at once (e.g. 30 m³ of M25 and 34 m³
+of M20 for the same pour). `GET /:token` now returns every request on the link (`requests`, newest
+first) instead of just the latest one; live delivery tracking still only ever follows the most
+recently *converted* request, since that's the one with trucks actually moving.
+
+### Changed: customer's own booking page — name hierarchy reversed
+`CustomerBookingForm.jsx` now shows the customer's name as the big, bold heading with the site name
+as the smaller label underneath — reversed from before. The page now renders a list of all open
+requests (each its own status card) instead of one "latest request" block, and "+ New booking
+request" is always available, no longer hidden while a request is pending.
+
+### Changed: "Place a Booking" and "Feedback" move from the Sales Executive's own dashboard into the Customer module
+`CustomerBooking.jsx` (`/customer-booking`) is now reachable by Sales Executive as well as
+Manager/Administrator, with role-appropriate tabs matching what each role's backend permissions
+already allow: Manager/Administrator keep "Booking Links & Requests" (link generation is admin-
+only); Sales Executive gets "Place a Booking" (`POST /sales/bookings` is SE-only) and both roles
+get "Feedback". Feedback is now **read-only** here — compliments/complaints are recorded inline
+when a rep logs a post-delivery visit (`post_delivery_feedback` on `POST /sales/visits`, feeding
+the existing `aftersales_feedback` table), not through a separate manual-entry form, matching the
+mockup's "feedback folds into recording a Visit" decision. A "Bookings & feedback →" link on the
+Sales Executive's own dashboard points here, since that's no longer a tab on their own page.
+
+### Migration note
+Run `/setup` after deploying — adds `lead_followups.is_new_project`, `lead_followups.answers`,
+`lead_followups.related_visit_id`, and the new `followup_actions` table (with its
+`idx_followup_actions_followup` index). Verified this round: `node --check` on every touched
+backend route file, and a full `npm run build` of the frontend (clean, no errors) after all
+restructuring — including the pass that moved `BookingsList`/`NewBookingForm`/`FeedbackList`/
+`NewFeedbackForm` out of `SalesExecutive.jsx` into `CustomerBooking.jsx`, and the pass that added
+the "Site visit done" derived badge to the leads list (the backend already returned
+`latest_activity_type`, but the first pass forgot to render it — caught and fixed before calling
+this done). No live Postgres instance was available in this environment to exercise the new
+endpoints end-to-end over HTTP — worth a smoke test after deploying, especially the lead
+site-visit → `customer_visits` row creation and the follow-up action log.
+
+## Hundred-and-third round (App 116 / Ver. 9.26) — three real bugs found while verifying last round's customer booking work
+
+Business verification of round 102's customer booking changes surfaced three real gaps —
+all in `routes/customerBooking.js` and `CustomerBookingForm.jsx`, no schema change needed
+(everything here reads columns that already existed).
+
+### Fixed: a booking link generated for an already-ongoing order showed nothing but the request form
+Tracking used to only ever come from a request that was itself submitted through *this exact
+link* and converted here (`latestConverted`, matched off `bookings.booking_link_id`). A link
+generated for a customer/site that already had an order in progress — created directly by
+Manager, never as a booking request through this link at all — had no matching `bookings`
+row, so `tracking` was always `null` and the customer saw only the bare "Request concrete"
+form, even with the link's tracking toggle turned on. Fixed by decoupling tracking from the
+booking-request linkage entirely: `GET /:token` now looks up whichever `customer_orders` row
+is currently live for that link's `customer_id` + `site_id` — preferring one still in
+progress, falling back to the most recent otherwise — regardless of how that order
+originated. `getOrderTrackingPayload()` (round 100's shared helper) still handles the
+terminal-state + 3-hour grace window on its own, unchanged. Frontend: `displayForm` used to
+gate purely on `requests.length === 0`; now also checks `!tracking`, so the status view (with
+live tracking) shows whenever there's something to track, even with zero requests on this
+particular link.
+
+### Fixed: a converted request's status froze at "Accepted — scheduled" forever
+`bookings.status` only has three values (`pending`/`converted`/`declined`) — once a request
+converted, the customer's card kept showing "Accepted — scheduled" even after the order was
+actually delivered, completed, or cancelled, because nothing ever looked past the booking's
+own frozen status. `GET /:token`'s `requests` query now `LEFT JOIN`s `customer_orders` on
+`b.converted_order_id` and returns the order's own `status` (`order_status`) alongside it.
+`RequestStatusCard` now branches on that for a converted request, using the same status
+vocabulary and meaning as the existing round-91 tracking link's `StatusBadge`
+(`planned`/`in_progress`/`partially_completed`/`completed`/`closed`/`cancelled`) — so a
+customer sees "Delivery in progress", "Completed", "Cancelled", etc. as the order actually
+moves through its lifecycle, not a permanent "Accepted" banner.
+
+### Fixed: a rescheduled date/time/grade/qty at conversion (or a later Correct Order edit) never reached the customer
+`POST /bookings/:id/convert` never wrote its final values back onto the `bookings` row — if
+Manager changed the date, time, grade, or quantity while converting (very possible; the
+convert form pre-fills from the request but every field is editable), the customer's request
+card kept showing what they originally asked for, not what was actually scheduled. Rather
+than mutate the booking (which should stay the honest record of the original ask), the fix
+keeps both: `GET /:token` now also returns the order's live `order_date`/
+`scheduled_batching_time`/`order_quantity_m3`/mix grade name (`order_order_date`/
+`order_scheduled_batching_time`/`order_order_quantity_m3`/`order_mix_grade_name`) for a
+converted request, and the frontend prefers these over the original request fields once
+converted. Because this reads the order's *current* values on every poll (the page already
+refreshes every 20s), a later Correct Order edit to the date/grade/pump also reaches the
+customer automatically, not just the original conversion.
+
+### Known limitation, not fixed this round
+A booking link is scoped to one customer + one site, and round 102 made it possible for a
+site to have several simultaneously-converted orders (different grade/qty combos). The
+"Your booking requests" list correctly shows each converted request's own real status
+independently (the fix above is per-request), but the "Live delivery status" truck-tracking
+section still only ever follows one order — the one picked as "most relevant" (in-progress
+preferred, else most recent). If two requests convert to two orders that are both in
+progress at once, only one gets live truck tracking on this page. Worth revisiting if this
+comes up for real — would need the tracking section to key off each request individually
+rather than a single link-level "current order".
+
+### Migration note
+None — no schema change. Every field this round reads was already on `customer_orders` or
+`bookings`. Verified with `node --check` on the touched backend file and a full
+`npm run build` of the frontend (clean, no errors). No live Postgres instance was available
+in this environment — worth a real end-to-end smoke test after deploying: generate a link
+for a site with an order already in progress and confirm tracking now shows; convert a
+booking with a different date/grade/qty than requested and confirm the customer's card
+reflects the change; walk a converted order through in_progress → completed and confirm the
+badge updates on the customer's page each time it polls.
+
+## Hundred-and-fourth round (App 117 / Ver. 9.27) — "Issued by" / "Approved by" on the Fuel and Lubricant Report
+
+Business asked whether an earlier request to add "Issued by" to the Fuel and Lubricant
+Report had actually been wired up, then asked for "Approved by" too. Checked the real
+code rather than assuming: `GET /supply-requests/report` and `/report/export`
+(`routes/supplyRequests.js`) already `LEFT JOIN`s both `users ub ON ub.id = sr.approved_by`
+and `users ui ON ui.id = sr.issued_by` and had always returned `approved_by_name`/
+`issued_by_name` — and the Excel export (`FuelReport.jsx`'s `exportExcel()`) already had
+"Approved by" and "Issued by" columns. So the backend and Excel export were done. What
+was actually missing: the **on-screen report table** and the **PDF export** never rendered
+either name — only the request/approve/issue *quantities*, no *who*. Added an "Approved by"
+and an "Issued by" column to both (on-screen table and `exportPdf()`'s `autoTable` head/body/
+foot — footer `colSpan`s recomputed for the now-14-column table). No backend or schema
+change needed — the data was already there, just not displayed in two of the report's three
+output forms.
+
+### Migration note
+None — no schema or backend change, display-only. Verified with a full `npm run build`
+(clean, no errors).

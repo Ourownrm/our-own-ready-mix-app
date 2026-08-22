@@ -1010,6 +1010,27 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (inspection_action_items — per-checklist-item 'Action required' remarks from the weekly inspection, tracked open/resolved as maintenance action items).");
 
+    // Round 115 — Sales module rework: mandatory visit questionnaire on a
+    // lead's "Site visit" update (is_new_project/answers, plus a link to the
+    // customer_visits row it creates), and an action log so a follow-up
+    // thread with several open items can show what's actually been done
+    // against it, not just whether it's done or not.
+    await pool.query(`
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS is_new_project BOOLEAN;
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS answers JSONB;
+      ALTER TABLE lead_followups ADD COLUMN IF NOT EXISTS related_visit_id INTEGER REFERENCES customer_visits(id);
+      CREATE TABLE IF NOT EXISTS followup_actions (
+        id SERIAL PRIMARY KEY,
+        followup_id INTEGER REFERENCES visit_followups(id) NOT NULL,
+        note TEXT NOT NULL,
+        next_due_date DATE,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_followup_actions_followup ON followup_actions(followup_id);
+    `);
+    log.push("Schema migration applied (lead site-visit questionnaire fields, and a followup_actions log for follow-up threads).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);
