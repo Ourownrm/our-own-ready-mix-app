@@ -69,8 +69,16 @@ export default function CustomerBookingForm() {
     );
   }
 
-  const { customer_name, site_name, mix_grades, latest_request, tracking } = data;
-  const displayForm = !latest_request || showForm;
+  const { customer_name, site_name, mix_grades, requests, tracking } = data;
+  // Round 116 fix: this used to gate purely on "has any request ever been
+  // submitted through this exact link" — so a link generated for a
+  // customer/site that already had an ongoing order (created directly by
+  // Manager, never as a booking request through this link) showed nothing
+  // but the bare request form, even with tracking turned on and trucks
+  // actually moving. Showing the status view whenever there's tracking to
+  // show fixes that; the plain request form is now only the true first-run
+  // state — no requests AND nothing currently being tracked.
+  const displayForm = (requests.length === 0 && !tracking) || showForm;
 
   async function submit(e) {
     e.preventDefault();
@@ -89,10 +97,10 @@ export default function CustomerBookingForm() {
 
   if (displayForm) {
     return (
-      <Shell customerLabel={customer_name}>
+      <Shell>
+        <CustomerHeading customerName={customer_name} siteName={site_name} />
         <div className="card" style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.4 }}>{site_name}</div>
-          <div style={{ fontSize: 16, fontWeight: 700, marginTop: 2 }}>Request concrete</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>Request concrete</div>
         </div>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
         <form onSubmit={submit} className="card" style={{ marginBottom: 20 }}>
@@ -137,9 +145,9 @@ export default function CustomerBookingForm() {
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={saving}>
             {saving ? "Sending..." : "Send booking request"}
           </button>
-          {latest_request && (
+          {requests.length > 0 && (
             <button type="button" style={{ width: "100%", marginTop: 8 }} onClick={() => setShowForm(false)}>
-              ← Back to my last request's status
+              ← Back to my requests
             </button>
           )}
         </form>
@@ -148,29 +156,24 @@ export default function CustomerBookingForm() {
   }
 
   return (
-    <Shell customerLabel={customer_name}>
+    <Shell>
+      <CustomerHeading customerName={customer_name} siteName={site_name} />
       <div className="card" style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 12, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.4 }}>{site_name}</div>
-        <div style={{ fontSize: 18, fontWeight: 700, marginTop: 2 }}>Booking status</div>
+        <div style={{ fontSize: 18, fontWeight: 700 }}>Booking status</div>
       </div>
 
-      <RequestStatusCard request={latest_request} />
-
-      <div className="card" style={{ marginBottom: 14 }}>
-        <Kv k="Grade" v={latest_request.mix_grade_name} />
-        <Kv k="Quantity" v={latest_request.estimated_qty_m3 ? `${latest_request.estimated_qty_m3} m³` : "—"} />
-        <Kv k="Pump" v={PUMP_LABELS[latest_request.pump_requirement] || "—"} />
-        <Kv
-          k="Requested"
-          v={latest_request.preferred_date
-            ? `${new Date(latest_request.preferred_date).toLocaleDateString([], { day: "2-digit", month: "short" })}${latest_request.preferred_time ? `, ${latest_request.preferred_time.slice(0, 5)}` : ""}`
-            : "—"}
-        />
-      </div>
+      <div style={{ fontSize: 13, fontWeight: 700, margin: "4px 0 8px" }}>Your booking requests</div>
+      {requests.length === 0 ? (
+        <div className="card" style={{ marginBottom: 14, fontSize: 12, color: "var(--slate)" }}>
+          No booking requests submitted through this link yet — your current order's status is shown below.
+        </div>
+      ) : (
+        requests.map((r) => <RequestStatusCard key={r.id} request={r} />)
+      )}
 
       {tracking && (
         <>
-          <div style={{ fontSize: 13, fontWeight: 700, margin: "4px 0 8px" }}>Live delivery status</div>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "16px 0 8px" }}>Live delivery status</div>
           {tracking.trucks.filter((t) => t.status !== "rejected").map((t) => (
             <TruckCard key={t.ticket_number} truck={t} />
           ))}
@@ -182,11 +185,12 @@ export default function CustomerBookingForm() {
         </>
       )}
 
-      {latest_request.status !== "pending" && (
-        <button style={{ width: "100%", marginBottom: 10 }} onClick={() => setShowForm(true)}>
-          Submit a new request
-        </button>
-      )}
+      <button className="btn-primary" style={{ width: "100%", marginBottom: 6 }} onClick={() => setShowForm(true)}>
+        + New booking request
+      </button>
+      <div style={{ fontSize: 10.5, color: "var(--slate)", textAlign: "center", marginBottom: 10 }}>
+        Always available — you can request more than one booking for this site at a time.
+      </div>
 
       <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center", padding: "6px 16px 22px", lineHeight: 1.6 }}>
         This link shows only your own bookings and site. It doesn't show any other customer's data.<br />
@@ -196,18 +200,69 @@ export default function CustomerBookingForm() {
   );
 }
 
+// Round 115 — customer name is now the big, bold heading; site name moves
+// underneath as the smaller label. Reversed from before, per feedback that
+// the customer's own identity should be the prominent thing they see, not
+// the site name.
+function CustomerHeading({ customerName, siteName }) {
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2 }}>{customerName}</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>{siteName}</div>
+    </div>
+  );
+}
+
+// Round 116 fix: once a request was accepted and converted to an order, this
+// card used to freeze at "Accepted — scheduled" forever — it never looked at
+// what actually happened to the order afterward (delivery started, finished,
+// or the order got closed/cancelled). The backend now also sends the linked
+// order's own status (`order_status`), so a converted request tracks the
+// real thing all the way through, the same status vocabulary as the round-91
+// tracking link uses.
+const ORDER_STATUS_MAP = {
+  planned: { bg: "var(--signal-green-bg)", color: "var(--signal-green)", title: "Accepted — scheduled", body: "Please ensure the site is ready to receive concrete at the scheduled time." },
+  in_progress: { bg: "var(--info-bg)", color: "var(--info)", title: "Delivery in progress", body: "Trucks are on the move — see live delivery status below." },
+  partially_completed: { bg: "var(--amber-bg)", color: "var(--amber)", title: "Partially delivered", body: "Part of this order has been delivered; the rest is still on its way." },
+  completed: { bg: "var(--signal-green-bg)", color: "var(--signal-green)", title: "Completed", body: "This order has been fully delivered." },
+  closed: { bg: "var(--concrete)", color: "var(--slate)", title: "Closed", body: "This order has been closed." },
+  cancelled: { bg: "var(--alert-red-bg)", color: "var(--alert-red)", title: "Cancelled", body: "This order was cancelled — please contact us if you still need this delivery." },
+};
+
 function RequestStatusCard({ request }) {
   const map = {
     pending: { bg: "var(--amber-bg)", color: "var(--amber)", title: "Under review", body: "We've received your request. You'll be notified here once it's confirmed." },
-    accepted: { bg: "var(--signal-green-bg)", color: "var(--signal-green)", title: "Accepted", body: "Confirmed — see the schedule below." },
-    converted: { bg: "var(--signal-green-bg)", color: "var(--signal-green)", title: "Accepted — scheduled", body: "Please ensure the site is ready to receive concrete at the scheduled time." },
     declined: { bg: "var(--alert-red-bg)", color: "var(--alert-red)", title: "Not accepted this time", body: request.declined_reason || "Please contact us, or submit a new request with different details." },
   };
-  const s = map[request.status] || map.pending;
+  const isConverted = request.status === "converted";
+  const s = isConverted ? (ORDER_STATUS_MAP[request.order_status] || ORDER_STATUS_MAP.planned) : (map[request.status] || map.pending);
+
+  // Round 116 fix: once converted, whatever Manager actually scheduled (via
+  // Convert, or a later Correct Order edit) can differ from the customer's
+  // original ask — prefer the live order's date/time/grade/qty so this
+  // reflects reality, falling back to the original request fields only if
+  // the order fields aren't present for some reason.
+  const gradeName = isConverted ? (request.order_mix_grade_name || request.mix_grade_name) : request.mix_grade_name;
+  const qty = isConverted ? (request.order_order_quantity_m3 ?? request.estimated_qty_m3) : request.estimated_qty_m3;
+  const date = isConverted ? (request.order_order_date || request.preferred_date) : request.preferred_date;
+  const time = isConverted ? (request.order_scheduled_batching_time || request.preferred_time) : request.preferred_time;
+
   return (
-    <div className="card" style={{ marginBottom: 14, textAlign: "center", background: s.bg, borderColor: "transparent" }}>
-      <div style={{ fontWeight: 700, color: s.color }}>{s.title}</div>
-      <div style={{ fontSize: 12, color: "var(--charcoal)", marginTop: 4 }}>{s.body}</div>
+    <div className="card" style={{ marginBottom: 10, background: s.bg, borderColor: "transparent" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ fontWeight: 700 }}>{gradeName || "Grade TBD"}{qty ? ` · ${qty} m³` : ""}</div>
+        <div style={{ fontWeight: 700, color: s.color, fontSize: 12.5 }}>{s.title}</div>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--charcoal)", marginTop: 4 }}>
+        {date
+          ? `${isConverted ? "Scheduled for" : "Requested for"} ${new Date(date).toLocaleDateString([], { day: "2-digit", month: "short" })}${time ? `, ${time.slice(0, 5)}` : ""}`
+          : s.body}
+        {request.pump_requirement && request.pump_requirement !== "without_pump" && ` · ${PUMP_LABELS[request.pump_requirement]}`}
+      </div>
+      {isConverted && date && <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>{s.body}</div>}
+      {request.status === "declined" && request.declined_reason && (
+        <div style={{ fontSize: 12, color: "var(--alert-red)", marginTop: 4 }}>{request.declined_reason}</div>
+      )}
     </div>
   );
 }
@@ -259,23 +314,14 @@ function Field({ label, children }) {
   );
 }
 
-function Kv({ k, v }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "5px 0", borderBottom: "1px dashed var(--border)" }}>
-      <span style={{ color: "var(--slate)" }}>{k}</span>
-      <span style={{ fontWeight: 600 }}>{v}</span>
-    </div>
-  );
-}
-
-function Shell({ children, customerLabel }) {
+function Shell({ children }) {
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", minHeight: "100vh", background: "var(--concrete)" }}>
       <div className="topbar" style={{ marginBottom: 16 }}>
         <div className="topbar-title">
           Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span>
           <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>
-            Concrete booking{customerLabel ? ` · ${customerLabel}` : ""}
+            Concrete booking
           </div>
         </div>
       </div>

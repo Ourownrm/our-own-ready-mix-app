@@ -89,29 +89,93 @@ function OutcomePicker({ visitId, onSaved }) {
   );
 }
 
-// Groups by (date, customer) so several follow-ups for the same visit show
-// as one header with sub-items underneath, instead of repeating the date
-// and customer name on every single line.
-function groupByDateCustomer(rows) {
+// Round 115 — a visit can generate several follow-up items at once (e.g.
+// "call back to check decision" + "send revised quotation"). Those are now
+// clubbed into one thread per visit instead of scattering across separate
+// date-based rows, so the rep sees everything owed to that customer/visit
+// in one place, with each item's own urgency and its own action log.
+function groupByVisit(rows) {
   const groups = new Map();
   for (const r of rows) {
-    const key = `${r.due_date}|${r.visited_name}|${r.site_name || ""}`;
-    if (!groups.has(key)) {
-      groups.set(key, { due_date: r.due_date, visited_name: r.visited_name, site_name: r.site_name, items: [] });
+    if (!groups.has(r.visit_id)) {
+      groups.set(r.visit_id, { visit_id: r.visit_id, visited_name: r.visited_name, site_name: r.site_name, visit_date: r.visit_date, items: [] });
     }
-    groups.get(key).items.push(r);
+    groups.get(r.visit_id).items.push(r);
   }
   return [...groups.values()];
 }
 
+function dayDiff(dueDate) {
+  const due = new Date(dueDate);
+  const today = new Date();
+  due.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  return Math.round((due - today) / 86400000);
+}
+
+function urgency(dueDate) {
+  const diff = dayDiff(dueDate);
+  if (diff < 0) return { rank: 0, color: "var(--alert-red)", emoji: "🔴", label: `overdue ${-diff} day${-diff === 1 ? "" : "s"}` };
+  if (diff === 0) return { rank: 1, color: "var(--amber)", emoji: "🟡", label: "due today" };
+  if (diff === 1) return { rank: 1, color: "var(--amber)", emoji: "🟡", label: "due tomorrow" };
+  return { rank: 2, color: "var(--slate)", emoji: "⚪", label: `due ${new Date(dueDate).toLocaleDateString([], { day: "2-digit", month: "short" })}` };
+}
+
+function LogActionForm({ followupId, onSaved, onCancel }) {
+  const [note, setNote] = useState("");
+  const [nextDue, setNextDue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save() {
+    if (!note.trim()) { setError("Enter what you did."); return; }
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/sales/followups/${followupId}/log-action`, { method: "POST", body: { note, next_due_date: nextDue || null } });
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 4, marginBottom: 4, padding: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 6, fontSize: 12 }}>
+      {error && <div style={{ color: "var(--alert-red)", marginBottom: 6 }}>{error}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Called, asked for 2 more days" style={{ fontSize: 12, padding: "5px 7px" }} />
+        <input type="date" value={nextDue} onChange={(e) => setNextDue(e.target.value)} style={{ fontSize: 12, padding: "5px 7px" }} title="Next due date (optional)" />
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button type="button" disabled={saving} onClick={save} style={{ fontSize: 11, padding: "3px 8px" }}>{saving ? "Saving..." : "Save action"}</button>
+        <button type="button" onClick={onCancel} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 export default function FollowupsDue({ asUser }) {
   const [rows, setRows] = useState([]);
+  const [actionsByFollowup, setActionsByFollowup] = useState({});
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState(null);
+  const [logOpenId, setLogOpenId] = useState(null);
 
   async function load() {
     try {
-      setRows(await apiRequest(`/sales/followups${asUser ? `?as_user=${asUser}` : ""}`));
+      const data = await apiRequest(`/sales/followups${asUser ? `?as_user=${asUser}` : ""}`);
+      setRows(data);
+      if (data.length > 0) {
+        const actions = await apiRequest(`/sales/followups/actions?followup_ids=${data.map((r) => r.id).join(",")}`);
+        const byFollowup = {};
+        for (const a of actions) {
+          (byFollowup[a.followup_id] ||= []).push(a);
+        }
+        setActionsByFollowup(byFollowup);
+      } else {
+        setActionsByFollowup({});
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -130,37 +194,65 @@ export default function FollowupsDue({ asUser }) {
     }
   }
 
-  const today = new Date().toDateString();
-  const overdue = rows.filter((r) => new Date(r.due_date) < new Date(today));
-  const dueToday = rows.filter((r) => new Date(r.due_date).toDateString() === today);
-  const upcoming = rows.filter((r) => new Date(r.due_date) > new Date(today));
+  const groups = groupByVisit(rows).map((g) => ({
+    ...g,
+    urgentRank: Math.min(...g.items.map((r) => urgency(r.due_date).rank)),
+  })).sort((a, b) => a.urgentRank - b.urgentRank);
 
-  function GroupBlock({ group, accentColor }) {
-    // Items in one visual group usually all come from the same visit — the
-    // outcome control operates on that visit's remaining open follow-ups, so
-    // it's shown once per group rather than repeated per line item.
-    const visitId = group.items[0]?.visit_id;
+  const accentByRank = { 0: "var(--alert-red)", 1: "var(--amber)", 2: "var(--slate)" };
+
+  function GroupBlock({ group }) {
+    const accentColor = accentByRank[group.urgentRank];
+    const combinedLog = group.items
+      .flatMap((r) => actionsByFollowup[r.id] || [])
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
     return (
       <div style={{ borderLeft: `3px solid ${accentColor}`, background: "var(--concrete)", borderRadius: "0 8px 8px 0", padding: "8px 10px", marginBottom: 8, fontSize: 13 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>
-          {new Date(group.due_date).toLocaleDateString([], { day: "2-digit", month: "short" })} — {group.visited_name}{group.site_name ? ` — ${group.site_name}` : ""}
+        <div style={{ fontWeight: 600 }}>
+          {group.visited_name}{group.site_name ? ` — ${group.site_name}` : ""}
+          {group.visit_date && (
+            <span style={{ fontWeight: 400, color: "var(--slate)", fontSize: 11 }}> · from visit on {new Date(group.visit_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</span>
+          )}
         </div>
-        {group.items.map((r) => (
-          <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, padding: "3px 0 3px 10px" }}>
-            <div>
-              <div>{r.title}</div>
-              {r.reason && <div style={{ color: "var(--slate)", fontSize: 11 }}>{r.reason}</div>}
+        <div style={{ color: "var(--slate)", fontSize: 11, marginBottom: 4 }}>
+          {group.items.length} open thread{group.items.length === 1 ? "" : "s"} on this customer
+        </div>
+        {group.items.map((r) => {
+          const u = urgency(r.due_date);
+          return (
+            <div key={r.id} style={{ padding: "3px 0 3px 10px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                <div>
+                  <div>{u.emoji} {r.title} — <b style={{ color: u.color }}>{u.label}</b></div>
+                  {r.reason && <div style={{ color: "var(--slate)", fontSize: 11 }}>{r.reason}</div>}
+                </div>
+                <span style={{ display: "flex", gap: 4, whiteSpace: "nowrap" }}>
+                  <button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setLogOpenId(logOpenId === r.id ? null : r.id)}>Log action</button>
+                  <button style={{ fontSize: 11, padding: "3px 8px" }} disabled={busyId === r.id} onClick={() => markDone(r.id)}>
+                    {busyId === r.id ? "..." : "Done"}
+                  </button>
+                </span>
+              </div>
+              {logOpenId === r.id && (
+                <LogActionForm followupId={r.id} onCancel={() => setLogOpenId(null)} onSaved={() => { setLogOpenId(null); load(); }} />
+              )}
             </div>
-            <button style={{ fontSize: 11, padding: "3px 8px", whiteSpace: "nowrap" }} disabled={busyId === r.id} onClick={() => markDone(r.id)}>
-              {busyId === r.id ? "..." : "Done"}
-            </button>
-          </div>
-        ))}
-        {visitId && (
-          <div style={{ paddingLeft: 10 }}>
-            <OutcomePicker visitId={visitId} onSaved={load} />
+          );
+        })}
+        {combinedLog.length > 0 && (
+          <div style={{ color: "var(--slate)", fontSize: 11, paddingLeft: 10, marginTop: 4 }}>
+            {combinedLog.map((a, i) => (
+              <span key={a.id}>
+                {i > 0 && " · "}
+                {new Date(a.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })} — {a.note}
+              </span>
+            ))}
           </div>
         )}
+        <div style={{ paddingLeft: 10, marginTop: 4 }}>
+          <OutcomePicker visitId={group.visit_id} onSaved={load} />
+        </div>
       </div>
     );
   }
@@ -172,26 +264,7 @@ export default function FollowupsDue({ asUser }) {
       {rows.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing pending.</div>
       ) : (
-        <>
-          {overdue.length > 0 && (
-            <>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--alert-red)", marginBottom: 4 }}>Overdue ({overdue.length})</div>
-              {groupByDateCustomer(overdue).map((g, i) => <GroupBlock key={i} group={g} accentColor="var(--alert-red)" />)}
-            </>
-          )}
-          {dueToday.length > 0 && (
-            <>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--amber)", marginBottom: 4 }}>Today ({dueToday.length})</div>
-              {groupByDateCustomer(dueToday).map((g, i) => <GroupBlock key={i} group={g} accentColor="var(--amber)" />)}
-            </>
-          )}
-          {upcoming.length > 0 && (
-            <>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)", marginBottom: 4 }}>Upcoming ({upcoming.length})</div>
-              {groupByDateCustomer(upcoming).map((g, i) => <GroupBlock key={i} group={g} accentColor="var(--slate)" />)}
-            </>
-          )}
-        </>
+        groups.map((g) => <GroupBlock key={g.visit_id} group={g} />)
       )}
     </div>
   );

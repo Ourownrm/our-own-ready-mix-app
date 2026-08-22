@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { CreateLeadForm } from "../lib/SalesPanels.jsx";
+import VisitCadenceStrip from "../lib/VisitCadenceStrip.jsx";
 
 const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
 
@@ -108,9 +109,131 @@ export default function SalesPerformance() {
             </div>
           )}
         </div>
+
+        <VisitCadenceReport />
+        <FollowupThreadsReport />
       </div>
     </>
   );
+}
+
+// Round 115 — visit-cadence accountability, appended below the two tables
+// that already lived on this page rather than as a new report. One day-strip
+// per active Sales Executive, same component the rep sees on their own
+// Visits tab (lib/VisitCadenceStrip.jsx) — Manager/Admin sees everyone's at
+// once instead of checking each rep's own dashboard.
+function VisitCadenceReport() {
+  const [reps, setReps] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest("/sales/visits/cadence?days=7").then(setReps).catch((err) => setError(err.message));
+  }, []);
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Visit cadence — by sales rep</div>
+        <div style={{ fontSize: 11.5, color: "var(--slate)" }}>Last 7 days · all reps</div>
+      </div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 8 }}>{error}</div>}
+      {!reps ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>
+      ) : reps.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No active Sales Executives on file yet.</div>
+      ) : (
+        reps.map((r) => (
+          <div key={r.user_id} style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>{r.name}</div>
+            <VisitCadenceStrip days={r.days} />
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+// Round 115 — follow-up threads (grouped by the visit that generated them)
+// with the latest logged action, across every Sales Executive — the
+// accountability/reporting half of clubbing multiple follow-ups from one
+// visit into a thread with an action history.
+function FollowupThreadsReport() {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest("/sales/followups/report").then(setRows).catch((err) => setError(err.message));
+  }, []);
+
+  const threads = groupFollowupsByVisit(rows || []);
+
+  return (
+    <div className="card">
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Follow-up threads &amp; actions taken</div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 8 }}>{error}</div>}
+      {!rows ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>
+      ) : threads.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No follow-up threads in the last 30 days.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ fontSize: 13 }}>
+            <thead>
+              <tr><th>Customer / site</th><th>Origin visit</th><th>Rep</th><th>Open threads</th><th>Latest action</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {threads.map((t) => {
+                const st = threadStatus(t);
+                return (
+                  <tr key={t.visit_id}>
+                    <td>{t.visited_name}</td>
+                    <td>{new Date(t.visit_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                    <td>{t.rep_name || "–"}</td>
+                    <td>{t.openCount}</td>
+                    <td>{t.latestAction ? `${new Date(t.latestAction.at).toLocaleDateString([], { day: "2-digit", month: "short" })} — ${t.latestAction.note}` : "— none logged yet"}</td>
+                    <td><span className={`badge ${st.className}`}>{st.label}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function groupFollowupsByVisit(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    if (!groups.has(r.visit_id)) {
+      groups.set(r.visit_id, { visit_id: r.visit_id, visited_name: r.visited_name, visit_date: r.visit_date, rep_name: r.rep_name, items: [] });
+    }
+    groups.get(r.visit_id).items.push(r);
+  }
+  return [...groups.values()].map((g) => {
+    const openCount = g.items.filter((i) => i.status === "pending").length;
+    const latest = g.items
+      .filter((i) => i.latest_action_at)
+      .sort((a, b) => new Date(b.latest_action_at) - new Date(a.latest_action_at))[0];
+    return { ...g, openCount, latestAction: latest ? { at: latest.latest_action_at, note: latest.latest_action_note } : null };
+  }).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+}
+
+function threadStatus(t) {
+  if (t.openCount === 0) return { label: "Closed", className: "badge-success" };
+  const soonest = Math.min(...t.items.filter((i) => i.status === "pending").map((i) => dayDiff(i.due_date)));
+  if (soonest < 0) return { label: "Overdue", className: "badge-danger" };
+  if (soonest === 0) return { label: "Due today", className: "badge-warning" };
+  return { label: "Upcoming", className: "badge-info" };
+}
+
+function dayDiff(dueDate) {
+  const due = new Date(dueDate);
+  const today = new Date();
+  due.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  return Math.round((due - today) / 86400000);
 }
 
 // Visit names never linked to a real customer record — the sales exec only

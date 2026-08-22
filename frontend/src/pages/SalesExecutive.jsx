@@ -6,13 +6,11 @@ import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../
 import FollowupsDue from "../lib/FollowupsDue.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
 import ShareableVisitReport from "../lib/ShareableVisitReport.jsx";
+import VisitCadenceStrip from "../lib/VisitCadenceStrip.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
   won: "badge-success", lost: "badge-danger",
-};
-const BOOKING_STATUS_BADGE = {
-  pending: "badge-warning", converted: "badge-success", declined: "badge-danger",
 };
 const ACTIVITY_LABEL = {
   note: "Note", quotation_issued: "Quotation issued", quotation_followup: "Quotation follow-up",
@@ -60,14 +58,13 @@ export default function SalesExecutive() {
   const isAdmin = user?.role === "administrator";
   const [executives, setExecutives] = useState([]);
   const [viewAsUser, setViewAsUser] = useState("");
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState("leads");
   const [selectedLeadId, setSelectedLeadId] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [leads, setLeads] = useState([]);
-  const [bookings, setBookings] = useState([]);
-  const [feedback, setFeedback] = useState([]);
   const [visits, setVisits] = useState([]);
   const [forecasts, setForecasts] = useState([]);
+  const [visitCadence, setVisitCadence] = useState([]);
   const [error, setError] = useState("");
   const [onDuty, setOnDuty] = useState(false);
   const [dutyStatus, setDutyStatus] = useState(null);
@@ -85,15 +82,14 @@ export default function SalesExecutive() {
 
   async function loadAll() {
     try {
-      const [d, l, b, f, v, fc] = await Promise.all([
+      const [d, l, v, fc, vc] = await Promise.all([
         apiRequest(`/sales/my-dashboard${asUserParam}`),
         apiRequest("/sales/leads"),
-        apiRequest("/sales/bookings"),
-        apiRequest("/sales/feedback"),
         apiRequest("/sales/visits"),
         apiRequest("/sales/forecasts"),
+        apiRequest(`/sales/visits/summary?days=7${asUserParam ? `&${asUserParam.slice(1)}` : ""}`),
       ]);
-      setDashboard(d); setLeads(l); setBookings(b); setFeedback(f); setVisits(v); setForecasts(fc);
+      setDashboard(d); setLeads(l); setVisits(v); setForecasts(fc); setVisitCadence(vc);
     } catch (err) {
       setError(err.message);
     }
@@ -183,12 +179,6 @@ export default function SalesExecutive() {
   if (view === "new-lead") {
     return <NewLeadForm onDone={() => { setView("leads"); loadAll(); }} onCancel={() => setView("leads")} />;
   }
-  if (view === "new-booking") {
-    return <NewBookingForm onDone={() => { setView("bookings"); loadAll(); }} onCancel={() => setView("bookings")} />;
-  }
-  if (view === "new-feedback") {
-    return <NewFeedbackForm onDone={() => { setView("feedback"); loadAll(); }} onCancel={() => setView("feedback")} />;
-  }
   if (view === "new-visit") {
     return <NewVisitForm onDone={() => { setView("visits"); loadAll(); }} onCancel={() => setView("visits")} />;
   }
@@ -246,8 +236,19 @@ export default function SalesExecutive() {
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-          {[["dashboard", "Dashboard"], ["leads", "My leads"], ["bookings", "Bookings"], ["visits", "Visits"], ["feedback", "Feedback"]].map(([key, label]) => (
+        <TopKpis data={dashboard} forecasts={forecasts} visitCadence={visitCadence} />
+
+        <FollowupsDue asUser={isAdmin ? viewAsUser : undefined} />
+
+        {!onDuty && (
+          <div className="card" style={{ margin: "16px 0", borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>
+            <div style={{ fontSize: 12, color: "var(--slate)" }}>Clock in above to add leads, visits, or forecasts.</div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, margin: "20px 0", flexWrap: "wrap", alignItems: "center" }}>
+          {[["leads", "My leads"], ["visits", "Visits"], ["forecast", "Forecast"]].map(([key, label]) => (
             <button
               key={key}
               className={`btn-tab ${view === key ? "active" : ""}`}
@@ -256,96 +257,183 @@ export default function SalesExecutive() {
               {label}
             </button>
           ))}
-          <Link to="/sales-forecast"><button className="btn-tab">Forecast</button></Link>
+          {!isAdmin && (
+            <Link to="/customer-booking" style={{ marginLeft: "auto", fontSize: 12.5 }}>
+              Bookings &amp; feedback →
+            </Link>
+          )}
         </div>
 
-        {view === "dashboard" && <Dashboard data={dashboard} forecasts={forecasts} onDuty={onDuty} isAdmin={isAdmin} viewAsUser={viewAsUser} />}
         {view === "leads" && (
           <LeadsList leads={leads} onDuty={onDuty} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
         )}
-        {view === "bookings" && (
-          <BookingsList bookings={bookings} onDuty={onDuty} onNew={() => setView("new-booking")} />
-        )}
         {view === "visits" && (
-          <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
+          <>
+            <VisitCadenceCard days={visitCadence} />
+            <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
+          </>
         )}
-        {view === "feedback" && (
-          <FeedbackList feedback={feedback} onDuty={onDuty} onNew={() => setView("new-feedback")} />
+        {view === "forecast" && (
+          <ForecastTab forecasts={forecasts} onDuty={onDuty} onReload={loadAll} />
         )}
       </div>
     </>
   );
 }
 
-function Dashboard({ data, forecasts, onDuty, isAdmin, viewAsUser }) {
+// Landing KPI row — promoted above the tabs (round 115). Achieved sales and
+// outstanding already existed on the old Dashboard tab; kept here rather
+// than dropped when that tab went away. "Sites overdue a visit" is new —
+// the actual forcing-function metric for "visit more sites," visible to the
+// rep on their own screen rather than only in a report someone else checks.
+function TopKpis({ data, forecasts, visitCadence }) {
+  const [showOutstanding, setShowOutstanding] = useState(false);
   if (!data) return <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>;
   const leadCounts = data.lead_counts || {};
+  const openLeads = (leadCounts.new || 0) + (leadCounts.contacted || 0) + (leadCounts.quoted || 0);
   const expiredCount = (forecasts || []).filter((f) => f.is_expired).length;
+  const visitsThisWeek = (visitCadence || []).reduce((sum, d) => sum + (d.visits || 0), 0);
   return (
     <>
-      <FollowupsDue asUser={isAdmin ? viewAsUser : undefined} />
-      {!onDuty && (
-        <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>
-          <div style={{ fontSize: 12, color: "var(--slate)" }}>Clock in above to add leads, bookings, visits, feedback, or forecasts.</div>
-        </div>
-      )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
-        <Kpi label="My customers" value={data.customers.length} />
-        <Kpi label="Orders this month" value={`${data.orders_month_qty} m³`} />
-        <Kpi label="Sales value this month" value={inr(data.orders_month_value)} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginTop: 16 }}>
+        <Kpi label="Open leads" value={openLeads} />
+        <Kpi label="Visits this week" value={visitsThisWeek} />
+        <Kpi label="Sites overdue a visit" value={data.sites_overdue_visit ?? 0} danger={Number(data.sites_overdue_visit) > 0} />
+        <Kpi label="Forecast status" value={expiredCount > 0 ? `${expiredCount} need refresh` : "Up to date"} danger={expiredCount > 0} />
+        <Kpi label="Achieved this month" value={`${data.orders_month_qty} m³`} />
         <Kpi label="Outstanding" value={inr(data.outstanding)} danger={Number(data.outstanding) > 0} />
       </div>
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>
-            Your forecasts
-            {expiredCount > 0 && <span className="badge badge-warning" style={{ marginLeft: 8 }}>{expiredCount} need refresh</span>}
+      {data.outstanding_by_customer?.length > 0 && (
+        <>
+          <div className="collapse-toggle" style={{ fontSize: 12, color: "var(--rebar)", cursor: "pointer", marginTop: 8 }} onClick={() => setShowOutstanding((s) => !s)}>
+            {showOutstanding ? "▴ Hide" : "▾ View"} outstanding by customer
           </div>
-          <Link to="/sales-forecast" style={{ fontSize: 12 }}>View / add forecasts</Link>
-        </div>
-        {(!forecasts || forecasts.length === 0) ? (
-          <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing forecasted yet.</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {forecasts.map((f) => (
-              <div key={f.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, background: "var(--concrete)", borderRadius: 8, padding: "6px 10px" }}>
-                <span>{f.customer_name} &middot; {f.site_name}</span>
-                <span>
-                  {f.expected_qty_m3} m³ / {f.period_days}d
-                  {f.is_expired && <span className="badge badge-warning" style={{ marginLeft: 6, fontSize: 10 }}>Expired</span>}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Leads by stage</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {["new", "contacted", "quoted", "won", "lost"].map((s) => (
-            <span key={s} className={`badge ${LEAD_STATUS_BADGE[s]}`}>{s} ({leadCounts[s] || 0})</span>
-          ))}
-        </div>
-      </div>
-      <div className="card">
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Outstanding by customer</div>
-        {(!data.outstanding_by_customer || data.outstanding_by_customer.length === 0) ? (
-          <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing outstanding under your customers.</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ fontSize: 13 }}>
-              <thead><tr><th>Customer</th><th>Outstanding</th></tr></thead>
-              <tbody>
-                {data.outstanding_by_customer.map((c, i) => (
-                  <tr key={i}><td>{c.customer_name}</td><td>{inr(c.outstanding)}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+          {showOutstanding && (
+            <div className="card" style={{ marginTop: 8 }}>
+              <table style={{ fontSize: 13 }}>
+                <thead><tr><th>Customer</th><th>Outstanding</th></tr></thead>
+                <tbody>
+                  {data.outstanding_by_customer.map((c, i) => (
+                    <tr key={i}><td>{c.customer_name}</td><td>{inr(c.outstanding)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </>
+  );
+}
+
+// Date-wise visit summary, last 7 days — days the rep was on duty with zero
+// visits logged are flagged, so under-visiting is visible right where they
+// work, not just in a report Manager/Admin might check. The day-strip itself
+// is shared with the Sales Performance page's cross-rep cadence report —
+// see lib/VisitCadenceStrip.jsx.
+function VisitCadenceCard({ days }) {
+  if (!days || days.length === 0) return null;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Visit summary — last 7 days</div>
+      <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 10 }}>Days you were on duty with zero visits logged are flagged red.</div>
+      <VisitCadenceStrip days={days} />
+    </div>
+  );
+}
+
+// Forecast, folded in as a tab (round 115) instead of a separate page link —
+// same /sales/forecasts and /sales/my-running-projects endpoints as the
+// standalone Sales Forecast page (still reachable at /sales-forecast for
+// Manager/Administrator).
+function ForecastTab({ forecasts, onDuty, onReload }) {
+  const [showForm, setShowForm] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [form, setForm] = useState({ site_id: "", expected_qty_m3: "", period_days: "30", confidence: "likely", notes: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (showForm) apiRequest("/sales/my-running-projects").then(setProjects).catch((err) => setError(err.message));
+  }, [showForm]);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(""); setSaving(true);
+    try {
+      await apiRequest("/sales/forecasts", { method: "POST", body: form });
+      setShowForm(false);
+      setForm({ site_id: "", expected_qty_m3: "", period_days: "30", confidence: "likely", notes: "" });
+      onReload();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Sales forecast — running projects</div>
+        <button onClick={() => setShowForm((s) => !s)} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>
+          {showForm ? "Cancel" : "+ Add / update project"}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--slate)", margin: "-4px 0 10px" }}>
+        Saving a forecast update notifies Manager/Operations right away, the same way an owners'-meeting or
+        technical-visit request does.
+      </div>
+      {showForm && (
+        <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, marginBottom: 14, background: "var(--concrete)", padding: 10, borderRadius: 8 }}>
+          <div>
+            <div style={{ color: "var(--slate)" }}>Project / site</div>
+            <select value={form.site_id} onChange={(e) => setForm({ ...form, site_id: e.target.value })} required style={{ width: "100%" }}>
+              <option value="">Select</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.customer_name} — {p.site_name}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div><div style={{ color: "var(--slate)" }}>Expected qty (m³)</div><input type="number" value={form.expected_qty_m3} onChange={(e) => setForm({ ...form, expected_qty_m3: e.target.value })} required style={{ width: "100%" }} /></div>
+            <div><div style={{ color: "var(--slate)" }}>Period (days)</div><input type="number" value={form.period_days} onChange={(e) => setForm({ ...form, period_days: e.target.value })} required style={{ width: "100%" }} /></div>
+          </div>
+          <div>
+            <div style={{ color: "var(--slate)" }}>Confidence</div>
+            <select value={form.confidence} onChange={(e) => setForm({ ...form, confidence: e.target.value })} style={{ width: "100%" }}>
+              <option value="confirmed">Confirmed</option>
+              <option value="likely">Likely</option>
+              <option value="tentative">Tentative</option>
+            </select>
+          </div>
+          <div><div style={{ color: "var(--slate)" }}>Notes</div><textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ width: "100%" }} /></div>
+          {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+          <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save forecast"}</button>
+        </form>
+      )}
+      {(!forecasts || forecasts.length === 0) ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing forecasted yet.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ fontSize: 13 }}>
+            <thead><tr><th>Project / site</th><th>Expected qty (m³)</th><th>Period</th><th>Confidence</th><th></th></tr></thead>
+            <tbody>
+              {forecasts.map((f) => (
+                <tr key={f.id}>
+                  <td>{f.customer_name} — {f.site_name}</td>
+                  <td>{f.expected_qty_m3}</td>
+                  <td>{f.period_days}d</td>
+                  <td>
+                    <span className={`badge ${f.confidence === "confirmed" ? "badge-success" : f.confidence === "likely" ? "badge-warning" : "badge-neutral"}`}>{f.confidence}</span>
+                    {f.is_expired && <span className="badge badge-danger" style={{ marginLeft: 6 }}>Expired</span>}
+                  </td>
+                  <td><button className="btn-ghost" onClick={() => setShowForm(true)} style={{ fontSize: 12 }}>Update</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -362,9 +450,14 @@ function LeadsList({ leads, onOpen, onNew, onDuty }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {leads.map((l) => (
             <div key={l.id} onClick={() => onOpen(l.id)} style={{ cursor: "pointer", background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
                 <span style={{ fontWeight: 600 }}>{l.prospect_name}</span>
-                <span className={`badge ${LEAD_STATUS_BADGE[l.status]}`}>{l.status}</span>
+                <span style={{ display: "flex", gap: 4 }}>
+                  {l.latest_activity_type === "site_visit" && !["won", "lost"].includes(l.status) && (
+                    <span className="badge badge-info">Site visit done</span>
+                  )}
+                  <span className={`badge ${LEAD_STATUS_BADGE[l.status]}`}>{l.status}</span>
+                </span>
               </div>
               {l.contact_phone && <div style={{ color: "var(--slate)" }}>{l.contact_phone}</div>}
               {l.site_location && <div style={{ color: "var(--slate)" }}>{l.site_location}</div>}
@@ -443,6 +536,13 @@ function LeadDetail({ leadId, onBack }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // Round 115 — "Site visit" as the update type now requires the same
+  // questionnaire as the Visits tab, answered inline, before Save is enabled.
+  const [isNewProject, setIsNewProject] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [visitorType, setVisitorType] = useState("customer");
+  const [missingKeys, setMissingKeys] = useState([]);
+
   async function load() {
     try {
       setLead(await apiRequest(`/sales/leads/${leadId}`));
@@ -452,10 +552,28 @@ function LeadDetail({ leadId, onBack }) {
   }
   useEffect(() => { load(); }, [leadId]);
 
+  function setAnswer(key, value) {
+    setAnswers((a) => ({ ...a, [key]: value }));
+  }
+
+  const questions = isNewProject === null ? [] : isNewProject ? NEW_PROJECT_QUESTIONS : RUNNING_PROJECT_QUESTIONS;
+  const visibleQuestions = questions.filter((q) => !q.conditional || q.conditional(answers));
+  const questionnaireIncomplete = activityType === "site_visit" && (
+    isNewProject === null || missingAnswerKeysClient(isNewProject, answers).length > 0
+  );
+
   async function addUpdate() {
     if (!note) return setError("Enter a note.");
     if (atSite === null) return setError("Let us know whether you're at site.");
-    setSaving(true); setError("");
+    if (activityType === "site_visit") {
+      if (isNewProject === null) return setError("Confirm whether this is a new or an existing project.");
+      const missing = missingAnswerKeysClient(isNewProject, answers);
+      if (missing.length > 0) {
+        setMissingKeys(missing);
+        return setError(`${missing.length} question(s) still need an answer — the visit questionnaire is mandatory for a site visit update.`);
+      }
+    }
+    setSaving(true); setError(""); setMissingKeys([]);
     try {
       await apiRequest(`/sales/leads/${leadId}/followup`, {
         method: "POST",
@@ -466,12 +584,17 @@ function LeadDetail({ leadId, onBack }) {
           persons_met: personsMet || null,
           at_site: atSite,
           latitude: coords?.latitude, longitude: coords?.longitude,
+          is_new_project: activityType === "site_visit" ? isNewProject : undefined,
+          answers: activityType === "site_visit" ? answers : undefined,
+          visitor_type: activityType === "site_visit" ? visitorType : undefined,
         },
       });
-      setNote(""); setQuotationAmount(""); setRevisionReason(""); setPersonsMet(""); setAtSite(null); setCoords(null); setActivityType("note");
+      setNote(""); setQuotationAmount(""); setRevisionReason(""); setPersonsMet(""); setAtSite(null); setCoords(null);
+      setActivityType("note"); setIsNewProject(null); setAnswers({});
       load();
     } catch (err) {
       setError(err.message);
+      if (err.data?.missing_keys) setMissingKeys(err.data.missing_keys);
     } finally {
       setSaving(false);
     }
@@ -572,8 +695,35 @@ function LeadDetail({ leadId, onBack }) {
 
               <AtSitePrompt atSite={atSite} setAtSite={setAtSite} coords={coords} setCoords={setCoords} />
 
+              {activityType === "site_visit" && (
+                <div style={{ border: "1px dashed var(--rebar)", background: "#FDF3EA", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--rebar-dark)", marginBottom: 6 }}>
+                    Visit questionnaire — required to save as "Site visit done"
+                  </div>
+                  <div style={{ color: "var(--slate)", marginBottom: 4 }}>Who is he?</div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 10 }}>
+                    {[["customer", "Customer"], ["client", "Client"], ["consultant", "Consultant"], ["site_engineer", "Site engineer"], ["other", "Other"]].map(([val, label]) => (
+                      <button key={val} type="button" onClick={() => setVisitorType(val)} style={{ fontSize: 11, padding: "5px 9px", ...(visitorType === val ? { background: "var(--rebar)", color: "#fff", border: "none" } : {}) }}>{label}</button>
+                    ))}
+                  </div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Is this a new project or an existing one?</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    <button type="button" onClick={() => { setIsNewProject(true); setAnswers({}); }} style={{ flex: 1, padding: 10, ...(isNewProject === true ? { background: "var(--rebar)", color: "#fff", border: "none" } : {}) }}>New project</button>
+                    <button type="button" onClick={() => { setIsNewProject(false); setAnswers({}); }} style={{ flex: 1, padding: 10, ...(isNewProject === false ? { background: "var(--rebar)", color: "#fff", border: "none" } : {}) }}>Existing project</button>
+                  </div>
+                  {visibleQuestions.map((q) => (
+                    <QuestionBlock key={q.key} q={q} value={answers[q.key]} onChange={(v) => setAnswer(q.key, v)} highlight={missingKeys.includes(q.key)} />
+                  ))}
+                  {isNewProject !== null && visibleQuestions.length === 0 && (
+                    <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading questions...</div>
+                  )}
+                </div>
+              )}
+
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={addUpdate} disabled={saving} style={{ flex: 1 }}>{saving ? "Saving..." : "Save update"}</button>
+                <button onClick={addUpdate} disabled={saving || questionnaireIncomplete} title={questionnaireIncomplete ? "Answer every question above to save a site visit update" : ""} style={{ flex: 1, ...(questionnaireIncomplete ? { opacity: 0.5, cursor: "not-allowed" } : {}) }}>
+                  {saving ? "Saving..." : questionnaireIncomplete ? "Save update — answer questionnaire first" : "Save update"}
+                </button>
                 <button className="btn-danger" style={{ flex: 1 }} onClick={() => setShowLost(!showLost)}>Mark lost</button>
               </div>
               {showLost && (
@@ -602,189 +752,6 @@ function LeadDetail({ leadId, onBack }) {
               </div>
             ))
           )}
-        </div>
-      </div>
-    </>
-  );
-}
-
-function BookingsList({ bookings, onNew, onDuty }) {
-  return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>My bookings</div>
-        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ New booking</button>
-      </div>
-      {bookings.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>No bookings placed yet.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {bookings.map((b) => (
-            <div key={b.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontWeight: 600 }}>{b.customer_name}</span>
-                <span className={`badge ${BOOKING_STATUS_BADGE[b.status]}`}>{b.status}</span>
-              </div>
-              <div style={{ color: "var(--slate)" }}>{b.site_name || "Site TBD"} · {b.mix_grade_name || "Grade TBD"} · {b.estimated_qty_m3 ? `${b.estimated_qty_m3} m³` : ""}</div>
-              {b.status === "declined" && b.declined_reason && <div style={{ color: "var(--alert-red)" }}>Declined — {b.declined_reason}</div>}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NewBookingForm({ onDone, onCancel }) {
-  const [customers, setCustomers] = useState([]);
-  const [sites, setSites] = useState([]);
-  const [mixGrades, setMixGrades] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", site_id: "", mix_grade_id: "", estimated_qty_m3: "", preferred_date: "", preferred_time: "", notes: "", site_latitude: "", site_longitude: "" });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [locating, setLocating] = useState(false);
-
-  useEffect(() => {
-    Promise.all([apiRequest("/master/customers"), apiRequest("/master/sites"), apiRequest("/master/mix-grades")])
-      .then(([c, s, m]) => { setCustomers(c); setSites(s); setMixGrades(m); })
-      .catch((err) => setError(err.message));
-  }, []);
-
-  const sitesForCustomer = form.customer_id ? sites.filter((s) => String(s.customer_id) === String(form.customer_id)) : sites;
-
-  async function addCustomer() {
-    const name = window.prompt("New customer name:");
-    if (!name || !name.trim()) return;
-    setError("");
-    try {
-      const created = await apiRequest("/sales/quick-customer", { method: "POST", body: { name } });
-      setCustomers((prev) => [...prev, created]);
-      setForm((f) => ({ ...f, customer_id: created.id, site_id: "" }));
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  async function addSite() {
-    if (!form.customer_id) { setError("Select a customer first."); return; }
-    const name = window.prompt("New site/project name:");
-    if (!name || !name.trim()) return;
-    setError("");
-    try {
-      const created = await apiRequest("/sales/quick-site", { method: "POST", body: { customer_id: form.customer_id, name } });
-      setSites((prev) => [...prev, created]);
-      setForm((f) => ({ ...f, site_id: created.id }));
-    } catch (err) {
-      if (err.status === 409 && window.confirm(`${err.message}\n\nCreate it anyway?`)) {
-        try {
-          const created = await apiRequest("/sales/quick-site", { method: "POST", body: { customer_id: form.customer_id, name, force: true } });
-          setSites((prev) => [...prev, created]);
-          setForm((f) => ({ ...f, site_id: created.id }));
-        } catch (err2) { setError(err2.message); }
-      } else if (err.status !== 409) {
-        setError(err.message);
-      }
-    }
-  }
-
-  function useCurrentLocation() {
-    setLocating(true);
-    navigator.geolocation?.getCurrentPosition(
-      (pos) => {
-        setForm((f) => ({ ...f, site_latitude: pos.coords.latitude.toFixed(7), site_longitude: pos.coords.longitude.toFixed(7) }));
-        setLocating(false);
-      },
-      () => { setError("Couldn't get current location — enter coordinates manually if you have them."); setLocating(false); }
-    );
-  }
-
-  async function submit(e) {
-    e.preventDefault();
-    setError(""); setSaving(true);
-    try {
-      await apiRequest("/sales/bookings", { method: "POST", body: form });
-      onDone();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <>
-      <TopBar title="Sales Executive · New booking" />
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
-        <button onClick={onCancel} style={{ marginBottom: 16 }}>← Back</button>
-        <div className="card">
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>Place a booking</div>
-          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Customer</div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value, site_id: "" })} required style={{ flex: 1 }}>
-                  <option value="">Select</option>
-                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-                <button type="button" onClick={addCustomer} style={{ fontSize: 12, padding: "4px 10px" }}>+ New</button>
-              </div>
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Site (if known)</div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <select value={form.site_id} onChange={(e) => setForm({ ...form, site_id: e.target.value })} style={{ flex: 1 }}>
-                  <option value="">Not decided yet</option>
-                  {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-                <button type="button" onClick={addSite} disabled={!form.customer_id} style={{ fontSize: 12, padding: "4px 10px" }}>+ New</button>
-              </div>
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Site location (GPS)</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
-                <input type="number" step="any" value={form.site_latitude} onChange={(e) => setForm({ ...form, site_latitude: e.target.value })} placeholder="Latitude" />
-                <input type="number" step="any" value={form.site_longitude} onChange={(e) => setForm({ ...form, site_longitude: e.target.value })} placeholder="Longitude" />
-              </div>
-              <button type="button" onClick={useCurrentLocation} disabled={locating} style={{ fontSize: 12, padding: "5px 10px" }}>
-                {locating ? "Getting location..." : "Use my current location"}
-              </button>
-              <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
-                If this is a new site, this carries through automatically once Manager converts the booking — drivers can navigate there from the first delivery.
-              </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <div>
-                <div style={{ color: "var(--slate)" }}>Grade</div>
-                <select value={form.mix_grade_id} onChange={(e) => setForm({ ...form, mix_grade_id: e.target.value })}>
-                  <option value="">Select</option>
-                  {mixGrades.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <div style={{ color: "var(--slate)" }}>Est. quantity (m³)</div>
-                <input type="number" value={form.estimated_qty_m3} onChange={(e) => setForm({ ...form, estimated_qty_m3: e.target.value })} />
-              </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <div>
-                <div style={{ color: "var(--slate)" }}>Preferred date</div>
-                <input type="date" value={form.preferred_date} onChange={(e) => setForm({ ...form, preferred_date: e.target.value })} />
-              </div>
-              <div>
-                <div style={{ color: "var(--slate)" }}>Preferred time</div>
-                <input type="time" value={form.preferred_time} onChange={(e) => setForm({ ...form, preferred_time: e.target.value })} />
-              </div>
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Notes for manager</div>
-              <textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Site plan pending, payment terms 15 days" />
-            </div>
-            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
-            <button type="submit" disabled={saving}>{saving ? "Submitting..." : "Submit booking"}</button>
-            <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center" }}>
-              Manager confirms site readiness and payment terms before converting this to an order.
-            </div>
-          </form>
         </div>
       </div>
     </>
@@ -867,6 +834,21 @@ const RUNNING_PROJECT_QUESTIONS = [
   { key: "relationship_health", label: "g. Relationship health?", options: ["Strong", "Needs attention", "At risk"] },
 ];
 
+// Client-side mirror of the backend's missingAnswerKeys() in sales.js —
+// used to disable Save until the questionnaire is complete, both here (a
+// lead's "Site visit" update) and in NewVisitForm below, without waiting on
+// a round trip to find out something's missing.
+function missingAnswerKeysClient(isNewProject, answers) {
+  const questions = isNewProject ? NEW_PROJECT_QUESTIONS : RUNNING_PROJECT_QUESTIONS;
+  const visible = questions.filter((q) => !q.conditional || q.conditional(answers));
+  return visible
+    .filter((q) => {
+      const v = answers?.[q.key];
+      return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+    })
+    .map((q) => q.key);
+}
+
 function QuestionBlock({ q, value, onChange, highlight }) {
   const selected = q.multi ? (Array.isArray(value) ? value : []) : value;
   function tap(opt) {
@@ -920,6 +902,16 @@ function NewVisitForm({ onDone, onCancel }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [missingKeys, setMissingKeys] = useState([]);
+
+  // Round 115 — post-delivery feedback folded into the visit form (was its
+  // own separate tab, disconnected from which visit surfaced it), plus an
+  // optional manual follow-up for anything the rule-based ones don't cover.
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackType, setFeedbackType] = useState("compliment");
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [showManualFollowup, setShowManualFollowup] = useState(false);
+  const [manualFollowupTitle, setManualFollowupTitle] = useState("");
+  const [manualFollowupDue, setManualFollowupDue] = useState("");
 
   useEffect(() => {
     Promise.all([apiRequest("/master/customers"), apiRequest("/master/sites")])
@@ -988,6 +980,11 @@ function NewVisitForm({ onDone, onCancel }) {
       return;
     }
 
+    if (showFeedback && !feedbackComment) return setError("Enter a comment for the feedback you're logging, or collapse that section.");
+    if (showManualFollowup && (!manualFollowupTitle || !manualFollowupDue)) {
+      return setError("Fill in both fields for your own follow-up, or collapse that section.");
+    }
+
     setSaving(true);
     try {
       await apiRequest("/sales/visits", {
@@ -998,6 +995,8 @@ function NewVisitForm({ onDone, onCancel }) {
           contact_person: contactPerson, contact_number: contactNumber,
           at_site: atSite, latitude: coords?.latitude, longitude: coords?.longitude,
           is_new_project: isNewProject, answers, comments: comments || null,
+          post_delivery_feedback: showFeedback ? { feedback_type: feedbackType, comment: feedbackComment } : undefined,
+          manual_followup: showManualFollowup ? { title: manualFollowupTitle, due_date: manualFollowupDue } : undefined,
         },
       });
       onDone();
@@ -1134,6 +1133,62 @@ function NewVisitForm({ onDone, onCancel }) {
               </div>
             )}
 
+            <div
+              onClick={() => setShowFeedback((s) => !s)}
+              style={{ fontSize: 12, color: "var(--rebar)", cursor: "pointer" }}
+            >
+              {showFeedback ? "▴ Hide" : "＋ Was this a post-delivery visit? Log feedback while you're here ▾"}
+            </div>
+            {showFeedback && (
+              <div style={{ border: "1px dashed var(--signal-green)", background: "var(--signal-green-bg)", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#14523A", marginBottom: 6 }}>
+                  Delivery feedback <span style={{ fontWeight: 400 }}>(optional — only if this visit follows a delivery)</span>
+                </div>
+                {!customerId && (
+                  <div style={{ fontSize: 11, color: "var(--alert-red)", marginBottom: 6 }}>
+                    Link this visit to an existing customer above first — feedback needs a real customer record to attach to.
+                  </div>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                  <div>
+                    <div style={{ color: "var(--slate)", fontSize: 12 }}>Type</div>
+                    <select value={feedbackType} onChange={(e) => setFeedbackType(e.target.value)} style={{ width: "100%" }}>
+                      <option value="compliment">Compliment</option>
+                      <option value="complaint">Complaint</option>
+                    </select>
+                  </div>
+                </div>
+                <div style={{ color: "var(--slate)", fontSize: 12 }}>Comment</div>
+                <textarea rows={2} value={feedbackComment} onChange={(e) => setFeedbackComment(e.target.value)} style={{ width: "100%" }} placeholder="Finish quality praised, on-time delivery" />
+              </div>
+            )}
+
+            <div style={{ border: "1px dashed var(--info)", background: "var(--info-bg)", borderRadius: 8, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#144A66", marginBottom: 6 }}>Follow-up</div>
+              <div style={{ fontSize: 12, color: "#144A66", marginBottom: 8, lineHeight: 1.5 }}>
+                A follow-up is always created when you save this visit — if none of the usual rules apply, a default
+                check-in reminder is added instead of no next action at all.
+              </div>
+              <div
+                onClick={() => setShowManualFollowup((s) => !s)}
+                style={{ fontSize: 12, color: "var(--rebar)", cursor: "pointer" }}
+              >
+                {showManualFollowup ? "▴ Hide" : "＋ Add your own follow-up too (optional) ▾"}
+              </div>
+              {showManualFollowup && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                  <div>
+                    <div style={{ color: "var(--slate)", fontSize: 12 }}>What to follow up on</div>
+                    <input value={manualFollowupTitle} onChange={(e) => setManualFollowupTitle(e.target.value)} placeholder="e.g. Confirm site plan received from architect" style={{ width: "100%" }} />
+                  </div>
+                  <div>
+                    <div style={{ color: "var(--slate)", fontSize: 12 }}>Due date</div>
+                    <input type="date" value={manualFollowupDue} onChange={(e) => setManualFollowupDue(e.target.value)} style={{ width: "100%" }} />
+                  </div>
+                </div>
+              )}
+            </div>
+
             {error && (
               <div style={{ background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "var(--alert-red)" }}>
                 {error}
@@ -1148,91 +1203,6 @@ function NewVisitForm({ onDone, onCancel }) {
               </div>
             )}
             <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save visit & generate follow-up"}</button>
-          </form>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function FeedbackList({ feedback, onNew, onDuty }) {
-  return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>After-sales feedback</div>
-        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ New feedback</button>
-      </div>
-      {feedback.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>None recorded yet.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {feedback.map((f) => (
-            <div key={f.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ fontWeight: 600 }}>{f.customer_name}</span>
-                <span className={`badge ${f.feedback_type === "complaint" ? "badge-danger" : "badge-success"}`}>{f.feedback_type}</span>
-              </div>
-              <div style={{ color: "var(--slate)" }}>{f.comment}</div>
-              <div style={{ color: "var(--slate)", fontSize: 11 }}>{new Date(f.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NewFeedbackForm({ onDone, onCancel }) {
-  const [customers, setCustomers] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", feedback_type: "compliment", comment: "" });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    apiRequest("/master/customers").then(setCustomers).catch((err) => setError(err.message));
-  }, []);
-
-  async function submit(e) {
-    e.preventDefault();
-    setError(""); setSaving(true);
-    try {
-      await apiRequest("/sales/feedback", { method: "POST", body: form });
-      onDone();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <>
-      <TopBar title="Sales Executive · New feedback" />
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
-        <button onClick={onCancel} style={{ marginBottom: 16 }}>← Back</button>
-        <div className="card">
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>Record after-sales feedback</div>
-          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Customer</div>
-              <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} required>
-                <option value="">Select</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Type</div>
-              <select value={form.feedback_type} onChange={(e) => setForm({ ...form, feedback_type: e.target.value })}>
-                <option value="compliment">Compliment</option>
-                <option value="complaint">Complaint</option>
-              </select>
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)" }}>Comment</div>
-              <textarea rows={4} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} required placeholder="What did the site say about the delivery, quality, service?" />
-            </div>
-            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
-            <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save feedback"}</button>
           </form>
         </div>
       </div>
