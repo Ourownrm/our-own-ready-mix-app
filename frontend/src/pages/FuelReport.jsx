@@ -68,15 +68,16 @@ export default function FuelReport() {
 
       doc.autoTable({
         startY: 30,
-        head: [["Ref", "Requested", "Type", "By", "Vehicle/machine", "Reading", "Station/lubricant", "Req qty", "Approved", "Issued", "Cost", "Status"]],
+        head: [["Ref", "Requested", "Type", "By", "Vehicle/machine", "Reading", "Station/lubricant", "Req qty", "Approved", "Approved by", "Issued", "Issued by", "Cost", "Status"]],
         body: rows.map((r) => [
           refNumber(r), formatDateTime(r.requested_at), r.request_type, r.requested_by_name, unitLabel(r),
           r.odometer_reading ? `${r.odometer_reading} km` : r.hour_meter_reading ? `${r.hour_meter_reading} hrs` : "–",
           r.request_type === "fuel" ? (r.station_name || "–") : (r.lubricant_type_name || "–"),
-          r.requested_quantity, r.approved_quantity ?? "–", r.actual_quantity_issued ?? "–",
+          r.requested_quantity, r.approved_quantity ?? "–", r.approved_by_name || "–",
+          r.actual_quantity_issued ?? "–", r.issued_by_name || "–",
           r.fuel_cost != null ? `Rs. ${r.fuel_cost}` : "–", r.status,
         ]),
-        foot: [["", "", "", "", "", "", "Total", "", "", `Fuel ${sumQty(rows, "fuel")} L / Lube ${sumQty(rows, "lubricant")}`, `Rs. ${sumCost(rows)}`, `${rows.length} requests`]],
+        foot: [["", "", "", "", "", "", "Total", "", "", "", `Fuel ${sumQty(rows, "fuel")} L / Lube ${sumQty(rows, "lubricant")}`, "", `Rs. ${sumCost(rows)}`, `${rows.length} requests`]],
         styles: { fontSize: 7, overflow: "linebreak" },
         headStyles: { fillColor: [199, 91, 18] },
         rowPageBreak: "avoid",
@@ -160,7 +161,8 @@ export default function FuelReport() {
               <thead>
                 <tr>
                   <th>Ref</th><th>Requested</th><th>Type</th><th>By</th><th>Vehicle/machine</th>
-                  <th>Reading</th><th>Station/Lubricant</th><th>Req qty</th><th>Approved</th><th>Issued</th><th>Cost</th><th>Status</th>
+                  <th>Reading</th><th>Station/Lubricant</th><th>Req qty</th><th>Approved</th><th>Approved by</th>
+                  <th>Issued</th><th>Issued by</th><th>Cost</th><th>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -175,7 +177,9 @@ export default function FuelReport() {
                     <td>{r.request_type === "fuel" ? (r.station_name || "–") : (r.lubricant_type_name || "–")}</td>
                     <td>{r.requested_quantity}</td>
                     <td>{r.approved_quantity ?? "–"}</td>
+                    <td>{r.approved_by_name || "–"}</td>
                     <td>{r.actual_quantity_issued ?? "–"}</td>
+                    <td>{r.issued_by_name || "–"}</td>
                     <td>{r.fuel_cost != null ? `₹${r.fuel_cost}` : "–"}</td>
                     <td>{r.status}</td>
                   </tr>
@@ -184,8 +188,8 @@ export default function FuelReport() {
               <tfoot>
                 <tr style={{ fontWeight: 600 }}>
                   <td colSpan={7}>Totals ({result.totals.request_count} requests)</td>
-                  <td colSpan={2}>Fuel {result.totals.total_fuel_litres} L</td>
-                  <td>Lube {result.totals.total_lubricant_qty}</td>
+                  <td colSpan={3}>Fuel {result.totals.total_fuel_litres} L</td>
+                  <td colSpan={2}>Lube {result.totals.total_lubricant_qty}</td>
                   <td>₹{result.totals.total_cost}</td>
                   <td></td>
                 </tr>
