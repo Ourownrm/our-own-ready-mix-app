@@ -1,5 +1,7 @@
 import { useEffect, useState, Fragment } from "react";
 import { apiRequest } from "./api.js";
+import { useAuth } from "./AuthContext.jsx";
+import { generateMixDesignPdf } from "./mixDesignPdf.js";
 
 export function List({ rows, columns }) {
   return (
@@ -2008,6 +2010,96 @@ export function MixDesignAssignmentsPanel({ setError }) {
               </tr>
             ))}
             {assignments.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No customer-specific assignments yet — everyone gets the standard design per grade.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Mix design approval, reachable from Administrator/Manager (not just the
+// Lab Technician's own dashboard) — a draft always needs a second, different
+// person to sign off, and that second person is routinely a Manager/QC lead
+// rather than another Lab Technician. Read/approve only; drafting a new
+// design (with the full admixtures/moisture/materials form) stays on the
+// Lab Technician screen, not duplicated here.
+export function MixDesignsPanel({ setError }) {
+  const { user } = useAuth();
+  const [designs, setDesigns] = useState([]);
+  const [notice, setNotice] = useState("");
+  const [busyId, setBusyId] = useState(null);
+
+  async function load() {
+    try { setDesigns(await apiRequest("/lab-technician/mix-designs")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function approve(id) {
+    setBusyId(id); setError(""); setNotice("");
+    try {
+      await apiRequest(`/lab-technician/mix-designs/${id}/approve`, { method: "POST" });
+      setNotice("Approved.");
+      load();
+    } catch (err) { setError(err.message); } finally { setBusyId(null); }
+  }
+
+  async function viewPdf(id) {
+    setError("");
+    try {
+      const data = await apiRequest(`/lab-technician/mix-designs/${id}/pdf-data`);
+      await generateMixDesignPdf(data);
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
+        A draft mix design needs a second, different person to approve it before it can be
+        assigned to customers or used as a grade's standard — the design's own creator can't
+        approve their own draft. New designs are created from the Lab Technician screen.
+      </div>
+      {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+      <div className="card">
+        <table>
+          <thead>
+            <tr><th>Design</th><th>Grade</th><th>Status</th><th>Created by</th><th>Approved by</th><th></th></tr>
+          </thead>
+          <tbody>
+            {designs.map((d) => {
+              const isOwnDraft = d.status === "draft" && user && String(d.created_by) === String(user.id);
+              return (
+                <tr key={d.id}>
+                  <td>{d.design_ref_code}{d.mix_description ? <div style={{ fontSize: 11, color: "var(--slate)" }}>{d.mix_description}</div> : null}</td>
+                  <td>{d.mix_grade_name}</td>
+                  <td>
+                    <span className={`badge ${d.status === "approved" ? "badge-success" : "badge-neutral"}`}>
+                      {d.status === "approved" ? "Approved" : "Draft"}
+                    </span>
+                    {Number(d.assigned_customer_count) > 0 && (
+                      <span style={{ fontSize: 11, color: "var(--slate)", marginLeft: 6 }}>
+                        · {d.assigned_customer_count} customer{Number(d.assigned_customer_count) === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </td>
+                  <td>{d.created_by_name}</td>
+                  <td>{d.approved_by_name || "—"}</td>
+                  <td style={{ display: "flex", gap: 6 }}>
+                    {d.status === "draft" && (
+                      <button
+                        style={{ fontSize: 12, padding: "4px 10px" }}
+                        disabled={isOwnDraft || busyId === d.id}
+                        title={isOwnDraft ? "You created this draft — another person needs to approve it." : undefined}
+                        onClick={() => approve(d.id)}
+                      >
+                        {busyId === d.id ? "Approving..." : "Approve"}
+                      </button>
+                    )}
+                    <button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
+                  </td>
+                </tr>
+              );
+            })}
+            {designs.length === 0 && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>No mix designs yet.</td></tr>}
           </tbody>
         </table>
       </div>

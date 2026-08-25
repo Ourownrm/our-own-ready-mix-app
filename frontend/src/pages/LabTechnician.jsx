@@ -66,16 +66,48 @@ export default function LabTechnician() {
 // ===== Cube Testing =====
 
 function CubeTestingTab({ setError, setNotice }) {
+  const [viewBucket, setViewBucket] = useState("active"); // active | completed | closed
   const [batches, setBatches] = useState([]);
   const [openBatchId, setOpenBatchId] = useState(null);
 
   async function load() {
-    try { setBatches(await apiRequest("/lab-technician/cube-batches")); } catch (err) { setError(err.message); }
+    try { setBatches(await apiRequest(`/lab-technician/cube-batches?view=${viewBucket}`)); } catch (err) { setError(err.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setOpenBatchId(null); load(); }, [viewBucket]);
+
+  async function closeBatch(plantQcId) {
+    const reason = window.prompt("Why is this batch not being tested? (optional — leave blank if you'd rather not say)");
+    if (reason === null) return; // cancelled the prompt
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/lab-technician/cube-batches/${plantQcId}/close`, { method: "POST", body: { reason } });
+      setNotice("Batch closed — moved to the Closed list.");
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function reopenBatch(plantQcId) {
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/lab-technician/cube-batches/${plantQcId}/reopen`, { method: "POST" });
+      setNotice("Batch reopened — moved back to Active.");
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  const EMPTY_LABEL = {
+    active: "No active cube batches — cubes are cast and identified by QC Engineer at plant QC entry.",
+    completed: "No completed batches yet — a batch moves here once both 7-day and 28-day results are entered.",
+    closed: "No closed batches.",
+  };
 
   return (
     <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button className={`btn-tab ${viewBucket === "active" ? "active" : ""}`} onClick={() => setViewBucket("active")}>Active</button>
+        <button className={`btn-tab ${viewBucket === "completed" ? "active" : ""}`} onClick={() => setViewBucket("completed")}>Completed</button>
+        <button className={`btn-tab ${viewBucket === "closed" ? "active" : ""}`} onClick={() => setViewBucket("closed")}>Closed</button>
+      </div>
       {batches.map((b) => (
         <div key={b.plant_qc_id} className="card" style={{ marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -83,16 +115,32 @@ function CubeTestingTab({ setError, setNotice }) {
               <div style={{ fontWeight: 600 }}>{b.ticket_number} · {b.mix_grade_name} · {b.number_of_cubes} cubes</div>
               <div style={{ fontSize: 12, color: "var(--slate)" }}>{b.customer_name} — {b.site_name}</div>
               <div style={{ fontSize: 11, color: "var(--slate)" }}>Cast {fmtDate(b.cast_at)} · Sample IDs: {b.sample_ids || "—"}</div>
+              {viewBucket === "closed" && (
+                <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
+                  Closed {fmtDate(b.closed_at)}{b.closed_by_name ? ` by ${b.closed_by_name}` : ""}{b.closed_reason ? ` — ${b.closed_reason}` : ""}
+                </div>
+              )}
             </div>
-            <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setOpenBatchId(openBatchId === b.plant_qc_id ? null : b.plant_qc_id)}>
-              {openBatchId === b.plant_qc_id ? "Close" : "Open"}
-            </button>
+            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+              {viewBucket === "closed" ? (
+                <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => reopenBatch(b.plant_qc_id)}>Reopen</button>
+              ) : (
+                <>
+                  {viewBucket === "active" && (
+                    <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => closeBatch(b.plant_qc_id)}>Close — not testing</button>
+                  )}
+                  <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setOpenBatchId(openBatchId === b.plant_qc_id ? null : b.plant_qc_id)}>
+                    {openBatchId === b.plant_qc_id ? "Hide" : "Open"}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <AgeBadge label="7-day" status={b.status_7day} due={b.due_7day} strength={b.result_7day_strength} />
             <AgeBadge label="28-day" status={b.status_28day} due={b.due_28day} strength={b.result_28day_strength} />
           </div>
-          {openBatchId === b.plant_qc_id && (
+          {viewBucket !== "closed" && openBatchId === b.plant_qc_id && (
             <BatchDetail
               plantQcId={b.plant_qc_id}
               setError={setError}
@@ -102,7 +150,7 @@ function CubeTestingTab({ setError, setNotice }) {
           )}
         </div>
       ))}
-      {batches.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No cube batches yet — cubes are cast and identified by QC Engineer at plant QC entry.</div>}
+      {batches.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>{EMPTY_LABEL[viewBucket]}</div>}
     </div>
   );
 }
@@ -124,20 +172,31 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
   const [cubes, setCubes] = useState([]);
   const [remarks, setRemarks] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savedNotice, setSavedNotice] = useState(""); // shown inline on this card, not just the page-top notice
 
-  useEffect(() => {
-    apiRequest(`/lab-technician/cube-batches/${plantQcId}`)
-      .then((d) => {
-        setDetail(d);
-        setMixDesignId(d.resolved_mix_design_id || (d.approved_designs[0]?.id ?? ""));
-        const labels = (d.sample_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
-        const count = d.number_of_cubes || labels.length || 3;
-        setCubes(Array.from({ length: count }, (_, i) => ({
-          cube_label: labels[i] || `Cube ${i + 1}`, weight_kg: "", testing_load_kn: "",
-        })));
-      })
-      .catch((err) => setError(err.message));
-  }, [plantQcId]);
+  function resetCubesFor(d) {
+    const labels = (d.sample_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const count = d.number_of_cubes || labels.length || 3;
+    setCubes(Array.from({ length: count }, (_, i) => ({
+      cube_label: labels[i] || `Cube ${i + 1}`, weight_kg: "", testing_load_kn: "",
+    })));
+  }
+
+  async function loadDetail() {
+    try {
+      const d = await apiRequest(`/lab-technician/cube-batches/${plantQcId}`);
+      setDetail(d);
+      setMixDesignId(d.resolved_mix_design_id || (d.approved_designs[0]?.id ?? ""));
+      // Default the radio to whichever age isn't tested yet, so re-opening
+      // after a save points straight at the next thing to do.
+      const testedAges = d.results.map((r) => r.testing_age_days);
+      setAge(testedAges.includes(7) && !testedAges.includes(28) ? 28 : 7);
+      resetCubesFor(d);
+      return d;
+    } catch (err) { setError(err.message); return null; }
+  }
+
+  useEffect(() => { loadDetail(); }, [plantQcId]);
 
   function updateCube(i, field, value) {
     setCubes((cs) => cs.map((c, idx) => idx === i ? { ...c, [field]: value } : c));
@@ -150,7 +209,7 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
 
   async function submit(e) {
     e.preventDefault();
-    setSaving(true); setError(""); setNotice("");
+    setSaving(true); setError(""); setNotice(""); setSavedNotice("");
     try {
       const payload = {
         testing_age_days: age,
@@ -165,8 +224,10 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
         })),
       };
       await apiRequest(`/lab-technician/cube-batches/${plantQcId}/results`, { method: "POST", body: payload });
-      setNotice("Test result saved.");
-      onSaved();
+      setSavedNotice(`${age}-day result saved.`); // stays on this card, not just the top-of-page banner
+      setRemarks("");
+      await loadDetail(); // pulls the new result into detail.results below, same card, no reopen needed
+      onSaved(); // refreshes the batch list's status badges/counts
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
@@ -181,6 +242,11 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
 
   return (
     <div style={{ marginTop: 12, borderTop: "1px solid var(--concrete)", paddingTop: 12 }}>
+      {savedNotice && (
+        <div style={{ color: "var(--signal-green)", fontSize: 12.5, marginBottom: 10, background: "var(--concrete)", borderRadius: 8, padding: "6px 10px" }}>
+          ✓ {savedNotice}
+        </div>
+      )}
       {detail.results.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           {detail.results.map((r) => (
@@ -334,7 +400,7 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
     coarse_12_5mm_moisture_pct: "", coarse_12_5mm_absorption_pct: "",
     notes: "",
   });
-  const [admixtures, setAdmixtures] = useState([{ type_brand: "", dosage_pct_of_binder: "", qty_kgm3: "", sp_gr: "" }]);
+  const [admixtures, setAdmixtures] = useState([{ type_brand: "", qty_kgm3: "", sp_gr: "" }]);
   const [grades, setGrades] = useState([]);
   const [saving, setSaving] = useState(false);
 
@@ -350,6 +416,7 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
     : null;
   const totalBinder = (Number(form.cement_kgm3) || 0) + (Number(form.fly_ash_kgm3) || 0);
   const wbRatio = totalBinder ? (Number(form.free_water_kgm3) / totalBinder).toFixed(3) : null;
+  const flyAshPct = totalBinder && form.fly_ash_kgm3 ? ((Number(form.fly_ash_kgm3) / totalBinder) * 100).toFixed(1) : null;
   const totalAggregate = (Number(form.fine_agg_kgm3) || 0) + (Number(form.coarse_20mm_kgm3) || 0) + (Number(form.coarse_12_5mm_kgm3) || 0);
   const totalAdmixture = admixtures.reduce((sum, a) => sum + (Number(a.qty_kgm3) || 0), 0);
   const densitySum = totalBinder + (Number(form.free_water_kgm3) || 0) + totalAggregate + totalAdmixture;
@@ -419,7 +486,9 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
           <div><div style={{ color: "var(--slate)" }}>Cement (kg/m³)</div><input type="number" value={form.cement_kgm3} onChange={(e) => set("cement_kgm3", e.target.value)} required /></div>
           <div><div style={{ color: "var(--slate)" }}>Fly ash (kg/m³)</div><input type="number" value={form.fly_ash_kgm3} onChange={(e) => set("fly_ash_kgm3", e.target.value)} /></div>
         </div>
-        <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>Total binder: {totalBinder.toFixed(1)} kg/m³{wbRatio && ` · W/B ratio: ${wbRatio}`}</div>
+        <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
+          Total binder: {totalBinder.toFixed(1)} kg/m³{wbRatio && ` · W/B ratio: ${wbRatio}`}{flyAshPct && ` · Fly ash: ${flyAshPct}% of binder`}
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
           <div><div style={{ color: "var(--slate)" }}>Free water (kg/m³)</div><input type="number" value={form.free_water_kgm3} onChange={(e) => set("free_water_kgm3", e.target.value)} required /></div>
           <div><div style={{ color: "var(--slate)" }}>Fine aggregate (kg/m³)</div><input type="number" value={form.fine_agg_kgm3} onChange={(e) => set("fine_agg_kgm3", e.target.value)} required /></div>
@@ -439,15 +508,26 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
 
       <div className="card">
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Admixtures</div>
-        {admixtures.map((a, i) => (
-          <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 6, marginBottom: 6 }}>
-            <input placeholder="Type / brand" value={a.type_brand} onChange={(e) => updateAdmixture(i, "type_brand", e.target.value)} />
-            <input type="number" step="0.01" placeholder="% binder" value={a.dosage_pct_of_binder} onChange={(e) => updateAdmixture(i, "dosage_pct_of_binder", e.target.value)} />
-            <input type="number" step="0.01" placeholder="kg/m³" value={a.qty_kgm3} onChange={(e) => updateAdmixture(i, "qty_kgm3", e.target.value)} />
-            <input type="number" step="0.01" placeholder="Sp. gr." value={a.sp_gr} onChange={(e) => updateAdmixture(i, "sp_gr", e.target.value)} />
-          </div>
-        ))}
-        <button type="button" style={{ fontSize: 12 }} onClick={() => setAdmixtures((as) => [...as, { type_brand: "", dosage_pct_of_binder: "", qty_kgm3: "", sp_gr: "" }])}>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 6, fontSize: 11, color: "var(--slate)", marginBottom: 2 }}>
+          <div>Type / brand</div><div>kg/m³</div><div>Sp. gr.</div><div>% of binder</div>
+        </div>
+        {admixtures.map((a, i) => {
+          const dosagePct = totalBinder && a.qty_kgm3 ? ((Number(a.qty_kgm3) / totalBinder) * 100).toFixed(2) : null;
+          return (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 6, marginBottom: 6, alignItems: "center" }}>
+              <input placeholder="Type / brand" value={a.type_brand} onChange={(e) => updateAdmixture(i, "type_brand", e.target.value)} />
+              <input type="number" step="0.01" placeholder="kg/m³" value={a.qty_kgm3} onChange={(e) => updateAdmixture(i, "qty_kgm3", e.target.value)} />
+              <input type="number" step="0.01" placeholder="Sp. gr." value={a.sp_gr} onChange={(e) => updateAdmixture(i, "sp_gr", e.target.value)} />
+              <div style={{ fontSize: 12.5, color: dosagePct ? "var(--charcoal)" : "var(--slate)" }}>
+                {dosagePct ? `${dosagePct}%` : "—"}
+              </div>
+            </div>
+          );
+        })}
+        <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 6 }}>
+          Calculated automatically from quantity ÷ total binder ({totalBinder ? totalBinder.toFixed(1) : "—"} kg/m³) — not typed in.
+        </div>
+        <button type="button" style={{ fontSize: 12 }} onClick={() => setAdmixtures((as) => [...as, { type_brand: "", qty_kgm3: "", sp_gr: "" }])}>
           + Add another admixture
         </button>
       </div>

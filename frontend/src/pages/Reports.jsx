@@ -84,6 +84,7 @@ export default function Reports() {
                 { label: "Site Contacts", to: "/administrator?view=site-contacts" },
                 { label: "Production Target", to: "/administrator?view=production-target" },
                 { label: "Approved Mix Assignments", to: "/administrator?view=mix-assignments" },
+                { label: "Mix Designs (approve)", to: "/administrator?view=mix-designs" },
               ]}
             />
             <GroupedMenu
