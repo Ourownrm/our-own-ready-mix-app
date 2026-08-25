@@ -100,7 +100,7 @@ router.get("/cube-batches/:plantQcId", async (req, res) => {
   const { rows: results } = await query(
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.mix_design_id,
-            u.name AS tested_by_name, ctr.tested_at
+            ctr.failure_type, u.name AS tested_by_name, ctr.tested_at
      FROM cube_test_results ctr JOIN users u ON u.id = ctr.tested_by
      WHERE ctr.plant_qc_id = $1 ORDER BY ctr.testing_age_days`,
     [batch.plant_qc_id]
@@ -130,12 +130,40 @@ router.post("/cube-batches/:plantQcId/reopen", requireRole("lab_technician", "ad
   res.json({ ok: true });
 });
 
+// ===== Raw material stock =====
+// Moved here from QC Engineer (round 118 refinement, per explicit request)
+// — QC Engineer no longer has write access to this at all. Still shown
+// read-only on Manager/Administrator dashboards via GET /master/raw-material-stock,
+// unchanged. Same shared-PIN protection as before it moved.
+router.put("/raw-material-stock", requireRole("lab_technician"), async (req, res) => {
+  const configuredPin = process.env.RAW_MATERIAL_STOCK_PIN;
+  if (configuredPin && req.body.pin !== configuredPin) {
+    return res.status(403).json({ error: "Incorrect PIN." });
+  }
+
+  const updates = req.body.rows || [];
+  for (const row of updates) {
+    await query(
+      `UPDATE raw_material_stock SET type_brand = $1, stock_qty = $2, qty_on_order = $3, expected_delivery_date = $4,
+         updated_by = $5, updated_at = now()
+       WHERE id = $6`,
+      [row.type_brand || null, row.stock_qty || 0, row.qty_on_order || 0, row.expected_delivery_date || null, req.user.id, row.id]
+    );
+  }
+  const { rows } = await query(
+    `SELECT s.id, s.bin_name, s.unit, s.type_brand, s.stock_qty, s.qty_on_order, s.expected_delivery_date, s.updated_at, u.name AS updated_by_name
+     FROM raw_material_stock s LEFT JOIN users u ON u.id = s.updated_by
+     ORDER BY s.id`
+  );
+  res.json(rows);
+});
+
 // Submit (or replace) a cube batch's test result for one testing age.
 // Averages are always recomputed here from the posted cubes, never trusted
 // as-is from the client, so the stored average can't drift from what the
 // per-cube rows actually say.
 router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "administrator"), async (req, res) => {
-  const { testing_age_days, mix_design_id, cubes, remarks } = req.body;
+  const { testing_age_days, mix_design_id, cubes, remarks, failure_type } = req.body;
   if (![7, 28].includes(Number(testing_age_days))) {
     return res.status(400).json({ error: "Testing age must be 7 or 28 days." });
   }
@@ -160,14 +188,14 @@ router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "a
   const { rows: resultRows } = await query(
     `INSERT INTO cube_test_results
       (plant_qc_id, testing_age_days, mix_design_id, average_weight_kg, average_load_kn,
-       average_density_kgm3, average_strength_mpa, remarks, tested_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       average_density_kgm3, average_strength_mpa, remarks, failure_type, tested_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      ON CONFLICT (plant_qc_id, testing_age_days) DO UPDATE SET
        mix_design_id = $3, average_weight_kg = $4, average_load_kn = $5,
        average_density_kgm3 = $6, average_strength_mpa = $7, remarks = $8,
-       tested_by = $9, tested_at = now()
+       failure_type = $9, tested_by = $10, tested_at = now()
      RETURNING id`,
-    [req.params.plantQcId, testing_age_days, mix_design_id || null, avgWeight, avgLoad, avgDensity, avgStrength, remarks || null, req.user.id]
+    [req.params.plantQcId, testing_age_days, mix_design_id || null, avgWeight, avgLoad, avgDensity, avgStrength, remarks || null, failure_type || null, req.user.id]
   );
   const resultId = resultRows[0].id;
 
@@ -184,13 +212,33 @@ router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "a
   res.status(201).json({ ok: true, result_id: resultId });
 });
 
+// Correct a saved test's recorded date — administrator only. Exists purely
+// for after-the-fact data-entry corrections (a result entered days later
+// but back-dated to when the test actually happened, or a typo caught after
+// saving); it does not re-run any of the averaging logic above.
+router.patch("/cube-batches/:plantQcId/results/:resultId/date", requireRole("administrator"), async (req, res) => {
+  const { tested_at } = req.body;
+  const parsed = tested_at ? new Date(tested_at) : null;
+  if (!parsed || isNaN(parsed)) {
+    return res.status(400).json({ error: "A valid test date is required." });
+  }
+  const { rows } = await query(
+    `UPDATE cube_test_results SET tested_at = $1
+     WHERE id = $2 AND plant_qc_id = $3
+     RETURNING id`,
+    [parsed.toISOString(), req.params.resultId, req.params.plantQcId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Test result not found." });
+  res.json({ ok: true });
+});
+
 // Flat JSON for the client-side cube test PDF generator (mirrors the
 // Delivery Challan PDF pattern — the PDF itself is built in the browser,
 // nothing is rendered or stored server-side).
 router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
   const { rows } = await query(
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
-            ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.tested_at,
+            ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
             u.name AS tested_by_name,
             pq.id AS plant_qc_id, pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
             dt.ticket_number,
@@ -217,6 +265,52 @@ router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
     [req.params.resultId]
   );
   res.json({ ...rows[0], cubes });
+});
+
+// Configurable summary table across every cube test result — date range,
+// customer, grade, and design ref code, any combination. Restricted to
+// Lab Technician + Administrator only (tighter than this router's general
+// read access above) since this is a cross-batch report, not a single
+// batch's own detail.
+router.get("/cube-test-report", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { from_date, to_date, customer_id, mix_grade_id, design_ref_code, testing_age_days } = req.query;
+  const conditions = [];
+  const params = [];
+  if (from_date) { params.push(from_date); conditions.push(`ctr.tested_at::date >= $${params.length}`); }
+  if (to_date) { params.push(to_date); conditions.push(`ctr.tested_at::date <= $${params.length}`); }
+  if (customer_id) { params.push(customer_id); conditions.push(`c.id = $${params.length}`); }
+  if (mix_grade_id) { params.push(mix_grade_id); conditions.push(`m.id = $${params.length}`); }
+  if (design_ref_code) { params.push(`%${design_ref_code}%`); conditions.push(`md.design_ref_code ILIKE $${params.length}`); }
+  if ([7, 28].includes(Number(testing_age_days))) { params.push(Number(testing_age_days)); conditions.push(`ctr.testing_age_days = $${params.length}`); }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const { rows } = await query(
+    `SELECT ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.average_load_kn,
+            ctr.average_density_kgm3, ctr.failure_type, ctr.remarks, ctr.tested_at,
+            u.name AS tested_by_name,
+            pq.id AS plant_qc_id, pq.entered_at AS cast_at, pq.sample_ids,
+            dt.ticket_number,
+            c.id AS customer_id, c.name AS customer_name,
+            s.id AS site_id, s.name AS site_name,
+            m.id AS mix_grade_id, m.name AS mix_grade_name,
+            md.id AS mix_design_id, md.design_ref_code, md.fck_28day_mpa,
+            CASE WHEN ctr.testing_age_days = 28 AND md.fck_28day_mpa IS NOT NULL
+                 THEN (ctr.average_strength_mpa >= md.fck_28day_mpa) END AS meets_target
+     FROM cube_test_results ctr
+     JOIN users u ON u.id = ctr.tested_by
+     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
+     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = ctr.mix_design_id
+     ${where}
+     ORDER BY ctr.tested_at DESC
+     LIMIT 1000`,
+    params
+  );
+  res.json(rows);
 });
 
 // ===== Mix designs =====

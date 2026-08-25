@@ -3759,11 +3759,101 @@ access today is via public, unauthenticated per-order/per-booking token links (`
 `/book/:token`). Whoever picks up customer-facing PDF viewing next needs to decide: build real
 customer auth, or extend the token-link pattern to cover PDF report access too.
 
+**Post-ship fix 5 (Ver. 9.29): both PDF reports reworked after business reviewed real
+generated output against their reference sample.** Root cause behind several of the reported
+issues: jsPDF's standard 14 fonts (Helvetica) use WinAnsiEncoding and don't reliably render
+Unicode outside that set — the superscript "³"/"²" and the Greek "σ" in unit/label text (e.g.
+"kg/m³", "N/mm²", "1.65σ") were rendering as mojibake or vanishing entirely, even though the
+source looks syntactically correct (a literal Unicode character in a JS string renders fine in
+a browser or editor, just not through jsPDF's default font). Every unit and symbol in both
+generators is now plain ASCII ("kg/m3", "N/mm2", "SD" for standard deviation).
+
+Both generators (`mixDesignPdf.js`, `cubeTestPdf.js`) were rewritten together: the
+identification block's "Created"/"Approved" fields (previously a single unfitted string) now
+render as two lines (date, then name) at a smaller font so a long name can no longer bleed into
+the next column; table values are now "bold figure + normal unit" instead of the whole string
+bold, so a unit no longer reads with the same weight as the number it qualifies; the Materials
+table's Type/Source column now wraps to as many lines as it needs (dynamic row height) instead
+of truncating to `splitTextToSize(...)[0]`, the same truncation bug that was also cramping the
+Mix Design Summary grid's labels — both fixed the same way; the header address block is now
+normal-weight and correctly sized to match `deliveryChallanPdf.js`'s established styling
+instead of bold/oversized; the hand-drawn aggregate pie chart's slices are now each a single
+filled polygon (`doc.lines(...)`) instead of a fan of small triangles, which removes the visible
+hairline seams the old triangle-fan approach left between segments; the mix design signatory
+line now always shows the fixed "Quality Control Engineer" label instead of the actual
+approving user's name; and the admixture row in the Materials table now matches the mockup's
+Material="Admixture" / Type-Source=brand-name layout (it previously put the brand name in the
+Material column). Layout was also generally tightened (row heights, section gaps) so the Mix
+Design PDF — which previously spilled onto a second page for just its disclaimer/footer — now
+fits on one page for a normal-sized design. Verified visually, not just by build success: wrote
+a small headless Node harness (jsPDF runs fine in Node once the browser-only `doc.save()` path
+is swapped for `doc.output("arraybuffer")`) to render both generators with realistic sample
+data and inspect the actual output via `pdftoppm`, since this class of bug — encoding, layout —
+is exactly the kind that compiles clean but is wrong in the rendered artifact.
+
+Also added the three cube-test fields business asked for: casting location and curing method
+are fixed reference text in the Standards Followed table (every cube batch in this app is cast
+during the Plant QC step — there's no site-casting workflow — and curing always follows
+standard IS 516 water curing, so unlike type of failure these don't vary and don't need a
+schema column); type of failure is a new optional `cube_test_results.failure_type` column,
+captured per-result via a free-text input with a suggestion list (`FAILURE_TYPES` in
+`LabTechnician.jsx` — Cone, Shear, Columnar, etc. — not a hard enum, since this is an
+observational note a technician fills in from what they actually saw). Also added an
+administrator-only "Change date" control on each saved result (`PATCH
+/lab-technician/cube-batches/:plantQcId/results/:resultId/date`) for after-the-fact date
+corrections.
+
+A review pass on this PDF/date/failure-type work caught two real bugs before ship, both fixed:
+the failure-type field was built as a closed `<select>` restricted to the 7 suggested values,
+contradicting its own design comment that free text should always be possible — changed to a
+text `<input>` with a `<datalist>` of suggestions; and the admin date-edit box was pre-filling
+from `new Date(...).toISOString()` (UTC date) while the label next to it displays the local
+date — since the app's home timezone is IST (UTC+5:30), any result tested between 00:00-05:29
+IST has a UTC date one day earlier, so an admin who didn't notice the mismatch could silently
+save the date one day too early. Fixed to derive the pre-fill from local date parts.
+
+**Post-ship addition 6 (Ver. 9.29): two more business requests, addressed together.**
+(a) New configurable Cube Test Report (`GET /lab-technician/cube-test-report`,
+`CubeTestReport.jsx`) — a cross-batch summary table filterable by date range, customer, grade,
+and design ref code (any combination), with an Excel export and a per-row PDF link reusing the
+existing `generateCubeTestPdf`. Deliberately gated tighter than this router's usual broad read
+access (`requireRole("lab_technician", "administrator")` on this one route specifically) since
+business asked for Lab Technician + Administrator only, not Manager or QC Engineer — reachable
+from a new button on the Lab Technician dashboard and from the Reports page's admin-only
+Reports menu. (b) Raw material stock entry moved from QC Engineer to Lab Technician per
+explicit request — `PUT .../raw-material-stock` removed entirely from `qcEngineer.js` and
+re-added to `labTechnician.js` gated `requireRole("lab_technician")` only (QC Engineer now has
+no write access to this at all); the page moved from `QcRawMaterialStock.jsx` (deleted) to
+`RawMaterialStockEntry.jsx`, route from `/qc/raw-material-stock` to
+`/lab-technician/raw-material-stock`. The read-only `GET /master/raw-material-stock` (shown on
+Manager/Administrator dashboards) is unchanged — still readable by any authenticated role.
+Same shared-PIN write protection carried over unchanged. A review pass over both features found
+no issues.
+
+**Post-ship fix 7 (Ver. 9.29): "number of cubes" default was silently creating phantom
+testable batches.** Business reported that after saving a delivery challan, it showed up in Lab
+Technician's testing queue even when no sample had actually been prepared. Root cause: the
+Plant QC entry form (`QcEngineer.jsx`) defaulted `number_of_cubes` to `3` (both the initial
+form state and the post-submit reset), so any QC submission where the engineer didn't
+deliberately overwrite the field silently recorded 3 prepared cubes — and Lab Technician's
+queue is driven by `WHERE COALESCE(pq.number_of_cubes, 0) > 0`. Fixed both occurrences to
+default to `0`, matching what's actually true until an engineer enters a real count. While
+fixing this, also found and fixed a companion bug in the backend handler
+(`qcEngineer.js`'s `POST /:ticketId/plant-qc`): it computed the stored value as
+`number_of_cubes || null`, which — since `0` is falsy in JS — silently coerced an explicitly
+entered `0` into `NULL` on save. Functionally harmless today (`COALESCE(number_of_cubes, 0)`
+treats `NULL` and `0` identically for queue visibility) but semantically wrong and a latent trap
+for any future feature that distinguishes "not entered" from "entered as zero." Replaced with
+an explicit check (`number_of_cubes === "" || null || undefined ? null : Number(...)`) that
+preserves an explicit `0` as `0`. Verified with `node --check` on the backend route and a clean
+`npm run build` on the frontend.
+
 ### Migration note
 Run `/setup` after deploying — adds the `lab_technician` enum value, six new tables
 (`mix_designs`, `mix_design_admixtures`, `mix_design_assignments`, `cube_test_results`,
-`cube_test_cubes`, `cube_batch_status`), and `customer_orders.resolved_mix_design_id`. No live
-Postgres instance available in this environment to smoke-test the migration against, so treat
-`/setup` on deploy as the first real run — same caveat as prior rounds without a local DB
-available. Frontend verified with a full `npm run build` (clean, no errors) and every
-touched/new backend route file verified with `node --check`.
+`cube_test_cubes`, `cube_batch_status`), `customer_orders.resolved_mix_design_id`, and (as of
+Ver. 9.29) `cube_test_results.failure_type`. No live Postgres instance available in this
+environment to smoke-test the migration against, so treat `/setup` on deploy as the first real
+run — same caveat as prior rounds without a local DB available. Frontend verified with a full
+`npm run build` (clean, no errors) and every touched/new backend route file verified with
+`node --check`.

@@ -1148,6 +1148,13 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (cube_batch_status — lets a cube batch be closed out of the active Lab Technician dashboard when it won't be tested).");
 
+    // failure_type (round 118 refinement) — optional per-test note on how
+    // the cubes failed under load, shown on the Cube Test Report PDF.
+    await query(`
+      ALTER TABLE cube_test_results ADD COLUMN IF NOT EXISTS failure_type VARCHAR(60);
+    `);
+    log.push("Schema migration applied (cube_test_results.failure_type — optional IS 516 failure-mode note per test).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

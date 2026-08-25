@@ -35,13 +35,21 @@ router.get("/pending-qc", async (req, res) => {
 router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), async (req, res) => {
   const { slump_mm, temperature_c, number_of_cubes, sample_ids, remarks } = req.body;
   if (!slump_mm) return res.status(400).json({ error: "Slump reading is required." });
+  // `number_of_cubes || null` would silently coerce an explicit 0 (no cubes
+  // prepared for this ticket — now the form's own default) into NULL, since
+  // 0 is falsy in JS. Cube batch visibility for Lab Technician already
+  // treats NULL and 0 the same (`COALESCE(number_of_cubes, 0) > 0`), but the
+  // stored value itself should still reflect what was actually entered.
+  const cubesEntered = number_of_cubes === "" || number_of_cubes === null || number_of_cubes === undefined
+    ? null
+    : Number(number_of_cubes);
 
   await query(
     `INSERT INTO plant_qc (ticket_id, slump_mm, temperature_c, number_of_cubes, sample_ids, remarks, entered_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (ticket_id) DO UPDATE SET
        slump_mm = $2, temperature_c = $3, number_of_cubes = $4, sample_ids = $5, remarks = $6`,
-    [req.params.ticketId, slump_mm, temperature_c || null, number_of_cubes || null, sample_ids || null, remarks || null, req.user.id]
+    [req.params.ticketId, slump_mm, temperature_c || null, cubesEntered, sample_ids || null, remarks || null, req.user.id]
   );
   await logEvent(req.params.ticketId, "plant_qc_completed", req.user.id);
   await query("UPDATE delivery_tickets SET status = 'dispatched' WHERE id = $1", [req.params.ticketId]);
@@ -50,37 +58,10 @@ router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), 
   res.json({ ok: true });
 });
 
-// Raw material stock — QC Engineer enters/updates daily. Shown read-only on
-// Manager and Administrator dashboards until QC updates it again.
-//
-// Protected by a shared PIN (RAW_MATERIAL_STOCK_PIN env var) so that on a
-// shared device/login, not just anyone who can open the QC screen can also
-// edit stock — only whoever knows the PIN. If the PIN isn't configured on
-// the server yet, saves are still allowed (so this doesn't break anything
-// for anyone who hasn't set it up), but nothing is actually protected until
-// you do — see README for how to set it.
-router.put("/raw-material-stock", requireRole("qc_engineer"), async (req, res) => {
-  const configuredPin = process.env.RAW_MATERIAL_STOCK_PIN;
-  if (configuredPin && req.body.pin !== configuredPin) {
-    return res.status(403).json({ error: "Incorrect PIN." });
-  }
-
-  const updates = req.body.rows || [];
-  for (const row of updates) {
-    await query(
-      `UPDATE raw_material_stock SET type_brand = $1, stock_qty = $2, qty_on_order = $3, expected_delivery_date = $4,
-         updated_by = $5, updated_at = now()
-       WHERE id = $6`,
-      [row.type_brand || null, row.stock_qty || 0, row.qty_on_order || 0, row.expected_delivery_date || null, req.user.id, row.id]
-    );
-  }
-  const { rows } = await query(
-    `SELECT s.id, s.bin_name, s.unit, s.type_brand, s.stock_qty, s.qty_on_order, s.expected_delivery_date, s.updated_at, u.name AS updated_by_name
-     FROM raw_material_stock s LEFT JOIN users u ON u.id = s.updated_by
-     ORDER BY s.id`
-  );
-  res.json(rows);
-});
+// Raw material stock entry moved to Lab Technician (round 118 refinement,
+// per explicit request) — see PUT /lab-technician/raw-material-stock.
+// QC Engineer no longer has write access to this at all; it's still shown
+// read-only on Manager/Administrator dashboards via GET /master/raw-material-stock.
 
 // Trucks that have been sitting at site more than 2 hours — same data Manager
 // sees on Active Trucks, so QC can proactively check on quality without

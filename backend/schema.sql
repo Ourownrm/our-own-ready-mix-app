@@ -904,6 +904,12 @@ CREATE TABLE cube_test_results (
   average_load_kn NUMERIC(7,2),
   average_density_kgm3 NUMERIC(7,1),
   average_strength_mpa NUMERIC(6,2),
+  -- Optional — how the batch failed under load (e.g. "Cone", "Shear",
+  -- "Columnar"), per IS 516. Free text, not an enum: the lab technician
+  -- records what they actually observed, and this varies test to test, so
+  -- (unlike casting location / curing method, which are fixed for every
+  -- batch in this app) it genuinely needs to be captured, not defaulted.
+  failure_type VARCHAR(60),
   remarks TEXT,
   tested_by INTEGER REFERENCES users(id) NOT NULL,
   tested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
