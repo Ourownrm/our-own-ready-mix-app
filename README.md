@@ -3698,6 +3698,16 @@ joining `users cu ON cu.id = md.created_by` even though the PDF reads `created_b
 referenced `r7`/`r28` result-table aliases in its `SELECT`/`CASE` without ever joining them,
 which would have 500'd on every call. Both fixed.
 
+**Post-ship fix**: business reported "That role isn't recognized" when creating a Lab
+Technician user from Administrator → Users. Cause: `POST /administrator/users`
+(`administrator.js`) validates the submitted role against its own hardcoded `validRoles`
+array — separate from the DB `user_role` ENUM and from `Administrator.jsx`'s `ROLES` array,
+both of which *had* been updated — and this one array was missed. Same category as the
+existing "role-gating has a few hardcoded validation lists beyond the DB ENUM" caveat;
+`lab_technician` added to `validRoles`. Worth grepping for every hardcoded role list
+(`validRoles`, `ROLES`, `STAFF_ROLES`, etc.) whenever a new role is added, not just the
+obvious ones.
+
 **Known gap, not addressed this round:** the mockups for a customer-facing module (sign-in,
 My Orders, QC Reports) assumed an authenticated customer account system. Checked the real app
 — no customer login/JWT issuance/customer-scoped routes exist anywhere; all customer-facing
