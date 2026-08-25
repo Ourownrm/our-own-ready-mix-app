@@ -69,6 +69,7 @@ export default function Reports() {
                 { label: "Charts", to: "/charts" },
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
                 { label: "Outstanding Collection", to: "/outstanding-collection-report" },
+                { label: "Cube Test Report", to: "/lab-technician/cube-test-report" },
               ]}
             />
             <GroupedMenu

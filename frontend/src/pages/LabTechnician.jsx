@@ -4,10 +4,18 @@
 // from. Single-file, internal-view-state dashboard, matching the pattern
 // used by every other role's own screen (QcEngineer.jsx, Accountant.jsx, etc).
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
 import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
+import { useAuth } from "../lib/AuthContext.jsx";
+
+// IS 516 doesn't mandate a fixed vocabulary for failure mode, but these are
+// the patterns a lab technician actually sees in practice — kept as
+// suggestions (a free-text fallback is always available) rather than a hard
+// enum, since this is an observational note, not a constrained data field.
+const FAILURE_TYPES = ["Cone", "Cone & Split", "Columnar", "Shear", "Side Fracture", "Explosive"];
 
 const CUBE_VOLUME_M3 = 0.003375; // 150mm cube
 const CUBE_FACE_AREA_MM2 = 150 * 150;
@@ -49,9 +57,11 @@ export default function LabTechnician() {
     <>
       <TopBar title="Lab Technician" />
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <button className={`btn-tab ${tab === "batches" ? "active" : ""}`} onClick={() => setTab("batches")}>Cube Testing</button>
           <button className={`btn-tab ${tab === "mix-designs" ? "active" : ""}`} onClick={() => setTab("mix-designs")}>Mix Designs</button>
+          <Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link>
+          <Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link>
         </div>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
@@ -166,13 +176,19 @@ function AgeBadge({ label, status, due, strength }) {
 }
 
 function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "administrator";
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
   const [cubes, setCubes] = useState([]);
   const [remarks, setRemarks] = useState("");
+  const [failureType, setFailureType] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(""); // shown inline on this card, not just the page-top notice
+  const [editingDateFor, setEditingDateFor] = useState(null); // result id currently being date-corrected (admin only)
+  const [dateDraft, setDateDraft] = useState("");
+  const [savingDate, setSavingDate] = useState(false);
 
   function resetCubesFor(d) {
     const labels = (d.sample_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -215,6 +231,7 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
         testing_age_days: age,
         mix_design_id: mixDesignId || null,
         remarks,
+        failure_type: failureType || null,
         cubes: cubes.map((c) => ({
           cube_label: c.cube_label,
           weight_kg: c.weight_kg || null,
@@ -226,6 +243,7 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
       await apiRequest(`/lab-technician/cube-batches/${plantQcId}/results`, { method: "POST", body: payload });
       setSavedNotice(`${age}-day result saved.`); // stays on this card, not just the top-of-page banner
       setRemarks("");
+      setFailureType("");
       await loadDetail(); // pulls the new result into detail.results below, same card, no reopen needed
       onSaved(); // refreshes the batch list's status badges/counts
     } catch (err) { setError(err.message); } finally { setSaving(false); }
@@ -236,6 +254,30 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
       const data = await apiRequest(`/lab-technician/cube-tests/${resultId}/pdf-data`);
       await generateCubeTestPdf(data);
     } catch (err) { setError(err.message); }
+  }
+
+  function startDateEdit(r) {
+    setEditingDateFor(r.id);
+    // Local calendar date, not toISOString()'s UTC date — the app's home
+    // timezone is IST (UTC+5:30), so a result tested between 00:00-05:29
+    // IST has a UTC date one day earlier; pre-filling from that would let
+    // an admin silently save the wrong (earlier) day.
+    const d = new Date(r.tested_at);
+    const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    setDateDraft(local);
+  }
+
+  async function saveDate(resultId) {
+    if (!dateDraft) return;
+    setSavingDate(true); setError("");
+    try {
+      await apiRequest(`/lab-technician/cube-batches/${plantQcId}/results/${resultId}/date`, {
+        method: "PATCH",
+        body: { tested_at: dateDraft },
+      });
+      setEditingDateFor(null);
+      await loadDetail();
+    } catch (err) { setError(err.message); } finally { setSavingDate(false); }
   }
 
   if (!detail) return <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Loading…</div>;
@@ -250,9 +292,28 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
       {detail.results.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           {detail.results.map((r) => (
-            <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, marginBottom: 4 }}>
-              <span>{r.testing_age_days}-day — {Number(r.average_strength_mpa).toFixed(1)} MPa avg, tested by {r.tested_by_name}</span>
-              <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+            <div key={r.id} style={{ fontSize: 12, marginBottom: 8, borderBottom: "1px solid var(--concrete)", paddingBottom: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>{r.testing_age_days}-day — {Number(r.average_strength_mpa).toFixed(1)} MPa avg, tested by {r.tested_by_name}</span>
+                <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
+                <span>
+                  Tested on {fmtDate(r.tested_at)}{r.failure_type ? ` · Failure: ${r.failure_type}` : ""}
+                </span>
+                {isAdmin && editingDateFor !== r.id && (
+                  <button type="button" style={{ fontSize: 10.5, padding: "2px 6px" }} onClick={() => startDateEdit(r)}>Change date</button>
+                )}
+              </div>
+              {isAdmin && editingDateFor === r.id && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}>
+                  <input type="date" value={dateDraft} onChange={(e) => setDateDraft(e.target.value)} style={{ fontSize: 11 }} />
+                  <button type="button" style={{ fontSize: 10.5, padding: "2px 8px" }} disabled={savingDate} onClick={() => saveDate(r.id)}>
+                    {savingDate ? "Saving..." : "Save"}
+                  </button>
+                  <button type="button" style={{ fontSize: 10.5, padding: "2px 8px" }} onClick={() => setEditingDateFor(null)}>Cancel</button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -298,6 +359,19 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
             Average strength: <b>{avgStrength} MPa</b>
           </div>
         )}
+        <div>
+          <div style={{ color: "var(--slate)" }}>Type of failure (optional)</div>
+          <input
+            list="failure-type-options"
+            value={failureType}
+            onChange={(e) => setFailureType(e.target.value)}
+            placeholder="e.g. Cone, Shear — or describe what you observed"
+            style={{ width: "100%" }}
+          />
+          <datalist id="failure-type-options">
+            {FAILURE_TYPES.map((f) => <option key={f} value={f} />)}
+          </datalist>
+        </div>
         <div>
           <div style={{ color: "var(--slate)" }}>Remarks</div>
           <textarea rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} />

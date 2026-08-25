@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 
@@ -9,7 +8,7 @@ export default function QcEngineer() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [qcTicketId, setQcTicketId] = useState("");
-  const [qcForm, setQcForm] = useState({ slump_mm: "", temperature_c: "", number_of_cubes: 3, sample_ids: "", remarks: "" });
+  const [qcForm, setQcForm] = useState({ slump_mm: "", temperature_c: "", number_of_cubes: 0, sample_ids: "", remarks: "" });
 
   async function load() {
     try {
@@ -37,7 +36,7 @@ export default function QcEngineer() {
     try {
       await apiRequest(`/qc-engineer/${qcTicketId}/plant-qc`, { method: "POST", body: qcForm });
       setNotice("QC submitted, ticket moved to dispatched.");
-      setQcForm({ slump_mm: "", temperature_c: "", number_of_cubes: 3, sample_ids: "", remarks: "" });
+      setQcForm({ slump_mm: "", temperature_c: "", number_of_cubes: 0, sample_ids: "", remarks: "" });
       setQcTicketId("");
       load();
     } catch (err) {
@@ -131,10 +130,6 @@ export default function QcEngineer() {
         {pendingQc.length === 0 && (
           <div style={{ fontSize: 13, color: "var(--slate)", marginTop: 12 }}>No tickets waiting on QC right now.</div>
         )}
-
-        <Link to="/qc/raw-material-stock">
-          <button type="button" style={{ width: "100%", marginTop: 16 }}>Raw material stock entry →</button>
-        </Link>
       </div>
     </>
   );
