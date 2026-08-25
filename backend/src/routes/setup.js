@@ -1031,6 +1031,108 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (lead site-visit questionnaire fields, and a followup_actions log for follow-up threads).");
 
+    // Round 118 — Lab Technician role, mix designs, cube test results, PDF reports.
+    await pool.query(`DO $$ BEGIN
+      ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'lab_technician';
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS mix_designs (
+        id SERIAL PRIMARY KEY,
+        mix_grade_id INTEGER REFERENCES mix_grades(id) NOT NULL,
+        design_ref_code VARCHAR(40) NOT NULL UNIQUE,
+        mix_description VARCHAR(200),
+        fck_28day_mpa NUMERIC(5,1) NOT NULL,
+        std_deviation_mpa NUMERIC(4,1) NOT NULL,
+        target_mean_strength_mpa NUMERIC(6,2) GENERATED ALWAYS AS (fck_28day_mpa + 1.65 * std_deviation_mpa) STORED,
+        max_agg_size_mm INTEGER,
+        target_workability_mm VARCHAR(20),
+        design_density_kgm3 NUMERIC(7,1),
+        cement_kgm3 NUMERIC(6,1) NOT NULL,
+        fly_ash_kgm3 NUMERIC(6,1) NOT NULL DEFAULT 0,
+        total_binder_kgm3 NUMERIC(6,1) GENERATED ALWAYS AS (cement_kgm3 + fly_ash_kgm3) STORED,
+        free_water_kgm3 NUMERIC(6,1) NOT NULL,
+        wb_ratio NUMERIC(5,3) GENERATED ALWAYS AS (free_water_kgm3 / NULLIF(cement_kgm3 + fly_ash_kgm3, 0)) STORED,
+        fine_agg_kgm3 NUMERIC(6,1) NOT NULL,
+        coarse_20mm_kgm3 NUMERIC(6,1) NOT NULL,
+        coarse_12_5mm_kgm3 NUMERIC(6,1) NOT NULL,
+        total_aggregate_kgm3 NUMERIC(7,1) GENERATED ALWAYS AS (fine_agg_kgm3 + coarse_20mm_kgm3 + coarse_12_5mm_kgm3) STORED,
+        cement_type_source VARCHAR(120),
+        cement_sp_gr NUMERIC(4,2),
+        fly_ash_type_source VARCHAR(120),
+        fly_ash_sp_gr NUMERIC(4,2),
+        fine_agg_type_source VARCHAR(120),
+        fine_agg_sp_gr NUMERIC(4,2),
+        coarse_20mm_type_source VARCHAR(120),
+        coarse_20mm_sp_gr NUMERIC(4,2),
+        coarse_12_5mm_type_source VARCHAR(120),
+        coarse_12_5mm_sp_gr NUMERIC(4,2),
+        fine_moisture_pct NUMERIC(4,1),
+        fine_absorption_pct NUMERIC(4,1),
+        coarse_20mm_moisture_pct NUMERIC(4,1),
+        coarse_20mm_absorption_pct NUMERIC(4,1),
+        coarse_12_5mm_moisture_pct NUMERIC(4,1),
+        coarse_12_5mm_absorption_pct NUMERIC(4,1),
+        is_standard_for_grade BOOLEAN NOT NULL DEFAULT false,
+        status VARCHAR(20) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved')),
+        revision VARCHAR(10) NOT NULL DEFAULT '00',
+        notes TEXT,
+        created_by INTEGER REFERENCES users(id) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        approved_by INTEGER REFERENCES users(id),
+        approved_at TIMESTAMPTZ
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_mix_designs_standard_per_grade ON mix_designs(mix_grade_id)
+        WHERE is_standard_for_grade = true AND status = 'approved';
+      CREATE TABLE IF NOT EXISTS mix_design_admixtures (
+        id SERIAL PRIMARY KEY,
+        mix_design_id INTEGER REFERENCES mix_designs(id) ON DELETE CASCADE NOT NULL,
+        type_brand VARCHAR(120) NOT NULL,
+        dosage_pct_of_binder NUMERIC(5,2),
+        qty_kgm3 NUMERIC(6,2) NOT NULL,
+        sp_gr NUMERIC(4,2),
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_mix_design_admixtures_design ON mix_design_admixtures(mix_design_id);
+      CREATE TABLE IF NOT EXISTS mix_design_assignments (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        mix_grade_id INTEGER REFERENCES mix_grades(id) NOT NULL,
+        mix_design_id INTEGER REFERENCES mix_designs(id) NOT NULL,
+        assigned_by INTEGER REFERENCES users(id) NOT NULL,
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_by INTEGER REFERENCES users(id),
+        updated_at TIMESTAMPTZ,
+        UNIQUE (customer_id, mix_grade_id)
+      );
+      CREATE TABLE IF NOT EXISTS cube_test_results (
+        id SERIAL PRIMARY KEY,
+        plant_qc_id INTEGER REFERENCES plant_qc(id) NOT NULL,
+        testing_age_days INTEGER NOT NULL CHECK (testing_age_days IN (7, 28)),
+        mix_design_id INTEGER REFERENCES mix_designs(id),
+        average_weight_kg NUMERIC(6,3),
+        average_load_kn NUMERIC(7,2),
+        average_density_kgm3 NUMERIC(7,1),
+        average_strength_mpa NUMERIC(6,2),
+        remarks TEXT,
+        tested_by INTEGER REFERENCES users(id) NOT NULL,
+        tested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (plant_qc_id, testing_age_days)
+      );
+      CREATE TABLE IF NOT EXISTS cube_test_cubes (
+        id SERIAL PRIMARY KEY,
+        cube_test_result_id INTEGER REFERENCES cube_test_results(id) ON DELETE CASCADE NOT NULL,
+        cube_label VARCHAR(40) NOT NULL,
+        weight_kg NUMERIC(6,3),
+        testing_load_kn NUMERIC(7,2),
+        density_kgm3 NUMERIC(7,1),
+        strength_mpa NUMERIC(6,2),
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_cube_test_cubes_result ON cube_test_cubes(cube_test_result_id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS resolved_mix_design_id INTEGER REFERENCES mix_designs(id);
+    `);
+    log.push("Schema migration applied (lab_technician role; mix_designs — grade-independent mix design library with generated target-strength/W-B-ratio/totals fields, admixtures and assignments as separate tables; cube_test_results/cube_test_cubes — 7/28-day compressive strength results per cube batch; customer_orders.resolved_mix_design_id — the design an order actually resolved to at creation).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

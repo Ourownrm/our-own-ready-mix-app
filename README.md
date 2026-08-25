@@ -3641,3 +3641,75 @@ output forms.
 ### Migration note
 None — no schema or backend change, display-only. Verified with a full `npm run build`
 (clean, no errors).
+
+## Hundred-and-fifth round (App 118 / Ver. 9.28) — Lab Technician role, mix designs, cube test results, PDF reports
+
+Coded up the Lab Technician mockup work from the last two design rounds for real. Scoped
+this to Lab Technician + mix designs + PDFs specifically (business's own choice — CMS
+screens for Services/Technical Writings/Brochure and customer-facing quick fixes are
+deferred to later rounds).
+
+New `lab_technician` role (enum value + `ROLES`/`ROLE_HOME`/`ROLE_LABEL` entries + its own
+`/lab-technician` route), separate from QC Engineer — QC Engineer keeps doing plant-side
+fresh-concrete QC (slump/temp, cube casting) exactly as before; a "cube batch" is just a
+`plant_qc` row that already has cubes cast (`number_of_cubes > 0`), nothing new captured at
+casting time. Lab Technician owns everything downstream:
+
+- **Cube compressive-strength testing** — per-batch 7-day/28-day result entry
+  (`POST /lab-technician/cube-batches/:plantQcId/results`), with per-cube weight/load
+  entered and weight→density, load→strength, and the batch average always **recomputed
+  server-side** from the posted cubes (never trusted from the client), so the stored
+  average can never drift from what the per-cube rows say. Batch due-status
+  (`overdue`/`due_today`/`upcoming`/`done`) is computed in SQL against `CURRENT_DATE`, not
+  in JS — recurring bug pattern #1.
+- **Mix design library** — full entry form matching the mix design file business supplied
+  (repeatable admixtures — a design can carry more than one, e.g. a superplasticizer plus a
+  retarder — moisture/absorption per aggregate fraction, and the full 5-material table), plus
+  a second-person approval step (`POST /mix-designs/:id/approve` — a design's own creator
+  can't approve it). Target mean strength, total binder, W/B ratio, and total aggregate are
+  all Postgres `GENERATED ALWAYS AS (...) STORED` columns — deliberately, so these can never
+  drift from their inputs the way an earlier mockup review round caught the design-density
+  arithmetic not actually summing correctly.
+- **Many-to-one mix design ↔ customer assignment** — round 117's mockup feedback question
+  ("how does assign to customer work — one mix design can have multiple customers?") answered
+  for real: `mix_design_assignments` is one row per customer+grade (`UNIQUE (customer_id,
+  mix_grade_id)`), not one row per design, so several customers routinely point at the same
+  shared design. New Administrator/Manager screen ("Approved Mix Assignments", added to all
+  three Masters menus — Administrator, Reports, ManagerDashboard — recurring pattern #7) shows
+  a "Shared · N customers" badge via a `design_shared_count` subquery, matches the mockup.
+  `customer_orders.resolved_mix_design_id` is now actually resolved and stored at order
+  creation (`orders.js`'s `POST /` — customer-specific assignment first, else the grade's
+  `is_standard_for_grade` design) — recurring pattern #9, a written column that's never
+  actually wired into the write path it's meant to snapshot.
+- **Two PDF reports**, client-side jsPDF vector drawing exactly like `deliveryChallanPdf.js`
+  (`frontend/src/lib/mixDesignPdf.js`, `cubeTestPdf.js`) — Mix Design Summary and Cube Test
+  Report, matching the confirmed mockups' navy/red visual language. Both render only real
+  columns from their `GET .../pdf-data` endpoints; fields the mockup showed but the schema
+  has no column for (pouring location, compaction method, casting slump, casting technician,
+  type of failure) were deliberately left out rather than invented.
+- Informational note on Create Order (`GET /master/resolve-mix-design`) showing which design
+  a customer+grade will resolve to — same resolution `orders.js` applies, purely informational,
+  never blocks placing the order.
+
+Spawned a review pass before calling this done (this is production code, not a mockup).
+Caught and fixed two real bugs pre-ship: `GET /lab-technician/mix-designs/:id/pdf-data` wasn't
+joining `users cu ON cu.id = md.created_by` even though the PDF reads `created_by_name`; and
+`GET /lab-technician/cube-batches` — the query the Cube Testing tab loads by default —
+referenced `r7`/`r28` result-table aliases in its `SELECT`/`CASE` without ever joining them,
+which would have 500'd on every call. Both fixed.
+
+**Known gap, not addressed this round:** the mockups for a customer-facing module (sign-in,
+My Orders, QC Reports) assumed an authenticated customer account system. Checked the real app
+— no customer login/JWT issuance/customer-scoped routes exist anywhere; all customer-facing
+access today is via public, unauthenticated per-order/per-booking token links (`/track/:token`,
+`/book/:token`). Whoever picks up customer-facing PDF viewing next needs to decide: build real
+customer auth, or extend the token-link pattern to cover PDF report access too.
+
+### Migration note
+Run `/setup` after deploying — adds the `lab_technician` enum value, five new tables
+(`mix_designs`, `mix_design_admixtures`, `mix_design_assignments`, `cube_test_results`,
+`cube_test_cubes`), and `customer_orders.resolved_mix_design_id`. No live Postgres instance
+available in this environment to smoke-test the migration against, so treat `/setup` on
+deploy as the first real run — same caveat as prior rounds without a local DB available.
+Frontend verified with a full `npm run build` (clean, no errors) and every touched/new
+backend route file verified with `node --check`.

@@ -967,4 +967,77 @@ router.patch("/site-contacts/:id", requireRole("administrator"), async (req, res
 // data to be Manager's, not Administrator's, to manage. See that file for
 // GET/POST/PATCH /api/maintenance/action-points.
 
+// ===== Approved mix assignments (round 118) =====
+// Which specific mix design a customer's order for a given grade actually
+// resolves to — see mix_design_assignments in schema.sql. One design (e.g.
+// "025-B") is routinely shared across several customer rows; this list is
+// customer-centric (one row per customer+grade override), not design-centric.
+router.get("/mix-design-assignments", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT a.id, a.customer_id, c.name AS customer_name, a.mix_grade_id, m.name AS mix_grade_name,
+            a.mix_design_id, md.design_ref_code, a.assigned_at,
+            (SELECT COUNT(*) FROM mix_design_assignments a2 WHERE a2.mix_design_id = a.mix_design_id) AS design_shared_count
+     FROM mix_design_assignments a
+     JOIN customers c ON c.id = a.customer_id
+     JOIN mix_grades m ON m.id = a.mix_grade_id
+     JOIN mix_designs md ON md.id = a.mix_design_id
+     ORDER BY c.name, m.name`
+  );
+  res.json(rows);
+});
+
+// Upsert on (customer_id, mix_grade_id) — assigning again for the same
+// customer+grade updates the existing link rather than creating a second one.
+router.post("/mix-design-assignments", requireRole("administrator", "manager"), async (req, res) => {
+  const { customer_id, mix_grade_id, mix_design_id } = req.body;
+  if (!customer_id || !mix_grade_id || !mix_design_id) {
+    return res.status(400).json({ error: "Customer, grade, and mix design are all required." });
+  }
+  const { rows: designCheck } = await query(
+    "SELECT id, mix_grade_id, status FROM mix_designs WHERE id = $1", [mix_design_id]
+  );
+  if (!designCheck.length || designCheck[0].status !== "approved") {
+    return res.status(400).json({ error: "Only an approved mix design can be assigned." });
+  }
+  if (Number(designCheck[0].mix_grade_id) !== Number(mix_grade_id)) {
+    return res.status(400).json({ error: "That mix design is for a different grade." });
+  }
+  const { rows } = await query(
+    `INSERT INTO mix_design_assignments (customer_id, mix_grade_id, mix_design_id, assigned_by)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (customer_id, mix_grade_id) DO UPDATE SET
+       mix_design_id = $3, updated_by = $4, updated_at = now()
+     RETURNING id`,
+    [customer_id, mix_grade_id, mix_design_id, req.user.id]
+  );
+  res.status(201).json({ id: rows[0].id });
+});
+
+router.delete("/mix-design-assignments/:id", requireRole("administrator", "manager"), async (req, res) => {
+  await query("DELETE FROM mix_design_assignments WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+// Sets (or clears) a mix design as the default/"standard" design for its
+// grade — used whenever a customer+grade has no specific assignment. Only
+// one design per grade can hold this at a time (enforced by a partial unique
+// index too); setting a new one here first clears whichever design already
+// held it for that grade.
+router.patch("/mix-designs/:id/standard", requireRole("administrator", "manager"), async (req, res) => {
+  const { is_standard } = req.body;
+  const { rows } = await query("SELECT id, mix_grade_id, status FROM mix_designs WHERE id = $1", [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: "Mix design not found." });
+  if (is_standard && rows[0].status !== "approved") {
+    return res.status(400).json({ error: "Only an approved mix design can be made the standard for its grade." });
+  }
+  if (is_standard) {
+    await query(
+      "UPDATE mix_designs SET is_standard_for_grade = false WHERE mix_grade_id = $1 AND id != $2",
+      [rows[0].mix_grade_id, req.params.id]
+    );
+  }
+  await query("UPDATE mix_designs SET is_standard_for_grade = $1 WHERE id = $2", [!!is_standard, req.params.id]);
+  res.json({ ok: true });
+});
+
 export default router;

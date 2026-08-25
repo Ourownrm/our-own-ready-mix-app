@@ -116,6 +116,29 @@ router.get("/mix-grades", async (req, res) => {
   res.json(rows);
 });
 
+// Round 118 — lets Create Order show an informational note about which mix
+// design a customer+grade will actually resolve to, before the order is even
+// submitted (same resolution logic as orders.js's own INSERT). Returns
+// nothing (design: null) rather than an error when no design is on file yet
+// for this grade — that's the normal, unremarkable case for most grades
+// today, not a problem to surface.
+router.get("/resolve-mix-design", async (req, res) => {
+  const { customer_id, mix_grade_id } = req.query;
+  if (!customer_id || !mix_grade_id) return res.json({ design: null });
+  const { rows } = await query(
+    `SELECT md.id, md.design_ref_code,
+            (a.id IS NOT NULL) AS is_customer_specific
+     FROM mix_designs md
+     LEFT JOIN mix_design_assignments a ON a.mix_design_id = md.id AND a.customer_id = $1 AND a.mix_grade_id = $2
+     WHERE md.id = COALESCE(
+       (SELECT mix_design_id FROM mix_design_assignments WHERE customer_id = $1 AND mix_grade_id = $2),
+       (SELECT id FROM mix_designs WHERE mix_grade_id = $2 AND is_standard_for_grade = true AND status = 'approved')
+     )`,
+    [customer_id, mix_grade_id]
+  );
+  res.json({ design: rows[0] || null });
+});
+
 router.get("/trucks", async (req, res) => {
   // Round 98, item 10 sub-requirement 3 — a truck currently away at an
   // external workshop (external_repairs.status = 'sent_out') can't be

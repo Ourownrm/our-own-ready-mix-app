@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OORM — Customer Concrete Booking Form (mockup)</title>
+<style>
+  :root {
+    --concrete: #F3F1EC;
+    --charcoal: #22262B;
+    --slate: #5B6470;
+    --rebar: #C75B12;
+    --rebar-dark: #A94B0C;
+    --signal-green: #1D7A55;
+    --signal-green-bg: #E4F2EC;
+    --alert-red: #B03A2E;
+    --alert-red-bg: #F8E9E7;
+    --amber: #9C6B12;
+    --amber-bg: #F5EDDD;
+    --info: #2A6F97;
+    --info-bg: #E3EEF4;
+    --violet: #6B4C9A;
+    --violet-bg: #ECE6F3;
+    --surface: #FFFFFF;
+    --border: #DEDAD1;
+    --border-strong: #C8C2B5;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(34, 38, 43, 0.06), 0 1px 8px rgba(34, 38, 43, 0.04);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--charcoal);
+    background: var(--concrete);
+    font-size: 14px;
+  }
+  .note-banner {
+    background: var(--charcoal); color: #fff; font-size: 12.5px; text-align: center;
+    padding: 8px 16px; line-height: 1.6;
+  }
+  .note-banner b { color: #FFD9B3; }
+  .app-shell { max-width: 1080px; margin: 0 auto; padding: 0 0 60px; }
+  .flow-strip {
+    display: flex; gap: 8px; padding: 18px 20px 0; flex-wrap: wrap;
+  }
+  .flow-step {
+    flex: 1; min-width: 180px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 12px; cursor: pointer; transition: all .15s ease;
+    box-shadow: var(--shadow);
+  }
+  .flow-step .num {
+    display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--concrete); color: var(--slate); font-size: 11px; font-weight: 700;
+    margin-right: 6px;
+  }
+  .flow-step.active { border-color: var(--rebar); box-shadow: 0 0 0 2px rgba(199,91,18,0.15); }
+  .flow-step.active .num { background: var(--rebar); color: #fff; }
+  .flow-step .title { font-weight: 600; font-size: 12.5px; }
+  .flow-step .sub { font-size: 11px; color: var(--slate); margin-top: 3px; margin-left: 26px; }
+
+  .panel { padding: 20px; }
+  .panel h2 { font-size: 16px; margin: 0 0 4px; }
+  .panel .lede { font-size: 12.5px; color: var(--slate); margin: 0 0 16px; max-width: 680px; line-height: 1.5; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700;
+    padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .3px;
+  }
+  .badge-pending { background: var(--amber-bg); color: var(--amber); }
+  .badge-accepted { background: var(--signal-green-bg); color: var(--signal-green); }
+  .badge-declined { background: var(--alert-red-bg); color: var(--alert-red); }
+  .badge-converted { background: var(--info-bg); color: var(--info); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--slate); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
+  tr:last-child td { border-bottom: none; }
+
+  label.field { display: block; margin-bottom: 12px; }
+  label.field .lbl { font-size: 12px; color: var(--slate); margin-bottom: 4px; display: block; }
+  input, select, textarea {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
+    font-size: 13.5px; font-family: inherit; background: var(--surface); color: var(--charcoal);
+  }
+  input:disabled, select:disabled { background: var(--concrete); color: var(--slate); }
+  textarea { resize: vertical; min-height: 60px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border-strong);
+    background: var(--surface); color: var(--charcoal); font-weight: 600; font-size: 13.5px; cursor: pointer;
+  }
+  .btn-primary { background: var(--rebar); border-color: var(--rebar); color: #fff; }
+  .btn-primary:hover { background: var(--rebar-dark); }
+  .btn-danger { background: var(--alert-red); border-color: var(--alert-red); color: #fff; }
+  .btn-ghost { background: transparent; border-color: transparent; color: var(--slate); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* Customer-facing phone frame */
+  .phone-wrap { display: flex; justify-content: center; padding: 10px 0 30px; }
+  .phone {
+    width: 380px; min-height: 640px; background: var(--concrete); border-radius: 26px;
+    border: 8px solid #1a1c1f; box-shadow: 0 12px 30px rgba(0,0,0,0.18); overflow: hidden;
+  }
+  .phone-topbar {
+    background: var(--charcoal); color: #fff; padding: 14px 16px;
+  }
+  .phone-topbar .co { font-weight: 700; font-size: 14px; }
+  .phone-topbar .sub { font-size: 11px; color: #B8BFC7; margin-top: 2px; }
+  .phone-body { padding: 14px 16px 24px; }
+
+  .stage-track { display: flex; align-items: flex-start; margin: 18px 0 6px; }
+  .stage { flex: 1; text-align: center; position: relative; }
+  .stage .dot {
+    width: 26px; height: 26px; border-radius: 50%; margin: 0 auto 6px; display: flex; align-items: center;
+    justify-content: center; font-size: 13px; font-weight: 700; background: var(--border); color: var(--slate);
+  }
+  .stage .line { position: absolute; top: 13px; left: -50%; width: 100%; height: 2px; background: var(--border); z-index: -1; }
+  .stage:first-child .line { display: none; }
+  .stage .lbl2 { font-size: 10px; color: var(--slate); font-weight: 600; line-height: 1.3; }
+  .stage.done .dot { background: var(--signal-green); color: #fff; }
+  .stage.done .line { background: var(--signal-green); }
+  .stage.current .dot { background: var(--rebar); color: #fff; box-shadow: 0 0 0 4px rgba(199,91,18,0.15); }
+  .stage.current .lbl2 { color: var(--rebar); }
+  .stage.declined .dot { background: var(--alert-red); color: #fff; }
+  .stage.declined .lbl2 { color: var(--alert-red); }
+
+  .terms-box {
+    max-height: 90px; overflow-y: auto; font-size: 11px; color: var(--slate); line-height: 1.5;
+    background: var(--concrete); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
+  }
+  .check-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--charcoal); }
+  .check-row input { width: auto; margin-top: 2px; }
+
+  .kv { display: flex; justify-content: space-between; font-size: 12.5px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+  .kv:last-child { border-bottom: none; }
+  .kv .k { color: var(--slate); }
+  .kv .v { font-weight: 600; }
+
+  .link-box {
+    display: flex; gap: 8px; align-items: center; background: var(--concrete); border: 1px dashed var(--border-strong);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; font-family: ui-monospace, monospace; color: var(--info);
+    word-break: break-all;
+  }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--charcoal); color: #fff;
+    padding: 10px 18px; border-radius: 8px; font-size: 12.5px; opacity: 0; pointer-events: none; transition: opacity .2s ease;
+    box-shadow: var(--shadow); z-index: 50;
+  }
+  .toast.show { opacity: 1; }
+  .hint { font-size: 11px; color: var(--slate); margin-top: 4px; }
+  .section-title { font-weight: 600; font-size: 13px; margin: 18px 0 8px; }
+  .section-title:first-child { margin-top: 0; }
+</style>
+</head>
+<body>
+
+<div class="note-banner">
+  🧪 <b>Mockup — sample data only, nothing here is wired to the real system.</b>
+  Fields shown are based on what Create Order already captures today (grade, quantity, pump, site contact, casting
+  location, etc.). Since this link only goes to customers who already have a signed supply agreement, the form no
+  longer carries its own Terms &amp; Conditions block — just a one-line reference to that agreement (see Tab 2).
+</div>
+
+<div class="app-shell">
+  <div class="flow-strip">
+    <div class="flow-step active" data-tab="link"><span class="num">1</span><span class="title">Generate booking link</span><div class="sub">Manager/Admin — one link per customer + site</div></div>
+    <div class="flow-step" data-tab="form"><span class="num">2</span><span class="title">Customer fills the form</span><div class="sub">What the customer sees on their phone</div></div>
+    <div class="flow-step" data-tab="queue"><span class="num">3</span><span class="title">Manager reviews &amp; converts</span><div class="sub">Appears in Manager Dashboard</div></div>
+    <div class="flow-step" data-tab="status"><span class="num">4</span><span class="title">Customer sees status</span><div class="sub">Accepted — with date &amp; time</div></div>
+  </div>
+
+  <!-- ============ TAB 1: GENERATE LINK ============ -->
+  <div class="panel tab-panel" id="tab-link">
+    <h2>Generate a booking link</h2>
+    <p class="lede">
+      Same pattern the app already uses for customer delivery-tracking links: an unguessable token scoped to exactly
+      one customer + one site, no login required. Manager or Administrator creates it once per project and shares it
+      over WhatsApp/SMS — the customer never sees or picks any other customer's data.
+    </p>
+    <div class="card" style="max-width: 480px;">
+      <label class="field">
+        <span class="lbl">Customer</span>
+        <select disabled><option>Sunrise Builders Pvt Ltd</option></select>
+      </label>
+      <label class="field">
+        <span class="lbl">Site / Project</span>
+        <select disabled><option>Sunrise Heights — Phase 2, Aluva</option></select>
+      </label>
+      <label class="field">
+        <span class="lbl">Link stays valid until</span>
+        <input type="text" disabled value="Revoked manually by Manager, or 90 days of inactivity" />
+      </label>
+      <div class="check-row" style="margin-bottom:14px; align-items:center;">
+        <input type="checkbox" id="f_tracking_toggle" onchange="showToast(this.checked ? 'Delivery status tracking enabled on this link (mock)' : 'Delivery status tracking turned off for this link (mock)')" />
+        <label for="f_tracking_toggle">
+          Also let this customer see live delivery status (the truck tracker you already built) on this same link,
+          once an order is created from it.
+        </label>
+      </div>
+      <div class="hint" style="margin:-8px 0 14px;">Off by default — turn on per customer/site if you want tracking bundled into this same link instead of sharing a separate one.</div>
+      <button class="btn btn-primary" style="width:100%" onclick="showToast('Link generated (mock)')">Generate link</button>
+      <div class="hint" style="margin-bottom:6px;">Generated link:</div>
+      <div class="link-box">https://oorm.app/book/8f2a1c9d-sunrise-heights-p2</div>
+    </div>
+
+    <div class="section-title" style="margin-top:26px;">Active links</div>
+    <p class="lede" style="margin-top:-4px;">
+      The booking link and the delivery-status view are two separate switches per link — you can turn tracking off
+      (or back on) any time without touching the booking link itself, and the booking link keeps working either way.
+      Revoke kills both, since without the link there's nothing to show.
+    </p>
+    <div class="card" style="padding:0; overflow:hidden; max-width:820px;">
+      <table>
+        <thead><tr><th>Customer / Site</th><th>Link</th><th>Tracking</th><th></th></tr></thead>
+        <tbody>
+          <tr id="linkRow-1">
+            <td><b>Sunrise Builders</b><br/><span style="color:var(--slate);font-size:11.5px;">Sunrise Heights — Phase 2</span></td>
+            <td><span style="font-family:ui-monospace,monospace;font-size:11.5px;color:var(--info);">.../book/8f2a1c9d-…</span></td>
+            <td><span class="badge badge-accepted" id="linkTrackBadge-1">Tracking ON</span></td>
+            <td>
+              <button class="btn" style="padding:5px 10px;font-size:11.5px;" onclick="toggleLinkTracking(1)">Turn tracking off</button>
+              <button class="btn btn-danger" style="padding:5px 10px;font-size:11.5px;" onclick="showToast('Link revoked — booking form and tracking both stop working (mock)')">Revoke link</button>
+            </td>
+          </tr>
+          <tr id="linkRow-2">
+            <td><b>Coastal Infra</b><br/><span style="color:var(--slate);font-size:11.5px;">Marine Drive Extension</span></td>
+            <td><span style="font-family:ui-monospace,monospace;font-size:11.5px;color:var(--info);">.../book/3e91bd7a-…</span></td>
+            <td><span class="badge" style="background:var(--concrete);color:var(--slate);" id="linkTrackBadge-2">Tracking OFF</span></td>
+            <td>
+              <button class="btn" style="padding:5px 10px;font-size:11.5px;" onclick="toggleLinkTracking(2)">Turn tracking on</button>
+              <button class="btn btn-danger" style="padding:5px 10px;font-size:11.5px;" onclick="showToast('Link revoked — booking form and tracking both stop working (mock)')">Revoke link</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ TAB 2: CUSTOMER FORM ============ -->
+  <div class="panel tab-panel" id="tab-form" style="display:none;">
+    <h2>Customer booking form</h2>
+    <p class="lede">
+      What opens when the customer taps the link above. Customer and site are locked in (read-only) since the link
+      is already scoped to them — the customer only fills in what's specific to this pour.
+    </p>
+    <div class="phone-wrap">
+      <div class="phone">
+        <div class="phone-topbar">
+          <div class="co">Our Own Ready Mix</div>
+          <div class="sub">Request concrete — Sunrise Heights, Phase 2</div>
+        </div>
+        <div class="phone-body" id="formBody">
+          <label class="field">
+            <span class="lbl">Customer</span>
+            <input type="text" disabled value="Sunrise Builders Pvt Ltd" />
+          </label>
+          <label class="field">
+            <span class="lbl">Site / project</span>
+            <input type="text" disabled value="Sunrise Heights — Phase 2, Aluva" />
+          </label>
+          <div class="grid2">
+            <label class="field">
+              <span class="lbl">Date required</span>
+              <input type="date" id="f_date" value="2026-08-25" />
+            </label>
+            <label class="field">
+              <span class="lbl">Preferred time</span>
+              <input type="time" id="f_time" value="09:30" />
+            </label>
+          </div>
+          <div class="grid2">
+            <label class="field">
+              <span class="lbl">Grade of concrete</span>
+              <select id="f_grade">
+                <option>M15</option><option selected>M20</option><option>M25</option><option>M30</option><option>M35</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="lbl">Quantity (m³)</span>
+              <input type="number" id="f_qty" value="24" />
+            </label>
+          </div>
+          <label class="field">
+            <span class="lbl">Pump required?</span>
+            <select id="f_pump">
+              <option>No pump — direct pour</option>
+              <option selected>Boom pump</option>
+              <option>Line pump</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="lbl">Structure / casting location</span>
+            <input type="text" id="f_loc" value="Column &amp; slab — Block A, 2nd floor" />
+          </label>
+          <div class="grid2">
+            <label class="field">
+              <span class="lbl">Site contact name</span>
+              <input type="text" id="f_cname" value="Rejeesh Kumar" />
+            </label>
+            <label class="field">
+              <span class="lbl">Site contact phone</span>
+              <input type="text" id="f_cphone" value="98470 XXXXX" />
+            </label>
+          </div>
+          <label class="field">
+            <span class="lbl">Special instructions (optional)</span>
+            <textarea id="f_remarks">Access road narrow after 6pm — please plan trucks before that.</textarea>
+          </label>
+
+          <div class="hint" style="margin-top:2px; line-height:1.5;">
+            This order will be governed by the Terms &amp; Conditions of your existing Supply Agreement with Our Own
+            Ready Mix.
+          </div>
+
+          <button class="btn btn-primary" style="width:100%; margin-top:14px;" onclick="submitBooking()">Send booking request</button>
+        </div>
+        <div class="phone-body" id="formSubmitted" style="display:none; text-align:center; padding-top:50px;">
+          <div style="font-size:40px;">✅</div>
+          <div style="font-weight:700; font-size:15px; margin:10px 0 4px;">Request sent</div>
+          <div style="font-size:12.5px; color:var(--slate); line-height:1.6;">
+            Our Own Ready Mix will review this and confirm a scheduled date &amp; time. You'll be able to check the
+            status on this same link.
+          </div>
+          <button class="btn" style="margin-top:16px;" onclick="resetForm()">Fill another request</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TAB 3: MANAGER QUEUE ============ -->
+  <div class="panel tab-panel" id="tab-queue" style="display:none;">
+    <h2>Manager Dashboard — Incoming booking requests</h2>
+    <p class="lede">
+      A new panel on the Manager Dashboard (alongside today's orders). Manager reviews each request, can adjust the
+      scheduled date/time before confirming, and converting fills a normal Create Order form with everything the
+      customer already gave — Manager just fills in the internal fields (truck interval, pump crew, supervisor) and saves.
+    </p>
+    <div class="card" style="padding:0; overflow:hidden; margin-bottom:16px;">
+      <table>
+        <thead><tr><th></th><th>Customer / Site</th><th>Requested</th><th>Grade</th><th>Qty</th><th>Pump</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          <tr>
+            <td style="font-size:16px;">🆕</td>
+            <td><b>Sunrise Builders</b><br/><span style="color:var(--slate);font-size:11.5px;">Sunrise Heights — Phase 2</span></td>
+            <td>25 Aug, 09:30</td>
+            <td>M20</td>
+            <td>24 m³</td>
+            <td>Boom pump</td>
+            <td><span class="badge badge-pending">Pending</span></td>
+            <td><button class="btn btn-primary" style="padding:6px 12px;font-size:12px;" onclick="openReview()">Review</button></td>
+          </tr>
+          <tr>
+            <td></td>
+            <td><b>Greenfield Developers</b><br/><span style="color:var(--slate);font-size:11.5px;">Greenfield Villas — Site 4</span></td>
+            <td>24 Aug, 14:00</td>
+            <td>M25</td>
+            <td>12 m³</td>
+            <td>No pump</td>
+            <td><span class="badge badge-accepted">Accepted</span></td>
+            <td><span style="font-size:11.5px;color:var(--slate);">Scheduled 24 Aug, 14:30</span></td>
+          </tr>
+          <tr>
+            <td></td>
+            <td><b>Coastal Infra</b><br/><span style="color:var(--slate);font-size:11.5px;">Marine Drive Extension</span></td>
+            <td>23 Aug, 07:00</td>
+            <td>M30</td>
+            <td>40 m³</td>
+            <td>Line pump</td>
+            <td><span class="badge badge-converted">Converted → Order #1042</span></td>
+            <td><span style="font-size:11.5px;color:var(--slate);">🚚 Tracking on for this link</span></td>
+          </tr>
+          <tr>
+            <td></td>
+            <td><b>Sunrise Builders</b><br/><span style="color:var(--slate);font-size:11.5px;">Sunrise Heights — Phase 1</span></td>
+            <td>21 Aug, 10:00</td>
+            <td>M20</td>
+            <td>8 m³</td>
+            <td>No pump</td>
+            <td><span class="badge badge-declined">Declined</span></td>
+            <td><span style="font-size:11.5px;color:var(--slate);">Batching plant fully booked that slot</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card" id="reviewPanel" style="display:none; max-width:640px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <div>
+          <div style="font-weight:700; font-size:14px;">Sunrise Builders — Sunrise Heights, Phase 2</div>
+          <div style="font-size:11.5px; color:var(--slate); margin-top:2px;">Submitted 20 Aug, 4:12 PM · via booking link</div>
+        </div>
+        <button class="btn btn-ghost" onclick="closeReview()" style="padding:2px 8px;">✕</button>
+      </div>
+
+      <div class="section-title" style="margin-top:14px;">What the customer gave</div>
+      <div style="margin-bottom:6px;">
+        <div class="kv"><span class="k">Grade</span><span class="v">M20</span></div>
+        <div class="kv"><span class="k">Quantity</span><span class="v">24 m³</span></div>
+        <div class="kv"><span class="k">Pump type</span><span class="v">Boom pump</span></div>
+        <div class="kv"><span class="k">Casting location</span><span class="v">Block A, 2nd floor</span></div>
+        <div class="kv"><span class="k">Site contact</span><span class="v">Rejeesh Kumar · 98470 XXXXX</span></div>
+        <div class="kv"><span class="k">Customer requested</span><span class="v">25 Aug, 09:30</span></div>
+      </div>
+
+      <div class="section-title">Complete the order</div>
+      <p class="hint" style="margin:-2px 0 8px;">
+        Same fields as today's Create Order screen — this is exactly that form, just pre-filled with what the
+        customer already gave above. Fill in the rest before accepting; nothing about this is locked to what the
+        customer submitted.
+      </p>
+      <div class="grid2">
+        <label class="field"><span class="lbl">Order date</span><input type="date" value="2026-08-25" /></label>
+        <label class="field"><span class="lbl">Scheduled batching time</span><input type="time" value="10:00" /></label>
+        <label class="field"><span class="lbl">Truck dispatch interval (min)</span><input type="number" value="20" /></label>
+        <label class="field"><span class="lbl">Which pump</span>
+          <select required>
+            <option value="">Select</option>
+            <option selected>Boom Pump — BP-04</option>
+            <option>Boom Pump — BP-07</option>
+          </select>
+        </label>
+        <label class="field"><span class="lbl">Site technician required</span>
+          <select><option>No</option><option selected>Yes</option></select>
+        </label>
+        <label class="field"><span class="lbl">Cube samples required</span><input type="number" value="3" /></label>
+        <label class="field"><span class="lbl">Assigned pump crew</span><input type="text" placeholder="e.g. Suresh + 2" /></label>
+        <label class="field"><span class="lbl">Assigned site supervisor</span>
+          <select><option value="">Select</option><option selected>Manoj P.</option><option>Ajith Kumar</option></select>
+        </label>
+        <label class="field"><span class="lbl">Sales representative</span>
+          <select><option value="">Select</option><option selected>Deepa Nair</option></select>
+        </label>
+        <label class="field"><span class="lbl">Specified slump (mm)</span><input type="number" value="100" /></label>
+        <label class="field"><span class="lbl">Pump departure time</span><input type="time" value="09:15" /></label>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn btn-primary" onclick="showToast('Order created with customer + manager details, this request marked Converted (mock)')">Accept &amp; create order</button>
+        <button class="btn btn-danger" onclick="showToast('Would prompt for a decline reason (mock)')">Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TAB 4: CUSTOMER STATUS ============ -->
+  <div class="panel tab-panel" id="tab-status" style="display:none;">
+    <h2>Customer status view</h2>
+    <p class="lede">
+      The same link the customer used to submit the request. Once Manager acts on it, reopening the link shows this
+      instead of the form — the confirmed date &amp; time is front and center, since that's what the customer most needs
+      to plan around on site.
+    </p>
+    <div class="phone-wrap">
+      <div class="phone">
+        <div class="phone-topbar">
+          <div class="co">Our Own Ready Mix</div>
+          <div class="sub">Booking status — Sunrise Heights, Phase 2</div>
+        </div>
+        <div class="phone-body">
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button class="btn" style="flex:1; padding:6px;font-size:11.5px;" onclick="setStatusDemo('pending')">Pending</button>
+            <button class="btn" style="flex:1; padding:6px;font-size:11.5px;" onclick="setStatusDemo('accepted')">Accepted</button>
+            <button class="btn" style="flex:1; padding:6px;font-size:11.5px;" onclick="setStatusDemo('declined')">Declined</button>
+          </div>
+          <div class="check-row" style="margin-bottom:16px; align-items:center;">
+            <input type="checkbox" id="statusTrackingToggle" checked onchange="setStatusDemo(currentStatusDemo)" />
+            <label for="statusTrackingToggle" style="font-size:11px;">Simulate: Manager enabled delivery-status tracking for this link</label>
+          </div>
+
+          <div class="stage-track" id="statusTrack">
+            <div class="stage done" data-s="0"><div class="dot">✓</div><div class="lbl2">Request<br/>sent</div></div>
+            <div class="stage current" data-s="1"><div class="line"></div><div class="dot">●</div><div class="lbl2">Under<br/>review</div></div>
+            <div class="stage" data-s="2"><div class="line"></div><div class="dot">3</div><div class="lbl2">Scheduled</div></div>
+            <div class="stage" data-s="3"><div class="line"></div><div class="dot">4</div><div class="lbl2">Delivered</div></div>
+          </div>
+
+          <div class="card" id="statusCard" style="margin-top:16px; text-align:center; background:var(--amber-bg); border-color:transparent;">
+            <div style="font-weight:700; color:var(--amber);" id="statusHeadline">Under review</div>
+            <div style="font-size:12px; color:var(--charcoal); margin-top:4px;" id="statusBody">
+              We've received your request for 25 Aug, 09:30. You'll be notified here once it's confirmed.
+            </div>
+          </div>
+
+          <div style="margin-top:16px;">
+            <div class="kv"><span class="k">Grade</span><span class="v">M20 · 24 m³</span></div>
+            <div class="kv"><span class="k">Pump</span><span class="v">Boom pump</span></div>
+            <div class="kv"><span class="k">Requested</span><span class="v">25 Aug, 09:30</span></div>
+          </div>
+
+          <div id="liveTrackingBlock" style="display:none; margin-top:18px;">
+            <div class="section-title">Live delivery status</div>
+            <div class="card" style="padding:12px;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-weight:700; font-size:13px;">🚚 KL-01-AA-1042</div>
+                <span class="badge" style="background:var(--amber-bg); color:var(--amber);">At site</span>
+              </div>
+              <div class="stage-track" style="margin:14px 0 4px;">
+                <div class="stage done" data-s="0"><div class="dot">✓</div><div class="lbl2">Left<br/>Plant</div></div>
+                <div class="stage current" data-s="1"><div class="line"></div><div class="dot">●</div><div class="lbl2">At<br/>Site</div></div>
+                <div class="stage" data-s="2"><div class="line"></div><div class="dot">3</div><div class="lbl2">Unloading</div></div>
+                <div class="stage" data-s="3"><div class="line"></div><div class="dot">4</div><div class="lbl2">Delivered</div></div>
+              </div>
+              <div class="hint" style="margin-top:8px;">6 m³ · left plant 09:52 AM · reached site 10:07 AM</div>
+            </div>
+            <div class="hint" style="margin-top:8px; text-align:center;">
+              This reuses the same truck-by-truck tracker as your existing per-order tracking link — bundled into this
+              one link instead of a second one, since Manager turned it on above.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  function switchTab(id, btn) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+    document.getElementById('tab-' + id).style.display = 'block';
+    document.querySelectorAll('.flow-step').forEach(s => s.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+  }
+  document.querySelectorAll('.flow-step').forEach(el => {
+    el.addEventListener('click', () => switchTab(el.getAttribute('data-tab'), el));
+  });
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  function submitBooking() {
+    document.getElementById('formBody').style.display = 'none';
+    document.getElementById('formSubmitted').style.display = 'block';
+  }
+  function resetForm() {
+    document.getElementById('formBody').style.display = 'block';
+    document.getElementById('formSubmitted').style.display = 'none';
+  }
+
+  function openReview() { document.getElementById('reviewPanel').style.display = 'block'; }
+  function closeReview() { document.getElementById('reviewPanel').style.display = 'none'; }
+
+  function toggleLinkTracking(n) {
+    const badge = document.getElementById('linkTrackBadge-' + n);
+    const btn = document.querySelector('#linkRow-' + n + ' .btn:not(.btn-danger)');
+    const nowOn = badge.textContent.includes('ON');
+    if (nowOn) {
+      badge.className = 'badge';
+      badge.style.background = 'var(--concrete)';
+      badge.style.color = 'var(--slate)';
+      badge.textContent = 'Tracking OFF';
+      btn.textContent = 'Turn tracking on';
+      showToast('Tracking turned off for this link — booking link keeps working (mock)');
+    } else {
+      badge.className = 'badge badge-accepted';
+      badge.style.background = '';
+      badge.style.color = '';
+      badge.textContent = 'Tracking ON';
+      btn.textContent = 'Turn tracking off';
+      showToast('Tracking turned back on for this link (mock)');
+    }
+  }
+
+  let currentStatusDemo = 'pending';
+
+  function setStatusDemo(kind) {
+    currentStatusDemo = kind;
+    const track = document.getElementById('statusTrack');
+    const stages = track.querySelectorAll('.stage');
+    const card = document.getElementById('statusCard');
+    const headline = document.getElementById('statusHeadline');
+    const body = document.getElementById('statusBody');
+    const trackingOn = document.getElementById('statusTrackingToggle').checked;
+    document.getElementById('liveTrackingBlock').style.display = (kind === 'accepted' && trackingOn) ? 'block' : 'none';
+
+    stages.forEach(s => {
+      s.classList.remove('done', 'current', 'declined');
+      s.querySelector('.dot').textContent = s.getAttribute('data-s') === '0' ? '✓' : Number(s.getAttribute('data-s')) + 1;
+      if (s.getAttribute('data-s') === '1') s.querySelector('.lbl2').innerHTML = 'Under<br/>review';
+    });
+
+    if (kind === 'pending') {
+      stages[0].classList.add('done'); stages[0].querySelector('.dot').textContent = '✓';
+      stages[1].classList.add('current'); stages[1].querySelector('.dot').textContent = '●';
+      card.style.background = 'var(--amber-bg)';
+      headline.style.color = 'var(--amber)';
+      headline.textContent = 'Under review';
+      body.textContent = "We've received your request for 25 Aug, 09:30. You'll be notified here once it's confirmed.";
+    } else if (kind === 'accepted') {
+      stages[0].classList.add('done'); stages[0].querySelector('.dot').textContent = '✓';
+      stages[1].classList.add('done'); stages[1].querySelector('.dot').textContent = '✓';
+      stages[2].classList.add('current'); stages[2].querySelector('.dot').textContent = '●';
+      card.style.background = 'var(--signal-green-bg)';
+      headline.style.color = 'var(--signal-green)';
+      headline.textContent = 'Accepted — scheduled';
+      body.innerHTML = 'Confirmed for <b>25 Aug, 10:00 AM</b>. A boom pump has been arranged. Please ensure the site is ready to receive concrete at this time.';
+    } else {
+      stages[0].classList.add('done'); stages[0].querySelector('.dot').textContent = '✓';
+      stages[1].classList.add('declined'); stages[1].querySelector('.dot').textContent = '✕';
+      stages[1].querySelector('.lbl2').textContent = 'Declined';
+      card.style.background = 'var(--alert-red-bg)';
+      headline.style.color = 'var(--alert-red)';
+      headline.textContent = 'Not accepted this time';
+      body.textContent = 'Batching plant is fully booked for the requested slot. Please call us to arrange another date.';
+    }
+  }
+</script>
+</body>
+</html>

@@ -83,21 +83,36 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     return res.status(400).json({ error: `Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.` });
   }
 
+  // Round 118 — resolve which mix design this order actually batches to for
+  // its grade: a customer-specific assignment first, else whichever design
+  // is marked standard for the grade, else none (an order can always be
+  // placed with no mix design on file yet — this is purely additive).
+  // Snapshotted onto the order at creation so history stays accurate even if
+  // the assignment or standard design changes later.
+  const { rows: resolvedDesign } = await query(
+    `SELECT COALESCE(
+       (SELECT mix_design_id FROM mix_design_assignments WHERE customer_id = $1 AND mix_grade_id = $2),
+       (SELECT id FROM mix_designs WHERE mix_grade_id = $2 AND is_standard_for_grade = true AND status = 'approved')
+     ) AS mix_design_id`,
+    [customer_id, mix_grade_id]
+  );
+  const resolvedMixDesignId = resolvedDesign[0]?.mix_design_id || null;
+
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
-      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount, resolved_mix_design_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, order_quantity_m3,
      sales_representative_id || null, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
      pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
-     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0]
+     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0, resolvedMixDesignId]
   );
   res.status(201).json(rows[0]);
 });

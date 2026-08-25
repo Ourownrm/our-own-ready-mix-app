@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OORM — Sales module rework (mockup)</title>
+<style>
+  :root {
+    --concrete: #F3F1EC;
+    --charcoal: #22262B;
+    --slate: #5B6470;
+    --rebar: #C75B12;
+    --rebar-dark: #A94B0C;
+    --signal-green: #1D7A55;
+    --signal-green-bg: #E4F2EC;
+    --alert-red: #B03A2E;
+    --alert-red-bg: #F8E9E7;
+    --amber: #9C6B12;
+    --amber-bg: #F5EDDD;
+    --info: #2A6F97;
+    --info-bg: #E3EEF4;
+    --violet: #6B4C9A;
+    --violet-bg: #ECE6F3;
+    --surface: #FFFFFF;
+    --border: #DEDAD1;
+    --border-strong: #C8C2B5;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(34, 38, 43, 0.06), 0 1px 8px rgba(34, 38, 43, 0.04);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--charcoal);
+    background: var(--concrete);
+    font-size: 14px;
+  }
+  #root { border-top: 4px solid var(--rebar); }
+  .note-banner {
+    background: var(--charcoal); color: #fff; font-size: 12.5px; text-align: center;
+    padding: 10px 16px; line-height: 1.6;
+  }
+  .note-banner b { color: #FFD9B3; }
+  .app-shell { max-width: 1040px; margin: 0 auto; padding: 0 0 60px; }
+
+  /* top-level switch between the three reworked screens */
+  .screen-switch {
+    display: flex; gap: 10px; padding: 18px 20px 0; flex-wrap: wrap;
+  }
+  .screen-tab {
+    flex: 1; min-width: 200px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 14px; cursor: pointer; transition: all .15s ease;
+    box-shadow: var(--shadow);
+  }
+  .screen-tab .num {
+    display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--concrete); color: var(--slate); font-size: 11px; font-weight: 700;
+    margin-right: 6px;
+  }
+  .screen-tab.active { border-color: var(--rebar); box-shadow: 0 0 0 2px rgba(199,91,18,0.15); }
+  .screen-tab.active .num { background: var(--rebar); color: #fff; }
+  .screen-tab .title { font-weight: 600; font-size: 13.5px; }
+  .screen-tab .sub { font-size: 11.5px; color: var(--slate); margin-top: 3px; margin-left: 26px; }
+
+  .panel { padding: 20px; }
+  .panel h2 { font-size: 16px; margin: 0 0 4px; }
+  .panel .lede { font-size: 12.5px; color: var(--slate); margin: 0 0 16px; max-width: 720px; line-height: 1.5; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700;
+    padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .3px;
+  }
+  .badge-pending { background: var(--amber-bg); color: var(--amber); }
+  .badge-success { background: var(--signal-green-bg); color: var(--signal-green); }
+  .badge-danger { background: var(--alert-red-bg); color: var(--alert-red); }
+  .badge-info { background: var(--info-bg); color: var(--info); }
+  .badge-neutral { background: #ECEAE4; color: var(--slate); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--slate); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
+  tr:last-child td { border-bottom: none; }
+
+  label.field { display: block; margin-bottom: 12px; }
+  label.field .lbl { font-size: 12px; color: var(--slate); margin-bottom: 4px; display: block; }
+  input, select, textarea {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
+    font-size: 13.5px; font-family: inherit; background: var(--surface); color: var(--charcoal);
+  }
+  textarea { resize: vertical; }
+
+  button { padding: 9px 14px; font-size: 12.5px; font-weight: 600; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--charcoal); cursor: pointer; }
+  .btn-primary { background: var(--rebar); border-color: var(--rebar); color: #fff; }
+  .btn-primary:hover { background: var(--rebar-dark); }
+  .btn-danger { background: var(--alert-red); border-color: var(--alert-red); color: #fff; }
+  .btn-tab { background: var(--surface); }
+  .btn-tab.active { background: var(--charcoal); border-color: var(--charcoal); color: #fff; }
+  .btn-ghost { background: none; border: none; color: var(--rebar); padding: 4px 6px; }
+
+  .tabbar { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); }
+  .kpi-label { font-size: 11px; color: var(--slate); text-transform: uppercase; letter-spacing: .4px; }
+  .kpi-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .removed-tag { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--alert-red); border: 1px dashed var(--alert-red); border-radius: 6px; padding: 1px 6px; margin-left: 6px; text-transform: uppercase; letter-spacing: .3px; }
+  .moved-tag { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--info); border: 1px dashed var(--info); border-radius: 6px; padding: 1px 6px; margin-left: 6px; text-transform: uppercase; letter-spacing: .3px; }
+  .new-tag { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--signal-green); border: 1px dashed var(--signal-green); border-radius: 6px; padding: 1px 6px; margin-left: 6px; text-transform: uppercase; letter-spacing: .3px; }
+
+  .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 700px) { .before-after { grid-template-columns: 1fr; } }
+  .before-after .col h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--slate); margin: 0 0 8px; }
+  .before-after .item { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; margin-bottom: 6px; }
+  .before-after .col.before .item { background: #F5F3EE; border: 1px solid var(--border); }
+  .before-after .col.after .item { background: var(--signal-green-bg); border: 1px solid var(--signal-green); color: #14523A; }
+
+  .feedback-inline {
+    border: 1px dashed var(--signal-green); background: var(--signal-green-bg); border-radius: 8px;
+    padding: 10px 12px; margin-top: 8px;
+  }
+  .feedback-inline .hdr { font-size: 12px; font-weight: 700; color: #14523A; margin-bottom: 6px; }
+
+  .collapse-toggle { font-size: 12px; color: var(--rebar); cursor: pointer; user-select: none; }
+
+  /* structured tap-question blocks (visit questionnaire) */
+  .qblock { margin-bottom: 12px; }
+  .qblock .qlabel { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .qopts { display: flex; gap: 5px; flex-wrap: wrap; }
+  .qopt { font-size: 11px; padding: 5px 9px; }
+  .qopt.selected { background: var(--rebar); border-color: var(--rebar); color: #fff; }
+  .project-toggle { display: flex; gap: 8px; margin-bottom: 14px; }
+  .project-toggle button { flex: 1; padding: 10px; }
+  .project-toggle button.active { background: var(--charcoal); border-color: var(--charcoal); color: #fff; }
+  .qwrap { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--concrete); margin-bottom: 12px; }
+
+  /* follow-up threads */
+  .thread-card { border-left: 3px solid var(--border-strong); background: var(--surface); border: 1px solid var(--border); border-radius: 0 8px 8px 0; border-left-width: 3px; padding: 10px 12px; margin-bottom: 8px; }
+  .thread-card.overdue { border-left-color: var(--alert-red); }
+  .thread-card.today { border-left-color: var(--amber); }
+  .thread-card.ok { border-left-color: var(--signal-green); }
+  .thread-hdr { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+  .thread-sub { font-size: 11px; color: var(--slate); margin-bottom: 8px; }
+  .thread-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px dashed var(--border); font-size: 12.5px; }
+  .thread-item:first-of-type { border-top: none; }
+  .thread-log { font-size: 11px; color: var(--slate); margin-top: 6px; padding-left: 2px; border-left: 2px solid var(--border); padding-left: 8px; line-height: 1.6; }
+
+  /* date-wise visit summary strip */
+  .day-strip { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+  .day-chip { flex: 1; min-width: 70px; text-align: center; border-radius: 8px; padding: 8px 4px; font-size: 11px; border: 1px solid var(--border); }
+  .day-chip .dname { color: var(--slate); font-size: 10px; text-transform: uppercase; }
+  .day-chip .dcount { font-weight: 700; font-size: 15px; margin-top: 2px; }
+  .day-chip.visited { background: var(--signal-green-bg); border-color: var(--signal-green); }
+  .day-chip.visited .dcount { color: var(--signal-green); }
+  .day-chip.none { background: var(--alert-red-bg); border-color: var(--alert-red); }
+  .day-chip.none .dcount { color: var(--alert-red); }
+  .day-chip.future { background: #F5F3EE; color: var(--slate); opacity: .6; }
+</style>
+</head>
+<body>
+<div id="root">
+<div class="note-banner">
+  <b>MOCKUP v5 — for review only, not wired to live data.</b> Latest changes: the visit/follow-up report moves into
+  the existing Sales Performance page instead of a new one; the customer booking link now allows multiple open
+  requests per site instead of blocking a second one while the first is pending; customer name is now big and bold
+  above the site name on that page; the leads visit questionnaire is answered inline and Save stays disabled until
+  it's complete.
+</div>
+
+<div class="app-shell">
+
+  <div class="panel" style="padding-bottom:0;">
+    <h2>What's changing</h2>
+    <p class="lede">
+      Guiding principle for this rework (per your note): the Sales Executive's screen should push them to do the
+      three things that actually grow the business — <b>visit more sites</b>, <b>respond to leads fast</b>, and
+      <b>keep forecasts current so Operations can plan around them</b> — not bury those under admin screens for
+      booking/feedback that belong elsewhere.
+    </p>
+    <div class="before-after">
+      <div class="col before">
+        <h3>Today — Sales Executive's own screen</h3>
+        <div class="item">Dashboard · Bookings · My leads · Visits · Feedback — 5 tabs, plus a separate link out to Forecast</div>
+        <div class="item">Booking form lives here, disconnected from the Customer Booking Links screen Manager/Admin use</div>
+        <div class="item">Feedback is its own tab, unrelated to which visit it came from</div>
+        <div class="item">A visit can be saved with zero follow-up created if no rule condition fires</div>
+        <div class="item">No visibility into which days had no site visits at all — under-visiting isn't flagged anywhere</div>
+        <div class="item">Multiple follow-ups on the same customer show as separate unrelated items, no shared thread or action history</div>
+      </div>
+      <div class="col after">
+        <h3>Proposed</h3>
+        <div class="item">Sales Executive: Leads · Visits · Forecast — 3 tabs, one purpose each</div>
+        <div class="item">Booking moves into the Customer module; Feedback folds into recording a Visit (optional field)</div>
+        <div class="item"><b>New:</b> achieved sales (m³), outstanding payments, and a "sites overdue a visit" count on the landing KPIs</div>
+        <div class="item"><b>New:</b> full visit questionnaire is back (same 12/7 structured questions as before) — never dropped, just needs to render correctly</div>
+        <div class="item"><b>New:</b> date-wise visit summary with no-visit days highlighted red — visible to the rep and to Manager/Admin in Reports</div>
+        <div class="item"><b>New:</b> follow-ups group into one thread per customer/visit with a logged action history, reported in Reports → Sales</div>
+        <div class="item"><b>New:</b> lead update makes the visit questionnaire mandatory when "Site visit" is the update type — answered inline, Save stays disabled until every question is answered</div>
+        <div class="item"><b>New:</b> "My leads" shows who sent each lead; forecast changes now notify Operations, same push pattern as owners'-meeting/technical-visit requests</div>
+        <div class="item"><b>New:</b> visit cadence &amp; follow-up thread report is added to the existing Sales Performance page, not a new report</div>
+        <div class="item"><b>New:</b> customer booking link allows multiple open requests per site (e.g. different grade/qty combos) instead of blocking a second one while the first is pending</div>
+        <div class="item"><b>New:</b> customer's own booking page shows their name big and bold above the site name — reversed from today</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="screen-switch">
+    <div class="screen-tab active" data-screen="sales" onclick="showScreen('sales')">
+      <div><span class="num">1</span><span class="title">Sales Executive — simplified</span></div>
+      <div class="sub">Leads, Visits, Forecast only</div>
+    </div>
+    <div class="screen-tab" data-screen="customer" onclick="showScreen('customer')">
+      <div><span class="num">2</span><span class="title">Customer module</span></div>
+      <div class="sub">Booking Links, Place a Booking, Feedback</div>
+    </div>
+    <div class="screen-tab" data-screen="reports" onclick="showScreen('reports')">
+      <div><span class="num">3</span><span class="title">Sales Performance — additions</span></div>
+      <div class="sub">Visit cadence &amp; follow-up thread report, added here</div>
+    </div>
+  </div>
+
+  <!-- ============================= SCREEN 1: SALES EXECUTIVE ============================= -->
+  <div class="panel" id="screen-sales">
+
+    <div class="row" style="margin-bottom:14px;">
+      <button class="btn-primary" style="flex:0 0 auto;">On duty — tap to clock off</button>
+      <span style="font-size:11.5px; color:var(--slate);">On duty since 09:12 (unchanged — still needed for visit GPS)</span>
+    </div>
+
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Open leads</div><div class="kpi-value">7</div></div>
+      <div class="kpi"><div class="kpi-label">Visits this week</div><div class="kpi-value">4</div></div>
+      <div class="kpi"><div class="kpi-label">Sites overdue a visit <span class="new-tag" style="margin-left:4px;">new</span></div><div class="kpi-value" style="color:var(--alert-red);">3</div></div>
+      <div class="kpi"><div class="kpi-label">Forecast status</div><div class="kpi-value" style="font-size:15px; color:var(--amber);">2 sites due update</div></div>
+      <div class="kpi"><div class="kpi-label">Achieved this month <span class="moved-tag" style="margin-left:4px;">restored</span></div><div class="kpi-value">642 m³</div></div>
+      <div class="kpi"><div class="kpi-label">Outstanding <span class="moved-tag" style="margin-left:4px;">restored</span></div><div class="kpi-value" style="color:var(--alert-red);">₹4,18,000</div></div>
+    </div>
+    <div class="card" id="outstanding-breakdown" style="display:none; margin-bottom:18px;">
+      <div style="font-weight:600; font-size:12.5px; margin-bottom:8px;">Outstanding by customer</div>
+      <table>
+        <thead><tr><th>Customer</th><th>Outstanding</th></tr></thead>
+        <tbody>
+          <tr><td>Coastal Warehousing Co.</td><td>₹2,80,000</td></tr>
+          <tr><td>Greenview Apartments</td><td>₹1,38,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="collapse-toggle" style="margin:-10px 0 16px;" onclick="toggleOutstanding()">▾ View outstanding by customer</div>
+
+    <div class="card" style="border-left:3px solid var(--alert-red); margin-bottom:18px;">
+      <div class="row" style="margin-bottom:8px;">
+        <div style="font-weight:600; font-size:13px;">Follow-ups due <span class="moved-tag">pinned above the tabs</span> <span class="new-tag">grouped into threads</span></div>
+        <span class="collapse-toggle" onclick="showScreen('reports')">View in Sales Performance ↗</span>
+      </div>
+
+      <div class="thread-card overdue">
+        <div class="thread-hdr">Metro Rail — Pkg 4 <span style="font-weight:400; color:var(--slate); font-size:11px;">· from visit on Aug 12</span></div>
+        <div class="thread-sub">2 open threads on this customer</div>
+        <div class="thread-item">
+          <span>🔴 Call back to check decision — <b>overdue 2 days</b></span>
+          <span><button style="font-size:11px; padding:3px 8px;" onclick="toggleThreadLog(this)">Log action</button> <button style="font-size:11px; padding:3px 8px;">Done</button></span>
+        </div>
+        <div class="thread-item">
+          <span>🟡 Send revised quotation — due tomorrow</span>
+          <span><button style="font-size:11px; padding:3px 8px;" onclick="toggleThreadLog(this)">Log action</button> <button style="font-size:11px; padding:3px 8px;">Done</button></span>
+        </div>
+        <div class="thread-log">
+          Aug 13 — Called, no answer, will retry &nbsp;·&nbsp; Aug 12 — Visit logged, competitor quote pending
+        </div>
+        <div id="thread-log-input" style="display:none; margin-top:8px;">
+          <div class="grid2">
+            <label class="field" style="margin-bottom:6px;"><span class="lbl">Action taken</span><input placeholder="e.g. Called, asked for 2 more days" /></label>
+            <label class="field" style="margin-bottom:6px;"><span class="lbl">Next due date (optional)</span><input type="date" /></label>
+          </div>
+          <button class="btn-primary" style="font-size:11px;">Save action</button>
+        </div>
+      </div>
+
+      <div class="thread-card today">
+        <div class="thread-hdr">Greenview Apartments <span style="font-weight:400; color:var(--slate); font-size:11px;">· from visit on Aug 19</span></div>
+        <div class="thread-sub">1 open thread on this customer</div>
+        <div class="thread-item">
+          <span>🟡 Check-in — no red flags from last visit, default 14-day reminder</span>
+          <span><button style="font-size:11px; padding:3px 8px;">Log action</button> <button style="font-size:11px; padding:3px 8px;">Done</button></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabbar">
+      <button class="btn-tab active" data-tab="leads" onclick="showTab('leads')">My leads</button>
+      <button class="btn-tab" data-tab="visits" onclick="showTab('visits')">Visits</button>
+      <button class="btn-tab" data-tab="forecast" onclick="showTab('forecast')">Forecast</button>
+    </div>
+
+    <!-- LEADS TAB -->
+    <div class="tabpanel" id="tab-leads">
+      <div class="card" style="margin-bottom:12px;">
+        <div class="row" style="margin-bottom:10px;">
+          <div style="font-weight:600; font-size:13px;">My leads <span class="new-tag">now shows who sent it</span></div>
+          <button style="font-size:12px;">+ New lead</button>
+        </div>
+        <table>
+          <thead><tr><th>Prospect</th><th>Stage</th><th>Last activity</th><th></th></tr></thead>
+          <tbody>
+            <tr>
+              <td>
+                <div>Greenview Apartments</div>
+                <div style="font-size:11px; color:var(--slate); margin-top:2px;">Sent by Rakesh (Manager) · 3 days ago</div>
+              </td>
+              <td><span class="badge badge-info">Site visit done</span></td>
+              <td>2 days ago</td>
+              <td><button class="btn-ghost" onclick="toggleLeadUpdate(this)">Respond / update ▾</button></td>
+            </tr>
+            <tr>
+              <td>
+                <div>Coastal Warehousing Co.</div>
+                <div style="font-size:11px; color:var(--slate); margin-top:2px;">Sent by Admin · 6 days ago</div>
+              </td>
+              <td><span class="badge badge-pending">Quote sent</span></td>
+              <td>Today</td>
+              <td><button class="btn-ghost" onclick="toggleLeadUpdate(this)">Respond / update ▾</button></td>
+            </tr>
+            <tr>
+              <td>
+                <div>Metro Rail — Pkg 4</div>
+                <div style="font-size:11px; color:var(--slate); margin-top:2px;">Sent by Rakesh (Manager) · today</div>
+              </td>
+              <td><span class="badge badge-neutral">New</span></td>
+              <td>—</td>
+              <td><button class="btn-ghost" onclick="toggleLeadUpdate(this)">Respond / update ▾</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="card" id="lead-update-demo" style="display:none; margin-top:10px; background:var(--concrete);">
+          <div style="font-weight:600; font-size:12.5px; margin-bottom:8px;">Update — Greenview Apartments</div>
+          <div class="grid2">
+            <label class="field"><span class="lbl">Update type</span>
+              <select id="lead-update-type" onchange="toggleLeadVisitQuestionnaire(this)">
+                <option>General note</option>
+                <option>Quotation issued</option>
+                <option>Quotation follow-up</option>
+                <option>Quotation revised</option>
+                <option>Meeting</option>
+                <option selected>Site visit</option>
+              </select>
+            </label>
+            <label class="field"><span class="lbl">Next follow-up date</span><input type="date" /></label>
+          </div>
+          <label class="field"><span class="lbl">Note</span><textarea rows="2" placeholder="Discussed pour schedule, awaiting site plan from architect">Discussed pour schedule, awaiting site plan from architect</textarea></label>
+
+          <div id="lead-visit-questionnaire-block" class="feedback-inline" style="border-color:var(--rebar); background:#FDF3EA;">
+            <div class="hdr" style="color:var(--rebar-dark);">Visit questionnaire — mandatory for this update <span class="new-tag" style="margin-left:4px;">new rule</span></div>
+            <div style="font-size:12px; color:var(--charcoal); margin-bottom:10px; line-height:1.5;">
+              "Site visit" is selected as the update type, so <b>Save update stays disabled</b> until every question
+              below is answered — same questionnaire as the Visits tab, answered right here instead of linking out.
+              This is what stops a stage from being marked "Site visit done" with nothing behind it.
+            </div>
+
+            <div class="project-toggle">
+              <button type="button" class="active" onclick="showLeadQSet('new', this)">New project</button>
+              <button type="button" onclick="showLeadQSet('existing', this)">Existing project</button>
+            </div>
+
+            <div class="qwrap" id="lead-qset-new">
+              <div class="qblock"><div class="qlabel">1. How was the meeting?</div><div class="qopts"><button class="qopt">Interested</button><button class="qopt">Comparing prices</button><button class="qopt">Not ready yet</button><button class="qopt">Lost to competitor</button><button class="qopt">Decision maker absent</button></div></div>
+              <div class="qblock"><div class="qlabel">2. When will they decide?</div><div class="qopts"><button class="qopt">Today/tomorrow</button><button class="qopt">This week</button><button class="qopt">Next week</button><button class="qopt">This month</button><button class="qopt">More than a month</button><button class="qopt">Not sure</button></div></div>
+              <div class="qblock"><div class="qlabel">3. Main concerns <span style="font-weight:400; color:var(--slate);">(pick any)</span></div><div class="qopts"><button class="qopt">Price</button><button class="qopt">Distance from plant</button><button class="qopt">Delivery timing</button><button class="qopt">Product quality</button><button class="qopt">Grade availability</button><button class="qopt">Pump availability</button><button class="qopt">Payment terms</button><button class="qopt">Trust, new supplier</button><button class="qopt">None</button></div></div>
+              <div class="qblock"><div class="qlabel">4. Grade(s) asked about <span style="font-weight:400; color:var(--slate);">(pick any)</span></div><div class="qopts"><button class="qopt">M10</button><button class="qopt">M15</button><button class="qopt">M20</button><button class="qopt">M25</button><button class="qopt">M30</button><button class="qopt">M35</button><button class="qopt">M40</button><button class="qopt">M45</button><button class="qopt">Not sure yet</button></div></div>
+              <div class="qblock"><div class="qlabel">5. Rough volume expected</div><div class="qopts"><button class="qopt">Under 50 m³</button><button class="qopt">50–200 m³</button><button class="qopt">200–500 m³</button><button class="qopt">Above 500 m³</button><button class="qopt">Unsure</button></div></div>
+              <div class="qblock"><div class="qlabel">6. Project stage</div><div class="qopts"><button class="qopt">Just planning</button><button class="qopt">Starting soon</button><button class="qopt">Excavation</button><button class="qopt">Foundation ready</button><button class="qopt">Column/Plinth</button><button class="qopt">Slab</button><button class="qopt">Finishing</button></div></div>
+              <div class="qblock"><div class="qlabel">7. Expected first pour</div><div class="qopts"><button class="qopt">Within 3 days</button><button class="qopt">1 week</button><button class="qopt">2 weeks</button><button class="qopt">1 month</button><button class="qopt">Later</button></div></div>
+              <div class="qblock"><div class="qlabel">8. Competitor involved?</div><div class="qopts"><button class="qopt">No</button><button class="qopt">Yes — SEDC</button><button class="qopt">Yes — Supermix</button><button class="qopt">Yes — Other</button></div></div>
+              <div class="qblock"><div class="qlabel">9. Their experience with that competitor <span style="font-weight:400; color:var(--slate);">(shown only if Q8 ≠ No)</span></div><div class="qopts"><button class="qopt">Happy</button><button class="qopt">Unhappy</button><button class="qopt">Minor issues</button><button class="qopt">None known</button></div></div>
+              <div class="qblock"><div class="qlabel">10. Quotation status</div><div class="qopts"><button class="qopt">Submitted</button><button class="qopt">Send today</button><button class="qopt">Revised quote needed</button><button class="qopt">Not required</button></div></div>
+              <div class="qblock"><div class="qlabel">11. Technical visit needed?</div><div class="qopts"><button class="qopt">Yes</button><button class="qopt">No</button></div></div>
+              <div class="qblock" style="margin-bottom:0;"><div class="qlabel">12. Owners' meeting needed?</div><div class="qopts"><button class="qopt">Yes</button><button class="qopt">No</button></div></div>
+            </div>
+
+            <div class="qwrap" id="lead-qset-existing" style="display:none;">
+              <div class="qblock"><div class="qlabel">a. How's the supply going?</div><div class="qopts"><button class="qopt">All good</button><button class="qopt">Minor issue</button><button class="qopt">Serious complaint</button></div></div>
+              <div class="qblock"><div class="qlabel">b. Volume trend?</div><div class="qopts"><button class="qopt">Increasing</button><button class="qopt">Steady</button><button class="qopt">Decreasing</button><button class="qopt">Nearing completion</button></div></div>
+              <div class="qblock"><div class="qlabel">c. Payments up to date?</div><div class="qopts"><button class="qopt">Yes</button><button class="qopt">Needs follow-up</button><button class="qopt">Overdue, urgent</button></div></div>
+              <div class="qblock"><div class="qlabel">d. Issues raised <span style="font-weight:400; color:var(--slate);">(pick any)</span></div><div class="qopts"><button class="qopt">None</button><button class="qopt">Late deliveries</button><button class="qopt">Quality complaint</button><button class="qopt">Pump crew behaviour</button><button class="qopt">Driver behaviour</button><button class="qopt">Other</button></div></div>
+              <div class="qblock"><div class="qlabel">e. Project timeline?</div><div class="qopts"><button class="qopt">Just started</button><button class="qopt">Mid-project</button><button class="qopt">Nearing completion</button><button class="qopt">Finished</button></div></div>
+              <div class="qblock"><div class="qlabel">f. Competitor activity?</div><div class="qopts"><button class="qopt">None mentioned</button><button class="qopt">Competitor approached them</button></div></div>
+              <div class="qblock" style="margin-bottom:0;"><div class="qlabel">g. Relationship health?</div><div class="qopts"><button class="qopt">Strong</button><button class="qopt">Needs attention</button><button class="qopt">At risk</button></div></div>
+            </div>
+          </div>
+
+          <button class="btn-primary" id="lead-save-update-btn" style="margin-top:10px; opacity:.45; cursor:not-allowed;" disabled>Save update — disabled until questionnaire is answered</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- VISITS TAB -->
+    <div class="tabpanel" id="tab-visits" style="display:none;">
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-weight:600; font-size:13px; margin-bottom:2px;">Visit summary — last 7 days <span class="new-tag">new</span></div>
+        <div style="font-size:11.5px; color:var(--slate); margin-bottom:10px;">Days you were on duty with zero visits logged are flagged red.</div>
+        <div class="day-strip">
+          <div class="day-chip visited"><div class="dname">Wed 13</div><div class="dcount">2</div></div>
+          <div class="day-chip none"><div class="dname">Thu 14</div><div class="dcount">0</div></div>
+          <div class="day-chip visited"><div class="dname">Fri 15</div><div class="dcount">1</div></div>
+          <div class="day-chip none"><div class="dname">Sat 16</div><div class="dcount">0</div></div>
+          <div class="day-chip visited"><div class="dname">Mon 18</div><div class="dcount">3</div></div>
+          <div class="day-chip visited"><div class="dname">Tue 19</div><div class="dcount">2</div></div>
+          <div class="day-chip future"><div class="dname">Wed 20</div><div class="dcount">—</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div class="row" style="margin-bottom:10px;">
+          <div style="font-weight:600; font-size:13px;">My visits</div>
+          <button style="font-size:12px;" onclick="toggleNewVisit()">+ New visit</button>
+        </div>
+        <table>
+          <thead><tr><th>Visited</th><th>Type</th><th>Notes</th><th>Feedback logged?</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Greenview Apartments</td>
+              <td>Customer</td>
+              <td>Discussed timeline</td>
+              <td><span class="badge badge-neutral">None</span></td>
+            </tr>
+            <tr>
+              <td>Coastal Warehousing Co.</td>
+              <td>Client — post-delivery</td>
+              <td>Checked finish quality</td>
+              <td><span class="badge badge-success">Compliment</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card" id="new-visit-demo" style="display:none;">
+        <div style="font-weight:600; font-size:13px; margin-bottom:10px;">New visit</div>
+
+        <div class="grid2">
+          <label class="field"><span class="lbl">Visitor type</span>
+            <select><option>Customer</option><option>Client</option><option>Consultant</option><option>Site engineer</option><option>Other</option></select>
+          </label>
+          <label class="field"><span class="lbl">Site / project</span><input placeholder="Search customer or site" /></label>
+        </div>
+        <div class="grid2">
+          <label class="field"><span class="lbl">Contact person</span><input placeholder="Who you met" /></label>
+          <label class="field"><span class="lbl">Contact number</span><input placeholder="10-digit mobile" /></label>
+        </div>
+        <div class="grid2">
+          <label class="field"><span class="lbl">Visit date</span><input type="date" /></label>
+          <label class="field"><span class="lbl">At site right now?</span>
+            <div style="display:flex; gap:6px;"><button type="button" style="flex:1;">Yes</button><button type="button" style="flex:1;">No</button></div>
+          </label>
+        </div>
+
+        <div class="project-toggle">
+          <button type="button" class="active" onclick="showQSet('new', this)">New project</button>
+          <button type="button" onclick="showQSet('existing', this)">Existing project</button>
+        </div>
+
+        <div class="qwrap" id="qset-new">
+          <div style="font-size:11.5px; color:var(--slate); margin-bottom:10px;">
+            Visit questionnaire — new project <span class="new-tag">restored, all 12 questions</span>
+          </div>
+          <div class="qblock"><div class="qlabel">1. How was the meeting?</div><div class="qopts"><button class="qopt">Interested</button><button class="qopt">Comparing prices</button><button class="qopt">Not ready yet</button><button class="qopt">Lost to competitor</button><button class="qopt">Decision maker absent</button></div></div>
+          <div class="qblock"><div class="qlabel">2. When will they decide?</div><div class="qopts"><button class="qopt">Today/tomorrow</button><button class="qopt">This week</button><button class="qopt">Next week</button><button class="qopt">This month</button><button class="qopt">More than a month</button><button class="qopt">Not sure</button></div></div>
+          <div class="qblock"><div class="qlabel">3. Main concerns <span style="font-weight:400; color:var(--slate);">(pick any)</span></div><div class="qopts"><button class="qopt">Price</button><button class="qopt">Distance from plant</button><button class="qopt">Delivery timing</button><button class="qopt">Product quality</button><button class="qopt">Grade availability</button><button class="qopt">Pump availability</button><button class="qopt">Payment terms</button><button class="qopt">Trust, new supplier</button><button class="qopt">None</button></div></div>
+          <div class="qblock"><div class="qlabel">4. Grade(s) asked about <span style="font-weight:400; color:var(--slate);">(pick any)</span></div><div class="qopts"><button class="qopt">M10</button><button class="qopt">M15</button><button class="qopt">M20</button><button class="qopt">M25</button><button class="qopt">M30</button><button class="qopt">M35</button><button class="qopt">M40</button><button class="qopt">M45</button><button class="qopt">Not sure yet</button></div></div>
+          <div class="qblock"><div class="qlabel">5. Rough volume expected</div><div class="qopts"><button class="qopt">Under 50 m³</button><button class="qopt">50–200 m³</button><button class="qopt">200–500 m³</button><button class="qopt">Above 500 m³</button><button class="qopt">Unsure</button></div></div>
+          <div class="qblock"><div class="qlabel">6. Project stage</div><div class="qopts"><button class="qopt">Just planning</button><button class="qopt">Starting soon</button><button class="qopt">Excavation</button><button class="qopt">Foundation ready</button><button class="qopt">Column/Plinth</button><button class="qopt">Slab</button><button class="qopt">Finishing</button></div></div>
+          <div class="qblock"><div class="qlabel">7. Expected first pour</div><div class="qopts"><button class="qopt">Within 3 days</button><button class="qopt">1 week</button><button class="qopt">2 weeks</button><button class="qopt">1 month</button><button class="qopt">Later</button></div></div>
+          <div class="qblock"><div class="qlabel">8. Competitor involved?</div><div class="qopts"><button class="qopt">No</button><button class="qopt">Yes — SEDC</button><button class="qopt">Yes — Supermix</button><button class="qopt">Yes — Other</button></div></div>
+          <div class="qblock"><div class="qlabel">9. Their experience with that competitor <span style="font-weight:400; color:var(--slate);">(shown only if Q8 ≠ No)</span></div><div class="qopts"><button class="qopt">Happy</button><button class="qopt">Unhappy</button><button class="qopt">Minor issues</button><button class="qopt">None known</button></div></div>
+          <div class="qblock"><div class="qlabel">10. Quotation status</div><div class="qopts"><button class="qopt">Submitted</button><button class="qopt">Send today</button><button class="qopt">Revised quote needed</button><button class="qopt">Not required</button></div></div>
+          <div class="qblock"><div class="qlabel">11. Technical visit needed?</div><div class="qopts"><button class="qopt">Yes</button><button class="qopt">No</button></div></div>
+          <div class="qblock" style="margin-bottom:0;"><div class="qlabel">12. Owners' meeting needed?</div><div class="qopts"><button class="qopt">Yes</button><button class="qopt">No</button></div></div>
+        </div>
+
+        <div class="qwrap" id="qset-existing" style="display:none;">
+          <div style="font-size:11.5px; color:var(--slate); margin-bottom:10px;">
+            Visit questionnaire — existing project <span class="new-tag">restored, all 7 questions</span>
+          </div>
+          <div class="qblock"><div class="qlabel">a. How's the supply going?</div><div class="qopts"><button class="qopt">All good</button><button class="qopt">Minor issue</button><button class="qopt">Serious complaint</button></div></div>
+          <div class="qblock"><div class="qlabel">b. Volume trend?</div><div class="qopts"><button class="qopt">Increasing</button><button class="qopt">Steady</button><button class="qopt">Decreasing</button><button class="qopt">Nearing completion</button></div></div>
+          <div class="qblock"><div class="qlabel">c. Payments up to date?</div><div class="qopts"><button class="qopt">Yes</button><button class="qopt">Needs follow-up</button><button class="qopt">Overdue, urgent</button></div></div>
+          <div class="qblock"><div class="qlabel">d. Issues raised <span style="font-weight:400; color:var(--slate);">(pick any)</span></div><div class="qopts"><button class="qopt">None</button><button class="qopt">Late deliveries</button><button class="qopt">Quality complaint</button><button class="qopt">Pump crew behaviour</button><button class="qopt">Driver behaviour</button><button class="qopt">Other</button></div></div>
+          <div class="qblock"><div class="qlabel">e. Project timeline?</div><div class="qopts"><button class="qopt">Just started</button><button class="qopt">Mid-project</button><button class="qopt">Nearing completion</button><button class="qopt">Finished</button></div></div>
+          <div class="qblock"><div class="qlabel">f. Competitor activity?</div><div class="qopts"><button class="qopt">None mentioned</button><button class="qopt">Competitor approached them</button></div></div>
+          <div class="qblock" style="margin-bottom:0;"><div class="qlabel">g. Relationship health?</div><div class="qopts"><button class="qopt">Strong</button><button class="qopt">Needs attention</button><button class="qopt">At risk</button></div></div>
+        </div>
+
+        <label class="field"><span class="lbl">Comments (optional, free text)</span><textarea rows="2" placeholder="Anything the questions above didn't capture"></textarea></label>
+
+        <div class="collapse-toggle" onclick="toggleFeedbackInline(this)">＋ Was this a post-delivery visit? Log feedback while you're here ▾</div>
+        <div class="feedback-inline" id="feedback-inline-block" style="display:none;">
+          <div class="hdr">Delivery feedback <span style="font-weight:400; color:var(--slate); text-transform:none;">(optional — only if this visit follows a delivery)</span></div>
+          <div class="grid2">
+            <label class="field"><span class="lbl">Type</span>
+              <select><option>Compliment</option><option>Complaint</option></select>
+            </label>
+            <label class="field"><span class="lbl">Related order / ticket (optional)</span><input placeholder="DT-2231" /></label>
+          </div>
+          <label class="field"><span class="lbl">Comment</span><textarea rows="2" placeholder="Finish quality praised, on-time delivery"></textarea></label>
+        </div>
+
+        <div class="feedback-inline" style="border-color:var(--info); background:var(--info-bg); margin-top:10px;">
+          <div class="hdr" style="color:#144A66;">Follow-up <span class="new-tag" style="margin-left:4px;">logic tightened</span></div>
+          <div style="font-size:12px; color:#144A66; margin-bottom:8px; line-height:1.5;">
+            A follow-up is now <b>always</b> created when you save this visit — same smart rules as before (call-back
+            timing, quotation, payment/complaint routing, etc.), but if none of those rules fire, a default
+            "check in" reminder is added automatically instead of the visit silently getting no next action. Multiple
+            follow-ups from the same visit club together into one thread against this customer.
+          </div>
+          <div class="collapse-toggle" onclick="toggleCustomFollowup()">＋ Add your own follow-up too (optional) ▾</div>
+          <div id="custom-followup-block" style="display:none; margin-top:8px;">
+            <div class="grid2">
+              <label class="field"><span class="lbl">What to follow up on</span><input placeholder="e.g. Confirm site plan received from architect" /></label>
+              <label class="field"><span class="lbl">Due date</span><input type="date" /></label>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn-primary" style="margin-top:8px;">Save visit</button>
+        <span class="new-tag">Feedback field is new here</span>
+      </div>
+    </div>
+
+    <!-- FORECAST TAB -->
+    <div class="tabpanel" id="tab-forecast" style="display:none;">
+      <div class="card">
+        <div class="row" style="margin-bottom:10px;">
+          <div style="font-weight:600; font-size:13px;">Sales forecast — running projects <span class="moved-tag">now a tab, not a separate page link</span></div>
+          <button style="font-size:12px;">+ Add / update project</button>
+        </div>
+        <div style="font-size:11.5px; color:var(--slate); margin:-4px 0 10px;">
+          <span class="new-tag" style="margin-right:4px;">new</span>Saving a forecast change now pushes a notification to Manager/Operations, the same way an owners'-meeting or technical-visit request does today — so a forecast update isn't only visible if someone happens to open this tab.
+        </div>
+        <table>
+          <thead><tr><th>Project / site</th><th>Expected start</th><th>Expected qty (m³)</th><th>Confidence</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>Greenview Apartments — Ph 2</td><td>Sep 2026</td><td>1,850</td><td><span class="badge badge-warning" style="background:var(--amber-bg); color:var(--amber);">Medium</span></td><td><button class="btn-ghost">Update</button></td></tr>
+            <tr><td>Coastal Warehousing Co.</td><td>Oct 2026</td><td>3,200</td><td><span class="badge badge-success">High</span></td><td><button class="btn-ghost">Update</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================= SCREEN 2: CUSTOMER MODULE ============================= -->
+  <div class="panel" id="screen-customer" style="display:none;">
+    <p class="lede">
+      Renamed/expanded from today's "Customer Booking" menu. Reachable by <b>Sales Executive, Manager, and
+      Administrator</b> — Sales Executive sees "Place a booking" and "Feedback" here now, instead of on their own
+      dashboard.
+    </p>
+
+    <div class="tabbar">
+      <button class="btn-tab active" data-ctab="links" onclick="showCTab('links')">Booking Links &amp; Requests</button>
+      <button class="btn-tab" data-ctab="place" onclick="showCTab('place')">Place a Booking <span class="moved-tag">moved here</span></button>
+      <button class="btn-tab" data-ctab="feedback" onclick="showCTab('feedback')">Feedback <span class="moved-tag">moved here</span></button>
+    </div>
+
+    <div class="ctabpanel" id="ctab-links">
+      <div class="card" style="margin-bottom:16px;">
+        <div style="font-weight:600; font-size:13px; margin-bottom:10px;">Booking links &amp; requests <span style="font-weight:400; color:var(--slate);">(unchanged from round 100)</span></div>
+        <table>
+          <thead><tr><th>Customer / site</th><th>Link</th><th>Tracking</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Coastal Warehousing Co. — Main Yard</td><td>oorm.app/book/●●●●●●●●</td><td>On</td><td><span class="badge badge-success">Active</span></td></tr>
+            <tr><td>Metro Rail — Pkg 4</td><td>oorm.app/book/●●●●●●●●</td><td>Off</td><td><span class="badge badge-success">Active</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div style="font-weight:600; font-size:13px; margin-bottom:2px;">Preview — what the customer sees on their link <span class="new-tag">2 fixes here</span></div>
+        <p style="font-size:12px; color:var(--slate); margin:2px 0 12px; line-height:1.5;">
+          Root cause of "only one booking, nothing else while pending": the link's booking form hard-blocks a second
+          submission while any request is still <code>pending</code> — <code>routes/customerBooking.js</code>. That
+          rule is removed; a customer can now have several open requests on the same site at once (different grade/qty
+          combos). Also fixes the name hierarchy — customer name is now the big, bold heading; site name moves
+          underneath as the smaller label, reversed from today.
+        </p>
+        <div style="max-width:360px; margin:0 auto; border:1px solid var(--border-strong); border-radius:16px; overflow:hidden; box-shadow:var(--shadow);">
+          <div style="background:var(--charcoal); color:#fff; padding:12px 16px;">
+            <div style="font-size:11px; opacity:.7;">Our Own Ready Mix — Concrete booking</div>
+          </div>
+          <div style="padding:16px; background:var(--surface);">
+            <div style="font-size:20px; font-weight:800; line-height:1.2;">Coastal Warehousing Co. <span class="new-tag" style="vertical-align:middle;">now big &amp; bold</span></div>
+            <div style="font-size:12px; color:var(--slate); text-transform:uppercase; letter-spacing:.4px; margin-top:2px;">Main Yard <span class="moved-tag" style="text-transform:none;">was the big heading, now the small one</span></div>
+
+            <div style="font-size:12px; font-weight:600; margin:16px 0 8px;">Your booking requests</div>
+            <div style="border:1px solid var(--amber); background:var(--amber-bg); border-radius:8px; padding:10px 12px; margin-bottom:8px;">
+              <div class="row"><b style="font-size:13px;">30 m³ · M25</b><span class="badge badge-pending">Under review</span></div>
+              <div style="font-size:11.5px; color:var(--charcoal); margin-top:2px;">Requested for Aug 22, 9:00 AM</div>
+            </div>
+            <div style="border:1px solid var(--amber); background:var(--amber-bg); border-radius:8px; padding:10px 12px; margin-bottom:12px;">
+              <div class="row"><b style="font-size:13px;">34 m³ · M20</b><span class="badge badge-pending">Under review</span></div>
+              <div style="font-size:11.5px; color:var(--charcoal); margin-top:2px;">Requested for Aug 23, 2:00 PM</div>
+              <div class="new-tag" style="margin-top:6px;">submitted while the first was still pending</div>
+            </div>
+            <button class="btn-primary" style="width:100%;">+ New booking request</button>
+            <div style="font-size:10.5px; color:var(--slate); text-align:center; margin-top:6px;">Always available now — no longer hidden while a request is pending</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ctabpanel" id="ctab-place" style="display:none;">
+      <div class="card">
+        <div style="font-weight:600; font-size:13px; margin-bottom:10px;">
+          Place a booking on behalf of a customer <span class="moved-tag">was: Sales Executive → Bookings tab</span>
+        </div>
+        <p style="font-size:12px; color:var(--slate); margin-top:-4px;">
+          For a lead or customer who doesn't have a self-service booking link yet. Same form as before — just reached
+          from here instead of the Sales Executive's own dashboard, alongside every other booking in one place.
+        </p>
+        <div class="grid2">
+          <label class="field"><span class="lbl">Customer</span><select><option>Select</option><option>Metro Rail — Pkg 4</option></select></label>
+          <label class="field"><span class="lbl">Site (if known)</span><select><option>Not decided yet</option></select></label>
+        </div>
+        <div class="grid2">
+          <label class="field"><span class="lbl">Grade</span><select><option>Select</option></select></label>
+          <label class="field"><span class="lbl">Est. quantity (m³)</span><input type="number" placeholder="e.g. 450" /></label>
+        </div>
+        <div class="grid2">
+          <label class="field"><span class="lbl">Preferred date</span><input type="date" /></label>
+          <label class="field"><span class="lbl">Preferred time</span><input type="time" /></label>
+        </div>
+        <label class="field"><span class="lbl">Notes for manager</span><textarea rows="2" placeholder="Payment terms 15 days"></textarea></label>
+        <button class="btn-primary">Submit booking</button>
+      </div>
+    </div>
+
+    <div class="ctabpanel" id="ctab-feedback" style="display:none;">
+      <div class="card">
+        <div class="row" style="margin-bottom:10px;">
+          <div style="font-weight:600; font-size:13px;">Customer feedback <span class="moved-tag">fed by the Visits form now</span></div>
+          <div class="tabbar" style="margin:0;">
+            <button class="btn-tab active" style="font-size:11px; padding:5px 9px;">All</button>
+            <button class="btn-tab" style="font-size:11px; padding:5px 9px;">Complaints</button>
+            <button class="btn-tab" style="font-size:11px; padding:5px 9px;">Compliments</button>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Customer</th><th>Type</th><th>Comment</th><th>Logged by</th></tr></thead>
+          <tbody>
+            <tr><td>Coastal Warehousing Co.</td><td><span class="badge badge-success">Compliment</span></td><td>Checked finish quality — on-time, praised</td><td>Sales Rep A (via visit)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================= SCREEN 3: SALES PERFORMANCE ADDITIONS ============================= -->
+  <div class="panel" id="screen-reports" style="display:none;">
+    <p class="lede">
+      <b>Correction from the last round:</b> per your note, this isn't a new standalone report — it's added to the
+      <b>existing Sales Performance page</b> (<code>/sales-performance</code>, Manager/Administrator), directly below
+      the "Salespersons — this month" table and the "Customer visits report" table that are already there today. What
+      you see below is what gets appended under those two, not a new menu item.
+    </p>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="row" style="margin-bottom:10px;">
+        <div style="font-weight:600; font-size:13px;">Visit cadence — by sales rep <span class="new-tag">new</span></div>
+        <div style="font-size:11.5px; color:var(--slate);">Last 7 days · all reps</div>
+      </div>
+      <div style="font-size:12.5px; font-weight:600; margin-bottom:6px;">Priya Nair</div>
+      <div class="day-strip" style="margin-bottom:14px;">
+        <div class="day-chip visited"><div class="dname">Wed 13</div><div class="dcount">2</div></div>
+        <div class="day-chip none"><div class="dname">Thu 14</div><div class="dcount">0</div></div>
+        <div class="day-chip visited"><div class="dname">Fri 15</div><div class="dcount">1</div></div>
+        <div class="day-chip none"><div class="dname">Sat 16</div><div class="dcount">0</div></div>
+        <div class="day-chip visited"><div class="dname">Mon 18</div><div class="dcount">3</div></div>
+        <div class="day-chip visited"><div class="dname">Tue 19</div><div class="dcount">2</div></div>
+        <div class="day-chip future"><div class="dname">Wed 20</div><div class="dcount">—</div></div>
+      </div>
+      <div style="font-size:12.5px; font-weight:600; margin-bottom:6px;">Arjun Menon</div>
+      <div class="day-strip">
+        <div class="day-chip visited"><div class="dname">Wed 13</div><div class="dcount">1</div></div>
+        <div class="day-chip none"><div class="dname">Thu 14</div><div class="dcount">0</div></div>
+        <div class="day-chip none"><div class="dname">Fri 15</div><div class="dcount">0</div></div>
+        <div class="day-chip none"><div class="dname">Sat 16</div><div class="dcount">0</div></div>
+        <div class="day-chip visited"><div class="dname">Mon 18</div><div class="dcount">1</div></div>
+        <div class="day-chip none"><div class="dname">Tue 19</div><div class="dcount">0</div></div>
+        <div class="day-chip future"><div class="dname">Wed 20</div><div class="dcount">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom:10px;">
+        <div style="font-weight:600; font-size:13px;">Follow-up threads &amp; actions taken <span class="new-tag">new</span></div>
+      </div>
+      <table>
+        <thead><tr><th>Customer / site</th><th>Origin visit</th><th>Rep</th><th>Open threads</th><th>Latest action</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Metro Rail — Pkg 4</td>
+            <td>Aug 12</td>
+            <td>Priya Nair</td>
+            <td>2</td>
+            <td>Aug 13 — Called, no answer, will retry</td>
+            <td><span class="badge badge-danger">Overdue</span></td>
+          </tr>
+          <tr>
+            <td>Greenview Apartments</td>
+            <td>Aug 19</td>
+            <td>Priya Nair</td>
+            <td>1</td>
+            <td>— none logged yet</td>
+            <td><span class="badge badge-pending">Due today</span></td>
+          </tr>
+          <tr>
+            <td>Coastal Warehousing Co.</td>
+            <td>Aug 10</td>
+            <td>Arjun Menon</td>
+            <td>0</td>
+            <td>Aug 11 — Payment confirmed, thread closed</td>
+            <td><span class="badge badge-success">Closed</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+function showScreen(name) {
+  ['sales','customer','reports'].forEach(s => {
+    document.getElementById('screen-' + s).style.display = s === name ? '' : 'none';
+  });
+  document.querySelectorAll('.screen-tab').forEach(el => el.classList.toggle('active', el.dataset.screen === name));
+}
+function showTab(name) {
+  ['leads','visits','forecast'].forEach(t => {
+    document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+  });
+  document.querySelectorAll('.tabbar .btn-tab[data-tab]').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+}
+function showCTab(name) {
+  ['links','place','feedback'].forEach(t => {
+    document.getElementById('ctab-' + t).style.display = t === name ? '' : 'none';
+  });
+  document.querySelectorAll('.tabbar .btn-tab[data-ctab]').forEach(el => el.classList.toggle('active', el.dataset.ctab === name));
+}
+function toggleLeadUpdate(btn) {
+  const el = document.getElementById('lead-update-demo');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function toggleNewVisit() {
+  const el = document.getElementById('new-visit-demo');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function toggleFeedbackInline(el) {
+  const block = document.getElementById('feedback-inline-block');
+  block.style.display = block.style.display === 'none' ? '' : 'none';
+}
+function toggleOutstanding() {
+  const block = document.getElementById('outstanding-breakdown');
+  block.style.display = block.style.display === 'none' ? '' : 'none';
+}
+function toggleCustomFollowup() {
+  const block = document.getElementById('custom-followup-block');
+  block.style.display = block.style.display === 'none' ? '' : 'none';
+}
+function toggleThreadLog(btn) {
+  const block = document.getElementById('thread-log-input');
+  block.style.display = block.style.display === 'none' ? '' : 'none';
+}
+function showQSet(which, btn) {
+  document.getElementById('qset-new').style.display = which === 'new' ? '' : 'none';
+  document.getElementById('qset-existing').style.display = which === 'existing' ? '' : 'none';
+  btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+function showLeadQSet(which, btn) {
+  document.getElementById('lead-qset-new').style.display = which === 'new' ? '' : 'none';
+  document.getElementById('lead-qset-existing').style.display = which === 'existing' ? '' : 'none';
+  btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+// Mockup-only stand-in for "disabled until every question answered" — every
+// tap toward completing the lead-visit questionnaire re-checks and, once all
+// visible questions in the active set have a selection, enables Save.
+function refreshLeadSaveState() {
+  const active = document.getElementById('lead-qset-new').style.display !== 'none'
+    ? document.getElementById('lead-qset-new') : document.getElementById('lead-qset-existing');
+  const questionnaireVisible = document.getElementById('lead-visit-questionnaire-block').style.display !== 'none';
+  const btn = document.getElementById('lead-save-update-btn');
+  if (!questionnaireVisible) {
+    btn.disabled = false; btn.style.opacity = 1; btn.style.cursor = 'pointer'; btn.textContent = 'Save update';
+    return;
+  }
+  const blocks = active.querySelectorAll('.qblock');
+  const allAnswered = [...blocks].every(b => b.querySelector('.qopt.selected'));
+  btn.disabled = !allAnswered;
+  btn.style.opacity = allAnswered ? 1 : .45;
+  btn.style.cursor = allAnswered ? 'pointer' : 'not-allowed';
+  btn.textContent = allAnswered ? 'Save update' : 'Save update — disabled until questionnaire is answered';
+}
+function toggleLeadVisitQuestionnaire(select) {
+  const block = document.getElementById('lead-visit-questionnaire-block');
+  block.style.display = select.value === 'Site visit' ? '' : 'none';
+  refreshLeadSaveState();
+}
+document.querySelectorAll('.qopt').forEach(b => b.addEventListener('click', () => { b.classList.toggle('selected'); refreshLeadSaveState(); }));
+refreshLeadSaveState();
+</script>
+</body>
+</html>
