@@ -10,6 +10,7 @@ export const ROLE_HOME = {
   accountant: "/accountant",
   sales_executive: "/sales",
   store: "/store",
+  lab_technician: "/lab-technician",
 };
 
 export const ROLE_LABEL = {
@@ -22,4 +23,5 @@ export const ROLE_LABEL = {
   accountant: "Accountant",
   sales_executive: "Sales Executive",
   store: "Store",
+  lab_technician: "Lab Technician",
 };

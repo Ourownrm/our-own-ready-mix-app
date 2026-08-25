@@ -83,6 +83,7 @@ export default function Reports() {
                 { label: "Plant Location (geofence)", to: "/administrator?view=plant-locations" },
                 { label: "Site Contacts", to: "/administrator?view=site-contacts" },
                 { label: "Production Target", to: "/administrator?view=production-target" },
+                { label: "Approved Mix Assignments", to: "/administrator?view=mix-assignments" },
               ]}
             />
             <GroupedMenu

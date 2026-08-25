@@ -1890,3 +1890,127 @@ export function MaintenanceActionPointsPanel({ setError }) {
     </div>
   );
 }
+
+// Round 118 — which mix design a customer's order for a given grade actually
+// resolves to (see mix_design_assignments in schema.sql). One design is
+// routinely shared across several customers, so this list is customer-
+// centric — assigning the same design to a second customer doesn't create a
+// second design, just a second row here, both flagged "Shared" once they
+// point at the same design.
+export function MixDesignAssignmentsPanel({ setError }) {
+  const [assignments, setAssignments] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [grades, setGrades] = useState([]);
+  const [designs, setDesigns] = useState([]);
+  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", mix_design_id: "" });
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  async function load() {
+    try {
+      const [a, c, g] = await Promise.all([
+        apiRequest("/administrator/mix-design-assignments"),
+        apiRequest("/administrator/customers"),
+        apiRequest("/master/mix-grades"),
+      ]);
+      setAssignments(a);
+      setCustomers(c);
+      setGrades(g);
+    } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (!form.mix_grade_id) { setDesigns([]); return; }
+    apiRequest(`/lab-technician/mix-designs?status=approved&mix_grade_id=${form.mix_grade_id}`)
+      .then(setDesigns)
+      .catch((err) => setError(err.message));
+  }, [form.mix_grade_id]);
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest("/administrator/mix-design-assignments", { method: "POST", body: form });
+      setNotice("Saved.");
+      setForm({ customer_id: "", mix_grade_id: "", mix_design_id: "" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function remove(id) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/mix-design-assignments/${id}`, { method: "DELETE" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  const designCounts = {};
+  assignments.forEach((a) => { designCounts[a.mix_design_id] = (designCounts[a.mix_design_id] || 0) + 1; });
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
+        A customer's order only ever records a grade — this resolves which specific, approved mix
+        design that grade actually batches to for them. No row for a customer+grade means the
+        grade's standard design is used (set from the Lab Technician's Mix Designs list).
+      </div>
+      <form onSubmit={submit} className="field-input card" style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", fontSize: 13, marginBottom: 12 }}>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Customer</div>
+          <select value={form.customer_id} onChange={(e) => setForm((f) => ({ ...f, customer_id: e.target.value }))} required style={{ minWidth: 160 }}>
+            <option value="">Select</option>
+            {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Grade</div>
+          <select value={form.mix_grade_id} onChange={(e) => setForm((f) => ({ ...f, mix_grade_id: e.target.value, mix_design_id: "" }))} required>
+            <option value="">Select</option>
+            {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Mix design</div>
+          <select value={form.mix_design_id} onChange={(e) => setForm((f) => ({ ...f, mix_design_id: e.target.value }))} required disabled={!form.mix_grade_id} style={{ minWidth: 160 }}>
+            <option value="">{form.mix_grade_id ? "Select" : "Pick a grade first"}</option>
+            {designs.map((d) => <option key={d.id} value={d.id}>{d.design_ref_code}{d.mix_description ? ` — ${d.mix_description}` : ""}</option>)}
+          </select>
+          {form.mix_grade_id && designs.length === 0 && (
+            <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>No approved designs for this grade yet.</div>
+          )}
+        </div>
+        <button type="submit" disabled={saving}>{saving ? "Saving..." : "Assign"}</button>
+        {notice && <span style={{ color: "var(--signal-green)" }}>{notice}</span>}
+      </form>
+
+      <div className="card">
+        <table>
+          <thead><tr><th>Customer</th><th>Grade</th><th>Assigned mix design</th><th>Since</th><th></th></tr></thead>
+          <tbody>
+            {assignments.map((a) => (
+              <tr key={a.id}>
+                <td>{a.customer_name}</td>
+                <td>{a.mix_grade_name}</td>
+                <td>
+                  {a.design_ref_code}{" "}
+                  {Number(a.design_shared_count) > 1 ? (
+                    <span className="badge" style={{ background: "var(--info-bg, #E3EEF4)", color: "var(--info, #2A6F97)" }}>
+                      Shared · {a.design_shared_count} customers
+                    </span>
+                  ) : (
+                    <span className="badge badge-success">Custom</span>
+                  )}
+                </td>
+                <td>{new Date(a.assigned_at).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
+                <td><button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => remove(a.id)}>Remove</button></td>
+              </tr>
+            ))}
+            {assignments.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No customer-specific assignments yet — everyone gets the standard design per grade.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

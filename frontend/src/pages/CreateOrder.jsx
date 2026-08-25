@@ -34,6 +34,7 @@ export default function CreateOrder({ onDone }) {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [rateInfo, setRateInfo] = useState(null);
+  const [mixDesignInfo, setMixDesignInfo] = useState(null);
   const [pumpChargeDecision, setPumpChargeDecision] = useState(null); // null | true | false
   const [partLoadDecision, setPartLoadDecision] = useState(null);
 
@@ -69,6 +70,18 @@ export default function CreateOrder({ onDone }) {
       .then(setRateInfo)
       .catch(() => setRateInfo(null));
   }, [form.customer_id, form.mix_grade_id, form.site_id, form.order_date]);
+
+  // Purely informational (round 118) — shows which mix design this
+  // customer+grade will actually resolve to (a customer-specific assignment,
+  // or the grade's standard design, or none on file yet), same resolution
+  // orders.js applies server-side when the order is placed. Never blocks
+  // submission — it's just so the person placing the order can see it.
+  useEffect(() => {
+    if (!form.customer_id || !form.mix_grade_id) { setMixDesignInfo(null); return; }
+    apiRequest(`/master/resolve-mix-design?customer_id=${form.customer_id}&mix_grade_id=${form.mix_grade_id}`)
+      .then((r) => setMixDesignInfo(r.design || null))
+      .catch(() => setMixDesignInfo(null));
+  }, [form.customer_id, form.mix_grade_id]);
 
   // Reload the contact list whenever customer+site changes, and reset the
   // in-progress selection — a contact picked for a different site shouldn't
@@ -191,6 +204,13 @@ export default function CreateOrder({ onDone }) {
             {mixGrades.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
         </Field>
+        {form.customer_id && form.mix_grade_id && (
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "var(--slate)", background: "var(--concrete)", borderRadius: 8, padding: "6px 10px", marginTop: -4 }}>
+            {mixDesignInfo
+              ? `Mix design on file: ${mixDesignInfo.design_ref_code}${mixDesignInfo.is_customer_specific ? " (assigned to this customer)" : " (standard for this grade)"}.`
+              : "No approved mix design on file yet for this customer/grade — the order will still go through."}
+          </div>
+        )}
         <Field label="Pump requirement">
           <select value={form.pump_requirement} onChange={(e) => set("pump_requirement", e.target.value)}>
             <option value="boom_pump">Boom pump</option>

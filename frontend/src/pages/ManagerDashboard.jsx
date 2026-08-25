@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel, MaintenanceActionPointsPanel } from "../lib/MasterDataPanels.jsx";
+import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel, MaintenanceActionPointsPanel, MixDesignAssignmentsPanel } from "../lib/MasterDataPanels.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import { PieChart } from "../lib/PieChart.jsx";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
@@ -146,7 +146,7 @@ export default function ManagerDashboard() {
       </>
     );
   }
-  if (["customers", "sites", "correct-orders", "correct-tickets", "rates", "maintenance-action-points"].includes(view)) {
+  if (["customers", "sites", "correct-orders", "correct-tickets", "rates", "maintenance-action-points", "mix-assignments"].includes(view)) {
     return (
       <>
         <TopBar title="Manager · Records" />
@@ -159,6 +159,7 @@ export default function ManagerDashboard() {
             <button className={`btn-tab ${view === "correct-tickets" ? "active" : ""}`} onClick={() => setView("correct-tickets")}>Correct tickets</button>
             <button className={`btn-tab ${view === "rates" ? "active" : ""}`} onClick={() => setView("rates")}>Concrete grades and rates</button>
             <button className={`btn-tab ${view === "maintenance-action-points" ? "active" : ""}`} onClick={() => setView("maintenance-action-points")}>Maintenance Action Points</button>
+            <button className={`btn-tab ${view === "mix-assignments" ? "active" : ""}`} onClick={() => setView("mix-assignments")}>Approved Mix Assignments</button>
           </div>
           {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
           {view === "customers" && <CustomersPanel setError={setError} />}
@@ -167,6 +168,7 @@ export default function ManagerDashboard() {
           {view === "correct-tickets" && <TicketsPanel setError={setError} />}
           {view === "rates" && <RatesPanel setError={setError} />}
           {view === "maintenance-action-points" && <MaintenanceActionPointsPanel setError={setError} />}
+          {view === "mix-assignments" && <MixDesignAssignmentsPanel setError={setError} />}
         </div>
       </>
     );
@@ -235,6 +237,7 @@ export default function ManagerDashboard() {
               { label: "Customer", onClick: () => setView("customers") },
               { label: "Projects & Sites", onClick: () => setView("sites") },
               { label: "Concrete Grade & Rates", onClick: () => setView("rates") },
+              { label: "Approved Mix Assignments", onClick: () => setView("mix-assignments") },
             ]}
           />
           <GroupedMenu
