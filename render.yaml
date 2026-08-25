@@ -9,6 +9,15 @@ services:
     envVars:
       - key: JWT_SECRET
         generateValue: true
+      # Round 119 — separate secret for customer portal sessions
+      # (routes/customerPortal.js), so a customer access-code session can
+      # never be verified as a staff session or vice versa. The backend
+      # falls back to JWT_SECRET if this isn't set, so it's safe to deploy
+      # before this line reaches an existing service — but re-syncing the
+      # blueprint (or setting it manually) to get a real distinct value is
+      # worth doing for the stronger boundary.
+      - key: CUSTOMER_JWT_SECRET
+        generateValue: true
       - key: DATABASE_URL
         fromDatabase:
           name: oorm-db

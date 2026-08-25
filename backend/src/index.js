@@ -28,6 +28,9 @@ import trackingRoutes from "./routes/tracking.js";
 import maintenanceRoutes from "./routes/maintenance.js";
 import bookingLinksRoutes from "./routes/bookingLinks.js";
 import customerBookingRoutes from "./routes/customerBooking.js";
+import customerAccessRoutes from "./routes/customerAccess.js";
+import customerPortalRoutes from "./routes/customerPortal.js";
+import publicInquiryRoutes from "./routes/publicInquiry.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -44,6 +47,14 @@ process.on("unhandledRejection", (err) => {
 });
 
 const app = express();
+// Render sits the app behind a proxy, so every request arrives with an
+// X-Forwarded-For header. express-rate-limit (used by publicInquiry.js and
+// customerPortal.js — round 119) refuses to key on that header unless Express
+// is explicitly told to trust it, and throws instead of just ignoring it —
+// which was taking down both new public endpoints with a generic 500 in
+// production. "1" trusts exactly one hop (Render's own proxy), matching how
+// Render's edge is documented to forward traffic.
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
 
@@ -71,11 +82,19 @@ app.use("/api/compliance", complianceRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
 app.use("/api/booking-links", bookingLinksRoutes);
+// Manager/Admin-only, staff auth as usual — generates/lists/revokes the
+// customer portal access codes (routes/customerAccess.js).
+app.use("/api/customer-access", customerAccessRoutes);
 // Deliberately NOT behind requireAuth — these are the public, token-scoped
 // customer-facing links (see routes/tracking.js and routes/customerBooking.js
-// for why that's safe).
+// for why that's safe), plus (round 119) the customer portal's own
+// access-code sign-in and the public inquiry form. The portal does its own
+// per-request auth via requireCustomerAuth inside customerPortal.js, using a
+// separate JWT secret from staff sessions — see that file's header comment.
 app.use("/api/track", trackingRoutes);
 app.use("/api/customer-booking", customerBookingRoutes);
+app.use("/api/customer-portal", customerPortalRoutes);
+app.use("/api/public-inquiry", publicInquiryRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff

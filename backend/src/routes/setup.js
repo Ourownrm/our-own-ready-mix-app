@@ -1155,6 +1155,37 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (cube_test_results.failure_type — optional IS 516 failure-mode note per test).");
 
+    // Round 119 — public inquiry capture + the customer portal (short access
+    // code, not a shareable link — see schema.sql's comment above
+    // customer_access_tokens for why).
+    await query(`
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'staff';
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS customer_access_tokens (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        token VARCHAR(12) UNIQUE NOT NULL,
+        label VARCHAR(100),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_by INTEGER REFERENCES users(id) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_used_at TIMESTAMPTZ,
+        revoked_by INTEGER REFERENCES users(id),
+        revoked_at TIMESTAMPTZ
+      );
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_customer_access_tokens_token ON customer_access_tokens(token);`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_customer_access_tokens_customer ON customer_access_tokens(customer_id);`);
+    await query(`
+      CREATE TABLE IF NOT EXISTS customer_access_token_sites (
+        token_id INTEGER REFERENCES customer_access_tokens(id) ON DELETE CASCADE NOT NULL,
+        site_id INTEGER REFERENCES sites(id) NOT NULL,
+        PRIMARY KEY (token_id, site_id)
+      );
+    `);
+    log.push("Schema migration applied (leads.source — distinguishes a public /inquiry submission from a staff-created lead; customer_access_tokens/customer_access_token_sites — short Manager-issued sign-in codes for the customer portal, each scoped to one customer and one or more sites).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

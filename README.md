@@ -3848,6 +3848,29 @@ an explicit check (`number_of_cubes === "" || null || undefined ? null : Number(
 preserves an explicit `0` as `0`. Verified with `node --check` on the backend route and a clean
 `npm run build` on the frontend.
 
+**Post-ship fix 8 (Ver. 9.29): PDF header rule had no breathing room, and the Mix Design report
+left too much dead space in the footer.** Business flagged, after reviewing real generated
+PDFs, that the red rule under the header sat flush against the logo/address block with no gap.
+Root cause: the logo (`addImage` at `y-9`, 15mm tall) bottoms out exactly at the same `y` the
+rule was drawn at (`y += 6` from the same baseline), so the two visually touched with zero
+clearance — same construction in both `mixDesignPdf.js` and `cubeTestPdf.js` since the cube
+test header was built from the same block. Fixed in both files by pushing the rule 3mm below
+the logo's bottom edge (`y += 9` instead of `y += 6`) and widening the gap to the content below
+it (`y += 7` instead of `y += 5`). Separately, on the Mix Design PDF specifically, the page was
+already fitting in one page but ending well short of the bottom margin — roughly 22mm of unused
+white space below the footer line, most visible as a gap between the disclaimer bar and the
+physical page edge. Rather than just trimming, the vertical rhythm between the major sections
+(summary grid, proportions/materials tables, aggregate/pie block, note+signatory, disclaimer)
+was opened up slightly (small per-section increases, ~2mm each) so the page reads more evenly
+filled instead of front-loaded with a large trailing gap, and `BOTTOM_LIMIT` was raised from
+283mm to 290mm to give that extra rhythm room to render without spilling to a second page —
+still leaving a safe ~7mm buffer under A4's 297mm height. Re-verified with the same headless
+render + `pdftoppm` visual-inspection technique as the round-118 PDF rework: both reports still
+render as exactly one page (`doc.internal.getNumberOfPages() === 1`), confirmed visually. The
+Cube Test report's own trailing white space was left as-is — it's inherently a shorter report
+(one summary table + a 3-row cube table) and business didn't flag it; only its header gap was
+fixed. Verified with a clean `npm run build`.
+
 ### Migration note
 Run `/setup` after deploying — adds the `lab_technician` enum value, six new tables
 (`mix_designs`, `mix_design_admixtures`, `mix_design_assignments`, `cube_test_results`,
@@ -3857,3 +3880,96 @@ environment to smoke-test the migration against, so treat `/setup` on deploy as 
 run — same caveat as prior rounds without a local DB available. Frontend verified with a full
 `npm run build` (clean, no errors) and every touched/new backend route file verified with
 `node --check`.
+
+## Round 119 (Ver. 9.30): the customer-facing module — public inquiries + a customer portal
+
+Business asked for the customer-facing screens sketched in the original mockup: potential
+customers reaching the business through public channels (social media, word of mouth, a
+website link) with no account, and existing customers checking their own orders and QC reports
+without staff involvement. The design went through several rounds of back-and-forth before
+landing on the final shape, driven by two explicit business objections: a shareable link is
+"anyone can access all the details" (too permissive — one link, unlimited access, no way to
+tell who's actually looking at it), and an OTP/SMS-sending flow would mean standing up an SMS
+or WhatsApp provider integration business didn't want to take on right now. What shipped
+instead:
+
+**Public inquiry ("get in touch"), no login (`/inquiry`, `PublicInquiry.jsx`,
+`routes/publicInquiry.js`).** A potential customer with no account submits Company Name,
+Site/Project, Requesting Person's Name, and Contact Number. Rather than building a parallel
+inbox, this reuses the existing Sales `leads` pipeline — a new `leads.source` column
+(`'staff'` default vs `'public_inquiry'`) tags where a lead came from without overloading the
+nullable `created_by`/`assigned_to` columns, and `LeadsBrowser.jsx` shows a "Public inquiry"
+badge plus (for a lead nobody's picked up yet) an "Assign to a salesperson" control backed by a
+new `PATCH /sales/leads/:id/assign`.
+
+**Customer portal, access-code sign-in (`/portal`, `CustomerPortal.jsx`,
+`routes/customerPortal.js`).** An *existing* customer signs in with a short human-typeable code
+(8 characters, from a confusable-character-free alphabet — no `0/O/1/I/L`) rather than a link.
+Manager/Admin generates the code from a new "Portal Access" tab on `CustomerBooking.jsx`
+(`routes/customerAccess.js`), scoping it to one customer and one or more of that customer's
+sites, and copies it to send to the customer manually — by SMS, WhatsApp, or a phone call,
+whatever the business already uses; the app does not send it. Signing in shows only that
+customer's own orders for the site(s) the code covers, with QC reports (mix design + cube test)
+rendered by calling the existing `generateMixDesignPdf`/`generateCubeTestPdf` functions
+completely unchanged — the new backend pdf-data endpoints just return the identical JSON shape
+the internal Lab Technician screens already use, so there's no second PDF implementation to
+maintain. The browser session persists (a separate `oorm_customer_session` storage key, kept
+deliberately apart from the staff `oorm_token` so a shared/kiosk browser can't cross-contaminate
+the two) so "save it for auto login next time" actually holds — but every request re-checks the
+code's live `is_active` flag server-side, so a Manager revoking a code takes effect immediately
+rather than waiting for the (180-day) JWT to expire on its own.
+
+One clarifying point worth recording plainly since it's a real characteristic of what shipped,
+not an oversight: the access code is a pure bearer credential. It isn't bound to a phone number
+or a device — anyone holding the code can sign in, from more than one device at once if they
+want, until a Manager revokes it. That was a deliberate simplification for round 119 (matching
+how the business already plans to hand it out — same trust model as sharing a password with one
+person) rather than an attempt at OTP-style verification; locking a code to its first device or
+checking it against a phone number on file would be a distinct, separate enhancement if ever
+wanted.
+
+**Security review caught two real issues before ship, both fixed:**
+
+1. **Missing `trust proxy` would have 500'd both new public endpoints in production.**
+   Both new public POST routes (`/api/public-inquiry`, `/api/customer-portal/login`) needed
+   rate limiting since they're unauthenticated and reachable by anyone — added via
+   `express-rate-limit` (8 inquiries / 15 min per IP; 12 login attempts / 15 min per IP).
+   `express-rate-limit` v8's default key generator throws when it sees an `X-Forwarded-For`
+   header — which Render's proxy always attaches — unless Express is explicitly told to trust
+   it. Nothing in the app called `app.set("trust proxy", ...)`, so in production every request
+   to either endpoint would have thrown, been caught by the app's catch-all handler, and
+   returned a generic 500 — silently breaking both brand-new public features on day one. Fixed
+   with `app.set("trust proxy", 1)` in `index.js` (one hop, matching Render's own proxy).
+
+2. **A conditional cross-boundary gap if `CUSTOMER_JWT_SECRET` is ever left unset.** Customer
+   sessions are deliberately signed with their own secret (`CUSTOMER_JWT_SECRET`, payload
+   `{type: "customer", ...}`) so a customer's token can never be mistaken for a staff one — but
+   the code fell back to the shared `JWT_SECRET` if that env var wasn't set, and staff
+   `requireAuth` did no shape-checking on what it verified. In that one misconfiguration window,
+   a customer's access-code session would pass `requireAuth` as if it were a real staff login,
+   and on any staff route that checks only "is someone signed in" with no role restriction
+   after it (`routes/masterData.js` in full — customers, sites, rates, trucks, drivers — has no
+   `requireRole` on any of its ~20 routes), a customer with nothing but a portal access code
+   could have read staff-only master data well beyond their own orders. Fixed by making
+   `requireAuth` explicitly reject any payload carrying `type: "customer"`, so this now fails
+   closed regardless of whether the env var happens to be set correctly.
+
+This is the recurring pattern worth cataloguing (see pattern #19 for the header/footer one;
+this is a new one, #20): **a public-facing endpoint added without exercising it behind the
+platform's actual proxy setup can look correct in every local/manual test and still be fully
+broken in production**, because the failure mode (`trust proxy` unset) only exists once a real
+proxy sits between the client and the app — nothing in local dev or a direct `curl` to the
+backend would ever surface it.
+
+### Migration note (round 119)
+Run `/setup` after deploying — adds `leads.source`, and two new tables
+(`customer_access_tokens`, `customer_access_token_sites`) plus their indexes. Also requires a
+new environment variable, `CUSTOMER_JWT_SECRET` (added to `render.yaml` with
+`generateValue: true`, same pattern as the existing `JWT_SECRET`) — deploy will still work
+without it (falls back to `JWT_SECRET`, and the `requireAuth` fix above closes the resulting
+exposure), but setting it explicitly is the correct production configuration since it keeps
+customer and staff sessions cryptographically independent as designed, not just logically
+independent. Verified with `node --check` on every touched/new backend route and middleware
+file, and a clean `npm run build` on the frontend. No live Postgres instance available in this
+environment, so `/setup` on deploy remains the first real migration run, same caveat as every
+prior round.

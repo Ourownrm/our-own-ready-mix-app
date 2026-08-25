@@ -194,6 +194,12 @@ CREATE TABLE leads (
   estimated_qty_m3 NUMERIC(8,2),
   assigned_to INTEGER REFERENCES users(id),
   created_by INTEGER REFERENCES users(id),
+  -- Round 119: 'staff' (default, created by Manager/Admin or a Sales
+  -- Executive as before) or 'public_inquiry' (submitted with no login via
+  -- the public /inquiry page — see routes/publicInquiry.js). A public
+  -- inquiry lands with assigned_to NULL; Manager/Admin assigns it to a
+  -- salesperson afterward via PATCH /sales/leads/:id/assign.
+  source VARCHAR(20) NOT NULL DEFAULT 'staff',
   status lead_status DEFAULT 'new',
   attribution lead_attribution,
   won_customer_id INTEGER REFERENCES customers(id),
@@ -262,6 +268,44 @@ CREATE TABLE customer_booking_links (
 );
 CREATE INDEX idx_customer_booking_links_token ON customer_booking_links(token);
 CREATE INDEX idx_customer_booking_links_customer_site ON customer_booking_links(customer_id, site_id);
+
+-- Round 119 — the customer portal: a short, human-typeable access code
+-- (6-10 chars, generated server-side) scoped to one customer and one or
+-- more of their sites, that a customer types into /portal to sign in and
+-- see their own orders + QC reports (mix design / cube test PDFs). Unlike
+-- customer_booking_links above (one link per customer+site, opened by
+-- tapping a URL), this is deliberately a short *code* a Manager reads out
+-- or sends over their own phone (SMS/WhatsApp/call) — the business
+-- explicitly did not want a bare shareable link here, since anyone holding
+-- the link/URL could open it; a code still has to be typed in by the
+-- person it was given to, and can cover several sites in one code instead
+-- of needing a separate link per site. See routes/customerPortal.js (the
+-- public sign-in + data side) and routes/customerAccess.js (Manager/Admin
+-- side: generate, list, revoke).
+CREATE TABLE customer_access_tokens (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  token VARCHAR(12) UNIQUE NOT NULL,
+  label VARCHAR(100),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_by INTEGER REFERENCES users(id) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  revoked_by INTEGER REFERENCES users(id),
+  revoked_at TIMESTAMPTZ
+);
+CREATE INDEX idx_customer_access_tokens_token ON customer_access_tokens(token);
+CREATE INDEX idx_customer_access_tokens_customer ON customer_access_tokens(customer_id);
+
+-- Many-to-many: one access code can cover several sites for the same
+-- customer (e.g. a head-office contact who should see every active
+-- project), which a single customer_booking_links row can't express since
+-- that's scoped to exactly one site.
+CREATE TABLE customer_access_token_sites (
+  token_id INTEGER REFERENCES customer_access_tokens(id) ON DELETE CASCADE NOT NULL,
+  site_id INTEGER REFERENCES sites(id) NOT NULL,
+  PRIMARY KEY (token_id, site_id)
+);
 
 -- A booking is a lighter-weight commitment than a real order — placed either
 -- by a Sales Executive, or (round 100) by a customer themselves via a

@@ -90,6 +90,23 @@ router.post("/leads/self", requireRole("sales_executive"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
+// Round 119 — a lead can land with no salesperson at all (a public /inquiry
+// submission, source = 'public_inquiry' — see routes/publicInquiry.js).
+// Manager/Admin assigns it to a real Sales Executive from here once they've
+// looked it over, same effect as picking one on the original POST /leads
+// form, just after the fact.
+router.patch("/leads/:id/assign", requireRole("manager", "administrator"), async (req, res) => {
+  const { assigned_to } = req.body;
+  if (!assigned_to) return res.status(400).json({ error: "Select a salesperson to assign this to." });
+  const { rows } = await query(
+    `UPDATE leads SET assigned_to = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+    [assigned_to, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Lead not found." });
+  await pushToRole("sales_executive", { title: "New lead assigned", body: rows[0].prospect_name, url: "/sales" });
+  res.json(rows[0]);
+});
+
 router.get("/leads", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
   const own = req.user.role === "sales_executive";
   const { rows } = await query(
