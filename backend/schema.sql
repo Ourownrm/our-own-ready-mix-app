@@ -922,6 +922,22 @@ CREATE TABLE cube_test_cubes (
 );
 CREATE INDEX idx_cube_test_cubes_result ON cube_test_cubes(cube_test_result_id);
 
+-- Some cube batches never actually get tested (cubes damaged, order cancelled,
+-- etc.) — closing one here is purely a dashboard/workflow marker so it stops
+-- cluttering the Lab Technician's active list; it does not touch plant_qc or
+-- any cube_test_results row. One row per batch that's ever been closed;
+-- reopening deletes the row rather than tracking a history of open/close
+-- cycles. A batch's overall "active / completed / closed" bucket is computed
+-- in the API (closed here, else both ages done = completed, else active) —
+-- not stored, so it can never drift from the underlying test results.
+CREATE TABLE cube_batch_status (
+  plant_qc_id INTEGER PRIMARY KEY REFERENCES plant_qc(id),
+  status VARCHAR(20) NOT NULL DEFAULT 'closed' CHECK (status = 'closed'),
+  closed_reason TEXT,
+  closed_by INTEGER REFERENCES users(id) NOT NULL,
+  closed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ===================== PUMP MODULE (SRS §10) =====================
 
 CREATE TABLE pump_logs (

@@ -1133,6 +1133,21 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (lab_technician role; mix_designs — grade-independent mix design library with generated target-strength/W-B-ratio/totals fields, admixtures and assignments as separate tables; cube_test_results/cube_test_cubes — 7/28-day compressive strength results per cube batch; customer_orders.resolved_mix_design_id — the design an order actually resolved to at creation).");
 
+    // cube_batch_status (round 118 refinement) — lets a Lab Technician mark a
+    // cube batch as not going to be tested, purely a dashboard/workflow
+    // marker so it stops cluttering the active list. Does not touch
+    // plant_qc or cube_test_results.
+    await query(`
+      CREATE TABLE IF NOT EXISTS cube_batch_status (
+        plant_qc_id INTEGER PRIMARY KEY REFERENCES plant_qc(id),
+        status VARCHAR(20) NOT NULL DEFAULT 'closed' CHECK (status = 'closed'),
+        closed_reason TEXT,
+        closed_by INTEGER REFERENCES users(id) NOT NULL,
+        closed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (cube_batch_status — lets a cube batch be closed out of the active Lab Technician dashboard when it won't be tested).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

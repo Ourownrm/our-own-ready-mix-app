@@ -3708,6 +3708,50 @@ existing "role-gating has a few hardcoded validation lists beyond the DB ENUM" c
 (`validRoles`, `ROLES`, `STAFF_ROLES`, etc.) whenever a new role is added, not just the
 obvious ones.
 
+**Post-ship fix 2**: business flagged that admixture dosage (% of binder) had to be typed in
+by hand on the mix design form — should be calculated. It's not something a `mix_design_
+admixtures` row can express as a Postgres `GENERATED` column itself (it would need to read
+`cement_kgm3`/`fly_ash_kgm3` off a *different* table's row), so it's computed once,
+server-side, at insert time (`POST /lab-technician/mix-designs` in `labTechnician.js`) from
+`qty_kgm3 ÷ (cement_kgm3 + fly_ash_kgm3) × 100` — any `dosage_pct_of_binder` the client sends
+is now ignored entirely, same "recompute server-side, never trust the client" rule the cube
+test averages already follow. The form's "% binder" text input is gone; each admixture row
+now shows a live-computed, read-only percentage instead. Also added a live "Fly ash: N% of
+binder" note next to the existing Total binder/W-B ratio line, previously only computed at
+PDF-generation time, not while filling out the form — same live-banner treatment as the
+other derived numbers on this form. Verified with a full `npm run build` (clean).
+
+**Post-ship fix 3**: business also flagged that approving a mix design wasn't reachable from
+Administrator at all. Real gap, not a training issue — the approval flow only existed on the
+Lab Technician's own `/lab-technician` dashboard, which `ProtectedRoute` gates to the
+`lab_technician` role alone, even though the *backend* had allowed
+`qc_engineer`/`manager`/`administrator` to approve since the route was first written. Added a
+new `MixDesignsPanel` (`MasterDataPanels.jsx`) — list + Approve + View PDF, no "create new"
+(drafting stays on the Lab Technician's own fuller form) — wired into Administrator, Manager,
+and Reports as a "Mix Designs (approve)" item next to the existing "Approved Mix Assignments"
+one, all three nav copies (pattern #7). Approve is disabled with a tooltip when the signed-in
+user is the design's own creator, mirroring the backend's self-approval block; `GET
+/lab-technician/mix-designs` now also returns `md.created_by` (previously only the joined
+name) so the frontend can compare against the signed-in user's id, not just a string name.
+
+**Post-ship fix 4**: business also asked for two Cube Testing workflow changes: (a) a saved
+test result should show inline on that batch's own card, not just as a banner at the top of
+the page — `BatchDetail` previously never refetched its own detail after a save, so the newly
+entered result only appeared if the card was closed and reopened; it now refetches immediately
+(`loadDetail()`, called on mount and again after a successful save) and shows an inline
+"✓ N-day result saved" note on the card itself, plus auto-selects whichever age isn't tested
+yet for the next entry. (b) Batches that will never be tested (damaged cubes, cancelled order)
+needed a way off the active list — added a `cube_batch_status` table (new migration, see
+below), `POST /lab-technician/cube-batches/:id/close` and `/reopen`, and Active/Completed/
+Closed sub-tabs on the Cube Testing tab. A batch buckets into `completed` automatically (both
+7-day and 28-day results present) or `closed` (explicitly marked), computed in the API on
+every request rather than stored, so it can't drift from the underlying test results; "active"
+is the default view so the dashboard doesn't fill up with old, fully-tested or closed batches.
+Closing/reopening never touches `plant_qc` or `cube_test_results` — purely a dashboard marker,
+reversible at any time. Posting a result against an already-closed batch is now rejected
+server-side ("This batch is closed — reopen it first."). Spawned a review agent over all four
+post-ship fixes together before calling this done; it found no further issues.
+
 **Known gap, not addressed this round:** the mockups for a customer-facing module (sign-in,
 My Orders, QC Reports) assumed an authenticated customer account system. Checked the real app
 — no customer login/JWT issuance/customer-scoped routes exist anywhere; all customer-facing
@@ -3716,10 +3760,10 @@ access today is via public, unauthenticated per-order/per-booking token links (`
 customer auth, or extend the token-link pattern to cover PDF report access too.
 
 ### Migration note
-Run `/setup` after deploying — adds the `lab_technician` enum value, five new tables
+Run `/setup` after deploying — adds the `lab_technician` enum value, six new tables
 (`mix_designs`, `mix_design_admixtures`, `mix_design_assignments`, `cube_test_results`,
-`cube_test_cubes`), and `customer_orders.resolved_mix_design_id`. No live Postgres instance
-available in this environment to smoke-test the migration against, so treat `/setup` on
-deploy as the first real run — same caveat as prior rounds without a local DB available.
-Frontend verified with a full `npm run build` (clean, no errors) and every touched/new
-backend route file verified with `node --check`.
+`cube_test_cubes`, `cube_batch_status`), and `customer_orders.resolved_mix_design_id`. No live
+Postgres instance available in this environment to smoke-test the migration against, so treat
+`/setup` on deploy as the first real run — same caveat as prior rounds without a local DB
+available. Frontend verified with a full `npm run build` (clean, no errors) and every
+touched/new backend route file verified with `node --check`.

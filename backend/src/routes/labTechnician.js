@@ -20,33 +20,50 @@ router.use(requireAuth, requireRole("lab_technician", "qc_engineer", "manager", 
 // due status computed in SQL (recurring pattern #1 — never JS Date() for
 // "is this overdue" logic).
 router.get("/cube-batches", async (req, res) => {
+  // Three dashboard buckets so the default (active) list doesn't get
+  // cluttered by batches that are already fully tested or that were
+  // deliberately closed out — "completed"/"closed" are their own views, not
+  // just filtered client-side, so the active list stays the default even as
+  // the batch count grows. Bucket is computed here, not stored, so it can
+  // never drift from the underlying test results.
+  const view = ["active", "completed", "closed"].includes(req.query.view) ? req.query.view : "active";
   const { rows } = await query(
-    `SELECT pq.id AS plant_qc_id, pq.ticket_id, pq.number_of_cubes, pq.sample_ids, pq.entered_at AS cast_at,
-            dt.ticket_number, co.mix_grade_id, m.name AS mix_grade_name,
-            c.name AS customer_name, s.name AS site_name,
-            r7.id AS result_7day_id, r7.average_strength_mpa AS result_7day_strength,
-            r28.id AS result_28day_id, r28.average_strength_mpa AS result_28day_strength,
-            CASE WHEN r7.id IS NOT NULL THEN 'done'
-                 WHEN CURRENT_DATE > (pq.entered_at::date + 7) THEN 'overdue'
-                 WHEN CURRENT_DATE = (pq.entered_at::date + 7) THEN 'due_today'
-                 ELSE 'upcoming' END AS status_7day,
-            (pq.entered_at::date + 7) AS due_7day,
-            CASE WHEN r28.id IS NOT NULL THEN 'done'
-                 WHEN CURRENT_DATE > (pq.entered_at::date + 28) THEN 'overdue'
-                 WHEN CURRENT_DATE = (pq.entered_at::date + 28) THEN 'due_today'
-                 ELSE 'upcoming' END AS status_28day,
-            (pq.entered_at::date + 28) AS due_28day
-     FROM plant_qc pq
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
-     JOIN customers c ON c.id = co.customer_id
-     JOIN sites s ON s.id = co.site_id
-     JOIN mix_grades m ON m.id = co.mix_grade_id
-     LEFT JOIN cube_test_results r7 ON r7.plant_qc_id = pq.id AND r7.testing_age_days = 7
-     LEFT JOIN cube_test_results r28 ON r28.plant_qc_id = pq.id AND r28.testing_age_days = 28
-     WHERE COALESCE(pq.number_of_cubes, 0) > 0
-     ORDER BY pq.entered_at DESC
-     LIMIT 200`
+    `SELECT * FROM (
+       SELECT pq.id AS plant_qc_id, pq.ticket_id, pq.number_of_cubes, pq.sample_ids, pq.entered_at AS cast_at,
+              dt.ticket_number, co.mix_grade_id, m.name AS mix_grade_name,
+              c.name AS customer_name, s.name AS site_name,
+              r7.id AS result_7day_id, r7.average_strength_mpa AS result_7day_strength,
+              r28.id AS result_28day_id, r28.average_strength_mpa AS result_28day_strength,
+              CASE WHEN r7.id IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (pq.entered_at::date + 7) THEN 'overdue'
+                   WHEN CURRENT_DATE = (pq.entered_at::date + 7) THEN 'due_today'
+                   ELSE 'upcoming' END AS status_7day,
+              (pq.entered_at::date + 7) AS due_7day,
+              CASE WHEN r28.id IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (pq.entered_at::date + 28) THEN 'overdue'
+                   WHEN CURRENT_DATE = (pq.entered_at::date + 28) THEN 'due_today'
+                   ELSE 'upcoming' END AS status_28day,
+              (pq.entered_at::date + 28) AS due_28day,
+              cbs.closed_reason, cbs.closed_at, cu.name AS closed_by_name,
+              CASE WHEN cbs.plant_qc_id IS NOT NULL THEN 'closed'
+                   WHEN r7.id IS NOT NULL AND r28.id IS NOT NULL THEN 'completed'
+                   ELSE 'active' END AS view_bucket
+       FROM plant_qc pq
+       JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN customers c ON c.id = co.customer_id
+       JOIN sites s ON s.id = co.site_id
+       JOIN mix_grades m ON m.id = co.mix_grade_id
+       LEFT JOIN cube_test_results r7 ON r7.plant_qc_id = pq.id AND r7.testing_age_days = 7
+       LEFT JOIN cube_test_results r28 ON r28.plant_qc_id = pq.id AND r28.testing_age_days = 28
+       LEFT JOIN cube_batch_status cbs ON cbs.plant_qc_id = pq.id
+       LEFT JOIN users cu ON cu.id = cbs.closed_by
+       WHERE COALESCE(pq.number_of_cubes, 0) > 0
+     ) t
+     WHERE view_bucket = $1
+     ORDER BY cast_at DESC
+     LIMIT 200`,
+    [view]
   );
   res.json(rows);
 });
@@ -58,13 +75,17 @@ router.get("/cube-batches/:plantQcId", async (req, res) => {
   const { rows } = await query(
     `SELECT pq.id AS plant_qc_id, pq.ticket_id, pq.number_of_cubes, pq.sample_ids, pq.entered_at AS cast_at,
             dt.ticket_number, co.id AS order_id, co.mix_grade_id, co.resolved_mix_design_id,
-            m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name
+            m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name,
+            cbs.closed_reason, cbs.closed_at, cu.name AS closed_by_name,
+            (cbs.plant_qc_id IS NOT NULL) AS is_closed
      FROM plant_qc pq
      JOIN delivery_tickets dt ON dt.id = pq.ticket_id
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN cube_batch_status cbs ON cbs.plant_qc_id = pq.id
+     LEFT JOIN users cu ON cu.id = cbs.closed_by
      WHERE pq.id = $1`,
     [req.params.plantQcId]
   );
@@ -87,6 +108,28 @@ router.get("/cube-batches/:plantQcId", async (req, res) => {
   res.json({ ...batch, approved_designs: designs, results });
 });
 
+// Close a batch that isn't going to be tested (cubes damaged, order
+// cancelled, etc.) — a pure dashboard/workflow marker, doesn't touch
+// plant_qc or any cube_test_results row, and never destroys anything: a
+// closed batch can always be reopened.
+router.post("/cube-batches/:plantQcId/close", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { reason } = req.body;
+  const { rows: batchRows } = await query("SELECT id FROM plant_qc WHERE id = $1", [req.params.plantQcId]);
+  if (!batchRows.length) return res.status(404).json({ error: "Cube batch not found." });
+  await query(
+    `INSERT INTO cube_batch_status (plant_qc_id, closed_reason, closed_by, closed_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (plant_qc_id) DO UPDATE SET closed_reason = $2, closed_by = $3, closed_at = now()`,
+    [req.params.plantQcId, reason || null, req.user.id]
+  );
+  res.json({ ok: true });
+});
+
+router.post("/cube-batches/:plantQcId/reopen", requireRole("lab_technician", "administrator"), async (req, res) => {
+  await query("DELETE FROM cube_batch_status WHERE plant_qc_id = $1", [req.params.plantQcId]);
+  res.json({ ok: true });
+});
+
 // Submit (or replace) a cube batch's test result for one testing age.
 // Averages are always recomputed here from the posted cubes, never trusted
 // as-is from the client, so the stored average can't drift from what the
@@ -101,6 +144,8 @@ router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "a
   }
   const { rows: batchRows } = await query("SELECT id FROM plant_qc WHERE id = $1", [req.params.plantQcId]);
   if (!batchRows.length) return res.status(404).json({ error: "Cube batch not found." });
+  const { rows: closedRows } = await query("SELECT 1 FROM cube_batch_status WHERE plant_qc_id = $1", [req.params.plantQcId]);
+  if (closedRows.length) return res.status(400).json({ error: "This batch is closed — reopen it first." });
 
   const avg = (key) => {
     const vals = cubes.map((c) => Number(c[key])).filter((v) => !isNaN(v));
@@ -186,7 +231,7 @@ router.get("/mix-designs", async (req, res) => {
   const { rows } = await query(
     `SELECT md.id, md.design_ref_code, md.mix_description, md.mix_grade_id, m.name AS mix_grade_name,
             md.fck_28day_mpa, md.target_mean_strength_mpa, md.status, md.is_standard_for_grade,
-            md.revision, md.created_at, cu.name AS created_by_name,
+            md.revision, md.created_at, md.created_by, cu.name AS created_by_name,
             au.name AS approved_by_name, md.approved_at,
             (SELECT COUNT(*) FROM mix_design_assignments a WHERE a.mix_design_id = md.id) AS assigned_customer_count
      FROM mix_designs md
@@ -253,15 +298,24 @@ router.post("/mix-designs", requireRole("lab_technician", "administrator"), asyn
   );
   const designId = rows[0].id;
 
+  // Dosage % of binder is always derived from qty_kgm3 against this same
+  // design's total binder (cement + fly ash) — never taken from the client,
+  // same "recompute server-side, never trust it as typed" rule the cube-test
+  // averages already follow. mix_design_admixtures can't hold this as a
+  // Postgres GENERATED column itself (it'd need to read a sibling row's
+  // cement_kgm3/fly_ash_kgm3 across tables), so it's computed here instead,
+  // once, at the moment both numbers are known.
+  const totalBinder = Number(b.cement_kgm3) + (Number(b.fly_ash_kgm3) || 0);
   const admixtures = Array.isArray(b.admixtures) ? b.admixtures : [];
   let i = 0;
   for (const a of admixtures) {
     if (!a.type_brand || !a.qty_kgm3) continue;
     i += 1;
+    const dosagePct = totalBinder > 0 ? Number(((Number(a.qty_kgm3) / totalBinder) * 100).toFixed(2)) : null;
     await query(
       `INSERT INTO mix_design_admixtures (mix_design_id, type_brand, dosage_pct_of_binder, qty_kgm3, sp_gr, sort_order)
        VALUES ($1,$2,$3,$4,$5,$6)`,
-      [designId, a.type_brand, a.dosage_pct_of_binder || null, a.qty_kgm3, a.sp_gr || null, i]
+      [designId, a.type_brand, dosagePct, a.qty_kgm3, a.sp_gr || null, i]
     );
   }
   res.status(201).json({ id: designId });
