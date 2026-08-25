@@ -39,7 +39,7 @@ const WHITE = [255, 255, 255];
 const PAGE_W = 210;
 const MARGIN_X = 12;
 const CONTENT_W = PAGE_W - MARGIN_X * 2;
-const BOTTOM_LIMIT = 283;
+const BOTTOM_LIMIT = 290;
 
 async function loadLogoBase64() {
   const res = await fetch("/logo.jpg");
@@ -108,12 +108,15 @@ export async function generateMixDesignPdf(data) {
   doc.setTextColor(...SLATE);
   doc.text("IS:10262-2019  |  IS:456-2000  |  IS 4926:2003", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
 
-  y += 6;
+  // Gap before the rule: the logo's bottom edge sits at y+6 (addImage was
+  // placed at y-9 with a 15mm height), so the rule needs to clear that,
+  // not sit flush on top of it — same for the address/IS-code text above.
+  y += 9;
   doc.setDrawColor(...RED);
   doc.setLineWidth(0.8);
   doc.line(MARGIN_X, y, PAGE_W - MARGIN_X, y);
   doc.setLineWidth(0.2);
-  y += 5;
+  y += 7;
 
   // ---------------- Identification block ----------------
   // Values are fitted to their column width (shrunk to the first wrapped
@@ -234,7 +237,7 @@ export async function generateMixDesignPdf(data) {
       doc.setTextColor(...CHARCOAL);
       doc.text(item[1], cx + 2.5, cy + rh - 2.2);
     });
-    y += rh * 3 + 5;
+    y += rh * 3 + 7;
   }
 
   // ---------------- Two-column: Mix Proportions / Materials ----------------
@@ -374,7 +377,7 @@ export async function generateMixDesignPdf(data) {
     y = ty + totalH;
   }
   const rightBottom = y;
-  y = Math.max(leftBottom, rightBottom) + 5;
+  y = Math.max(leftBottom, rightBottom) + 7;
 
   // ---------------- Aggregate proportions + ratio bar ----------------
   const fine = Number(data.fine_agg_kgm3) || 0;
@@ -518,7 +521,7 @@ export async function generateMixDesignPdf(data) {
     y += 4.5;
   });
 
-  y = Math.max(aggBottom, y) + 3;
+  y = Math.max(aggBottom, y) + 5;
 
   // ---------------- Note + signatory ----------------
   y = ensureSpace(y, 32);
@@ -567,7 +570,7 @@ export async function generateMixDesignPdf(data) {
   doc.setTextColor(...SLATE);
   doc.text("Quality Control, Our Own Ready Mix", sigX, sigLineY + 8);
 
-  y = Math.max(noteBottom, sigLineY + 11) + 2;
+  y = Math.max(noteBottom, sigLineY + 11) + 3;
 
   // ---------------- Disclaimer + footer ----------------
   y = ensureSpace(y, 24);
@@ -580,7 +583,7 @@ export async function generateMixDesignPdf(data) {
   doc.rect(MARGIN_X, y, CONTENT_W, discH, "F");
   doc.setTextColor(220, 228, 236);
   discLines.forEach((line, i) => doc.text(line, MARGIN_X + 3, y + 4.3 + i * 3));
-  y += discH + 3.5;
+  y += discH + 4.5;
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(6.8);

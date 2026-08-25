@@ -40,6 +40,8 @@ import CustomerTracking from "./pages/CustomerTracking.jsx";
 import Maintenance from "./pages/Maintenance.jsx";
 import CustomerBooking from "./pages/CustomerBooking.jsx";
 import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
+import PublicInquiry from "./pages/PublicInquiry.jsx";
+import CustomerPortal from "./pages/CustomerPortal.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -61,6 +63,11 @@ export default function App() {
           <Route path="/track/:token" element={<CustomerTracking />} />
           {/* Public, no login — reached only via a shared per-customer+site booking link. */}
           <Route path="/book/:token" element={<CustomerBookingForm />} />
+          {/* Public, no login — a potential customer's "get in touch" form (round 119). */}
+          <Route path="/inquiry" element={<PublicInquiry />} />
+          {/* Public, no login by password — an existing customer signs in with a
+              short Manager-issued access code (round 119). */}
+          <Route path="/portal" element={<CustomerPortal />} />
 
           <Route path="/driver" element={
             <ProtectedRoute roles={["driver"]}><DriverDuty /></ProtectedRoute>

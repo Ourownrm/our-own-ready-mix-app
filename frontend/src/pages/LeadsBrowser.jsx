@@ -51,11 +51,16 @@ export default function LeadsBrowser() {
               {leads.map((l) => (
                 <div key={l.id} onClick={() => setSelectedId(l.id)} style={{ cursor: "pointer", background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontWeight: 600 }}>{l.prospect_name}</span>
+                    <span style={{ fontWeight: 600 }}>
+                      {l.prospect_name}
+                      {l.source === "public_inquiry" && (
+                        <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 10 }}>Public inquiry</span>
+                      )}
+                    </span>
                     <span className={`badge ${LEAD_STATUS_BADGE[l.status]}`}>{l.status}</span>
                   </div>
                   <div style={{ color: "var(--slate)" }}>
-                    Assigned to {l.assigned_to_name || "—"} {l.quotation_issued ? `· Quoted ₹${l.latest_quotation_amount ?? ""}` : ""}
+                    Assigned to {l.assigned_to_name || "— unassigned"} {l.quotation_issued ? `· Quoted ₹${l.latest_quotation_amount ?? ""}` : ""}
                   </div>
                 </div>
               ))}
@@ -72,6 +77,9 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
   const [error, setError] = useState("");
   const [attribution, setAttribution] = useState("salesperson");
   const [saving, setSaving] = useState(false);
+  const [executives, setExecutives] = useState([]);
+  const [assignTo, setAssignTo] = useState("");
+  const [assigning, setAssigning] = useState(false);
 
   async function load() {
     try {
@@ -81,6 +89,22 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
     }
   }
   useEffect(() => { load(); }, [leadId]);
+  useEffect(() => {
+    apiRequest("/sales/executives").then(setExecutives).catch(() => {});
+  }, []);
+
+  async function assign() {
+    if (!assignTo) return;
+    setAssigning(true); setError("");
+    try {
+      await apiRequest(`/sales/leads/${leadId}/assign`, { method: "PATCH", body: { assigned_to: assignTo } });
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAssigning(false);
+    }
+  }
 
   async function markWon() {
     setSaving(true); setError("");
@@ -114,11 +138,16 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
 
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontWeight: 600, fontSize: 15 }}>{lead.prospect_name}</div>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>
+              {lead.prospect_name}
+              {lead.source === "public_inquiry" && (
+                <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 10 }}>Public inquiry</span>
+              )}
+            </div>
             <span className={`badge ${LEAD_STATUS_BADGE[lead.status]}`}>{lead.status}</span>
           </div>
           <div style={{ fontSize: 13, color: "var(--slate)" }}>
-            <div>Assigned to: {lead.assigned_to_name || "—"}</div>
+            <div>Assigned to: {lead.assigned_to_name || "— unassigned"}</div>
             {lead.contact_person && <div>Contact: {lead.contact_person} {lead.contact_phone ? `· ${lead.contact_phone}` : ""}</div>}
             {lead.site_location && <div>Location: {lead.site_location}</div>}
             {lead.estimated_qty_m3 && <div>Estimated quantity: {lead.estimated_qty_m3} m³</div>}
@@ -143,6 +172,22 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
             </a>
           )}
         </div>
+
+        {!lead.assigned_to && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Assign to a salesperson</div>
+            <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>
+              {lead.source === "public_inquiry" ? "Submitted directly by a potential customer — nobody's on this yet." : "No salesperson assigned yet."}
+            </div>
+            <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} style={{ width: "100%", marginBottom: 8 }}>
+              <option value="">Select</option>
+              {executives.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+            <button className="btn-primary" onClick={assign} disabled={assigning || !assignTo} style={{ width: "100%" }}>
+              {assigning ? "Assigning..." : "Assign"}
+            </button>
+          </div>
+        )}
 
         {canMarkWon && lead.status !== "won" && lead.status !== "lost" && (
           <div className="card" style={{ marginBottom: 16 }}>

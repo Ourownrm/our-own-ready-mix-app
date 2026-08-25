@@ -30,10 +30,15 @@ export default function CustomerBooking() {
     <>
       <TopBar title="Customer Booking" />
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
-        <div className="tabbar" style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+        <div className="tabbar" style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
           {!isSalesExec && (
             <button onClick={() => setCtab("links")} className={ctab === "links" ? "btn-primary" : ""} style={{ fontSize: 12.5, padding: "6px 12px" }}>
               Booking Links &amp; Requests
+            </button>
+          )}
+          {!isSalesExec && (
+            <button onClick={() => setCtab("portal")} className={ctab === "portal" ? "btn-primary" : ""} style={{ fontSize: 12.5, padding: "6px 12px" }}>
+              Portal Access
             </button>
           )}
           {isSalesExec && (
@@ -47,6 +52,7 @@ export default function CustomerBooking() {
         </div>
 
         {ctab === "links" && !isSalesExec && <BookingLinksTab />}
+        {ctab === "portal" && !isSalesExec && <PortalAccessTab />}
         {ctab === "place" && isSalesExec && <PlaceBookingTab />}
         {ctab === "feedback" && <FeedbackTab isSalesExec={isSalesExec} />}
       </div>
@@ -264,6 +270,230 @@ function BookingLinksTab() {
 
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Incoming requests</div>
       <BookingsQueue setError={setError} />
+    </>
+  );
+}
+
+// ===================== PORTAL ACCESS CODES (round 119) =====================
+// Manager/Admin's console for the customer portal (/portal) — an existing
+// customer signs in there with a short access code, not a shareable link.
+// Per explicit business decision: a link means "anyone who has the URL can
+// see everything," so a customer here instead gets a short code they type
+// in themselves, scoped to one customer and one or more of their sites, and
+// Manager sends it over their OWN phone (SMS/WhatsApp/call) — there's no
+// in-app SMS/WhatsApp sending here, this just generates the code.
+function PortalAccessTab() {
+  const [customers, setCustomers] = useState([]);
+  const [sites, setSites] = useState([]);
+  const [tokens, setTokens] = useState([]);
+  const [customerId, setCustomerId] = useState("");
+  const [siteIds, setSiteIds] = useState([]);
+  const [label, setLabel] = useState("");
+  const [generated, setGenerated] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function loadTokens() {
+    try {
+      setTokens(await apiRequest("/customer-access"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    Promise.all([apiRequest("/master/customers"), apiRequest("/master/sites")])
+      .then(([c, s]) => { setCustomers(c); setSites(s); })
+      .catch((err) => setError(err.message));
+    loadTokens();
+  }, []);
+
+  const sitesForCustomer = sites.filter((s) => String(s.customer_id) === String(customerId));
+
+  function toggleSite(id) {
+    setSiteIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function generate(e) {
+    e.preventDefault();
+    setError(""); setSaving(true);
+    try {
+      const token = await apiRequest("/customer-access", {
+        method: "POST",
+        body: { customer_id: customerId, site_ids: siteIds, label },
+      });
+      setGenerated(token);
+      setSiteIds([]);
+      setLabel("");
+      loadTokens();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function revoke(token) {
+    if (!window.confirm(`Revoke the access code for ${token.customer_name}? They won't be able to sign in with it any more.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/customer-access/${token.id}/revoke`, { method: "POST" });
+      loadTokens();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* clipboard may be unavailable — the value is still shown on screen */
+    }
+  }
+
+  const inquiryUrl = `${window.location.origin}/inquiry`;
+  const activeTokens = tokens.filter((t) => t.is_active);
+  const revokedTokens = tokens.filter((t) => !t.is_active);
+
+  return (
+    <>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+      <div className="card" style={{ marginBottom: 20, maxWidth: 520 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Public inquiry form</div>
+        <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 8, lineHeight: 1.5 }}>
+          Share this link anywhere (website, social media) for potential customers to request a quote — it feeds
+          straight into Browse Leads, no account needed.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{
+            flex: 1, background: "var(--concrete)", border: "1px dashed var(--border-strong, #ccc)",
+            borderRadius: 8, padding: "8px 10px", fontSize: 12, fontFamily: "ui-monospace, monospace",
+            color: "var(--info)", wordBreak: "break-all",
+          }}>
+            {inquiryUrl}
+          </div>
+          <button type="button" onClick={() => copyText(inquiryUrl)} style={{ fontSize: 12 }}>Copy</button>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 20, maxWidth: 520 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Generate a customer access code</div>
+        <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
+          A short code (not a link) an existing customer types into /portal to see their own orders and QC reports.
+          Covers one or more of their sites — send it to them yourself, by phone/SMS/WhatsApp.
+        </div>
+        <form onSubmit={generate} style={{ fontSize: 13 }}>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>Customer</span>
+            <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setSiteIds([]); }} required>
+              <option value="">Select</option>
+              {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </label>
+          <div style={{ marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>
+              Site(s) this code can see
+            </span>
+            {!customerId ? (
+              <div style={{ fontSize: 12, color: "var(--slate)" }}>Select a customer first</div>
+            ) : sitesForCustomer.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--slate)" }}>No sites on file for this customer</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 140, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}>
+                {sitesForCustomer.map((s) => (
+                  <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                    <input type="checkbox" checked={siteIds.includes(s.id)} onChange={() => toggleSite(s.id)} />
+                    {s.name}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <label style={{ display: "block", marginBottom: 14 }}>
+            <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>Label (optional)</span>
+            <input type="text" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Site engineer — Ravi" />
+          </label>
+          <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={saving || siteIds.length === 0}>
+            {saving ? "Generating..." : "Generate access code"}
+          </button>
+        </form>
+        {generated && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 6 }}>Generated code — send this to the customer:</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{
+                flex: 1, background: "var(--concrete)", border: "1px dashed var(--border-strong, #ccc)",
+                borderRadius: 8, padding: "10px 12px", fontSize: 18, fontWeight: 700, letterSpacing: 2,
+                fontFamily: "ui-monospace, monospace", color: "var(--info)", textAlign: "center",
+              }}>
+                {generated.token}
+              </div>
+              <button type="button" onClick={() => copyText(generated.token)} style={{ fontSize: 12 }}>Copy</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Active access codes</div>
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: "left" }}>
+              <th style={th}>Customer</th>
+              <th style={th}>Sites</th>
+              <th style={th}>Code</th>
+              <th style={th}>Last used</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeTokens.length === 0 && (
+              <tr><td colSpan={5} style={{ ...td, color: "var(--slate)" }}>No active access codes yet.</td></tr>
+            )}
+            {activeTokens.map((t) => (
+              <tr key={t.id}>
+                <td style={td}>
+                  <b>{t.customer_name}</b>
+                  {t.label && <div style={{ color: "var(--slate)", fontSize: 11.5 }}>{t.label}</div>}
+                </td>
+                <td style={{ ...td, color: "var(--slate)", fontSize: 11.5 }}>{(t.site_names || []).join(", ") || "—"}</td>
+                <td style={td}>
+                  <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, color: "var(--info)", fontWeight: 700 }}>{t.token}</span>{" "}
+                  <button type="button" onClick={() => copyText(t.token)} style={{ fontSize: 11, padding: "3px 8px" }}>Copy</button>
+                </td>
+                <td style={{ ...td, color: "var(--slate)" }}>{t.last_used_at ? new Date(t.last_used_at).toLocaleDateString([], { day: "2-digit", month: "short" }) : "Never"}</td>
+                <td style={td}>
+                  <button type="button" className="btn-danger" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => revoke(t)}>
+                    Revoke
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {revokedTokens.length > 0 && (
+        <details style={{ marginBottom: 20 }}>
+          <summary style={{ fontSize: 12.5, color: "var(--slate)", cursor: "pointer" }}>
+            {revokedTokens.length} revoked code{revokedTokens.length === 1 ? "" : "s"}
+          </summary>
+          <div className="card" style={{ padding: 0, overflow: "hidden", marginTop: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <tbody>
+                {revokedTokens.map((t) => (
+                  <tr key={t.id}>
+                    <td style={td}><b>{t.customer_name}</b> <span style={{ color: "var(--slate)" }}>— {(t.site_names || []).join(", ")}</span></td>
+                    <td style={{ ...td, color: "var(--slate)" }}>Revoked {new Date(t.revoked_at).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </>
   );
 }

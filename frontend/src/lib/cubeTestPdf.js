@@ -105,12 +105,15 @@ export async function generateCubeTestPdf(data) {
   doc.setTextColor(...SLATE);
   doc.text("IS 516 (Part 1)  |  IS:456-2000  |  IS 1199 (1959)", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
 
-  y += 6;
+  // Gap before the rule: the logo's bottom edge sits at y+6 (addImage was
+  // placed at y-9 with a 15mm height), so the rule needs to clear that,
+  // not sit flush on top of it — same for the address/IS-code text above.
+  y += 9;
   doc.setDrawColor(...RED);
   doc.setLineWidth(0.8);
   doc.line(MARGIN_X, y, PAGE_W - MARGIN_X, y);
   doc.setLineWidth(0.2);
-  y += 5;
+  y += 7;
 
   // ---------------- Spec grid (4 columns) ----------------
   const cubeCount = data.cubes?.length || data.number_of_cubes || 0;
