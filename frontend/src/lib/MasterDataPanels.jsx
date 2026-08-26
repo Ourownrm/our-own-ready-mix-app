@@ -1360,8 +1360,9 @@ export function OrdersPanel({ setError, initialEditId }) {
   const [orders, setOrders] = useState([]);
   const [mixGrades, setMixGrades] = useState([]);
   const [pumps, setPumps] = useState([]);
+  const [qcEngineers, setQcEngineers] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "", mix_grade_id: "", pump_requirement: "without_pump", pump_id: "" });
+  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "", mix_grade_id: "", pump_requirement: "without_pump", pump_id: "", assigned_qc_engineer_id: "" });
   const [rescheduling, setRescheduling] = useState(null);
   const [rescheduleForm, setRescheduleForm] = useState({ new_order_date: "", new_scheduled_batching_time: "", reason: "" });
   const [saving, setSaving] = useState(false);
@@ -1383,6 +1384,7 @@ export function OrdersPanel({ setError, initialEditId }) {
     load();
     apiRequest("/master/mix-grades").then(setMixGrades).catch((err) => setError(err.message));
     apiRequest("/master/pumps").then(setPumps).catch((err) => setError(err.message));
+    apiRequest("/master/qc-engineers").then(setQcEngineers).catch((err) => setError(err.message));
   }, []);
 
   function startEdit(o) {
@@ -1394,6 +1396,7 @@ export function OrdersPanel({ setError, initialEditId }) {
       mix_grade_id: o.mix_grade_id || "",
       pump_requirement: o.pump_requirement || "without_pump",
       pump_id: o.pump_id || "",
+      assigned_qc_engineer_id: o.assigned_qc_engineer_id || "",
     });
   }
 
@@ -1441,7 +1444,7 @@ export function OrdersPanel({ setError, initialEditId }) {
     <div className="card">
       <table>
         <thead>
-          <tr><th>Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Qty (m³)</th><th>Pump</th><th>Status</th><th></th></tr>
+          <tr><th>Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Qty (m³)</th><th>Pump</th><th>QC Engineer</th><th>Status</th><th></th></tr>
         </thead>
         <tbody>
           {orders.map((o) => (
@@ -1503,6 +1506,20 @@ export function OrdersPanel({ setError, initialEditId }) {
                     </span>
                   ) : o.pump_requirement && o.pump_requirement !== "without_pump" ? (o.pump_code || "—") : "—"}
                 </td>
+                <td>
+                  {editing === o.id ? (
+                    // Round 119, post-ship again, item 1 — lets Admin/Manager
+                    // pick a specific QC Engineer for this order's "your team
+                    // on this order" card in the customer portal, instead of
+                    // the app always resolving the same one by role (there's
+                    // more than one QC Engineer on staff, unlike Manager).
+                    // Left blank falls back to the old role-based pick.
+                    <select value={form.assigned_qc_engineer_id} onChange={(e) => setForm({ ...form, assigned_qc_engineer_id: e.target.value })} style={{ fontSize: 12 }}>
+                      <option value="">(default — any QC Engineer)</option>
+                      {qcEngineers.map((q) => <option key={q.id} value={q.id}>{q.name}</option>)}
+                    </select>
+                  ) : o.qc_engineer_name || <span style={{ color: "var(--slate)" }}>—</span>}
+                </td>
                 <td><span className={`badge ${o.status === "cancelled" ? "badge-danger" : "badge-neutral"}`}>{o.status.replace("_", " ")}</span></td>
                 <td>
                   {!["cancelled", "closed", "completed"].includes(o.status) && (
@@ -1523,7 +1540,7 @@ export function OrdersPanel({ setError, initialEditId }) {
               </tr>
               {rescheduling === o.id && (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <div className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 8, fontSize: 13, padding: 10, background: "var(--concrete)", borderRadius: 8, alignItems: "end" }}>
                       <div>
                         <div style={{ color: "var(--slate)" }}>New date</div>
@@ -1550,7 +1567,7 @@ export function OrdersPanel({ setError, initialEditId }) {
               )}
             </Fragment>
           ))}
-          {orders.length === 0 && <tr><td colSpan={8} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
+          {orders.length === 0 && <tr><td colSpan={9} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
         </tbody>
       </table>
     </div>

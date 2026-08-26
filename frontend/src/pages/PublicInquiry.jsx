@@ -127,6 +127,12 @@ function Field({ label, children }) {
 }
 
 function Shell({ children }) {
+  // Round 119, post-ship again, item 5 — unlike the other public pages
+  // (Services, RMC vs. Site-Mix, Free Technical Assistance), this one is
+  // meant to be reached by an outside visitor with no account at all (see
+  // the header comment above), so there's no sensible /portal fallback here
+  // — only show Back when there's actually somewhere to go back to.
+  const canGoBack = typeof window !== "undefined" && window.history.length > 1;
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", minHeight: "100vh", background: "var(--concrete)" }}>
       <div className="topbar" style={{ marginBottom: 16 }}>
@@ -137,7 +143,14 @@ function Shell({ children }) {
           </div>
         </div>
       </div>
-      <div style={{ padding: "0 16px" }}>{children}</div>
+      <div style={{ padding: "0 16px" }}>
+        {canGoBack && (
+          <button type="button" onClick={() => window.history.back()} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, background: "none", border: "none", padding: "6px 0 10px", color: "var(--rebar)", cursor: "pointer", fontWeight: 600 }}>
+            ← Back
+          </button>
+        )}
+        {children}
+      </div>
     </div>
   );
 }

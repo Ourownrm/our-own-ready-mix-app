@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { APP_VERSION } from "../lib/version.js";
+import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
+import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
 
 // Public, no-login page reached only via a shared per-customer+site link
 // (see pages/CustomerBooking.jsx for how Manager/Admin generate it, and
@@ -69,7 +71,10 @@ export default function CustomerBookingForm() {
     );
   }
 
-  const { customer_name, site_name, mix_grades, requests, tracking } = data;
+  const {
+    customer_name, site_name, mix_grades, requests, tracking, tracking_enabled,
+    allow_qc_reports, allow_technical_writings, qc_reports, technical_writings,
+  } = data;
   // Round 116 fix: this used to gate purely on "has any request ever been
   // submitted through this exact link" — so a link generated for a
   // customer/site that already had an ongoing order (created directly by
@@ -78,7 +83,11 @@ export default function CustomerBookingForm() {
   // actually moving. Showing the status view whenever there's tracking to
   // show fixes that; the plain request form is now only the true first-run
   // state — no requests AND nothing currently being tracked.
-  const displayForm = (requests.length === 0 && !tracking) || showForm;
+  // Round 119, post-ship again, item 4 — QC Reports and Technical Writings
+  // are now also reasons to land on the status screen instead of straight on
+  // the bare request form, same as tracking already was, since there can be
+  // something worth showing there even before any booking request exists.
+  const displayForm = (requests.length === 0 && !tracking && !allow_qc_reports && !allow_technical_writings) || showForm;
 
   async function submit(e) {
     e.preventDefault();
@@ -92,6 +101,51 @@ export default function CustomerBookingForm() {
       setError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Round 119, post-ship again, item 4 — same client-side PDF generation the
+  // authenticated /portal side already uses (mixDesignPdf.js/cubeTestPdf.js),
+  // just fetching the raw data from this link's own token-scoped routes
+  // instead of an auth'd session.
+  const [busy, setBusy] = useState(false);
+  const [busyErr, setBusyErr] = useState("");
+  async function viewMixDesign(orderId) {
+    setBusyErr(""); setBusy(true);
+    try {
+      const d = await apiRequest(`/customer-booking/${token}/orders/${orderId}/mix-design-pdf-data`);
+      await generateMixDesignPdf(d);
+    } catch (err) {
+      setBusyErr(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function viewCubeTest(resultId) {
+    setBusyErr(""); setBusy(true);
+    try {
+      const d = await apiRequest(`/customer-booking/${token}/cube-tests/${resultId}/pdf-data`);
+      await generateCubeTestPdf(d);
+    } catch (err) {
+      setBusyErr(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function openTechDoc(doc) {
+    setBusyErr(""); setBusy(true);
+    try {
+      const file = await apiRequest(`/customer-booking/${token}/technical-writings/${doc.id}/file`);
+      const bytes = Uint8Array.from(atob(file.data_base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: file.mime_type || "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank");
+      if (!win) window.location.assign(url);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      setBusyErr(err.message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -171,21 +225,93 @@ export default function CustomerBookingForm() {
         requests.map((r) => <RequestStatusCard key={r.id} request={r} />)
       )}
 
-      {tracking && (
+      {tracking_enabled && (
         <>
           <div style={{ fontSize: 13, fontWeight: 700, margin: "16px 0 8px" }}>Live delivery status</div>
-          {tracking.trucks.filter((t) => t.status !== "rejected").map((t) => (
-            <TruckCard key={t.ticket_number} truck={t} />
-          ))}
-          {tracking.trucks.length === 0 && (
+          {tracking ? (
+            <>
+              {tracking.trucks.filter((t) => t.status !== "rejected").map((t) => (
+                <TruckCard key={t.ticket_number} truck={t} />
+              ))}
+              {tracking.trucks.length === 0 && (
+                <div className="card" style={{ marginBottom: 14, fontSize: 12, color: "var(--slate)" }}>
+                  No trucks dispatched yet — this will update automatically once one leaves the plant.
+                </div>
+              )}
+            </>
+          ) : (
+            // Round 119, post-ship again, item 4 — this section used to
+            // render nothing at all here (not even this line) when tracking
+            // was switched on but there was no live/recent order yet, which
+            // read as "tracking is broken" rather than "nothing to track
+            // right now."
             <div className="card" style={{ marginBottom: 14, fontSize: 12, color: "var(--slate)" }}>
-              No trucks dispatched yet — this will update automatically once one leaves the plant.
+              No delivery in progress for this site right now — this will update automatically once an order is scheduled.
             </div>
           )}
         </>
       )}
 
-      <button className="btn-primary" style={{ width: "100%", marginBottom: 6 }} onClick={() => setShowForm(true)}>
+      {allow_qc_reports && qc_reports && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "16px 0 8px" }}>QC reports</div>
+          {busyErr && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 8 }}>{busyErr}</div>}
+          {qc_reports.cube_tests.length === 0 && qc_reports.mix_designs.length === 0 ? (
+            <div className="card" style={{ marginBottom: 14, fontSize: 12, color: "var(--slate)" }}>
+              No cube test results or approved mix designs on file yet for this site.
+            </div>
+          ) : (
+            <>
+              {qc_reports.mix_designs.map((m) => (
+                <div key={m.order_id} className="card" style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <div style={{ fontWeight: 700, fontSize: 12.5 }}>{m.mix_grade_name}{m.design_ref_code ? ` · ${m.design_ref_code}` : ""}</div>
+                    <span className="badge badge-success">Approved mix design</span>
+                  </div>
+                  <button type="button" onClick={() => viewMixDesign(m.order_id)} disabled={busy} style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }}>View PDF</button>
+                </div>
+              ))}
+              {qc_reports.cube_tests.map((t) => (
+                <div key={t.id} className="card" style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <div style={{ fontWeight: 700, fontSize: 12.5 }}>Order #{t.order_id} · {t.mix_grade_name}</div>
+                    <span style={{ fontSize: 11, color: "var(--slate)" }}>
+                      {t.tested_at ? new Date(t.tested_at).toLocaleDateString([], { day: "2-digit", month: "short" }) : ""}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4 }}>
+                    {t.testing_age_days}-day{t.average_strength_mpa ? ` · ${t.average_strength_mpa} N/mm²` : ""}
+                  </div>
+                  <button type="button" onClick={() => viewCubeTest(t.id)} disabled={busy} style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }}>View PDF</button>
+                </div>
+              ))}
+            </>
+          )}
+        </>
+      )}
+
+      {allow_technical_writings && technical_writings && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "16px 0 8px" }}>Technical writings</div>
+          {technical_writings.length === 0 ? (
+            <div className="card" style={{ marginBottom: 14, fontSize: 12, color: "var(--slate)" }}>
+              No documents uploaded yet.
+            </div>
+          ) : (
+            technical_writings.map((doc) => (
+              <button
+                key={doc.id} type="button" onClick={() => openTechDoc(doc)} disabled={busy}
+                className="card" style={{ display: "block", width: "100%", textAlign: "left", marginBottom: 10, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 12.5 }}>{doc.title}</div>
+                <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>{doc.category || "General"}</div>
+              </button>
+            ))
+          )}
+        </>
+      )}
+
+      <button className="btn-primary" style={{ width: "100%", marginBottom: 6, marginTop: 4 }} onClick={() => setShowForm(true)}>
         + New booking request
       </button>
       <div style={{ fontSize: 10.5, color: "var(--slate)", textAlign: "center", marginBottom: 10 }}>
@@ -315,6 +441,11 @@ function Field({ label, children }) {
 }
 
 function Shell({ children }) {
+  // Round 119, post-ship again, item 5 — a booking link is opened directly
+  // (WhatsApp/SMS), not from within /portal, so — same reasoning as
+  // PublicInquiry.jsx's Shell — only show Back when there's actually
+  // somewhere in this tab's own history to go back to.
+  const canGoBack = typeof window !== "undefined" && window.history.length > 1;
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", minHeight: "100vh", background: "var(--concrete)" }}>
       <div className="topbar" style={{ marginBottom: 16 }}>
@@ -325,7 +456,14 @@ function Shell({ children }) {
           </div>
         </div>
       </div>
-      <div style={{ padding: "0 16px" }}>{children}</div>
+      <div style={{ padding: "0 16px" }}>
+        {canGoBack && (
+          <button type="button" onClick={() => window.history.back()} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, background: "none", border: "none", padding: "6px 0 10px", color: "var(--rebar)", cursor: "pointer", fontWeight: 600 }}>
+            ← Back
+          </button>
+        )}
+        {children}
+      </div>
     </div>
   );
 }

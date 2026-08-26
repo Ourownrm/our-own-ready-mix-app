@@ -205,7 +205,7 @@ a { color: var(--rebar); }
 .portal-tile-title { font-weight: 700; font-size: 13px; }
 .portal-tile-sub { font-size: 11px; color: var(--slate); }
 .portal-tile.cta .portal-tile-sub { color: rgba(255,255,255,.8); }
-.portal-strip { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; margin-top: 14px; display: flex; gap: 12px; align-items: center; text-align: left; width: 100%; font-family: inherit; }
+.portal-strip { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; margin-top: 14px; display: flex; gap: 12px; align-items: center; text-align: left; width: 100%; font-family: inherit; text-decoration: none; color: inherit; }
 
 .portal-group-label { font-size: 11px; font-weight: 700; color: var(--slate); text-transform: uppercase; letter-spacing: .5px; margin: 14px 0 8px; }
 .portal-group-label:first-child { margin-top: 0; }
@@ -237,7 +237,7 @@ a { color: var(--rebar); }
 .portal-callbtn { width: 34px; height: 34px; border-radius: 50%; background: var(--rebar); display: flex; align-items: center; justify-content: center; flex: none; border: none; }
 .portal-contact-row.highlight .portal-callbtn { background: var(--signal-green); }
 
-.portal-guest-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border); width: 100%; text-align: left; background: none; border-left: none; border-right: none; border-top: none; font-family: inherit; }
+.portal-guest-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border); width: 100%; text-align: left; background: none; border-left: none; border-right: none; border-top: none; font-family: inherit; text-decoration: none; color: inherit; }
 .portal-guest-row:last-child { border-bottom: none; }
 .portal-guest-ic { width: 36px; height: 36px; border-radius: 9px; background: var(--concrete); display: flex; align-items: center; justify-content: center; flex: none; }
 

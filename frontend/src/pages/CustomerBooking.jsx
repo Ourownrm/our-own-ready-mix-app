@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { BookingsQueue } from "../lib/SalesPanels.jsx";
@@ -350,16 +350,32 @@ function PortalAccessTab() {
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
   const [tokens, setTokens] = useState([]);
+  // Round 119, post-ship again, item 3 — the same customer_booking_links
+  // rows the Booking Links tab manages, loaded here too so this tab can
+  // show/edit Live Tracking, QC Reports, and Tech. Writings directly,
+  // instead of only pointing Manager at the other tab.
+  const [links, setLinks] = useState([]);
   const [customerId, setCustomerId] = useState("");
   const [siteIds, setSiteIds] = useState([]);
   const [label, setLabel] = useState("");
   const [generated, setGenerated] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [ensuringSiteId, setEnsuringSiteId] = useState(null);
+  const [savingPermId, setSavingPermId] = useState(null);
+  const [expandedTokenId, setExpandedTokenId] = useState(null);
 
   async function loadTokens() {
     try {
       setTokens(await apiRequest("/customer-access"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function loadLinks() {
+    try {
+      setLinks(await apiRequest("/booking-links"));
     } catch (err) {
       setError(err.message);
     }
@@ -370,12 +386,49 @@ function PortalAccessTab() {
       .then(([c, s]) => { setCustomers(c); setSites(s); })
       .catch((err) => setError(err.message));
     loadTokens();
+    loadLinks();
   }, []);
 
   const sitesForCustomer = sites.filter((s) => String(s.customer_id) === String(customerId));
 
-  function toggleSite(id) {
+  function linkFor(custId, siteId) {
+    return links.find((l) => String(l.customer_id) === String(custId) && String(l.site_id) === String(siteId) && l.is_active);
+  }
+
+  // Round 119, post-ship again, item 3 — checking a site guarantees a
+  // customer_booking_links row exists for it right away (rather than only
+  // on code generation), so its toggles are editable immediately below,
+  // before the "Generate access code" button is even pressed.
+  async function toggleSite(id) {
     setSiteIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    if (siteIds.includes(id) || !customerId) return;
+    setEnsuringSiteId(id); setError("");
+    try {
+      const link = await apiRequest("/booking-links/ensure", { method: "POST", body: { customer_id: customerId, site_id: id } });
+      setLinks((prev) => (prev.some((l) => l.id === link.id) ? prev.map((l) => (l.id === link.id ? { ...l, ...link, customer_id: customerId, site_id: id } : l)) : [...prev, { ...link, customer_id: customerId, site_id: id }]));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setEnsuringSiteId(null);
+    }
+  }
+
+  // Same optimistic pattern as BookingLinksTab's setPermission.
+  async function setPermission(link, patch) {
+    setSavingPermId(link.id); setError("");
+    const next = {
+      tracking_enabled: link.tracking_enabled, allow_qc_reports: link.allow_qc_reports,
+      allow_technical_writings: link.allow_technical_writings, ...patch,
+    };
+    setLinks((prev) => prev.map((l) => (l.id === link.id ? { ...l, ...next } : l)));
+    try {
+      await apiRequest(`/booking-links/${link.id}/permissions`, { method: "PATCH", body: next });
+    } catch (err) {
+      setError(err.message);
+      loadLinks();
+    } finally {
+      setSavingPermId(null);
+    }
   }
 
   async function generate(e) {
@@ -390,6 +443,7 @@ function PortalAccessTab() {
       setSiteIds([]);
       setLabel("");
       loadTokens();
+      loadLinks();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -465,13 +519,43 @@ function PortalAccessTab() {
             ) : sitesForCustomer.length === 0 ? (
               <div style={{ fontSize: 12, color: "var(--slate)" }}>No sites on file for this customer</div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 140, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}>
-                {sitesForCustomer.map((s) => (
-                  <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
-                    <input type="checkbox" checked={siteIds.includes(s.id)} onChange={() => toggleSite(s.id)} />
-                    {s.name}
-                  </label>
-                ))}
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 280, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}>
+                {sitesForCustomer.map((s) => {
+                  const checked = siteIds.includes(s.id);
+                  const link = linkFor(customerId, s.id);
+                  return (
+                    <div key={s.id} style={checked ? { borderBottom: "1px solid var(--border)", paddingBottom: 6, marginBottom: 2 } : undefined}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleSite(s.id)} />
+                        {s.name}
+                      </label>
+                      {checked && (
+                        // Round 119, post-ship again, item 3 — the actual
+                        // fix: tracking/QC/tech-writings can be switched
+                        // right here per site, as soon as it's selected,
+                        // instead of only on the separate Booking Links tab.
+                        !link || ensuringSiteId === s.id ? (
+                          <div style={{ fontSize: 11, color: "var(--slate)", marginLeft: 22, marginTop: 4 }}>Setting up permissions…</div>
+                        ) : (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginLeft: 22, marginTop: 4 }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                              <ToggleSwitch checked={link.tracking_enabled} disabled={savingPermId === link.id} onChange={(v) => setPermission(link, { tracking_enabled: v })} />
+                              Live delivery tracking
+                            </label>
+                            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                              <ToggleSwitch checked={link.allow_qc_reports} disabled={savingPermId === link.id} onChange={(v) => setPermission(link, { allow_qc_reports: v })} />
+                              QC reports
+                            </label>
+                            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                              <ToggleSwitch checked={link.allow_technical_writings} disabled={savingPermId === link.id} onChange={(v) => setPermission(link, { allow_technical_writings: v })} />
+                              Technical writings
+                            </label>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -480,8 +564,9 @@ function PortalAccessTab() {
             <input type="text" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Site engineer — Ravi" />
           </label>
           <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 14, lineHeight: 1.5 }}>
-            What this code can see (tracking, QC reports, technical writings) is controlled per site on the{" "}
-            <b>Booking Links</b> tab, not here — this code inherits whatever's switched on for the site(s) selected above.
+            Tracking / QC Reports / Tech. Writings above are shared with the <b>Booking Links</b> tab — it's the same
+            per customer+site switch either way, so changing it here also updates that customer's booking link (and
+            vice versa).
           </div>
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={saving || siteIds.length === 0}>
             {saving ? "Generating..." : "Generate access code"}
@@ -521,23 +606,68 @@ function PortalAccessTab() {
               <tr><td colSpan={5} style={{ ...td, color: "var(--slate)" }}>No active access codes yet.</td></tr>
             )}
             {activeTokens.map((t) => (
-              <tr key={t.id}>
-                <td style={td}>
-                  <b>{t.customer_name}</b>
-                  {t.label && <div style={{ color: "var(--slate)", fontSize: 11.5 }}>{t.label}</div>}
-                </td>
-                <td style={{ ...td, color: "var(--slate)", fontSize: 11.5 }}>{(t.site_names || []).join(", ") || "—"}</td>
-                <td style={td}>
-                  <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, color: "var(--info)", fontWeight: 700 }}>{t.token}</span>{" "}
-                  <button type="button" onClick={() => copyText(t.token)} style={{ fontSize: 11, padding: "3px 8px" }}>Copy</button>
-                </td>
-                <td style={{ ...td, color: "var(--slate)" }}>{t.last_used_at ? new Date(t.last_used_at).toLocaleDateString([], { day: "2-digit", month: "short" }) : "Never"}</td>
-                <td style={td}>
-                  <button type="button" className="btn-danger" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => revoke(t)}>
-                    Revoke
-                  </button>
-                </td>
-              </tr>
+              <Fragment key={t.id}>
+                <tr>
+                  <td style={td}>
+                    <b>{t.customer_name}</b>
+                    {t.label && <div style={{ color: "var(--slate)", fontSize: 11.5 }}>{t.label}</div>}
+                  </td>
+                  <td style={{ ...td, color: "var(--slate)", fontSize: 11.5 }}>{(t.sites || []).map((s) => s.name).join(", ") || "—"}</td>
+                  <td style={td}>
+                    <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, color: "var(--info)", fontWeight: 700 }}>{t.token}</span>{" "}
+                    <button type="button" onClick={() => copyText(t.token)} style={{ fontSize: 11, padding: "3px 8px" }}>Copy</button>
+                  </td>
+                  <td style={{ ...td, color: "var(--slate)" }}>{t.last_used_at ? new Date(t.last_used_at).toLocaleDateString([], { day: "2-digit", month: "short" }) : "Never"}</td>
+                  <td style={td}>
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button type="button" onClick={() => setExpandedTokenId(expandedTokenId === t.id ? null : t.id)} style={{ fontSize: 11.5, padding: "5px 10px" }}>
+                        {expandedTokenId === t.id ? "Hide access" : "Manage access"}
+                      </button>
+                      <button type="button" className="btn-danger" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => revoke(t)}>
+                        Revoke
+                      </button>
+                    </span>
+                  </td>
+                </tr>
+                {expandedTokenId === t.id && (
+                  <tr>
+                    <td colSpan={5} style={{ ...td, background: "var(--concrete)" }}>
+                      {/* Round 119, post-ship again, item 3 — the literal fix:
+                          Manager can see and flip Tracking/QC/Tech.
+                          Writings for every site this code covers right
+                          here, on the Portal Access tab itself. */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                        {(t.sites || []).map((s) => {
+                          const link = linkFor(t.customer_id, s.id);
+                          return (
+                            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+                              <b style={{ fontSize: 12.5, minWidth: 120 }}>{s.name}</b>
+                              {!link ? (
+                                <span style={{ fontSize: 11.5, color: "var(--slate)" }}>No booking-link permissions row yet — reopen this after saving once.</span>
+                              ) : (
+                                <>
+                                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                                    <ToggleSwitch checked={link.tracking_enabled} disabled={savingPermId === link.id} onChange={(v) => setPermission(link, { tracking_enabled: v })} />
+                                    Live tracking
+                                  </label>
+                                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                                    <ToggleSwitch checked={link.allow_qc_reports} disabled={savingPermId === link.id} onChange={(v) => setPermission(link, { allow_qc_reports: v })} />
+                                    QC reports
+                                  </label>
+                                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                                    <ToggleSwitch checked={link.allow_technical_writings} disabled={savingPermId === link.id} onChange={(v) => setPermission(link, { allow_technical_writings: v })} />
+                                    Technical writings
+                                  </label>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -553,7 +683,7 @@ function PortalAccessTab() {
               <tbody>
                 {revokedTokens.map((t) => (
                   <tr key={t.id}>
-                    <td style={td}><b>{t.customer_name}</b> <span style={{ color: "var(--slate)" }}>— {(t.site_names || []).join(", ")}</span></td>
+                    <td style={td}><b>{t.customer_name}</b> <span style={{ color: "var(--slate)" }}>— {(t.sites || []).map((s) => s.name).join(", ")}</span></td>
                     <td style={{ ...td, color: "var(--slate)" }}>Revoked {new Date(t.revoked_at).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
                   </tr>
                 ))}
@@ -994,14 +1124,22 @@ function FeedbackTab({ isSalesExec }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {filtered.map((f) => (
             <div key={f.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontWeight: 600 }}>{f.customer_name}</span>
-                <span className={`badge ${f.feedback_type === "complaint" ? "badge-danger" : "badge-success"}`}>{f.feedback_type}</span>
+                <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {/* Round 119, post-ship again, item 6 — a customer can now
+                      submit their own feedback (with a star rating) from the
+                      portal's Feedback screen, not just a rep logging it
+                      after a visit — both badges make the source obvious. */}
+                  {f.submitted_by_customer && <span className="badge badge-info">From customer</span>}
+                  {f.rating && <span style={{ fontSize: 12, color: "var(--amber)" }}>{"★".repeat(f.rating)}{"☆".repeat(5 - f.rating)}</span>}
+                  <span className={`badge ${f.feedback_type === "complaint" ? "badge-danger" : "badge-success"}`}>{f.feedback_type}</span>
+                </span>
               </div>
               <div style={{ color: "var(--slate)" }}>{f.comment}</div>
               <div style={{ color: "var(--slate)", fontSize: 11 }}>
                 {new Date(f.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })}
-                {!isSalesExec && f.recorded_by_name && ` · Logged by ${f.recorded_by_name}`}
+                {!isSalesExec && !f.submitted_by_customer && f.recorded_by_name && ` · Logged by ${f.recorded_by_name}`}
               </div>
             </div>
           ))}

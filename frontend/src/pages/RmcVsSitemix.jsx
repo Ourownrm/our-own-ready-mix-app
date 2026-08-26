@@ -63,6 +63,14 @@ export default function RmcVsSitemix() {
   );
 }
 
+// Round 119, post-ship again, item 5 — see ServicesPublic.jsx's identical
+// comment on goBack. Reached from /portal's More screen and guest links as a
+// full page navigation, so PortalShell's own back button doesn't cover it.
+function goBack() {
+  if (window.history.length > 1) window.history.back();
+  else window.location.assign("/portal");
+}
+
 function Shell({ children }) {
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", minHeight: "100vh", background: "var(--concrete)" }}>
@@ -72,7 +80,12 @@ function Shell({ children }) {
           <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>Ready-Mix vs. Site-Mix</div>
         </div>
       </div>
-      <div style={{ padding: "0 16px" }}>{children}</div>
+      <div style={{ padding: "0 16px" }}>
+        <button type="button" onClick={goBack} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, background: "none", border: "none", padding: "6px 0 10px", color: "var(--rebar)", cursor: "pointer", fontWeight: 600 }}>
+          ← Back
+        </button>
+        {children}
+      </div>
     </div>
   );
 }

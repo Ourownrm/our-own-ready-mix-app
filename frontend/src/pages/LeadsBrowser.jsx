@@ -12,6 +12,15 @@ const ACTIVITY_LABEL = {
   quotation_revised: "Quotation revised", meeting: "Meeting", site_visit: "Site visit",
 };
 
+// Round 119, post-ship again, item 7 — "type of enquiry" (quote request vs.
+// free technical assistance) has no column of its own; publicInquiry.js
+// already tags a technical-assistance lead's notes with this exact prefix
+// at submission time, so it's derived here rather than adding a new column
+// for something already distinguishable.
+function enquiryType(l) {
+  return l.notes?.startsWith("[Free Technical Assistance") ? "Technical assistance" : "Request for quote";
+}
+
 export default function LeadsBrowser() {
   const { user } = useAuth();
   const [leads, setLeads] = useState([]);
@@ -54,7 +63,10 @@ export default function LeadsBrowser() {
                     <span style={{ fontWeight: 600 }}>
                       {l.prospect_name}
                       {l.source === "public_inquiry" && (
-                        <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 10 }}>Public inquiry</span>
+                        <>
+                          <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 10 }}>Public inquiry</span>
+                          <span className="badge badge-neutral" style={{ marginLeft: 4, fontSize: 10 }}>{enquiryType(l)}</span>
+                        </>
                       )}
                     </span>
                     <span className={`badge ${LEAD_STATUS_BADGE[l.status]}`}>{l.status}</span>
@@ -80,6 +92,8 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
   const [executives, setExecutives] = useState([]);
   const [assignTo, setAssignTo] = useState("");
   const [assigning, setAssigning] = useState(false);
+  const [closeReason, setCloseReason] = useState("");
+  const [closing, setClosing] = useState(false);
 
   async function load() {
     try {
@@ -118,6 +132,25 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
     }
   }
 
+  // Round 119, post-ship again, item 7 — "how do I close this lead?" This
+  // was the missing action: the only options were assign and (Administrator
+  // only) mark won. Reuses the existing POST /sales/leads/:id/lost, which
+  // already allows sales_executive/manager/administrator — same role gate
+  // this whole page already assumes.
+  async function closeLead() {
+    if (!closeReason.trim()) return;
+    setClosing(true); setError("");
+    try {
+      await apiRequest(`/sales/leads/${leadId}/lost`, { method: "POST", body: { lost_reason: closeReason.trim() } });
+      setCloseReason("");
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setClosing(false);
+    }
+  }
+
   if (!lead) {
     return (
       <>
@@ -141,7 +174,10 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
             <div style={{ fontWeight: 600, fontSize: 15 }}>
               {lead.prospect_name}
               {lead.source === "public_inquiry" && (
-                <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 10 }}>Public inquiry</span>
+                <>
+                  <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 10 }}>Public inquiry</span>
+                  <span className="badge badge-neutral" style={{ marginLeft: 4, fontSize: 10 }}>{enquiryType(lead)}</span>
+                </>
               )}
             </div>
             <span className={`badge ${LEAD_STATUS_BADGE[lead.status]}`}>{lead.status}</span>
@@ -200,6 +236,22 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
             </select>
             <button className="btn-primary" onClick={markWon} disabled={saving} style={{ width: "100%" }}>
               {saving ? "Saving..." : "Confirm won"}
+            </button>
+          </div>
+        )}
+
+        {lead.status !== "won" && lead.status !== "lost" && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Close this lead</div>
+            <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>
+              Didn't go anywhere? Close it with a reason — it moves to "lost" and stops showing as open.
+            </div>
+            <input
+              type="text" value={closeReason} onChange={(e) => setCloseReason(e.target.value)}
+              placeholder="Reason (e.g. went with another supplier)" style={{ width: "100%", marginBottom: 8 }}
+            />
+            <button className="btn-danger" onClick={closeLead} disabled={closing || !closeReason.trim()} style={{ width: "100%" }}>
+              {closing ? "Closing..." : "Close lead"}
             </button>
           </div>
         )}

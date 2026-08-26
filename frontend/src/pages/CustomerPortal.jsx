@@ -238,6 +238,7 @@ function PortalShell({ me, onSignOut, onRefreshMe }) {
   if (top.name === "order-concrete") { title = "Order Concrete"; subtitle = null; }
   if (top.name === "qc-reports") { title = "QC & Mix Designs"; subtitle = null; }
   if (top.name === "technical-writings") { title = "Technical Writings"; subtitle = null; }
+  if (top.name === "feedback") { title = "Feedback"; subtitle = null; }
 
   return (
     <div className="portal-shell">
@@ -286,6 +287,7 @@ function PortalShell({ me, onSignOut, onRefreshMe }) {
         )}
         {top.name === "qc-reports" && <QcReportsScreen />}
         {top.name === "technical-writings" && <TechnicalWritingsScreen />}
+        {top.name === "feedback" && <FeedbackScreen onDone={pop} />}
       </div>
 
       <div className="portal-bottomnav">
@@ -741,6 +743,17 @@ function MoreScreen({ me, onSignOut, onPush }) {
             <IconChevron size={16} color="#C8C2B5" />
           </button>
         )}
+        {/* Round 119, post-ship again, item 6 — not gated on any
+            tracking/QC/tech-writings permission, since giving feedback isn't
+            a data-visibility switch like those; every signed-in customer
+            code can leave feedback. */}
+        <button type="button" className="portal-more-row" onClick={() => onPush({ name: "feedback" })}>
+          <div className="portal-more-ic">
+            <Icon size={17} color="#C75B12"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></Icon>
+          </div>
+          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Feedback</div>
+          <IconChevron size={16} color="#C8C2B5" />
+        </button>
         <a href="/services" className="portal-more-row" style={{ textDecoration: "none", color: "inherit" }}>
           <div className="portal-more-ic"><IconBuilding color="#C75B12" size={17} /></div>
           <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Services, Products &amp; Equipment</div>
@@ -903,6 +916,102 @@ function TechnicalWritingsScreen() {
         ))
       )}
     </>
+  );
+}
+
+// ===================== Feedback (round 119, post-ship again, item 6) =====================
+// A customer can log their own after-sales feedback (star rating + a
+// comment, optionally tied to one of their own orders) directly from the
+// portal — see routes/customerPortal.js's POST /feedback. Lands in the same
+// aftersales_feedback table (and the same Manager/Admin-facing Feedback tab
+// on Customer Booking) a Sales Executive's post-visit feedback already
+// does, just with submitted_by_customer/rating set so it's clearly labeled.
+function FeedbackScreen({ onDone }) {
+  const [orders, setOrders] = useState([]);
+  const [orderId, setOrderId] = useState("");
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    customerPortalRequest("/orders").then((rows) => setOrders(rows.filter((r) => r.kind === "order"))).catch(() => setOrders([]));
+  }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!rating) { setError("Select a star rating."); return; }
+    if (!comment.trim()) { setError("Please add a short comment."); return; }
+    setError(""); setSaving(true);
+    try {
+      await customerPortalRequest("/feedback", { method: "POST", body: { order_id: orderId || null, rating, comment } });
+      setDone(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (done) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: "32px 20px" }}>
+        <div style={{ fontSize: 34, marginBottom: 10 }}>🙏</div>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>Thank you for your feedback</div>
+        <div style={{ fontSize: 12.5, color: "var(--slate)", lineHeight: 1.5, marginBottom: 16 }}>
+          We've shared this with our team.
+        </div>
+        <button type="button" className="btn-primary" style={{ width: "100%" }} onClick={onDone}>Done</button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="card">
+      <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 14, lineHeight: 1.5 }}>
+        Tell us how we're doing — a quick rating and a note, on any order or in general.
+      </div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+
+      <div style={{ marginBottom: 14 }}>
+        <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 6 }}>Your rating</span>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button
+              key={n} type="button" onClick={() => setRating(n)}
+              style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 30, lineHeight: 1, color: n <= rating ? "var(--amber)" : "#D9D4C8" }}
+              aria-label={`${n} star${n === 1 ? "" : "s"}`}
+            >
+              {n <= rating ? "★" : "☆"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {orders.length > 0 && (
+        <label style={{ display: "block", marginBottom: 12 }}>
+          <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>About an order (optional)</span>
+          <select value={orderId} onChange={(e) => setOrderId(e.target.value)}>
+            <option value="">General feedback — not order-specific</option>
+            {orders.map((o) => (
+              <option key={o.id} value={o.id}>
+                Order #{o.id} · {o.site_name} · {o.order_date ? new Date(o.order_date).toLocaleDateString([], { day: "2-digit", month: "short" }) : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      <label style={{ display: "block", marginBottom: 14 }}>
+        <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>Comments</span>
+        <textarea rows={4} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="What went well, or what we can do better..." />
+      </label>
+
+      <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={saving}>
+        {saving ? "Sending..." : "Send feedback"}
+      </button>
+    </form>
   );
 }
 

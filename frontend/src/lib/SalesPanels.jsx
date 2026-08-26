@@ -384,14 +384,31 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
 // endpoint (same one LeadsBrowser.jsx uses) rather than adding a new
 // backend route just for this — same "don't build a second read path for
 // data that already has one" instinct as the public-inquiry feature itself
-// reusing the leads pipeline. Shows only what's unassigned/new, since an
-// already-picked-up lead has nothing left for Manager to act on from here —
-// full history is one click away on Browse Leads.
+// reusing the leads pipeline.
+//
+// Round 119, post-ship again, items 7 & 8 — two fixes reported after this
+// shipped:
+// 1. A lead used to disappear from this card the moment it was assigned —
+//    which meant Manager lost track of it entirely unless they went and
+//    browsed Leads. It now stays here (as a reminder) until actually closed
+//    (won/lost), showing who it's assigned to instead of the Assign
+//    control. The "X new" badge now only counts still-unassigned leads,
+//    since that's the number actually needing Manager's attention.
+// 2. There was no way to close/decline a lead from here at all — only
+//    "assign" existed. Reuses the existing POST /sales/leads/:id/lost
+//    (already used elsewhere for this) rather than adding a new endpoint.
+//    "Won" isn't offered here deliberately — that's an Administrator-only
+//    action needing customer/order attribution (see LeadsBrowser.jsx), not
+//    something this quick card is meant to do.
+const ENQUIRY_TYPE = (l) => (l.notes?.startsWith("[Free Technical Assistance") ? "Technical assistance" : "Request for quote");
+
 export function CustomerInquiriesCard({ setError }) {
   const [leads, setLeads] = useState([]);
   const [executives, setExecutives] = useState([]);
   const [assigningId, setAssigningId] = useState(null);
   const [assignTo, setAssignTo] = useState("");
+  const [closingId, setClosingId] = useState(null);
+  const [closeReason, setCloseReason] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function load() {
@@ -407,8 +424,9 @@ export function CustomerInquiriesCard({ setError }) {
   }, []);
 
   const inquiries = leads
-    .filter((l) => l.source === "public_inquiry" && !l.assigned_to && l.status !== "won" && l.status !== "lost")
+    .filter((l) => l.source === "public_inquiry" && l.status !== "won" && l.status !== "lost")
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const unassignedCount = inquiries.filter((l) => !l.assigned_to).length;
 
   async function assign(leadId) {
     if (!assignTo) return;
@@ -424,28 +442,58 @@ export function CustomerInquiriesCard({ setError }) {
     }
   }
 
+  async function closeLead(leadId) {
+    if (!closeReason.trim()) return;
+    setBusy(true); setError("");
+    try {
+      await apiRequest(`/sales/leads/${leadId}/lost`, { method: "POST", body: { lost_reason: closeReason.trim() } });
+      setClosingId(null); setCloseReason("");
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>Customer inquiries</div>
-        {inquiries.length > 0 && (
-          <span className="badge badge-info" style={{ fontSize: 12, padding: "3px 9px" }}>{inquiries.length} new</span>
+        {unassignedCount > 0 && (
+          <span className="badge badge-info" style={{ fontSize: 12, padding: "3px 9px" }}>{unassignedCount} new</span>
         )}
       </div>
       {inquiries.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>No new customer inquiries waiting on assignment.</div>
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No open customer inquiries.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {inquiries.slice(0, 5).map((l) => (
             <div key={l.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ fontWeight: 600 }}>{l.prospect_name}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                <div style={{ fontWeight: 600 }}>{l.prospect_name}</div>
+                <span className="badge badge-neutral" style={{ fontSize: 10.5, padding: "2px 7px", whiteSpace: "nowrap" }}>{ENQUIRY_TYPE(l)}</span>
+              </div>
               <div style={{ color: "var(--slate)", fontSize: 12 }}>
                 {l.site_location ? `${l.site_location} · ` : ""}{l.contact_person ? `${l.contact_person} · ` : ""}{l.contact_phone}
               </div>
               <div style={{ color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
                 Submitted {new Date(l.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })}
+                {l.assigned_to_name && ` · Assigned to ${l.assigned_to_name}`}
               </div>
-              {assigningId === l.id ? (
+
+              {closingId === l.id ? (
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <input
+                    type="text" value={closeReason} onChange={(e) => setCloseReason(e.target.value)}
+                    placeholder="Reason (e.g. went with another supplier)" style={{ flex: 1, fontSize: 12 }}
+                  />
+                  <button type="button" disabled={busy || !closeReason.trim()} onClick={() => closeLead(l.id)} style={{ fontSize: 11, padding: "3px 8px" }}>
+                    {busy ? "..." : "Confirm"}
+                  </button>
+                  <button type="button" onClick={() => { setClosingId(null); setCloseReason(""); }} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
+                </div>
+              ) : assigningId === l.id ? (
                 <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                   <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} style={{ flex: 1, fontSize: 12 }}>
                     <option value="">Select salesperson</option>
@@ -457,9 +505,14 @@ export function CustomerInquiriesCard({ setError }) {
                   <button type="button" onClick={() => { setAssigningId(null); setAssignTo(""); }} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
                 </div>
               ) : (
-                <button type="button" onClick={() => setAssigningId(l.id)} style={{ fontSize: 11, padding: "3px 8px", marginTop: 8 }}>
-                  Assign to a salesperson
-                </button>
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <button type="button" onClick={() => setAssigningId(l.id)} style={{ fontSize: 11, padding: "3px 8px" }}>
+                    {l.assigned_to_name ? "Reassign" : "Assign to a salesperson"}
+                  </button>
+                  <button type="button" className="btn-danger" onClick={() => setClosingId(l.id)} style={{ fontSize: 11, padding: "3px 8px" }}>
+                    Close
+                  </button>
+                </div>
               )}
             </div>
           ))}
