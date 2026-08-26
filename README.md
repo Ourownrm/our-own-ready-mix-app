@@ -4295,3 +4295,54 @@ Run `/setup` after deploying — adds `leads.dashboard_hidden` and `site_qc.auto
 environment variables. Verified with `node --check` on every touched backend file and a clean
 `npm run build` on the frontend. No live Postgres instance available in this environment, so
 `/setup` on deploy remains the first real migration run, same caveat as every prior round.
+
+## Round 119, post-ship again — round 4 (Ver. 9.35): mockup-fidelity + code review pass
+Business asked for the round-3 driver/site-supervisor rebuild to be checked against the mockup
+screen-by-screen, and for a broader scan of the round's code for bugs. Result: the round-3
+behavior itself (punch-in gating, GPS auto-confirm logic, allowance wallet data, pill restyle,
+delay sheets, stack UI) checked out correct against the backend and the mockup's intent — but the
+review surfaced 3 real issues, all fixed here, plus several layout-level mockup deviations that
+are documented rather than silently rewritten (see below — flagged for a business decision, not
+assumed).
+
+1. **`schema.sql` never got round 3's two new columns** — `setup.js` had the
+   `leads.dashboard_hidden` and `site_qc.auto_confirmed` migrations (and they're idempotent, so
+   `/setup` on a real deploy would still apply them correctly), but `schema.sql` — the reference
+   copy read by anyone standing up a fresh database directly from it, and the file this app's own
+   README explicitly tells every round to keep in sync (recurring bug pattern #6) — was never
+   updated to match. A fresh install from `schema.sql` alone would have been missing both columns.
+   Fixed: both added to `schema.sql` in place, matching `setup.js` exactly.
+2. **A stale code comment in `driver.js`** on the `/geofence-response` route said the grace-period
+   restart-on-"Not Yet" was "currently only wired up for Plant Out" — true before round 3, false
+   after it (all 4 stages use the same mechanism now). Corrected so a future reader isn't misled.
+3. **A dead, never-rendered i18n key.** Round 3 added `not_started` to all 3 language dictionaries
+   specifically for the "other assigned trucks" list (matching the mockup's "Not started" pill per
+   truck card), but no code ever actually referenced the key — the compact `TripCard` had no status
+   badge at all. Fixed: a "Not started" badge now shows on a compact trip card that hasn't logged
+   Plant Out yet, matching the mockup.
+
+**Mockup-fidelity findings not changed this round — flagged for a decision, not assumed:**
+the round-3 rebuild matches the mockup's *behavior* (what each screen does) but diverges from its
+*exact layout* in a few places, all deliberate reuse of this app's existing shared components
+rather than a fresh from-scratch build:
+   - The mockup shows "other assigned trucks today" as an inline list directly on the driver's
+     home screen; this app shows it as a banner linking to a separate screen (reusing the
+     pre-existing "older trips" view rather than restructuring the home screen).
+   - The mockup shows Fuel filling / Report Breakdown / Request Repair as a 3-column row directly
+     under the punched-in status; this app keeps them at the bottom of the screen (their existing
+     position from before this round).
+   - The mockup's GPS auto-confirm has a distinct final-moment modal (a live per-second countdown,
+     "4… 3… 2…") right before it fires; this app shows a static "auto-confirms in ~N min" banner
+     inside the existing suggest-popup instead — same underlying grace-period deadline, less
+     dramatic presentation.
+   - The mockup's black header bar shows the truck number and trip number directly; this app's
+     shared `TopBar` (used by all 9 roles) shows the app name and screen title instead — changing
+     that would touch every role's screens, not just Driver's.
+   - The mockup shows an always-visible blue "GPS shows you're at the site — auto-confirms in a
+     moment" banner directly on the trip card; this app only shows that as part of the interruptive
+     popup and the existing dismissible hint banner, not as a persistent inline strip.
+
+None of these are functional bugs — the underlying data and confirmations all work — but they are
+real layout differences from the mockup images. Left as-is pending a business decision on whether
+to invest in matching them exactly, since several touch the driver home screen's overall structure
+rather than a single component.

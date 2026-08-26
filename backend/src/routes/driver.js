@@ -114,10 +114,13 @@ router.post("/tickets/:ticketId/plant-out", async (req, res) => {
 });
 
 // Round 101, item 1: driver tapped "Not yet" on a geofence hint popup — the
-// grace period before auto-recording that stage (currently only wired up for
-// Plant Out — see checkPlantOutAutoRecord in scheduledChecks.js) restarts
-// from this response instead of the original GPS detection, since the
-// driver has actively confirmed they're still there. A no-op if there's no
+// grace period before auto-recording that stage restarts from this response
+// instead of the original GPS detection, since the driver has actively
+// confirmed they're still there. Originally wired up for Plant Out only
+// (checkPlantOutAutoRecord); round 119 post-ship again round 3 generalized
+// auto-record to all 4 stages (see its 3 siblings in scheduledChecks.js),
+// and this same endpoint/response now backs the grace-period restart for
+// whichever stage's hint the driver dismissed. A no-op if there's no
 // matching geofence_events row yet (e.g. a stale/duplicate tap) — nothing to
 // update, and nothing to error about either.
 router.post("/tickets/:ticketId/geofence-response", async (req, res) => {

@@ -222,6 +222,13 @@ CREATE TABLE leads (
   -- more discriminator on top of source felt like overkill for a value only
   -- ever read by a human on the lead detail screen.
   notes TEXT,
+  -- Round 119, post-ship again round 3 — purely cosmetic per-lead dismiss for
+  -- the Manager Dashboard's Customer Inquiries card (PATCH
+  -- /sales/leads/:id/dashboard-hide). Completely independent of `status` —
+  -- actually closing/marking a lead lost only ever happens via the existing
+  -- POST /sales/leads/:id/lost, from the Leads page. Business explicitly
+  -- reversed an earlier round's "Close" button on the dashboard card itself.
+  dashboard_hidden BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -940,7 +947,15 @@ CREATE TABLE site_qc (
   manager_approved_rejection BOOLEAN DEFAULT FALSE, -- Manager role: "approve rejected concrete"
   manager_approved_by INTEGER REFERENCES users(id),
   entered_by INTEGER REFERENCES users(id),
-  entered_at TIMESTAMPTZ DEFAULT now()
+  entered_at TIMESTAMPTZ DEFAULT now(),
+  -- Round 119, post-ship again round 3 — set by checkSiteOutAutoRecord
+  -- (scheduledChecks.js) when Site Out was GPS-auto-recorded because the
+  -- driver never responded to the geofence hint within the grace period.
+  -- Slump/delivery-note-status/after-pour-care are left at their defaults in
+  -- that case (not guessed at) — this flag is what lets Manager/QC see the
+  -- gap and follow up. Never set true by the driver's own manual Site Out
+  -- submission.
+  auto_confirmed BOOLEAN NOT NULL DEFAULT false
 );
 
 -- ===================== MIX DESIGNS & CUBE TESTING (round 118) =====================
