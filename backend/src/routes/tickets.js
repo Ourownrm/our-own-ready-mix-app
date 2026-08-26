@@ -56,6 +56,13 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
      SELECT dt.id, dt.ticket_number, dt.status, dt.created_at, dt.ticket_date,
             t.truck_number, t.id AS truck_id,
             c.name AS customer_name, s.name AS site_name,
+            m.name AS mix_grade_name, dt.loaded_quantity_m3,
+            -- Round 119, post-ship again round 3: same grace-period setting
+            -- driving GPS auto-record server-side (see checkPlantOutAutoRecord
+            -- and its 3 siblings in scheduledChecks.js) — exposed here so the
+            -- driver's geofence-hint popup can show an accurate countdown to
+            -- the same deadline, not a made-up number.
+            COALESCE(s.plant_out_grace_minutes, 12) AS auto_confirm_grace_minutes,
             -- The site's saved coordinate is often unset or rough. Prefer the
             -- Site Supervisor's fresh GPS capture from their Site Ready tap
             -- on this order when it's available and wasn't flagged as
@@ -94,6 +101,7 @@ router.get("/my-trips", requireRole("driver"), async (req, res) => {
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
+     LEFT JOIN mix_grades m ON m.id = co.mix_grade_id
      LEFT JOIN users sup ON sup.id = co.assigned_site_supervisor_id
      LEFT JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
      LEFT JOIN ticket_stages ts ON ts.ticket_id = dt.id

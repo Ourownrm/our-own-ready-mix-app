@@ -1333,6 +1333,29 @@ router.get("/setup", async (req, res) => {
     await query(`ALTER TABLE aftersales_feedback ADD COLUMN IF NOT EXISTS submitted_by_customer BOOLEAN NOT NULL DEFAULT false;`);
     log.push("Schema migration applied (aftersales_feedback.recorded_by now nullable, + rating and submitted_by_customer columns — for the new customer-portal Feedback screen).");
 
+    // Round 119, post-ship again — round 3: the Manager dashboard's "Close"
+    // button on a public inquiry used to actually mark the lead lost — the
+    // business only wanted it dismissed from the widget, with closing staying
+    // a Leads-page-only action. dashboard_hidden is purely a per-lead
+    // "dismissed from the dashboard widget" flag, reversible via the same
+    // PATCH /sales/leads/:id/dashboard-hide route (hidden: false) — it has no
+    // bearing on lead status/won/lost.
+    await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS dashboard_hidden BOOLEAN NOT NULL DEFAULT false;`);
+    log.push("Schema migration applied (leads.dashboard_hidden — lets a Manager dismiss a public inquiry from the dashboard widget without closing the lead).");
+
+    // Round 119, post-ship again — round 3: extends the existing Plant-Out
+    // auto-record grace period (sites.plant_out_grace_minutes — see
+    // checkPlantOutAutoRecord in scheduledChecks.js) to the other 3 GPS
+    // stage nudges (Site In, Site Out, Plant In). Site In/Plant In are plain
+    // trip_events, same as Plant Out — nothing new needed there. Site Out is
+    // different: it normally also captures site_qc's slump/delivery-note/
+    // after-pour-care from the driver's own form. When it auto-records
+    // instead (driver never responded), those fields are left blank and this
+    // flag is set, so Manager/QC's dashboards can tell "driver confirmed
+    // this" apart from "system closed this out with no info" and follow up.
+    await query(`ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS auto_confirmed BOOLEAN NOT NULL DEFAULT false;`);
+    log.push("Schema migration applied (site_qc.auto_confirmed — flags a Site Out that was GPS-auto-recorded with no slump/delivery-note/after-pour-care info from the driver).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

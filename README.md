@@ -4201,3 +4201,97 @@ NULL` on `aftersales_feedback.recorded_by`, and adds `aftersales_feedback.rating
 --check` on every touched backend file and a clean `npm run build` on the frontend. No live
 Postgres instance available in this environment, so `/setup` on deploy remains the first real
 migration run, same caveat as every prior round.
+
+## Round 119, post-ship again — round 3 (Ver. 9.34): 2 more real-world fixes, plus the Driver & Site Supervisor module rebuild from mockup
+
+1. **Live Tracking tile now actually disappears when tracking isn't enabled**, instead of staying
+   visible with a "Not enabled for your sites" subtitle. `HomeScreen` in `CustomerPortal.jsx` now
+   wraps the tile in `{showTracking && (...)}`, matching the QC Reports/Technical Writings tiles'
+   existing conditional-render pattern — this was the one tile on that screen that hadn't been
+   brought in line with that pattern.
+2. **Manager Dashboard's "Close" button now hides a public inquiry instead of closing the
+   lead.** Round 2 added a Close button to the Customer Inquiries card that called `POST
+   /sales/leads/:id/lost` directly — turns out that wasn't what was wanted; closing a lead (an
+   actual won/lost decision) should only happen from the Leads page. New `leads.dashboard_hidden`
+   column + `PATCH /sales/leads/:id/dashboard-hide` (`{ hidden: true|false }`, Manager/Admin)
+   purely dismisses a card from the dashboard widget with no effect on the lead's real status —
+   reversible via a new "N hidden — show" toggle at the bottom of the card, so a manager who hides
+   one by mistake isn't stuck. The Leads page's own "Close lead" action (from round 2) is
+   unchanged and remains the only real close/decline path.
+3. **Driver and Site Supervisor modules rebuilt against a new mockup.** The business supplied ~13
+   screens covering a redesigned driver trip screen, GPS auto-confirm behavior, and a Site
+   Supervisor stack UI. A scoping pass found the backend/DB/geofencing/i18n foundations for nearly
+   all of it already existed from earlier rounds — this was mostly a frontend rebuild layered on
+   top, plus one real backend behavior change (item 3f below), confirmed with the business before
+   building it:
+   - **a. Punch-In gating.** Trips, the allowance card, and the quick-action buttons (Report
+     breakdown / Fuel / Request repair) are now genuinely locked until the driver punches in —
+     previously they rendered regardless of duty status, so "Punch In to unlock" was aspirational
+     copy that didn't match the code. Off-duty, `DriverDuty.jsx`'s home screen instead shows a
+     centered Punch-In button with "Start your shift to begin" copy, and — if a trip is already
+     assigned — a dimmed, non-interactive preview of it with a "🔒 Unlocks after Punch In" badge.
+   - **b. Trip screen: truck number, mix grade/quantity, on-duty shift timer.** `TripCard` now
+     shows the truck number and `{mix grade} · {quantity} m³` under the site name (both already
+     queried elsewhere, just not selected for the driver's own `GET /tickets/my-trips` — added
+     `mix_grades` join + `dt.loaded_quantity_m3` there). A live "on duty {Xh Ym}" timer reads
+     `driver_duty_log`'s existing `since` timestamp (already returned by `GET
+     /driver/duty-status`, just never displayed) and ticks via a 60s interval.
+   - **c. Trip Allowance is now its own screen**, not just an inline "Completed today" card on the
+     driver's home screen (which stays, now linking through). Same data
+     (`trip_allowance_payouts` via `my-trips`), no backend change — scoped to today only, matching
+     the mockup itself, which is also today-only.
+   - **d. "Other assigned trucks today."** The "older trips need action" banner/list (for a driver
+     juggling more than one active trip) is relabeled to match the mockup's framing; the
+     underlying data and per-trip `TripCard` were already correct for this, just styled/titled
+     around a different mental model ("stuck trips" vs. "your other assignments").
+   - **e. Site Out form fix + pill restyle.** The after-pour-care checkbox has said "required" in
+     its label since it was built, but `SiteOutForm` never actually enforced it before submit —
+     now it does (matching the enforcement `WorkCompleteForm` on the Site Supervisor side already
+     had). Delivery Note Status switched from a `<select>` to pill buttons on both the driver's
+     `SiteOutForm` and the Site Supervisor's `CompleteForm`, matching the mockup.
+   - **f. GPS auto-confirm, extended to all 4 stages, with the business's explicit sign-off on the
+     one real behavior change.** `checkPlantOutAutoRecord` (existing, Plant Out only) has 3 new
+     siblings — `checkSiteInAutoRecord`, `checkSiteOutAutoRecord`, `checkPlantInAutoRecord` — using
+     the same per-site `plant_out_grace_minutes` setting (relabeled "Auto-confirm grace" in Master
+     Data → Projects & Sites, since it now covers all four) as the driver's geofence-hint popup
+     already used for Plant Out: if the driver doesn't respond within the grace period, the stage
+     auto-records from GPS, same as it already did for Plant Out. Site In and Plant In are plain
+     timestamp inserts, no new data needed. Site Out is different — it normally also captures site
+     slump, delivery note status, and the after-pour-care confirmation from the driver's own form.
+     Confirmed with the business directly: when Site Out auto-confirms with no response, those
+     fields are left blank (not guessed at) and a new `site_qc.auto_confirmed` flag is set, so
+     Manager/QC can see the gap and follow up — trip allowance is still paid, since the concrete
+     was genuinely delivered either way. The driver's geofence-hint modal now shows a live
+     countdown ("auto-confirms in ~N min") computed from the same grace-period math the server
+     actually uses, so the UI matches what really happens. This does **not** extend to the Site
+     Supervisor's own geofence hints (arrival/completion) — those stay suggest-only, on purpose;
+     see the code comment on `SiteSupervisor.jsx`'s popup for why.
+   - **g. Site Supervisor delay-reason sheets.** `confirmPumpDeparture` and `confirmSiteReady`
+     used `window.prompt()` to collect a required late-delay reason — replaced with a real bottom
+     sheet component (`DelayReasonSheet`), reused for both triggers, with the same "required, no
+     skip" enforcement the backend already had (both routes still 400 without `delay_reason` — the
+     sheet doesn't change that, just how it's collected).
+   - **h. Site Supervisor stack UI.** The plain `<select>` used to switch between multiple
+     deliveries at one site is replaced with a stack: the "up next" delivery stays expanded above
+     (full stage tracker, now with buttons ~25% larger, matching the mockup), everything else
+     collapses into compact tap-to-bring-to-front cards below. Same `GET
+     /site-supervisor/my-deliveries` data, no backend change.
+   - **i. Reject Concrete banner copy**, on both the driver's and Site Supervisor's `RejectForm`:
+     explicitly states the load won't count toward trip allowance and the manager is notified
+     automatically — both were already true (rejection never inserts into
+     `trip_allowance_payouts`, and `confirmRejection` already notifies the manager), just not
+     stated in the UI until now.
+   - **j. Language switcher tabs.** Driver-facing screens that are actually translated today (Home,
+     Other Trucks, Site Out, Trip Allowance) now show English/Malayalam/Hindi tabs at the top,
+     switching instantly via the existing `PATCH /driver/language`, instead of requiring a trip to
+     the separate Settings screen (still there, unchanged, for anyone who prefers it). Not added
+     to Reject/Breakdown/Repair or Settings itself — those were a deliberate untranslated-content
+     decision from round 96/97 that this doesn't revisit. Not added to the Site Supervisor module
+     at all — that module has never been localized, and doing so is a materially bigger, separate
+     scope than this round covered.
+
+### Migration note (round 119, post-ship again — round 3)
+Run `/setup` after deploying — adds `leads.dashboard_hidden` and `site_qc.auto_confirmed`. No new
+environment variables. Verified with `node --check` on every touched backend file and a clean
+`npm run build` on the frontend. No live Postgres instance available in this environment, so
+`/setup` on deploy remains the first real migration run, same caveat as every prior round.

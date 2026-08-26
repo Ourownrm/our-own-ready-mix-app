@@ -20,6 +20,12 @@ const DICT = {
     action_plant_in: "Plant In",
     plant_out_auto_recorded_title: "Plant Out was auto-recorded",
     plant_out_auto_recorded_body: (ticket, time) => `${ticket} — you didn't respond, so Plant Out was recorded at ${time} from GPS`,
+    site_in_auto_recorded_title: "Site In was auto-recorded",
+    site_in_auto_recorded_body: (ticket, time) => `${ticket} — you didn't respond, so Site In was recorded at ${time} from GPS`,
+    site_out_auto_recorded_title: "Site Out was auto-recorded",
+    site_out_auto_recorded_body: (ticket, time) => `${ticket} — you didn't respond, so Site Out was recorded at ${time} from GPS. Slump and delivery note weren't captured — fill them in when you can.`,
+    plant_in_auto_recorded_title: "Plant In was auto-recorded",
+    plant_in_auto_recorded_body: (ticket, time) => `${ticket} — you didn't respond, so Plant In was recorded at ${time} from GPS`,
   },
   ml: {
     left_plant_title: "നിങ്ങൾ പ്ലാന്റ് വിട്ടതായി തോന്നുന്നു",
@@ -36,6 +42,12 @@ const DICT = {
     action_plant_in: "പ്ലാന്റ് ഇൻ",
     plant_out_auto_recorded_title: "പ്ലാന്റ് ഔട്ട് സ്വയമേവ രേഖപ്പെടുത്തി",
     plant_out_auto_recorded_body: (ticket, time) => `${ticket} — നിങ്ങൾ പ്രതികരിക്കാത്തതിനാൽ, GPS പ്രകാരം ${time} ന് പ്ലാന്റ് ഔട്ട് രേഖപ്പെടുത്തി`,
+    site_in_auto_recorded_title: "സൈറ്റ് ഇൻ സ്വയമേവ രേഖപ്പെടുത്തി",
+    site_in_auto_recorded_body: (ticket, time) => `${ticket} — നിങ്ങൾ പ്രതികരിക്കാത്തതിനാൽ, GPS പ്രകാരം ${time} ന് സൈറ്റ് ഇൻ രേഖപ്പെടുത്തി`,
+    site_out_auto_recorded_title: "സൈറ്റ് ഔട്ട് സ്വയമേവ രേഖപ്പെടുത്തി",
+    site_out_auto_recorded_body: (ticket, time) => `${ticket} — നിങ്ങൾ പ്രതികരിക്കാത്തതിനാൽ, GPS പ്രകാരം ${time} ന് സൈറ്റ് ഔട്ട് രേഖപ്പെടുത്തി. സ്ലമ്പും ഡെലിവറി നോട്ടും രേഖപ്പെടുത്തിയിട്ടില്ല — സാധിക്കുമ്പോൾ പൂരിപ്പിക്കുക.`,
+    plant_in_auto_recorded_title: "പ്ലാന്റ് ഇൻ സ്വയമേവ രേഖപ്പെടുത്തി",
+    plant_in_auto_recorded_body: (ticket, time) => `${ticket} — നിങ്ങൾ പ്രതികരിക്കാത്തതിനാൽ, GPS പ്രകാരം ${time} ന് പ്ലാന്റ് ഇൻ രേഖപ്പെടുത്തി`,
   },
   hi: {
     left_plant_title: "लगता है आपने प्लांट छोड़ दिया है",
@@ -52,6 +64,12 @@ const DICT = {
     action_plant_in: "प्लांट इन",
     plant_out_auto_recorded_title: "प्लांट आउट अपने आप दर्ज हो गया",
     plant_out_auto_recorded_body: (ticket, time) => `${ticket} — आपने जवाब नहीं दिया, इसलिए GPS के अनुसार ${time} पर प्लांट आउट दर्ज कर दिया गया`,
+    site_in_auto_recorded_title: "साइट इन अपने आप दर्ज हो गया",
+    site_in_auto_recorded_body: (ticket, time) => `${ticket} — आपने जवाब नहीं दिया, इसलिए GPS के अनुसार ${time} पर साइट इन दर्ज कर दिया गया`,
+    site_out_auto_recorded_title: "साइट आउट अपने आप दर्ज हो गया",
+    site_out_auto_recorded_body: (ticket, time) => `${ticket} — आपने जवाब नहीं दिया, इसलिए GPS के अनुसार ${time} पर साइट आउट दर्ज कर दिया गया। स्लंप और डिलीवरी नोट दर्ज नहीं हो पाए — जब समय मिले भर दें।`,
+    plant_in_auto_recorded_title: "प्लांट इन अपने आप दर्ज हो गया",
+    plant_in_auto_recorded_body: (ticket, time) => `${ticket} — आपने जवाब नहीं दिया, इसलिए GPS के अनुसार ${time} पर प्लांट इन दर्ज कर दिया गया`,
   },
 };
 

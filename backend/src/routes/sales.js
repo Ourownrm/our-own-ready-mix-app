@@ -107,6 +107,22 @@ router.patch("/leads/:id/assign", requireRole("manager", "administrator"), async
   res.json(rows[0]);
 });
 
+// Round 119, post-ship again — round 3: lets a Manager dismiss a public
+// inquiry from the dashboard's "Customer inquiries" widget WITHOUT closing
+// the lead — closing (marking it lost) only happens on the Leads page now.
+// Reversible (hidden: false) so a manager who hides one by mistake, or wants
+// to glance back, isn't stuck — see the "N hidden — show" toggle in
+// CustomerInquiriesCard.
+router.patch("/leads/:id/dashboard-hide", requireRole("manager", "administrator"), async (req, res) => {
+  const hidden = req.body.hidden !== false;
+  const { rows } = await query(
+    `UPDATE leads SET dashboard_hidden = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+    [hidden, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Lead not found." });
+  res.json(rows[0]);
+});
+
 router.get("/leads", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
   const own = req.user.role === "sales_executive";
   const { rows } = await query(

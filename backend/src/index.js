@@ -36,7 +36,8 @@ import technicalWritingsRoutes from "./routes/technicalWritings.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
-  checkPlantOutAutoRecord, cleanupOldNotifications,
+  checkPlantOutAutoRecord, checkSiteInAutoRecord, checkSiteOutAutoRecord, checkPlantInAutoRecord,
+  cleanupOldNotifications,
 } from "./lib/scheduledChecks.js";
 
 dotenv.config();
@@ -141,6 +142,9 @@ setInterval(() => {
   checkPendingSupplyRequests().catch((err) => console.error("Pending-supply-requests check failed:", err));
   checkGeofenceEvents().catch((err) => console.error("Geofence-events check failed:", err));
   checkPlantOutAutoRecord().catch((err) => console.error("Plant-out-auto-record check failed:", err));
+  checkSiteInAutoRecord().catch((err) => console.error("Site-in-auto-record check failed:", err));
+  checkSiteOutAutoRecord().catch((err) => console.error("Site-out-auto-record check failed:", err));
+  checkPlantInAutoRecord().catch((err) => console.error("Plant-in-auto-record check failed:", err));
 }, 5 * 60 * 1000);
 
 // Purges old notifications (see cleanupOldNotifications for the retention

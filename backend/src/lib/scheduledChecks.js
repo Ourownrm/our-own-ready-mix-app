@@ -1,6 +1,7 @@
 import { query } from "../db.js";
 import { pushToRole, pushToUser } from "./push.js";
 import { pushText, actionLabel } from "./i18n.js";
+import { generateInvoiceForTicket, syncOrderCompletionStatus } from "./deliveryConfirmation.js";
 
 // Runs on a timer (see index.js) rather than being tied to a user action,
 // since nobody "does" anything at the 2-hour mark — it's a passive
@@ -461,18 +462,27 @@ export async function checkGeofenceEvents() {
 // 10:25). Written with source='auto' so reports and Best Driver scoring can
 // tell it apart from a driver's own confirmed tap (see computeTransitRows
 // in maintenance.js for why that distinction matters for fairness).
-const PLANT_OUT_DEFAULT_GRACE_MINUTES = 12;
+//
+// Round 119, post-ship again (round 3): this same grace period now also
+// drives auto-record for the other 3 driver-facing GPS stage nudges — Site
+// In (checkSiteInAutoRecord), Site Out (checkSiteOutAutoRecord), and Plant
+// In (checkPlantInAutoRecord), below. One shared per-site setting (business
+// decision: reuse "Plant Out Grace" rather than add three more Master Data
+// fields), one shared default. Site In/Out are self-service-site only
+// (no_site_supervisor) — on a supervised site those two stages are the Site
+// Supervisor's own to confirm, and this doesn't auto-decide on their behalf.
+const AUTO_CONFIRM_DEFAULT_GRACE_MINUTES = 12;
 
 export async function checkPlantOutAutoRecord() {
   const { rows } = await query(
     `SELECT ge.ticket_id, ge.latitude, ge.longitude,
             COALESCE(ge.last_response_at, ge.detected_at)
-              + (COALESCE(s.plant_out_grace_minutes, ${PLANT_OUT_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+              + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
               AS auto_event_time,
             dt.ticket_number, dt.driver_id,
             to_char(
               COALESCE(ge.last_response_at, ge.detected_at)
-                + (COALESCE(s.plant_out_grace_minutes, ${PLANT_OUT_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval,
+                + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval,
               'HH24:MI'
             ) AS auto_event_time_label,
             COALESCE(du.preferred_language, 'en') AS driver_lang
@@ -485,7 +495,7 @@ export async function checkPlantOutAutoRecord() {
        AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
        AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'left_plant')
        AND COALESCE(ge.last_response_at, ge.detected_at)
-             + (COALESCE(s.plant_out_grace_minutes, ${PLANT_OUT_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+             + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
            <= now()`
   );
 
@@ -524,6 +534,246 @@ export async function checkPlantOutAutoRecord() {
       body: message,
       url: "/manager",
     });
+  }
+  return rows;
+}
+
+// Site In — same mechanism as Plant Out above, for the 'reached_site' hint.
+// Self-service sites only (no Site Supervisor assigned): on a supervised
+// site, arrival is the Supervisor's own confirmation to make, not something
+// GPS silently decides for them. Plain trip_events insert + status update —
+// arrival needs no additional driver-entered data, so there's no "blank
+// fields" concern here the way there is for Site Out below.
+export async function checkSiteInAutoRecord() {
+  const { rows } = await query(
+    `SELECT ge.ticket_id, ge.latitude, ge.longitude,
+            COALESCE(ge.last_response_at, ge.detected_at)
+              + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+              AS auto_event_time,
+            dt.ticket_number, dt.driver_id,
+            to_char(
+              COALESCE(ge.last_response_at, ge.detected_at)
+                + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval,
+              'HH24:MI'
+            ) AS auto_event_time_label,
+            COALESCE(du.preferred_language, 'en') AS driver_lang
+     FROM geofence_events ge
+     JOIN delivery_tickets dt ON dt.id = ge.ticket_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN users du ON du.id = dt.driver_id
+     WHERE ge.event_type = 'reached_site'
+       AND co.assigned_site_supervisor_id IS NULL
+       AND dt.status NOT IN ('completed', 'cancelled', 'returned', 'rejected')
+       AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'reached_site')
+       AND COALESCE(ge.last_response_at, ge.detected_at)
+             + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+           <= now()`
+  );
+
+  for (const r of rows) {
+    const { rows: already } = await query(
+      "SELECT 1 FROM trip_events WHERE ticket_id = $1 AND event_type = 'reached_site' LIMIT 1",
+      [r.ticket_id]
+    );
+    if (already.length) continue;
+
+    await query(
+      `INSERT INTO trip_events (ticket_id, event_type, event_time, source, latitude, longitude)
+       VALUES ($1, 'reached_site', $2, 'auto', $3, $4)`,
+      [r.ticket_id, r.auto_event_time, r.latitude, r.longitude]
+    );
+    await query("UPDATE delivery_tickets SET status = 'reached_site' WHERE id = $1", [r.ticket_id]);
+
+    const message = `${r.ticket_number} — Site In auto-recorded at ${r.auto_event_time_label} (driver didn't respond)`;
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('driver', $1, 'site_in_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('manager', $1, 'site_in_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await pushToUser(r.driver_id, {
+      title: pushText("site_in_auto_recorded", r.driver_lang, "title"),
+      body: pushText("site_in_auto_recorded", r.driver_lang, "body", [r.ticket_number, r.auto_event_time_label]),
+      url: "/driver",
+    });
+    await pushToRole("manager", { title: "Site In auto-recorded", body: message, url: "/manager" });
+  }
+  return rows;
+}
+
+// Site Out — the one stage among the four that normally captures more than
+// a timestamp: the driver's own Site Out form records site slump, delivery
+// note status, and a required after-pour-care confirmation (see SiteOutForm
+// in DriverDuty.jsx). Business decision (round 119 post-ship again round 3):
+// when the driver never responds, auto-record anyway — the concrete was
+// still delivered, and leaving the trip stuck helps nobody — but leave that
+// driver-entered data blank rather than guessing at it, and set
+// site_qc.auto_confirmed so Manager/QC can see the gap and follow up. Trip
+// allowance is still paid — the driver did the trip; only the paperwork is
+// missing. Mirrors confirmUnloadingComplete in deliveryConfirmation.js
+// (invoice + order-completion sync + allowance payout) since this closes a
+// delivery out exactly the same way a driver's own confirm does, just via a
+// different door.
+export async function checkSiteOutAutoRecord() {
+  const { rows } = await query(
+    `SELECT ge.ticket_id, ge.latitude, ge.longitude, dt.order_id,
+            COALESCE(ge.last_response_at, ge.detected_at)
+              + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+              AS auto_event_time,
+            dt.ticket_number, dt.driver_id, s.trip_allowance_category_id,
+            to_char(
+              COALESCE(ge.last_response_at, ge.detected_at)
+                + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval,
+              'HH24:MI'
+            ) AS auto_event_time_label,
+            COALESCE(du.preferred_language, 'en') AS driver_lang
+     FROM geofence_events ge
+     JOIN delivery_tickets dt ON dt.id = ge.ticket_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN users du ON du.id = dt.driver_id
+     WHERE ge.event_type = 'left_site'
+       AND co.assigned_site_supervisor_id IS NULL
+       AND dt.status IN ('reached_site', 'unloading')
+       AND EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'reached_site')
+       AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'unloading_completed')
+       AND COALESCE(ge.last_response_at, ge.detected_at)
+             + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+           <= now()`
+  );
+
+  for (const r of rows) {
+    const { rows: already } = await query(
+      "SELECT 1 FROM trip_events WHERE ticket_id = $1 AND event_type = 'unloading_completed' LIMIT 1",
+      [r.ticket_id]
+    );
+    if (already.length) continue;
+
+    // Same start-then-complete pairing the driver's own site-out route uses
+    // when unloading-start was never separately logged.
+    const { rows: startedAlready } = await query(
+      "SELECT 1 FROM trip_events WHERE ticket_id = $1 AND event_type = 'unloading_started' LIMIT 1",
+      [r.ticket_id]
+    );
+    if (!startedAlready.length) {
+      await query(
+        `INSERT INTO trip_events (ticket_id, event_type, event_time, source) VALUES ($1, 'unloading_started', $2, 'auto')`,
+        [r.ticket_id, r.auto_event_time]
+      );
+    }
+    await query(
+      `INSERT INTO trip_events (ticket_id, event_type, event_time, source, latitude, longitude)
+       VALUES ($1, 'unloading_completed', $2, 'auto', $3, $4)`,
+      [r.ticket_id, r.auto_event_time, r.latitude, r.longitude]
+    );
+    await query(
+      `INSERT INTO site_qc (ticket_id, unload_start_time, unload_finish_time, delivery_note_status, accepted, after_pour_care_confirmed, auto_confirmed, entered_at)
+       VALUES ($1, $2, $2, 'pending', true, false, true, $2)
+       ON CONFLICT (ticket_id) DO UPDATE SET unload_finish_time = $2, accepted = true, auto_confirmed = true`,
+      [r.ticket_id, r.auto_event_time]
+    );
+    await query("UPDATE delivery_tickets SET status = 'completed' WHERE id = $1", [r.ticket_id]);
+
+    const { rows: allowance } = await query(
+      "SELECT amount FROM trip_allowance_categories WHERE id = $1",
+      [r.trip_allowance_category_id]
+    );
+    if (allowance[0]) {
+      await query(
+        `INSERT INTO trip_allowance_payouts (ticket_id, driver_id, amount) VALUES ($1, $2, $3) ON CONFLICT (ticket_id) DO NOTHING`,
+        [r.ticket_id, r.driver_id, allowance[0].amount]
+      );
+    }
+    await generateInvoiceForTicket(r.ticket_id);
+    await syncOrderCompletionStatus(r.order_id);
+
+    const message = `${r.ticket_number} — Site Out auto-recorded at ${r.auto_event_time_label} (driver didn't respond) — no delivery note details captured, follow up needed`;
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('driver', $1, 'site_out_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('manager', $1, 'site_out_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await pushToUser(r.driver_id, {
+      title: pushText("site_out_auto_recorded", r.driver_lang, "title"),
+      body: pushText("site_out_auto_recorded", r.driver_lang, "body", [r.ticket_number, r.auto_event_time_label]),
+      url: "/driver",
+    });
+    await pushToRole("manager", { title: "Site Out auto-recorded — no delivery note info", body: message, url: "/manager" });
+  }
+  return rows;
+}
+
+// Plant In — same mechanism again, for 'returned_to_plant'. Respects the
+// exact same gating driver.js's own Plant In route enforces: on a
+// self-service site, Plant In waits on Site Out being logged first (so
+// stage order can't come out of sequence); on a supervised site it doesn't
+// wait on Site In/Out at all, since those belong to the Supervisor on their
+// own timing (see driver.js's comment on POST /tickets/:ticketId/plant-in).
+export async function checkPlantInAutoRecord() {
+  const { rows } = await query(
+    `SELECT ge.ticket_id, ge.latitude, ge.longitude,
+            COALESCE(ge.last_response_at, ge.detected_at)
+              + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+              AS auto_event_time,
+            dt.ticket_number, dt.driver_id,
+            to_char(
+              COALESCE(ge.last_response_at, ge.detected_at)
+                + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval,
+              'HH24:MI'
+            ) AS auto_event_time_label,
+            COALESCE(du.preferred_language, 'en') AS driver_lang
+     FROM geofence_events ge
+     JOIN delivery_tickets dt ON dt.id = ge.ticket_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN users du ON du.id = dt.driver_id
+     WHERE ge.event_type = 'returned_to_plant'
+       AND dt.status NOT IN ('cancelled')
+       AND EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'left_plant')
+       AND NOT EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'returned_to_plant')
+       AND (
+         co.assigned_site_supervisor_id IS NOT NULL
+         OR EXISTS (SELECT 1 FROM trip_events te WHERE te.ticket_id = ge.ticket_id AND te.event_type = 'unloading_completed')
+       )
+       AND COALESCE(ge.last_response_at, ge.detected_at)
+             + (COALESCE(s.plant_out_grace_minutes, ${AUTO_CONFIRM_DEFAULT_GRACE_MINUTES}) || ' minutes')::interval
+           <= now()`
+  );
+
+  for (const r of rows) {
+    const { rows: already } = await query(
+      "SELECT 1 FROM trip_events WHERE ticket_id = $1 AND event_type = 'returned_to_plant' LIMIT 1",
+      [r.ticket_id]
+    );
+    if (already.length) continue;
+
+    await query(
+      `INSERT INTO trip_events (ticket_id, event_type, event_time, source, latitude, longitude)
+       VALUES ($1, 'returned_to_plant', $2, 'auto', $3, $4)`,
+      [r.ticket_id, r.auto_event_time, r.latitude, r.longitude]
+    );
+
+    const message = `${r.ticket_number} — Plant In auto-recorded at ${r.auto_event_time_label} (driver didn't respond)`;
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('driver', $1, 'plant_in_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message) VALUES ('manager', $1, 'plant_in_auto_recorded', $2)`,
+      [r.ticket_id, message]
+    );
+    await pushToUser(r.driver_id, {
+      title: pushText("plant_in_auto_recorded", r.driver_lang, "title"),
+      body: pushText("plant_in_auto_recorded", r.driver_lang, "body", [r.ticket_number, r.auto_event_time_label]),
+      url: "/driver",
+    });
+    await pushToRole("manager", { title: "Plant In auto-recorded", body: message, url: "/manager" });
   }
   return rows;
 }
