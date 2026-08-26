@@ -256,7 +256,7 @@ export function SitesPanel({ setError }) {
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 12, marginBottom: 8 }}>{notice}</div>}
       <div className="card" style={{ marginBottom: 12, overflowX: "auto" }}>
         <table style={{ fontSize: 13 }}>
-          <thead><tr><th>Site</th><th>Customer</th><th>Distance</th><th>Plant-out grace</th><th>Sales person</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Site</th><th>Customer</th><th>Distance</th><th>Auto-confirm grace</th><th>Sales person</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {visible.map((s) => (
               <tr key={s.id} style={!s.is_active ? { opacity: 0.6 } : undefined}>
@@ -335,10 +335,10 @@ export function SitesPanel({ setError }) {
         <div><div style={{ color: "var(--slate)" }}>Latitude</div><input type="number" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} placeholder="e.g. 8.5241" /></div>
         <div><div style={{ color: "var(--slate)" }}>Longitude</div><input type="number" step="any" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} placeholder="e.g. 76.9366" /></div>
         <div>
-          <div style={{ color: "var(--slate)" }}>Plant-out grace (minutes)</div>
+          <div style={{ color: "var(--slate)" }}>Auto-confirm grace (minutes)</div>
           <input type="number" min="1" value={form.plant_out_grace_minutes} onChange={(e) => setForm({ ...form, plant_out_grace_minutes: e.target.value })} placeholder="Default: 12" />
           <div style={{ fontSize: 11, color: "var(--slate)" }}>
-            If a driver doesn't respond after GPS detects Plant Out, it's auto-recorded this many minutes later. Leave blank to use the default (12 min) — set lower for a short-travel-time site.
+            If a driver doesn't respond to a GPS stage nudge (Plant Out, Site In, Site Out, or Plant In), it's auto-recorded this many minutes later — same grace period for all four. Site Out auto-records with slump/delivery-note left blank, flagged for follow-up. Leave blank to use the default (12 min) — set lower for a short-travel-time site.
           </div>
         </div>
         <div style={{ gridColumn: "1 / -1" }}>

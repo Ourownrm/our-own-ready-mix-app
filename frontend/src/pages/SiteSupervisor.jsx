@@ -10,6 +10,7 @@ export default function SiteSupervisor() {
   const [selectedId, setSelectedId] = useState(null);
   const [showReject, setShowReject] = useState(false);
   const [workCompleteOrderId, setWorkCompleteOrderId] = useState(null);
+  const [delaySheet, setDelaySheet] = useState(null); // { kind: 'pump'|'site-ready', orderId, loc? }
   const [pending, setPending] = useState(pendingCount());
   const [error, setError] = useState("");
   // Item 9: same interruptive-popup treatment as the Driver app, not just a
@@ -70,6 +71,12 @@ export default function SiteSupervisor() {
     }
   }
 
+  // Round 119, post-ship again round 3, item 8: replaces window.prompt with
+  // a real required bottom sheet (DelayReasonSheet below) — same backend
+  // requirement either way (both routes still 400 without delay_reason),
+  // this just changes how it's collected. delaySheet holds everything
+  // submitDelayReason needs to retry the exact same request with the reason
+  // attached.
   async function confirmPumpDeparture(orderId) {
     setError("");
     try {
@@ -77,14 +84,7 @@ export default function SiteSupervisor() {
       load();
     } catch (err) {
       if (err.message.includes("reason for the delay is required")) {
-        const reason = window.prompt("This is past the scheduled departure time — what caused the delay?");
-        if (!reason) return;
-        try {
-          await apiRequest(`/site-supervisor/orders/${orderId}/confirm-pump-departure`, { method: "POST", body: { delay_reason: reason } });
-          load();
-        } catch (err2) {
-          setError(err2.message);
-        }
+        setDelaySheet({ kind: "pump", orderId });
       } else {
         setError(err.message);
       }
@@ -121,17 +121,25 @@ export default function SiteSupervisor() {
       load();
     } catch (err) {
       if (err.message.includes("reason for the delay is required")) {
-        const reason = window.prompt("This is past the scheduled batching time — what caused the delay?");
-        if (!reason) return;
-        try {
-          await apiRequest(`/site-supervisor/orders/${orderId}/confirm-site-ready`, { method: "POST", body: { delay_reason: reason, ...loc } });
-          load();
-        } catch (err2) {
-          setError(err2.message);
-        }
+        setDelaySheet({ kind: "site-ready", orderId, loc });
       } else {
         setError(err.message);
       }
+    }
+  }
+
+  async function submitDelayReason(reason) {
+    if (!delaySheet) return;
+    const { kind, orderId, loc } = delaySheet;
+    try {
+      const path = kind === "pump" ? "confirm-pump-departure" : "confirm-site-ready";
+      const body = kind === "pump" ? { delay_reason: reason } : { delay_reason: reason, ...(loc || {}) };
+      await apiRequest(`/site-supervisor/orders/${orderId}/${path}`, { method: "POST", body });
+      setDelaySheet(null);
+      load();
+    } catch (err) {
+      setError(err.message);
+      setDelaySheet(null);
     }
   }
 
@@ -190,6 +198,18 @@ export default function SiteSupervisor() {
   return (
     <>
       <TopBar title="Site Supervisor" />
+      {delaySheet && (
+        <DelayReasonSheet
+          title={delaySheet.kind === "pump" ? "Pump departure is running late" : "Site batching confirmation is running late"}
+          subtitle={
+            delaySheet.kind === "pump"
+              ? "Scheduled pump departure has already passed and no reason is on file yet — this only appears when a delivery is running late."
+              : "This is past the scheduled batching time — a reason for the delay is required before this goes through."
+          }
+          onSubmit={submitDelayReason}
+          onCancel={() => setDelaySheet(null)}
+        />
+      )}
       {popupHint && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
           <div className="card" style={{ maxWidth: 320, width: "100%", textAlign: "center" }}>
@@ -288,57 +308,81 @@ export default function SiteSupervisor() {
         <Link to="/fuel"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Fuel filling</button></Link>
         <Link to="/delay-justification-report"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Delay report</button></Link>
 
-        {deliveries.length > 1 && (
-          <select
-            value={selected?.id || ""}
-            onChange={(e) => setSelectedId(Number(e.target.value))}
-            style={{ width: "100%", marginBottom: 12, padding: 8 }}
-          >
-            {deliveries.map((d) => (
-              <option key={d.id} value={d.id}>
-                {new Date(d.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })} — {d.ticket_number} — {statusLabel(d.status)} — {d.truck_number || "no truck"} · {d.driver_name || "no driver"}
-              </option>
-            ))}
-          </select>
-        )}
-
         {!selected ? (
           <div style={{ fontSize: 13, color: "var(--slate)", textAlign: "center", marginTop: 40 }}>No deliveries need your confirmation right now.</div>
         ) : (
-          <div className="card" style={{ borderRadius: 20, padding: "20px 18px" }}>
-            <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)" }}>{selected.site_name} &middot; {selected.ticket_number}</div>
-            <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)", marginTop: 2 }}>
-              {selected.truck_number || "No truck"} &middot; {selected.driver_name || "No driver"}
+          <>
+            {deliveries.length > 1 && (
+              <div style={{ fontSize: 11, color: "var(--slate)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>
+                Up next — delivery {deliveries.findIndex((d) => d.id === selected.id) + 1} of {deliveries.length}
+              </div>
+            )}
+            <div className="card" style={{ borderRadius: 20, padding: "20px 18px" }}>
+              <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)" }}>{selected.site_name} &middot; {selected.ticket_number}</div>
+              <div style={{ textAlign: "center", fontSize: 13, color: "var(--slate)", marginTop: 2 }}>
+                {selected.truck_number || "No truck"} &middot; {selected.driver_name || "No driver"}
+              </div>
+              <div style={{ textAlign: "center", fontSize: 16, fontWeight: 600, margin: "4px 0 18px" }}>{statusLabel(selected.status)}</div>
+
+              {/* Geofence hints — GPS movement suggests this happened, but
+                  nothing is auto-confirmed (unlike the Driver app's own
+                  hints, since round 119 post-ship again round 3 — this one
+                  stays "suggest, never decide" on purpose: confirming a
+                  truck's arrival/completion on the Supervisor's behalf isn't
+                  something GPS should ever silently do for them). Purely a
+                  nudge to tap the real stage below. Server only sends these
+                  while the real trip_events timestamp is still null. */}
+              {selected.hint_reached_site_at && (
+                <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
+                  Looks like the truck reached site around {new Date(selected.hint_reached_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — Confirm Arrival will be one tap, no countdown.
+                </div>
+              )}
+              {selected.hint_left_site_at && (
+                <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
+                  Looks like the truck left site around {new Date(selected.hint_left_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — if unloading is done, tap <strong>Completion</strong> below to confirm.
+                </div>
+              )}
+
+              <SupervisorStageTracker status={selected.status} onAct={act} />
+
+              {selected.status === "unloading" && <CompleteForm onAct={act} />}
+
+              <button
+                className="btn-danger"
+                style={{ width: "100%", marginTop: 18, padding: "12px", fontSize: 14, fontWeight: 600 }}
+                onClick={() => setShowReject(true)}
+              >
+                Reject concrete
+              </button>
             </div>
-            <div style={{ textAlign: "center", fontSize: 16, fontWeight: 600, margin: "4px 0 18px" }}>{statusLabel(selected.status)}</div>
 
-            {/* Geofence hints — GPS movement suggests this happened, but
-                nothing is auto-confirmed; purely a nudge to tap the real
-                stage below. Server only sends these while the real
-                trip_events timestamp is still null. */}
-            {selected.hint_reached_site_at && (
-              <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
-                Looks like the truck reached site around {new Date(selected.hint_reached_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — tap <strong>Arrival</strong> below to confirm.
+            {/* Round 119, post-ship again round 3, item 9: replaces the plain
+                <select> switcher with a stack — the "up next" delivery stays
+                expanded above (with the full stage tracker), everything else
+                collapses into a compact card here; tapping one brings it to
+                the front instead of picking from a dropdown. */}
+            {deliveries.length > 1 && (
+              <div style={{ marginTop: 14 }}>
+                {deliveries.filter((d) => d.id !== selected.id).map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => setSelectedId(d.id)}
+                    style={{
+                      width: "100%", textAlign: "left", background: "var(--concrete)", border: "none",
+                      borderRadius: 10, padding: "10px 12px", marginBottom: 8, cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{d.truck_number || "No truck"}</span>
+                      <span className="badge badge-neutral" style={{ fontSize: 10.5 }}>{statusLabel(d.status)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>{d.ticket_number} &middot; {d.driver_name || "No driver"}</div>
+                  </button>
+                ))}
               </div>
             )}
-            {selected.hint_left_site_at && (
-              <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
-                Looks like the truck left site around {new Date(selected.hint_left_site_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — if unloading is done, tap <strong>Completion</strong> below to confirm.
-              </div>
-            )}
-
-            <SupervisorStageTracker status={selected.status} onAct={act} />
-
-            {selected.status === "unloading" && <CompleteForm onAct={act} />}
-
-            <button
-              className="btn-danger"
-              style={{ width: "100%", marginTop: 18, padding: "12px", fontSize: 14, fontWeight: 600 }}
-              onClick={() => setShowReject(true)}
-            >
-              Reject concrete
-            </button>
-          </div>
+          </>
         )}
       </div>
     </>
@@ -361,12 +405,15 @@ function SupervisorStageTracker({ status, onAct }) {
         return (
           <div key={stage.key} style={{ display: "flex", alignItems: "flex-start", flex: i === stages.length - 1 ? "0 0 auto" : 1 }}>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1, minWidth: 70 }}>
+              {/* Buttons sized ~25% larger than standard (mockup item 9) —
+                  this is the primary action surface on the supervisor's
+                  screen, so it gets extra tap-target emphasis. */}
               <button
                 disabled={!tappable}
                 onClick={() => tappable && onAct(stage.action)}
                 style={{
-                  width: "100%", border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600,
-                  padding: "12px 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                  width: "100%", border: "none", borderRadius: 10, fontSize: 15, fontWeight: 600,
+                  padding: "15px 5px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
                   background: done ? "var(--signal-green)" : tappable ? "var(--rebar)" : "var(--concrete)",
                   color: done || tappable ? "#fff" : "var(--slate)",
                 }}
@@ -436,6 +483,38 @@ function WorkCompleteForm({ onSubmit, onCancel }) {
 }
 
 
+const NOTE_STATUS_OPTIONS = [
+  { value: "pending", label: "Pending" },
+  { value: "signed", label: "Signed" },
+  { value: "refused", label: "Refused" },
+];
+
+function NoteStatusPills({ value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+      {NOTE_STATUS_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          style={{
+            flex: 1, border: "none", borderRadius: 8, padding: "8px 4px", fontSize: 12.5, fontWeight: 600,
+            background: value === opt.value ? "var(--signal-green)" : "#fff",
+            color: value === opt.value ? "#fff" : "var(--slate)",
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Round 119, post-ship again round 3, item 11: pill restyle only — this is
+// the "Mark Completion" modal from the mockup (per-delivery, triggers trip
+// allowance payout). See WorkCompleteForm above for the distinct per-order
+// "Work Complete" signal, which is a different flow at a different
+// granularity, not a duplicate of this one.
 function CompleteForm({ onAct }) {
   const [slump, setSlump] = useState("");
   const [noteStatus, setNoteStatus] = useState("pending");
@@ -463,11 +542,7 @@ function CompleteForm({ onAct }) {
       <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
       <div style={{ color: "var(--slate)", marginBottom: 4 }}>Delivery note status</div>
-      <select value={noteStatus} onChange={(e) => setNoteStatus(e.target.value)} style={{ width: "100%", marginBottom: 12 }}>
-        <option value="pending">Pending</option>
-        <option value="signed">Signed</option>
-        <option value="refused">Refused</option>
-      </select>
+      <NoteStatusPills value={noteStatus} onChange={setNoteStatus} />
 
       {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
       <button onClick={submit} disabled={saving} style={{ width: "100%", padding: "12px", fontSize: 14, fontWeight: 600, background: "var(--signal-green)", color: "#fff", border: "none" }}>
@@ -515,6 +590,10 @@ function RejectForm({ ticket, onAct, onDone }) {
         <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{ticket.ticket_number} &middot; {ticket.site_name}</div>
 
         <div className="field-input" style={{ fontSize: 13 }}>
+          <div style={{ background: "var(--alert-red-bg, #FBEAEA)", color: "var(--alert-red)", borderRadius: 8, padding: "8px 10px", marginBottom: 12, fontSize: 12 }}>
+            This load will not be added to the driver's trip allowance. Manager is notified automatically.
+          </div>
+
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Reason for rejection</div>
           <select value={reasonId} onChange={(e) => setReasonId(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
             <option value="">Select</option>
@@ -538,5 +617,53 @@ function RejectForm({ ticket, onAct, onDone }) {
         </div>
       </div>
     </>
+  );
+}
+
+// Round 119, post-ship again round 3, item 8: required bottom sheet,
+// replacing window.prompt for both the pump-departure and site-ready delay
+// reasons (see confirmPumpDeparture/confirmSiteReady/submitDelayReason
+// above). No skip — the Submit button stays disabled until something's
+// typed — but Cancel backs out of the sheet without submitting, same
+// no-op-on-abandon behavior window.prompt already had (the underlying
+// confirmation simply doesn't go through until a reason is provided).
+function DelayReasonSheet({ title, subtitle, onSubmit, onCancel }) {
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!reason.trim()) return;
+    setSaving(true);
+    await onSubmit(reason.trim());
+    setSaving(false);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000 }}>
+      <div className="card" style={{ width: "100%", maxWidth: 400, borderRadius: "16px 16px 0 0", padding: "20px 18px", boxSizing: "border-box" }}>
+        <div style={{ width: 40, height: 4, background: "var(--concrete)", borderRadius: 999, margin: "0 auto 14px" }} />
+        <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{title}</div>
+        {subtitle && (
+          <div style={{ fontSize: 12, color: "var(--slate)", background: "var(--amber-bg)", borderRadius: 8, padding: "8px 10px", margin: "8px 0 12px" }}>
+            {subtitle}
+          </div>
+        )}
+        <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>Reason for delay *</div>
+        <textarea
+          rows={3} autoFocus value={reason} onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Site access blocked, waiting on pump availability, traffic on route..."
+          style={{ width: "100%", marginBottom: 6, boxSizing: "border-box" }}
+        />
+        <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 14 }}>
+          Required — this sheet stays open until a reason is entered. There is no skip.
+        </div>
+        <button onClick={submit} disabled={saving || !reason.trim()} style={{ width: "100%", marginBottom: 8 }}>
+          {saving ? "Saving..." : "Submit reason"}
+        </button>
+        <button type="button" onClick={onCancel} style={{ width: "100%", background: "none", border: "none", color: "var(--slate)", fontSize: 12 }}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }

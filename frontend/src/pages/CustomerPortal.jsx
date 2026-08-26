@@ -343,11 +343,13 @@ function HomeScreen({ me, onGoTab, onPush }) {
           <div className="portal-tile-title">My Orders</div>
           <div className="portal-tile-sub">{totalCount === null ? "Loading..." : `${totalCount} total${activeCount ? ` · ${activeCount} active` : ""}`}</div>
         </button>
-        <button type="button" className="portal-tile" onClick={() => onGoTab("track")}>
-          <div className="portal-tile-ic"><IconTrack color="#C75B12" size={17} /></div>
-          <div className="portal-tile-title">Live Tracking</div>
-          <div className="portal-tile-sub">{showTracking ? "See trucks en route" : "Not enabled for your sites"}</div>
-        </button>
+        {showTracking && (
+          <button type="button" className="portal-tile" onClick={() => onGoTab("track")}>
+            <div className="portal-tile-ic"><IconTrack color="#C75B12" size={17} /></div>
+            <div className="portal-tile-title">Live Tracking</div>
+            <div className="portal-tile-sub">See trucks en route</div>
+          </button>
+        )}
         <button type="button" className="portal-tile cta" onClick={() => onPush({ name: "order-concrete" })}>
           <div className="portal-tile-ic"><IconPlus color="#fff" size={17} /></div>
           <div className="portal-tile-title">New Order</div>

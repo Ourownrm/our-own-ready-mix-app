@@ -394,12 +394,17 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
 //    (won/lost), showing who it's assigned to instead of the Assign
 //    control. The "X new" badge now only counts still-unassigned leads,
 //    since that's the number actually needing Manager's attention.
-// 2. There was no way to close/decline a lead from here at all — only
-//    "assign" existed. Reuses the existing POST /sales/leads/:id/lost
-//    (already used elsewhere for this) rather than adding a new endpoint.
-//    "Won" isn't offered here deliberately — that's an Administrator-only
-//    action needing customer/order attribution (see LeadsBrowser.jsx), not
-//    something this quick card is meant to do.
+// 2. Round 119 post-ship again (round 2) added a "Close" button here that
+//    marked the lead lost via POST /sales/leads/:id/lost. Round 3 walked
+//    that back: closing a lead is a Leads-page-only action now (see
+//    LeadDetailAdmin in LeadsBrowser.jsx). What this widget offers instead
+//    is "Hide" — PATCH /sales/leads/:id/dashboard-hide sets
+//    leads.dashboard_hidden, which only dismisses the card from this widget
+//    and has no bearing on the lead's actual status. It's reversible via the
+//    "N hidden — show" toggle below, so a manager who hides one by mistake
+//    isn't stuck. "Won" isn't offered here deliberately — that's an
+//    Administrator-only action needing customer/order attribution (see
+//    LeadsBrowser.jsx), not something this quick card is meant to do.
 const ENQUIRY_TYPE = (l) => (l.notes?.startsWith("[Free Technical Assistance") ? "Technical assistance" : "Request for quote");
 
 export function CustomerInquiriesCard({ setError }) {
@@ -407,8 +412,7 @@ export function CustomerInquiriesCard({ setError }) {
   const [executives, setExecutives] = useState([]);
   const [assigningId, setAssigningId] = useState(null);
   const [assignTo, setAssignTo] = useState("");
-  const [closingId, setClosingId] = useState(null);
-  const [closeReason, setCloseReason] = useState("");
+  const [showHidden, setShowHidden] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function load() {
@@ -423,9 +427,11 @@ export function CustomerInquiriesCard({ setError }) {
     apiRequest("/sales/executives").then(setExecutives).catch(() => {});
   }, []);
 
-  const inquiries = leads
+  const open = leads
     .filter((l) => l.source === "public_inquiry" && l.status !== "won" && l.status !== "lost")
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const inquiries = open.filter((l) => !l.dashboard_hidden);
+  const hiddenInquiries = open.filter((l) => l.dashboard_hidden);
   const unassignedCount = inquiries.filter((l) => !l.assigned_to).length;
 
   async function assign(leadId) {
@@ -442,12 +448,10 @@ export function CustomerInquiriesCard({ setError }) {
     }
   }
 
-  async function closeLead(leadId) {
-    if (!closeReason.trim()) return;
+  async function setHidden(leadId, hidden) {
     setBusy(true); setError("");
     try {
-      await apiRequest(`/sales/leads/${leadId}/lost`, { method: "POST", body: { lost_reason: closeReason.trim() } });
-      setClosingId(null); setCloseReason("");
+      await apiRequest(`/sales/leads/${leadId}/dashboard-hide`, { method: "PATCH", body: { hidden } });
       load();
     } catch (err) {
       setError(err.message);
@@ -482,18 +486,7 @@ export function CustomerInquiriesCard({ setError }) {
                 {l.assigned_to_name && ` · Assigned to ${l.assigned_to_name}`}
               </div>
 
-              {closingId === l.id ? (
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                  <input
-                    type="text" value={closeReason} onChange={(e) => setCloseReason(e.target.value)}
-                    placeholder="Reason (e.g. went with another supplier)" style={{ flex: 1, fontSize: 12 }}
-                  />
-                  <button type="button" disabled={busy || !closeReason.trim()} onClick={() => closeLead(l.id)} style={{ fontSize: 11, padding: "3px 8px" }}>
-                    {busy ? "..." : "Confirm"}
-                  </button>
-                  <button type="button" onClick={() => { setClosingId(null); setCloseReason(""); }} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
-                </div>
-              ) : assigningId === l.id ? (
+              {assigningId === l.id ? (
                 <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                   <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} style={{ flex: 1, fontSize: 12 }}>
                     <option value="">Select salesperson</option>
@@ -509,8 +502,8 @@ export function CustomerInquiriesCard({ setError }) {
                   <button type="button" onClick={() => setAssigningId(l.id)} style={{ fontSize: 11, padding: "3px 8px" }}>
                     {l.assigned_to_name ? "Reassign" : "Assign to a salesperson"}
                   </button>
-                  <button type="button" className="btn-danger" onClick={() => setClosingId(l.id)} style={{ fontSize: 11, padding: "3px 8px" }}>
-                    Close
+                  <button type="button" disabled={busy} onClick={() => setHidden(l.id, true)} style={{ fontSize: 11, padding: "3px 8px" }}>
+                    Hide
                   </button>
                 </div>
               )}
@@ -519,6 +512,38 @@ export function CustomerInquiriesCard({ setError }) {
           {inquiries.length > 5 && (
             <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center" }}>
               +{inquiries.length - 5} more — see Browse Leads
+            </div>
+          )}
+        </div>
+      )}
+      {hiddenInquiries.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            onClick={() => setShowHidden((v) => !v)}
+            style={{ fontSize: 11, color: "var(--slate)", background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline" }}
+          >
+            {hiddenInquiries.length} hidden — {showHidden ? "hide again" : "show"}
+          </button>
+          {showHidden && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+              {hiddenInquiries.map((l) => (
+                <div key={l.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13, opacity: 0.75 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                    <div style={{ fontWeight: 600 }}>{l.prospect_name}</div>
+                    <span className="badge badge-neutral" style={{ fontSize: 10.5, padding: "2px 7px", whiteSpace: "nowrap" }}>{ENQUIRY_TYPE(l)}</span>
+                  </div>
+                  <div style={{ color: "var(--slate)", fontSize: 12 }}>
+                    {l.site_location ? `${l.site_location} · ` : ""}{l.contact_person ? `${l.contact_person} · ` : ""}{l.contact_phone}
+                    {l.assigned_to_name && ` · Assigned to ${l.assigned_to_name}`}
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <button type="button" disabled={busy} onClick={() => setHidden(l.id, false)} style={{ fontSize: 11, padding: "3px 8px" }}>
+                      Unhide
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

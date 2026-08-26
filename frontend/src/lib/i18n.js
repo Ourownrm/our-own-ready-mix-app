@@ -65,6 +65,25 @@ const DICT = {
     hint_returned_to_plant: "Looks like you're back at the plant around {time} — tap Plant In below to confirm.",
     confirm_stage: "Confirm {stage}?",
     not_yet: "Not Yet",
+    auto_confirm_countdown: "This will auto-confirm {stage} in about {minutes} min if you don't respond.",
+    auto_confirm_imminent: "This will auto-confirm {stage} any moment now.",
+
+    // Punch-in gating (round 119, post-ship again round 3)
+    punch_in_gate_title: "Start your shift to begin",
+    punch_in_gate_sub: "Your trips, allowance and other tools unlock right after.",
+    locked_after_punch_in: "Unlocks after Punch In",
+    on_duty_for: "On duty {time}",
+
+    // "Other assigned trucks today" list (was "older trips")
+    other_trucks_today: "Other assigned trucks today",
+    not_started: "Not started",
+
+    // Trip Allowance wallet screen
+    trip_allowance_wallet_title: "Trip Allowance",
+    completed_today: "Completed today",
+    earned_today: "Allowance earned today",
+    trips_completed_suffix: "{count} trip(s) completed",
+    allowance_credit_note: "Allowance is credited per completed trip — nothing shows for a rejected load.",
 
     // Fuel & lubricant module (driver-visible parts)
     fuel_title: "Fuel and lubricants",
@@ -144,6 +163,22 @@ const DICT = {
     hint_returned_to_plant: "നിങ്ങൾ ഏകദേശം {time}-ന് പ്ലാന്റിൽ തിരിച്ചെത്തിയതായി തോന്നുന്നു — സ്ഥിരീകരിക്കാൻ താഴെ പ്ലാന്റ് ഇൻ ടാപ്പ് ചെയ്യുക.",
     confirm_stage: "{stage} സ്ഥിരീകരിക്കണോ?",
     not_yet: "ഇപ്പോൾ വേണ്ട",
+    auto_confirm_countdown: "നിങ്ങൾ പ്രതികരിച്ചില്ലെങ്കിൽ, ഏകദേശം {minutes} മിനിറ്റിനുള്ളിൽ {stage} സ്വയമേവ സ്ഥിരീകരിക്കും.",
+    auto_confirm_imminent: "{stage} ഇപ്പോൾ തന്നെ സ്വയമേവ സ്ഥിരീകരിക്കും.",
+
+    punch_in_gate_title: "തുടങ്ങാൻ ഷിഫ്റ്റ് പഞ്ച് ഇൻ ചെയ്യുക",
+    punch_in_gate_sub: "പഞ്ച് ഇൻ ചെയ്ത ഉടൻ നിങ്ങളുടെ ട്രിപ്പുകൾ, അലവൻസ്, മറ്റ് ടൂളുകൾ എന്നിവ അൺലോക്ക് ആകും.",
+    locked_after_punch_in: "പഞ്ച് ഇൻ ചെയ്താൽ അൺലോക്ക് ആകും",
+    on_duty_for: "{time} ആയി ഡ്യൂട്ടിയിൽ",
+
+    other_trucks_today: "ഇന്ന് നിയോഗിച്ച മറ്റ് ട്രക്കുകൾ",
+    not_started: "തുടങ്ങിയിട്ടില്ല",
+
+    trip_allowance_wallet_title: "ട്രിപ്പ് അലവൻസ്",
+    completed_today: "ഇന്ന് പൂർത്തിയായത്",
+    earned_today: "ഇന്ന് നേടിയ അലവൻസ്",
+    trips_completed_suffix: "{count} ട്രിപ്പ് പൂർത്തിയായി",
+    allowance_credit_note: "പൂർത്തിയായ ഓരോ ട്രിപ്പിനും അലവൻസ് ലഭിക്കും — നിരസിച്ച ലോഡിന് ഒന്നും ലഭിക്കില്ല.",
 
     fuel_title: "ഇന്ധനവും ലൂബ്രിക്കന്റും",
     your_requests: "നിങ്ങളുടെ അഭ്യർത്ഥനകൾ",
@@ -222,6 +257,22 @@ const DICT = {
     hint_returned_to_plant: "लगता है आप लगभग {time} बजे वापस प्लांट पहुंच गए — पुष्टि के लिए नीचे प्लांट इन पर टैप करें।",
     confirm_stage: "{stage} की पुष्टि करें?",
     not_yet: "अभी नहीं",
+    auto_confirm_countdown: "अगर आप जवाब नहीं देंगे, तो लगभग {minutes} मिनट में {stage} अपने आप दर्ज हो जाएगा।",
+    auto_confirm_imminent: "{stage} अभी अपने आप दर्ज हो जाएगा।",
+
+    punch_in_gate_title: "शुरू करने के लिए पंच इन करें",
+    punch_in_gate_sub: "पंच इन करते ही आपकी ट्रिप, अलाउंस और बाकी टूल अनलॉक हो जाएंगे।",
+    locked_after_punch_in: "पंच इन के बाद अनलॉक होगा",
+    on_duty_for: "{time} से ड्यूटी पर",
+
+    other_trucks_today: "आज सौंपे गए अन्य ट्रक",
+    not_started: "शुरू नहीं हुआ",
+
+    trip_allowance_wallet_title: "ट्रिप अलाउंस",
+    completed_today: "आज पूरी हुई ट्रिप",
+    earned_today: "आज कमाया गया अलाउंस",
+    trips_completed_suffix: "{count} ट्रिप पूरी हुईं",
+    allowance_credit_note: "हर पूरी हुई ट्रिप पर अलाउंस मिलता है — रिजेक्ट किए गए लोड पर कुछ नहीं मिलता।",
 
     fuel_title: "ईंधन और लुब्रिकेंट",
     your_requests: "आपके अनुरोध",
