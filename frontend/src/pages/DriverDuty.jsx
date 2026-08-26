@@ -664,12 +664,24 @@ function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
     else if (stage.key === "plant_in") onAct("plant-in", {});
   }
 
+  // Matches the mockup's "Not started" pill on each collapsed other-truck
+  // card — round 119 post-ship again round 3 added the `not_started` i18n
+  // key for exactly this but never actually rendered it anywhere (caught on
+  // review). Only shown compact — the expanded current-trip card already has
+  // the full stage tracker doing this job in more detail.
+  const notStarted = compact && !trip.plant_out_at;
+
   return (
     <div className="card" style={{ marginBottom: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
         <div>
           <div style={{ fontSize: 11, color: "var(--slate)" }}>{compact ? t("assigned") : t("current_trip")}</div>
-          <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600 }}>{trip.ticket_number}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600 }}>{trip.ticket_number}</div>
+            {notStarted && (
+              <span className="badge badge-neutral" style={{ fontSize: 10 }}>{t("not_started")}</span>
+            )}
+          </div>
         </div>
         {trip.trip_allowance_amount && (
           <div style={{ textAlign: "right" }}>
