@@ -212,6 +212,16 @@ CREATE TABLE leads (
   longitude NUMERIC(10,7),
   site_latitude NUMERIC(10,7),
   site_longitude NUMERIC(10,7),
+  -- Round 119, post-ship — free-text extras from the expanded public
+  -- "Request a Quote" form (mix requirement, timeline) and the new "Free
+  -- Technical Assistance" form (routes/publicInquiry.js's POST / and POST
+  -- /technical-assistance) — both public, no-login intake forms that create
+  -- a lead the same way. Technical-assistance submissions prefix this with
+  -- the topic chip the person picked (e.g. "[Free Technical Assistance —
+  -- Choosing a grade]") since there's no separate column for that — one
+  -- more discriminator on top of source felt like overkill for a value only
+  -- ever read by a human on the lead detail screen.
+  notes TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -260,6 +270,26 @@ CREATE TABLE customer_booking_links (
   site_id INTEGER REFERENCES sites(id) NOT NULL,
   token VARCHAR(64) UNIQUE NOT NULL,
   tracking_enabled BOOLEAN NOT NULL DEFAULT false,
+  -- Round 119, post-ship (per the business's own mockup) — this row is now
+  -- ALSO the single per-customer+site home for the customer portal's
+  -- feature switches, not just the public tracking view. The mockup's own
+  -- wording: "Tracking already exists today (Customer Booking -> Links) —
+  -- carried forward as-is. QC Reports and Technical Writings are new
+  -- columns on the SAME table, switched per customer+site rather than one
+  -- global on/off." A customer's /portal access code can cover several
+  -- sites (customer_access_token_sites); for each order, the effective
+  -- allow_tracking/allow_qc_reports/allow_technical_writings is resolved
+  -- from THIS table's row for that order's own (customer_id, site_id) —
+  -- see requireCustomerAuth in routes/customerPortal.js. A site with no
+  -- active link row here shows nothing (all three effectively false,
+  -- matching tracking_enabled's own existing default-false convention) —
+  -- Manager needs to generate a link for a site before a portal code
+  -- covering it will show anything for that site. This supersedes
+  -- customer_access_tokens.allow_tracking/allow_qc_reports/
+  -- allow_technical_writings below, which are no longer read anywhere
+  -- (left in place rather than dropped, to avoid a destructive migration).
+  allow_qc_reports BOOLEAN NOT NULL DEFAULT true,
+  allow_technical_writings BOOLEAN NOT NULL DEFAULT true,
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_by INTEGER REFERENCES users(id) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -288,6 +318,20 @@ CREATE TABLE customer_access_tokens (
   token VARCHAR(12) UNIQUE NOT NULL,
   label VARCHAR(100),
   is_active BOOLEAN NOT NULL DEFAULT true,
+  -- Post-ship (round 119): per-code capability switches, business asked to
+  -- be able to switch off specific portal capabilities per customer. These
+  -- three columns are now VESTIGIAL — round 119 post-ship (per the
+  -- business's own mockup) moved this control onto customer_booking_links
+  -- above instead (one row per customer+SITE, matching the mockup exactly),
+  -- since a single access code can cover several sites and the business
+  -- wanted control at the site level, visible on the same table as the
+  -- existing "Booking Links & Requests" screen. Left in place rather than
+  -- dropped (no destructive migration), but nothing reads them any more —
+  -- see routes/customerBooking.js's PATCH /:id/permissions and
+  -- routes/customerPortal.js's requireCustomerAuth for the real thing.
+  allow_tracking BOOLEAN NOT NULL DEFAULT true,
+  allow_qc_reports BOOLEAN NOT NULL DEFAULT true,
+  allow_technical_writings BOOLEAN NOT NULL DEFAULT true,
   created_by INTEGER REFERENCES users(id) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_used_at TIMESTAMPTZ,
@@ -305,6 +349,48 @@ CREATE TABLE customer_access_token_sites (
   token_id INTEGER REFERENCES customer_access_tokens(id) ON DELETE CASCADE NOT NULL,
   site_id INTEGER REFERENCES sites(id) NOT NULL,
   PRIMARY KEY (token_id, site_id)
+);
+
+-- Post-ship (round 119, per the business's own mockup) — a small document
+-- library: PDF guides/articles (e.g. "After-pour care", "Choosing the
+-- right grade for slabs vs. footings") that Manager/Admin uploads and
+-- categorizes, shown to customers whose access code has
+-- allow_technical_writings on. This is the FIRST place this app stores an
+-- uploaded file's actual bytes — no S3/external object storage is set up
+-- anywhere else, so file_data is a plain BYTEA. That's a fine trade-off at
+-- this app's scale (a handful of small PDFs, not per-order attachments —
+-- see the app's Known Limitations note on file attachments generally) but
+-- worth revisiting with real object storage if this library grows large or
+-- a future round needs per-order photo/file attachments too.
+CREATE TABLE technical_documents (
+  id SERIAL PRIMARY KEY,
+  title VARCHAR(150) NOT NULL,
+  category VARCHAR(60),
+  filename VARCHAR(200) NOT NULL,
+  mime_type VARCHAR(100) NOT NULL DEFAULT 'application/pdf',
+  size_bytes INTEGER NOT NULL,
+  file_data BYTEA NOT NULL,
+  uploaded_by INTEGER REFERENCES users(id) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_technical_documents_category ON technical_documents(category);
+
+-- Round 119, post-ship — editable copy for the public marketing pages (per
+-- the business's own mockup): "Services, Products & Equipment" and
+-- "Ready-Mix vs. Site-Mix" comparison. One JSONB blob per page (key =
+-- 'services' or 'rmc_vs_sitemix') rather than a fully normalized set of
+-- tables — this is marketing copy a Manager/Admin edits occasionally
+-- through a form (routes/siteContent.js), not transactional data anything
+-- else in the app joins against, so a flexible blob is the right amount of
+-- structure. Seeded with the mockup's own copy at setup time (see
+-- routes/setup.js) so the public pages aren't empty before anyone edits
+-- them. Read is public/unauthenticated (routes/siteContent.js's GET);
+-- write is Manager/Admin only.
+CREATE TABLE site_content (
+  key VARCHAR(40) PRIMARY KEY,
+  content JSONB NOT NULL,
+  updated_by INTEGER REFERENCES users(id),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- A booking is a lighter-weight commitment than a real order — placed either
@@ -335,6 +421,16 @@ CREATE TABLE bookings (
   status booking_status DEFAULT 'pending',
   converted_order_id INTEGER, -- FK to customer_orders added below, once that table exists
   declined_reason TEXT,
+  -- Round 119, post-ship — a THIRD way a booking can originate, alongside
+  -- requested_by (Sales Executive, phone/in person) and booking_link_id (the
+  -- public, no-login /book/:token page). This one is a customer's own
+  -- "Order Concrete" self-service request, submitted while signed in at
+  -- /portal with their access code (routes/customerPortal.js's POST
+  -- /orders) — requested_by and booking_link_id are both NULL for these,
+  -- same as a booking-link submission, so this flag is what tells the
+  -- Manager/Admin queue (lib/SalesPanels.jsx's BookingsQueue) and reports
+  -- apart from that case rather than leaving both indistinguishable.
+  submitted_via_portal BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 

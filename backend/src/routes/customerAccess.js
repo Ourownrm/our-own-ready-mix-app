@@ -9,6 +9,14 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 // public side the customer actually uses lives in routes/customerPortal.js.
 // See schema.sql's comment above customer_access_tokens for why this is a
 // typed-in code rather than a shareable link like customer_booking_links.
+//
+// Round 119, post-ship — this route file is now IDENTITY-ONLY (which
+// customer, which sites, a label). What a code can actually see (tracking/
+// QC reports/technical writings) moved to routes/bookingLinks.js's
+// PATCH /:id/permissions instead, per customer+SITE rather than per code —
+// see schema.sql's comment above customer_booking_links. A code covering
+// three sites can now show different things per site; that couldn't be
+// expressed when the switches lived here.
 const router = Router();
 router.use(requireAuth, requireRole("manager", "administrator"));
 

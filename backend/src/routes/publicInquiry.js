@@ -29,26 +29,75 @@ const submitLimiter = rateLimit({
   message: { error: "Too many submissions from this connection — please try again later." },
 });
 
+// Round 119, post-ship — expanded per the business's own mockup (RequestQuote
+// screen): a contact's own name is now required (previously "company name"
+// doubled as the required field), company/site name is optional, and
+// quantity/grade/mix-requirement/timeline fields were added.
+// mix_grade_interest and estimated_qty_m3 reuse leads' own existing columns
+// (already there for staff-created leads); mix requirement and "anything
+// else" are free text with nowhere structured to go, so the frontend
+// combines them into one string and it lands in leads.notes.
 router.post("/", submitLimiter, async (req, res) => {
-  const { company_name, site_project, contact_name, contact_number } = req.body;
-  const companyName = (company_name || "").trim();
+  const { contact_name, contact_number, company_name, site_project, estimated_qty_m3, mix_grade_interest, notes } = req.body;
+  const contactName = (contact_name || "").trim();
   const contactNumber = (contact_number || "").trim();
-  if (!companyName || !contactNumber) {
-    return res.status(400).json({ error: "Company name and a contact number are required." });
+  const companyName = (company_name || "").trim();
+  if (!contactName || !contactNumber) {
+    return res.status(400).json({ error: "Your name and a mobile number are required." });
   }
-  if (companyName.length > 150 || contactNumber.length > 20) {
+  if (contactName.length > 150 || contactNumber.length > 20 || companyName.length > 150) {
     return res.status(400).json({ error: "That doesn't look right — please check the fields and try again." });
   }
 
   const { rows } = await query(
-    `INSERT INTO leads (prospect_name, contact_person, contact_phone, site_location, source, status)
-     VALUES ($1,$2,$3,$4,'public_inquiry','new') RETURNING id`,
-    [companyName, (contact_name || "").trim() || null, contactNumber, (site_project || "").trim() || null]
+    `INSERT INTO leads (prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, notes, source, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'public_inquiry','new') RETURNING id`,
+    [
+      companyName || contactName, contactName, contactNumber, (site_project || "").trim() || null,
+      (mix_grade_interest || "").trim() || null, estimated_qty_m3 || null, (notes || "").trim() || null,
+    ]
   );
 
   const pushPayload = {
     title: "New public inquiry",
-    body: `${companyName}${site_project ? ` — ${site_project}` : ""}`,
+    body: `${companyName || contactName}${site_project ? ` — ${site_project}` : ""}`,
+    url: "/leads",
+  };
+  await Promise.all([pushToRole("manager", pushPayload), pushToRole("administrator", pushPayload)]);
+
+  res.status(201).json({ ok: true, id: rows[0].id });
+});
+
+// Round 119, post-ship — the mockup's "Free Technical Assistance" callback
+// form: same public, no-login intake as the quote form above, landing in
+// the same leads pipeline (source = 'public_inquiry') so Manager/Admin sees
+// it in the one place they already check, rather than a second inbox. What
+// makes it a "technical assistance" request rather than a quote request is
+// just the topic tag prefixed onto notes — see schema.sql's comment on
+// leads.notes for why that's a tag in text rather than another column.
+router.post("/technical-assistance", submitLimiter, async (req, res) => {
+  const { name, phone, topic, project_description } = req.body;
+  const contactName = (name || "").trim();
+  const contactNumber = (phone || "").trim();
+  if (!contactName || !contactNumber) {
+    return res.status(400).json({ error: "Your name and a mobile number are required." });
+  }
+  if (contactName.length > 150 || contactNumber.length > 20) {
+    return res.status(400).json({ error: "That doesn't look right — please check the fields and try again." });
+  }
+  const topicTag = (topic || "Something else").trim();
+  const description = (project_description || "").trim();
+  const notes = `[Free Technical Assistance — ${topicTag}]${description ? ` ${description}` : ""}`;
+
+  const { rows } = await query(
+    `INSERT INTO leads (prospect_name, contact_person, contact_phone, notes, source, status)
+     VALUES ($1,$2,$3,$4,'public_inquiry','new') RETURNING id`,
+    [contactName, contactName, contactNumber, notes]
+  );
+
+  const pushPayload = {
+    title: "New technical assistance request",
+    body: `${contactName} — ${topicTag}`,
     url: "/leads",
   };
   await Promise.all([pushToRole("manager", pushPayload), pushToRole("administrator", pushPayload)]);

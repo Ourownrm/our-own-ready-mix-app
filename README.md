@@ -3961,6 +3961,73 @@ broken in production**, because the failure mode (`trust proxy` unset) only exis
 proxy sits between the client and the app — nothing in local dev or a direct `curl` to the
 backend would ever surface it.
 
+## Round 119, post-ship (Ver. 9.31): per-code access control, live tracking, customer leads on the Manager Dashboard, and a Technical Writings library
+
+Business feedback on the round 119 ship, verbatim: "1. i asked for access control to customer,
+switch on/off tracking, QC, and technical writings, it is not there. 2. customer leads should
+appear in manager dashboard." Four pieces of follow-up work, all building on the round 119
+customer portal above rather than changing its shape:
+
+**Customer leads on the Manager Dashboard (`CustomerInquiriesCard`, `SalesPanels.jsx`).** The
+public-inquiry leads created above were only visible by going into Browse Leads and filtering —
+nothing surfaced them where a Manager actually looks first. A new card on `ManagerDashboard.jsx`
+(reusing the same `leads`/`sales/executives` endpoints Browse Leads already calls, no new
+backend route) shows the top 5 unassigned, not-yet-won/lost `public_inquiry` leads with an
+inline "assign to" dropdown (`PATCH /sales/leads/:id/assign`) and a link through to the full
+list.
+
+**Live delivery tracking, not just a status word.** The original round 119 ship only showed an
+order's status badge inside the portal — "Tracking" business asked for turned out to mean the
+same live per-truck view the public `/track/:token` link and the internal booking-status screen
+already show (stage progress, ETA, last-seen time), not a label. Rather than a third
+implementation of that view, the truck-card UI was pulled out of `CustomerTracking.jsx` into a
+shared `lib/DeliveryTrackingView.jsx` (`TruckCard`, `STAGES`, etc.) and reused as-is inside a new
+"Track delivery" panel on each order in the portal, polling the existing
+`lib/orderTracking.js` helper (`GET /customer-portal/orders/:id/tracking`, ownership-checked
+against the signed-in code's own customer + sites) every 20 seconds while open.
+
+**Per-access-code switches for all three: tracking, QC reports, technical writings.** "Switch
+on/off" was the business's own phrasing — this is deliberately per *access code*, not per
+customer, since one customer can hold more than one code (e.g. one site engineer's code with
+just tracking, a head-office code with everything). `customer_access_tokens` gained three
+booleans (`allow_tracking`, `allow_qc_reports`, `allow_technical_writings`, all
+`NOT NULL DEFAULT true` so an existing code keeps full access unless someone turns a switch
+off). Set at generation time and editable afterward from the same "Portal Access" tab
+(`PATCH /customer-access/:id/permissions`, optimistic UI with rollback on failure). The customer
+portal's `requireCustomerAuth` re-reads all three live on every request — same reasoning as the
+existing `is_active` re-check — so flipping a switch off takes effect on the customer's very
+next tap, not at the end of their 180-day session. Each gated section (tracking panel, QC
+buttons, the new Technical Writings panel below) simply doesn't render when its switch is off,
+and every route it depends on enforces the same switch server-side too, so this isn't just a UI
+hide.
+
+**Technical Writings — a document library, distinct from QC PDFs (`technicalWritings.js`,
+new "Technical Writings" tab on `CustomerBooking.jsx`, new panel on `CustomerPortal.jsx`).**
+Business's "technical writings" turned out to mean something the QC/mix-design PDFs don't cover
+at all: a small admin-managed library of guide documents (e.g. "after-pour curing care",
+"choosing the right grade for slabs vs. footings") — uploaded, categorized, renamed, and deleted
+by Manager/Admin, downloadable by any customer whose access code allows it. This is the first
+place in the app that stores a binary file in the database (`technical_documents.file_data
+BYTEA`) — a deliberate scale trade-off, fine for a handful of small PDF guides, flagged in
+`schema.sql`'s comment and in Known Limitations below as something that would need real object
+storage (e.g. S3) if the library grows much larger or if per-order file attachments are ever
+added elsewhere. Upload travels as base64 inside a JSON body rather than a real
+`multipart/form-data` upload, matching every other endpoint's all-JSON convention (this app has
+no multipart middleware anywhere), which meant raising Express's JSON body limit from the
+default 100kb to 12mb app-wide — sized deliberately above the 8MB file cap plus its ~33% base64
+inflation, after an internal review caught that 10mb would have silently rejected files near the
+advertised 8MB limit with a generic error instead of the route's own friendly one. On the
+customer side, opening a document decodes the base64 response into a `Blob` and opens it via an
+object URL (`URL.createObjectURL`, revoked after 60s) rather than a plain download link, since
+the file never lives at a stable server URL the customer's browser could hit directly; if the
+browser blocks that as a popup (Safari does this when it happens after an `await`), it falls
+back to a same-page navigation instead of silently doing nothing.
+
+Both the tracking-polling panel and the Technical Writings panel are additive UI on the existing
+`/portal` — the navigation and screen structure otherwise match what shipped in round 119
+above; a broader visual/navigational rework (bottom tab bar, a Home-style dashboard, etc.) was
+discussed against an earlier mockup but is out of scope for this round and not reflected here.
+
 ### Migration note (round 119)
 Run `/setup` after deploying — adds `leads.source`, and two new tables
 (`customer_access_tokens`, `customer_access_token_sites`) plus their indexes. Also requires a
@@ -3971,5 +4038,85 @@ exposure), but setting it explicitly is the correct production configuration sin
 customer and staff sessions cryptographically independent as designed, not just logically
 independent. Verified with `node --check` on every touched/new backend route and middleware
 file, and a clean `npm run build` on the frontend. No live Postgres instance available in this
+environment, so `/setup` on deploy remains the first real migration run, same caveat as every
+prior round.
+
+## Round 119, post-ship again (Ver. 9.32): customer portal rebuilt to the business's own mockup, self-service ordering, and public marketing pages
+
+The business sent its own 16-screen mockup of the customer portal and asked for the app rebuilt
+to match it — with one deliberate departure ("Request Concrete" → "Order Concrete") — and
+confirmed sign-in stays the existing code-only flow, not the mockup's phone+OTP screens. Scope
+was confirmed up front to cover everything the mockup shows: the bottom-tab portal shell, a
+self-service booking form, and the public no-login marketing pages plus the Manager-side editor
+for them.
+
+**Where the toggles live, moved to match the mockup exactly.** The three portal switches
+(tracking, QC reports, technical writings) added last round were per *access code*
+(`customer_access_tokens`) — the mockup shows them per **customer + site**, editable from the
+existing Booking Links screen rather than the code-generation form. They now live on
+`customer_booking_links` as `tracking_enabled` (already existed), `allow_qc_reports` and
+`allow_technical_writings` (new columns), one row per customer+site. `PortalAccessTab` on
+`CustomerBooking.jsx` lost its "what this code can see" checkboxes and its Access column
+entirely — that screen is now just code issuing/expiry — with a note pointing to Booking Links
+for the actual switches. The three booleans on `customer_access_tokens` are left in place
+(documented as superseded in `schema.sql`, never dropped) rather than migrated, since a code can
+span sites with different settings and there's no single per-code value to migrate them to.
+
+**Customer portal rebuilt from the mockup (`CustomerPortal.jsx`, fully rewritten — flat ~450
+lines to a bottom-tab shell around 1000 lines).** Bottom nav (Home / Orders / Track / More)
+replaces the old single-screen layout, driven by internal `tab` + drill-down `stack` state
+rather than new router routes, matching how `/portal` has always been one route. Home is a
+dashboard tile grid; **My Orders** is one merged list — a customer's own pending "Order
+Concrete" requests sit alongside their real orders, computed server-side via a `UNION ALL`
+across `customer_orders` and not-yet-converted `bookings` and run through one shared
+`summarizeStatus()` so the list and the detail screen never disagree on a status label. Order
+detail gained a 4-stage stepper, a rescheduled-delivery banner, and a "your team on this order"
+contacts card (Sales Executive resolved per-order via `salespersons`/`created_by` fallback,
+Site Supervisor per-order and highlighted, Plant Manager and QC Engineer resolved by role since
+neither is assigned per-order in the schema — a known simplification, flagged in code). Sign-in
+is unchanged (access-code only) beyond a visual restyle to match the mockup, per explicit
+instruction not to build the phone+OTP flow shown there.
+
+**Order Concrete — self-service booking, in-portal (`POST /customer-portal/orders`,
+`OrderConcreteScreen`).** A signed-in customer can now submit a booking request for one of their
+own sites directly from the portal, without a Manager-issued booking link. Recorded on
+`bookings` with a new `submitted_via_portal` boolean (both `requested_by` and `booking_link_id`
+are `NULL` either way, same as a portal submission's existing signature — the new column is
+what lets staff screens tell "customer used their own portal" apart from "customer used a
+shared booking link" when displaying provenance). `BookingsQueue` and `ConvertBookingForm` on
+the Sales side now show a distinct "Order Concrete (portal)" badge/pre-fill notice for these.
+
+**Public marketing pages, no login (`ServicesPublic.jsx`, `RmcVsSitemix.jsx`,
+`TechnicalAssistance.jsx`, `PublicInquiry.jsx` expanded).** Four pages from the mockup that
+don't require an account: a Services/Products/Equipment browse page and a Ready-Mix vs.
+Site-Mix comparison page, both reading their copy from a new `site_content` JSONB table
+(`GET /site-content/:key`, public) rather than being hardcoded, so the business can update
+grades/services/fleet copy or the comparison text without a code change; a new "Free Technical
+Assistance" callback form (`POST /public-inquiry/technical-assistance`) for a customer who
+doesn't yet know their grade/quantity; and the existing "Request a Quote" form
+(`PublicInquiry.jsx`) expanded with the mockup's fuller field set (contact name now required in
+place of company name, mobile number, optional company/site name, project location, quantity,
+grade, mix requirement, free text). Both the assistance form and the expanded quote form land in
+the same `leads` pipeline (`source = 'public_inquiry'`) — rather than adding a new `leads.source`
+value (which would have meant touching every existing `source === 'public_inquiry'` check across
+`LeadsBrowser.jsx`/`SalesPanels.jsx`), the distinction is carried in a new free-text
+`leads.notes` column instead, tagged with the topic for the assistance form. All four pages are
+linked from the sign-in screen's guest links and from the portal's More tab.
+
+**Manager-side content editor (`SiteContentEditor.jsx`, new "Website Content" item under the
+existing Customer Booking menu on all three Masters-menu screens).** Two tabs — Services &
+Products, Ready-Mix vs. Site-Mix — editing the same `site_content` rows the two public pages
+read, gated Manager/Administrator (`PUT /site-content/:key`). Kept as one screen rather than two
+separate Masters entries; it's occasional marketing-copy editing, not transactional data, so a
+plain JSONB blob per page was preferred over normalizing services/fleet/points into their own
+tables.
+
+### Migration note (round 119, post-ship again)
+Run `/setup` after deploying — adds `bookings.submitted_via_portal`, `leads.notes`, and a new
+`site_content` table, seeded with two rows (`services`, `rmc_vs_sitemix`) matching the mockup's
+copy so the two public pages aren't blank on first deploy. No new environment variables. Verified
+with `node --check` on every touched/new backend file and a clean `npm run build` on the
+frontend (including the new `/services`, `/rmc-vs-sitemix`, `/technical-assistance`, and
+`/site-content` routes registered in `App.jsx`). No live Postgres instance available in this
 environment, so `/setup` on deploy remains the first real migration run, same caveat as every
 prior round.

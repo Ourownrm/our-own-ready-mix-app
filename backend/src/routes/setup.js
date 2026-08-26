@@ -1168,6 +1168,8 @@ router.get("/setup", async (req, res) => {
         token VARCHAR(12) UNIQUE NOT NULL,
         label VARCHAR(100),
         is_active BOOLEAN NOT NULL DEFAULT true,
+        allow_tracking BOOLEAN NOT NULL DEFAULT true,
+        allow_qc_reports BOOLEAN NOT NULL DEFAULT true,
         created_by INTEGER REFERENCES users(id) NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         last_used_at TIMESTAMPTZ,
@@ -1185,6 +1187,135 @@ router.get("/setup", async (req, res) => {
       );
     `);
     log.push("Schema migration applied (leads.source — distinguishes a public /inquiry submission from a staff-created lead; customer_access_tokens/customer_access_token_sites — short Manager-issued sign-in codes for the customer portal, each scoped to one customer and one or more sites).");
+
+    // Post-ship, same round — access control switches per code (business
+    // asked for a way to turn off specific portal capabilities per
+    // customer). Separate ALTER, guarded, since the table above may
+    // already exist from an earlier round-119 deploy without these columns
+    // (CREATE TABLE IF NOT EXISTS is a no-op against an existing table).
+    await query(`
+      ALTER TABLE customer_access_tokens ADD COLUMN IF NOT EXISTS allow_tracking BOOLEAN NOT NULL DEFAULT true;
+    `);
+    await query(`
+      ALTER TABLE customer_access_tokens ADD COLUMN IF NOT EXISTS allow_qc_reports BOOLEAN NOT NULL DEFAULT true;
+    `);
+    log.push("Schema migration applied (customer_access_tokens.allow_tracking / allow_qc_reports — per-code switches so Manager can turn off live tracking or QC reports for a specific customer's access code; both default true so existing codes are unaffected).");
+
+    // Post-ship, same round — the business's own mockup clarified "technical
+    // writings" as a small admin-managed PDF document library (guides like
+    // "After-pour care", not the mix design itself), with its own per-code
+    // switch alongside tracking/QC. First feature in this app to store an
+    // uploaded file's bytes (BYTEA — no object storage set up elsewhere).
+    await query(`
+      ALTER TABLE customer_access_tokens ADD COLUMN IF NOT EXISTS allow_technical_writings BOOLEAN NOT NULL DEFAULT true;
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS technical_documents (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(150) NOT NULL,
+        category VARCHAR(60),
+        filename VARCHAR(200) NOT NULL,
+        mime_type VARCHAR(100) NOT NULL DEFAULT 'application/pdf',
+        size_bytes INTEGER NOT NULL,
+        file_data BYTEA NOT NULL,
+        uploaded_by INTEGER REFERENCES users(id) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_technical_documents_category ON technical_documents(category);`);
+    log.push("Schema migration applied (customer_access_tokens.allow_technical_writings; technical_documents — Manager/Admin-uploaded PDF guides shown to customers whose code has this switched on).");
+
+    // Round 119, post-ship (per the business's own mockup) — moved the three
+    // portal capability switches off customer_access_tokens (per code) onto
+    // customer_booking_links (per customer+SITE, one row per site on the
+    // same "Booking Links & Requests" table the business already uses).
+    // tracking_enabled already existed there; these two are new siblings.
+    // Both default true on ALTER so an already-active link keeps showing
+    // exactly what it showed before this migration ran.
+    await query(`
+      ALTER TABLE customer_booking_links ADD COLUMN IF NOT EXISTS allow_qc_reports BOOLEAN NOT NULL DEFAULT true;
+    `);
+    await query(`
+      ALTER TABLE customer_booking_links ADD COLUMN IF NOT EXISTS allow_technical_writings BOOLEAN NOT NULL DEFAULT true;
+    `);
+    log.push("Schema migration applied (customer_booking_links.allow_qc_reports / allow_technical_writings — per customer+site portal feature switches, alongside the existing tracking_enabled; customer_access_tokens' own three switch columns are no longer read anywhere, superseded by this).");
+
+    // Round 119, post-ship — full mockup-fidelity customer portal rebuild:
+    // the new "Order Concrete" self-service form (routes/customerPortal.js's
+    // POST /orders) creates a bookings row with requested_by AND
+    // booking_link_id both NULL, same as the public /book/:token link
+    // leaves requested_by — but there's no link token here, just an
+    // authenticated /portal session, so booking_link_id stays NULL too.
+    // Without this flag that combination would be indistinguishable from a
+    // hypothetical booking with neither a staff submitter nor a link, so
+    // it's what tells the Manager/Admin queue (and this app's own
+    // requested_by/booking_link_id convention) the two apart.
+    await query(`
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS submitted_via_portal BOOLEAN NOT NULL DEFAULT false;
+    `);
+    log.push("Schema migration applied (bookings.submitted_via_portal — distinguishes a customer's own 'Order Concrete' portal request from a booking-link submission, both of which leave requested_by/booking_link_id NULL/set the same way).");
+
+    // Round 119, post-ship — the expanded public "Request a Quote" form and
+    // the new "Free Technical Assistance" callback form (both in
+    // routes/publicInquiry.js) both write their free-text extras here.
+    await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS notes TEXT;`);
+    log.push("Schema migration applied (leads.notes — free-text extras from the expanded public Request-a-Quote and new Free-Technical-Assistance forms).");
+
+    // Round 119, post-ship — editable copy for the two public marketing
+    // pages (routes/siteContent.js). Seeded once with the business's own
+    // mockup copy, ON CONFLICT DO NOTHING so a Manager's later edits are
+    // never overwritten by a subsequent setup run.
+    await query(`
+      CREATE TABLE IF NOT EXISTS site_content (
+        key VARCHAR(40) PRIMARY KEY,
+        content JSONB NOT NULL,
+        updated_by INTEGER REFERENCES users(id),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await query(
+      `INSERT INTO site_content (key, content) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO NOTHING`,
+      [
+        "services",
+        JSON.stringify({
+          grades: ["M15", "M20", "M25", "M30", "M35", "M40", "Design mixes on request"],
+          services: [
+            { title: "Ready-mix concrete supply", description: "Batched to order and delivered by transit mixer, with a QC-tested slump on every load." },
+            { title: "Concrete pumping", description: "Boom and line pump options for high-rise and hard-to-reach pours." },
+            { title: "On-site quality testing", description: "Slump checks and cube casting at the point of pour, with lab-verified compressive strength reports." },
+          ],
+          fleet: [
+            { title: "Transit mixers", subtitle: "6m³ & 8m³" },
+            { title: "Boom pumps", subtitle: "up to 32m reach" },
+          ],
+        }),
+      ]
+    );
+    await query(
+      `INSERT INTO site_content (key, content) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO NOTHING`,
+      [
+        "rmc_vs_sitemix",
+        JSON.stringify({
+          hero_title: "One consistent mix,\nevery single load.",
+          hero_subtitle: "Why more contractors are moving away from mixing on site.",
+          ready_mix_points: [
+            "Batched by weight, QC-tested every load",
+            "No site storage for cement/aggregate",
+            "Faster pour, less labour on site",
+            "Consistent strength, lab-verified",
+          ],
+          site_mix_points: [
+            "Manual proportioning, varies by crew",
+            "Needs storage & water on site",
+            "Slower, more labour-intensive",
+            "Strength varies batch to batch",
+          ],
+          cost_paragraph: "Site-mix looks cheaper per bag of cement — until you count labour, water, wastage, storage space and rework from inconsistent strength. Most contractors find ready-mix comes out even or ahead once a pour is above ~15 m³.",
+          quality_paragraph: "Slump checked at the plant and again on site; cubes cast per pour and tested at 7 & 28 days. Once your account is set up, these results are available in the QC section of the app.",
+        }),
+      ]
+    );
+    log.push("Schema migration applied (site_content — editable copy for the public Services/Products/Equipment and Ready-Mix vs Site-Mix pages, seeded with the mockup's own default copy).");
 
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {

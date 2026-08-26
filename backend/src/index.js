@@ -31,6 +31,8 @@ import customerBookingRoutes from "./routes/customerBooking.js";
 import customerAccessRoutes from "./routes/customerAccess.js";
 import customerPortalRoutes from "./routes/customerPortal.js";
 import publicInquiryRoutes from "./routes/publicInquiry.js";
+import siteContentRoutes from "./routes/siteContent.js";
+import technicalWritingsRoutes from "./routes/technicalWritings.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -56,7 +58,18 @@ const app = express();
 // Render's edge is documented to forward traffic.
 app.set("trust proxy", 1);
 app.use(cors());
-app.use(express.json());
+// Round 119, post-ship — Technical Writings uploads a PDF as base64 inside a
+// JSON body (see routes/technicalWritings.js's header comment for why: no
+// multipart middleware exists anywhere in this app, and base64-over-JSON
+// keeps every endpoint on the same all-JSON convention). Base64 inflates a
+// file by roughly a third, so the default 100kb body limit would reject
+// even a small real PDF guide — raised modestly, app-wide, rather than
+// standing up a second body-parser instance scoped to one route. Set to
+// 12mb, not 10mb: technicalWritings.js caps the actual file at 8MB, and
+// 8MB of base64 alone is ~10.7MB before the surrounding JSON (title,
+// filename, etc.) is even added — 10mb would silently 413 files the
+// route's own size check was written to accept.
+app.use(express.json({ limit: "12mb" }));
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
@@ -85,6 +98,10 @@ app.use("/api/booking-links", bookingLinksRoutes);
 // Manager/Admin-only, staff auth as usual — generates/lists/revokes the
 // customer portal access codes (routes/customerAccess.js).
 app.use("/api/customer-access", customerAccessRoutes);
+// Manager/Admin-only — upload/rename/delete the Technical Writings PDF
+// library (routes/technicalWritings.js). The customer-facing list/download
+// side lives inside customerPortalRoutes below, gated per access code.
+app.use("/api/technical-writings", technicalWritingsRoutes);
 // Deliberately NOT behind requireAuth — these are the public, token-scoped
 // customer-facing links (see routes/tracking.js and routes/customerBooking.js
 // for why that's safe), plus (round 119) the customer portal's own
@@ -95,6 +112,9 @@ app.use("/api/track", trackingRoutes);
 app.use("/api/customer-booking", customerBookingRoutes);
 app.use("/api/customer-portal", customerPortalRoutes);
 app.use("/api/public-inquiry", publicInquiryRoutes);
+// GET is public (the marketing pages have no login); PUT is gated inside
+// the router itself (Manager/Admin only) — see routes/siteContent.js.
+app.use("/api/site-content", siteContentRoutes);
 app.use("/", setupRoutes);
 
 // Keep error messages plain-language — this app is used by non-technical field staff
