@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomInt } from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { ensureActiveLink } from "./bookingLinks.js";
 
 // ===================== CUSTOMER PORTAL ACCESS CODES (round 119) =====================
 // Manager/Admin side: generate, list, and revoke the short access codes
@@ -41,15 +42,21 @@ async function newUniqueToken() {
 }
 
 router.get("/", async (req, res) => {
+  // Round 119, post-ship again, item 3 — now returns each site's id
+  // alongside its name (not just the name string), so the frontend can look
+  // up and edit that site's customer_booking_links permissions (Live
+  // Tracking / QC Reports / Tech. Writings) right here on the Portal Access
+  // tab, instead of sending Manager to the separate Booking Links tab with
+  // no way back to which sites a given code even covers.
   const { rows } = await query(
     `SELECT cat.id, cat.customer_id, cat.token, cat.label, cat.is_active, cat.created_at,
             cat.last_used_at, cat.revoked_at, c.name AS customer_name, u.name AS created_by_name,
             COALESCE(
-              (SELECT json_agg(s.name ORDER BY s.name)
+              (SELECT json_agg(json_build_object('id', s.id, 'name', s.name) ORDER BY s.name)
                FROM customer_access_token_sites cats JOIN sites s ON s.id = cats.site_id
                WHERE cats.token_id = cat.id),
               '[]'
-            ) AS site_names
+            ) AS sites
      FROM customer_access_tokens cat
      JOIN customers c ON c.id = cat.customer_id
      LEFT JOIN users u ON u.id = cat.created_by
@@ -85,6 +92,16 @@ router.post("/", async (req, res) => {
      SELECT $1, unnest($2::int[])`,
     [tokenId, siteIds]
   );
+
+  // Round 119, post-ship again, item 3 — guarantee every site this code
+  // covers has a customer_booking_links row (default permissions: tracking
+  // off, QC reports + technical writings on), so a customer signing in with
+  // just a Portal Access code — no one having separately generated a public
+  // booking link for that site — still resolves real permissions instead of
+  // everything defaulting to off. See ensureActiveLink in bookingLinks.js.
+  for (const siteId of siteIds) {
+    await ensureActiveLink(customer_id, siteId, req.user.id);
+  }
 
   res.status(201).json(rows[0]);
 });

@@ -442,7 +442,19 @@ CREATE TABLE aftersales_feedback (
   order_id INTEGER, -- FK to customer_orders added below, once that table exists
   feedback_type feedback_type NOT NULL,
   comment TEXT NOT NULL,
-  recorded_by INTEGER REFERENCES users(id) NOT NULL,
+  -- Round 119, post-ship again — a customer can now log their own feedback
+  -- from a new "Feedback" screen in the customer portal (routes/
+  -- customerPortal.js's POST /feedback), not just a Sales Executive logging
+  -- it on the customer's behalf after a visit. recorded_by is nullable for
+  -- exactly that case (no staff user did the recording); submitted_by_customer
+  -- distinguishes it from a hypothetical future NULL for some other reason.
+  -- rating is the star rating (1-5) the customer picks; feedback_type above
+  -- is derived from it server-side (kept as a real column rather than
+  -- computed from rating every read, since staff-logged feedback has no
+  -- rating at all and still needs a feedback_type).
+  recorded_by INTEGER REFERENCES users(id),
+  rating SMALLINT CHECK (rating BETWEEN 1 AND 5),
+  submitted_by_customer BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -643,6 +655,16 @@ CREATE TABLE customer_orders (
   cube_samples_required INTEGER NOT NULL,
   assigned_pump_crew VARCHAR(150),
   assigned_site_supervisor_id INTEGER REFERENCES users(id),
+  -- Round 119, post-ship again — same idea as assigned_site_supervisor_id
+  -- above, for QC Engineer: business feedback was that the "your team on
+  -- this order" card in the customer portal always showed the same QC
+  -- Engineer (picked by role, see resolveOrderContacts in
+  -- routes/customerPortal.js), even though there's more than one QC
+  -- Engineer on staff. NULL means "no specific QC Engineer assigned to this
+  -- order" and the app falls back to the old role-based pick, same as
+  -- before this column existed — set/changed from Administrator/Manager's
+  -- Correct Order screen.
+  assigned_qc_engineer_id INTEGER REFERENCES users(id),
   site_contact_number VARCHAR(20) NOT NULL,
   order_quantity_m3 NUMERIC(8,2) NOT NULL,
   sales_representative VARCHAR(150),  -- deprecated free-text field, kept for old records only

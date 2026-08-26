@@ -1317,6 +1317,22 @@ router.get("/setup", async (req, res) => {
     );
     log.push("Schema migration applied (site_content — editable copy for the public Services/Products/Equipment and Ready-Mix vs Site-Mix pages, seeded with the mockup's own default copy).");
 
+    // Round 119, post-ship again — business feedback batch. See
+    // pages/MasterDataPanels.jsx's OrdersPanel and routes/customerPortal.js's
+    // resolveOrderContacts for the read/write side of this per-order
+    // QC Engineer override.
+    await query(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS assigned_qc_engineer_id INTEGER REFERENCES users(id);`);
+    log.push("Schema migration applied (customer_orders.assigned_qc_engineer_id — lets Admin/Manager pick which QC Engineer shows on the customer portal's 'your team' card per order, instead of always the same role-based pick).");
+
+    // Round 119, post-ship again — lets a customer submit their own delivery
+    // feedback from the portal (routes/customerPortal.js's POST /feedback),
+    // not just a Sales Executive logging it on their behalf. recorded_by can
+    // no longer be NOT NULL now that a customer-submitted row has none.
+    await query(`ALTER TABLE aftersales_feedback ALTER COLUMN recorded_by DROP NOT NULL;`);
+    await query(`ALTER TABLE aftersales_feedback ADD COLUMN IF NOT EXISTS rating SMALLINT CHECK (rating BETWEEN 1 AND 5);`);
+    await query(`ALTER TABLE aftersales_feedback ADD COLUMN IF NOT EXISTS submitted_by_customer BOOLEAN NOT NULL DEFAULT false;`);
+    log.push("Schema migration applied (aftersales_feedback.recorded_by now nullable, + rating and submitted_by_customer columns — for the new customer-portal Feedback screen).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

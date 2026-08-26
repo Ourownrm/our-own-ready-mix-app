@@ -449,15 +449,24 @@ router.post("/orders", requireCustomerAuth, async (req, res) => {
 });
 
 // Round 119, post-ship — "Your team on this order" (see CustOrderDetail in
-// the business's mockup). There's no per-order QC Engineer or "Plant
-// Manager" assignment anywhere in this schema (confirmed — the only
-// per-order staff links are assigned_site_supervisor_id and
-// sales_representative_id/created_by), so those two are resolved by ROLE
-// instead of by this specific order: whichever active user currently holds
-// qc_engineer / manager is shown, same person on every order, until this
-// app grows real per-order/per-plant assignment for those roles. Site
-// Supervisor stays the one genuinely per-order, individually-assigned
-// contact, and is visually highlighted for it (see the frontend).
+// the business's mockup). There's no per-order "Plant Manager" assignment
+// anywhere in this schema, and there's genuinely only ever one Manager on
+// staff at a time in practice, so that one is resolved by ROLE — whichever
+// active user currently holds the manager role is shown, same person on
+// every order. Site Supervisor is genuinely per-order
+// (assigned_site_supervisor_id) and visually highlighted for it.
+//
+// Round 119, post-ship again — QC Engineer used to be resolved by role too
+// (the same "whichever qc_engineer is active" pick as Manager above), but
+// business feedback was that this doesn't hold up once there's more than
+// one QC Engineer on staff — the card always showed the same person
+// regardless of who actually handled the order. customer_orders.
+// assigned_qc_engineer_id (settable per order from Administrator/Manager's
+// Correct Order screen) now overrides the role-based pick when set, and is
+// highlighted the same way Site Supervisor is, since it means someone
+// specifically chose this QC Engineer for this order rather than the app
+// guessing. Falls back to the old role-based pick for any order where it's
+// never been set, so this isn't a breaking change for existing orders.
 async function resolveOrderContacts(order) {
   const contacts = [];
 
@@ -478,8 +487,13 @@ async function resolveOrderContacts(order) {
   const { rows: mgr } = await query("SELECT name, phone FROM users WHERE role = 'manager' AND is_active ORDER BY id LIMIT 1");
   if (mgr.length) contacts.push({ role: "Plant Manager", name: mgr[0].name, phone: mgr[0].phone, highlight: false });
 
-  const { rows: qc } = await query("SELECT name, phone FROM users WHERE role = 'qc_engineer' AND is_active ORDER BY id LIMIT 1");
-  if (qc.length) contacts.push({ role: "QC Engineer", name: qc[0].name, phone: qc[0].phone, highlight: false });
+  if (order.assigned_qc_engineer_id) {
+    const { rows } = await query("SELECT name, phone FROM users WHERE id = $1", [order.assigned_qc_engineer_id]);
+    if (rows.length) contacts.push({ role: "QC Engineer · assigned", name: rows[0].name, phone: rows[0].phone, highlight: true });
+  } else {
+    const { rows: qc } = await query("SELECT name, phone FROM users WHERE role = 'qc_engineer' AND is_active ORDER BY id LIMIT 1");
+    if (qc.length) contacts.push({ role: "QC Engineer", name: qc[0].name, phone: qc[0].phone, highlight: false });
+  }
 
   if (order.assigned_site_supervisor_id) {
     const { rows } = await query("SELECT name, phone FROM users WHERE id = $1", [order.assigned_site_supervisor_id]);
@@ -493,6 +507,41 @@ async function resolveOrderContacts(order) {
 router.get("/mix-grades", requireCustomerAuth, async (req, res) => {
   const { rows } = await query("SELECT id, name FROM mix_grades ORDER BY name");
   res.json(rows);
+});
+
+// Round 119, post-ship again, item 6 — the portal's own "Feedback" screen:
+// a customer can log their own after-sales feedback (star rating + comment,
+// optionally tied to one of their own orders) instead of it only ever being
+// recorded by a Sales Executive after a visit. feedback_type is derived from
+// the rating here (4-5 stars = compliment, 1-3 = complaint) since every
+// reader of aftersales_feedback (FeedbackTab in CustomerBooking.jsx,
+// sales.js's GET /feedback) still keys off that column either way — see
+// schema.sql's comment above aftersales_feedback for the full reasoning.
+router.post("/feedback", requireCustomerAuth, async (req, res) => {
+  const { order_id, rating, comment } = req.body;
+  const ratingNum = Number(rating);
+  if (!ratingNum || ratingNum < 1 || ratingNum > 5) {
+    return res.status(400).json({ error: "Select a star rating from 1 to 5." });
+  }
+  if (!comment || !comment.trim()) {
+    return res.status(400).json({ error: "Please add a short comment." });
+  }
+  let orderId = null;
+  if (order_id) {
+    const owned = await ownOrder(req, order_id);
+    if (!owned) return res.status(400).json({ error: "That order wasn't found on your account." });
+    orderId = owned.id;
+  }
+  const feedbackType = ratingNum >= 4 ? "compliment" : "complaint";
+  const { rows } = await query(
+    `INSERT INTO aftersales_feedback (customer_id, order_id, feedback_type, comment, rating, submitted_by_customer)
+     VALUES ($1,$2,$3,$4,$5,true) RETURNING id`,
+    [req.customerId, orderId, feedbackType, comment.trim(), ratingNum]
+  );
+  if (feedbackType === "complaint") {
+    await pushToRole("manager", { title: "Customer feedback logged (low rating)", body: comment.trim().slice(0, 80), url: "/customer-booking" });
+  }
+  res.status(201).json({ ok: true, id: rows[0].id });
 });
 
 // Round 119, post-ship — the "More" tab's "QC & Mix Designs" screen (see

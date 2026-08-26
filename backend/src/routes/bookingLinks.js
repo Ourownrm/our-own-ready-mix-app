@@ -24,6 +24,35 @@ function newToken() {
   return randomBytes(24).toString("base64url");
 }
 
+// Round 119, post-ship again, item 3 — guarantees a customer_booking_links
+// row exists for a customer+site pair, with the same default permissions as
+// generating a link by hand (tracking off, QC reports + technical writings
+// on). Used by this file's own POST /ensure route below, AND by
+// customerAccess.js's POST / (Portal Access code generation) so every site a
+// portal access code covers gets a row here automatically — before this,
+// a site that only ever had a Portal Access code (no one separately visited
+// Booking Links to generate a link for it) had no row at all, which resolved
+// to all three switches effectively off (see requireCustomerAuth in
+// customerPortal.js). Idempotent: reuses the active row if one already
+// exists — there's no unique constraint on (customer_id, site_id), only a
+// non-unique index (older revoked rows can exist), so this always filters on
+// is_active explicitly rather than relying on ON CONFLICT.
+export async function ensureActiveLink(customerId, siteId, userId) {
+  const { rows: existing } = await query(
+    `SELECT id, token, tracking_enabled, allow_qc_reports, allow_technical_writings, is_active
+     FROM customer_booking_links WHERE customer_id = $1 AND site_id = $2 AND is_active`,
+    [customerId, siteId]
+  );
+  if (existing.length) return existing[0];
+  const { rows } = await query(
+    `INSERT INTO customer_booking_links (customer_id, site_id, token, tracking_enabled, allow_qc_reports, allow_technical_writings, created_by)
+     VALUES ($1,$2,$3,false,true,true,$4)
+     RETURNING id, token, tracking_enabled, allow_qc_reports, allow_technical_writings, is_active`,
+    [customerId, siteId, newToken(), userId]
+  );
+  return rows[0];
+}
+
 router.get("/", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT cbl.id, cbl.customer_id, cbl.site_id, cbl.token, cbl.tracking_enabled,
@@ -68,6 +97,24 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     [customer_id, site_id, newToken(), !!tracking_enabled, allow_qc_reports !== false, allow_technical_writings !== false, req.user.id]
   );
   res.status(201).json(rows[0]);
+});
+
+// Round 119, post-ship again, item 3 — lets the Portal Access tab show/edit
+// per-site permissions inline (without a Manager needing to separately
+// generate a public link first) by ensuring a row exists as soon as a site
+// is selected there. See ensureActiveLink above for the full reasoning.
+router.post("/ensure", requireRole("manager", "administrator"), async (req, res) => {
+  const { customer_id, site_id } = req.body;
+  if (!customer_id || !site_id) return res.status(400).json({ error: "customer_id and site_id are required." });
+
+  const { rows: siteCheck } = await query(
+    "SELECT id FROM sites WHERE id = $1 AND customer_id = $2",
+    [site_id, customer_id]
+  );
+  if (!siteCheck.length) return res.status(400).json({ error: "That site doesn't belong to the selected customer." });
+
+  const link = await ensureActiveLink(customer_id, site_id, req.user.id);
+  res.json(link);
 });
 
 // Round 119, post-ship — replaces the old single-purpose PATCH /:id/tracking

@@ -4120,3 +4120,84 @@ frontend (including the new `/services`, `/rmc-vs-sitemix`, `/technical-assistan
 `/site-content` routes registered in `App.jsx`). No live Postgres instance available in this
 environment, so `/setup` on deploy remains the first real migration run, same caveat as every
 prior round.
+
+## Round 119, post-ship again — round 2 (Ver. 9.33): 8 real-world bug fixes on the rebuilt customer module
+
+After the rebuilt customer module (Ver. 9.32) went live, real testing surfaced 8 issues, all
+fixed this round.
+
+1. **Per-order QC Engineer assignment.** The customer portal's "your team on this order" card
+   always resolved QC Engineer by role (picking whichever `qc_engineer` user came first) — fine
+   for Manager, of which there's genuinely one, but wrong once there's more than one QC Engineer
+   on staff. New `customer_orders.assigned_qc_engineer_id` (same pattern as the existing
+   `assigned_site_supervisor_id`), settable from Administrator/Manager's "Correct Order" screen
+   (new `GET /master/qc-engineers` + a QC Engineer column in `OrdersPanel`). `resolveOrderContacts`
+   in `customerPortal.js` now prefers this per-order pick, falling back to the old role-based
+   resolution when unset. Manager resolution is untouched, per the business's own clarification.
+2. **Stray underlines removed** on the home screen's "Why ready-mix beats site-mix" strip and the
+   sign-in screen's guest links to Services/RMC-vs-Sitemix/Technical Assistance — `.portal-strip`
+   and `.portal-guest-row` never had a `text-decoration: none` reset, so the app's global `a { color:
+   ... }` rule left the browser-default underline showing through.
+3. **Portal Access now shows/edits the same tracking/QC/technical-writings switches Booking Links
+   does**, instead of pointing Manager at a separate tab with no way back to which sites a code
+   even covers. `GET /customer-access` now returns each site as `{id, name}` (was name-only); a
+   new `POST /booking-links/ensure` (and its shared `ensureActiveLink` helper) guarantees a
+   `customer_booking_links` row exists — with the same defaults as generating a link by hand — the
+   moment a site is checked when generating a Portal Access code, and `POST /customer-access`
+   itself now also calls it for every site a new code covers. This was the actual root cause of the
+   bug: a site that only ever had a Portal Access code (nobody separately visited Booking Links)
+   had **no** `customer_booking_links` row at all, which resolved to all three switches off. The
+   Portal Access tab can now flip them right on the "Generate a customer access code" form (per
+   checked site) and on each existing code via a new "Manage access" expandable row — same
+   `ToggleSwitch` + `PATCH /booking-links/:id/permissions` pattern the Booking Links tab already
+   used, so either tab edits the same underlying row.
+4. **QC reports and technical writings now actually show on the public booking link
+   (`/book/:token`)**, not just in the authenticated `/portal` sign-in — the Booking Links tab's
+   own copy always promised both, but `customerBooking.js`/`CustomerBookingForm.jsx` were never
+   touched in the portal rebuild and had zero QC/technical-writings support. `GET
+   /customer-booking/:token` now also returns `qc_reports` (cube tests + approved mix designs,
+   scoped to the link's own customer+site) and `technical_writings` (the shared document list)
+   when the link's switches allow it, with three new token-scoped routes for the actual PDF/file
+   bytes (`/:token/orders/:orderId/mix-design-pdf-data`, `/:token/cube-tests/:resultId/pdf-data`,
+   `/:token/technical-writings/:id/file`) mirroring `customerPortal.js`'s equivalents so the
+   frontend reuses the same `mixDesignPdf.js`/`cubeTestPdf.js` generators. Also fixed: live
+   tracking used to render nothing at all (not even a placeholder) when tracking was switched on
+   but no order was live yet — now shows an explicit "no delivery in progress right now" message,
+   same as the authenticated portal side already did.
+5. **Back navigation added** to the four public pages reachable from the portal's More screen and
+   its sign-in guest links (`ServicesPublic.jsx`, `RmcVsSitemix.jsx`, `TechnicalAssistance.jsx`) —
+   these are full page navigations (`<a href>`), not pushed portal screens, so `PortalShell`'s own
+   back button never covered them. Falls back to `/portal` when there's no browser history to go
+   back to. `PublicInquiry.jsx` and `CustomerBookingForm.jsx` got the same Back control, but
+   browser-back-only with no forced destination (no `/portal` fallback) — both are meant to be
+   opened by an outside visitor or a shared link with no portal account implied.
+6. **Customer Feedback screen added to the portal** (new "Feedback" tile on More, gated on nothing
+   — every signed-in customer code can leave feedback). Star rating (1–5) + comment, optionally
+   tied to one of the customer's own orders. `aftersales_feedback.recorded_by` is now nullable
+   (was staff-only `NOT NULL`), with new `rating SMALLINT CHECK (rating BETWEEN 1 AND 5)` and
+   `submitted_by_customer BOOLEAN` columns. New `POST /customer-portal/feedback` derives
+   `feedback_type` from the rating (4–5 stars = compliment, 1–3 = complaint) so every existing
+   reader of the table (the Manager/Admin Feedback tab on Customer Booking, `sales.js`'s `GET
+   /feedback`) keeps working unchanged — the Feedback tab now shows a star readout and a "From
+   customer" badge when `submitted_by_customer` is set.
+7. **"Type of enquiry" shown on customer inquiries, and a way to close one.** A public inquiry's
+   type (Request for quote vs. Free Technical Assistance) is derived client-side from the
+   `[Free Technical Assistance — ...]` prefix `publicInquiry.js` already tags onto
+   technical-assistance leads' `notes` — no new column — and now shows as a badge on both the
+   Manager Dashboard's Customer Inquiries card and the Leads page. Closing a lead (declining it)
+   had no UI anywhere outside "mark won," even though `POST /sales/leads/:id/lost` already existed
+   server-side and already allows Sales Executive/Manager/Administrator — both the dashboard card
+   and the Leads detail page now have a "Close" action (reason required) that calls it.
+8. **Assigned leads stay visible on the Manager Dashboard**, instead of disappearing from the
+   Customer Inquiries card the moment they're assigned — they now stay until actually closed
+   (won/lost), showing "Assigned to \<name>" with a Reassign option plus the new Close button,
+   so an assigned-but-still-open lead keeps functioning as a reminder for Manager rather than
+   vanishing from view. The "N new" badge now counts only genuinely unassigned inquiries.
+
+### Migration note (round 119, post-ship again — round 2)
+Run `/setup` after deploying — adds `customer_orders.assigned_qc_engineer_id`, drops the `NOT
+NULL` on `aftersales_feedback.recorded_by`, and adds `aftersales_feedback.rating` +
+`aftersales_feedback.submitted_by_customer`. No new environment variables. Verified with `node
+--check` on every touched backend file and a clean `npm run build` on the frontend. No live
+Postgres instance available in this environment, so `/setup` on deploy remains the first real
+migration run, same caveat as every prior round.

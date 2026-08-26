@@ -174,6 +174,16 @@ router.get("/site-supervisors", async (req, res) => {
   res.json(rows);
 });
 
+// Round 119, post-ship again — lets Administrator/Manager pick a specific
+// QC Engineer per order (customer_orders.assigned_qc_engineer_id) rather
+// than the app always resolving "the" QC Engineer by role, which broke down
+// once there was more than one on staff. See MasterDataPanels.jsx's
+// OrdersPanel and customerPortal.js's resolveOrderContacts.
+router.get("/qc-engineers", async (req, res) => {
+  const { rows } = await query("SELECT id, name FROM users WHERE role = 'qc_engineer' AND is_active ORDER BY name");
+  res.json(rows);
+});
+
 router.get("/sales-executives", async (req, res) => {
   const { rows } = await query("SELECT id, name FROM users WHERE role = 'sales_executive' AND is_active ORDER BY name");
   res.json(rows);
