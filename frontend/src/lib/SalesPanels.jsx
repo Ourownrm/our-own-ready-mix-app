@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "./api.js";
 
 export function CreateLeadForm({ setError, onDone }) {
@@ -128,6 +129,9 @@ export function BookingsQueue({ setError }) {
                 {b.booking_link_id && (
                   <span className="badge" style={{ background: "var(--info-bg)", color: "var(--info)", fontSize: 10 }}>Customer booking</span>
                 )}
+                {b.submitted_via_portal && (
+                  <span className="badge" style={{ background: "var(--violet-bg, #ECE6F3)", color: "var(--violet, #6B4C9A)", fontSize: 10 }}>Order Concrete (portal)</span>
+                )}
               </div>
               <div style={{ color: "var(--slate)" }}>
                 {b.site_name || "Site TBD"} · {b.mix_grade_name || "Grade TBD"} · {b.estimated_qty_m3 ? `${b.estimated_qty_m3} m³` : "Qty TBD"}
@@ -151,7 +155,11 @@ export function BookingsQueue({ setError }) {
                 </a>
               )}
               <div style={{ color: "var(--slate)", fontSize: 11 }}>
-                {b.booking_link_id ? "Submitted directly by the customer via their booking link" : `From ${b.requested_by_name}`}
+                {b.submitted_via_portal
+                  ? "Submitted directly by the customer — \"Order Concrete\" in the customer portal"
+                  : b.booking_link_id
+                    ? "Submitted directly by the customer via their booking link"
+                    : `From ${b.requested_by_name}`}
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button className="btn-primary" style={{ flex: 1, fontSize: 12 }} onClick={() => setConverting(b)}>Convert to order</button>
@@ -256,7 +264,12 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Convert booking to order</div>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>{booking.customer_name}</div>
-      {booking.booking_link_id && (
+      {booking.submitted_via_portal ? (
+        <div style={{ fontSize: 11, color: "var(--slate)", background: "var(--concrete)", borderRadius: 6, padding: "6px 8px", marginBottom: 12 }}>
+          Submitted directly by the customer through "Order Concrete" in the customer portal — the fields below are
+          pre-filled with what they gave; everything is still yours to adjust before creating the order.
+        </div>
+      ) : booking.booking_link_id && (
         <div style={{ fontSize: 11, color: "var(--slate)", background: "var(--concrete)", borderRadius: 6, padding: "6px 8px", marginBottom: 12 }}>
           Submitted directly by the customer via their booking link — the fields below are pre-filled with what they
           gave; everything is still yours to adjust before creating the order.
@@ -360,6 +373,104 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
           <button type="button" onClick={onCancel} style={{ flex: 1 }}>Cancel</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// Round 119, post-ship — business asked that customer leads (which now
+// includes the public "Request a quote" inquiries, source = 'public_inquiry')
+// actually appear ON the Manager Dashboard, not just be reachable by
+// navigating to Sales -> Browse Leads. Reuses the existing GET /sales/leads
+// endpoint (same one LeadsBrowser.jsx uses) rather than adding a new
+// backend route just for this — same "don't build a second read path for
+// data that already has one" instinct as the public-inquiry feature itself
+// reusing the leads pipeline. Shows only what's unassigned/new, since an
+// already-picked-up lead has nothing left for Manager to act on from here —
+// full history is one click away on Browse Leads.
+export function CustomerInquiriesCard({ setError }) {
+  const [leads, setLeads] = useState([]);
+  const [executives, setExecutives] = useState([]);
+  const [assigningId, setAssigningId] = useState(null);
+  const [assignTo, setAssignTo] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try {
+      setLeads(await apiRequest("/sales/leads"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  useEffect(() => {
+    load();
+    apiRequest("/sales/executives").then(setExecutives).catch(() => {});
+  }, []);
+
+  const inquiries = leads
+    .filter((l) => l.source === "public_inquiry" && !l.assigned_to && l.status !== "won" && l.status !== "lost")
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  async function assign(leadId) {
+    if (!assignTo) return;
+    setBusy(true); setError("");
+    try {
+      await apiRequest(`/sales/leads/${leadId}/assign`, { method: "PATCH", body: { assigned_to: assignTo } });
+      setAssigningId(null); setAssignTo("");
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Customer inquiries</div>
+        {inquiries.length > 0 && (
+          <span className="badge badge-info" style={{ fontSize: 12, padding: "3px 9px" }}>{inquiries.length} new</span>
+        )}
+      </div>
+      {inquiries.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No new customer inquiries waiting on assignment.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {inquiries.slice(0, 5).map((l) => (
+            <div key={l.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
+              <div style={{ fontWeight: 600 }}>{l.prospect_name}</div>
+              <div style={{ color: "var(--slate)", fontSize: 12 }}>
+                {l.site_location ? `${l.site_location} · ` : ""}{l.contact_person ? `${l.contact_person} · ` : ""}{l.contact_phone}
+              </div>
+              <div style={{ color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
+                Submitted {new Date(l.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })}
+              </div>
+              {assigningId === l.id ? (
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} style={{ flex: 1, fontSize: 12 }}>
+                    <option value="">Select salesperson</option>
+                    {executives.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  </select>
+                  <button type="button" disabled={busy || !assignTo} onClick={() => assign(l.id)} style={{ fontSize: 11, padding: "3px 8px" }}>
+                    {busy ? "..." : "Assign"}
+                  </button>
+                  <button type="button" onClick={() => { setAssigningId(null); setAssignTo(""); }} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
+                </div>
+              ) : (
+                <button type="button" onClick={() => setAssigningId(l.id)} style={{ fontSize: 11, padding: "3px 8px", marginTop: 8 }}>
+                  Assign to a salesperson
+                </button>
+              )}
+            </div>
+          ))}
+          {inquiries.length > 5 && (
+            <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center" }}>
+              +{inquiries.length - 5} more — see Browse Leads
+            </div>
+          )}
+        </div>
+      )}
+      <Link to="/leads" style={{ display: "block", textAlign: "center", marginTop: 10, fontSize: 12 }}>Browse all leads →</Link>
     </div>
   );
 }

@@ -42,6 +42,10 @@ import CustomerBooking from "./pages/CustomerBooking.jsx";
 import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
 import PublicInquiry from "./pages/PublicInquiry.jsx";
 import CustomerPortal from "./pages/CustomerPortal.jsx";
+import ServicesPublic from "./pages/ServicesPublic.jsx";
+import RmcVsSitemix from "./pages/RmcVsSitemix.jsx";
+import TechnicalAssistance from "./pages/TechnicalAssistance.jsx";
+import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -68,6 +72,11 @@ export default function App() {
           {/* Public, no login by password — an existing customer signs in with a
               short Manager-issued access code (round 119). */}
           <Route path="/portal" element={<CustomerPortal />} />
+          {/* Public, no login — marketing/browse pages reachable from the portal's
+              guest links and from outside the app (round 119). */}
+          <Route path="/services" element={<ServicesPublic />} />
+          <Route path="/rmc-vs-sitemix" element={<RmcVsSitemix />} />
+          <Route path="/technical-assistance" element={<TechnicalAssistance />} />
 
           <Route path="/driver" element={
             <ProtectedRoute roles={["driver"]}><DriverDuty /></ProtectedRoute>
@@ -138,6 +147,9 @@ export default function App() {
           } />
           <Route path="/customer-booking" element={
             <ProtectedRoute roles={["sales_executive", "manager", "administrator"]}><CustomerBooking /></ProtectedRoute>
+          } />
+          <Route path="/site-content" element={
+            <ProtectedRoute roles={["manager", "administrator"]}><SiteContentEditor /></ProtectedRoute>
           } />
           <Route path="/fuel" element={
             <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator"]}><FuelFilling /></ProtectedRoute>

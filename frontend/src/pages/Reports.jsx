@@ -110,6 +110,7 @@ export default function Reports() {
               label="Customer Booking"
               items={[
                 { label: "Booking Links & Requests", to: "/customer-booking" },
+                { label: "Website Content", to: "/site-content" },
               ]}
             />
           </div>

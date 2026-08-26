@@ -150,7 +150,9 @@ function LeadDetailAdmin({ leadId, canMarkWon, onBack }) {
             <div>Assigned to: {lead.assigned_to_name || "— unassigned"}</div>
             {lead.contact_person && <div>Contact: {lead.contact_person} {lead.contact_phone ? `· ${lead.contact_phone}` : ""}</div>}
             {lead.site_location && <div>Location: {lead.site_location}</div>}
+            {lead.mix_grade_interest && <div>Grade of interest: {lead.mix_grade_interest}</div>}
             {lead.estimated_qty_m3 && <div>Estimated quantity: {lead.estimated_qty_m3} m³</div>}
+            {lead.notes && <div style={{ marginTop: 4, fontStyle: "italic" }}>"{lead.notes}"</div>}
             {lead.quotation_issued && <div>Latest quotation: ₹{lead.latest_quotation_amount}</div>}
             <div>
               {lead.at_site && lead.latitude ? (

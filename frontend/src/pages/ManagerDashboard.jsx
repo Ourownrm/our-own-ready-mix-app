@@ -10,7 +10,7 @@ import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
-import { BookingsQueue, CreateLeadForm } from "../lib/SalesPanels.jsx";
+import { BookingsQueue, CreateLeadForm, CustomerInquiriesCard } from "../lib/SalesPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 
 export default function ManagerDashboard() {
@@ -263,6 +263,7 @@ export default function ManagerDashboard() {
             label="Customer Booking"
             items={[
               { label: "Booking Links & Requests", to: "/customer-booking" },
+              { label: "Website Content", to: "/site-content" },
             ]}
           />
           <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
@@ -284,6 +285,7 @@ export default function ManagerDashboard() {
             nothing". */}
         {stats?.target_m3 != null && <MonthlyTargetPanel stats={stats} />}
 
+        <CustomerInquiriesCard setError={setError} />
         <BookingsQueue setError={setError} />
         <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} setError={setError} onReload={load} />
         <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} onApplyDelayCharge={applyDelayCharge} onAddSiteDelayReason={addSiteDelayReason} />

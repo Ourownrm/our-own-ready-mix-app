@@ -41,6 +41,11 @@ export default function CustomerBooking() {
               Portal Access
             </button>
           )}
+          {!isSalesExec && (
+            <button onClick={() => setCtab("techwritings")} className={ctab === "techwritings" ? "btn-primary" : ""} style={{ fontSize: 12.5, padding: "6px 12px" }}>
+              Technical Writings
+            </button>
+          )}
           {isSalesExec && (
             <button onClick={() => setCtab("place")} className={ctab === "place" ? "btn-primary" : ""} style={{ fontSize: 12.5, padding: "6px 12px" }}>
               Place a Booking
@@ -53,6 +58,7 @@ export default function CustomerBooking() {
 
         {ctab === "links" && !isSalesExec && <BookingLinksTab />}
         {ctab === "portal" && !isSalesExec && <PortalAccessTab />}
+        {ctab === "techwritings" && !isSalesExec && <TechnicalWritingsTab />}
         {ctab === "place" && isSalesExec && <PlaceBookingTab />}
         {ctab === "feedback" && <FeedbackTab isSalesExec={isSalesExec} />}
       </div>
@@ -60,6 +66,14 @@ export default function CustomerBooking() {
   );
 }
 
+// Round 119, post-ship (per the business's own mockup) — this table is now
+// ALSO the single per-customer+site control for what the /portal customer
+// sign-in shows (Live Tracking / QC Reports / Tech. Writings), not just the
+// public no-login booking link. See schema.sql's comment above
+// customer_booking_links: a portal access code can cover several of a
+// customer's sites, and each site's own row here decides what that code
+// shows for orders at that site — a site with no link generated yet shows
+// nothing in the portal, same as tracking already worked before this round.
 function BookingLinksTab() {
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
@@ -67,9 +81,12 @@ function BookingLinksTab() {
   const [customerId, setCustomerId] = useState("");
   const [siteId, setSiteId] = useState("");
   const [trackingEnabled, setTrackingEnabled] = useState(false);
+  const [allowQcReports, setAllowQcReports] = useState(true);
+  const [allowTechnicalWritings, setAllowTechnicalWritings] = useState(true);
   const [generated, setGenerated] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [savingPermId, setSavingPermId] = useState(null);
 
   async function loadLinks() {
     try {
@@ -94,9 +111,14 @@ function BookingLinksTab() {
     try {
       const link = await apiRequest("/booking-links", {
         method: "POST",
-        body: { customer_id: customerId, site_id: siteId, tracking_enabled: trackingEnabled },
+        body: {
+          customer_id: customerId, site_id: siteId,
+          tracking_enabled: trackingEnabled, allow_qc_reports: allowQcReports, allow_technical_writings: allowTechnicalWritings,
+        },
       });
       setGenerated(link);
+      setAllowQcReports(true);
+      setAllowTechnicalWritings(true);
       loadLinks();
     } catch (err) {
       setError(err.message);
@@ -105,13 +127,24 @@ function BookingLinksTab() {
     }
   }
 
-  async function toggleTracking(link) {
-    setError("");
+  // Optimistic update (same pattern this app already uses for the old
+  // per-code toggles) — flips one switch immediately, rolls back via
+  // loadLinks() if the request fails. Sends all three together since the
+  // backend route takes them together (see bookingLinks.js's PATCH).
+  async function setPermission(link, patch) {
+    setSavingPermId(link.id); setError("");
+    const next = {
+      tracking_enabled: link.tracking_enabled, allow_qc_reports: link.allow_qc_reports,
+      allow_technical_writings: link.allow_technical_writings, ...patch,
+    };
+    setLinks((prev) => prev.map((l) => (l.id === link.id ? { ...l, ...next } : l)));
     try {
-      await apiRequest(`/booking-links/${link.id}/tracking`, { method: "PATCH", body: { tracking_enabled: !link.tracking_enabled } });
-      loadLinks();
+      await apiRequest(`/booking-links/${link.id}/permissions`, { method: "PATCH", body: next });
     } catch (err) {
       setError(err.message);
+      loadLinks();
+    } finally {
+      setSavingPermId(null);
     }
   }
 
@@ -167,13 +200,25 @@ function BookingLinksTab() {
               {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14, fontSize: 12 }}>
-            <input type="checkbox" checked={trackingEnabled} onChange={(e) => setTrackingEnabled(e.target.checked)} style={{ marginTop: 2 }} />
-            <span>
-              Also let this customer see live delivery status on this same link, once an order is created from it.
-              Off by default — you can turn it on or off later without touching the link itself.
+          <div style={{ marginBottom: 14 }}>
+            <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>
+              What this customer can see for this site — on the booking link and in their /portal sign-in
             </span>
-          </label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                <input type="checkbox" checked={trackingEnabled} onChange={(e) => setTrackingEnabled(e.target.checked)} />
+                Live delivery tracking (off by default — a heavier feature, turn on deliberately)
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                <input type="checkbox" checked={allowQcReports} onChange={(e) => setAllowQcReports(e.target.checked)} />
+                QC reports (mix design + cube tests)
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                <input type="checkbox" checked={allowTechnicalWritings} onChange={(e) => setAllowTechnicalWritings(e.target.checked)} />
+                Technical writings
+              </label>
+            </div>
+          </div>
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={saving}>
             {saving ? "Generating..." : "Generate link"}
           </button>
@@ -195,10 +240,11 @@ function BookingLinksTab() {
         )}
       </div>
 
-      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Active links</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Booking links — per customer+site feature control</div>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10, lineHeight: 1.5 }}>
-        The booking link and the delivery-status view are two separate switches — turning tracking off (or back on)
-        never touches the link itself. Revoke kills both, since without the link there's nothing to show.
+        One row per customer+site. Live Tracking, QC Reports, and Tech. Writings are each switched independently —
+        this also controls what shows on that customer's /portal sign-in for orders at this site. Revoke kills the
+        link and all three switches at once, since without the link there's nothing to show either way.
       </div>
       <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -206,16 +252,18 @@ function BookingLinksTab() {
             <tr style={{ textAlign: "left" }}>
               <th style={th}>Customer / Site</th>
               <th style={th}>Link</th>
-              <th style={th}>Tracking</th>
+              <th style={th}>Live Tracking</th>
+              <th style={th}>QC Reports</th>
+              <th style={th}>Tech. Writings</th>
               <th style={th}></th>
             </tr>
           </thead>
           <tbody>
             {activeLinks.length === 0 && (
-              <tr><td colSpan={4} style={{ ...td, color: "var(--slate)" }}>No active booking links yet.</td></tr>
+              <tr><td colSpan={6} style={{ ...td, color: "var(--slate)" }}>No active booking links yet.</td></tr>
             )}
             {activeLinks.map((l) => (
-              <tr key={l.id}>
+              <tr key={l.id} style={{ opacity: savingPermId === l.id ? 0.6 : 1 }}>
                 <td style={td}>
                   <b>{l.customer_name}</b>
                   <div style={{ color: "var(--slate)", fontSize: 11.5 }}>{l.site_name}</div>
@@ -227,17 +275,27 @@ function BookingLinksTab() {
                   <button type="button" onClick={() => copyLink(l.token)} style={{ fontSize: 11, padding: "3px 8px" }}>Copy</button>
                 </td>
                 <td style={td}>
-                  <span className="badge" style={{
-                    background: l.tracking_enabled ? "var(--signal-green-bg)" : "var(--concrete)",
-                    color: l.tracking_enabled ? "var(--signal-green)" : "var(--slate)",
-                  }}>
-                    {l.tracking_enabled ? "Tracking ON" : "Tracking OFF"}
-                  </span>
+                  <ToggleSwitch
+                    checked={l.tracking_enabled}
+                    disabled={savingPermId === l.id}
+                    onChange={(v) => setPermission(l, { tracking_enabled: v })}
+                  />
                 </td>
                 <td style={td}>
-                  <button type="button" style={{ fontSize: 11.5, padding: "5px 10px", marginRight: 6 }} onClick={() => toggleTracking(l)}>
-                    {l.tracking_enabled ? "Turn tracking off" : "Turn tracking on"}
-                  </button>
+                  <ToggleSwitch
+                    checked={l.allow_qc_reports}
+                    disabled={savingPermId === l.id}
+                    onChange={(v) => setPermission(l, { allow_qc_reports: v })}
+                  />
+                </td>
+                <td style={td}>
+                  <ToggleSwitch
+                    checked={l.allow_technical_writings}
+                    disabled={savingPermId === l.id}
+                    onChange={(v) => setPermission(l, { allow_technical_writings: v })}
+                  />
+                </td>
+                <td style={td}>
                   <button type="button" className="btn-danger" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => revoke(l)}>
                     Revoke link
                   </button>
@@ -282,6 +340,12 @@ function BookingLinksTab() {
 // in themselves, scoped to one customer and one or more of their sites, and
 // Manager sends it over their OWN phone (SMS/WhatsApp/call) — there's no
 // in-app SMS/WhatsApp sending here, this just generates the code.
+//
+// Round 119, post-ship — this tab is identity-only (which customer, which
+// sites, a label). What the code can actually see (tracking/QC reports/
+// technical writings) is controlled per customer+SITE on the Booking Links
+// tab instead (see BookingLinksTab below) — matches the business's own
+// mockup, which shows these as columns on the booking-links table.
 function PortalAccessTab() {
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
@@ -411,10 +475,14 @@ function PortalAccessTab() {
               </div>
             )}
           </div>
-          <label style={{ display: "block", marginBottom: 14 }}>
+          <label style={{ display: "block", marginBottom: 6 }}>
             <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>Label (optional)</span>
             <input type="text" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Site engineer — Ravi" />
           </label>
+          <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 14, lineHeight: 1.5 }}>
+            What this code can see (tracking, QC reports, technical writings) is controlled per site on the{" "}
+            <b>Booking Links</b> tab, not here — this code inherits whatever's switched on for the site(s) selected above.
+          </div>
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={saving || siteIds.length === 0}>
             {saving ? "Generating..." : "Generate access code"}
           </button>
@@ -494,6 +562,183 @@ function PortalAccessTab() {
           </div>
         </details>
       )}
+    </>
+  );
+}
+
+// Round 119, post-ship — Manager/Admin's library of PDF guides shown to
+// customers at a site whose booking link has "Tech. writings" switched on
+// (see the Booking Links tab). Upload reads the file client-side
+// via FileReader into base64 rather than a real multipart upload — matches
+// routes/technicalWritings.js's header comment: this app has no multipart
+// middleware anywhere, and base64-over-JSON is the same convention every
+// other endpoint already uses.
+function TechnicalWritingsTab() {
+  const [docs, setDocs] = useState([]);
+  const [title, setTitle] = useState("");
+  const [category, setCategory] = useState("");
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renameCategory, setRenameCategory] = useState("");
+
+  async function load() {
+    try {
+      setDocs(await apiRequest("/technical-writings"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  function fileToBase64(f) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",").pop());
+      reader.onerror = () => reject(new Error("Couldn't read that file — please try again."));
+      reader.readAsDataURL(f);
+    });
+  }
+
+  async function upload(e) {
+    e.preventDefault();
+    if (!file) return;
+    setError(""); setUploading(true);
+    try {
+      const data_base64 = await fileToBase64(file);
+      await apiRequest("/technical-writings", {
+        method: "POST",
+        body: { title, category, filename: file.name, mime_type: file.type || "application/pdf", data_base64 },
+      });
+      setTitle(""); setCategory(""); setFile(null);
+      const input = document.getElementById("techwriting-file-input");
+      if (input) input.value = "";
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function startRename(doc) {
+    setRenamingId(doc.id);
+    setRenameTitle(doc.title);
+    setRenameCategory(doc.category || "");
+  }
+
+  async function saveRename(doc) {
+    setError("");
+    try {
+      await apiRequest(`/technical-writings/${doc.id}`, {
+        method: "PATCH",
+        body: { title: renameTitle, category: renameCategory },
+      });
+      setRenamingId(null);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function remove(doc) {
+    if (!window.confirm(`Delete "${doc.title}"? Customers with access to it won't be able to see it any more.`)) return;
+    setError("");
+    try {
+      await apiRequest(`/technical-writings/${doc.id}`, { method: "DELETE" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function fmtSize(bytes) {
+    if (bytes == null) return "—";
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return (
+    <>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+      <div className="card" style={{ marginBottom: 20, maxWidth: 520 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Upload a guide (PDF)</div>
+        <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
+          Shown to customers whose access code has "Tech. writings" switched on — e.g. after-pour care,
+          choosing the right grade for slabs vs. footings.
+        </div>
+        <form onSubmit={upload} style={{ fontSize: 13 }}>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>Title</span>
+            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. After-pour curing care" required />
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>Category (optional)</span>
+            <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Curing & finishing" />
+          </label>
+          <label style={{ display: "block", marginBottom: 14 }}>
+            <span style={{ fontSize: 12, color: "var(--slate)", display: "block", marginBottom: 4 }}>PDF file (max 8MB)</span>
+            <input id="techwriting-file-input" type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} required />
+          </label>
+          <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={uploading || !file || !title.trim()}>
+            {uploading ? "Uploading..." : "Upload"}
+          </button>
+        </form>
+      </div>
+
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Library</div>
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: "left" }}>
+              <th style={th}>Title</th>
+              <th style={th}>Category</th>
+              <th style={th}>Size</th>
+              <th style={th}>Uploaded</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {docs.length === 0 && (
+              <tr><td colSpan={5} style={{ ...td, color: "var(--slate)" }}>No documents uploaded yet.</td></tr>
+            )}
+            {docs.map((d) => (
+              <tr key={d.id}>
+                {renamingId === d.id ? (
+                  <>
+                    <td style={td}>
+                      <input type="text" value={renameTitle} onChange={(e) => setRenameTitle(e.target.value)} style={{ fontSize: 12.5, width: "100%" }} />
+                    </td>
+                    <td style={td}>
+                      <input type="text" value={renameCategory} onChange={(e) => setRenameCategory(e.target.value)} style={{ fontSize: 12.5, width: "100%" }} />
+                    </td>
+                    <td style={{ ...td, color: "var(--slate)" }}>{fmtSize(d.size_bytes)}</td>
+                    <td style={{ ...td, color: "var(--slate)" }}>{new Date(d.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                    <td style={td}>
+                      <button type="button" className="btn-primary" style={{ fontSize: 11, padding: "4px 8px", marginRight: 6 }} onClick={() => saveRename(d)}>Save</button>
+                      <button type="button" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setRenamingId(null)}>Cancel</button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td style={td}><b>{d.title}</b></td>
+                    <td style={{ ...td, color: "var(--slate)" }}>{d.category || "—"}</td>
+                    <td style={{ ...td, color: "var(--slate)" }}>{fmtSize(d.size_bytes)}</td>
+                    <td style={{ ...td, color: "var(--slate)" }}>{new Date(d.created_at).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                    <td style={td}>
+                      <button type="button" style={{ fontSize: 11, padding: "4px 8px", marginRight: 6 }} onClick={() => startRename(d)}>Rename</button>
+                      <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => remove(d)}>Delete</button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
@@ -768,3 +1013,32 @@ function FeedbackTab({ isSalesExec }) {
 
 const th = { padding: "9px 10px", borderBottom: "1px solid var(--border)", color: "var(--slate)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.3 };
 const td = { padding: "9px 10px", borderBottom: "1px solid var(--border)" };
+
+// A small pill on/off switch, matching the mockup's per-feature toggle look
+// on the Booking Links table — used wherever a single boolean is flipped
+// inline in a table row (no separate "Turn X on/off" button needed).
+function ToggleSwitch({ checked, disabled, onChange }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      style={{
+        position: "relative", width: 38, height: 21, borderRadius: 999, border: "none",
+        background: checked ? "var(--signal-green)" : "var(--border-strong, #ccc)",
+        cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1,
+        padding: 0, flexShrink: 0,
+      }}
+    >
+      <span
+        style={{
+          position: "absolute", top: 2, left: checked ? 19 : 2, width: 17, height: 17,
+          borderRadius: "50%", background: "#fff", transition: "left 0.12s ease",
+          boxShadow: "0 1px 2px rgba(0,0,0,0.3)",
+        }}
+      />
+    </button>
+  );
+}
