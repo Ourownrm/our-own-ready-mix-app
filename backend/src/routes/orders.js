@@ -50,7 +50,7 @@ router.post("/:id/close", requireRole("manager", "administrator"), async (req, r
 // Create order — Manager or Administrator only
 router.post("/", requireRole("manager", "administrator"), async (req, res) => {
   const {
-    order_date, scheduled_batching_time, truck_dispatch_interval_minutes,
+    order_date, scheduled_batching_time, required_at_site_time, truck_dispatch_interval_minutes,
     customer_id, site_id, mix_grade_id, pump_requirement, pump_id,
     site_technician_required, cube_samples_required, assigned_pump_crew,
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
@@ -115,15 +115,15 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
 
   const { rows } = await query(
     `INSERT INTO customer_orders
-     (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
+     (order_date, scheduled_batching_time, required_at_site_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
       pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount, resolved_mix_design_id,
       assigned_qc_engineer_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
      RETURNING *`,
-    [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
+    [order_date, scheduled_batching_time, required_at_site_time || null, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, order_quantity_m3,
      sales_representative_id || null, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,

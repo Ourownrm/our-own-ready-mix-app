@@ -696,7 +696,7 @@ router.patch("/salespersons/:id/status", requireRole("administrator"), async (re
 
 router.get("/orders", requireRole("administrator", "manager"), async (req, res) => {
   const { rows } = await query(
-    `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time,
+    `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time, o.required_at_site_time,
             o.mix_grade_id, o.pump_requirement, o.pump_id, p.pump_code,
             o.assigned_qc_engineer_id, qc.name AS qc_engineer_name,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
@@ -714,7 +714,7 @@ router.get("/orders", requireRole("administrator", "manager"), async (req, res) 
 });
 
 router.patch("/orders/:id", requireRole("administrator", "manager"), async (req, res) => {
-  const { order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id, pump_requirement, pump_id, assigned_qc_engineer_id } = req.body;
+  const { order_quantity_m3, scheduled_batching_time, required_at_site_time, remarks, mix_grade_id, pump_requirement, pump_id, assigned_qc_engineer_id } = req.body;
 
   // Unlike grade, the pump is deliberately editable at any time — even after
   // a delivery ticket (DN) exists — because the pump actually used can
@@ -755,9 +755,10 @@ router.patch("/orders/:id", requireRole("administrator", "manager"), async (req,
        mix_grade_id = COALESCE($4, mix_grade_id),
        pump_requirement = COALESCE($5, pump_requirement),
        pump_id = CASE WHEN $5::text IS NULL THEN pump_id WHEN $5 = 'without_pump' THEN NULL ELSE $6 END,
-       assigned_qc_engineer_id = $8
+       assigned_qc_engineer_id = $8,
+       required_at_site_time = COALESCE($9, required_at_site_time)
      WHERE id = $7 RETURNING *`,
-    [order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id || null, pump_requirement || null, pump_id || null, req.params.id, assigned_qc_engineer_id || null]
+    [order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id || null, pump_requirement || null, pump_id || null, req.params.id, assigned_qc_engineer_id || null, required_at_site_time || null]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found." });
   res.json(rows[0]);

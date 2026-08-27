@@ -652,6 +652,15 @@ CREATE TABLE customer_orders (
   id SERIAL PRIMARY KEY,
   order_date DATE NOT NULL,
   scheduled_batching_time TIME NOT NULL,
+  -- Round 119, post-ship again — round 6: when the customer actually needs
+  -- concrete AT SITE, as distinct from scheduled_batching_time (when the
+  -- plant starts batching). The two differ by travel time — a customer
+  -- asking for 8 AM at a far site needs batching well before 8 AM. This is
+  -- what's shown to the CUSTOMER (portal/tracking); scheduled_batching_time
+  -- stays the internal plant-facing time. Nullable — older orders and any
+  -- order placed before this column existed simply fall back to showing
+  -- scheduled_batching_time to the customer instead.
+  required_at_site_time TIME,
   truck_dispatch_interval_minutes INTEGER NOT NULL,
   customer_id INTEGER REFERENCES customers(id) NOT NULL,
   site_id INTEGER REFERENCES sites(id) NOT NULL,

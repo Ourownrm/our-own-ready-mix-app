@@ -274,7 +274,8 @@ router.get("/orders", requireCustomerAuth, async (req, res) => {
   if (!req.siteIds.length) return res.json([]);
   const { rows } = await query(
     `WITH order_rows AS (
-       SELECT 'order'::text AS kind, co.id, co.order_date, co.scheduled_batching_time,
+       SELECT 'order'::text AS kind, co.id, co.order_date,
+              COALESCE(co.required_at_site_time, co.scheduled_batching_time) AS scheduled_batching_time,
               co.status::text AS raw_status, co.order_quantity_m3 AS qty_m3, co.site_id,
               s.name AS site_name, m.name AS mix_grade_name, co.rescheduled_at, co.created_at,
               NULL::text AS declined_reason,
@@ -317,7 +318,8 @@ router.get("/orders/:id", requireCustomerAuth, async (req, res) => {
   if (!owned) return res.status(404).json({ error: "Order not found." });
 
   const { rows } = await query(
-    `SELECT co.*, s.name AS site_name, s.address AS site_address, m.name AS mix_grade_name
+    `SELECT co.*, s.name AS site_name, s.address AS site_address, m.name AS mix_grade_name,
+            s.assigned_sales_representative_id AS site_assigned_sales_representative_id
      FROM customer_orders co
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
@@ -348,7 +350,10 @@ router.get("/orders/:id", requireCustomerAuth, async (req, res) => {
   res.json({
     id: order.id,
     order_date: order.order_date,
-    scheduled_batching_time: order.scheduled_batching_time,
+    // The customer-facing time is when concrete is needed AT SITE, not when
+    // the plant starts batching — falls back to the batching time for older
+    // orders placed before required_at_site_time existed.
+    scheduled_batching_time: order.required_at_site_time || order.scheduled_batching_time,
     status: order.status,
     display_status: status.label,
     status_tone: status.tone,
@@ -470,19 +475,38 @@ router.post("/orders", requireCustomerAuth, async (req, res) => {
 async function resolveOrderContacts(order) {
   const contacts = [];
 
-  if (order.sales_representative_id) {
-    // Round 119, post-ship again, item 5 — this used to INNER JOIN users via
-    // salespersons.user_id, so any salesperson without a linked login (every
-    // name added through Create Order's "+ Add new salesperson" quick-add,
-    // and anything carried forward from the old free-text field) silently
-    // dropped out of this card entirely, even though sales_representative_id
-    // was correctly set on the order. Falls back to the salesperson's own
-    // name with no phone number when there's no linked user to pull one from.
+  // Round 119, post-ship again — round 7: every other place in this app that
+  // resolves "the sales rep" for an order (orders.js GET /:id, reports.js,
+  // productionReport.js, sales.js's own dashboards) prefers the SITE's
+  // assigned_sales_representative_id over the order's own
+  // sales_representative_id — COALESCE(site, order) — since a site's
+  // long-term account owner is the more meaningful "who to contact" than
+  // whoever happened to be picked (or auto-filled) on one specific order.
+  // This card had never followed that pattern at all — it only ever looked
+  // at the order's own field — so it could show a different (or no) sales
+  // rep than every staff-facing screen for the exact same order. Matching it
+  // here fixes that inconsistency.
+  const salesRepId = order.site_assigned_sales_representative_id || order.sales_representative_id;
+  if (salesRepId) {
+    // Round 119, post-ship again, item 5 — LEFT JOIN so the name is still
+    // available even when there's no linked staff login for this salesperson
+    // (every name added through Create Order's "+ Add new salesperson"
+    // quick-add, and anything carried forward from the old free-text field).
     const { rows } = await query(
       "SELECT sp.name, u.phone FROM salespersons sp LEFT JOIN users u ON u.id = sp.user_id WHERE sp.id = $1",
-      [order.sales_representative_id]
+      [salesRepId]
     );
-    if (rows.length) contacts.push({ role: "Sales Executive", name: rows[0].name, phone: rows[0].phone, highlight: false });
+    // Round 119, post-ship again — round 7: but a salesperson with no phone
+    // at all isn't shown to the customer — every site is required to have an
+    // assigned rep (administrator.js won't save a site without one), and
+    // that's often a "company"-level placeholder (a distributor, a walk-in
+    // source, anything carried forward from old free-text data) rather than
+    // an actual individual the customer could call. Falls through to the
+    // order's creator below (if they're a real Sales Executive with a phone)
+    // instead of showing a name with no way to reach them.
+    if (rows.length && rows[0].phone) {
+      contacts.push({ role: "Sales Executive", name: rows[0].name, phone: rows[0].phone, highlight: false });
+    }
   }
   if (!contacts.length && order.created_by) {
     const { rows } = await query("SELECT name, phone, role FROM users WHERE id = $1", [order.created_by]);

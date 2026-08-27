@@ -50,7 +50,7 @@ router.get("/:token", async (req, res) => {
     `SELECT b.id, b.status, b.preferred_date, b.preferred_time, b.estimated_qty_m3, b.pump_requirement,
             b.casting_location, b.declined_reason, b.converted_order_id, b.created_at, m.name AS mix_grade_name,
             o.status AS order_status, o.order_date AS order_order_date,
-            o.scheduled_batching_time AS order_scheduled_batching_time,
+            COALESCE(o.required_at_site_time, o.scheduled_batching_time) AS order_scheduled_batching_time,
             o.order_quantity_m3 AS order_order_quantity_m3, om.name AS order_mix_grade_name
      FROM bookings b
      LEFT JOIN mix_grades m ON m.id = b.mix_grade_id

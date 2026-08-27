@@ -1356,6 +1356,17 @@ router.get("/setup", async (req, res) => {
     await query(`ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS auto_confirmed BOOLEAN NOT NULL DEFAULT false;`);
     log.push("Schema migration applied (site_qc.auto_confirmed — flags a Site Out that was GPS-auto-recorded with no slump/delivery-note/after-pour-care info from the driver).");
 
+    // Round 119, post-ship again — round 6: customer_orders.required_at_site_time
+    // — the time the customer actually needs concrete AT SITE, distinct from
+    // scheduled_batching_time (when the plant starts batching, which needs to
+    // be earlier by however long the delivery takes to reach the site). See
+    // Create Order / Convert Booking (lib/SalesPanels.jsx, pages/CreateOrder.jsx)
+    // for the "suggested batching time" helper this feeds, and
+    // routes/customerPortal.js for where it replaces scheduled_batching_time
+    // on every customer-facing screen.
+    await query(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS required_at_site_time TIME;`);
+    log.push("Schema migration applied (customer_orders.required_at_site_time — the customer-facing 'needed at site' time, distinct from the internal plant batching time).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

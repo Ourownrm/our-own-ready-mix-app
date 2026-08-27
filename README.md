@@ -4414,3 +4414,98 @@ rather than a single component.
    it on unmount, so a fresh install from `/portal` opens straight back into it; `RootRedirect` also
    falls back to `/portal` when there's a live customer session and no staff one, covering anyone
    who installed before this fix or whose browser doesn't honor a per-page manifest swap.
+
+## Round 119, post-ship again — round 6 (Ver. 9.37): feedback on round 5's own output
+
+1. **Batching time vs. "required at site" time were the same field — they aren't.** A customer
+   asking for concrete at 8 AM needs it AT SITE by 8 AM, not batching to start then — the truck
+   still has to drive there. `ConvertBookingForm` (`lib/SalesPanels.jsx`) had been copying a
+   booking's `preferred_time` straight into `scheduled_batching_time`, silently treating the
+   customer's arrival ask as the plant's batching time. New `customer_orders.required_at_site_time`
+   column separates the two: it's what the customer asked for and what's shown to them everywhere
+   (portal My Orders/order detail/status stepper, a booking-link's own status page) — falling back
+   to `scheduled_batching_time` for older orders placed before this column existed, so nothing that
+   already shipped breaks. `scheduled_batching_time` stays the internal, plant-facing field.
+   Create Order and Convert Booking now collect both, and — since "calculated and made early based
+   on distance from site" was asked for specifically — a new `lib/travelEstimate.js` computes a
+   *suggested* batching time from the site's existing `distance_from_plant_km` (already on file for
+   trip allowance brackets) using an assumed average speed (25 km/h) plus a fixed 15-minute plant
+   prep buffer, shown as "Suggested HH:MM — [Use]" under the batching time field. This is a
+   transparent estimate, not real routing/traffic data (nothing like that exists anywhere in this
+   app) — it's offered as a starting point the person filling the form can freely override, never
+   applied silently. If the 25 km/h assumption proves wrong in practice, it's the one constant to
+   revisit. `orders.js` POST `/` and `sales.js`'s convert route both accept and store the new field;
+   `OrderDetailModal.jsx` shows it alongside the batching time for staff.
+2. **Picture report: missing fields and bad sizing for one order.** Two separate complaints on
+   round 5's own new feature, both in `OrdersSchedule.jsx`'s `PictureReportPanel`. First, sizing —
+   the shared-image container had no width cap of its own, so it rendered (and got captured by
+   html2canvas) at whatever width the page happened to be — a manager's wide desktop browser — which
+   produced a huge, mostly-empty banner for a single order. It's now capped to a fixed mobile-card
+   width (max 420px, centered) regardless of the page it's opened from, since the output is a phone
+   image either way. Second, layout — orders now stack one below another (a plain vertical list)
+   instead of the auto-fill multi-column grid round 5 shipped; a phone screen reads top-to-bottom,
+   not side-by-side, whether there's 1 order or 6. Third, fields — added "Required at site" (new
+   field, see item 1) and split pump departure time out of the Pump line into its own always-visible
+   "Pump leaving time" field (it only showed at all before when set, which read as missing).
+3. **Language switcher was portal-only — not on the public, pre-login pages.** `CustomerLanguageProvider`
+   moved from `CustomerPortal.jsx` up to the whole app (`App.jsx`), so `useCustomerLanguage()` and a
+   new compact `PublicLanguageSwitcher` (`lib/customerI18n.jsx`) work anywhere. Dropped the switcher
+   into the header of every public, no-login customer page: Services & Products, Ready-Mix vs.
+   Site-Mix, Free Technical Assistance, a booking link (`/book/:token`), a shared tracking link
+   (`/track/:token`), and the public inquiry/quote form. Same scope decision as round 5's portal
+   i18n: page titles, back buttons, and the switcher itself are translated; the longer body content
+   on these pages (service descriptions, the RMC-vs-site-mix comparison, technical-assistance
+   copy) still renders in English — translating that is additive from here, not structural.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 119, post-ship again — round 7 (Ver. 9.38): PWA install follow-up, "company" sales reps, code review
+
+1. **PWA install: iOS was never actually covered.** Round 5's manifest-swap fix (see round 5, item
+   7) only addresses Chrome/Android, which reads the Web App Manifest's `start_url` — that part
+   follows Google's own documented pattern for a multi-manifest site and should work correctly for
+   a *new* "Install app"/"Add to Home Screen" action taken from this point forward. iOS Safari
+   doesn't use the manifest the same way for "Add to Home Screen": it separately needs the
+   `apple-mobile-web-app-capable` meta tag to even treat the result as a standalone app (without it,
+   the "installed" icon just opens the page inside Safari's normal browser chrome — address bar and
+   all), and reads `apple-mobile-web-app-title` (falling back to `document.title`) for the home
+   screen label rather than the manifest's `name`. `index.html` gained the two meta tags (plus
+   `apple-mobile-web-app-status-bar-style`); `CustomerPortal.jsx`'s existing manifest-swap effect now
+   also swaps `apple-mobile-web-app-title`'s content and `document.title` to "OORM Portal" while
+   mounted, restoring both on unmount — same pattern as the manifest link swap.
+   **Important limitation, unchanged from round 5 and not fixable in-app**: none of this — on either
+   platform — retroactively updates an icon a customer already installed before the relevant fix
+   shipped. `start_url` (and, on iOS, the home screen title) are fixed at the moment "Add to Home
+   Screen"/"Install app" is tapped; changing the manifest/meta tags afterward only affects the *next*
+   install someone does, not one already sitting on a home screen. Anyone who installed earlier needs
+   to delete that icon and add it again from `/portal` — `RootRedirect`'s session fallback (App.jsx)
+   is what covers them in the meantime, not a live update to the old icon.
+2. **"Your team on this order" could show a sales rep the customer had no way to actually reach.**
+   Two issues in `customerPortal.js`'s `resolveOrderContacts`, both in how the sales-rep contact is
+   resolved: first, it only ever looked at the order's own `sales_representative_id`, unlike every
+   other place in the app that resolves "the sales rep for an order" (`orders.js` GET `/:id`,
+   `reports.js`, `productionReport.js`, `sales.js`'s own dashboards), which all prefer the *site's*
+   `assigned_sales_representative_id` first — `COALESCE(site, order)` — since every site is required
+   to have one on file (`administrator.js` won't save a site without it) while an individual order's
+   own field is often left blank. `resolveOrderContacts` now matches that pattern. Second — and this
+   is the actual business ask — a salesperson entry with no linked staff login has no phone number to
+   show, and is typically a "company"-level placeholder (a distributor, a walk-in source, anything
+   carried forward from old free-text data) rather than a real individual. That contact is now
+   skipped entirely rather than shown with a name and no way to call them; it falls through to the
+   order's creator (if they're a real Sales Executive with a phone), same as when there's no sales
+   rep resolved at all.
+3. **Code review pass across rounds 5–7** (a dedicated review, not just re-reading my own diffs) —
+   one real gap found and fixed: `required_at_site_time` (round 6, item 1) had no correction path
+   after an order was created — `administrator.js`'s Correct Order screen (`PATCH /orders/:id`) never
+   accepted it, and `MasterDataPanels.jsx`'s `OrdersPanel` edit row had no field for it at all, unlike
+   its sibling `scheduled_batching_time`. A mistyped "Required at site" time (an easy fat-finger on a
+   plain time input) had no fix short of a raw DB edit. Added as a plain inline-editable field next
+   to QC Engineer — no "reason" required, since correcting the customer-facing display time isn't the
+   same as actually rescheduling the delivery (that stays behind the heavier Reschedule flow, which
+   does require one). Everything else checked — SQL param counts on both extended `customer_orders`
+   INSERTs, empty-string-to-TIME handling, the `GET /orders` UNION's column types, the new site-level
+   contact resolution's single call site, the travel-time suggestion math, React hook dependencies,
+   the provider-move for customer i18n, and every field name referenced in the picture report against
+   the actual `GET /orders/:id` response — came back clean.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.
