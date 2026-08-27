@@ -70,6 +70,7 @@ router.get("/delayed-trucks", async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, t.truck_number, u.name AS driver_name,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            sp.name AS sales_representative_name,
             rs.event_time AS reached_site_at,
             EXTRACT(EPOCH FROM (now() - rs.event_time)) / 60 AS minutes_at_site,
             EXISTS (
@@ -83,6 +84,7 @@ router.get("/delayed-trucks", async (req, res) => {
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN salespersons sp ON sp.id = co.sales_representative_id
      JOIN LATERAL (
        SELECT event_time FROM trip_events
        WHERE ticket_id = dt.id AND event_type = 'reached_site'

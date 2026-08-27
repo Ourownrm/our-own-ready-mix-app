@@ -471,8 +471,15 @@ async function resolveOrderContacts(order) {
   const contacts = [];
 
   if (order.sales_representative_id) {
+    // Round 119, post-ship again, item 5 — this used to INNER JOIN users via
+    // salespersons.user_id, so any salesperson without a linked login (every
+    // name added through Create Order's "+ Add new salesperson" quick-add,
+    // and anything carried forward from the old free-text field) silently
+    // dropped out of this card entirely, even though sales_representative_id
+    // was correctly set on the order. Falls back to the salesperson's own
+    // name with no phone number when there's no linked user to pull one from.
     const { rows } = await query(
-      "SELECT u.name, u.phone FROM salespersons sp JOIN users u ON u.id = sp.user_id WHERE sp.id = $1",
+      "SELECT sp.name, u.phone FROM salespersons sp LEFT JOIN users u ON u.id = sp.user_id WHERE sp.id = $1",
       [order.sales_representative_id]
     );
     if (rows.length) contacts.push({ role: "Sales Executive", name: rows[0].name, phone: rows[0].phone, highlight: false });

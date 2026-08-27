@@ -98,21 +98,38 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
   );
   const resolvedMixDesignId = resolvedDesign[0]?.mix_design_id || null;
 
+  // Round 119, post-ship again, item 3 — Ajith Pulikkol is the default QC
+  // Engineer on every new order, so this never has to be picked by hand at
+  // Create Order time (there's deliberately no QC Engineer field on that
+  // form). Resolved by name, not a hardcoded id, since ids differ per
+  // deployment/environment. Manager/Admin can still override it afterwards
+  // from the existing "Correct Order" screen's QC Engineer picker
+  // (administrator.js PATCH /orders/:id) — this only sets the starting
+  // value. Falls back to no default (the old role-based pick still applies
+  // wherever nothing is assigned) if that name isn't on file as an active
+  // QC Engineer in this deployment.
+  const { rows: defaultQc } = await query(
+    `SELECT id FROM users WHERE role = 'qc_engineer' AND is_active AND name ILIKE 'Ajith Pulikkol%' ORDER BY id LIMIT 1`
+  );
+  const defaultQcEngineerId = defaultQc[0]?.id || null;
+
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
-      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount, resolved_mix_design_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount, resolved_mix_design_id,
+      assigned_qc_engineer_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, order_quantity_m3,
      sales_representative_id || null, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
      pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
-     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0, resolvedMixDesignId]
+     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0, resolvedMixDesignId,
+     defaultQcEngineerId]
   );
   res.status(201).json(rows[0]);
 });
@@ -566,6 +583,7 @@ router.get("/:id", async (req, res) => {
     `SELECT o.*, c.name AS customer_name, s.name AS site_name, s.address AS site_address,
             m.name AS mix_grade_name, p.pump_code, sup.name AS site_supervisor_name,
             sp.name AS sales_representative_name, creator.name AS created_by_name,
+            qc.name AS qc_engineer_name,
             COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0)
               - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS delivered_qty_m3
      FROM customer_orders o
@@ -576,10 +594,11 @@ router.get("/:id", async (req, res) => {
      LEFT JOIN users sup ON sup.id = o.assigned_site_supervisor_id
      LEFT JOIN salespersons sp ON sp.id = COALESCE(s.assigned_sales_representative_id, o.sales_representative_id)
      LEFT JOIN users creator ON creator.id = o.created_by
+     LEFT JOIN users qc ON qc.id = o.assigned_qc_engineer_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
      LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE o.id = $1
-     GROUP BY o.id, c.name, s.name, s.address, m.name, p.pump_code, sup.name, sp.name, creator.name`,
+     GROUP BY o.id, c.name, s.name, s.address, m.name, p.pump_code, sup.name, sp.name, creator.name, qc.name`,
     [req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found." });

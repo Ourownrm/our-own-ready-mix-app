@@ -84,10 +84,11 @@ router.get("/my-orders", async (req, res) => {
             o.pump_departure_time, o.pump_actual_departure_time, o.pump_departure_delay_reason,
             o.site_ready_confirmed, o.site_ready_delay_reason, o.supervisor_marked_complete,
             o.site_ready_latitude, o.site_ready_longitude, o.site_ready_location_suspect,
-            c.name AS customer_name, s.name AS site_name
+            c.name AS customer_name, s.name AS site_name, sp.name AS sales_representative_name
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
      JOIN sites s ON s.id = o.site_id
+     LEFT JOIN salespersons sp ON sp.id = o.sales_representative_id
      WHERE o.assigned_site_supervisor_id = $1
        AND o.order_date = CURRENT_DATE
        AND o.status NOT IN ('cancelled', 'closed', 'completed')

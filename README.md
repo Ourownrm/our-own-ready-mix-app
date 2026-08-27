@@ -4346,3 +4346,71 @@ None of these are functional bugs — the underlying data and confirmations all 
 real layout differences from the mockup images. Left as-is pending a business decision on whether
 to invest in matching them exactly, since several touch the driver home screen's overall structure
 rather than a single component.
+
+## Round 119, post-ship again — round 5 (Ver. 9.36): 7 real-world feature/bug requests
+
+1. **Manager can share a day's scheduled orders as a picture report.** New panel at the top of
+   "Today & Tomorrow's Orders" (`OrdersSchedule.jsx`) — a Today/Tomorrow toggle renders every
+   `status = 'planned'` order for that day (orders that haven't started yet; a running or completed
+   order drops off automatically) as a card carrying the full order-form field set — grade, qty,
+   pump + crew + departure time, site technician, cube samples, site supervisor, site contact,
+   sales rep, QC Engineer, casting location, slump, remarks — laid out in a responsive grid that
+   goes to multiple columns/rows as more orders are scheduled. "Share as image" reuses the same
+   html2canvas → native share sheet (with a download fallback) pattern already established in
+   `ShareableVisitReport.jsx`, rather than a new one-off implementation. `GET /orders/:id` gained a
+   `qc_engineer_name` join to support this (and now shows on the existing Order Detail modal too).
+2. **Convert Booking → Order was missing several Create Order fields.** Verified specifically for
+   the "sales person submits their own booking" scenario asked about: that path already resolves
+   correctly server-side (`POST /sales/bookings` sets `requested_by` to the sales executive's own
+   id; `administrator.js` auto-links `salespersons.user_id` when their account is created; the
+   convert route's fallback already looks up `salespersons WHERE user_id = booking.requested_by`) —
+   the real gap was in the CONVERT FORM itself (`SalesPanels.jsx`): `sales_representative_id`,
+   `specified_slump_mm`, and `pump_departure_time` weren't collected at all, and
+   `site_technician_required`/`cube_samples_required`/`casting_location` were in form state but had
+   no visible input, so a Manager could never actually see or change them during conversion. Added
+   all of the above, plus the same Site Contacts directory picker Create Order already has (was a
+   plain text box). Backend (`POST /sales/bookings/:id/convert`) gained the missing
+   `specified_slump_mm` column, the same mix-design resolution `orders.js` already does, and the
+   same default QC Engineer as item 3 below — this route builds a `customer_orders` row too and had
+   been skipping all three.
+3. **Ajith Pulikkol is now the default QC Engineer on every new order** (`orders.js` `POST /` and
+   the booking-convert route) — resolved by name (`role = 'qc_engineer' AND name ILIKE 'Ajith
+   Pulikkol%'`), not a hardcoded id, since ids differ per deployment. Deliberately backend-only —
+   no QC Engineer field was added to Create Order or Convert Booking. To change it, Manager/Admin
+   use the existing "Correct Order" screen's QC Engineer dropdown (`MasterDataPanels.jsx`), which
+   already existed and needed no changes — it now simply starts pre-filled with Ajith instead of
+   blank.
+4. **Order numbers now display as `ORM-<id>`** everywhere a customer or staff member sees one —
+   new `lib/orderNumber.js` (`formatOrderNumber`), applied across the customer portal, Manager
+   Dashboard, Plant Operator, Site Supervisor, Production Report, the Correct-Order-mismatch panel,
+   Order Detail modal, and the Delivery Challan PDF. Purely a display format — the underlying
+   `customer_orders.id`, delivery tickets' own separate `DT-####` numbering, and every API/DB
+   reference are unchanged.
+5. **Sales rep name was invisible outside the Manager screen.** Three separate fixes: (a) QC
+   Engineer's "delayed trucks" card and Site Supervisor's "today's orders" card now both show
+   "Sales rep: ..." (neither query joined `salespersons` before); (b) the customer portal's "your
+   team on this order" contact card was silently dropping the sales rep entirely whenever that
+   salesperson had no linked staff login — its query used an INNER JOIN through
+   `salespersons.user_id`, so anyone added via Create Order's "+ Add new salesperson" quick-add (or
+   carried forward from the old free-text field) never had a `user_id` and never appeared, even
+   though `sales_representative_id` was correctly set on the order. Now a LEFT JOIN with a
+   name-only fallback.
+6. **Customer portal language option — English, Malayalam, Kannada.** New `lib/customerI18n.jsx`,
+   a dictionary and React context deliberately separate from the driver-only `lib/i18n.js` (whose
+   own header already scopes it to the driver app, and whose language set — en/ml/hi — doesn't
+   match what was asked for here). Covers the shell every customer sees on every visit: bottom nav,
+   screen titles, the Home tile grid, and a new "Language" row on the More screen with an inline
+   picker; the choice persists across visits (`localStorage`, its own key, same pattern as the
+   portal's own session storage). Deeper screens (order detail field labels, QC reports body copy)
+   still render in English — the dictionary is built so extending coverage later is additive.
+   Translation quality is a first pass, not verified by a native speaker — worth a native-speaker
+   review before this is customer-facing.
+7. **Fixed: installed customer-portal PWA icon opened to staff login.** The app ships one PWA
+   manifest (`vite.config.js`) with `start_url: "/"`, and `App.jsx`'s `RootRedirect` (root path
+   handler) checked only the staff `AuthContext` — so a customer's "Add to Home Screen" icon always
+   reopened to the staff sign-in screen, with no way back to the customer portal short of typing
+   the URL by hand. Two-part fix: `CustomerPortal.jsx` now swaps the page's `<link rel="manifest">`
+   href to a new `portal-manifest.webmanifest` (`start_url: "/portal"`) while mounted and restores
+   it on unmount, so a fresh install from `/portal` opens straight back into it; `RootRedirect` also
+   falls back to `/portal` when there's a live customer session and no staff one, covering anyone
+   who installed before this fix or whose browser doesn't honor a per-page manifest swap.

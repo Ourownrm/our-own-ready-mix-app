@@ -368,7 +368,7 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
     site_id, mix_grade_id, pump_requirement, pump_id,
     site_technician_required, cube_samples_required, assigned_pump_crew,
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-    sales_representative_id, casting_location, pump_departure_time, remarks,
+    sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks,
     pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
   } = req.body;
 
@@ -418,21 +418,42 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
     return res.status(400).json({ error: `Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.` });
   }
 
+  // Same mix design resolution as orders.js's own POST / — this endpoint
+  // creates a customer_orders row too and had been skipping this entirely.
+  const { rows: resolvedDesign } = await query(
+    `SELECT COALESCE(
+       (SELECT mix_design_id FROM mix_design_assignments WHERE customer_id = $1 AND mix_grade_id = $2),
+       (SELECT id FROM mix_designs WHERE mix_grade_id = $2 AND is_standard_for_grade = true AND status = 'approved')
+     ) AS mix_design_id`,
+    [booking.customer_id, finalMixGradeId]
+  );
+  const resolvedMixDesignId = resolvedDesign[0]?.mix_design_id || null;
+
+  // Same default QC Engineer as orders.js (round 119, post-ship again, item
+  // 3) — a booking converted into an order should get Ajith Pulikkol by
+  // default too, not just orders placed directly.
+  const { rows: defaultQc } = await query(
+    `SELECT id FROM users WHERE role = 'qc_engineer' AND is_active AND name ILIKE 'Ajith Pulikkol%' ORDER BY id LIMIT 1`
+  );
+  const defaultQcEngineerId = defaultQc[0]?.id || null;
+
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, truck_dispatch_interval_minutes, customer_id, site_id,
       mix_grade_id, pump_requirement, pump_id, site_technician_required, cube_samples_required,
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
-      sales_representative_id, casting_location, pump_departure_time, remarks, created_by,
-      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+      sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
+      pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
+      resolved_mix_design_id, assigned_qc_engineer_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
      RETURNING *`,
     [order_date, scheduled_batching_time, truck_dispatch_interval_minutes, booking.customer_id, finalSiteId,
      finalMixGradeId, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required || null,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, finalQty,
-     finalSalesRepId, casting_location || null, pump_departure_time || null, remarks || null, req.user.id,
+     finalSalesRepId, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
      pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
-     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0]
+     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0,
+     resolvedMixDesignId, defaultQcEngineerId]
   );
 
   await query(
