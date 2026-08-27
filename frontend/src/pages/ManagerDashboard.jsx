@@ -12,6 +12,7 @@ import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { BookingsQueue, CreateLeadForm, CustomerInquiriesCard } from "../lib/SalesPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
+import { formatOrderNumber } from "../lib/orderNumber.js";
 
 export default function ManagerDashboard() {
   const [stats, setStats] = useState(null);
@@ -591,7 +592,7 @@ function PumpStatusTable({ orders, activeTrucks, setError, onReload }) {
               const status = siteStatus(o, activeTrucks);
               return (
                 <tr key={o.id} style={status.label === "Pump delayed" ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
-                  <td>#{o.id}</td>
+                  <td>{formatOrderNumber(o.id)}</td>
                   <td>{o.customer_name}</td>
                   <td>{o.site_name}</td>
                   <td>{o.pump_departure_time || "–"}</td>
@@ -699,7 +700,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
                 return (
                   <tr key={o.id} style={overdue ? { background: "var(--alert-red-bg, #FBEAEA)" } : undefined}>
                     {showDate && <td>{new Date(o.order_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>}
-                    <td>#{o.id}</td>
+                    <td>{formatOrderNumber(o.id)}</td>
                     <td>{o.customer_name}</td>
                     <td>{o.site_name}</td>
                     <td>{o.mix_grade_name}</td>

@@ -120,7 +120,7 @@ function ServicesEditor() {
         + Add service
       </button>
 
-      <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>Fleet &amp; equipment</div>
+      <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>Our Own Facilities &amp; Equipment</div>
       {fleet.map((f, i) => (
         <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
           <input type="text" placeholder="Title" value={f.title} onChange={(e) => updateFleet(i, "title", e.target.value)} style={{ flex: 1 }} />

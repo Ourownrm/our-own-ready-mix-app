@@ -178,6 +178,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   const [mixGrades, setMixGrades] = useState([]);
   const [supervisors, setSupervisors] = useState([]);
   const [pumps, setPumps] = useState([]);
+  const [salespersons, setSalespersons] = useState([]);
   const [form, setForm] = useState({
     order_date: booking.preferred_date ? booking.preferred_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
     scheduled_batching_time: booking.preferred_time ? booking.preferred_time.slice(0, 5) : "08:00",
@@ -192,7 +193,10 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     cube_samples_required: 3,
     assigned_site_supervisor_id: "",
     site_contact_number: booking.site_contact_number || "",
+    sales_representative_id: "",
     casting_location: booking.casting_location || "",
+    specified_slump_mm: "",
+    pump_departure_time: "",
     remarks: booking.remarks || booking.notes || "",
   });
   const [saving, setSaving] = useState(false);
@@ -200,9 +204,22 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   const [pumpChargeDecision, setPumpChargeDecision] = useState(null);
   const [partLoadDecision, setPartLoadDecision] = useState(null);
 
+  // Round 119, post-ship again, item 2 — this form used to collect only a
+  // subset of what Create Order does (missing sales rep, slump, pump
+  // departure time entirely; site technician/cube samples were in state but
+  // had no input at all, so a Manager could never actually change them here).
+  // Same Site Contacts directory pattern as CreateOrder.jsx (round 96, item 7).
+  const [siteContacts, setSiteContacts] = useState([]);
+  const [contactChoice, setContactChoice] = useState("");
+  const [newContactName, setNewContactName] = useState("");
+
+  function set(field, value) {
+    setForm((f) => ({ ...f, [field]: value }));
+  }
+
   useEffect(() => {
-    Promise.all([apiRequest("/master/sites"), apiRequest("/master/mix-grades"), apiRequest("/master/site-supervisors"), apiRequest("/master/pumps")])
-      .then(([s, m, sup, p]) => { setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p); })
+    Promise.all([apiRequest("/master/sites"), apiRequest("/master/mix-grades"), apiRequest("/master/site-supervisors"), apiRequest("/master/pumps"), apiRequest("/master/salespersons")])
+      .then(([s, m, sup, p, sp]) => { setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p); setSalespersons(sp); })
       .catch((err) => setError(err.message));
   }, []);
 
@@ -213,6 +230,34 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
       .then(setRateInfo)
       .catch(() => setRateInfo(null));
   }, [form.mix_grade_id, form.site_id, form.order_date]);
+
+  // Same autofill-from-directory behavior as Create Order: reload whenever
+  // the site changes, and pre-select the booking's own contact if it's
+  // already on file for this customer+site (otherwise it stays as
+  // free-typed text, same as before).
+  useEffect(() => {
+    if (!booking.customer_id || !form.site_id) { setSiteContacts([]); return; }
+    apiRequest(`/master/site-contacts?customer_id=${booking.customer_id}&site_id=${form.site_id}`)
+      .then((contacts) => {
+        setSiteContacts(contacts);
+        const match = booking.site_contact_number && contacts.find((c) => c.phone_number === booking.site_contact_number);
+        if (match) setContactChoice(String(match.id));
+        else if (booking.site_contact_number) { setContactChoice("__new__"); setNewContactName(booking.site_contact_name || ""); }
+      })
+      .catch(() => setSiteContacts([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.site_id]);
+
+  function chooseContact(value) {
+    setContactChoice(value);
+    if (value === "__new__" || value === "") {
+      if (value === "") set("site_contact_number", "");
+      setNewContactName("");
+    } else {
+      const c = siteContacts.find((sc) => String(sc.id) === String(value));
+      set("site_contact_number", c?.phone_number || "");
+    }
+  }
 
   const sitesForCustomer = sites.filter((s) => String(s.customer_id) === String(booking.customer_id));
 
@@ -252,6 +297,18 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
           part_load_charge_amount: needsPartLoadDecision && partLoadDecision ? partLoadAmount : 0,
         },
       });
+      // Same best-effort directory save as Create Order — never blocks
+      // converting the booking if it fails.
+      if (contactChoice === "__new__" && form.site_contact_number) {
+        apiRequest("/master/site-contacts", {
+          method: "POST",
+          body: {
+            customer_id: booking.customer_id, site_id: form.site_id,
+            contact_name: newContactName.trim() || undefined,
+            phone_number: form.site_contact_number,
+          },
+        }).catch(() => {});
+      }
       onDone();
     } catch (err) {
       setError(err.message);
@@ -317,13 +374,93 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
             <input type="text" value={form.assigned_pump_crew} onChange={(e) => setForm({ ...form, assigned_pump_crew: e.target.value })} />
           </div>
         )}
-        <div><div style={{ color: "var(--slate)" }}>Site contact number</div><input value={form.site_contact_number} onChange={(e) => setForm({ ...form, site_contact_number: e.target.value })} required /></div>
+        {form.pump_requirement !== "without_pump" && (
+          <div>
+            <div style={{ color: "var(--slate)" }}>Pump departure time</div>
+            <input type="time" value={form.pump_departure_time} onChange={(e) => setForm({ ...form, pump_departure_time: e.target.value })} />
+          </div>
+        )}
+        <div>
+          <div style={{ color: "var(--slate)" }}>Site technician required</div>
+          <select value={form.site_technician_required} onChange={(e) => setForm({ ...form, site_technician_required: e.target.value === "true" })}>
+            <option value="false">No</option>
+            <option value="true">Yes</option>
+          </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Cube samples required</div>
+          <input type="number" value={form.cube_samples_required} onChange={(e) => setForm({ ...form, cube_samples_required: e.target.value })} />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Site contact</div>
+          {siteContacts.length > 0 && (
+            <select value={contactChoice} onChange={(e) => chooseContact(e.target.value)} style={{ marginBottom: contactChoice === "__new__" || contactChoice === "" ? 6 : 0 }}>
+              <option value="">Select a contact on file</option>
+              {siteContacts.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.contact_name}{c.role_label ? ` — ${c.role_label}` : ""} — {c.phone_number}
+                </option>
+              ))}
+              <option value="__new__">+ Add a new contact</option>
+            </select>
+          )}
+          {(siteContacts.length === 0 || contactChoice === "__new__") && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                type="text" placeholder="Name (optional)" value={newContactName}
+                onChange={(e) => { setNewContactName(e.target.value); if (contactChoice !== "__new__") setContactChoice("__new__"); }}
+                style={{ flex: 1 }}
+              />
+              <input
+                type="tel" placeholder="Phone number" value={form.site_contact_number}
+                onChange={(e) => { set("site_contact_number", e.target.value); if (contactChoice !== "__new__") setContactChoice("__new__"); }}
+                required style={{ flex: 1 }}
+              />
+            </div>
+          )}
+        </div>
         <div>
           <div style={{ color: "var(--slate)" }}>Site supervisor</div>
           <select value={form.assigned_site_supervisor_id} onChange={(e) => setForm({ ...form, assigned_site_supervisor_id: e.target.value })}>
             <option value="">None (small site)</option>
             {supervisors.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Sales representative</div>
+          <select
+            value={form.sales_representative_id}
+            onChange={async (e) => {
+              if (e.target.value === "__add_new__") {
+                const name = window.prompt("New salesperson's name:");
+                if (name && name.trim()) {
+                  try {
+                    const sp = await apiRequest("/administrator/salespersons", { method: "POST", body: { name: name.trim() } });
+                    setSalespersons((list) => [...list, sp].sort((a, b) => a.name.localeCompare(b.name)));
+                    set("sales_representative_id", sp.id);
+                  } catch (err) {
+                    setError(err.message);
+                  }
+                }
+                return;
+              }
+              set("sales_representative_id", e.target.value);
+            }}
+          >
+            <option value="">
+              {booking.requested_by_name ? `Auto (booked by ${booking.requested_by_name})` : "Select"}
+            </option>
+            {salespersons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            <option value="__add_new__">+ Add new salesperson...</option>
+          </select>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Structure / casting location</div>
+          <input type="text" value={form.casting_location} onChange={(e) => setForm({ ...form, casting_location: e.target.value })} />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Specified slump (mm)</div>
+          <input type="number" min="0" step="1" value={form.specified_slump_mm} onChange={(e) => setForm({ ...form, specified_slump_mm: e.target.value })} />
         </div>
         <div style={{ gridColumn: "1 / -1" }}>
           <div style={{ color: "var(--slate)" }}>Remarks</div>

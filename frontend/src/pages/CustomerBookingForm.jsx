@@ -4,6 +4,7 @@ import { apiRequest } from "../lib/api.js";
 import { APP_VERSION } from "../lib/version.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
 import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
+import { formatOrderNumber } from "../lib/orderNumber.js";
 
 // Public, no-login page reached only via a shared per-customer+site link
 // (see pages/CustomerBooking.jsx for how Manager/Admin generate it, and
@@ -274,7 +275,7 @@ export default function CustomerBookingForm() {
               {qc_reports.cube_tests.map((t) => (
                 <div key={t.id} className="card" style={{ marginBottom: 10 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <div style={{ fontWeight: 700, fontSize: 12.5 }}>Order #{t.order_id} · {t.mix_grade_name}</div>
+                    <div style={{ fontWeight: 700, fontSize: 12.5 }}>{formatOrderNumber(t.order_id)} · {t.mix_grade_name}</div>
                     <span style={{ fontSize: 11, color: "var(--slate)" }}>
                       {t.tested_at ? new Date(t.tested_at).toLocaleDateString([], { day: "2-digit", month: "short" }) : ""}
                     </span>

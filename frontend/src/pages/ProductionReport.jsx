@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import QcDetailModal from "../lib/QcDetailModal.jsx";
+import { formatOrderNumber } from "../lib/orderNumber.js";
 
 const STATUS_OPTIONS = ["All", "Signed", "Pending", "Refused"];
 const FILTER_KEYS = ["customer_id", "site_id", "truck_id", "driver_id", "salesperson_id", "pump_id", "supervisor_id"];
@@ -399,7 +400,7 @@ export default function ProductionReport() {
                       <tr key={r.id}>
                         <td>{formatDate(r.ticket_date)}</td>
                         <td>{r.dc_no}{r.created_at && <div style={{ fontSize: 10, color: "var(--slate)" }}>{formatTime(r.created_at)}</div>}</td>
-                        <td>#{r.order_id}</td>
+                        <td>{formatOrderNumber(r.order_id)}</td>
                         <td>{r.customer_name}</td>
                         <td>{r.site_name}</td>
                         <td>{r.truck_number}</td>

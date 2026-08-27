@@ -41,7 +41,7 @@ export default function ServicesPublic() {
 
           {(content.fleet || []).length > 0 && (
             <>
-              <div className="portal-group-label">Fleet &amp; equipment</div>
+              <div className="portal-group-label">Our Own Facilities &amp; Equipment</div>
               <div className="card" style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20 }}>
                 {content.fleet.map((f, i) => (
                   <div key={i} style={{ minWidth: 140 }}>

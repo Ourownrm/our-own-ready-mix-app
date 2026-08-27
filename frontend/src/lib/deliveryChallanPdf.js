@@ -8,6 +8,7 @@
 // defaults and the live values pulled from the database) renders in blue
 // (0070C0); every LABEL stays black.
 import { apiRequest } from "./api.js";
+import { formatOrderNumber } from "./orderNumber.js";
 
 const BLUE = [0, 112, 192];
 const BLACK = [0, 0, 0];
@@ -191,7 +192,7 @@ export async function generateDeliveryChallanPdf(ticketId) {
   ]);
   drawRow([
     { label: "Customer: ", value: data.customer_name, w: w2 + w4 },
-    { label: "Order No: ", value: `#${data.order_id}`, w: w4 },
+    { label: "Order No: ", value: formatOrderNumber(data.order_id), w: w4 },
   ]);
   drawRow([
     { label: "Project: ", value: data.site_name, w: w2 + w4 },

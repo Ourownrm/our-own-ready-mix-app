@@ -4,6 +4,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, failedCount, clearFailed, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
+import { formatOrderNumber } from "../lib/orderNumber.js";
 
 function newIdempotencyKey() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -133,7 +134,7 @@ export default function PlantOperator() {
                 <option value="">Select</option>
                 {orders.map((o) => (
                   <option key={o.id} value={o.id}>
-                    Order #{o.id} — {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.scheduled_batching_time?.slice(0, 5)} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
+                    {formatOrderNumber(o.id)} — {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.scheduled_batching_time?.slice(0, 5)} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
                     {o.blocked_site_not_ready ? " — site not confirmed ready yet" : ""}
                   </option>
                 ))}
@@ -141,7 +142,7 @@ export default function PlantOperator() {
             </div>
             {selectedOrder && (
               <div style={{ fontSize: 12, color: "var(--slate)", background: "var(--concrete)", padding: 8, borderRadius: 6 }}>
-                Order #{selectedOrder.id} — {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;
+                {formatOrderNumber(selectedOrder.id)} — {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;
                 remaining {selectedOrder.order_quantity_m3 - selectedOrder.dispatched_so_far} m³
               </div>
             )}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
+import { formatOrderNumber } from "./orderNumber.js";
 
 export default function OrderDetailModal({ orderId, onClose }) {
   const [order, setOrder] = useState(null);
@@ -33,7 +34,7 @@ export default function OrderDetailModal({ orderId, onClose }) {
 
         {order && (
           <div style={{ fontSize: 13, display: "flex", flexDirection: "column", gap: 6 }}>
-            <Row label="Order #" value={`#${order.id}`} />
+            <Row label="Order #" value={formatOrderNumber(order.id)} />
             <Row label="Customer" value={order.customer_name} />
             <Row label="Site" value={order.site_name} />
             {order.site_address && <Row label="Site address" value={order.site_address} />}
@@ -52,6 +53,7 @@ export default function OrderDetailModal({ orderId, onClose }) {
             <Row label="Site supervisor" value={order.site_supervisor_name || "None assigned"} />
             <Row label="Site contact number" value={order.site_contact_number} />
             <Row label="Sales representative" value={order.sales_representative_name || "–"} />
+            <Row label="QC Engineer" value={order.qc_engineer_name || "–"} />
             <Row label="Casting location" value={order.casting_location || "–"} />
             <Row label="Status" value={order.status?.replace(/_/g, " ")} />
             {order.closure_reason && <Row label="Closure reason" value={order.closure_reason} />}

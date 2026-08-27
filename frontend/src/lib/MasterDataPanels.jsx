@@ -2,6 +2,7 @@ import { useEffect, useState, Fragment } from "react";
 import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import { generateMixDesignPdf } from "./mixDesignPdf.js";
+import { formatOrderNumber } from "./orderNumber.js";
 
 export function List({ rows, columns }) {
   return (
@@ -567,7 +568,7 @@ function SiteMismatchReview({ setError, onClose, onDone }) {
           return (
             <div key={r.order_id} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid var(--concrete)" }}>
               <div style={{ fontSize: 13, marginBottom: 4 }}>
-                Order #{r.order_id} — <strong>{r.order_customer_name}</strong> — {new Date(r.order_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })} — {r.ticket_count} ticket{r.ticket_count === 1 ? "" : "s"}
+                {formatOrderNumber(r.order_id)} — <strong>{r.order_customer_name}</strong> — {new Date(r.order_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })} — {r.ticket_count} ticket{r.ticket_count === 1 ? "" : "s"}
               </div>
               <div style={{ fontSize: 12, color: "var(--alert-red)", marginBottom: 8 }}>
                 Currently pointing at "{r.site_name}", which actually belongs to <strong>{r.site_actual_customer_name}</strong>, not {r.order_customer_name}.

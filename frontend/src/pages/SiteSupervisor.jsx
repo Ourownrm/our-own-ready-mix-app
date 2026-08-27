@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { formatOrderNumber } from "../lib/orderNumber.js";
 
 export default function SiteSupervisor() {
   const [deliveries, setDeliveries] = useState([]);
@@ -247,9 +248,12 @@ export default function SiteSupervisor() {
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Today's orders</div>
             {orders.map((o) => (
               <div key={o.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 8, fontSize: 12 }}>
-                <div style={{ display: "inline-block", background: "var(--rebar)", color: "#fff", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, marginBottom: 4 }}>Order #{o.id}</div>
+                <div style={{ display: "inline-block", background: "var(--rebar)", color: "#fff", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, marginBottom: 4 }}>{formatOrderNumber(o.id)}</div>
                 <div style={{ fontWeight: 600 }}>{o.customer_name} — {o.site_name}</div>
                 <div style={{ color: "var(--slate)" }}>Batching scheduled {o.scheduled_batching_time}</div>
+                {o.sales_representative_name && (
+                  <div style={{ color: "var(--slate)" }}>Sales rep: {o.sales_representative_name}</div>
+                )}
 
                 {o.pump_requirement !== "without_pump" && (
                   <div style={{ marginTop: 6 }}>

@@ -74,6 +74,9 @@ export default function QcEngineer() {
                 <div style={{ fontWeight: 600 }}>{t.truck_number} · {t.ticket_number}</div>
                 <div style={{ color: "var(--slate)" }}>{t.customer_name} — {t.site_name}</div>
                 <div style={{ color: "var(--slate)" }}>{t.mix_grade_name} · Driver: {t.driver_name}</div>
+                {t.sales_representative_name && (
+                  <div style={{ color: "var(--slate)" }}>Sales rep: {t.sales_representative_name}</div>
+                )}
                 <div style={{ color: "var(--alert-red)", fontWeight: 600, marginTop: 4 }}>
                   At site {formatDuration(t.minutes_at_site)}
                 </div>

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/AuthContext.jsx";
 import { ROLE_HOME } from "./lib/roleHome.js";
+import { getCustomerSession } from "./lib/customerPortalApi.js";
 import ProtectedRoute from "./lib/ProtectedRoute.jsx";
 import Login from "./pages/Login.jsx";
 import DriverDuty from "./pages/DriverDuty.jsx";
@@ -53,6 +54,13 @@ import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 function RootRedirect() {
   const { user } = useAuth();
   if (user) return <Navigate to={ROLE_HOME[user.role] || "/login"} replace />;
+  // Round 119, post-ship again, item 7 — the customer portal's installed PWA
+  // icon (CustomerPortal.jsx swaps in its own manifest, start_url "/portal")
+  // is the primary fix, but this covers whoever installed before that fix
+  // shipped, or whose browser doesn't honor a per-page manifest swap: with no
+  // staff session but a live customer portal one, "/" should reopen the
+  // portal, not demand a staff username/password.
+  if (getCustomerSession()) return <Navigate to="/portal" replace />;
   return <Navigate to="/login" replace />;
 }
 

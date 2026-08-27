@@ -4,6 +4,8 @@ import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
 import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { APP_VERSION } from "../lib/version.js";
 import { TruckCard } from "../lib/DeliveryTrackingView.jsx";
+import { formatOrderNumber } from "../lib/orderNumber.js";
+import { CustomerLanguageProvider, useCustomerLanguage, CUSTOMER_LANGUAGES } from "../lib/customerI18n.jsx";
 
 // Round 119, post-ship — full mockup-fidelity rebuild of the customer
 // portal (/portal): bottom tab nav (Home/Orders/Track/More), a Home
@@ -93,12 +95,44 @@ export default function CustomerPortal() {
   }
   useEffect(() => { verifySession(); }, []);
 
+  // Round 119, post-ship again, item 7 — the whole app shares ONE PWA
+  // manifest (vite.config.js), with start_url "/". A customer who taps
+  // "Add to Home Screen" while on /portal was still getting an installed
+  // icon that opens to "/" — which, with no staff AuthContext session,
+  // App.jsx's RootRedirect sends straight to the STAFF /login screen. There
+  // was no way to get back to the customer sign-in from the installed icon
+  // at all short of typing the URL by hand.
+  //
+  // Swapping the <link rel="manifest"> tag's href while this page is mounted
+  // means "Add to Home Screen" reads portal-manifest.webmanifest (start_url
+  // "/portal") instead of the app-wide one, so a NEW install opens straight
+  // back into the portal. Restored on unmount so every other route keeps
+  // using the default app manifest. RootRedirect also has its own fallback
+  // (see App.jsx) for anyone who installed before this fix, or whose browser
+  // ignores a per-page manifest swap.
+  useEffect(() => {
+    const link = document.querySelector('link[rel="manifest"]');
+    if (!link) return;
+    const previousHref = link.getAttribute("href");
+    link.setAttribute("href", "/portal-manifest.webmanifest");
+    return () => { link.setAttribute("href", previousHref); };
+  }, []);
+
   function onSignedIn(data) { setMe(data); }
   function signOut() { clearCustomerSession(); setMe(null); }
 
   if (checking) return <CenterMessage>Loading...</CenterMessage>;
-  if (!me) return <LoginForm onSignedIn={onSignedIn} />;
-  return <PortalShell me={me} onSignOut={signOut} onRefreshMe={() => customerPortalRequest("/me").then(setMe)} />;
+  // Round 119, post-ship again, item 6 — the language choice lives for the
+  // whole authenticated portal, not just one screen, so the provider wraps
+  // both the signed-out and signed-in states (a "New here?" visitor should
+  // get the same language persistence once they do sign in).
+  return (
+    <CustomerLanguageProvider>
+      {!me ? <LoginForm onSignedIn={onSignedIn} /> : (
+        <PortalShell me={me} onSignOut={signOut} onRefreshMe={() => customerPortalRequest("/me").then(setMe)} />
+      )}
+    </CustomerLanguageProvider>
+  );
 }
 
 // ===================== Sign-in =====================
@@ -214,11 +248,12 @@ function LoginForm({ onSignedIn }) {
 
 // ===================== Authenticated shell: tabs + a tiny nav stack =====================
 function PortalShell({ me, onSignOut, onRefreshMe }) {
+  const { t } = useCustomerLanguage();
   const [tab, setTab] = useState("home"); // home | orders | track | more
   const [stack, setStack] = useState([{ name: "root" }]); // drill-down screens on top of the current tab's root
 
-  function goTab(t) {
-    setTab(t);
+  function goTab(nextTab) {
+    setTab(nextTab);
     setStack([{ name: "root" }]);
   }
   function push(screen) { setStack((s) => [...s, screen]); }
@@ -227,18 +262,18 @@ function PortalShell({ me, onSignOut, onRefreshMe }) {
   const top = stack[stack.length - 1];
   const showBack = stack.length > 1;
 
-  let title = "Our Own Ready Mix";
+  let title = t("appName");
   let subtitle = me.customer_name;
-  if (tab === "orders" && top.name === "root") { title = "My Orders"; subtitle = null; }
-  if (tab === "track" && top.name === "root") { title = "Track"; subtitle = null; }
-  if (tab === "more" && top.name === "root") { title = "More"; subtitle = null; }
-  if (top.name === "order-detail") { title = `Order #${top.id}`; subtitle = top.siteName || null; }
+  if (tab === "orders" && top.name === "root") { title = t("title_my_orders"); subtitle = null; }
+  if (tab === "track" && top.name === "root") { title = t("title_track"); subtitle = null; }
+  if (tab === "more" && top.name === "root") { title = t("title_more"); subtitle = null; }
+  if (top.name === "order-detail") { title = formatOrderNumber(top.id); subtitle = top.siteName || null; }
   if (top.name === "booking-detail") { title = `Request #${top.id}`; subtitle = null; }
-  if (top.name === "order-tracking") { title = "Live delivery status"; subtitle = top.siteName ? `Order #${top.id} · ${top.siteName}` : `Order #${top.id}`; }
-  if (top.name === "order-concrete") { title = "Order Concrete"; subtitle = null; }
-  if (top.name === "qc-reports") { title = "QC & Mix Designs"; subtitle = null; }
-  if (top.name === "technical-writings") { title = "Technical Writings"; subtitle = null; }
-  if (top.name === "feedback") { title = "Feedback"; subtitle = null; }
+  if (top.name === "order-tracking") { title = t("title_live_delivery_status"); subtitle = top.siteName ? `${formatOrderNumber(top.id)} · ${top.siteName}` : formatOrderNumber(top.id); }
+  if (top.name === "order-concrete") { title = t("title_order_concrete"); subtitle = null; }
+  if (top.name === "qc-reports") { title = t("title_qc_mix_designs"); subtitle = null; }
+  if (top.name === "technical-writings") { title = t("title_technical_writings"); subtitle = null; }
+  if (top.name === "feedback") { title = t("title_feedback"); subtitle = null; }
 
   return (
     <div className="portal-shell">
@@ -292,16 +327,16 @@ function PortalShell({ me, onSignOut, onRefreshMe }) {
 
       <div className="portal-bottomnav">
         <button type="button" className={`portal-navitem${tab === "home" ? " active" : ""}`} onClick={() => goTab("home")}>
-          <IconHome size={19} /> Home
+          <IconHome size={19} /> {t("nav_home")}
         </button>
         <button type="button" className={`portal-navitem${tab === "orders" ? " active" : ""}`} onClick={() => goTab("orders")}>
-          <IconOrders size={19} /> Orders
+          <IconOrders size={19} /> {t("nav_orders")}
         </button>
         <button type="button" className={`portal-navitem${tab === "track" ? " active" : ""}`} onClick={() => goTab("track")}>
-          <IconTrack size={19} /> Track
+          <IconTrack size={19} /> {t("nav_track")}
         </button>
         <button type="button" className={`portal-navitem${tab === "more" ? " active" : ""}`} onClick={() => goTab("more")}>
-          <IconMore size={19} /> More
+          <IconMore size={19} /> {t("nav_more")}
         </button>
       </div>
     </div>
@@ -310,6 +345,7 @@ function PortalShell({ me, onSignOut, onRefreshMe }) {
 
 // ===================== Home =====================
 function HomeScreen({ me, onGoTab, onPush }) {
+  const { t } = useCustomerLanguage();
   const [orders, setOrders] = useState(undefined);
   useEffect(() => { customerPortalRequest("/orders").then(setOrders).catch(() => setOrders([])); }, []);
 
@@ -340,13 +376,13 @@ function HomeScreen({ me, onGoTab, onPush }) {
       <div className="portal-tiles">
         <button type="button" className="portal-tile" onClick={() => onGoTab("orders")}>
           <div className="portal-tile-ic"><IconOrders color="#C75B12" size={17} /></div>
-          <div className="portal-tile-title">My Orders</div>
+          <div className="portal-tile-title">{t("title_my_orders")}</div>
           <div className="portal-tile-sub">{totalCount === null ? "Loading..." : `${totalCount} total${activeCount ? ` · ${activeCount} active` : ""}`}</div>
         </button>
         {showTracking && (
           <button type="button" className="portal-tile" onClick={() => onGoTab("track")}>
             <div className="portal-tile-ic"><IconTrack color="#C75B12" size={17} /></div>
-            <div className="portal-tile-title">Live Tracking</div>
+            <div className="portal-tile-title">{t("home_live_tracking")}</div>
             <div className="portal-tile-sub">See trucks en route</div>
           </button>
         )}
@@ -419,7 +455,7 @@ function OrdersScreen({ onOpenOrder, onOpenBooking }) {
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{o.kind === "order" ? `Order #${o.id}` : `Request #${o.id}`}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{o.kind === "order" ? formatOrderNumber(o.id) : `Request #${o.id}`}</div>
                     <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 2 }}>{o.site_name || "Site not yet set"}</div>
                   </div>
                   <span className={`badge badge-${o.tone}`}>{o.label}</span>
@@ -673,7 +709,7 @@ function TrackRootScreen({ onOpenTracking }) {
         <button key={o.id} type="button" className="card portal-order-card" onClick={() => onOpenTracking(o.id, o.site_name)}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>Order #{o.id}</div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{formatOrderNumber(o.id)}</div>
               <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 2 }}>{o.site_name}</div>
             </div>
             <span className={`badge badge-${o.tone}`}>{o.label}</span>
@@ -726,22 +762,25 @@ function OrderTrackingScreen({ orderId }) {
 
 // ===================== More =====================
 function MoreScreen({ me, onSignOut, onPush }) {
+  const { t, lang, setLang } = useCustomerLanguage();
+  const [langPickerOpen, setLangPickerOpen] = useState(false);
   const showQc = me.permissions?.qc_reports;
   const showWritings = me.permissions?.technical_writings;
+  const currentLanguage = CUSTOMER_LANGUAGES.find((l) => l.code === lang) || CUSTOMER_LANGUAGES[0];
   return (
     <>
       <div className="card" style={{ padding: "2px 14px", marginBottom: 16 }}>
         {showQc && (
           <button type="button" className="portal-more-row" onClick={() => onPush({ name: "qc-reports" })}>
             <div className="portal-more-ic"><IconQc color="#C75B12" size={17} /></div>
-            <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>QC &amp; Mix Designs</div>
+            <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_qc_mix_designs")}</div>
             <IconChevron size={16} color="#C8C2B5" />
           </button>
         )}
         {showWritings && (
           <button type="button" className="portal-more-row" onClick={() => onPush({ name: "technical-writings" })}>
             <div className="portal-more-ic"><IconWritings color="#C75B12" size={17} /></div>
-            <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Technical Writings</div>
+            <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_technical_writings")}</div>
             <IconChevron size={16} color="#C8C2B5" />
           </button>
         )}
@@ -753,37 +792,68 @@ function MoreScreen({ me, onSignOut, onPush }) {
           <div className="portal-more-ic">
             <Icon size={17} color="#C75B12"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></Icon>
           </div>
-          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Feedback</div>
+          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_feedback")}</div>
           <IconChevron size={16} color="#C8C2B5" />
         </button>
         <a href="/services" className="portal-more-row" style={{ textDecoration: "none", color: "inherit" }}>
           <div className="portal-more-ic"><IconBuilding color="#C75B12" size={17} /></div>
-          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Services, Products &amp; Equipment</div>
+          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_services")}</div>
           <IconChevron size={16} color="#C8C2B5" />
         </a>
         <a href="/rmc-vs-sitemix" className="portal-more-row" style={{ textDecoration: "none", color: "inherit" }}>
           <div className="portal-more-ic"><IconInfo color="#C75B12" size={17} /></div>
-          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Ready-mix vs. Site-mix</div>
+          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_rmc_vs_sitemix")}</div>
           <IconChevron size={16} color="#C8C2B5" />
         </a>
         <a href="/technical-assistance" className="portal-more-row" style={{ textDecoration: "none", color: "inherit" }}>
           <div className="portal-more-ic">
             <Icon size={17} color="#C75B12"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></Icon>
           </div>
-          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Free Technical Assistance</div>
+          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_technical_assistance")}</div>
           <IconChevron size={16} color="#C8C2B5" />
         </a>
         <a href="/inquiry" className="portal-more-row" style={{ textDecoration: "none", color: "inherit" }}>
           <div className="portal-more-ic"><IconDoc color="#C75B12" size={17} /></div>
-          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Request a Quote</div>
+          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_request_quote")}</div>
           <IconChevron size={16} color="#C8C2B5" />
         </a>
+        {/* Round 119, post-ship again, item 6 — language option for the
+            customer portal (English / Malayalam / Kannada). Opens an inline
+            picker rather than a new screen — three options doesn't need a
+            whole drill-down page. */}
+        <button type="button" className="portal-more-row" onClick={() => setLangPickerOpen((v) => !v)}>
+          <div className="portal-more-ic">
+            <Icon size={17} color="#C75B12"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20z" /></Icon>
+          </div>
+          <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{t("more_language")}</div>
+          <div style={{ fontSize: 12, color: "var(--slate)", marginRight: 4 }}>{currentLanguage.nativeLabel}</div>
+          <IconChevron size={16} color="#C8C2B5" />
+        </button>
+        {langPickerOpen && (
+          <div style={{ padding: "4px 0 12px 38px", display: "flex", flexDirection: "column", gap: 4 }}>
+            {CUSTOMER_LANGUAGES.map((l) => (
+              <button
+                key={l.code}
+                type="button"
+                onClick={() => { setLang(l.code); setLangPickerOpen(false); }}
+                style={{
+                  textAlign: "left", fontSize: 13, padding: "7px 10px", borderRadius: 7,
+                  background: l.code === lang ? "var(--rebar)" : "var(--concrete)",
+                  color: l.code === lang ? "#fff" : "var(--charcoal, inherit)",
+                  border: "none",
+                }}
+              >
+                {l.nativeLabel}{l.nativeLabel !== l.label ? ` (${l.label})` : ""}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 13, fontWeight: 700 }}>{me.customer_name}</div>
-        <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 4 }}>{me.sites.map((s) => s.name).join(", ") || "No sites on this code"}</div>
-        <button type="button" onClick={onSignOut} style={{ marginTop: 12, width: "100%", fontSize: 12.5 }}>Sign out</button>
+        <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 4 }}>{me.sites.map((s) => s.name).join(", ") || t("more_no_sites")}</div>
+        <button type="button" onClick={onSignOut} style={{ marginTop: 12, width: "100%", fontSize: 12.5 }}>{t("sign_out")}</button>
       </div>
 
       <div style={{ textAlign: "center", fontSize: 10.5, color: "var(--slate)" }}>Our Own Ready Mix · Ver. {APP_VERSION}</div>
@@ -840,7 +910,7 @@ function QcReportsScreen() {
           data.cube_tests.map((t) => (
             <div key={t.id} className="card" style={{ marginBottom: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <div style={{ fontWeight: 700, fontSize: 12.5 }}>Order #{t.order_id} · {t.site_name}</div>
+                <div style={{ fontWeight: 700, fontSize: 12.5 }}>{formatOrderNumber(t.order_id)} · {t.site_name}</div>
                 <span style={{ fontSize: 11, color: "var(--slate)" }}>{fmtDateShort(t.tested_at)}</span>
               </div>
               <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4 }}>
@@ -998,7 +1068,7 @@ function FeedbackScreen({ onDone }) {
             <option value="">General feedback — not order-specific</option>
             {orders.map((o) => (
               <option key={o.id} value={o.id}>
-                Order #{o.id} · {o.site_name} · {o.order_date ? new Date(o.order_date).toLocaleDateString([], { day: "2-digit", month: "short" }) : ""}
+                {formatOrderNumber(o.id)} · {o.site_name} · {o.order_date ? new Date(o.order_date).toLocaleDateString([], { day: "2-digit", month: "short" }) : ""}
               </option>
             ))}
           </select>
