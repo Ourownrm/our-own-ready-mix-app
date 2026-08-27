@@ -5,6 +5,7 @@ import { APP_VERSION } from "../lib/version.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
 import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { useCustomerLanguage, PublicLanguageSwitcher } from "../lib/customerI18n.jsx";
 
 // Public, no-login page reached only via a shared per-customer+site link
 // (see pages/CustomerBooking.jsx for how Manager/Admin generate it, and
@@ -447,20 +448,24 @@ function Shell({ children }) {
   // PublicInquiry.jsx's Shell — only show Back when there's actually
   // somewhere in this tab's own history to go back to.
   const canGoBack = typeof window !== "undefined" && window.history.length > 1;
+  const { t } = useCustomerLanguage();
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", minHeight: "100vh", background: "var(--concrete)" }}>
       <div className="topbar" style={{ marginBottom: 16 }}>
-        <div className="topbar-title">
-          Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span>
-          <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>
-            Concrete booking
+        <div className="topbar-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span>
+            <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>
+              {t("title_concrete_booking")}
+            </div>
           </div>
+          <PublicLanguageSwitcher />
         </div>
       </div>
       <div style={{ padding: "0 16px" }}>
         {canGoBack && (
           <button type="button" onClick={() => window.history.back()} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, background: "none", border: "none", padding: "6px 0 10px", color: "var(--rebar)", cursor: "pointer", fontWeight: 600 }}>
-            ← Back
+            ← {t("back")}
           </button>
         )}
         {children}

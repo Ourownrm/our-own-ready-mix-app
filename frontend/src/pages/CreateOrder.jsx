@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
+import { estimateTravelMinutes, suggestBatchingTime } from "../lib/travelEstimate.js";
 
 const initialForm = {
   order_date: new Date().toISOString().slice(0, 10),
   scheduled_batching_time: "08:00",
+  required_at_site_time: "",
   truck_dispatch_interval_minutes: 20,
   customer_id: "",
   site_id: "",
@@ -172,6 +174,10 @@ export default function CreateOrder({ onDone }) {
   }
 
   const selectedSite = sites.find((s) => String(s.id) === String(form.site_id));
+  const travelMinutes = selectedSite ? estimateTravelMinutes(selectedSite.distance_from_plant_km) : null;
+  const batchingSuggestion = selectedSite && form.required_at_site_time
+    ? suggestBatchingTime(form.required_at_site_time, selectedSite.distance_from_plant_km)
+    : null;
 
   return (
     <div className="card" style={{ maxWidth: 640, margin: "0 auto" }}>
@@ -180,8 +186,17 @@ export default function CreateOrder({ onDone }) {
         <Field label="Order date">
           <input type="date" value={form.order_date} onChange={(e) => set("order_date", e.target.value)} required />
         </Field>
+        <Field label="Required at site (customer needs it by)">
+          <input type="time" value={form.required_at_site_time} onChange={(e) => set("required_at_site_time", e.target.value)} required />
+        </Field>
         <Field label="Scheduled batching time">
           <input type="time" value={form.scheduled_batching_time} onChange={(e) => set("scheduled_batching_time", e.target.value)} required />
+          {batchingSuggestion && (
+            <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
+              Suggested {batchingSuggestion} — {selectedSite.distance_from_plant_km} km, ~{travelMinutes} min travel + 15 min prep.{" "}
+              <button type="button" onClick={() => set("scheduled_batching_time", batchingSuggestion)} style={{ fontSize: 11, padding: "2px 8px" }}>Use</button>
+            </div>
+          )}
         </Field>
         <Field label="Truck dispatch interval (min)">
           <input type="number" value={form.truck_dispatch_interval_minutes} onChange={(e) => set("truck_dispatch_interval_minutes", e.target.value)} required />

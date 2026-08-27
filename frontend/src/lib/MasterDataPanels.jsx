@@ -1363,7 +1363,7 @@ export function OrdersPanel({ setError, initialEditId }) {
   const [pumps, setPumps] = useState([]);
   const [qcEngineers, setQcEngineers] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", remarks: "", mix_grade_id: "", pump_requirement: "without_pump", pump_id: "", assigned_qc_engineer_id: "" });
+  const [form, setForm] = useState({ order_quantity_m3: "", scheduled_batching_time: "", required_at_site_time: "", remarks: "", mix_grade_id: "", pump_requirement: "without_pump", pump_id: "", assigned_qc_engineer_id: "" });
   const [rescheduling, setRescheduling] = useState(null);
   const [rescheduleForm, setRescheduleForm] = useState({ new_order_date: "", new_scheduled_batching_time: "", reason: "" });
   const [saving, setSaving] = useState(false);
@@ -1393,6 +1393,7 @@ export function OrdersPanel({ setError, initialEditId }) {
     setForm({
       order_quantity_m3: o.order_quantity_m3,
       scheduled_batching_time: o.scheduled_batching_time || "",
+      required_at_site_time: o.required_at_site_time || "",
       remarks: "",
       mix_grade_id: o.mix_grade_id || "",
       pump_requirement: o.pump_requirement || "without_pump",
@@ -1445,7 +1446,7 @@ export function OrdersPanel({ setError, initialEditId }) {
     <div className="card">
       <table>
         <thead>
-          <tr><th>Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Qty (m³)</th><th>Pump</th><th>QC Engineer</th><th>Status</th><th></th></tr>
+          <tr><th>Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Qty (m³)</th><th>Pump</th><th>Required at site</th><th>QC Engineer</th><th>Status</th><th></th></tr>
         </thead>
         <tbody>
           {orders.map((o) => (
@@ -1509,6 +1510,20 @@ export function OrdersPanel({ setError, initialEditId }) {
                 </td>
                 <td>
                   {editing === o.id ? (
+                    // Round 119, post-ship again — round 7: this was
+                    // captured on Create Order / Convert Booking but had no
+                    // correction path afterward at all — a mistyped time
+                    // (an easy fat-finger on a plain time input) could only
+                    // be fixed with a raw DB edit. Corrected here the same
+                    // lightweight way as QC Engineer, below — no "reason"
+                    // required, since it's the customer-facing display time,
+                    // not the actual batching/dispatch schedule (that stays
+                    // behind the heavier Reschedule flow, which does require one).
+                    <input type="time" value={form.required_at_site_time} onChange={(e) => setForm({ ...form, required_at_site_time: e.target.value })} style={{ fontSize: 12 }} />
+                  ) : (o.required_at_site_time || <span style={{ color: "var(--slate)" }}>—</span>)}
+                </td>
+                <td>
+                  {editing === o.id ? (
                     // Round 119, post-ship again, item 1 — lets Admin/Manager
                     // pick a specific QC Engineer for this order's "your team
                     // on this order" card in the customer portal, instead of
@@ -1541,7 +1556,7 @@ export function OrdersPanel({ setError, initialEditId }) {
               </tr>
               {rescheduling === o.id && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 8, fontSize: 13, padding: 10, background: "var(--concrete)", borderRadius: 8, alignItems: "end" }}>
                       <div>
                         <div style={{ color: "var(--slate)" }}>New date</div>
@@ -1568,7 +1583,7 @@ export function OrdersPanel({ setError, initialEditId }) {
               )}
             </Fragment>
           ))}
-          {orders.length === 0 && <tr><td colSpan={9} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
+          {orders.length === 0 && <tr><td colSpan={10} style={{ color: "var(--slate)" }}>No orders yet.</td></tr>}
         </tbody>
       </table>
     </div>

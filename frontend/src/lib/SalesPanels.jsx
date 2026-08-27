@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "./api.js";
+import { estimateTravelMinutes, suggestBatchingTime } from "./travelEstimate.js";
 
 export function CreateLeadForm({ setError, onDone }) {
   const [salesExecs, setSalesExecs] = useState([]);
@@ -181,7 +182,14 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   const [salespersons, setSalespersons] = useState([]);
   const [form, setForm] = useState({
     order_date: booking.preferred_date ? booking.preferred_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
-    scheduled_batching_time: booking.preferred_time ? booking.preferred_time.slice(0, 5) : "08:00",
+    // Round 119, post-ship again — round 6: this used to be pre-filled
+    // straight from booking.preferred_time, which is actually what the
+    // CUSTOMER asked for (i.e. required_at_site_time, below) — not
+    // necessarily when the plant should start batching. Left as a plain
+    // default now; the "Suggested" helper under the field below fills it in
+    // once required_at_site_time and a site (with a distance on file) are set.
+    scheduled_batching_time: "08:00",
+    required_at_site_time: booking.preferred_time ? booking.preferred_time.slice(0, 5) : "",
     truck_dispatch_interval_minutes: 20,
     site_id: booking.site_id || "",
     mix_grade_id: booking.mix_grade_id || "",
@@ -260,6 +268,11 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   }
 
   const sitesForCustomer = sites.filter((s) => String(s.customer_id) === String(booking.customer_id));
+  const selectedSite = sites.find((s) => String(s.id) === String(form.site_id));
+  const travelMinutes = selectedSite ? estimateTravelMinutes(selectedSite.distance_from_plant_km) : null;
+  const batchingSuggestion = selectedSite && form.required_at_site_time
+    ? suggestBatchingTime(form.required_at_site_time, selectedSite.distance_from_plant_km)
+    : null;
 
   const pumpChargeAmount = form.pump_requirement === "boom_pump" ? Number(rateInfo?.boom_pump_charge || 0) || null : form.pump_requirement === "line_pump" ? Number(rateInfo?.line_pump_charge || 0) || null : null;
   const pumpMinQty = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_min_qty_m3 : rateInfo?.line_pump_min_qty_m3;
@@ -334,7 +347,17 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
       )}
       <form onSubmit={submit} className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
         <div><div style={{ color: "var(--slate)" }}>Order date</div><input type="date" value={form.order_date} onChange={(e) => setForm({ ...form, order_date: e.target.value })} required /></div>
-        <div><div style={{ color: "var(--slate)" }}>Scheduled batching time</div><input type="time" value={form.scheduled_batching_time} onChange={(e) => setForm({ ...form, scheduled_batching_time: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Required at site (customer needs it by)</div><input type="time" value={form.required_at_site_time} onChange={(e) => setForm({ ...form, required_at_site_time: e.target.value })} required /></div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Scheduled batching time</div>
+          <input type="time" value={form.scheduled_batching_time} onChange={(e) => setForm({ ...form, scheduled_batching_time: e.target.value })} required />
+          {batchingSuggestion && (
+            <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
+              Suggested {batchingSuggestion} — {selectedSite.distance_from_plant_km} km, ~{travelMinutes} min travel + 15 min prep.{" "}
+              <button type="button" onClick={() => setForm({ ...form, scheduled_batching_time: batchingSuggestion })} style={{ fontSize: 11, padding: "2px 8px" }}>Use</button>
+            </div>
+          )}
+        </div>
         <div>
           <div style={{ color: "var(--slate)" }}>Site</div>
           <select value={form.site_id} onChange={(e) => setForm({ ...form, site_id: e.target.value })} required>

@@ -228,7 +228,15 @@ function PictureReportPanel({ orders }) {
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No scheduled (not yet started) orders for {day}.</div>
       ) : (
         <>
-          <div ref={captureRef} style={{ background: "#fff", border: "1px solid #DEDAD1", borderRadius: 10, overflow: "hidden" }}>
+          {/* Round 119, post-ship again — round 6, item 2: this is captured as
+              a shared image, almost always viewed on a phone — so it's fixed
+              to a mobile-card width regardless of how wide the page itself
+              happens to be rendered (a manager's desktop browser, previously
+              this stretched to a wide, mostly-empty banner for a single
+              order). Orders stack one below another (see the order-list div
+              below) rather than side-by-side, so it reads top-to-bottom like
+              a phone screen either way — one order or several. */}
+          <div ref={captureRef} style={{ background: "#fff", border: "1px solid #DEDAD1", borderRadius: 10, overflow: "hidden", maxWidth: 420, margin: "0 auto" }}>
             <div style={{ background: "#1A1D21", color: "#fff", padding: "16px 18px", borderTop: "5px solid #C75B12" }}>
               <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", color: "#E7E4DC" }}>Our Own Ready Mix</div>
               <div style={{ fontSize: 10.5, color: "#8A8F96", marginBottom: 10 }}>Scheduled orders · shared from OORM Smart App</div>
@@ -251,7 +259,7 @@ function PictureReportPanel({ orders }) {
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7D8590", marginBottom: 10 }}>
                 Scheduled — not yet started
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12, paddingBottom: 14 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingBottom: 14 }}>
                 {loading && detailed.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading order details...</div>}
                 {detailed.map((o) => <PictureReportOrderCard key={o.id} order={o} />)}
               </div>
@@ -281,10 +289,12 @@ function PictureReportOrderCard({ order: o }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 10px", paddingTop: 8, borderTop: "1px dashed #DEDAD1", fontSize: 11.5 }}>
         <PRField label="Order date" value={o.order_date?.slice(0, 10)} />
         <PRField label="Batching time" value={o.scheduled_batching_time?.slice(0, 5)} />
+        <PRField label="Required at site" value={o.required_at_site_time ? o.required_at_site_time.slice(0, 5) : "–"} />
         <PRField label="Mix grade" value={o.mix_grade_name} />
         <PRField label="Quantity" value={`${o.order_quantity_m3} m³`} />
         <PRField label="Truck interval" value={o.truck_dispatch_interval_minutes ? `${o.truck_dispatch_interval_minutes} min` : "–"} />
-        <PRField label="Pump" value={o.pump_requirement === "without_pump" ? "Without pump" : `${o.pump_code || o.pump_requirement}${o.pump_departure_time ? ` — dep. ${o.pump_departure_time.slice(0, 5)}` : ""}`} />
+        <PRField label="Pump" value={o.pump_requirement === "without_pump" ? "Without pump" : (o.pump_code || o.pump_requirement)} />
+        {o.pump_requirement !== "without_pump" && <PRField label="Pump leaving time" value={o.pump_departure_time ? o.pump_departure_time.slice(0, 5) : "–"} />}
         {o.pump_requirement !== "without_pump" && <PRField label="Pump crew" value={o.assigned_pump_crew || "–"} />}
         <PRField label="Site technician" value={o.site_technician_required ? "Required" : "Not required"} />
         <PRField label="Cube samples" value={o.cube_samples_required ?? "–"} />

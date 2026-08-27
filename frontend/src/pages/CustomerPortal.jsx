@@ -5,7 +5,7 @@ import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { APP_VERSION } from "../lib/version.js";
 import { TruckCard } from "../lib/DeliveryTrackingView.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
-import { CustomerLanguageProvider, useCustomerLanguage, CUSTOMER_LANGUAGES } from "../lib/customerI18n.jsx";
+import { useCustomerLanguage, CUSTOMER_LANGUAGES } from "../lib/customerI18n.jsx";
 
 // Round 119, post-ship — full mockup-fidelity rebuild of the customer
 // portal (/portal): bottom tab nav (Home/Orders/Track/More), a Home
@@ -110,28 +110,46 @@ export default function CustomerPortal() {
   // using the default app manifest. RootRedirect also has its own fallback
   // (see App.jsx) for anyone who installed before this fix, or whose browser
   // ignores a per-page manifest swap.
+  // Round 119, post-ship again — round 7: this swap alone covers Chrome/
+  // Android (which reads the Web App Manifest's start_url). iOS Safari
+  // doesn't use the manifest the same way for "Add to Home Screen" — it
+  // separately reads the apple-mobile-web-app-title meta tag (and falls back
+  // to document.title) for the home-screen label, so both are swapped here
+  // too, restored on unmount exactly like the manifest link.
+  //
+  // IMPORTANT — this only affects a NEW "Add to Home Screen"/"Install app"
+  // action taken from this point forward. An icon someone already installed
+  // before this fix shipped keeps its original start_url ("/") permanently —
+  // installing doesn't retroactively update an existing home-screen icon on
+  // either platform. Anyone who installed earlier needs to remove that icon
+  // and add it again from /portal for the fix to take effect; RootRedirect's
+  // own fallback (App.jsx) is what covers them in the meantime.
   useEffect(() => {
     const link = document.querySelector('link[rel="manifest"]');
-    if (!link) return;
-    const previousHref = link.getAttribute("href");
-    link.setAttribute("href", "/portal-manifest.webmanifest");
-    return () => { link.setAttribute("href", previousHref); };
+    const titleMeta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    const previousHref = link?.getAttribute("href");
+    const previousTitle = titleMeta?.getAttribute("content");
+    const previousDocTitle = document.title;
+    if (link) link.setAttribute("href", "/portal-manifest.webmanifest");
+    if (titleMeta) titleMeta.setAttribute("content", "OORM Portal");
+    document.title = "OORM Portal";
+    return () => {
+      if (link && previousHref !== undefined) link.setAttribute("href", previousHref);
+      if (titleMeta && previousTitle !== undefined) titleMeta.setAttribute("content", previousTitle);
+      document.title = previousDocTitle;
+    };
   }, []);
 
   function onSignedIn(data) { setMe(data); }
   function signOut() { clearCustomerSession(); setMe(null); }
 
   if (checking) return <CenterMessage>Loading...</CenterMessage>;
-  // Round 119, post-ship again, item 6 — the language choice lives for the
-  // whole authenticated portal, not just one screen, so the provider wraps
-  // both the signed-out and signed-in states (a "New here?" visitor should
-  // get the same language persistence once they do sign in).
-  return (
-    <CustomerLanguageProvider>
-      {!me ? <LoginForm onSignedIn={onSignedIn} /> : (
-        <PortalShell me={me} onSignOut={signOut} onRefreshMe={() => customerPortalRequest("/me").then(setMe)} />
-      )}
-    </CustomerLanguageProvider>
+  // Round 119, post-ship again, item 6 — the language choice now lives at the
+  // whole-app level (App.jsx's CustomerLanguageProvider, round 6), not just
+  // here, so a "New here?" visitor's language choice carries through to
+  // sign-in and beyond without a portal-local provider.
+  return !me ? <LoginForm onSignedIn={onSignedIn} /> : (
+    <PortalShell me={me} onSignOut={signOut} onRefreshMe={() => customerPortalRequest("/me").then(setMe)} />
   );
 }
 

@@ -43,6 +43,7 @@ export default function OrderDetailModal({ orderId, onClose }) {
             <Row label="Delivered so far" value={`${order.delivered_qty_m3} m³`} />
             <Row label="Order date" value={order.order_date?.slice(0, 10)} />
             <Row label="Scheduled batching time" value={order.scheduled_batching_time} />
+            <Row label="Required at site (customer-facing)" value={order.required_at_site_time || "–"} />
             <Row label="Truck dispatch interval" value={order.truck_dispatch_interval_minutes ? `${order.truck_dispatch_interval_minutes} min` : "–"} />
             <Row label="Pump requirement" value={order.pump_requirement?.replace(/_/g, " ")} />
             {order.pump_code && <Row label="Pump assigned" value={order.pump_code} />}

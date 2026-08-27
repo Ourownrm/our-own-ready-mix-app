@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { APP_VERSION } from "../lib/version.js";
 import { TruckCard } from "../lib/DeliveryTrackingView.jsx";
+import { useCustomerLanguage, PublicLanguageSwitcher } from "../lib/customerI18n.jsx";
 
 // Public, no-login page reached only via a shared per-order link (see
 // OrderDetailModal's TrackingLinkPanel for how Manager/Admin generate it, and
@@ -125,14 +126,18 @@ function StatusBadge({ status }) {
 }
 
 function Shell({ children, customerLabel }) {
+  const { t } = useCustomerLanguage();
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", minHeight: "100vh", background: "var(--concrete)" }}>
       <div className="topbar" style={{ marginBottom: 16 }}>
-        <div className="topbar-title">
-          Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span>
-          <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>
-            Delivery tracking{customerLabel ? ` · shared with ${customerLabel}` : ""}
+        <div className="topbar-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span>
+            <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>
+              {t("title_delivery_tracking")}{customerLabel ? ` · shared with ${customerLabel}` : ""}
+            </div>
           </div>
+          <PublicLanguageSwitcher />
         </div>
       </div>
       <div style={{ padding: "0 16px" }}>{children}</div>

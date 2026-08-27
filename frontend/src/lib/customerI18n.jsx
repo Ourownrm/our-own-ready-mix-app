@@ -1,5 +1,15 @@
 import { createContext, useContext, useState } from "react";
 
+// Round 119, post-ship again — round 6, item 3: the language option
+// originally shipped only inside the logged-in portal's More screen. Business
+// feedback was that a member of the public browsing the pre-login pages
+// (Services, Ready-Mix vs. Site-Mix, Free Technical Assistance, a booking
+// link, a shared tracking link, the public inquiry form) has no way to
+// switch languages at all before signing in. CustomerLanguageProvider now
+// wraps the whole app (see App.jsx) instead of just the portal, and this
+// small standalone switcher — same 3 languages, same localStorage-backed
+// choice — drops into each of those public pages' own header.
+
 // Round 119, post-ship again, item 6 — a language option for the customer
 // portal (/portal), covering English, Malayalam, and Kannada. Deliberately a
 // SEPARATE dictionary from lib/i18n.js, not an extension of it: that file's
@@ -58,6 +68,15 @@ const DICT = {
 
   choose_language: { en: "Choose language", ml: "ഭാഷ തിരഞ്ഞെടുക്കുക", kn: "ಭಾಷೆ ಆಯ್ಕೆಮಾಡಿ" },
   done: { en: "Done", ml: "ശരി", kn: "ಮುಗಿದಿದೆ" },
+
+  // Public (pre-login) page titles — round 6, item 3
+  title_services: { en: "Services & Products", ml: "സേവനങ്ങളും ഉൽപ്പന്നങ്ങളും", kn: "ಸೇವೆಗಳು ಮತ್ತು ಉತ್ಪನ್ನಗಳು" },
+  title_rmc_vs_sitemix: { en: "Ready-Mix vs. Site-Mix", ml: "റെഡി-മിക്സ് vs. സൈറ്റ്-മിക്സ്", kn: "ರೆಡಿ-ಮಿಕ್ಸ್ vs. ಸೈಟ್-ಮಿಕ್ಸ್" },
+  title_technical_assistance: { en: "Free Technical Assistance", ml: "സൗജന്യ സാങ്കേതിക സഹായം", kn: "ಉಚಿತ ತಾಂತ್ರಿಕ ಸಹಾಯ" },
+  title_request_quote: { en: "Request a Quote", ml: "ഒരു ക്വോട്ട് അഭ്യർത്ഥിക്കുക", kn: "ಉಲ್ಲೇಖ ಕೋರಿ" },
+  title_delivery_tracking: { en: "Delivery tracking", ml: "ഡെലിവരി ട്രാക്കിംഗ്", kn: "ಡೆಲಿವರಿ ಟ್ರ್ಯಾಕಿಂಗ್" },
+  title_concrete_booking: { en: "Concrete booking", ml: "കോൺക്രീറ്റ് ബുക്കിംഗ്", kn: "ಕಾಂಕ್ರೀಟ್ ಬುಕಿಂಗ್" },
+  back: { en: "Back", ml: "തിരികെ", kn: "ಹಿಂದೆ" },
 };
 
 export function t(key, lang) {
@@ -91,4 +110,53 @@ export function CustomerLanguageProvider({ children }) {
 
 export function useCustomerLanguage() {
   return useContext(CustomerLanguageContext);
+}
+
+// A compact "🌐 English ▾" button that expands into the same 3-language list
+// as the portal's More screen — meant to sit in a public page's topbar
+// (round 6, item 3). Self-contained: manages its own open/closed state, so
+// dropping it into a page needs nothing beyond rendering it inside a
+// CustomerLanguageProvider (App.jsx provides one for the whole app).
+export function PublicLanguageSwitcher() {
+  const { lang, setLang } = useCustomerLanguage();
+  const [open, setOpen] = useState(false);
+  const current = CUSTOMER_LANGUAGES.find((l) => l.code === lang) || CUSTOMER_LANGUAGES[0];
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          fontSize: 11.5, padding: "5px 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.25)",
+          background: "rgba(255,255,255,0.08)", color: "#fff", display: "inline-flex", alignItems: "center", gap: 4,
+        }}
+      >
+        🌐 {current.nativeLabel} ▾
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 20, minWidth: 140,
+            background: "#fff", border: "1px solid var(--border, #DEDAD1)", borderRadius: 8,
+            boxShadow: "0 4px 14px rgba(0,0,0,0.15)", overflow: "hidden",
+          }}
+        >
+          {CUSTOMER_LANGUAGES.map((l) => (
+            <button
+              key={l.code}
+              type="button"
+              onClick={() => { setLang(l.code); setOpen(false); }}
+              style={{
+                display: "block", width: "100%", textAlign: "left", padding: "8px 12px", fontSize: 12.5,
+                background: l.code === lang ? "var(--concrete)" : "transparent", color: "var(--charcoal, #22262B)", border: "none",
+              }}
+            >
+              {l.nativeLabel}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }

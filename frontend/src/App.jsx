@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/AuthContext.jsx";
+import { CustomerLanguageProvider } from "./lib/customerI18n.jsx";
 import { ROLE_HOME } from "./lib/roleHome.js";
 import { getCustomerSession } from "./lib/customerPortalApi.js";
 import ProtectedRoute from "./lib/ProtectedRoute.jsx";
@@ -67,6 +68,14 @@ function RootRedirect() {
 export default function App() {
   return (
     <AuthProvider>
+      {/* Round 119, post-ship again — round 6, item 3: was scoped to just
+          CustomerPortal.jsx (the logged-in /portal screens); moved up here so
+          the language choice (and useCustomerLanguage()/PublicLanguageSwitcher)
+          are available on the public, pre-login customer pages too — Services,
+          Ready-Mix vs. Site-Mix, Free Technical Assistance, a booking link, a
+          shared tracking link, and the public inquiry form. Harmless for every
+          staff-facing route, which never reads this context. */}
+      <CustomerLanguageProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -200,6 +209,7 @@ export default function App() {
           <Route path="*" element={<RootRedirect />} />
         </Routes>
       </BrowserRouter>
+      </CustomerLanguageProvider>
     </AuthProvider>
   );
 }

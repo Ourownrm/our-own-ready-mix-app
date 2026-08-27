@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { APP_VERSION } from "../lib/version.js";
+import { useCustomerLanguage, PublicLanguageSwitcher } from "../lib/customerI18n.jsx";
 
 // Public, no-login page (round 119) for a potential customer arriving from
 // outside the app — a website link, social media, word of mouth — who has
@@ -133,20 +134,24 @@ function Shell({ children }) {
   // the header comment above), so there's no sensible /portal fallback here
   // — only show Back when there's actually somewhere to go back to.
   const canGoBack = typeof window !== "undefined" && window.history.length > 1;
+  const { t } = useCustomerLanguage();
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", minHeight: "100vh", background: "var(--concrete)" }}>
       <div className="topbar" style={{ marginBottom: 16 }}>
-        <div className="topbar-title">
-          Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span>
-          <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>
-            Request a Quote
+        <div className="topbar-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span>
+            <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 12, marginTop: 2 }}>
+              {t("title_request_quote")}
+            </div>
           </div>
+          <PublicLanguageSwitcher />
         </div>
       </div>
       <div style={{ padding: "0 16px" }}>
         {canGoBack && (
           <button type="button" onClick={() => window.history.back()} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, background: "none", border: "none", padding: "6px 0 10px", color: "var(--rebar)", cursor: "pointer", fontWeight: 600 }}>
-            ← Back
+            ← {t("back")}
           </button>
         )}
         {children}
