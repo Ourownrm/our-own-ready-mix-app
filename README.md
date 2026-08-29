@@ -5015,3 +5015,52 @@ result tested today. No new columns/tables — item 6 is a data repair, not a sc
 Verified with `node --check` on every touched backend file, a clean `npm run build`, and a rendered
 sample of the mix design PDF (checked visually — single page, no overlap, legend/pie/table all read
 correctly at the new sizes).
+
+## Round 128 (Ver. 9.48): Cube test PDF layout rework, logo size, Customer Access "no permissions row" fix
+
+All from one round of feedback on the cube test PDF (`Cube_Test_DT2302_7day_1.pdf` attached) plus one
+follow-up on the Customer Access screen.
+
+1. **Customer name field widened** — it was clipping in the identification block's quarter-width
+   column. Pulled Customer and Site out of the 4-column spec grid into their own row, 50/50 width,
+   directly above it — doubles the room for a long name and reads as the two most important facts on
+   the page, which they are.
+2. **Delivery Ticket dropped from the spec grid** — not required to show, per the request.
+3. **Cube Test Analysis's "Average" column removed.** It repeated the same all-cubes average on
+   every single row, which read as if each cube had its own individual average — the real average
+   already has its own line in TEST SUMMARY above the table, once, correctly labeled.
+4. **Tested By moved to bottom-left**, now sitting directly under the Remarks box, its own signature
+   line + name + "Tested By — Lab Technician" role label. **Checked By stays bottom-right**, alone,
+   at roughly the vertical spot Tested By used to occupy.
+5. **Remarks box's minimum height increased** (14mm → 22mm) to use the vertical room the right
+   column gave up when Tested By moved out of it.
+6. **Tested By dropped from the header spec grid** — it's now shown exactly once, in the signature
+   block; showing it up top too was a straight repetition.
+7. **Test Summary row height increased** (9.5mm → 12.5mm) and the value pulled further from the row's
+   bottom edge, so each label and its result read as clearly separate instead of nearly touching.
+8. **Logo size increased ~10%** (15mm → 16.5mm) on both the cube test report and the mix design PDF,
+   address text nudged right to match — same fix applied to both files since both share the same
+   header layout.
+9. **Customer Access "Manage sites" no longer dead-ends on a stale booking-link message.** Root
+   cause: a `customer_booking_links` row (the per-site permissions row behind the public booking
+   link — still a real, intentionally-kept feature, not something Round 122 removed) only ever gets
+   auto-created for the "specific sites" checkbox flow at grant-creation time; an "all sites" grant,
+   or a site added to a customer after its grant already existed, never got one — so opening "Manage
+   sites" on those sat forever on "No booking-link permissions row yet — reopen this after saving
+   once," with no actual reopen-and-save action available, which read as the booking-link feature
+   being broken or half-removed. Fixed by having "Manage sites" itself ensure a link exists for every
+   site under that grant the moment the panel opens (`ensureSiteLinks`, same `/booking-links/ensure`
+   call the checkbox flow already used), with a "Setting up access for this site…" message while
+   that's in flight instead of the old dead-end text.
+10. **Incidental fix, found while verifying the logo change**: the mix design PDF's "Target
+    Workability at Site" field was passed to jsPDF as a raw number instead of a string — `doc.text()`
+    rejects that outright ("Type of text must be string or Array"), so generating the PDF for any
+    design with a workability value on file would have thrown. Formatted it the same way every other
+    field in that grid already is (`"100 mm"`, matching Maximum Aggregate Size's own pattern).
+
+Verified with a clean `npm run build`, and both PDFs rendered from realistic sample data and
+inspected visually (cube test report: real customer name fits easily in the widened field, no
+"Average" column, Tested By/Checked By correctly split left/right, wider label/value gap in Test
+Summary, bigger logo; mix design PDF: bigger logo, Target Workability renders "100 mm" without
+throwing, Round 127's layout unaffected) — no backend changes this round, so no `node --check` was
+needed.
