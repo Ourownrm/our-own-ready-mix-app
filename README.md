@@ -4922,3 +4922,32 @@ in practice.
    "View Lab Technician" button alongside the existing "View Manager Dashboard" one.
 
 Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 126 (Ver. 9.46): legacy cube-test delete fix, Sales Collections/Leads/Visits polish
+
+Follow-up to the screenshots the user sent of order ORM-55's Lab Technician detail view (two
+legacy cube test results with no Delete button) plus the Sales Collections tab and Visit Reports
+cadence strip.
+
+1. **Legacy cube test results couldn't be deleted**: the admin-only delete route added in Round 124
+   (`DELETE /cube-pours/:orderId/results/:resultId`) restricted itself to pour-level rows with
+   `AND plant_qc_id IS NULL`, and the frontend Delete button was gated the same way
+   (`{r.is_pour_level && <button>Delete</button>}`). Legacy per-DN results (cast before Round 123's
+   pour-level model existed) never matched that filter, so they had no way to be deleted at all —
+   exactly the two rows in the screenshot. Fixed both sides to match by `order_id` alone (the same
+   safe key the existing "Change date" route already relies on for both row shapes), so Delete now
+   appears for every result and works for both legacy and pour-level rows.
+2. **Sales Collections tab clarity**: added an in-page "Collections & Follow-ups" heading so the tab
+   reads as what it actually is, and "Achieved Sales" now shows the delivered quantity in m³
+   alongside the ₹ amount (the shared `Kpi` tile gained an optional secondary line for this).
+3. **Leads missing assigned salesperson name**: the Round 124 mockup-matching rewrite of the Leads
+   cards dropped the assigned-salesperson line entirely. Restored it as "Assigned to {name}" on each
+   card (the backend was already returning `assigned_to_name`, just unused since Round 124).
+4. **Visit cadence coloring wrong for some on-duty days**: the cadence strip's on-duty check
+   (`dailyVisitCadence()` in `sales.js`) only looked for a punch-in event dated exactly that
+   calendar day, so a shift spanning midnight (or any other clock-boundary case) could show a day
+   as off-duty/gray even though a visit was logged and counted on it. Since `POST /visits` is
+   already gated by `requireOnDuty()`, a logged visit is itself proof of on-duty status — the query
+   now ORs that in directly instead of trying to reconstruct the exact punch-in/out interval.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.

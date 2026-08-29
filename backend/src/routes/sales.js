@@ -901,13 +901,24 @@ router.post("/visits/link-customer", requireRole("manager", "administrator"), as
 // plus whether they were on duty at all that day (sales_duty_log clocking
 // in at least once) — a day with 0 visits only means something if they were
 // actually on duty; a day off is a day off, not a missed visit.
+//
+// Round 125 fix — `on_duty` originally only checked for a punch-IN event
+// dated exactly that calendar day, so a shift that started the evening
+// before (or any other clock-boundary case) showed a day as off-duty even
+// though a visit was logged on it — the cadence strip then colored that day
+// gray instead of green, with the visit count sitting right there looking
+// uncounted. A logged visit is proof the rep was on duty at that moment —
+// POST /visits itself is gated by requireOnDuty() — so OR that in directly
+// rather than trying to reconstruct the exact punch-in/out interval.
 async function dailyVisitCadence(userId, days) {
   const { rows } = await query(
     `SELECT d::date AS date,
             COUNT(cv.id) AS visits,
-            EXISTS(
-              SELECT 1 FROM sales_duty_log sdl
-              WHERE sdl.salesperson_user_id = $1 AND sdl.is_on = true AND sdl.event_time::date = d::date
+            (
+              EXISTS(
+                SELECT 1 FROM sales_duty_log sdl
+                WHERE sdl.salesperson_user_id = $1 AND sdl.is_on = true AND sdl.event_time::date = d::date
+              ) OR COUNT(cv.id) > 0
             ) AS on_duty
      FROM generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, interval '1 day') d
      LEFT JOIN customer_visits cv ON cv.visited_by = $1 AND cv.visit_date = d::date

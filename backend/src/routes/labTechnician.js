@@ -207,17 +207,25 @@ router.get("/cube-pours/:orderId", async (req, res) => {
   res.json({ ...order, dns, approved_designs: designs, results: resultsWithCubes });
 });
 
-// Round 124 — a genuine delete for a pour-level result entered wrong, not
-// just the date-correction PATCH below. Administrator-only, same as that
-// PATCH: this removes already-submitted QC data (unlike the site-cast
-// DELETE above, which only ever removes an un-tested cast), so it gets the
-// same higher bar. cube_test_cubes cascades off cube_test_result_id.
+// Round 124 — a genuine delete for a wrongly-entered result, not just the
+// date-correction PATCH below. Administrator-only, same as that PATCH: this
+// removes already-submitted QC data (unlike the site-cast DELETE above,
+// which only ever removes an un-tested cast), so it gets the same higher
+// bar. cube_test_cubes cascades off cube_test_result_id.
+//
+// Round 125 fix — this originally required `plant_qc_id IS NULL`, so it
+// only ever worked on a new pour-level result and silently 404'd on a
+// legacy per-DN one, even though the "Recorded results" list shows both
+// with the exact same Delete button next to it. order_id is backfilled on
+// every row regardless of shape (see the schema migration, and the same
+// `id AND order_id` pattern the date-correction PATCH above already uses)
+// so there's no reason to treat the two differently here either.
 router.delete("/cube-pours/:orderId/results/:resultId", requireRole("administrator"), async (req, res) => {
   const { rows } = await query(
-    `DELETE FROM cube_test_results WHERE id = $1 AND order_id = $2 AND plant_qc_id IS NULL RETURNING id`,
+    `DELETE FROM cube_test_results WHERE id = $1 AND order_id = $2 RETURNING id`,
     [req.params.resultId, req.params.orderId]
   );
-  if (!rows.length) return res.status(404).json({ error: "Pour-level result not found." });
+  if (!rows.length) return res.status(404).json({ error: "Test result not found." });
   res.json({ ok: true });
 });
 
