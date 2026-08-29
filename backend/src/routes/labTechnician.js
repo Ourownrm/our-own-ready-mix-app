@@ -185,7 +185,40 @@ router.get("/cube-pours/:orderId", async (req, res) => {
      ORDER BY ctr.testing_age_days, ctr.tested_at`,
     [req.params.orderId, dns.map((d) => d.plant_qc_id)]
   );
-  res.json({ ...order, dns, approved_designs: designs, results });
+
+  // Round 124 — the per-cube rows behind each pour-level result, so the
+  // Lab Technician's entry form can pre-fill with what's already on file
+  // when they reopen an age that was already tested, instead of forcing a
+  // blind full re-type just to fix one wrong figure (that blind re-entry is
+  // exactly what item 6's averaging bug was hiding behind — a mis-typed
+  // resubmit is how a blank cube got left blank instead of corrected).
+  const pourLevelIds = results.filter((r) => r.is_pour_level).map((r) => r.id);
+  const cubesByResult = {};
+  if (pourLevelIds.length) {
+    const { rows: cubeRows } = await query(
+      `SELECT cube_test_result_id, plant_qc_id, cube_label, weight_kg, testing_load_kn
+       FROM cube_test_cubes WHERE cube_test_result_id = ANY($1::int[]) ORDER BY id`,
+      [pourLevelIds]
+    );
+    for (const c of cubeRows) (cubesByResult[c.cube_test_result_id] ||= []).push(c);
+  }
+  const resultsWithCubes = results.map((r) => (r.is_pour_level ? { ...r, cubes: cubesByResult[r.id] || [] } : r));
+
+  res.json({ ...order, dns, approved_designs: designs, results: resultsWithCubes });
+});
+
+// Round 124 — a genuine delete for a pour-level result entered wrong, not
+// just the date-correction PATCH below. Administrator-only, same as that
+// PATCH: this removes already-submitted QC data (unlike the site-cast
+// DELETE above, which only ever removes an un-tested cast), so it gets the
+// same higher bar. cube_test_cubes cascades off cube_test_result_id.
+router.delete("/cube-pours/:orderId/results/:resultId", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query(
+    `DELETE FROM cube_test_results WHERE id = $1 AND order_id = $2 AND plant_qc_id IS NULL RETURNING id`,
+    [req.params.resultId, req.params.orderId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Pour-level result not found." });
+  res.json({ ok: true });
 });
 
 // Round 120, item 4a — Lab Technician/Administrator toggles whether one
@@ -295,8 +328,18 @@ router.post("/cube-pours/:orderId/results", requireRole("lab_technician", "admin
     return res.status(400).json({ error: "At least one cube's weight/load is required." });
   }
 
+  // Round 124 fix: a cube that was cast but never actually tested comes
+  // through as null (or "") on this field, not as a real 0 — Number(null)
+  // and Number("") both evaluate to 0, which isNaN() doesn't catch, so an
+  // untested cube was silently pulling the average down toward zero instead
+  // of just being left out of it. Filter the blanks out before the numeric
+  // conversion, not after.
   const avg = (key) => {
-    const vals = flatCubes.map((c) => Number(c[key])).filter((v) => !isNaN(v));
+    const vals = flatCubes
+      .map((c) => c[key])
+      .filter((v) => v !== null && v !== undefined && v !== "")
+      .map((v) => Number(v))
+      .filter((v) => !isNaN(v));
     if (!vals.length) return null;
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   };
@@ -304,6 +347,9 @@ router.post("/cube-pours/:orderId/results", requireRole("lab_technician", "admin
   const avgLoad = avg("testing_load_kn");
   const avgDensity = avg("density_kgm3");
   const avgStrength = avg("strength_mpa");
+  if (avgStrength === null) {
+    return res.status(400).json({ error: "Enter a result for at least one cube." });
+  }
 
   const { rows: resultRows } = await query(
     `INSERT INTO cube_test_results
@@ -406,7 +452,23 @@ router.get("/site-cube-casts/:castId", async (req, res) => {
      WHERE sctr.site_cube_cast_id = $1 ORDER BY sctr.testing_age_days`,
     [batch.cast_id]
   );
-  res.json({ ...batch, approved_designs: designs, results });
+
+  // Round 124 — same reasoning as the plant pour route above: hand back the
+  // per-cube rows so the entry form can pre-fill a correction instead of
+  // forcing a blind re-type.
+  const resultIds = results.map((r) => r.id);
+  const cubesByResult = {};
+  if (resultIds.length) {
+    const { rows: cubeRows } = await query(
+      `SELECT site_cube_test_result_id, cube_label, weight_kg, testing_load_kn
+       FROM site_cube_test_cubes WHERE site_cube_test_result_id = ANY($1::int[]) ORDER BY sort_order, id`,
+      [resultIds]
+    );
+    for (const c of cubeRows) (cubesByResult[c.site_cube_test_result_id] ||= []).push(c);
+  }
+  const resultsWithCubes = results.map((r) => ({ ...r, cubes: cubesByResult[r.id] || [] }));
+
+  res.json({ ...batch, approved_designs: designs, results: resultsWithCubes });
 });
 
 // Round 121, item 5 — delete a wrongly-entered site cast (e.g. logged
@@ -441,8 +503,14 @@ router.post("/site-cube-casts/:castId/results", requireRole("lab_technician", "a
   const { rows: castRows } = await query("SELECT id FROM site_cube_casts WHERE id = $1", [req.params.castId]);
   if (!castRows.length) return res.status(404).json({ error: "Site cube cast not found." });
 
+  // Round 124 fix — see the same comment on the pour-basis route above:
+  // an untested cube's blank field must not be coerced to 0 by Number().
   const avg = (key) => {
-    const vals = cubes.map((c) => Number(c[key])).filter((v) => !isNaN(v));
+    const vals = cubes
+      .map((c) => c[key])
+      .filter((v) => v !== null && v !== undefined && v !== "")
+      .map((v) => Number(v))
+      .filter((v) => !isNaN(v));
     if (!vals.length) return null;
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   };
@@ -450,6 +518,9 @@ router.post("/site-cube-casts/:castId/results", requireRole("lab_technician", "a
   const avgLoad = avg("testing_load_kn");
   const avgDensity = avg("density_kgm3");
   const avgStrength = avg("strength_mpa");
+  if (avgStrength === null) {
+    return res.status(400).json({ error: "Enter a result for at least one cube." });
+  }
 
   const { rows: resultRows } = await query(
     `INSERT INTO site_cube_test_results
@@ -484,6 +555,18 @@ router.patch("/site-cube-tests/:resultId/visibility", requireRole("lab_technicia
   const { rows } = await query(
     `UPDATE site_cube_test_results SET visible_to_customer = $1 WHERE id = $2 RETURNING id`,
     [!!req.body.visible_to_customer, req.params.resultId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Test result not found." });
+  res.json({ ok: true });
+});
+
+// Round 124 — delete a wrongly-entered site-cast result (the plant-side
+// twin of the /cube-pours delete above). Administrator-only, same reasoning:
+// this removes already-submitted QC data, not just an untested cast.
+router.delete("/site-cube-tests/:resultId", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query(
+    `DELETE FROM site_cube_test_results WHERE id = $1 RETURNING id`,
+    [req.params.resultId]
   );
   if (!rows.length) return res.status(404).json({ error: "Test result not found." });
   res.json({ ok: true });

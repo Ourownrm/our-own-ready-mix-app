@@ -836,9 +836,13 @@ router.post("/visits/:visitId/outcome", requireRole("sales_executive", "manager"
 router.get("/visits", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
   const own = req.user.role === "sales_executive";
   const { rows } = await query(
-    `SELECT cv.*, c.name AS customer_name, u.name AS visited_by_name
+    // Round 124, item 7 — joins in the site name so the rebuilt Visits list
+    // (matching the approved mockup) can show it under the visited name,
+    // same as the Leads list already does with site_location.
+    `SELECT cv.*, c.name AS customer_name, u.name AS visited_by_name, s.name AS site_name
      FROM customer_visits cv
      LEFT JOIN customers c ON c.id = cv.customer_id
+     LEFT JOIN sites s ON s.id = cv.site_id
      JOIN users u ON u.id = cv.visited_by
      ${own ? "WHERE cv.visited_by = $1" : ""}
      ORDER BY cv.visit_date DESC, cv.created_at DESC

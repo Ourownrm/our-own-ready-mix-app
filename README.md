@@ -4847,3 +4847,78 @@ adds and backfills `cube_test_results.order_id`, adds the partial unique index
 all automatically on next backend start, all additive (see above).
 
 Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 124 (Ver. 9.44): login wording, Sales Collections tab, cube-test fixes, Leads/Visits restyle
+
+Seven feedback items — no schema changes this round, everything additive to existing tables/data.
+
+1. **Login screen wording.** `pages/Login.jsx`'s role switch is now labeled "Employee" / "Customer"
+   (was "Staff" / "I'm a Customer"), and the username field's placeholder is now "Enter your
+   username" instead of showing a fake phone number ("9999999999") as if it were a default value.
+2. **Customer portal sign-in copy.** `pages/CustomerPortal.jsx`'s welcome copy is now "Stay connected
+   with Our Own Ready Mix for your concrete projects, wherever you are." (was generic "Orders, live
+   tracking, QC reports..." marketing copy), and the access-code card now opens with "Enter the
+   access code provided by your OORM contact to continue." above the code field.
+3. **Sales Executive: Follow-ups and Outstanding Collection promoted to their own tab.** The old
+   6-tile KPI grid on the Home tab (round 115) is gone — everything it showed already lives
+   elsewhere (open-lead/this-week-visit counts are on their own tile subtext, sites-overdue-a-visit
+   has its own banner, each expired forecast is flagged individually on the Forecast tab). What's
+   left — **Achieved Sales** (this month's order value) and **Outstanding Collection** (amount owed,
+   with the existing "by customer" breakdown) — plus the Follow-ups Due list, move to a new
+   **Collections** tab, same footing as Leads/Visits/Forecast in the bottom nav.
+4. **Lab Technician: a real edit and delete for a wrong cube-test entry.** Previously, reopening an
+   already-tested age blanked the form — "editing" meant retyping every cube from scratch, and there
+   was no delete at all for a submitted pour-level or site-cast result. `GET /lab-technician/cube-
+   pours/:orderId` and `GET /lab-technician/site-cube-casts/:castId` now return each result's own
+   cube rows, and the entry form pre-fills from them when you pick an already-tested age, so fixing
+   one wrong figure is an actual edit. New administrator-only routes —
+   `DELETE /lab-technician/cube-pours/:orderId/results/:resultId` and
+   `DELETE /lab-technician/site-cube-tests/:resultId` — delete a submitted result outright (cube rows
+   cascade off it); gated to Administrator, same bar as the existing test-date correction, since
+   unlike deleting an untested cast this removes already-submitted QC data.
+5. **Fixed: an untested cube was dragging the average down instead of being excluded.** When only
+   some of a group's cast cubes were actually tested, the untested ones' blank weight/load fields
+   went through `Number(null)`/`Number("")` — both evaluate to `0`, which `isNaN()` doesn't catch —
+   so a "4 cast, 2 tested" result was silently averaging in two zeros. `labTechnician.js`'s `avg()`
+   helper (both the pour-basis and the site-cast results routes) now filters out `null`/`undefined`/
+   `""` before the numeric conversion, and a submission with no valid cube values at all is now
+   rejected with a clear error instead of silently saving `null` averages.
+6. **Sales Executive: Leads and Visits rebuilt to match the approved mockups.** Both tabs now open
+   with a dark header (title, a live count, the primary action button) instead of a plain `.card`
+   row. Lead cards: name + status pill, site location with a pin icon, then "Updated 3 days ago"
+   against "Est. N m³" below a divider — phone/quotation/site-visit info the old card showed is kept
+   as smaller secondary lines rather than dropped. Visit cards: name + a real "GPS verified" /
+   "Logged manually" pill (from `at_site` plus a captured coordinate — not cosmetic), site name (now
+   joined in `GET /sales/visits`, previously left as an unresolved `site_id`), and a "Today, 10:15
+   AM" line. The mockup also showed a visit start–end time range and an on-site duration; this app
+   has never tracked a visit's end time, only when it was logged, so that part wasn't recreated —
+   inventing one would be fabricated data. The "This week's cadence" strip (`VisitCadenceStrip.jsx`,
+   round 115) already colored on-duty zero-visit days red and on-duty visited days green exactly as
+   asked — unchanged, just retitled to match the mockup.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 125 (Ver. 9.45): administrator access to Lab Technician
+
+Follow-up to Round 124 item 4 (the admin-only cube-test delete). The user asked directly whether
+an administrator account can reach Lab Technician at all — turned out the answer was no, and that
+made the just-shipped delete feature (and the older admin-only test-date correction) unreachable
+in practice.
+
+1. **Root cause**: the backend has allowed `administrator` on nearly every `labTechnician.js` route
+   all along — a router-level `requireRole("lab_technician", "qc_engineer", "manager",
+   "administrator")` gate covers the whole file, before any route's own stricter check. But
+   `App.jsx`'s frontend route guard for `/lab-technician` only ever listed `roles={["lab_technician"]}`
+   — an administrator opening that URL hit `ProtectedRoute` and got redirected straight back to
+   `/login`, with no error message explaining why. (`/lab-technician/cube-test-report`, the
+   read-only report page, already correctly listed both roles — only the main working page didn't.)
+2. **Fixed**: `/lab-technician` now accepts `["lab_technician", "administrator"]`, matching what the
+   backend already allows. `/lab-technician/raw-material-stock` was deliberately left
+   lab_technician-only — its backend route (`PUT /raw-material-stock`) is also lab_technician-only,
+   so that guard was already correct.
+3. **Added a way to actually get there**: administrator had no in-app link to this page at all
+   before now (nothing pointed at `/lab-technician`, only at the report sub-page). Reports &
+   Director's Dashboard (`pages/Reports.jsx`, administrator's own quick-links row) now has a
+   "View Lab Technician" button alongside the existing "View Manager Dashboard" one.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.
