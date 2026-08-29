@@ -205,6 +205,7 @@ export default function SalesExecutive() {
     ["home", "Home", IconHome],
     ["leads", "Leads", IconLeads],
     ["visits", "Visits", IconVisits],
+    ["collections", "Collections", IconCollections],
     ["forecast", "Forecast", IconForecast],
   ];
 
@@ -267,10 +268,6 @@ export default function SalesExecutive() {
               </div>
             )}
 
-            <TopKpis data={dashboard} forecasts={forecasts} visitCadence={visitCadence} />
-
-            <FollowupsDue asUser={isAdmin ? viewAsUser : undefined} />
-
             {!isAdmin && !onDuty && (
               <div className="card" style={{ margin: "16px 0", borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>
@@ -288,6 +285,11 @@ export default function SalesExecutive() {
                 <div className="se-tile-ic"><IconVisits color="#C75B12" size={17} /></div>
                 <div className="se-tile-title">Visits</div>
                 <div className="se-tile-sub">{dashboard ? `${visitsThisWeekCount} this week` : "Loading..."}</div>
+              </button>
+              <button type="button" className="se-tile" onClick={() => setView("collections")}>
+                <div className="se-tile-ic"><IconCollections color="#C75B12" size={17} /></div>
+                <div className="se-tile-title">Collections</div>
+                <div className="se-tile-sub">{dashboard ? `${inr(dashboard.outstanding)} outstanding` : "Loading..."}</div>
               </button>
               <button type="button" className="se-tile cta" onClick={() => setView("forecast")}>
                 <div className="se-tile-ic"><IconForecast color="#ffffff" size={17} /></div>
@@ -321,10 +323,10 @@ export default function SalesExecutive() {
           <LeadsList leads={leads} onDuty={onDuty} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
         )}
         {view === "visits" && (
-          <>
-            <VisitCadenceCard days={visitCadence} />
-            <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} />
-          </>
+          <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} weekCount={visitsThisWeekCount} cadenceDays={visitCadence} />
+        )}
+        {view === "collections" && (
+          <CollectionsTab dashboard={dashboard} asUser={isAdmin ? viewAsUser : undefined} />
         )}
         {view === "forecast" && (
           <ForecastTab forecasts={forecasts} onDuty={onDuty} onReload={loadAll} />
@@ -350,6 +352,7 @@ function IconHome(p) { return <Icon {...p}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 
 function IconLeads(p) { return <Icon {...p}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></Icon>; }
 function IconVisits(p) { return <Icon {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></Icon>; }
 function IconForecast(p) { return <Icon {...p}><path d="M3 3v18h18" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></Icon>; }
+function IconCollections(p) { return <Icon {...p}><circle cx="12" cy="12" r="9" /><path d="M14.5 9a2.5 2.5 0 0 0-2.5-1c-1.4 0-2.5.7-2.5 1.75S10.5 11.5 12 11.5s2.5.5 2.5 1.75S13.4 15 12 15a2.5 2.5 0 0 1-2.5-1" /><path d="M12 6.5v1M12 16.5v1" /></Icon>; }
 function IconBookings(p) { return <Icon {...p}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></Icon>; }
 function Icon({ size = 18, color = "currentColor", children }) {
   return (
@@ -359,39 +362,35 @@ function Icon({ size = 18, color = "currentColor", children }) {
   );
 }
 
-// Landing KPI row — promoted above the tabs (round 115). Achieved sales and
-// outstanding already existed on the old Dashboard tab; kept here rather
-// than dropped when that tab went away. "Sites overdue a visit" is new —
-// the actual forcing-function metric for "visit more sites," visible to the
-// rep on their own screen rather than only in a report someone else checks.
-function TopKpis({ data, forecasts, visitCadence }) {
+// Round 124 — replaces the old landing KPI row (round 115: 6 tiles covering
+// leads/visits/forecast/sales all at once) with its own tab, same footing as
+// Leads/Visits. Everything that KPI row also showed already lives somewhere
+// else on Home (open-lead count and this-week visit count are on their own
+// tiles' subtext, sites-overdue-a-visit has its own banner strip, and each
+// expired forecast is flagged individually on the Forecast tab) — the only
+// two figures worth a standalone stat here are the money ones: what's been
+// sold this month and what's still owed. Follow-ups due lives here too since
+// chasing an overdue follow-up and chasing an outstanding payment are the
+// same daily task for a rep, not two different ones.
+function CollectionsTab({ dashboard, asUser }) {
   const [showOutstanding, setShowOutstanding] = useState(false);
-  if (!data) return <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>;
-  const leadCounts = data.lead_counts || {};
-  const openLeads = (leadCounts.new || 0) + (leadCounts.contacted || 0) + (leadCounts.quoted || 0);
-  const expiredCount = (forecasts || []).filter((f) => f.is_expired).length;
-  const visitsThisWeek = (visitCadence || []).reduce((sum, d) => sum + (d.visits || 0), 0);
   return (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginTop: 16 }}>
-        <Kpi label="Open leads" value={openLeads} />
-        <Kpi label="Visits this week" value={visitsThisWeek} />
-        <Kpi label="Sites overdue a visit" value={data.sites_overdue_visit ?? 0} danger={Number(data.sites_overdue_visit) > 0} />
-        <Kpi label="Forecast status" value={expiredCount > 0 ? `${expiredCount} need refresh` : "Up to date"} danger={expiredCount > 0} />
-        <Kpi label="Achieved this month" value={`${data.orders_month_qty} m³`} />
-        <Kpi label="Outstanding" value={inr(data.outstanding)} danger={Number(data.outstanding) > 0} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+        <Kpi label="Achieved Sales" value={dashboard ? inr(dashboard.orders_month_value) : "..."} />
+        <Kpi label="Outstanding Collection" value={dashboard ? inr(dashboard.outstanding) : "..."} danger={Number(dashboard?.outstanding) > 0} />
       </div>
-      {data.outstanding_by_customer?.length > 0 && (
+      {dashboard?.outstanding_by_customer?.length > 0 && (
         <>
-          <div className="collapse-toggle" style={{ fontSize: 12, color: "var(--rebar)", cursor: "pointer", marginTop: 8 }} onClick={() => setShowOutstanding((s) => !s)}>
+          <div className="collapse-toggle" style={{ fontSize: 12, color: "var(--rebar)", cursor: "pointer", marginBottom: 14 }} onClick={() => setShowOutstanding((s) => !s)}>
             {showOutstanding ? "▴ Hide" : "▾ View"} outstanding by customer
           </div>
           {showOutstanding && (
-            <div className="card" style={{ marginTop: 8 }}>
+            <div className="card" style={{ marginBottom: 14 }}>
               <table style={{ fontSize: 13 }}>
                 <thead><tr><th>Customer</th><th>Outstanding</th></tr></thead>
                 <tbody>
-                  {data.outstanding_by_customer.map((c, i) => (
+                  {dashboard.outstanding_by_customer.map((c, i) => (
                     <tr key={i}><td>{c.customer_name}</td><td>{inr(c.outstanding)}</td></tr>
                   ))}
                 </tbody>
@@ -400,6 +399,7 @@ function TopKpis({ data, forecasts, visitCadence }) {
           )}
         </>
       )}
+      <FollowupsDue asUser={asUser} />
     </>
   );
 }
@@ -413,11 +413,58 @@ function VisitCadenceCard({ days }) {
   if (!days || days.length === 0) return null;
   return (
     <div className="card" style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Visit summary — last 7 days</div>
-      <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 10 }}>Days you were on duty with zero visits logged are flagged red.</div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>This week's cadence</div>
+      <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 10 }}>Days on duty with zero visits logged are flagged red.</div>
       <VisitCadenceStrip days={days} />
     </div>
   );
+}
+
+// Round 124, item 7 — shared dark header for the Leads/Visits tabs, matching
+// the approved mockups (mockup_leads_visits screenshots): title + a live
+// count subtitle, with the primary action pinned top-right instead of
+// buried in a .card row. Reuses the same dark gradient as the Home hero
+// (.se-hero) rather than the mockup's flat near-black, so it reads as the
+// same app instead of a bolted-on screen.
+function ListHeader({ title, subtitle, buttonLabel, onButton, disabled }) {
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+      background: "linear-gradient(135deg, #2A2117 0%, var(--charcoal) 55%)", borderRadius: "var(--radius)",
+      padding: "16px 16px 16px 18px", boxShadow: "var(--shadow)", margin: "16px 0 12px",
+    }}>
+      <div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{title}</div>
+        <div style={{ fontSize: 11.5, color: "#C9CDD2", marginTop: 3 }}>{subtitle}</div>
+      </div>
+      <button
+        type="button" className="btn-primary" onClick={onButton} disabled={disabled}
+        title={disabled ? "Clock in first" : ""}
+        style={{ borderRadius: 20, fontSize: 12.5, padding: "9px 14px", flex: "none", whiteSpace: "nowrap" }}
+      >
+        + {buttonLabel}
+      </button>
+    </div>
+  );
+}
+
+// "Updated today" / "Updated 1 day ago" / "Updated 3 days ago" — matches the
+// mockup's own phrasing. Falls back to a plain date past a week out.
+function dayLabel(dateStr, { capitalize = false } = {}) {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = new Date();
+  const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const diff = Math.round((todayDay - day) / 86400000);
+  if (diff <= 0) return capitalize ? "Today" : "today";
+  if (diff === 1) return capitalize ? "Yesterday" : "1 day ago";
+  if (diff < 7) return `${diff} days ago`;
+  return d.toLocaleDateString([], { day: "2-digit", month: "short" });
+}
+
+function IconPin(p) {
+  return <Icon {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></Icon>;
 }
 
 // Forecast, folded in as a tab (round 115) instead of a separate page link —
@@ -515,39 +562,46 @@ function ForecastTab({ forecasts, onDuty, onReload }) {
   );
 }
 
+// Round 124, item 7 — rebuilt against the approved My Leads mockup: a name
+// + status pill row, a location row with a pin icon, a divider, then
+// "Updated ..." against "Est. N m³" — the two figures a rep scans for first.
+// Phone/quotation/site-visit info the old card showed is kept, just folded
+// in as small secondary lines rather than dropped, so nothing that was
+// useful before is lost in the restyle.
 function LeadsList({ leads, onOpen, onNew, onDuty }) {
+  const openCount = leads.filter((l) => !["won", "lost"].includes(l.status)).length;
   return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>My leads</div>
-        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ New lead</button>
-      </div>
+    <>
+      <ListHeader title="My Leads" subtitle={`${openCount} open`} buttonLabel="New Lead" onButton={onNew} disabled={!onDuty} />
       {leads.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>No leads yet.</div>
+        <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>No leads yet.</div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {leads.map((l) => (
-            <div key={l.id} onClick={() => onOpen(l.id)} style={{ cursor: "pointer", background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
+            <div key={l.id} onClick={() => onOpen(l.id)} className="card" style={{ cursor: "pointer", padding: 14, fontSize: 13 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                <span style={{ fontWeight: 600 }}>{l.prospect_name}</span>
-                <span style={{ display: "flex", gap: 4 }}>
-                  {l.latest_activity_type === "site_visit" && !["won", "lost"].includes(l.status) && (
-                    <span className="badge badge-info">Site visit done</span>
-                  )}
-                  <span className={`badge ${LEAD_STATUS_BADGE[l.status]}`}>{l.status}</span>
-                </span>
+                <span style={{ fontWeight: 700 }}>{l.prospect_name}</span>
+                <span className={`badge ${LEAD_STATUS_BADGE[l.status]}`} style={{ textTransform: "capitalize", flex: "none" }}>{l.status}</span>
               </div>
-              {l.contact_phone && <div style={{ color: "var(--slate)" }}>{l.contact_phone}</div>}
-              {l.site_location && <div style={{ color: "var(--slate)" }}>{l.site_location}</div>}
-              {l.quotation_issued && <div style={{ color: "var(--slate)" }}>Quoted ₹{l.latest_quotation_amount}</div>}
-              <div style={{ color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
-                Sent by {l.created_by_name || "Unknown"} &middot; {new Date(l.created_at).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })} &middot; {new Date(l.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              {l.site_location && (
+                <div style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--slate)", fontSize: 12, marginTop: 5 }}>
+                  <IconPin size={12} color="var(--rebar)" />{l.site_location}
+                </div>
+              )}
+              {l.contact_phone && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>{l.contact_phone}</div>}
+              {l.quotation_issued && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>Quoted ₹{l.latest_quotation_amount}</div>}
+              {l.latest_activity_type === "site_visit" && !["won", "lost"].includes(l.status) && (
+                <div style={{ color: "var(--info)", fontSize: 11, marginTop: 3 }}>Site visit logged</div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--concrete)" }}>
+                <span style={{ color: "var(--slate)", fontSize: 11.5 }}>Updated {dayLabel(l.updated_at)}</span>
+                {l.estimated_qty_m3 && <span style={{ fontWeight: 700, fontSize: 12.5 }}>Est. {l.estimated_qty_m3} m³</span>}
               </div>
             </div>
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -838,54 +892,76 @@ function LeadDetail({ leadId, onBack }) {
 
 const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
 
-function VisitsList({ visits, onNew, onDuty }) {
+// Round 124, item 7 — rebuilt against the approved Visit Reports mockup:
+// name + a "GPS verified"/"Logged manually" pill (real data — at_site plus
+// a captured coordinate, not cosmetic), site name, and a "Today, 10:15 AM"
+// style line. The mockup also shows a start–end time range and an on-site
+// duration, but this app has never tracked a visit's end time, only when it
+// was logged — inventing one would be fabricated data, so that part of the
+// mockup wasn't carried over. New/existing-project and visitor-type, which
+// the old card showed as pills, are kept as a plain text line instead so
+// the single GPS pill stays the visual focus, matching the mockup.
+function VisitsList({ visits, onNew, onDuty, weekCount, cadenceDays }) {
   const [shareOpenId, setShareOpenId] = useState(null);
   return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Visits</div>
-        <button onClick={onNew} disabled={!onDuty} title={!onDuty ? "Clock in first" : ""} style={{ fontSize: 12, padding: "5px 10px" }}>+ Report visit</button>
-      </div>
+    <>
+      <ListHeader title="Visit Reports" subtitle={`${weekCount ?? 0} logged this week`} buttonLabel="New Visit" onButton={onNew} disabled={!onDuty} />
+      <VisitCadenceCard days={cadenceDays} />
       {visits.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>No visits reported yet.</div>
+        <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>No visits reported yet.</div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {visits.map((v) => (
-            <div key={v.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontWeight: 600 }}>{v.visited_name}</span>
-                <div style={{ display: "flex", gap: 4 }}>
-                  {v.is_new_project != null && (
-                    <span className={v.is_new_project ? "badge badge-info" : "badge badge-success"}>{v.is_new_project ? "New project" : "Existing project"}</span>
-                  )}
-                  <span className="badge badge-neutral">{VISITOR_TYPE_LABEL[v.visitor_type] || v.visitor_type}</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {visits.map((v) => {
+            const gpsVerified = v.at_site && v.latitude != null && v.longitude != null;
+            return (
+              <div key={v.id} className="card" style={{ padding: 14, fontSize: 13 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontWeight: 700 }}>{v.visited_name}</span>
+                  <span className={`badge ${gpsVerified ? "badge-success" : "badge-neutral"}`} style={{ flex: "none" }}>
+                    {gpsVerified ? "GPS verified" : "Logged manually"}
+                  </span>
                 </div>
-              </div>
-              <div style={{ color: "var(--slate)" }}>
-                {new Date(v.visit_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}
-                {v.visit_time ? ` · ${v.visit_time.slice(0, 5)}` : ""}
-                {v.contact_person ? ` · ${v.contact_person}` : ""}
-                {v.contact_number ? ` · ${v.contact_number}` : ""}
-              </div>
-              {v.discussion_outcome && <div>{v.discussion_outcome}</div>}
-              <div style={{ color: "var(--slate)", fontSize: 11 }}>{v.at_site === false ? "Not at site" : v.at_site ? "At site" : ""}</div>
-              <button
-                style={{ fontSize: 11, padding: "4px 10px", marginTop: 6 }}
-                onClick={() => setShareOpenId(shareOpenId === v.id ? null : v.id)}
-              >
-                {shareOpenId === v.id ? "Hide report" : "Share report"}
-              </button>
-              {shareOpenId === v.id && (
-                <div style={{ marginTop: 8 }}>
-                  <ShareableVisitReport visit={v} />
+                {v.site_name && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--slate)", fontSize: 12, marginTop: 5 }}>
+                    <IconPin size={12} color="var(--rebar)" />{v.site_name}
+                  </div>
+                )}
+                <div style={{ color: "var(--slate)", fontSize: 11.5, marginTop: 5 }}>
+                  {dayLabel(v.visit_date, { capitalize: true })}
+                  {v.visit_time ? `, ${formatTime12h(v.visit_time)}` : ""}
                 </div>
-              )}
-            </div>
-          ))}
+                <div style={{ color: "var(--slate)", fontSize: 11.5, marginTop: 2 }}>
+                  {v.is_new_project != null ? (v.is_new_project ? "New project" : "Existing project") : ""}
+                  {v.is_new_project != null ? " · " : ""}{VISITOR_TYPE_LABEL[v.visitor_type] || v.visitor_type}
+                  {v.contact_person ? ` · ${v.contact_person}` : ""}
+                </div>
+                {v.discussion_outcome && <div style={{ marginTop: 6 }}>{v.discussion_outcome}</div>}
+                <button
+                  style={{ fontSize: 11, padding: "4px 10px", marginTop: 8 }}
+                  onClick={() => setShareOpenId(shareOpenId === v.id ? null : v.id)}
+                >
+                  {shareOpenId === v.id ? "Hide report" : "Share report"}
+                </button>
+                {shareOpenId === v.id && (
+                  <div style={{ marginTop: 8 }}>
+                    <ShareableVisitReport visit={v} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
-    </div>
+    </>
   );
+}
+
+// "09:15" (24h, from <input type="time">/TIME column) -> "9:15 AM".
+function formatTime12h(t) {
+  const [h, m] = t.split(":").map(Number);
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
 }
 
 const NEW_PROJECT_QUESTIONS = [

@@ -60,16 +60,17 @@ export default function Login() {
 
         {/* Round 122 — replaces the old small "Are you a customer?" text
             link below the form with a switch that gets equal visual weight
-            to staff sign-in, right at the top. Tapping "I'm a Customer"
-            goes straight to the (unchanged) Customer Portal access-code
-            sign-in — that screen stays exactly as it is, since it's used by
-            the public too, not just customers coming from here. */}
+            to staff sign-in, right at the top. Tapping "Customer" goes
+            straight to the (unchanged) Customer Portal access-code sign-in
+            — that screen stays exactly as it is, since it's used by the
+            public too, not just customers coming from here. Labels
+            relabeled "Employee" / "Customer" in round 124. */}
         <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
           <div style={{
             flex: 1, textAlign: "center", padding: "11px 6px", borderRadius: 8, fontSize: 13, fontWeight: 700,
             background: "var(--rebar)", border: "1px solid var(--rebar)", color: "#fff",
           }}>
-            Staff
+            Employee
           </div>
           <Link
             to="/portal"
@@ -78,7 +79,7 @@ export default function Login() {
               border: "1px solid var(--border-strong)", color: "var(--slate)", textDecoration: "none",
             }}
           >
-            I'm a Customer
+            Customer
           </Link>
         </div>
 
@@ -87,7 +88,7 @@ export default function Login() {
             <label htmlFor="phone" style={{ fontSize: 13, color: "var(--slate)" }}>Username</label>
             <input
               id="phone" name="username" type="tel" inputMode="tel" autoComplete="username"
-              value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="9999999999" required
+              value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Enter your username" required
             />
           </div>
           <div>

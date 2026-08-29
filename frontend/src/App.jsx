@@ -114,8 +114,15 @@ export default function App() {
           <Route path="/qc" element={
             <ProtectedRoute roles={["qc_engineer"]}><QcEngineer /></ProtectedRoute>
           } />
+          {/* Round 125 — the backend has allowed administrator on nearly every
+              lab-technician route all along (the router-level requireRole on
+              labTechnician.js includes it, plus qc_engineer/manager), but this
+              route guard only ever let the lab_technician role itself in —
+              an admin hit this and got bounced straight back to /login. That
+              made the admin-only delete/date-correction actions unreachable
+              in practice. Opened to match what the backend already allows. */}
           <Route path="/lab-technician" element={
-            <ProtectedRoute roles={["lab_technician"]}><LabTechnician /></ProtectedRoute>
+            <ProtectedRoute roles={["lab_technician", "administrator"]}><LabTechnician /></ProtectedRoute>
           } />
           <Route path="/lab-technician/raw-material-stock" element={
             <ProtectedRoute roles={["lab_technician"]}><RawMaterialStockEntry /></ProtectedRoute>

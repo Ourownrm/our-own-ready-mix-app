@@ -46,6 +46,7 @@ export default function Reports() {
         {user?.role === "administrator" && (
           <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
+            <Link to="/lab-technician"><button type="button">View Lab Technician</button></Link>
             <Link to="/administrator"><button type="button">Users and roles</button></Link>
             <Link to="/notifications">
               <button type="button" style={{ position: "relative" }}>

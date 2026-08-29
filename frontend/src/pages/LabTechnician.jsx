@@ -228,6 +228,32 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
     }));
   }
 
+  // Round 124, item 5 — rebuild the entry form's groups from a pour-level
+  // result already on file, so reopening an already-tested age is an actual
+  // edit (pre-filled, ready to correct one wrong figure and resave) instead
+  // of forcing a blind full re-type of every cube. Grouped by DN in the same
+  // order as detail.dns; a DN with no cubes in this particular result is
+  // just left out (matches whatever was really submitted for this age).
+  function groupsFromResult(d, result) {
+    const byDn = new Map();
+    for (const c of result.cubes || []) {
+      if (!byDn.has(c.plant_qc_id)) byDn.set(c.plant_qc_id, []);
+      byDn.get(c.plant_qc_id).push({ cube_label: c.cube_label, weight_kg: c.weight_kg ?? "", testing_load_kn: c.testing_load_kn ?? "" });
+    }
+    return d.dns.filter((dn) => byDn.has(dn.plant_qc_id)).map((dn) => ({
+      plant_qc_id: dn.plant_qc_id, ticket_number: dn.ticket_number, cubes: byDn.get(dn.plant_qc_id),
+    }));
+  }
+
+  // Picks pre-filled (editing) vs. blank (new) groups for whichever age is
+  // now selected — called on initial load and again whenever the 7-day/
+  // 28-day radio is switched by hand.
+  function setGroupsForAge(d, ageValue) {
+    const existing = (d.results || []).find((r) => r.is_pour_level && r.testing_age_days === ageValue);
+    if (existing?.cubes?.length) setGroups(groupsFromResult(d, existing));
+    else resetGroupsFor(d);
+  }
+
   async function loadDetail() {
     try {
       const d = await apiRequest(`/lab-technician/cube-pours/${orderId}`);
@@ -236,13 +262,29 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
       // Default the radio to whichever age isn't tested yet, so re-opening
       // after a save points straight at the next thing to do.
       const testedAges = d.results.map((r) => r.testing_age_days);
-      setAge(testedAges.includes(7) && !testedAges.includes(28) ? 28 : 7);
-      resetGroupsFor(d);
+      const nextAge = testedAges.includes(7) && !testedAges.includes(28) ? 28 : 7;
+      setAge(nextAge);
+      setGroupsForAge(d, nextAge);
       return d;
     } catch (err) { setError(err.message); return null; }
   }
 
   useEffect(() => { loadDetail(); }, [orderId]);
+
+  function chooseAge(next) {
+    setAge(next);
+    if (detail) setGroupsForAge(detail, next);
+  }
+
+  async function deleteResult(resultId) {
+    if (!window.confirm("Delete this result? This can't be undone.")) return;
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/lab-technician/cube-pours/${orderId}/results/${resultId}`, { method: "DELETE" });
+      await loadDetail();
+      onSaved();
+    } catch (err) { setError(err.message); }
+  }
 
   function updateCube(gi, ci, field, value) {
     setGroups((gs) => gs.map((g, gidx) => gidx === gi
@@ -368,9 +410,21 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
                   {!r.is_pour_level && " · legacy — recorded before pour-basis testing"}
                 </span>
                 {isAdmin && editingDateFor !== r.id && (
-                  <button type="button" style={{ fontSize: 10.5, padding: "2px 6px" }} onClick={() => startDateEdit(r)}>Change date</button>
+                  <span style={{ display: "flex", gap: 4 }}>
+                    <button type="button" style={{ fontSize: 10.5, padding: "2px 6px" }} onClick={() => startDateEdit(r)}>Change date</button>
+                    {r.is_pour_level && (
+                      <button type="button" style={{ fontSize: 10.5, padding: "2px 6px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => deleteResult(r.id)}>
+                        Delete
+                      </button>
+                    )}
+                  </span>
                 )}
               </div>
+              {r.is_pour_level && (
+                <div style={{ color: "var(--slate)", fontSize: 10.5, marginTop: 2 }}>
+                  Wrong entry? Pick {r.testing_age_days}-day below — it's pre-filled with these figures, ready to correct.
+                </div>
+              )}
               <label style={{ display: "flex", gap: 5, alignItems: "center", marginTop: 3, color: "var(--slate)" }}>
                 <input type="checkbox" checked={r.visible_to_customer !== false} onChange={(e) => toggleVisible(r.id, e.target.checked)} />
                 Visible in customer module
@@ -390,15 +444,20 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
       )}
 
       <div style={{ fontSize: 11, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>
-        Enter {age}-day results
+        {detail.results.some((r) => r.is_pour_level && r.testing_age_days === age) ? `Editing the ${age}-day result` : `Enter ${age}-day results`}
       </div>
+      {detail.results.some((r) => r.is_pour_level && r.testing_age_days === age) && (
+        <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
+          Pre-filled with what's already on file — fix whatever's wrong and save to overwrite it.
+        </div>
+      )}
       <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
         <div style={{ display: "flex", gap: 16 }}>
           <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            <input type="radio" checked={age === 7} onChange={() => setAge(7)} /> 7-day
+            <input type="radio" checked={age === 7} onChange={() => chooseAge(7)} /> 7-day
           </label>
           <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            <input type="radio" checked={age === 28} onChange={() => setAge(28)} /> 28-day
+            <input type="radio" checked={age === 28} onChange={() => chooseAge(28)} /> 28-day
           </label>
         </div>
         <div>
@@ -580,6 +639,8 @@ function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
 }
 
 function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "administrator";
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
@@ -597,19 +658,48 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
     })));
   }
 
+  // Round 124, item 5 — same pre-fill-to-edit fix as the plant pour form:
+  // reopening an already-tested age loads what's on file instead of a blank
+  // form, so correcting a wrong entry doesn't require blindly re-typing
+  // every cube (which is how item 6's averaging bug went unnoticed).
+  function setCubesForAge(d, ageValue) {
+    const existing = (d.results || []).find((r) => r.testing_age_days === ageValue);
+    if (existing?.cubes?.length) {
+      setCubes(existing.cubes.map((c) => ({ cube_label: c.cube_label, weight_kg: c.weight_kg ?? "", testing_load_kn: c.testing_load_kn ?? "" })));
+    } else {
+      resetCubesFor(d);
+    }
+  }
+
   async function loadDetail() {
     try {
       const d = await apiRequest(`/lab-technician/site-cube-casts/${castId}`);
       setDetail(d);
       setMixDesignId(d.resolved_mix_design_id || (d.approved_designs[0]?.id ?? ""));
       const testedAges = d.results.map((r) => r.testing_age_days);
-      setAge(testedAges.includes(7) && !testedAges.includes(28) ? 28 : 7);
-      resetCubesFor(d);
+      const nextAge = testedAges.includes(7) && !testedAges.includes(28) ? 28 : 7;
+      setAge(nextAge);
+      setCubesForAge(d, nextAge);
       return d;
     } catch (err) { setError(err.message); return null; }
   }
 
   useEffect(() => { loadDetail(); }, [castId]);
+
+  function chooseAge(next) {
+    setAge(next);
+    if (detail) setCubesForAge(detail, next);
+  }
+
+  async function deleteResult(resultId) {
+    if (!window.confirm("Delete this result? This can't be undone.")) return;
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/lab-technician/site-cube-tests/${resultId}`, { method: "DELETE" });
+      await loadDetail();
+      onSaved();
+    } catch (err) { setError(err.message); }
+  }
 
   function updateCube(i, field, value) {
     setCubes((cs) => cs.map((c, idx) => idx === i ? { ...c, [field]: value } : c));
@@ -693,10 +783,20 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
             <div key={r.id} style={{ fontSize: 12, marginBottom: 8, borderBottom: "1px solid var(--concrete)", paddingBottom: 6 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>{r.testing_age_days}-day — {Number(r.average_strength_mpa).toFixed(1)} MPa avg, tested by {r.tested_by_name}</span>
-                <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+                <span style={{ display: "flex", gap: 4 }}>
+                  <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+                  {isAdmin && (
+                    <button type="button" style={{ fontSize: 11, padding: "3px 8px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => deleteResult(r.id)}>
+                      Delete
+                    </button>
+                  )}
+                </span>
               </div>
               <div style={{ color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
                 Tested on {fmtDate(r.tested_at)}{r.failure_type ? ` · Failure: ${r.failure_type}` : ""}
+              </div>
+              <div style={{ color: "var(--slate)", fontSize: 10.5, marginTop: 2 }}>
+                Wrong entry? Pick {r.testing_age_days}-day below — it's pre-filled with these figures, ready to correct.
               </div>
               <label style={{ display: "flex", gap: 5, alignItems: "center", marginTop: 3, color: "var(--slate)" }}>
                 <input type="checkbox" checked={r.visible_to_customer !== false} onChange={(e) => toggleVisible(r.id, e.target.checked)} />
@@ -708,12 +808,17 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
       )}
 
       <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+        {detail.results.some((r) => r.testing_age_days === age) && (
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>
+            Editing the {age}-day result — pre-filled with what's already on file, save to overwrite it.
+          </div>
+        )}
         <div style={{ display: "flex", gap: 16 }}>
           <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            <input type="radio" checked={age === 7} onChange={() => setAge(7)} /> 7-day
+            <input type="radio" checked={age === 7} onChange={() => chooseAge(7)} /> 7-day
           </label>
           <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            <input type="radio" checked={age === 28} onChange={() => setAge(28)} /> 28-day
+            <input type="radio" checked={age === 28} onChange={() => chooseAge(28)} /> 28-day
           </label>
         </div>
         <div>

@@ -201,13 +201,16 @@ function LoginForm({ onSignedIn }) {
           </div>
           <div style={{ fontSize: 19, fontWeight: 800, textAlign: "center", lineHeight: 1.3 }}>Welcome to OORM</div>
           <div style={{ fontSize: 12.5, color: "var(--slate)", textAlign: "center", marginTop: 6, maxWidth: 280, lineHeight: 1.5 }}>
-            Orders, live tracking, QC reports and more — all in one place.
+            Stay connected with Our Own Ready Mix for your concrete projects, wherever you are.
           </div>
         </div>
 
         <div className="card">
           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 9 }}>
             Existing customer
+          </div>
+          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 9, lineHeight: 1.4 }}>
+            Enter the access code provided by your OORM contact to continue.
           </div>
           {error && <div style={{ color: "var(--alert-red)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <form onSubmit={submit}>
