@@ -55,6 +55,9 @@ export default function OrderDetailModal({ orderId, onClose }) {
             <Row label="Site supervisor" value={order.site_supervisor_name || "None assigned"} />
             <Row label="Site contact number" value={order.site_contact_number} />
             <Row label="Sales representative" value={order.sales_representative_name || "–"} />
+            {order.billing_address_name && (
+              <Row label="Bill to" value={`${order.billing_address_name}${order.billing_gstin ? ` — GSTIN ${order.billing_gstin}` : ""}`} />
+            )}
             <Row label="QC Engineer" value={order.qc_engineer_name || "–"} />
             <Row label="Casting location" value={order.casting_location || "–"} />
             <Row label="Status" value={order.status?.replace(/_/g, " ")} />
@@ -74,10 +77,7 @@ export default function OrderDetailModal({ orderId, onClose }) {
             <Row label="Remarks" value={order.remarks || "–"} />
             <Row label="Created by" value={order.created_by_name || "–"} />
             {["manager", "administrator"].includes(user?.role) && (
-              <>
-                <TruckTrackingPanel orderId={order.id} />
-                <TrackingLinkPanel orderId={order.id} />
-              </>
+              <TruckTrackingPanel orderId={order.id} />
             )}
           </div>
         )}
@@ -109,102 +109,6 @@ function TruckTrackingPanel({ orderId }) {
       {payload === undefined && <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading...</div>}
       {payload && payload.trucks.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>No deliveries raised for this order yet.</div>}
       {payload && payload.trucks.map((t) => <TruckCard key={t.ticket_number} truck={t} />)}
-    </div>
-  );
-}
-
-// Manager/Administrator-only: create, share, regenerate, or revoke the
-// customer-facing tracking link for this one order. Regenerating is the
-// actual "I sent it to the wrong person" fix — it immediately invalidates
-// whatever link was active before, since the backend only ever allows one
-// active link per order at a time.
-function TrackingLinkPanel({ orderId }) {
-  const [link, setLink] = useState(undefined); // undefined = loading, null = none active
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
-
-  function load() {
-    apiRequest(`/orders/${orderId}/tracking-link`)
-      .then((r) => setLink(r.active_link))
-      .catch((err) => setError(err.message));
-  }
-  useEffect(() => { load(); }, [orderId]);
-
-  function urlFor(token) {
-    return `${window.location.origin}/track/${token}`;
-  }
-
-  async function createOrRegenerate() {
-    if (link && !window.confirm("This creates a new link and immediately invalidates the current one — anyone still using the old link will see \"no longer active.\" Continue?")) return;
-    setBusy(true); setError(""); setCopied(false);
-    try {
-      const created = await apiRequest(`/orders/${orderId}/tracking-link`, { method: "POST" });
-      setLink(created);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function revoke() {
-    if (!window.confirm("Disable this tracking link? Anyone with it will immediately see \"no longer active.\"")) return;
-    setBusy(true); setError("");
-    try {
-      await apiRequest(`/orders/${orderId}/tracking-link/revoke`, { method: "POST" });
-      setLink(null);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function share() {
-    const url = urlFor(link.token);
-    if (navigator.share) {
-      try { await navigator.share({ title: "Track your Our Own Ready Mix delivery", url }); return; } catch { /* user cancelled — fall through to copy */ }
-    }
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    } catch {
-      window.prompt("Copy this link:", url);
-    }
-  }
-
-  return (
-    <div style={{ marginTop: 8, paddingTop: 10, borderTop: "1px dashed var(--border-strong)" }}>
-      <div style={{ color: "var(--slate)", marginBottom: 6 }}>Customer tracking link</div>
-      {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{error}</div>}
-      {link === undefined && <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading...</div>}
-      {link === null && (
-        <button type="button" disabled={busy} onClick={createOrRegenerate} style={{ fontSize: 12, padding: "5px 10px" }}>
-          {busy ? "..." : "Create & share link"}
-        </button>
-      )}
-      {link && (
-        <div>
-          <div style={{ fontSize: 11, color: "var(--slate)", wordBreak: "break-all", marginBottom: 6 }}>{urlFor(link.token)}</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <button type="button" onClick={share} style={{ fontSize: 12, padding: "5px 10px" }}>
-              {copied ? "Copied!" : "Share / copy link"}
-            </button>
-            <button type="button" disabled={busy} onClick={createOrRegenerate} style={{ fontSize: 12, padding: "5px 10px" }}>
-              Regenerate (invalidates current)
-            </button>
-            <button type="button" disabled={busy} onClick={revoke} className="btn-danger" style={{ fontSize: 12, padding: "5px 10px" }}>
-              Revoke
-            </button>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 6 }}>
-            Shows only this order's trucks — no other order or customer. Stays valid until revoked, or until
-            3 hours after this order is completed/closed.
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -29,6 +29,11 @@ const initialForm = {
   specified_slump_mm: "",
   pump_departure_time: "",
   remarks: "",
+  // Round 121, item 3 — which billing entity to invoice this order under, if
+  // the customer has more than one on file. Blank means "use whichever the
+  // customer has marked default" (resolved server-side) — most customers
+  // never touch this at all.
+  billing_address_id: "",
 };
 
 export default function CreateOrder({ onDone }) {
@@ -52,6 +57,10 @@ export default function CreateOrder({ onDone }) {
   const [siteContacts, setSiteContacts] = useState([]);
   const [contactChoice, setContactChoice] = useState(""); // "" | a site_contacts id | "__new__"
   const [newContactName, setNewContactName] = useState("");
+
+  // Round 121, item 3 — this customer's billing profiles, if any. Empty for
+  // the vast majority of customers, in which case the field stays hidden.
+  const [billingAddresses, setBillingAddresses] = useState([]);
 
   useEffect(() => {
     Promise.all([
@@ -102,6 +111,23 @@ export default function CreateOrder({ onDone }) {
       .catch(() => setSiteContacts([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.customer_id, form.site_id]);
+
+  // Round 121, item 3 — reload the customer's billing profiles whenever the
+  // customer changes, and pre-select whichever one is marked default (the
+  // person placing the order can still change it before submitting).
+  useEffect(() => {
+    set("billing_address_id", "");
+    if (!form.customer_id) { setBillingAddresses([]); return; }
+    apiRequest(`/administrator/customers/${form.customer_id}/billing-addresses`)
+      .then((rows) => {
+        const active = rows.filter((r) => r.is_active);
+        setBillingAddresses(active);
+        const def = active.find((r) => r.is_default);
+        if (def) set("billing_address_id", def.id);
+      })
+      .catch(() => setBillingAddresses([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.customer_id]);
 
   function set(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -219,6 +245,13 @@ export default function CreateOrder({ onDone }) {
             {sites.filter((s) => String(s.customer_id) === String(form.customer_id)).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </Field>
+        {billingAddresses.length > 0 && (
+          <Field label="Bill to">
+            <select value={form.billing_address_id} onChange={(e) => set("billing_address_id", e.target.value)}>
+              {billingAddresses.map((b) => <option key={b.id} value={b.id}>{b.name}{b.is_default ? " (default)" : ""}</option>)}
+            </select>
+          </Field>
+        )}
         <Field label="Mix grade">
           <select value={form.mix_grade_id} onChange={(e) => set("mix_grade_id", e.target.value)} required>
             <option value="">Select</option>

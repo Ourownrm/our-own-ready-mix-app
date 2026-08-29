@@ -58,7 +58,7 @@ export default function SalesExecutive() {
   const isAdmin = user?.role === "administrator";
   const [executives, setExecutives] = useState([]);
   const [viewAsUser, setViewAsUser] = useState("");
-  const [view, setView] = useState("leads");
+  const [view, setView] = useState("home");
   const [selectedLeadId, setSelectedLeadId] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [leads, setLeads] = useState([]);
@@ -183,6 +183,31 @@ export default function SalesExecutive() {
     return <NewVisitForm onDone={() => { setView("visits"); loadAll(); }} onCancel={() => setView("visits")} />;
   }
 
+  // Round 122 — rebuilt on the customer portal's home + tabs pattern: a
+  // hero (with the duty punch control folded in) plus a tile grid live only
+  // on the Home tab, and a sticky bottom nav that switches between Home /
+  // Leads / Visits / Forecast without re-fetching (loadAll() already pulled
+  // everything up front, same as before).
+  const leadCounts = dashboard?.lead_counts || {};
+  const openLeadsCount = (leadCounts.new || 0) + (leadCounts.contacted || 0) + (leadCounts.quoted || 0);
+  const visitsThisWeekCount = (visitCadence || []).reduce((sum, d) => sum + (d.visits || 0), 0);
+  const sitesOverdueCount = Number(dashboard?.sites_overdue_visit || 0);
+
+  let heroSub = "Loading...";
+  if (dashboard) {
+    const bits = [];
+    if (openLeadsCount) bits.push(`${openLeadsCount} open lead${openLeadsCount === 1 ? "" : "s"}`);
+    if (sitesOverdueCount) bits.push(`${sitesOverdueCount} site${sitesOverdueCount === 1 ? "" : "s"} overdue a visit`);
+    heroSub = bits.length ? bits.join(" · ") : "You're all caught up.";
+  }
+
+  const TABS = [
+    ["home", "Home", IconHome],
+    ["leads", "Leads", IconLeads],
+    ["visits", "Visits", IconVisits],
+    ["forecast", "Forecast", IconForecast],
+  ];
+
   return (
     <>
       <TopBar title="Sales Executive" />
@@ -199,70 +224,98 @@ export default function SalesExecutive() {
           </div>
         )}
 
-        {!isAdmin && (
-        <button
-          onClick={toggleDuty}
-          className={onDuty ? "btn-danger" : "btn-primary"}
-          style={{ width: "100%", marginBottom: 8, padding: 12, fontSize: 14, fontWeight: 600 }}
-        >
-          {onDuty ? "On duty — tap to clock off" : "Off duty — tap to clock in"}
-        </button>
-        )}
-        {!isAdmin && dutyStatus?.since && (
-          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>
-            {onDuty ? "On duty since " : "Off duty since "}
-            {new Date(dutyStatus.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-          </div>
-        )}
-        {dutyStatus?.today?.length > 0 && (
-          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", fontSize: 11, marginBottom: 12 }}>
-            {dutyStatus.today.map((e, i) => (
-              <span key={i} style={{ color: e.is_on ? "var(--signal-green)" : "var(--slate)" }}>
-                {e.is_on ? "In " : "Out "}
-                {new Date(e.event_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </span>
-            ))}
-          </div>
-        )}
-        {pending > 0 && (
-          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
-            {pending} action(s) waiting to sync
-            <button
-              style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
-              onClick={async () => { await flushQueue(); setPending(pendingCount()); }}
-            >
-              Sync now
-            </button>
-          </div>
-        )}
+        {view === "home" && (
+          <>
+            <div className="se-hero">
+              <div className="se-hero-left">
+                <div className="se-hero-h">Stay ahead<br />of the pour.</div>
+                <div className="se-hero-sub">{heroSub}</div>
+                {!isAdmin && dutyStatus?.since && (
+                  <div className="se-hero-since">
+                    {onDuty ? "On duty since " : "Off duty since "}
+                    {new Date(dutyStatus.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                )}
+              </div>
+              {!isAdmin && (
+                <button type="button" className={`se-punch${onDuty ? "" : " off"}`} onClick={toggleDuty}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" /></svg>
+                  <span>{onDuty ? "Punch Out" : "Punch In"}</span>
+                </button>
+              )}
+            </div>
 
-        <TopKpis data={dashboard} forecasts={forecasts} visitCadence={visitCadence} />
+            {!isAdmin && dutyStatus?.today?.length > 0 && (
+              <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", fontSize: 11, marginBottom: 12 }}>
+                {dutyStatus.today.map((e, i) => (
+                  <span key={i} style={{ color: e.is_on ? "var(--signal-green)" : "var(--slate)" }}>
+                    {e.is_on ? "In " : "Out "}
+                    {new Date(e.event_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                ))}
+              </div>
+            )}
+            {pending > 0 && (
+              <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+                {pending} action(s) waiting to sync
+                <button
+                  style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+                  onClick={async () => { await flushQueue(); setPending(pendingCount()); }}
+                >
+                  Sync now
+                </button>
+              </div>
+            )}
 
-        <FollowupsDue asUser={isAdmin ? viewAsUser : undefined} />
+            <TopKpis data={dashboard} forecasts={forecasts} visitCadence={visitCadence} />
 
-        {!onDuty && (
-          <div className="card" style={{ margin: "16px 0", borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>
-            <div style={{ fontSize: 12, color: "var(--slate)" }}>Clock in above to add leads, visits, or forecasts.</div>
-          </div>
+            <FollowupsDue asUser={isAdmin ? viewAsUser : undefined} />
+
+            {!isAdmin && !onDuty && (
+              <div className="card" style={{ margin: "16px 0", borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>You're off duty</div>
+                <div style={{ fontSize: 12, color: "var(--slate)" }}>Punch in above to add leads, visits, or forecasts.</div>
+              </div>
+            )}
+
+            <div className="se-tiles" style={{ marginTop: 16 }}>
+              <button type="button" className="se-tile" onClick={() => setView("leads")}>
+                <div className="se-tile-ic"><IconLeads color="#C75B12" size={17} /></div>
+                <div className="se-tile-title">My Leads</div>
+                <div className="se-tile-sub">{dashboard ? `${openLeadsCount} open lead${openLeadsCount === 1 ? "" : "s"}` : "Loading..."}</div>
+              </button>
+              <button type="button" className="se-tile" onClick={() => setView("visits")}>
+                <div className="se-tile-ic"><IconVisits color="#C75B12" size={17} /></div>
+                <div className="se-tile-title">Visits</div>
+                <div className="se-tile-sub">{dashboard ? `${visitsThisWeekCount} this week` : "Loading..."}</div>
+              </button>
+              <button type="button" className="se-tile cta" onClick={() => setView("forecast")}>
+                <div className="se-tile-ic"><IconForecast color="#ffffff" size={17} /></div>
+                <div className="se-tile-title">Forecast</div>
+                <div className="se-tile-sub">Update running-project numbers</div>
+              </button>
+              {!isAdmin && (
+                <Link to="/customer-booking" className="se-tile" style={{ textDecoration: "none", color: "inherit" }}>
+                  <div className="se-tile-ic"><IconBookings color="#C75B12" size={17} /></div>
+                  <div className="se-tile-title">Bookings &amp; Feedback</div>
+                  <div className="se-tile-sub">View &amp; respond</div>
+                </Link>
+              )}
+            </div>
+
+            {sitesOverdueCount > 0 && (
+              <button type="button" className="se-strip" onClick={() => setView("visits")}>
+                <div className="se-strip-ic">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9C6B12" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                </div>
+                <div>
+                  <div className="se-strip-title">{sitesOverdueCount} site{sitesOverdueCount === 1 ? "" : "s"} overdue a visit</div>
+                  <div className="se-strip-sub">Open Visits →</div>
+                </div>
+              </button>
+            )}
+          </>
         )}
-
-        <div style={{ display: "flex", gap: 8, margin: "20px 0", flexWrap: "wrap", alignItems: "center" }}>
-          {[["leads", "My leads"], ["visits", "Visits"], ["forecast", "Forecast"]].map(([key, label]) => (
-            <button
-              key={key}
-              className={`btn-tab ${view === key ? "active" : ""}`}
-              onClick={() => setView(key)}
-            >
-              {label}
-            </button>
-          ))}
-          {!isAdmin && (
-            <Link to="/customer-booking" style={{ marginLeft: "auto", fontSize: 12.5 }}>
-              Bookings &amp; feedback →
-            </Link>
-          )}
-        </div>
 
         {view === "leads" && (
           <LeadsList leads={leads} onDuty={onDuty} onOpen={(id) => { setSelectedLeadId(id); setView("lead-detail"); }} onNew={() => setView("new-lead")} />
@@ -276,8 +329,33 @@ export default function SalesExecutive() {
         {view === "forecast" && (
           <ForecastTab forecasts={forecasts} onDuty={onDuty} onReload={loadAll} />
         )}
+
+        <div className="se-bottomnav">
+          {TABS.map(([key, label, Icon]) => (
+            <button key={key} type="button" className={`se-navitem${view === key ? " active" : ""}`} onClick={() => setView(key)}>
+              <Icon size={19} />
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
     </>
+  );
+}
+
+// Small inline icon set for the bottom nav / tiles — mirrors the plain
+// line-icon style already used across the app (index.css tokens, 2px
+// stroke), kept local since these four are only used on this page.
+function IconHome(p) { return <Icon {...p}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></Icon>; }
+function IconLeads(p) { return <Icon {...p}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></Icon>; }
+function IconVisits(p) { return <Icon {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></Icon>; }
+function IconForecast(p) { return <Icon {...p}><path d="M3 3v18h18" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></Icon>; }
+function IconBookings(p) { return <Icon {...p}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></Icon>; }
+function Icon({ size = 18, color = "currentColor", children }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
   );
 }
 

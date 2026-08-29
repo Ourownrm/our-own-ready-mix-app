@@ -208,11 +208,15 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     specified_slump_mm: "",
     pump_departure_time: "",
     remarks: booking.remarks || booking.notes || "",
+    // Round 121, item 3 — same "bill to" concept as Create Order; blank
+    // resolves server-side to the customer's default profile.
+    billing_address_id: "",
   });
   const [saving, setSaving] = useState(false);
   const [rateInfo, setRateInfo] = useState(null);
   const [pumpChargeDecision, setPumpChargeDecision] = useState(null);
   const [partLoadDecision, setPartLoadDecision] = useState(null);
+  const [billingAddresses, setBillingAddresses] = useState([]);
 
   // Round 119, post-ship again, item 2 — this form used to collect only a
   // subset of what Create Order does (missing sales rep, slump, pump
@@ -232,6 +236,19 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
       .then(([s, m, sup, p, sp]) => { setSites(s); setMixGrades(m); setSupervisors(sup); setPumps(p); setSalespersons(sp); })
       .catch((err) => setError(err.message));
   }, []);
+
+  // Round 121, item 3 — same billing-profile pre-select as Create Order.
+  useEffect(() => {
+    apiRequest(`/administrator/customers/${booking.customer_id}/billing-addresses`)
+      .then((rows) => {
+        const active = rows.filter((r) => r.is_active);
+        setBillingAddresses(active);
+        const def = active.find((r) => r.is_default);
+        if (def) set("billing_address_id", def.id);
+      })
+      .catch(() => setBillingAddresses([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booking.customer_id]);
 
   useEffect(() => {
     setPumpChargeDecision(null); setPartLoadDecision(null);
@@ -367,6 +384,14 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
             {sitesForCustomer.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </div>
+        {billingAddresses.length > 0 && (
+          <div>
+            <div style={{ color: "var(--slate)" }}>Bill to</div>
+            <select value={form.billing_address_id} onChange={(e) => set("billing_address_id", e.target.value)}>
+              {billingAddresses.map((b) => <option key={b.id} value={b.id}>{b.name}{b.is_default ? " (default)" : ""}</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <div style={{ color: "var(--slate)" }}>Grade</div>
           <select value={form.mix_grade_id} onChange={(e) => setForm({ ...form, mix_grade_id: e.target.value })} required>

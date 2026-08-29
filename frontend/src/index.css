@@ -250,3 +250,40 @@ a { color: var(--rebar); }
 .portal-more-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border); width: 100%; text-align: left; background: none; border-left: none; border-right: none; border-top: none; font-family: inherit; cursor: pointer; }
 .portal-more-row:last-child { border-bottom: none; }
 .portal-more-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--concrete); display: flex; align-items: center; justify-content: center; flex: none; }
+
+/* ===== Sales Executive home + tabs (round 122) =====
+   Same visual pattern as the customer portal's home+tiles+bottomnav (see
+   .portal-hero etc. above), deliberately kept under its own "se-" prefix
+   rather than reusing the portal- classes — pages/SalesExecutive.jsx isn't
+   pages/CustomerPortal.jsx and shouldn't be coupled to it just because the
+   two happen to look alike right now. */
+.se-hero { display: flex; align-items: stretch; gap: 12px; background: linear-gradient(135deg, #2A2117 0%, var(--charcoal) 55%); border-radius: var(--radius); padding: 16px 16px 16px 18px; box-shadow: var(--shadow); margin: 16px 0 12px; }
+.se-hero-left { flex: 1; display: flex; flex-direction: column; justify-content: center; color: #fff; min-width: 0; }
+.se-hero-h { font-size: 16px; font-weight: 800; line-height: 1.32; }
+.se-hero-sub { font-size: 11.5px; color: #C9CDD2; margin-top: 6px; line-height: 1.5; }
+.se-hero-since { font-size: 10.5px; color: #9BA2AA; margin-top: 9px; font-weight: 700; }
+.se-punch { flex: none; width: 96px; border: none; border-radius: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-family: inherit; background: var(--alert-red); color: #fff; }
+.se-punch.off { background: var(--rebar); color: #fff; }
+.se-punch span { font-size: 12.5px; font-weight: 800; line-height: 1.25; text-align: center; }
+
+.se-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.se-tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; text-align: left; font-family: inherit; width: 100%; }
+.se-tile.cta { background: var(--rebar); border-color: var(--rebar); color: #fff; }
+.se-tile-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--concrete); display: flex; align-items: center; justify-content: center; }
+.se-tile.cta .se-tile-ic { background: rgba(255,255,255,.15); }
+.se-tile-title { font-weight: 700; font-size: 13px; }
+.se-tile-sub { font-size: 11px; color: var(--slate); }
+.se-tile.cta .se-tile-sub { color: rgba(255,255,255,.8); }
+
+.se-strip { background: var(--amber-bg); border: 1px solid #E7D8AE; border-radius: var(--radius); padding: 11px 13px; display: flex; gap: 11px; align-items: center; width: 100%; text-align: left; font-family: inherit; margin-bottom: 14px; }
+.se-strip-ic { width: 30px; height: 30px; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
+.se-strip-title { font-size: 12px; font-weight: 700; color: var(--charcoal); }
+.se-strip-sub { font-size: 10.5px; color: var(--amber); margin-top: 1px; font-weight: 600; }
+
+.se-bottomnav { position: sticky; bottom: 0; display: flex; border-top: 1px solid var(--border); background: var(--surface); padding: 9px 4px 12px; margin: 20px -16px 0; }
+.se-navitem { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10px; color: var(--slate); font-weight: 700; background: none; border: none; padding: 4px; font-family: inherit; }
+.se-navitem.active { color: var(--rebar); }
+
+@media (max-width: 480px) {
+  .se-tiles { grid-template-columns: 1fr 1fr; }
+}

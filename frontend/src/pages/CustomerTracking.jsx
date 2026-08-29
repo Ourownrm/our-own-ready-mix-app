@@ -5,9 +5,14 @@ import { APP_VERSION } from "../lib/version.js";
 import { TruckCard } from "../lib/DeliveryTrackingView.jsx";
 import { useCustomerLanguage, PublicLanguageSwitcher } from "../lib/customerI18n.jsx";
 
-// Public, no-login page reached only via a shared per-order link (see
-// OrderDetailModal's TrackingLinkPanel for how Manager/Admin generate it, and
-// routes/tracking.js on the backend for why this is safe to leave open).
+// Public, no-login page reached only via a shared per-order link.
+//
+// Round 122 — the option to generate/share one of these links from Order
+// Details was removed (OrderDetailModal's old TrackingLinkPanel): the
+// customer portal's access-code login now covers that need, so there's no
+// in-app way to mint a new link any more. This page is kept only so any
+// link a customer was already sent before that change keeps working —
+// see routes/tracking.js on the backend for why leaving it open is safe.
 // Deliberately doesn't use TopBar/ProtectedRoute — there's no session here.
 //
 // Round 119, post-ship: the per-truck progress card (TruckCard) moved to

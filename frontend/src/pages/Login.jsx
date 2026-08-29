@@ -56,15 +56,35 @@ export default function Login() {
         <div style={{ fontSize: 12, color: "var(--rebar)", fontWeight: 600, letterSpacing: 0.4, textTransform: "uppercase" }}>
           Our Own Ready Mix
         </div>
-        <h1 style={{ fontSize: 20, margin: "4px 0 4px" }}>Sign in</h1>
-        <p style={{ fontSize: 13, color: "var(--slate)", marginBottom: 20 }}>
-          Enter your phone number and password. Your browser can remember these for next time —
-          look for a "Save password" prompt after you sign in.
-        </p>
+        <h1 style={{ fontSize: 20, margin: "4px 0 18px" }}>Sign in</h1>
+
+        {/* Round 122 — replaces the old small "Are you a customer?" text
+            link below the form with a switch that gets equal visual weight
+            to staff sign-in, right at the top. Tapping "I'm a Customer"
+            goes straight to the (unchanged) Customer Portal access-code
+            sign-in — that screen stays exactly as it is, since it's used by
+            the public too, not just customers coming from here. */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+          <div style={{
+            flex: 1, textAlign: "center", padding: "11px 6px", borderRadius: 8, fontSize: 13, fontWeight: 700,
+            background: "var(--rebar)", border: "1px solid var(--rebar)", color: "#fff",
+          }}>
+            Staff
+          </div>
+          <Link
+            to="/portal"
+            style={{
+              flex: 1, textAlign: "center", padding: "11px 6px", borderRadius: 8, fontSize: 13, fontWeight: 700,
+              border: "1px solid var(--border-strong)", color: "var(--slate)", textDecoration: "none",
+            }}
+          >
+            I'm a Customer
+          </Link>
+        </div>
 
         <form onSubmit={handleSubmit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
-            <label htmlFor="phone" style={{ fontSize: 13, color: "var(--slate)" }}>Phone number</label>
+            <label htmlFor="phone" style={{ fontSize: 13, color: "var(--slate)" }}>Username</label>
             <input
               id="phone" name="username" type="tel" inputMode="tel" autoComplete="username"
               value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="9999999999" required
@@ -83,18 +103,8 @@ export default function Login() {
           </button>
         </form>
 
-        {/* Round 120, item 1 — the redirect above only recovers a customer
-            who still has a live session. Someone opening a stale home-screen
-            icon for the very first time (no session yet, per the same iOS
-            start_url gap explained above) would otherwise have no way off
-            this staff-only screen short of typing "/portal" in by hand. This
-            link is the unconditional fallback: it costs staff nothing (they
-            never tap it) and gives a stuck customer one tap back to where
-            they need to be, regardless of what URL their icon is stuck on. */}
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--concrete)", textAlign: "center" }}>
-          <Link to="/portal" style={{ fontSize: 13, color: "var(--rebar)" }}>
-            Are you a customer? Open the Customer Portal
-          </Link>
+        <div style={{ marginTop: 16, textAlign: "center", fontSize: 11.5, color: "var(--slate)" }}>
+          Trouble signing in? Contact your plant office.
         </div>
       </div>
     </div>

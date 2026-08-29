@@ -126,8 +126,16 @@ async function renderCubeTestSection(doc, data, logoData) {
     ["Structure", data.casting_location || "—"],
     // Round 120, items 4b/4e — a site-cast batch has no delivery ticket to
     // show here (there's no delivery it's tied to); says so plainly instead
-    // of a bare "—", which would otherwise look like a data gap.
-    ["Delivery Ticket", data.is_site_cast ? "Site cast — no ticket" : (data.ticket_number ? `#${data.ticket_number}` : "—")],
+    // of a bare "—", which would otherwise look like a data gap. Round 122 —
+    // a pour-level result can draw cubes from more than one DN, so
+    // ticket_number may already be a comma-joined list; "#" reads oddly
+    // prefixed to more than one, so that prefix is only used for a single
+    // ticket.
+    ["Delivery Ticket", data.is_site_cast
+      ? "Site cast — no ticket"
+      : (data.ticket_number
+        ? (data.ticket_number.includes(",") ? `DNs: ${data.ticket_number}` : `#${data.ticket_number}`)
+        : "—")],
     ["Sample IDs", data.sample_ids || "—"],
     ["No. of Cubes", String(cubeCount)],
     ["Testing Age", data.testing_age_days ? `${data.testing_age_days} days` : "—"],
@@ -392,7 +400,12 @@ export async function generateCubeTestPdf(data) {
   let logoData = null;
   try { logoData = await loadLogoBase64(); } catch { /* logo optional — proceed without it */ }
   await renderCubeTestSection(doc, data, logoData);
-  const label = data.sample_ids ? data.sample_ids.split(",")[0].trim() : (data.is_site_cast ? data.site_cube_cast_id : data.plant_qc_id);
+  // Round 122 — a pour-level result no longer carries a single plant_qc_id
+  // (see labTechnician.js's pdf-data route), so the filename falls back to
+  // the order id instead once sample_ids/ticket_number are both empty.
+  const label = data.sample_ids
+    ? data.sample_ids.split(",")[0].trim()
+    : (data.is_site_cast ? data.site_cube_cast_id : (data.ticket_number ? data.ticket_number.split(",")[0].trim() : data.order_id));
   doc.save(`Cube_Test_${label}_${data.testing_age_days || ""}day.pdf`);
   return doc;
 }

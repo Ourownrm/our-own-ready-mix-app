@@ -83,90 +83,103 @@ export default function LabTechnician() {
 
 function CubeTestingTab({ setError, setNotice }) {
   const [viewBucket, setViewBucket] = useState("active"); // active | completed | closed
-  const [batches, setBatches] = useState([]);
-  const [openBatchId, setOpenBatchId] = useState(null);
+  const [pours, setPours] = useState([]);
+  const [openOrderId, setOpenOrderId] = useState(null);
 
   async function load() {
-    try { setBatches(await apiRequest(`/lab-technician/cube-batches?view=${viewBucket}`)); } catch (err) { setError(err.message); }
+    try { setPours(await apiRequest(`/lab-technician/cube-pours?view=${viewBucket}`)); } catch (err) { setError(err.message); }
   }
-  useEffect(() => { setOpenBatchId(null); load(); }, [viewBucket]);
+  useEffect(() => { setOpenOrderId(null); load(); }, [viewBucket]);
 
-  async function closeBatch(plantQcId) {
-    const reason = window.prompt("Why is this batch not being tested? (optional — leave blank if you'd rather not say)");
+  async function closePour(orderId) {
+    const reason = window.prompt("Why is this pour not being tested? (optional — leave blank if you'd rather not say)");
     if (reason === null) return; // cancelled the prompt
     setError(""); setNotice("");
     try {
-      await apiRequest(`/lab-technician/cube-batches/${plantQcId}/close`, { method: "POST", body: { reason } });
-      setNotice("Batch closed — moved to the Closed list.");
+      await apiRequest(`/lab-technician/cube-pours/${orderId}/close`, { method: "POST", body: { reason } });
+      setNotice("Pour closed — moved to the Closed list.");
       load();
     } catch (err) { setError(err.message); }
   }
 
-  async function reopenBatch(plantQcId) {
+  async function reopenPour(orderId) {
     setError(""); setNotice("");
     try {
-      await apiRequest(`/lab-technician/cube-batches/${plantQcId}/reopen`, { method: "POST" });
-      setNotice("Batch reopened — moved back to Active.");
+      await apiRequest(`/lab-technician/cube-pours/${orderId}/reopen`, { method: "POST" });
+      setNotice("Pour reopened — moved back to Active.");
       load();
     } catch (err) { setError(err.message); }
   }
 
   const EMPTY_LABEL = {
-    active: "No active cube batches — cubes are cast and identified by QC Engineer at plant QC entry.",
-    completed: "No completed batches yet — a batch moves here once both 7-day and 28-day results are entered.",
-    closed: "No closed batches.",
+    active: "No active pours — cubes are cast and identified by QC Engineer at plant QC entry.",
+    completed: "No completed pours yet — a pour moves here once both 7-day and 28-day results are entered.",
+    closed: "No closed pours.",
   };
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
         <button className={`btn-tab ${viewBucket === "active" ? "active" : ""}`} onClick={() => setViewBucket("active")}>Active</button>
         <button className={`btn-tab ${viewBucket === "completed" ? "active" : ""}`} onClick={() => setViewBucket("completed")}>Completed</button>
         <button className={`btn-tab ${viewBucket === "closed" ? "active" : ""}`} onClick={() => setViewBucket("closed")}>Closed</button>
       </div>
-      {batches.map((b) => (
-        <div key={b.plant_qc_id} className="card" style={{ marginBottom: 10 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
-              <div style={{ fontWeight: 600 }}>{b.ticket_number} · {b.mix_grade_name} · {b.number_of_cubes} cubes</div>
-              <div style={{ fontSize: 12, color: "var(--slate)" }}>{b.customer_name} — {b.site_name}</div>
-              <div style={{ fontSize: 11, color: "var(--slate)" }}>Cast {fmtDate(b.cast_at)} · Sample IDs: {b.sample_ids || "—"}</div>
-              {viewBucket === "closed" && (
-                <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
-                  Closed {fmtDate(b.closed_at)}{b.closed_by_name ? ` by ${b.closed_by_name}` : ""}{b.closed_reason ? ` — ${b.closed_reason}` : ""}
+      {/* Round 122 — cube testing moved from per-DN to per-pour; every DN
+          that contributed cubes to a pour shows up as a reference inside its
+          own test card (see "Open" below) instead of being its own card. */}
+      <div style={{ fontSize: 12, color: "var(--charcoal)", background: "var(--info-bg, #E3EEF4)", borderRadius: 8, padding: "8px 10px", margin: "8px 0 12px", lineHeight: 1.5 }}>
+        Cube tests are grouped <b>by pour (order)</b>, not by delivery note. Every DN that contributed cubes to a pour
+        shows up as a reference inside its test card.
+      </div>
+      {pours.map((p) => {
+        const strength7 = p.result_7day_strength ?? p.legacy_7day_strength;
+        const strength28 = p.result_28day_strength ?? p.legacy_28day_strength;
+        return (
+          <div key={p.order_id} className="card" style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>
+                  {formatOrderNumber(p.order_id)} · {p.mix_grade_name} · {p.total_cubes} cube{Number(p.total_cubes) === 1 ? "" : "s"} across {p.dn_count} DN{Number(p.dn_count) === 1 ? "" : "s"}
                 </div>
-              )}
+                <div style={{ fontSize: 12, color: "var(--slate)" }}>{p.customer_name} — {p.site_name}</div>
+                <div style={{ fontSize: 11, color: "var(--slate)" }}>Poured {fmtDate(p.poured_at)}</div>
+                {viewBucket === "closed" && (
+                  <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
+                    Closed {fmtDate(p.closed_at)}{p.closed_by_name ? ` by ${p.closed_by_name}` : ""}{p.closed_reason ? ` — ${p.closed_reason}` : ""}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                {viewBucket === "closed" ? (
+                  <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => reopenPour(p.order_id)}>Reopen</button>
+                ) : (
+                  <>
+                    {viewBucket === "active" && (
+                      <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => closePour(p.order_id)}>Close — not testing</button>
+                    )}
+                    <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setOpenOrderId(openOrderId === p.order_id ? null : p.order_id)}>
+                      {openOrderId === p.order_id ? "Hide" : "Open"}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-              {viewBucket === "closed" ? (
-                <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => reopenBatch(b.plant_qc_id)}>Reopen</button>
-              ) : (
-                <>
-                  {viewBucket === "active" && (
-                    <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => closeBatch(b.plant_qc_id)}>Close — not testing</button>
-                  )}
-                  <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setOpenBatchId(openBatchId === b.plant_qc_id ? null : b.plant_qc_id)}>
-                    {openBatchId === b.plant_qc_id ? "Hide" : "Open"}
-                  </button>
-                </>
-              )}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <AgeBadge label="7-day" status={p.status_7day} due={p.due_7day} strength={strength7} />
+              <AgeBadge label="28-day" status={p.status_28day} due={p.due_28day} strength={strength28} />
             </div>
+            {viewBucket !== "closed" && openOrderId === p.order_id && (
+              <PourDetail
+                orderId={p.order_id}
+                setError={setError}
+                setNotice={setNotice}
+                onSaved={() => { load(); }}
+              />
+            )}
           </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <AgeBadge label="7-day" status={b.status_7day} due={b.due_7day} strength={b.result_7day_strength} />
-            <AgeBadge label="28-day" status={b.status_28day} due={b.due_28day} strength={b.result_28day_strength} />
-          </div>
-          {viewBucket !== "closed" && openBatchId === b.plant_qc_id && (
-            <BatchDetail
-              plantQcId={b.plant_qc_id}
-              setError={setError}
-              setNotice={setNotice}
-              onSaved={() => { load(); }}
-            />
-          )}
-        </div>
-      ))}
-      {batches.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>{EMPTY_LABEL[viewBucket]}</div>}
+        );
+      })}
+      {pours.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>{EMPTY_LABEL[viewBucket]}</div>}
     </div>
   );
 }
@@ -181,13 +194,18 @@ function AgeBadge({ label, status, due, strength }) {
   );
 }
 
-function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
+// Round 122 — one pour's expanded card: the DN reference list ("cube samples
+// for this pour"), any results already on file (pour-level and legacy — see
+// the backend route's own comment), and the entry form, which groups its
+// cube rows by contributing DN rather than one flat list, matching the
+// mockup this was built from.
+function PourDetail({ orderId, setError, setNotice, onSaved }) {
   const { user } = useAuth();
   const isAdmin = user?.role === "administrator";
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
-  const [cubes, setCubes] = useState([]);
+  const [groups, setGroups] = useState([]); // one per DN: { plant_qc_id, ticket_number, cubes: [...] }
   const [remarks, setRemarks] = useState("");
   const [failureType, setFailureType] = useState("");
   const [saving, setSaving] = useState(false);
@@ -196,36 +214,45 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
   const [dateDraft, setDateDraft] = useState("");
   const [savingDate, setSavingDate] = useState(false);
 
-  function resetCubesFor(d) {
-    const labels = (d.sample_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
-    const count = d.number_of_cubes || labels.length || 3;
-    setCubes(Array.from({ length: count }, (_, i) => ({
-      cube_label: labels[i] || `Cube ${i + 1}`, weight_kg: "", testing_load_kn: "",
-    })));
+  function resetGroupsFor(d) {
+    setGroups(d.dns.map((dn) => {
+      const labels = (dn.sample_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+      const count = dn.number_of_cubes || labels.length || 3;
+      return {
+        plant_qc_id: dn.plant_qc_id,
+        ticket_number: dn.ticket_number,
+        cubes: Array.from({ length: count }, (_, i) => ({
+          cube_label: labels[i] || `${dn.ticket_number} · Cube ${i + 1}`, weight_kg: "", testing_load_kn: "",
+        })),
+      };
+    }));
   }
 
   async function loadDetail() {
     try {
-      const d = await apiRequest(`/lab-technician/cube-batches/${plantQcId}`);
+      const d = await apiRequest(`/lab-technician/cube-pours/${orderId}`);
       setDetail(d);
       setMixDesignId(d.resolved_mix_design_id || (d.approved_designs[0]?.id ?? ""));
       // Default the radio to whichever age isn't tested yet, so re-opening
       // after a save points straight at the next thing to do.
       const testedAges = d.results.map((r) => r.testing_age_days);
       setAge(testedAges.includes(7) && !testedAges.includes(28) ? 28 : 7);
-      resetCubesFor(d);
+      resetGroupsFor(d);
       return d;
     } catch (err) { setError(err.message); return null; }
   }
 
-  useEffect(() => { loadDetail(); }, [plantQcId]);
+  useEffect(() => { loadDetail(); }, [orderId]);
 
-  function updateCube(i, field, value) {
-    setCubes((cs) => cs.map((c, idx) => idx === i ? { ...c, [field]: value } : c));
+  function updateCube(gi, ci, field, value) {
+    setGroups((gs) => gs.map((g, gidx) => gidx === gi
+      ? { ...g, cubes: g.cubes.map((c, cidx) => cidx === ci ? { ...c, [field]: value } : c) }
+      : g));
   }
 
+  const allCubes = groups.flatMap((g) => g.cubes);
   const avgStrength = (() => {
-    const vals = cubes.map((c) => Number(computeStrength(c.testing_load_kn))).filter((v) => v > 0);
+    const vals = allCubes.map((c) => Number(computeStrength(c.testing_load_kn))).filter((v) => v > 0);
     return vals.length ? (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : null;
   })();
 
@@ -238,20 +265,23 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
         mix_design_id: mixDesignId || null,
         remarks,
         failure_type: failureType || null,
-        cubes: cubes.map((c) => ({
-          cube_label: c.cube_label,
-          weight_kg: c.weight_kg || null,
-          testing_load_kn: c.testing_load_kn || null,
-          density_kgm3: computeDensity(c.weight_kg) || null,
-          strength_mpa: computeStrength(c.testing_load_kn) || null,
+        groups: groups.map((g) => ({
+          plant_qc_id: g.plant_qc_id,
+          cubes: g.cubes.map((c) => ({
+            cube_label: c.cube_label,
+            weight_kg: c.weight_kg || null,
+            testing_load_kn: c.testing_load_kn || null,
+            density_kgm3: computeDensity(c.weight_kg) || null,
+            strength_mpa: computeStrength(c.testing_load_kn) || null,
+          })),
         })),
       };
-      await apiRequest(`/lab-technician/cube-batches/${plantQcId}/results`, { method: "POST", body: payload });
+      await apiRequest(`/lab-technician/cube-pours/${orderId}/results`, { method: "POST", body: payload });
       setSavedNotice(`${age}-day result saved.`); // stays on this card, not just the top-of-page banner
       setRemarks("");
       setFailureType("");
       await loadDetail(); // pulls the new result into detail.results below, same card, no reopen needed
-      onSaved(); // refreshes the batch list's status badges/counts
+      onSaved(); // refreshes the pour list's status badges/counts
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
@@ -288,7 +318,7 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
     if (!dateDraft) return;
     setSavingDate(true); setError("");
     try {
-      await apiRequest(`/lab-technician/cube-batches/${plantQcId}/results/${resultId}/date`, {
+      await apiRequest(`/lab-technician/cube-pours/${orderId}/results/${resultId}/date`, {
         method: "PATCH",
         body: { tested_at: dateDraft },
       });
@@ -306,8 +336,26 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
           ✓ {savedNotice}
         </div>
       )}
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--rebar)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>
+        Cube samples for this pour
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        {detail.dns.map((dn) => (
+          <div key={dn.plant_qc_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--concrete)", fontSize: 12.5 }}>
+            <div>
+              <div style={{ fontWeight: 600 }}>{dn.ticket_number}{dn.truck_number ? ` · Truck ${dn.truck_number}` : ""}</div>
+              <div style={{ color: "var(--slate)", fontSize: 11.5, marginTop: 1 }}>{dn.number_of_cubes || "?"} cubes · Sampled {fmtDate(dn.cast_at)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {detail.results.length > 0 && (
         <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>
+            Recorded results
+          </div>
           {detail.results.map((r) => (
             <div key={r.id} style={{ fontSize: 12, marginBottom: 8, borderBottom: "1px solid var(--concrete)", paddingBottom: 6 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -317,6 +365,7 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
                 <span>
                   Tested on {fmtDate(r.tested_at)}{r.failure_type ? ` · Failure: ${r.failure_type}` : ""}
+                  {!r.is_pour_level && " · legacy — recorded before pour-basis testing"}
                 </span>
                 {isAdmin && editingDateFor !== r.id && (
                   <button type="button" style={{ fontSize: 10.5, padding: "2px 6px" }} onClick={() => startDateEdit(r)}>Change date</button>
@@ -340,6 +389,9 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
         </div>
       )}
 
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>
+        Enter {age}-day results
+      </div>
       <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
         <div style={{ display: "flex", gap: 16 }}>
           <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -356,28 +408,35 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
             {detail.approved_designs.map((d) => <option key={d.id} value={d.id}>{d.design_ref_code}</option>)}
           </select>
         </div>
-        {cubes.map((c, i) => (
-          <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, alignItems: "end" }}>
-            <div>
-              <div style={{ color: "var(--slate)", fontSize: 11 }}>{i === 0 ? "Cube" : ""}</div>
-              <input value={c.cube_label} onChange={(e) => updateCube(i, "cube_label", e.target.value)} style={{ width: "100%" }} />
+        {groups.map((g, gi) => (
+          <div key={g.plant_qc_id}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--rebar)", textTransform: "uppercase", letterSpacing: 0.3, margin: "6px 0" }}>
+              From DN {g.ticket_number}
             </div>
-            <div>
-              <div style={{ color: "var(--slate)", fontSize: 11 }}>{i === 0 ? "Weight (kg)" : ""}</div>
-              <input type="number" step="0.001" value={c.weight_kg} onChange={(e) => updateCube(i, "weight_kg", e.target.value)} style={{ width: "100%" }} />
-            </div>
-            <div>
-              <div style={{ color: "var(--slate)", fontSize: 11 }}>{i === 0 ? "Load (kN)" : ""}</div>
-              <input type="number" step="0.01" value={c.testing_load_kn} onChange={(e) => updateCube(i, "testing_load_kn", e.target.value)} style={{ width: "100%" }} />
-            </div>
-            <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)" }}>
-              {c.weight_kg && `Density: ${computeDensity(c.weight_kg)} kg/m³`} {c.testing_load_kn && `· Strength: ${computeStrength(c.testing_load_kn)} MPa`}
-            </div>
+            {g.cubes.map((c, ci) => (
+              <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, alignItems: "end", marginBottom: 6 }}>
+                <div>
+                  <div style={{ color: "var(--slate)", fontSize: 11 }}>{ci === 0 ? "Cube" : ""}</div>
+                  <input value={c.cube_label} onChange={(e) => updateCube(gi, ci, "cube_label", e.target.value)} style={{ width: "100%" }} />
+                </div>
+                <div>
+                  <div style={{ color: "var(--slate)", fontSize: 11 }}>{ci === 0 ? "Weight (kg)" : ""}</div>
+                  <input type="number" step="0.001" value={c.weight_kg} onChange={(e) => updateCube(gi, ci, "weight_kg", e.target.value)} style={{ width: "100%" }} />
+                </div>
+                <div>
+                  <div style={{ color: "var(--slate)", fontSize: 11 }}>{ci === 0 ? "Load (kN)" : ""}</div>
+                  <input type="number" step="0.01" value={c.testing_load_kn} onChange={(e) => updateCube(gi, ci, "testing_load_kn", e.target.value)} style={{ width: "100%" }} />
+                </div>
+                <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)" }}>
+                  {c.weight_kg && `Density: ${computeDensity(c.weight_kg)} kg/m³`} {c.testing_load_kn && `· Strength: ${computeStrength(c.testing_load_kn)} MPa`}
+                </div>
+              </div>
+            ))}
           </div>
         ))}
         {avgStrength && (
           <div style={{ background: "var(--concrete)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5 }}>
-            Average strength: <b>{avgStrength} MPa</b>
+            Average strength so far: <b>{avgStrength} MPa</b>
           </div>
         )}
         <div>
@@ -397,7 +456,7 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
           <div style={{ color: "var(--slate)" }}>Remarks</div>
           <textarea rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
         </div>
-        <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save test result"}</button>
+        <button type="submit" disabled={saving}>{saving ? "Saving..." : `Save ${age}-day results`}</button>
       </form>
     </div>
   );
@@ -470,7 +529,10 @@ function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
   const [remarks, setRemarks] = useState("");
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { apiRequest("/orders").then(setOrders).catch((err) => setError(err.message)); }, []);
+  // Round 121, item 4 — only orders that actually received supply are
+  // selectable (see the backend route's own comment): a site cast can't
+  // exist for concrete that was never delivered.
+  useEffect(() => { apiRequest("/lab-technician/orders-with-supply").then(setOrders).catch((err) => setError(err.message)); }, []);
 
   async function submit(e) {
     e.preventDefault();
@@ -598,10 +660,28 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 121, item 5 — delete a wrongly-entered site cast (wrong order,
+  // duplicate entry, etc). Unlike a plant batch, a site cast has no delivery
+  // ticket behind it — nothing else on record depends on it — so a real
+  // delete is correct here, not a "close" flag.
+  async function deleteCast() {
+    if (!window.confirm("Delete this site cast? This removes it and any test results already entered against it — this can't be undone.")) return;
+    setError("");
+    try {
+      await apiRequest(`/lab-technician/site-cube-casts/${castId}`, { method: "DELETE" });
+      onSaved();
+    } catch (err) { setError(err.message); }
+  }
+
   if (!detail) return <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Loading…</div>;
 
   return (
     <div style={{ marginTop: 12, borderTop: "1px solid var(--concrete)", paddingTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+        <button type="button" onClick={deleteCast} style={{ fontSize: 11, padding: "3px 9px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }}>
+          Delete this cast
+        </button>
+      </div>
       {savedNotice && (
         <div style={{ color: "var(--signal-green)", fontSize: 12.5, marginBottom: 10, background: "var(--concrete)", borderRadius: 8, padding: "6px 10px" }}>
           ✓ {savedNotice}

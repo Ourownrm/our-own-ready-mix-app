@@ -24,6 +24,111 @@ export function List({ rows, columns }) {
   );
 }
 
+// Round 121, item 3 — a customer's saved billing profiles (name/address/
+// GSTIN), each selectable per order when it's created. Shown as an
+// expandable row under the customer it belongs to, since most customers
+// will never need more than one and this keeps the main table uncluttered.
+function CustomerBillingAddressesEditor({ customerId, setError }) {
+  const [list, setList] = useState(null);
+  const [form, setForm] = useState({ name: "", address: "", gstin: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", address: "", gstin: "" });
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setList(await apiRequest(`/administrator/customers/${customerId}/billing-addresses`)); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, [customerId]);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!form.name.trim()) { setError("A name for this billing entity is required."); return; }
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/customers/${customerId}/billing-addresses`, { method: "POST", body: form });
+      setForm({ name: "", address: "", gstin: "" });
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  function startEdit(b) {
+    setEditingId(b.id);
+    setEditForm({ name: b.name, address: b.address || "", gstin: b.gstin || "" });
+  }
+  async function saveEdit(id) {
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/administrator/billing-addresses/${id}`, { method: "PATCH", body: editForm });
+      setEditingId(null);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+  async function setDefault(id) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/billing-addresses/${id}/set-default`, { method: "POST" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+  async function toggleActive(b) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/billing-addresses/${b.id}/status`, { method: "POST", body: { is_active: !b.is_active } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  if (!list) return null;
+
+  return (
+    <div className="field-input" style={{ padding: "10px 0" }}>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>
+        Named billing entities for this customer — picked per order (defaults to whichever is marked "Default").
+        A customer with none here just invoices under their own name/billing address above, as before.
+      </div>
+      <table style={{ fontSize: 12 }}>
+        <thead><tr><th>Name</th><th>Address</th><th>GSTIN</th><th></th><th></th></tr></thead>
+        <tbody>
+          {list.map((b) => (
+            <tr key={b.id} style={!b.is_active ? { opacity: 0.6 } : undefined}>
+              {editingId === b.id ? (
+                <>
+                  <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: "100%" }} /></td>
+                  <td><input value={editForm.address} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} style={{ width: "100%" }} /></td>
+                  <td><input value={editForm.gstin} onChange={(e) => setEditForm({ ...editForm, gstin: e.target.value })} style={{ width: 110 }} /></td>
+                  <td colSpan={2} style={{ display: "flex", gap: 4 }}>
+                    <button type="button" onClick={() => saveEdit(b.id)} disabled={saving}>Save</button>
+                    <button type="button" onClick={() => setEditingId(null)}>Cancel</button>
+                  </td>
+                </>
+              ) : (
+                <>
+                  <td>{b.name}{b.is_default && <span className="badge badge-success" style={{ marginLeft: 6, fontSize: 10 }}>Default</span>}</td>
+                  <td>{b.address || "–"}</td>
+                  <td>{b.gstin || "–"}</td>
+                  <td>{!b.is_active && <span className="badge badge-neutral">Disabled</span>}</td>
+                  <td style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    <button type="button" style={{ fontSize: 11, padding: "3px 7px" }} onClick={() => startEdit(b)}>Edit</button>
+                    {!b.is_default && b.is_active && <button type="button" style={{ fontSize: 11, padding: "3px 7px" }} onClick={() => setDefault(b.id)}>Set default</button>}
+                    <button type="button" style={{ fontSize: 11, padding: "3px 7px" }} onClick={() => toggleActive(b)}>{b.is_active ? "Disable" : "Enable"}</button>
+                  </td>
+                </>
+              )}
+            </tr>
+          ))}
+          {list.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No billing profiles added.</td></tr>}
+        </tbody>
+      </table>
+      <form onSubmit={submit} style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div><div style={{ color: "var(--slate)", fontSize: 11 }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Company A Pvt Ltd" style={{ width: 170 }} /></div>
+        <div><div style={{ color: "var(--slate)", fontSize: 11 }}>Address</div><input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} style={{ width: 200 }} /></div>
+        <div><div style={{ color: "var(--slate)", fontSize: 11 }}>GSTIN</div><input value={form.gstin} onChange={(e) => setForm({ ...form, gstin: e.target.value })} style={{ width: 130 }} /></div>
+        <button type="submit" disabled={saving} style={{ fontSize: 12 }}>{saving ? "Adding..." : "+ Add billing profile"}</button>
+      </form>
+    </div>
+  );
+}
+
 export function CustomersPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [form, setForm] = useState({ name: "", contact_number: "", billing_address: "" });
@@ -31,6 +136,7 @@ export function CustomersPanel({ setError }) {
   const [editForm, setEditForm] = useState({ name: "", contact_number: "", billing_address: "" });
   const [saving, setSaving] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const [billingOpenId, setBillingOpenId] = useState(null);
 
   async function load() {
     try { setCustomers(await apiRequest("/administrator/customers")); } catch (err) { setError(err.message); }
@@ -94,7 +200,8 @@ export function CustomersPanel({ setError }) {
           <thead><tr><th>Name</th><th>Contact</th><th>Billing address</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {visible.map((c) => (
-              <tr key={c.id} style={!c.is_active ? { opacity: 0.6 } : undefined}>
+              <Fragment key={c.id}>
+              <tr style={!c.is_active ? { opacity: 0.6 } : undefined}>
                 {editingId === c.id ? (
                   <>
                     <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: "100%" }} /></td>
@@ -116,10 +223,19 @@ export function CustomersPanel({ setError }) {
                       <button onClick={() => startEdit(c)}>Edit</button>
                       <button onClick={() => toggleActive(c)}>{c.is_active ? "Disable" : "Enable"}</button>
                       <button className="btn-danger" onClick={() => remove(c)}>Delete</button>
+                      <button type="button" onClick={() => setBillingOpenId(billingOpenId === c.id ? null : c.id)}>
+                        {billingOpenId === c.id ? "Hide billing profiles" : "Billing profiles"}
+                      </button>
                     </td>
                   </>
                 )}
               </tr>
+              {billingOpenId === c.id && (
+                <tr>
+                  <td colSpan={5}><CustomerBillingAddressesEditor customerId={c.id} setError={setError} /></td>
+                </tr>
+              )}
+              </Fragment>
             ))}
             {visible.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No customers.</td></tr>}
           </tbody>
@@ -1342,6 +1458,7 @@ export function PlantLocationsPanel({ setError }) {
                 <td>{p.geofence_radius_m}</td>
                 <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-neutral">Inactive</span>}</td>
                 <td style={{ display: "flex", gap: 6 }}>
+                  <a href={`https://maps.google.com/?q=${p.latitude},${p.longitude}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>View on map</a>
                   {!p.is_active && (
                     <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => setActive(p.id)}>
                       Set active
@@ -1367,6 +1484,126 @@ export function PlantLocationsPanel({ setError }) {
           <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add plant location"}</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// Round 121, item 6 — a manager reported the auto plant-out-delay detection
+// "used to work, later modifications ruined it." A full audit of the
+// pipeline (scheduler wiring in index.js, the geofence-detection SQL and the
+// grace-period auto-record SQL in scheduledChecks.js, the driver app's GPS
+// ping loop and offline queue) turned up no code-level regression — it's all
+// wired exactly as designed. The two most likely real-world causes left are
+// (a) the plant's own saved coordinate/radius above having drifted or been
+// mis-edited, or (b) a site's saved coordinate being wrong/stale, which
+// wouldn't affect Plant Out itself but would explain related "truck isn't
+// where it should be" symptoms. Neither is visible without a way to actually
+// see what's on file per site next to what's really been captured live —
+// this report is exactly that, plus the ability to fix it without a database
+// console.
+export function SiteGeofenceReportPanel({ setError, setNotice }) {
+  const [data, setData] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ latitude: "", longitude: "", geofence_radius_m: "" });
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setData(await apiRequest("/administrator/sites/geofence-report")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  function startEdit(site) {
+    setEditingId(site.id);
+    setEditForm({
+      latitude: site.latitude ?? "", longitude: site.longitude ?? "",
+      geofence_radius_m: site.geofence_radius_m ?? "",
+    });
+  }
+  function useLiveTap(site) {
+    setEditingId(site.id);
+    setEditForm((f) => ({ ...f, latitude: site.last_site_ready_latitude, longitude: site.last_site_ready_longitude }));
+  }
+
+  async function save(site) {
+    setSaving(true); setError(""); setNotice?.("");
+    try {
+      await apiRequest(`/administrator/sites/${site.id}`, {
+        method: "PATCH",
+        body: {
+          name: site.name, address: site.address, distance_from_plant_km: site.distance_from_plant_km,
+          trip_allowance_category_id: site.trip_allowance_category_id,
+          latitude: editForm.latitude, longitude: editForm.longitude, geofence_radius_m: editForm.geofence_radius_m,
+        },
+      });
+      setEditingId(null);
+      setNotice?.(`Saved geofence for ${site.name}.`);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  if (!data) return null;
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Site geofences</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+        What's actually anchoring arrival/departure detection at each site — the saved coordinate/radius, next to
+        the most recent live GPS location a Site Supervisor's own "Site Ready" tap captured there. If a site's
+        detection has been unreliable, this is usually why: no saved coordinate, or one that's drifted from where
+        the site really is. Tap a site to view it on the map or adjust its coordinate/radius directly.
+      </div>
+      <div className="card" style={{ overflowX: "auto" }}>
+        <table style={{ fontSize: 12.5 }}>
+          <thead>
+            <tr><th>Site</th><th>Saved coordinate</th><th>Radius (m)</th><th>Last live "Site Ready" tap</th><th></th></tr>
+          </thead>
+          <tbody>
+            {data.sites.map((s) => (
+              <Fragment key={s.id}>
+                <tr>
+                  <td>{s.customer_name} — {s.name}</td>
+                  <td>
+                    {s.latitude != null && s.longitude != null
+                      ? <a href={`https://maps.google.com/?q=${s.latitude},${s.longitude}`} target="_blank" rel="noreferrer">{Number(s.latitude).toFixed(5)}, {Number(s.longitude).toFixed(5)}</a>
+                      : <span style={{ color: "var(--alert-red)" }}>Not set — falls back to {s.distance_from_plant_km ? `${s.distance_from_plant_km} km estimate only` : "nothing"}</span>}
+                  </td>
+                  <td>{s.geofence_radius_m || 150}</td>
+                  <td>
+                    {s.last_site_ready_latitude != null ? (
+                      <>
+                        <a href={`https://maps.google.com/?q=${s.last_site_ready_latitude},${s.last_site_ready_longitude}`} target="_blank" rel="noreferrer">
+                          {Number(s.last_site_ready_latitude).toFixed(5)}, {Number(s.last_site_ready_longitude).toFixed(5)}
+                        </a>
+                        {" "}({new Date(s.last_site_ready_at).toLocaleDateString([], { day: "2-digit", month: "short" })}){s.last_site_ready_suspect && <span style={{ color: "var(--alert-red)" }}> — flagged suspect, not used</span>}
+                      </>
+                    ) : <span style={{ color: "var(--slate)" }}>No tap captured yet</span>}
+                  </td>
+                  <td style={{ display: "flex", gap: 6 }}>
+                    <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => startEdit(s)}>Adjust</button>
+                    {s.last_site_ready_latitude != null && !s.last_site_ready_suspect && (
+                      <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => useLiveTap(s)}>Use live tap</button>
+                    )}
+                  </td>
+                </tr>
+                {editingId === s.id && (
+                  <tr>
+                    <td colSpan={5}>
+                      <div className="field-input" style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", padding: "8px 0" }}>
+                        <div><div style={{ color: "var(--slate)", fontSize: 11 }}>Latitude</div><input type="number" step="any" value={editForm.latitude} onChange={(e) => setEditForm({ ...editForm, latitude: e.target.value })} style={{ width: 120 }} /></div>
+                        <div><div style={{ color: "var(--slate)", fontSize: 11 }}>Longitude</div><input type="number" step="any" value={editForm.longitude} onChange={(e) => setEditForm({ ...editForm, longitude: e.target.value })} style={{ width: 120 }} /></div>
+                        <div><div style={{ color: "var(--slate)", fontSize: 11 }}>Radius (m)</div><input type="number" value={editForm.geofence_radius_m} onChange={(e) => setEditForm({ ...editForm, geofence_radius_m: e.target.value })} style={{ width: 90 }} placeholder="150" /></div>
+                        <button type="button" disabled={saving} onClick={() => save(s)}>{saving ? "Saving..." : "Save"}</button>
+                        <button type="button" onClick={() => setEditingId(null)}>Cancel</button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+            {data.sites.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No sites yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
