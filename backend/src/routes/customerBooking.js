@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { pushToRole } from "../lib/push.js";
 import { getOrderTrackingPayload } from "../lib/orderTracking.js";
+import { resolveCubeTestDnSummary } from "../lib/cubeTestDns.js";
 
 // Public, unauthenticated customer booking form (round 100, item 4) —
 // deliberately NOT mounted behind requireAuth, same reasoning as
@@ -97,9 +98,7 @@ router.get("/:token", async (req, res) => {
       `SELECT ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at,
               co.id AS order_id, m.name AS mix_grade_name
        FROM cube_test_results ctr
-       JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-       JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN customer_orders co ON co.id = ctr.order_id
        JOIN mix_grades m ON m.id = co.mix_grade_id
        WHERE co.customer_id = $1 AND co.site_id = $2
        ORDER BY ctr.tested_at DESC NULLS LAST
@@ -194,17 +193,13 @@ router.get("/:token/cube-tests/:resultId/pdf-data", async (req, res) => {
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
             u.name AS tested_by_name,
-            pq.id AS plant_qc_id, pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
-            dt.ticket_number, dt.order_id,
             co.id AS order_id, co.casting_location, co.order_date, co.customer_id, co.site_id,
             c.name AS customer_name, s.name AS site_name, s.address AS site_address,
             m.name AS mix_grade_name,
             md.id AS mix_design_id, md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
      FROM cube_test_results ctr
      JOIN users u ON u.id = ctr.tested_by
-     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customer_orders co ON co.id = ctr.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
@@ -221,7 +216,8 @@ router.get("/:token/cube-tests/:resultId/pdf-data", async (req, res) => {
      FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
     [req.params.resultId]
   );
-  res.json({ ...row, cubes });
+  const dnSummary = await resolveCubeTestDnSummary(req.params.resultId);
+  res.json({ ...row, ...dnSummary, number_of_cubes: cubes.length, cubes });
 });
 
 // Round 119, post-ship again, item 4 — file download for the shared

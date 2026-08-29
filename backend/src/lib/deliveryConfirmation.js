@@ -112,9 +112,18 @@ export async function generateInvoiceForTicket(ticketId) {
     `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.order_date,
             rm.rate_per_m3, co.pump_requirement,
             co.pump_charge_applicable, co.pump_charge_amount,
-            co.part_load_applicable, co.part_load_charge_amount
+            co.part_load_applicable, co.part_load_charge_amount,
+            -- Round 121, item 3 — the order's chosen billing profile (if any),
+            -- falling back to the customer's own name/billing_address so a
+            -- customer who never set up multiple billing entities invoices
+            -- exactly as before this feature existed.
+            COALESCE(ba.name, c.name) AS billing_name,
+            COALESCE(ba.address, c.billing_address) AS billing_address,
+            ba.gstin AS billing_gstin
      FROM delivery_tickets dt
      JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     LEFT JOIN customer_billing_addresses ba ON ba.id = co.billing_address_id
      JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
        AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
        AND rm.effective_from <= co.order_date AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
@@ -146,10 +155,11 @@ export async function generateInvoiceForTicket(ticketId) {
     }
 
     await query(
-      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount)
-       VALUES ($1, $2, $3, $4, $5, 0, $6)
+      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount, billing_name, billing_address, billing_gstin)
+       VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)
        ON CONFLICT DO NOTHING`,
-      [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, concreteAmount + pumpingCharge + partLoadCharge]
+      [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, concreteAmount + pumpingCharge + partLoadCharge,
+       r.billing_name, r.billing_address, r.billing_gstin]
     );
     return true;
   } else {

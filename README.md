@@ -4651,3 +4651,199 @@ tables automatically on next backend start; nothing manual required. `schema.sql
 match as the plain-SQL doc of record.
 
 Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 121 (Ver. 9.41): real ETA distance, order picker/site-cast cleanup, geofence report, multiple billing addresses
+
+A 6-item request list plus 2 mockups. Shipped here: items 1, 4, 5, 6, and 3 (billing addresses) below.
+**Deliberately not done yet, and called out explicitly at the end of this section**: item 2 (restructuring
+Lab Technician's cube test entry to pour-basis) and the two mockups (login screen, Sales Executive module) —
+each is sizable enough to deserve its own focused pass rather than being rushed alongside five other
+changes in one round.
+
+1. **Truck ETA — real plant-to-site distance, not just the manually-typed figure.** The fallback ETA
+   (used whenever there's no fresh GPS ping) was already mathematically "time remaining, counted down
+   from now" — anchoring it from `left_plant_at` instead is the same number, it just doesn't drift
+   forward every time the endpoint is called again with nothing new to go on (see the code comment in
+   `etaEstimate.js` for the actual algebra). What changed: the *distance* it's based on. `estimateEtaAt`
+   now takes the active plant location's coordinate and computes a real haversine distance to the
+   site's best-known coordinate — preferring the Site Supervisor's own "Site Ready" GPS tap
+   (`customer_orders.site_ready_latitude/longitude`, same anchor the geofence checks already trust,
+   unless flagged suspect) over the site's saved coordinate, over the manually-typed
+   `distance_from_plant_km` as the last resort. `orderTracking.js` now pulls the active plant location
+   and the order's site-ready fields alongside everything else it already fetched.
+2. **Lab Technician's "+ Record a site cast" order picker showed orders that never received any
+   supply** (a fresh order with zero deliveries, or one cancelled/closed before a single truck went
+   out) — nonsensical for a site cast, which can only exist for concrete that actually reached the
+   site. New `GET /lab-technician/orders-with-supply` filters to `delivered_qty_m3 > 0`; the generic
+   `GET /orders` list used everywhere else is untouched, so nothing else in the app is affected.
+3. **Delete a wrongly-entered site cast.** Unlike a plant batch (always tied to a real delivery ticket
+   that stays on record either way, so it only ever gets "closed," never deleted), a site cast has
+   nothing else backing it — a genuine mis-entry (wrong order, duplicate) has no other record to fall
+   back on. New `DELETE /lab-technician/site-cube-casts/:castId` (removes its test results/cubes
+   first, then the cast itself) plus a "Delete this cast" button in `SiteCastDetail`.
+4. **Auto plant-out-delay "still broken, used to work."** Audited the full pipeline end to end —
+   `index.js`'s scheduler wiring, the geofence-detection and grace-period auto-record SQL in
+   `scheduledChecks.js`, the driver app's GPS ping loop and its offline-queue flush logic — and found
+   no code-level regression anywhere; everything is wired exactly as designed. That leaves the two
+   most likely real causes: the plant's own saved coordinate/radius having drifted, or (for the
+   related "truck isn't where it should be" symptoms) a site's saved coordinate being wrong or never
+   set. Built the diagnostic tool needed to actually tell: a new **Site geofences** report under
+   Administrator → Plant Locations, listing every site's saved coordinate/radius next to the most
+   recent live GPS location a Site Supervisor's own "Site Ready" tap captured there — "View on map"
+   links for both, a "Use live tap" one-click fix when they disagree, and inline editing of a site's
+   coordinate/radius (`geofence_radius_m` gained a UI for the first time — it's existed in the schema
+   since the original geofence feature but was never actually settable). Also added a "View on map"
+   link to the Plant Location table itself. Separately confirmed: yes, the site coordinate is already
+   carried to drivers for navigation — `GET /tickets/my-trips` has resolved a "Site location" Google
+   Maps link with this same site-ready-tap-preferred-over-saved-coordinate pattern since round 119,
+   post-ship round 3; `DriverDuty.jsx` already renders it. Nothing new needed there.
+5. **Multiple billing addresses per customer.** Business need: the same customer, sometimes even the
+   same site, may need to be billed under a different legal entity order to order ("today Company A,
+   next order Company B, to manage tax"). New `customer_billing_addresses` table — named, reusable
+   profiles (name/address/GSTIN) a customer maintains, managed from a "Billing profiles" expandable
+   row under each customer in Administrator → Customers. `customer_orders.billing_address_id` records
+   which profile an order is billed under — selected per order (a new "Bill to" dropdown in Create
+   Order and Convert Booking, defaulting to whichever profile is marked default, always changeable);
+   a customer's very first profile is automatically marked default so "always keep a default
+   available" holds without anyone having to remember to set one. A customer with no profiles at all
+   invoices exactly as before — falling back to the plain `customers.name`/`billing_address` fields,
+   untouched. `invoices` gained `billing_name`/`billing_address`/`billing_gstin`, snapshotted at
+   invoice-generation time (same reasoning as `resolved_mix_design_id` being snapshotted on the
+   order) so a past invoice never silently changes if a profile is later renamed. The selected billing
+   entity shows on the Order Detail view. Customer portal is intentionally untouched — a customer
+   login still sees every order and delivery under their account regardless of which billing address
+   it was billed to, per the business's own answer to this exact question.
+
+**Still open — deliberately not started**:
+- **Item 2, pour-basis cube testing.** Business direction is clear (plant QC keeps casting cubes at
+  truck/DN level; Lab Technician's testing *card* should group by pour instead, showing every DN's
+  cube samples cast under that pour as reference before entering one shared result) — the piece that
+  still needs its own pass is the schema work to let one test result draw cube samples from more than
+  one `plant_qc` row (today `cube_test_results.plant_qc_id` is a single FK), plus the PDF/report
+  updates that follow from it.
+- **Two requested mockups** — a redesigned login screen (remove the current instructional copy,
+  relabel the phone field "Username," give the customer-login path equal visual priority instead of a
+  small link) and a Sales Executive module rebuilt with a home page + tabs like the customer module.
+
+### Migration note
+
+Same pattern as every prior round — `setup.js` runs `CREATE TABLE IF NOT EXISTS
+customer_billing_addresses` and the matching `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for
+`customer_orders.billing_address_id` and the three new `invoices` columns automatically on next
+backend start. `sites.geofence_radius_m` already existed in the schema from the original geofence
+feature — no migration needed for it, just a route/UI change to actually make it settable.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 122 (Ver. 9.42): mockups shipped as code, tracking-link removal, unified customer access
+
+Follows on directly from Round 121's two deferred mockups (login screen, Sales Executive module),
+each refined over a couple of feedback passes as a design canvas before being built for real here,
+plus two more items raised in that same conversation: removing the old per-order tracking-link
+feature, and a new unified/multi-site customer portal access flow.
+
+1. **Login screen.** `pages/Login.jsx` — dropped the old instructional paragraph, relabeled the
+   phone field "Username" (kept `name="username"` / `type="tel"` / `autoComplete="username"` so
+   nothing downstream changes), and added a Staff/Customer segmented toggle above the form: Staff
+   stays on this screen (rebar-filled, selected), "I'm a Customer" is a styled link straight to
+   `/portal` — the real customer sign-in page, deliberately left untouched since it's also the
+   public-facing entry point.
+2. **Sales Executive rebuilt on the customer module's home + tabs pattern.** `pages/SalesExecutive.jsx`
+   now opens on a Home view (topbar, hero card, a 4-tile grid, an overdue-visits strip, bottom nav)
+   instead of dropping straight into the Leads list, mirroring `pages/CustomerPortal.jsx`'s shell —
+   under its own `.se-*` CSS namespace in `index.css` rather than reusing `.portal-*` directly, so the
+   two modules don't end up coupled by shared classes. The hero kept its original black gradient (an
+   orange version was tried and reverted — the red Punch Out button didn't read against orange). Duty
+   On/Off moved into the hero as a square `.se-punch` button ("Punch In"/"Punch Out" labels) at the
+   same height as the tile buttons. Every existing sub-component — `LeadDetail`, `NewLeadForm`,
+   `NewVisitForm`, `ForecastTab`, the GPS/offline-queue/questionnaire logic — is untouched; only the
+   top-level shell and default view changed.
+3. **Removed the per-order "generate & share tracking link" option from Order Details.** Now that the
+   customer portal's access-code sign-in covers this need, `TrackingLinkPanel` and its three routes
+   (`GET/POST /:orderId/tracking-link`, `POST /:orderId/tracking-link/revoke`) are gone from
+   `OrderDetailModal.jsx` and `routes/orders.js`. The public `/track/:token` consumption route and the
+   `order_tracking_links` table are deliberately left in place — any link already shared before this
+   round keeps working; there's just no way to mint a new one from Order Details anymore.
+4. **Unified, multi-site customer portal access.** The old "Booking Links & Requests" and "Portal
+   Access" tabs (`CustomerBooking.jsx`) are merged into one "Customer Access" tab. Granting access is
+   now a single flow: pick a customer, choose scope (all sites for that customer, or specific sites),
+   set permissions (tracking / QC reports / technical writings), and generate — it produces one access
+   code plus the matching shareable link(s) together, instead of two separate mechanisms a Manager had
+   to reconcile by hand. "All sites" is backed by a new `customer_access_tokens.covers_all_sites`
+   column; `requireCustomerAuth` and the access-code list both resolve that code's sites live from the
+   customer's current sites on every check, rather than a fixed snapshot — so a site added to a
+   customer later is automatically covered by an existing "all sites" code, no re-grant needed. A
+   fallback "advanced" table still covers any booking link created outside this unified flow (pre-Round-122
+   data with no access code attached).
+
+**Still open — deliberately not started**: item 2 from Round 121, restructuring Lab Technician's cube
+test entry to pour-basis (the `cube_test_results.plant_qc_id` single-FK-to-multi-row schema change and
+its follow-on PDF/report updates) — flagged again this round as needing its own dedicated pass given
+its scope.
+
+### Migration note
+
+`setup.js` runs `ALTER TABLE customer_access_tokens ADD COLUMN IF NOT EXISTS covers_all_sites
+BOOLEAN NOT NULL DEFAULT false` automatically on next backend start. Everything else this round is
+route/UI-only — no other schema change.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 123 (Ver. 9.43): pour-basis cube testing
+
+Finishes the item flagged as deferred at the end of Round 121 and again at the end of Round 122 —
+letting Lab Technician test cube samples by **pour** (the order) instead of by individual delivery
+note, since plant QC routinely casts cubes against several trucks/DNs for the same pour and the
+compressive-strength result has always really been one shared figure for that pour, not three
+separate ones. Scoped deliberately as an **additive** schema change (see "Migration note" below) —
+every result recorded before this round, however many DNs an order had independently tested under
+the old model, stays exactly as it was and keeps showing up everywhere it always did.
+
+1. **`cube_test_results` moves from per-DN to per-pour.** A NEW row is now anchored to the order
+   (`order_id` set, `plant_qc_id` left `NULL`) rather than to one `plant_qc` row — a partial unique
+   index (`idx_cube_test_results_pour`, `WHERE plant_qc_id IS NULL`) enforces one shared result per
+   pour per testing age going forward, without touching or colliding with any pre-existing per-DN
+   row (those keep their old `UNIQUE (plant_qc_id, testing_age_days)` shape). `cube_test_cubes`
+   gained its own nullable `plant_qc_id` so a multi-DN pour's individual cubes still record which DN
+   each one was actually pulled from — used by the PDF/report, on top of the human-readable
+   "TCK-2208 · Cube 1" style label the Lab Technician already types.
+2. **Lab Technician's Cube Testing tab rebuilt around pours.** `pages/LabTechnician.jsx`'s list
+   (`GET /lab-technician/cube-pours`) now shows one card per order — "18 cubes across 3 DNs" — with
+   7-day/28-day due status computed from the EARLIEST cube-casting time across the pour's DNs (the
+   conservative anchor, so nothing reads as later-due than it would have under the old model).
+   Opening a card (`GET /lab-technician/cube-pours/:orderId`) shows "Cube samples for this pour" — a
+   reference list of every DN that had cubes cast — followed by any results already on file (new
+   pour-level ones and any surviving legacy per-DN ones, clearly labeled), then the entry form:
+   cube rows now grouped under a "From DN <ticket>" sub-heading per contributing DN
+   (`POST /lab-technician/cube-pours/:orderId/results`, body `{ testing_age_days, groups: [{
+   plant_qc_id, cubes }] }`), with one shared average computed across every group's cubes together.
+   Close/reopen ("not testing this pour") moved to a new `cube_pour_status` table, parallel to (and
+   independent of) the older per-DN `cube_batch_status`, which is left untouched for any DN closed
+   out before this round.
+3. **Every downstream consumer updated to read by `order_id` instead of joining through
+   `plant_qc`/`delivery_tickets`** — `cube_test_results.order_id` is backfilled for every existing
+   row (legacy or new), so this is one consistent join everywhere rather than a branch per row shape:
+   the Lab Technician cube-test PDF route, the Cube Test Report (`cube-test-report`, still grouped
+   by pour for `CubeTestReport.jsx`'s existing "Group by pour" toggle — this round makes that
+   grouping real all the way down instead of a display-only reshuffle over per-DN rows), the customer
+   portal's QC Reports list, per-order cube-test list, single-result and same-day-combined PDF
+   routes, and the shared booking-link page's own QC report/PDF routes. A new shared helper,
+   `lib/cubeTestDns.js`'s `resolveCubeTestDnSummary()`, resolves a result's ticket number(s), sample
+   IDs, and earliest casting time from however many DNs it actually drew from (one, for a legacy
+   result; however many contributed, for a pour-level one) — used by every PDF-data route instead of
+   each reimplementing that join. `cubeTestPdf.js`'s "Delivery Ticket" line shows `DNs: X, Y, Z` for
+   a multi-DN pour instead of misleadingly prefixing a comma-joined list with a single "#".
+
+**Verification note**: this round's migration is additive-only by design (relaxing a `NOT NULL`,
+adding nullable columns, a new partial unique index, a new parallel table) specifically so it carries
+no risk to any already-recorded cube test data regardless of what shape existing rows are in —
+reviewed for that property rather than tested against production data, since none was available here.
+
+### Migration note
+
+`setup.js` now also runs: `ALTER TABLE cube_test_results ALTER COLUMN plant_qc_id DROP NOT NULL`,
+adds and backfills `cube_test_results.order_id`, adds the partial unique index
+`idx_cube_test_results_pour`, adds `cube_test_cubes.plant_qc_id`, and creates `cube_pour_status` —
+all automatically on next backend start, all additive (see above).
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.

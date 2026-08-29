@@ -1426,6 +1426,70 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (site_cube_casts/site_cube_test_results/site_cube_test_cubes — cube samples cast at the customer's site rather than the plant, anchored to the order instead of a delivery ticket; same visible_to_customer switch as plant-cast results).");
 
+    // Round 121, item 3 — a customer may need multiple billing entities
+    // (business decision: "one day bill Company A, next order Company B, to
+    // manage tax," even for the same site) — each a named, reusable profile
+    // (name/address/GSTIN) a customer maintains, picked per order (defaults
+    // to whichever one is_default, but always changeable). Deliberately
+    // additive: customers.billing_address (the old single free-text field)
+    // stays exactly as-is as the fallback for a customer with no profiles
+    // set up — nothing here changes what any existing order or invoice shows.
+    await query(`
+      CREATE TABLE IF NOT EXISTS customer_billing_addresses (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id) NOT NULL,
+        name VARCHAR(150) NOT NULL,
+        address TEXT,
+        gstin VARCHAR(20),
+        is_default BOOLEAN NOT NULL DEFAULT false,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_customer_billing_addresses_customer ON customer_billing_addresses(customer_id);
+      ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS billing_address_id INTEGER REFERENCES customer_billing_addresses(id);
+      ALTER TABLE invoices ADD COLUMN IF NOT EXISTS billing_name VARCHAR(200);
+      ALTER TABLE invoices ADD COLUMN IF NOT EXISTS billing_address TEXT;
+      ALTER TABLE invoices ADD COLUMN IF NOT EXISTS billing_gstin VARCHAR(20);
+    `);
+    log.push("Schema migration applied (customer_billing_addresses — named, reusable billing profiles per customer; customer_orders.billing_address_id — which profile an order is billed under; invoices.billing_name/billing_address/billing_gstin — snapshotted at invoice-generation time so a past invoice never changes if the profile is later edited).");
+
+    await query(`
+      ALTER TABLE customer_access_tokens ADD COLUMN IF NOT EXISTS covers_all_sites BOOLEAN NOT NULL DEFAULT false;
+    `);
+    log.push("Schema migration applied (customer_access_tokens.covers_all_sites — an access code can now cover every current and future site for a customer instead of a fixed, checked-at-generation-time site list).");
+
+    // Round 122 — cube testing moves from per-DN to per-pour (see
+    // schema.sql's comment above cube_test_results). Purely additive: relax
+    // plant_qc_id to nullable so a new pour-level row can omit it, add
+    // order_id (backfilled below for every existing row so date-correction
+    // and reporting can key off it uniformly regardless of a row's age), add
+    // the partial unique index that only governs NEW pour-level rows, add
+    // cube_test_cubes.plant_qc_id for per-cube DN provenance on a multi-DN
+    // pour, and add cube_pour_status as a parallel table to the existing
+    // per-DN cube_batch_status (left untouched).
+    await query(`
+      ALTER TABLE cube_test_results ALTER COLUMN plant_qc_id DROP NOT NULL;
+      ALTER TABLE cube_test_results ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES customer_orders(id);
+    `);
+    await query(`
+      UPDATE cube_test_results ctr SET order_id = dt.order_id
+      FROM plant_qc pq JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+      WHERE pq.id = ctr.plant_qc_id AND ctr.order_id IS NULL;
+    `);
+    await query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_cube_test_results_pour ON cube_test_results(order_id, testing_age_days)
+        WHERE plant_qc_id IS NULL;
+      ALTER TABLE cube_test_cubes ADD COLUMN IF NOT EXISTS plant_qc_id INTEGER REFERENCES plant_qc(id);
+      CREATE TABLE IF NOT EXISTS cube_pour_status (
+        order_id INTEGER PRIMARY KEY REFERENCES customer_orders(id),
+        status VARCHAR(20) NOT NULL DEFAULT 'closed' CHECK (status = 'closed'),
+        closed_reason TEXT,
+        closed_by INTEGER REFERENCES users(id) NOT NULL,
+        closed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (cube_test_results — cube testing moves from per-DN to per-pour; plant_qc_id is now nullable and order_id added/backfilled, with a partial unique index covering only new pour-level rows so no existing per-DN result is touched; cube_test_cubes.plant_qc_id — per-cube DN provenance for a multi-DN pour; cube_pour_status — pour-level close/reopen, parallel to the existing cube_batch_status).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

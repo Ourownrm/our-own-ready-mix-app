@@ -141,6 +141,75 @@ router.delete("/customers/:id", requireRole("administrator", "manager"), async (
   res.json({ ok: true });
 });
 
+// ===== Round 121, item 3: Billing addresses (per-customer, multiple) =====
+// Named, reusable billing profiles a customer maintains — a customer with
+// none has every order fall back to the plain customers.billing_address
+// field, exactly as before this feature existed.
+
+router.get("/customers/:customerId/billing-addresses", requireRole("administrator", "manager", "sales_executive", "accountant"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT * FROM customer_billing_addresses WHERE customer_id = $1 ORDER BY is_default DESC, is_active DESC, name`,
+    [req.params.customerId]
+  );
+  res.json(rows);
+});
+
+router.post("/customers/:customerId/billing-addresses", requireRole("administrator", "manager"), async (req, res) => {
+  const { name, address, gstin, is_default } = req.body;
+  if (!name) return res.status(400).json({ error: "A name for this billing entity is required (e.g. the company name)." });
+  const { rows: customerCheck } = await query("SELECT id FROM customers WHERE id = $1", [req.params.customerId]);
+  if (!customerCheck.length) return res.status(404).json({ error: "Customer not found." });
+
+  // First billing address a customer ever gets is set default automatically
+  // — otherwise "keep a default always available" (the business's own
+  // requirement) would silently not hold for the common case of a customer
+  // who only ever adds one.
+  const { rows: existing } = await query("SELECT COUNT(*) FROM customer_billing_addresses WHERE customer_id = $1", [req.params.customerId]);
+  const shouldBeDefault = !!is_default || Number(existing[0].count) === 0;
+  if (shouldBeDefault) {
+    await query("UPDATE customer_billing_addresses SET is_default = false WHERE customer_id = $1", [req.params.customerId]);
+  }
+  const { rows } = await query(
+    `INSERT INTO customer_billing_addresses (customer_id, name, address, gstin, is_default)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [req.params.customerId, name, address || null, gstin || null, shouldBeDefault]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/billing-addresses/:id", requireRole("administrator", "manager"), async (req, res) => {
+  const { name, address, gstin } = req.body;
+  if (!name) return res.status(400).json({ error: "A name for this billing entity is required." });
+  const { rows } = await query(
+    `UPDATE customer_billing_addresses SET name = $1, address = $2, gstin = $3 WHERE id = $4 RETURNING *`,
+    [name, address || null, gstin || null, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Billing address not found." });
+  res.json(rows[0]);
+});
+
+router.post("/billing-addresses/:id/set-default", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows: rowCheck } = await query("SELECT customer_id FROM customer_billing_addresses WHERE id = $1", [req.params.id]);
+  if (!rowCheck.length) return res.status(404).json({ error: "Billing address not found." });
+  await query("UPDATE customer_billing_addresses SET is_default = false WHERE customer_id = $1", [rowCheck[0].customer_id]);
+  await query("UPDATE customer_billing_addresses SET is_default = true WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+// Deactivate rather than delete — past orders/invoices keep referencing this
+// row (invoices only ever snapshot its text anyway, so a deactivated profile
+// changes nothing about history), it just stops appearing as a choice for
+// new orders.
+router.post("/billing-addresses/:id/status", requireRole("administrator", "manager"), async (req, res) => {
+  const { is_active } = req.body;
+  const { rows } = await query(
+    "UPDATE customer_billing_addresses SET is_active = $1 WHERE id = $2 RETURNING *",
+    [!!is_active, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Billing address not found." });
+  res.json(rows[0]);
+});
+
 // ===== Master data: Sites =====
 
 // Every site including disabled ones, with full detail plus its assigned
@@ -158,8 +227,39 @@ router.get("/sites", requireRole("administrator", "manager"), async (req, res) =
   res.json(rows);
 });
 
+// Round 121, item 6 — every site's geofence anchor (the coordinate + radius
+// that decides "has this truck reached/left the site" for auto-detection),
+// alongside the freshest Site Supervisor site-ready GPS tap on file for it —
+// so a manager can see exactly what's actually driving detection for a site,
+// compare it against where the site really is on the map, and fix a stale or
+// missing saved coordinate without needing a database console. This is a
+// diagnostic/adjustment view, not a new detection mechanism — the detection
+// logic in scheduledChecks.js is unchanged; this just makes what it's using
+// visible and editable.
+router.get("/sites/geofence-report", requireRole("administrator", "manager"), async (req, res) => {
+  const { rows: plant } = await query(
+    `SELECT id, name, latitude, longitude, geofence_radius_m, is_active FROM plant_locations ORDER BY is_active DESC, name`
+  );
+  const { rows: sites } = await query(
+    `SELECT s.id, s.name, s.latitude, s.longitude, s.geofence_radius_m, s.distance_from_plant_km,
+            c.name AS customer_name,
+            lr.site_ready_latitude AS last_site_ready_latitude, lr.site_ready_longitude AS last_site_ready_longitude,
+            lr.site_ready_location_suspect AS last_site_ready_suspect, lr.site_ready_confirmed_at AS last_site_ready_at
+     FROM sites s
+     JOIN customers c ON c.id = s.customer_id
+     LEFT JOIN LATERAL (
+       SELECT site_ready_latitude, site_ready_longitude, site_ready_location_suspect, site_ready_confirmed_at
+       FROM customer_orders
+       WHERE site_id = s.id AND site_ready_confirmed_at IS NOT NULL
+       ORDER BY site_ready_confirmed_at DESC LIMIT 1
+     ) lr ON true
+     ORDER BY c.name, s.name`
+  );
+  res.json({ plant_locations: plant, sites });
+});
+
 router.post("/sites", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
-  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id, plant_out_grace_minutes, force } = req.body;
+  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, assigned_sales_representative_id, plant_out_grace_minutes, force } = req.body;
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   if (!assigned_sales_representative_id) return res.status(400).json({ error: "Every site needs a salesperson assigned." });
 
@@ -177,22 +277,25 @@ router.post("/sites", requireRole("administrator", "manager", "sales_executive")
   }
 
   const { rows } = await query(
-    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, assigned_sales_representative_id, plant_out_grace_minutes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null, assigned_sales_representative_id, plant_out_grace_minutes || null]
+    `INSERT INTO sites (customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, assigned_sales_representative_id, plant_out_grace_minutes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude || null, longitude || null, geofence_radius_m || null, assigned_sales_representative_id, plant_out_grace_minutes || null]
   );
   res.status(201).json(rows[0]);
 });
 
+// Round 121, item 6 — geofence_radius_m gained a UI (below); previously it
+// only ever existed in the schema with its SQL-level default (150), with no
+// way to actually set it per site.
 router.patch("/sites/:id", requireRole("administrator", "manager"), async (req, res) => {
-  const { name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, plant_out_grace_minutes } = req.body;
+  const { name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, plant_out_grace_minutes } = req.body;
   if (!name) return res.status(400).json({ error: "Site name is required." });
   const { rows } = await query(
     `UPDATE sites SET name = $1, address = $2, distance_from_plant_km = $3, trip_allowance_category_id = $4,
-       latitude = $5, longitude = $6, plant_out_grace_minutes = $7
-     WHERE id = $8 RETURNING *`,
+       latitude = $5, longitude = $6, geofence_radius_m = $7, plant_out_grace_minutes = $8
+     WHERE id = $9 RETURNING *`,
     [name, address || null, distance_from_plant_km || null, trip_allowance_category_id || null,
-     latitude || null, longitude || null, plant_out_grace_minutes || null, req.params.id]
+     latitude || null, longitude || null, geofence_radius_m || null, plant_out_grace_minutes || null, req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Site not found." });
   res.json(rows[0]);

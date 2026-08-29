@@ -1,116 +1,198 @@
 // Lab Technician (round 118) — new role, separate from QC Engineer.
 // QC Engineer keeps doing plant-side fresh-concrete QC (slump/temp, cube
-// casting) exactly as before — a "cube batch" here is just a plant_qc row
-// that already has cubes cast against it (number_of_cubes > 0); nothing new
-// is captured at casting time. Lab Technician owns everything downstream:
+// casting) exactly as before — a plant_qc row is just a delivery ticket that
+// already has cubes cast against it (number_of_cubes > 0); nothing new is
+// captured at casting time. Lab Technician owns everything downstream:
 // recording compressive-strength results at 7/28 days, and maintaining the
 // mix design library those results and both PDF reports are built from.
+// Round 122 — that downstream testing moved from per-DN to per-POUR (the
+// order); see the "Cube testing, pour-basis" section below for the full
+// reasoning.
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { resolveCubeTestDnSummary } from "../lib/cubeTestDns.js";
 
 const router = Router();
 // Broad read access for anyone who might reasonably need to see this data;
 // writes are tightened per-route below.
 router.use(requireAuth, requireRole("lab_technician", "qc_engineer", "manager", "administrator"));
 
-// ===== Cube test batches =====
+// Round 121, item 4 — order picker for "+ Record a site cast" (the only
+// place Lab Technician manually picks an order, since a site cast has no
+// delivery ticket to derive it from). The generic GET /orders list used
+// elsewhere still includes an order right up until it's ever delivered
+// against (and, within its 1-day carry-forward window, even after being
+// cancelled/closed with zero supply) — exactly the case that shouldn't be
+// selectable here: cubes can only ever have been cast at a site for concrete
+// that actually reached it. Filtered here, not on the shared route, so nothing
+// else in the app (which legitimately wants to see a just-created order with
+// no deliveries yet) is affected.
+router.get("/orders-with-supply", async (req, res) => {
+  const { rows } = await query(
+    `SELECT o.id, o.order_date, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0) AS delivered_qty_m3
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     JOIN mix_grades m ON m.id = o.mix_grade_id
+     JOIN delivery_tickets dt ON dt.order_id = o.id
+     GROUP BY o.id, c.name, s.name, m.name
+     HAVING COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0) > 0
+     ORDER BY o.order_date DESC, o.id DESC
+     LIMIT 300`
+  );
+  res.json(rows);
+});
 
-// Every cube batch (plant_qc row with cubes actually cast), with 7-day/28-day
-// due status computed in SQL (recurring pattern #1 — never JS Date() for
-// "is this overdue" logic).
-router.get("/cube-batches", async (req, res) => {
+// ===== Cube testing, pour-basis (round 122) =====
+// Cube testing is now grouped and entered by POUR (the customer_orders row),
+// not by individual delivery note — a pour is usually served by several
+// trucks/DNs, and cubes cast against any of them are one shared batch as far
+// as compressive-strength testing goes. QC Engineer's own plant-side capture
+// is completely unchanged (still one plant_qc row per delivery ticket, cubes
+// cast and counted there); only how Lab Technician tests them changes.
+//
+// A NEW-style cube_test_results row belongs to the pour as a whole:
+// order_id is set, plant_qc_id is NULL (see schema.sql's comment on that
+// column and the partial unique index idx_cube_test_results_pour). A row
+// entered before this round keeps its old shape (plant_qc_id set, one DN's
+// own result) and is never migrated or touched — every route below treats
+// those as "legacy" and keeps surfacing them so nothing already recorded
+// drops out of view.
+
+// Every pour (order) that has at least one plant_qc row with cubes actually
+// cast, with 7-day/28-day due status computed in SQL (recurring pattern #1
+// — never JS Date() for "is this overdue" logic). "poured_at" is the
+// EARLIEST cube-casting time across the pour's DNs — the conservative choice
+// for a due-date anchor, so a due date never lands later than it would have
+// under the old per-DN model.
+router.get("/cube-pours", async (req, res) => {
   // Three dashboard buckets so the default (active) list doesn't get
-  // cluttered by batches that are already fully tested or that were
+  // cluttered by pours that are already fully tested or that were
   // deliberately closed out — "completed"/"closed" are their own views, not
   // just filtered client-side, so the active list stays the default even as
-  // the batch count grows. Bucket is computed here, not stored, so it can
+  // the pour count grows. Bucket is computed here, not stored, so it can
   // never drift from the underlying test results.
   const view = ["active", "completed", "closed"].includes(req.query.view) ? req.query.view : "active";
   const { rows } = await query(
     `SELECT * FROM (
-       SELECT pq.id AS plant_qc_id, pq.ticket_id, pq.number_of_cubes, pq.sample_ids, pq.entered_at AS cast_at,
-              dt.ticket_number, co.mix_grade_id, m.name AS mix_grade_name,
-              c.name AS customer_name, s.name AS site_name,
-              r7.id AS result_7day_id, r7.average_strength_mpa AS result_7day_strength,
-              r28.id AS result_28day_id, r28.average_strength_mpa AS result_28day_strength,
-              CASE WHEN r7.id IS NOT NULL THEN 'done'
-                   WHEN CURRENT_DATE > (pq.entered_at::date + 7) THEN 'overdue'
-                   WHEN CURRENT_DATE = (pq.entered_at::date + 7) THEN 'due_today'
+       WITH pour_batches AS (
+         SELECT co.id AS order_id, m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name,
+                MIN(pq.entered_at) AS poured_at, COUNT(DISTINCT pq.id) AS dn_count,
+                COALESCE(SUM(pq.number_of_cubes), 0) AS total_cubes
+         FROM plant_qc pq
+         JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+         JOIN customer_orders co ON co.id = dt.order_id
+         JOIN customers c ON c.id = co.customer_id
+         JOIN sites s ON s.id = co.site_id
+         JOIN mix_grades m ON m.id = co.mix_grade_id
+         WHERE COALESCE(pq.number_of_cubes, 0) > 0
+         GROUP BY co.id, m.name, c.name, s.name
+       ),
+       legacy_results AS (
+         -- Any pre-round-122 DN-level result, rolled up to its order — the
+         -- most recently tested one per order+age stands in for the list's
+         -- badges until that pour gets its own shared pour-level result.
+         SELECT DISTINCT ON (dt.order_id, ctr.testing_age_days)
+                dt.order_id, ctr.testing_age_days, ctr.average_strength_mpa AS strength
+         FROM cube_test_results ctr
+         JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
+         JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+         ORDER BY dt.order_id, ctr.testing_age_days, ctr.tested_at DESC
+       )
+       SELECT pb.order_id, pb.mix_grade_name, pb.customer_name, pb.site_name, pb.poured_at, pb.dn_count, pb.total_cubes,
+              pr7.id AS result_7day_id, pr7.average_strength_mpa AS result_7day_strength,
+              pr28.id AS result_28day_id, pr28.average_strength_mpa AS result_28day_strength,
+              leg7.strength AS legacy_7day_strength, leg28.strength AS legacy_28day_strength,
+              cps.closed_reason, cps.closed_at, cu.name AS closed_by_name,
+              CASE WHEN cps.order_id IS NOT NULL THEN 'closed'
+                   WHEN (pr7.id IS NOT NULL OR leg7.strength IS NOT NULL)
+                    AND (pr28.id IS NOT NULL OR leg28.strength IS NOT NULL) THEN 'completed'
+                   ELSE 'active' END AS view_bucket,
+              CASE WHEN pr7.id IS NOT NULL OR leg7.strength IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (pb.poured_at::date + 7) THEN 'overdue'
+                   WHEN CURRENT_DATE = (pb.poured_at::date + 7) THEN 'due_today'
                    ELSE 'upcoming' END AS status_7day,
-              (pq.entered_at::date + 7) AS due_7day,
-              CASE WHEN r28.id IS NOT NULL THEN 'done'
-                   WHEN CURRENT_DATE > (pq.entered_at::date + 28) THEN 'overdue'
-                   WHEN CURRENT_DATE = (pq.entered_at::date + 28) THEN 'due_today'
+              (pb.poured_at::date + 7) AS due_7day,
+              CASE WHEN pr28.id IS NOT NULL OR leg28.strength IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (pb.poured_at::date + 28) THEN 'overdue'
+                   WHEN CURRENT_DATE = (pb.poured_at::date + 28) THEN 'due_today'
                    ELSE 'upcoming' END AS status_28day,
-              (pq.entered_at::date + 28) AS due_28day,
-              cbs.closed_reason, cbs.closed_at, cu.name AS closed_by_name,
-              CASE WHEN cbs.plant_qc_id IS NOT NULL THEN 'closed'
-                   WHEN r7.id IS NOT NULL AND r28.id IS NOT NULL THEN 'completed'
-                   ELSE 'active' END AS view_bucket
-       FROM plant_qc pq
-       JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-       JOIN customer_orders co ON co.id = dt.order_id
-       JOIN customers c ON c.id = co.customer_id
-       JOIN sites s ON s.id = co.site_id
-       JOIN mix_grades m ON m.id = co.mix_grade_id
-       LEFT JOIN cube_test_results r7 ON r7.plant_qc_id = pq.id AND r7.testing_age_days = 7
-       LEFT JOIN cube_test_results r28 ON r28.plant_qc_id = pq.id AND r28.testing_age_days = 28
-       LEFT JOIN cube_batch_status cbs ON cbs.plant_qc_id = pq.id
-       LEFT JOIN users cu ON cu.id = cbs.closed_by
-       WHERE COALESCE(pq.number_of_cubes, 0) > 0
+              (pb.poured_at::date + 28) AS due_28day
+       FROM pour_batches pb
+       LEFT JOIN cube_test_results pr7 ON pr7.order_id = pb.order_id AND pr7.testing_age_days = 7 AND pr7.plant_qc_id IS NULL
+       LEFT JOIN cube_test_results pr28 ON pr28.order_id = pb.order_id AND pr28.testing_age_days = 28 AND pr28.plant_qc_id IS NULL
+       LEFT JOIN legacy_results leg7 ON leg7.order_id = pb.order_id AND leg7.testing_age_days = 7
+       LEFT JOIN legacy_results leg28 ON leg28.order_id = pb.order_id AND leg28.testing_age_days = 28
+       LEFT JOIN cube_pour_status cps ON cps.order_id = pb.order_id
+       LEFT JOIN users cu ON cu.id = cps.closed_by
      ) t
      WHERE view_bucket = $1
-     ORDER BY cast_at DESC
+     ORDER BY poured_at DESC
      LIMIT 200`,
     [view]
   );
   res.json(rows);
 });
 
-// One batch's detail, plus the approved mix designs for its grade (for the
-// "compare against" dropdown) and the order's own resolved design, if any,
-// as the sensible default.
-router.get("/cube-batches/:plantQcId", async (req, res) => {
-  const { rows } = await query(
-    `SELECT pq.id AS plant_qc_id, pq.ticket_id, pq.number_of_cubes, pq.sample_ids, pq.entered_at AS cast_at,
-            dt.ticket_number, co.id AS order_id, co.mix_grade_id, co.resolved_mix_design_id,
+// One pour's detail: every DN that had cubes cast for it (the reference list
+// shown before entering a shared result — see the mockup's "Cube samples for
+// this pour"), the approved designs for its grade, and every result on file
+// for it — new pour-level rows plus any legacy per-DN rows still on record
+// (see the file header comment).
+router.get("/cube-pours/:orderId", async (req, res) => {
+  const { rows: orderRows } = await query(
+    `SELECT co.id AS order_id, co.mix_grade_id, co.resolved_mix_design_id,
             m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name,
-            cbs.closed_reason, cbs.closed_at, cu.name AS closed_by_name,
-            (cbs.plant_qc_id IS NOT NULL) AS is_closed
-     FROM plant_qc pq
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
+            cps.closed_reason, cps.closed_at, cu.name AS closed_by_name, (cps.order_id IS NOT NULL) AS is_closed
+     FROM customer_orders co
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
-     LEFT JOIN cube_batch_status cbs ON cbs.plant_qc_id = pq.id
-     LEFT JOIN users cu ON cu.id = cbs.closed_by
-     WHERE pq.id = $1`,
-    [req.params.plantQcId]
+     LEFT JOIN cube_pour_status cps ON cps.order_id = co.id
+     LEFT JOIN users cu ON cu.id = cps.closed_by
+     WHERE co.id = $1`,
+    [req.params.orderId]
   );
-  if (!rows.length) return res.status(404).json({ error: "Cube batch not found." });
-  const batch = rows[0];
+  if (!orderRows.length) return res.status(404).json({ error: "Order not found." });
+  const order = orderRows[0];
+
+  const { rows: dns } = await query(
+    `SELECT pq.id AS plant_qc_id, pq.number_of_cubes, pq.sample_ids, pq.entered_at AS cast_at,
+            dt.ticket_number, tr.truck_number
+     FROM plant_qc pq
+     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+     LEFT JOIN trucks tr ON tr.id = dt.truck_id
+     WHERE dt.order_id = $1 AND COALESCE(pq.number_of_cubes, 0) > 0
+     ORDER BY pq.entered_at`,
+    [req.params.orderId]
+  );
+  if (!dns.length) return res.status(404).json({ error: "No cube-cast delivery notes found for this order." });
 
   const { rows: designs } = await query(
     `SELECT id, design_ref_code, mix_description FROM mix_designs
      WHERE mix_grade_id = $1 AND status = 'approved' ORDER BY design_ref_code`,
-    [batch.mix_grade_id]
+    [order.mix_grade_id]
   );
   const { rows: results } = await query(
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.mix_design_id,
-            ctr.failure_type, ctr.visible_to_customer, u.name AS tested_by_name, ctr.tested_at
+            ctr.failure_type, ctr.visible_to_customer, u.name AS tested_by_name, ctr.tested_at,
+            (ctr.plant_qc_id IS NULL) AS is_pour_level
      FROM cube_test_results ctr JOIN users u ON u.id = ctr.tested_by
-     WHERE ctr.plant_qc_id = $1 ORDER BY ctr.testing_age_days`,
-    [batch.plant_qc_id]
+     WHERE (ctr.order_id = $1 AND ctr.plant_qc_id IS NULL) OR ctr.plant_qc_id = ANY($2::int[])
+     ORDER BY ctr.testing_age_days, ctr.tested_at`,
+    [req.params.orderId, dns.map((d) => d.plant_qc_id)]
   );
-  res.json({ ...batch, approved_designs: designs, results });
+  res.json({ ...order, dns, approved_designs: designs, results });
 });
 
 // Round 120, item 4a — Lab Technician/Administrator toggles whether one
 // result is shown in the customer module. Defaults true (see the schema
-// migration), so this is only ever hit to actively hide something.
+// migration), so this is only ever hit to actively hide something. Works
+// unchanged for a pour-level or a legacy result — it only ever touches the
+// one row by its own id.
 router.patch("/cube-tests/:resultId/visibility", requireRole("lab_technician", "administrator"), async (req, res) => {
   const { rows } = await query(
     `UPDATE cube_test_results SET visible_to_customer = $1 WHERE id = $2 RETURNING id`,
@@ -120,25 +202,27 @@ router.patch("/cube-tests/:resultId/visibility", requireRole("lab_technician", "
   res.json({ ok: true });
 });
 
-// Close a batch that isn't going to be tested (cubes damaged, order
+// Close a pour that isn't going to be tested (cubes damaged, order
 // cancelled, etc.) — a pure dashboard/workflow marker, doesn't touch
 // plant_qc or any cube_test_results row, and never destroys anything: a
-// closed batch can always be reopened.
-router.post("/cube-batches/:plantQcId/close", requireRole("lab_technician", "administrator"), async (req, res) => {
+// closed pour can always be reopened. Parallel to (but independent of) the
+// older per-DN cube_batch_status, which stays untouched for any DN closed
+// out under the pre-round-122 model.
+router.post("/cube-pours/:orderId/close", requireRole("lab_technician", "administrator"), async (req, res) => {
   const { reason } = req.body;
-  const { rows: batchRows } = await query("SELECT id FROM plant_qc WHERE id = $1", [req.params.plantQcId]);
-  if (!batchRows.length) return res.status(404).json({ error: "Cube batch not found." });
+  const { rows: orderRows } = await query("SELECT id FROM customer_orders WHERE id = $1", [req.params.orderId]);
+  if (!orderRows.length) return res.status(404).json({ error: "Order not found." });
   await query(
-    `INSERT INTO cube_batch_status (plant_qc_id, closed_reason, closed_by, closed_at)
+    `INSERT INTO cube_pour_status (order_id, closed_reason, closed_by, closed_at)
      VALUES ($1, $2, $3, now())
-     ON CONFLICT (plant_qc_id) DO UPDATE SET closed_reason = $2, closed_by = $3, closed_at = now()`,
-    [req.params.plantQcId, reason || null, req.user.id]
+     ON CONFLICT (order_id) DO UPDATE SET closed_reason = $2, closed_by = $3, closed_at = now()`,
+    [req.params.orderId, reason || null, req.user.id]
   );
   res.json({ ok: true });
 });
 
-router.post("/cube-batches/:plantQcId/reopen", requireRole("lab_technician", "administrator"), async (req, res) => {
-  await query("DELETE FROM cube_batch_status WHERE plant_qc_id = $1", [req.params.plantQcId]);
+router.post("/cube-pours/:orderId/reopen", requireRole("lab_technician", "administrator"), async (req, res) => {
+  await query("DELETE FROM cube_pour_status WHERE order_id = $1", [req.params.orderId]);
   res.json({ ok: true });
 });
 
@@ -170,25 +254,49 @@ router.put("/raw-material-stock", requireRole("lab_technician"), async (req, res
   res.json(rows);
 });
 
-// Submit (or replace) a cube batch's test result for one testing age.
-// Averages are always recomputed here from the posted cubes, never trusted
-// as-is from the client, so the stored average can't drift from what the
-// per-cube rows actually say.
-router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "administrator"), async (req, res) => {
-  const { testing_age_days, mix_design_id, cubes, remarks, failure_type } = req.body;
+// Submit (or replace) a pour's shared test result for one testing age.
+// `groups` is one entry per contributing DN — {plant_qc_id, cubes: [...]} —
+// matching the mockup's "From DN <ticket>" sub-sections; cubes are flattened
+// across every group before averaging (recomputed here, never trusted as-is
+// from the client, same rule every other averaged figure in this app
+// follows), and each cube keeps which DN it was pulled from
+// (cube_test_cubes.plant_qc_id) for the PDF/report's own provenance, even
+// though the human-readable cube_label the Lab Technician types already
+// spells the DN out too (e.g. "TCK-2208 · Cube 1").
+router.post("/cube-pours/:orderId/results", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { testing_age_days, mix_design_id, groups, remarks, failure_type } = req.body;
   if (![7, 28].includes(Number(testing_age_days))) {
     return res.status(400).json({ error: "Testing age must be 7 or 28 days." });
   }
-  if (!Array.isArray(cubes) || cubes.length === 0) {
+  if (!Array.isArray(groups) || groups.length === 0) {
+    return res.status(400).json({ error: "At least one DN's cubes are required." });
+  }
+  const { rows: orderRows } = await query("SELECT id FROM customer_orders WHERE id = $1", [req.params.orderId]);
+  if (!orderRows.length) return res.status(404).json({ error: "Order not found." });
+  const { rows: closedRows } = await query("SELECT 1 FROM cube_pour_status WHERE order_id = $1", [req.params.orderId]);
+  if (closedRows.length) return res.status(400).json({ error: "This pour is closed — reopen it first." });
+
+  // Every group's plant_qc_id must actually belong to this order — the
+  // checklist the frontend builds it from is already scoped to this pour's
+  // own DNs, but this is cheap insurance against a stale client.
+  const { rows: validDns } = await query(
+    `SELECT pq.id FROM plant_qc pq JOIN delivery_tickets dt ON dt.id = pq.ticket_id WHERE dt.order_id = $1`,
+    [req.params.orderId]
+  );
+  const validIds = new Set(validDns.map((r) => r.id));
+  const flatCubes = [];
+  for (const g of groups) {
+    if (!validIds.has(Number(g.plant_qc_id))) {
+      return res.status(400).json({ error: "One of the selected DNs doesn't belong to this order." });
+    }
+    for (const c of (g.cubes || [])) flatCubes.push({ ...c, plant_qc_id: Number(g.plant_qc_id) });
+  }
+  if (flatCubes.length === 0) {
     return res.status(400).json({ error: "At least one cube's weight/load is required." });
   }
-  const { rows: batchRows } = await query("SELECT id FROM plant_qc WHERE id = $1", [req.params.plantQcId]);
-  if (!batchRows.length) return res.status(404).json({ error: "Cube batch not found." });
-  const { rows: closedRows } = await query("SELECT 1 FROM cube_batch_status WHERE plant_qc_id = $1", [req.params.plantQcId]);
-  if (closedRows.length) return res.status(400).json({ error: "This batch is closed — reopen it first." });
 
   const avg = (key) => {
-    const vals = cubes.map((c) => Number(c[key])).filter((v) => !isNaN(v));
+    const vals = flatCubes.map((c) => Number(c[key])).filter((v) => !isNaN(v));
     if (!vals.length) return null;
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   };
@@ -199,26 +307,26 @@ router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "a
 
   const { rows: resultRows } = await query(
     `INSERT INTO cube_test_results
-      (plant_qc_id, testing_age_days, mix_design_id, average_weight_kg, average_load_kn,
+      (order_id, plant_qc_id, testing_age_days, mix_design_id, average_weight_kg, average_load_kn,
        average_density_kgm3, average_strength_mpa, remarks, failure_type, tested_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-     ON CONFLICT (plant_qc_id, testing_age_days) DO UPDATE SET
+     VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     ON CONFLICT (order_id, testing_age_days) WHERE plant_qc_id IS NULL DO UPDATE SET
        mix_design_id = $3, average_weight_kg = $4, average_load_kn = $5,
        average_density_kgm3 = $6, average_strength_mpa = $7, remarks = $8,
        failure_type = $9, tested_by = $10, tested_at = now()
      RETURNING id`,
-    [req.params.plantQcId, testing_age_days, mix_design_id || null, avgWeight, avgLoad, avgDensity, avgStrength, remarks || null, failure_type || null, req.user.id]
+    [req.params.orderId, testing_age_days, mix_design_id || null, avgWeight, avgLoad, avgDensity, avgStrength, remarks || null, failure_type || null, req.user.id]
   );
   const resultId = resultRows[0].id;
 
   await query("DELETE FROM cube_test_cubes WHERE cube_test_result_id = $1", [resultId]);
   let i = 0;
-  for (const c of cubes) {
+  for (const c of flatCubes) {
     i += 1;
     await query(
-      `INSERT INTO cube_test_cubes (cube_test_result_id, cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [resultId, c.cube_label || `Cube ${i}`, c.weight_kg || null, c.testing_load_kn || null, c.density_kgm3 || null, c.strength_mpa || null, i]
+      `INSERT INTO cube_test_cubes (cube_test_result_id, plant_qc_id, cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [resultId, c.plant_qc_id, c.cube_label || `Cube ${i}`, c.weight_kg || null, c.testing_load_kn || null, c.density_kgm3 || null, c.strength_mpa || null, i]
     );
   }
   res.status(201).json({ ok: true, result_id: resultId });
@@ -227,10 +335,13 @@ router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "a
 // ===== Site-cast cube tests (round 120, items 4b/4e) =====
 // Cubes prepared AT THE CUSTOMER'S SITE rather than plant-cast — a genuinely
 // separate workflow since there's no delivery ticket to anchor a batch to.
-// A "site cube cast" plays the same role plant_qc plays for plant batches;
-// everything below deliberately mirrors the plant cube-batches routes above
-// (same shape, same averaging-recomputed-server-side rule, same
-// visibility-toggle pattern), just anchored to an order instead of a ticket.
+// A "site cube cast" plays the same role plant_qc plays for a plant batch;
+// everything below deliberately mirrors the (pre-round-122, single-DN) plant
+// cube-batches shape — same averaging-recomputed-server-side rule, same
+// visibility-toggle pattern — just anchored to an order instead of a ticket.
+// It's deliberately NOT folded into the pour-basis routes above: a site cast
+// already has exactly one order behind it and no DN to group by, so there's
+// nothing pour-basis testing would add here.
 
 router.get("/site-cube-casts", async (req, res) => {
   const { rows } = await query(
@@ -296,6 +407,27 @@ router.get("/site-cube-casts/:castId", async (req, res) => {
     [batch.cast_id]
   );
   res.json({ ...batch, approved_designs: designs, results });
+});
+
+// Round 121, item 5 — delete a wrongly-entered site cast (e.g. logged
+// against the wrong order, or duplicated). Unlike a plant batch (which is
+// only ever "closed," never deleted, since it's tied to a real delivery
+// ticket that stays on record either way), a site cast has no ticket behind
+// it, so a genuine mis-entry has no other record to fall back on — deleting
+// it outright is the correct fix, not a status flag. Removes any test
+// results/cubes entered against it first (no ON DELETE CASCADE from
+// site_cube_test_results to site_cube_casts in the schema, by design — this
+// keeps a plain accidental-click DELETE on a *test result* from silently
+// taking the whole cast with it).
+router.delete("/site-cube-casts/:castId", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { rows: castRows } = await query("SELECT id FROM site_cube_casts WHERE id = $1", [req.params.castId]);
+  if (!castRows.length) return res.status(404).json({ error: "Site cube cast not found." });
+  await query(
+    `DELETE FROM site_cube_test_results WHERE site_cube_cast_id = $1`,
+    [req.params.castId]
+  ); // cascades to site_cube_test_cubes via its own ON DELETE CASCADE
+  await query("DELETE FROM site_cube_casts WHERE id = $1", [req.params.castId]);
+  res.json({ ok: true });
 });
 
 router.post("/site-cube-casts/:castId/results", requireRole("lab_technician", "administrator"), async (req, res) => {
@@ -394,7 +526,10 @@ router.get("/site-cube-tests/:resultId/pdf-data", async (req, res) => {
 // for after-the-fact data-entry corrections (a result entered days later
 // but back-dated to when the test actually happened, or a typo caught after
 // saving); it does not re-run any of the averaging logic above.
-router.patch("/cube-batches/:plantQcId/results/:resultId/date", requireRole("administrator"), async (req, res) => {
+// Correct a saved test's recorded date — administrator only. order_id is
+// backfilled on every row (legacy or pour-level, see the schema migration),
+// so this one WHERE works uniformly regardless of which shape the result is.
+router.patch("/cube-pours/:orderId/results/:resultId/date", requireRole("administrator"), async (req, res) => {
   const { tested_at } = req.body;
   const parsed = tested_at ? new Date(tested_at) : null;
   if (!parsed || isNaN(parsed)) {
@@ -402,9 +537,9 @@ router.patch("/cube-batches/:plantQcId/results/:resultId/date", requireRole("adm
   }
   const { rows } = await query(
     `UPDATE cube_test_results SET tested_at = $1
-     WHERE id = $2 AND plant_qc_id = $3
+     WHERE id = $2 AND order_id = $3
      RETURNING id`,
-    [parsed.toISOString(), req.params.resultId, req.params.plantQcId]
+    [parsed.toISOString(), req.params.resultId, req.params.orderId]
   );
   if (!rows.length) return res.status(404).json({ error: "Test result not found." });
   res.json({ ok: true });
@@ -412,24 +547,25 @@ router.patch("/cube-batches/:plantQcId/results/:resultId/date", requireRole("adm
 
 // Flat JSON for the client-side cube test PDF generator (mirrors the
 // Delivery Challan PDF pattern — the PDF itself is built in the browser,
-// nothing is rendered or stored server-side).
+// nothing is rendered or stored server-side). Joins to the order via
+// ctr.order_id directly (populated for both legacy and pour-level rows) so
+// this works for either shape without branching; the DN-level fields the PDF
+// wants (ticket number(s), sample IDs, casting time) come from the shared
+// resolveCubeTestDnSummary helper, which already knows how to summarize
+// across however many DNs a pour-level result actually drew from.
 router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
   const { rows } = await query(
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
-            ctr.visible_to_customer,
+            ctr.visible_to_customer, (ctr.plant_qc_id IS NULL) AS is_pour_level,
             u.name AS tested_by_name,
-            pq.id AS plant_qc_id, pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
-            dt.ticket_number,
             co.id AS order_id, co.casting_location, co.order_date,
             c.name AS customer_name, s.name AS site_name, s.address AS site_address,
             m.name AS mix_grade_name,
             md.id AS mix_design_id, md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
      FROM cube_test_results ctr
      JOIN users u ON u.id = ctr.tested_by
-     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customer_orders co ON co.id = ctr.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
@@ -443,7 +579,8 @@ router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
      FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
     [req.params.resultId]
   );
-  res.json({ ...rows[0], cubes, is_site_cast: false });
+  const dnSummary = await resolveCubeTestDnSummary(req.params.resultId);
+  res.json({ ...rows[0], ...dnSummary, number_of_cubes: cubes.length, cubes, is_site_cast: false });
 });
 
 // Configurable summary table across every cube test result — date range,
@@ -452,11 +589,14 @@ router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
 // read access above) since this is a cross-batch report, not a single
 // batch's own detail.
 //
-// Round 120, item 4d — "pour-based reporting" was scoped (per discussion) to
-// a reporting-layer change only, not a restructure of how/where casting is
-// recorded: `order_id` is now included on every row precisely so the
-// frontend (CubeTestReport.jsx) can group these by order/pour for display,
-// without any change to the underlying plant_qc/cube_test_results shape.
+// Round 120, item 4d — "pour-based reporting" first shipped as a
+// reporting-layer-only change (`order_id` on every row so the frontend,
+// CubeTestReport.jsx, could group by order/pour for display) while casting
+// and testing stayed per-DN underneath. Round 122 made that real: a plant
+// row's own `order_id`/`ticket_number`/`sample_ids`/`cast_at` below now
+// resolve correctly whether the underlying result is pour-level or a legacy
+// per-DN one (see the COALESCE subqueries), so this report needed no other
+// change to keep working across both.
 // Round 120, items 4b/4e — UNIONed with site_cube_test_results (cubes cast
 // at the customer's site rather than the plant) so this one report covers
 // both; `source` tells the two apart since they don't share an id space.
@@ -476,8 +616,23 @@ router.get("/cube-test-report", requireRole("lab_technician", "administrator"), 
     `SELECT 'plant' AS source, ctr.id, co.id AS order_id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.failure_type, ctr.remarks, ctr.tested_at, ctr.visible_to_customer,
             u.name AS tested_by_name,
-            pq.id AS batch_id, pq.entered_at AS cast_at, pq.sample_ids,
-            dt.ticket_number,
+            co.id AS batch_id,
+            COALESCE(pq.entered_at, (
+              SELECT MIN(pq2.entered_at) FROM cube_test_cubes ctc
+              JOIN plant_qc pq2 ON pq2.id = ctc.plant_qc_id
+              WHERE ctc.cube_test_result_id = ctr.id
+            )) AS cast_at,
+            COALESCE(pq.sample_ids, (
+              SELECT string_agg(DISTINCT pq2.sample_ids, ', ') FROM cube_test_cubes ctc
+              JOIN plant_qc pq2 ON pq2.id = ctc.plant_qc_id
+              WHERE ctc.cube_test_result_id = ctr.id AND pq2.sample_ids IS NOT NULL
+            )) AS sample_ids,
+            COALESCE(dt.ticket_number, (
+              SELECT string_agg(DISTINCT dt2.ticket_number, ', ') FROM cube_test_cubes ctc
+              JOIN plant_qc pq2 ON pq2.id = ctc.plant_qc_id
+              JOIN delivery_tickets dt2 ON dt2.id = pq2.ticket_id
+              WHERE ctc.cube_test_result_id = ctr.id
+            )) AS ticket_number,
             c.id AS customer_id, c.name AS customer_name,
             s.id AS site_id, s.name AS site_name,
             m.id AS mix_grade_id, m.name AS mix_grade_name,
@@ -486,12 +641,12 @@ router.get("/cube-test-report", requireRole("lab_technician", "administrator"), 
                  THEN (ctr.average_strength_mpa >= md.fck_28day_mpa) END AS meets_target
      FROM cube_test_results ctr
      JOIN users u ON u.id = ctr.tested_by
-     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customer_orders co ON co.id = ctr.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
+     LEFT JOIN delivery_tickets dt ON dt.id = pq.ticket_id
      LEFT JOIN mix_designs md ON md.id = ctr.mix_design_id
      ${where}
      UNION ALL

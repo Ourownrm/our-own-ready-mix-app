@@ -41,8 +41,9 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 // there's not enough information (no site GPS/distance on file at all, or
 // this truck hasn't left the plant yet). `truck` needs left_plant_at plus the
 // last-ping fields orderTracking.js's query attaches; `site` needs
-// latitude/longitude and/or distance_from_plant_km.
-export function estimateEtaAt(truck, site) {
+// latitude/longitude and/or distance_from_plant_km. `plant` (optional) is the
+// active plant_locations row, {latitude, longitude}.
+export function estimateEtaAt(truck, site, plant) {
   if (!truck.left_plant_at || truck.reached_site_at) return null; // not in transit
 
   const pingAgeMinutes = truck.last_ping_at ? (Date.now() - new Date(truck.last_ping_at).getTime()) / 60000 : Infinity;
@@ -57,9 +58,28 @@ export function estimateEtaAt(truck, site) {
     }
   }
 
-  // Fallback: distance-based estimate anchored from when the truck actually
-  // left the plant, same math as travelEstimate.js's estimateTravelMinutes.
-  const distanceKm = Number(site.distance_from_plant_km);
+  // Fallback (no fresh GPS yet): a distance-based estimate anchored from when
+  // the truck actually left the plant. This is written as "left_plant_at +
+  // total travel time," but it's mathematically the same figure as "total
+  // travel time minus elapsed-since-plant-out, added to now" — ETA = now +
+  // (total - elapsed) = now + total - (now - left_plant_at) = left_plant_at +
+  // total. Writing it anchored from left_plant_at (rather than from "now")
+  // just means the ETA doesn't quietly drift forward every time this
+  // function is called again with no new information.
+  //
+  // Round 121, item 1 — distance itself now prefers a real plant→site
+  // haversine distance (using the plant's saved geofence-anchor coordinate
+  // and the site's best-known coordinate — the Site Supervisor's own
+  // site-ready GPS tap when there is one and it isn't flagged suspect, else
+  // the site's saved lat/long) over the site's manually-entered
+  // distance_from_plant_km, since straight-line-from-real-coordinates is a
+  // more accurate number than a typed-in estimate. Only falls back to the
+  // manual figure when a real distance can't be computed at all (no active
+  // plant location, or no site coordinate on file).
+  const computedDistanceKm = plant?.latitude != null && plant?.longitude != null
+    ? haversineKm(plant.latitude, plant.longitude, site.latitude, site.longitude)
+    : null;
+  const distanceKm = computedDistanceKm !== null ? computedDistanceKm : Number(site.distance_from_plant_km);
   if (distanceKm > 0) {
     const minutes = (distanceKm / ASSUMED_AVERAGE_SPEED_KMPH) * 60;
     return new Date(new Date(truck.left_plant_at).getTime() + minutes * 60000).toISOString();

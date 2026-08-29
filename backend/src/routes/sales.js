@@ -370,6 +370,7 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
     sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks,
     pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
+    billing_address_id,
   } = req.body;
 
   const finalSiteId = site_id || booking.site_id;
@@ -441,6 +442,17 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
   );
   const defaultQcEngineerId = defaultQc[0]?.id || null;
 
+  // Round 121, item 3 — same default-billing-profile resolution as orders.js
+  // POST / (see that route's own comment).
+  let resolvedBillingAddressId = billing_address_id || null;
+  if (!resolvedBillingAddressId) {
+    const { rows: defaultBilling } = await query(
+      `SELECT id FROM customer_billing_addresses WHERE customer_id = $1 AND is_default AND is_active LIMIT 1`,
+      [booking.customer_id]
+    );
+    resolvedBillingAddressId = defaultBilling[0]?.id || null;
+  }
+
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, required_at_site_time, truck_dispatch_interval_minutes, customer_id, site_id,
@@ -448,8 +460,8 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
       pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
-      resolved_mix_design_id, assigned_qc_engineer_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+      resolved_mix_design_id, assigned_qc_engineer_id, billing_address_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
      RETURNING *`,
     [order_date, scheduled_batching_time, required_at_site_time || booking.preferred_time || null, truck_dispatch_interval_minutes, booking.customer_id, finalSiteId,
      finalMixGradeId, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required || null,
@@ -457,7 +469,7 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
      finalSalesRepId, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
      pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
      part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0,
-     resolvedMixDesignId, defaultQcEngineerId]
+     resolvedMixDesignId, defaultQcEngineerId, resolvedBillingAddressId]
   );
 
   await query(

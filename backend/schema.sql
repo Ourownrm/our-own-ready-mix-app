@@ -49,6 +49,30 @@ CREATE TABLE customers (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Round 121, item 3 — a customer may need to be billed under more than one
+-- legal entity (business decision: "one day bill Company A, next order
+-- Company B, to manage tax" — can be the same site, so this is deliberately
+-- NOT tied to a site). Each row is a named, reusable billing profile a
+-- customer maintains; customers.billing_address above stays as the plain
+-- legacy free-text fallback for a customer with no profiles set up at all —
+-- nothing here replaces it, an order simply prefers a selected profile when
+-- one exists. is_default marks the one that pre-fills new orders (a business
+-- decision, not a UI default: "keep a default billing address always if
+-- available"); at most one per customer is enforced in the application layer
+-- (set-default clears any other row's flag in the same statement), not by a
+-- partial unique index, to keep the migration a plain CREATE TABLE.
+CREATE TABLE customer_billing_addresses (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) NOT NULL,
+  name VARCHAR(150) NOT NULL,        -- e.g. "Company A Pvt Ltd"
+  address TEXT,
+  gstin VARCHAR(20),
+  is_default BOOLEAN NOT NULL DEFAULT false,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_customer_billing_addresses_customer ON customer_billing_addresses(customer_id);
+
 -- Trip allowance category, added per business rule: 100/150/200 by distance, paid only on completed delivery
 CREATE TABLE trip_allowance_categories (
   id SERIAL PRIMARY KEY,
@@ -339,6 +363,15 @@ CREATE TABLE customer_access_tokens (
   allow_tracking BOOLEAN NOT NULL DEFAULT true,
   allow_qc_reports BOOLEAN NOT NULL DEFAULT true,
   allow_technical_writings BOOLEAN NOT NULL DEFAULT true,
+  -- Round 122 — "all sites for this customer", not just the sites checked
+  -- at generation time. When true, customer_access_token_sites below is left
+  -- empty for this token and routes/customerPortal.js's requireCustomerAuth
+  -- resolves req.siteIds from a live query of every site currently on this
+  -- customer instead — so a site added to the customer LATER is covered
+  -- automatically, without anyone having to come back and re-check it here.
+  -- Right for a company-level contact (owner, PM); a site-specific contact
+  -- still uses customer_access_token_sites as before.
+  covers_all_sites BOOLEAN NOT NULL DEFAULT false,
   created_by INTEGER REFERENCES users(id) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_used_at TIMESTAMPTZ,
@@ -351,7 +384,8 @@ CREATE INDEX idx_customer_access_tokens_customer ON customer_access_tokens(custo
 -- Many-to-many: one access code can cover several sites for the same
 -- customer (e.g. a head-office contact who should see every active
 -- project), which a single customer_booking_links row can't express since
--- that's scoped to exactly one site.
+-- that's scoped to exactly one site. Left empty when covers_all_sites above
+-- is true — see that column's comment.
 CREATE TABLE customer_access_token_sites (
   token_id INTEGER REFERENCES customer_access_tokens(id) ON DELETE CASCADE NOT NULL,
   site_id INTEGER REFERENCES sites(id) NOT NULL,
@@ -757,7 +791,14 @@ CREATE TABLE customer_orders (
   -- before any mix design existed for its grade, or before this feature
   -- existed at all, simply has none. The customer never picks this directly —
   -- they only ever pick mix_grade_id above.
-  resolved_mix_design_id INTEGER
+  resolved_mix_design_id INTEGER,
+  -- Round 121, item 3 -- which of the customer's billing profiles this
+  -- particular order should be billed under (picked per order, per business
+  -- decision -- the same site can be billed to a different entity order to
+  -- order). NULL means "no specific profile" -- invoicing falls back to the
+  -- customer's own name/billing_address, same as every order before this
+  -- column existed.
+  billing_address_id INTEGER REFERENCES customer_billing_addresses(id)
 );
 
 -- ===================== DELIVERY TICKETS (SRS 6) =====================
@@ -1076,12 +1117,22 @@ CREATE TABLE mix_design_assignments (
   UNIQUE (customer_id, mix_grade_id)
 );
 
--- A cube test result for one cube batch (plant_qc row) at one testing age.
--- Cubes from the same batch are almost always tested together (per-cube rows
--- below), so this is the "result set", not a single cube.
+-- A cube test result at one testing age. Originally one row per cube batch
+-- (plant_qc row = one delivery note) — as of round 122, a NEW row is one per
+-- POUR instead (order_id set, plant_qc_id NULL): Lab Technician now tests by
+-- pour, pulling cubes from however many DNs contributed to it, since that's
+-- how a real pour's cube samples are actually planned and reported. A row
+-- entered before round 122 keeps its old shape (plant_qc_id set, order_id
+-- backfilled alongside it, one DN's own result) — this migration is
+-- deliberately additive, nothing already recorded is rewritten or dropped.
+-- idx_cube_test_results_pour below is a PARTIAL unique index (plant_qc_id IS
+-- NULL only), so it can never collide with old data: a legacy order that
+-- already had more than one DN independently tested under the old model
+-- keeps every one of those rows exactly as they were.
 CREATE TABLE cube_test_results (
   id SERIAL PRIMARY KEY,
-  plant_qc_id INTEGER REFERENCES plant_qc(id) NOT NULL,
+  plant_qc_id INTEGER REFERENCES plant_qc(id),
+  order_id INTEGER REFERENCES customer_orders(id),
   testing_age_days INTEGER NOT NULL CHECK (testing_age_days IN (7, 28)),
   -- Snapshotted so the report always shows the target strength that applied
   -- at test time, even if the design is revised later.
@@ -1105,10 +1156,18 @@ CREATE TABLE cube_test_results (
   visible_to_customer BOOLEAN NOT NULL DEFAULT true,
   UNIQUE (plant_qc_id, testing_age_days)
 );
+CREATE UNIQUE INDEX idx_cube_test_results_pour ON cube_test_results(order_id, testing_age_days)
+  WHERE plant_qc_id IS NULL;
 
 CREATE TABLE cube_test_cubes (
   id SERIAL PRIMARY KEY,
   cube_test_result_id INTEGER REFERENCES cube_test_results(id) ON DELETE CASCADE NOT NULL,
+  -- Round 122 — which DN this particular cube was pulled from, for a
+  -- pour-level result that draws from more than one. NULL for a legacy
+  -- single-DN result (its parent cube_test_results.plant_qc_id already says
+  -- which DN every cube in it came from) and for anything entered against a
+  -- pour with only one contributing DN.
+  plant_qc_id INTEGER REFERENCES plant_qc(id),
   cube_label VARCHAR(40) NOT NULL,
   weight_kg NUMERIC(6,3),
   testing_load_kn NUMERIC(7,2),
@@ -1128,6 +1187,19 @@ CREATE INDEX idx_cube_test_cubes_result ON cube_test_cubes(cube_test_result_id);
 -- not stored, so it can never drift from the underlying test results.
 CREATE TABLE cube_batch_status (
   plant_qc_id INTEGER PRIMARY KEY REFERENCES plant_qc(id),
+  status VARCHAR(20) NOT NULL DEFAULT 'closed' CHECK (status = 'closed'),
+  closed_reason TEXT,
+  closed_by INTEGER REFERENCES users(id) NOT NULL,
+  closed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Round 122 — same "closed, purely a workflow marker" idea as
+-- cube_batch_status above, but keyed to the POUR (order) instead of one DN,
+-- since testing is now entered per-pour. cube_batch_status itself is left in
+-- place untouched (existing closed DN rows from before round 122 stay valid
+-- history) — this is a parallel table, not a replacement/migration of it.
+CREATE TABLE cube_pour_status (
+  order_id INTEGER PRIMARY KEY REFERENCES customer_orders(id),
   status VARCHAR(20) NOT NULL DEFAULT 'closed' CHECK (status = 'closed'),
   closed_reason TEXT,
   closed_by INTEGER REFERENCES users(id) NOT NULL,
@@ -1406,7 +1478,17 @@ CREATE TABLE invoices (
   part_load_charge NUMERIC(12,2) DEFAULT 0,
   waiting_charge NUMERIC(12,2) DEFAULT 0,
   total_amount NUMERIC(12,2) NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  -- Round 121, item 3 -- snapshotted (not just a billing_address_id FK) so a
+  -- past invoice always shows the billing name/address/GSTIN that actually
+  -- applied when it was generated, even if that profile is later renamed or
+  -- deactivated -- same reasoning as resolved_mix_design_id being snapshotted
+  -- on customer_orders. Resolved from the order's billing_address_id when
+  -- set, else falls back to the plain customer name/billing_address (NULL
+  -- billing_gstin in that case -- the legacy fields never had one).
+  billing_name VARCHAR(200),
+  billing_address TEXT,
+  billing_gstin VARCHAR(20)
 );
 
 -- Supports multiple receipts against the same invoice (Additional Recommendations)

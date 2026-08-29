@@ -19,6 +19,12 @@ export async function getOrderTrackingPayload(orderId) {
     `SELECT o.id, o.status, o.order_quantity_m3, o.order_date, o.terminal_at,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
             s.latitude AS site_latitude, s.longitude AS site_longitude, s.distance_from_plant_km,
+            -- Round 121, item 1 — the Site Supervisor's own site-ready GPS tap
+            -- is usually a fresher, more precise anchor than the site's saved
+            -- coordinate (same COALESCE-unless-suspect pattern used for the
+            -- geofence checks in scheduledChecks.js), so it's preferred here
+            -- too when computing a real plant-to-site distance for ETA.
+            o.site_ready_latitude, o.site_ready_longitude, o.site_ready_location_suspect,
             COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status NOT IN ('cancelled', 'rejected')), 0) AS delivered_qty_m3
      FROM customer_orders o
      JOIN customers c ON c.id = o.customer_id
@@ -26,7 +32,8 @@ export async function getOrderTrackingPayload(orderId) {
      JOIN mix_grades m ON m.id = o.mix_grade_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
      WHERE o.id = $1
-     GROUP BY o.id, c.name, s.name, m.name, s.latitude, s.longitude, s.distance_from_plant_km`,
+     GROUP BY o.id, c.name, s.name, m.name, s.latitude, s.longitude, s.distance_from_plant_km,
+              o.site_ready_latitude, o.site_ready_longitude, o.site_ready_location_suspect`,
     [orderId]
   );
   const order = orderRows[0];
@@ -71,7 +78,21 @@ export async function getOrderTrackingPayload(orderId) {
     [orderId]
   );
 
-  const site = { latitude: order.site_latitude, longitude: order.site_longitude, distance_from_plant_km: order.distance_from_plant_km };
+  // Round 121, item 1 — the active plant location (same geofence-anchor row
+  // used elsewhere) doubles as the ETA fallback's distance origin. Missing
+  // entirely (no active plant location set) just means estimateEtaAt falls
+  // straight back to the site's manually-entered distance_from_plant_km, same
+  // as before this round.
+  const { rows: plantRows } = await query(
+    `SELECT latitude, longitude FROM plant_locations WHERE is_active LIMIT 1`
+  );
+  const plant = plantRows[0] || null;
+
+  const site = {
+    latitude: !order.site_ready_location_suspect && order.site_ready_latitude != null ? order.site_ready_latitude : order.site_latitude,
+    longitude: !order.site_ready_location_suspect && order.site_ready_longitude != null ? order.site_ready_longitude : order.site_longitude,
+    distance_from_plant_km: order.distance_from_plant_km,
+  };
 
   return {
     order: {
@@ -93,7 +114,7 @@ export async function getOrderTrackingPayload(orderId) {
       reached_site_at: t.reached_site_at,
       unloading_started_at: t.unloading_started_at,
       unloading_completed_at: t.unloading_completed_at,
-      eta_at: estimateEtaAt(t, site),
+      eta_at: estimateEtaAt(t, site, plant),
     })),
   };
 }

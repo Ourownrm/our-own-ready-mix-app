@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { randomBytes } from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { pushToRole } from "../lib/push.js";
@@ -57,6 +56,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
     sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks,
     pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
+    billing_address_id,
   } = req.body;
 
   // Round 120, item 4c — cube_samples_required added to this list: the
@@ -119,6 +119,21 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
   );
   const defaultQcEngineerId = defaultQc[0]?.id || null;
 
+  // Round 121, item 3 — if the form didn't specify one (or was left on "use
+  // default"), resolve the customer's own default billing profile, per the
+  // business decision to "keep a default billing address always if
+  // available." A customer with no profiles at all simply gets null here —
+  // invoicing then falls back to the plain customer name/billing_address,
+  // same as before this feature existed.
+  let resolvedBillingAddressId = billing_address_id || null;
+  if (!resolvedBillingAddressId) {
+    const { rows: defaultBilling } = await query(
+      `SELECT id FROM customer_billing_addresses WHERE customer_id = $1 AND is_default AND is_active LIMIT 1`,
+      [customer_id]
+    );
+    resolvedBillingAddressId = defaultBilling[0]?.id || null;
+  }
+
   const { rows } = await query(
     `INSERT INTO customer_orders
      (order_date, scheduled_batching_time, required_at_site_time, truck_dispatch_interval_minutes, customer_id, site_id,
@@ -126,8 +141,8 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
       pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount, resolved_mix_design_id,
-      assigned_qc_engineer_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+      assigned_qc_engineer_id, billing_address_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
      RETURNING *`,
     [order_date, scheduled_batching_time, required_at_site_time || null, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
@@ -135,7 +150,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
      sales_representative_id || null, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
      pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
      part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0, resolvedMixDesignId,
-     defaultQcEngineerId]
+     defaultQcEngineerId, resolvedBillingAddressId]
   );
   res.status(201).json(rows[0]);
 });
@@ -419,41 +434,14 @@ router.post("/:orderId/confirm-completion", requireRole("manager", "administrato
 });
 
 // ===================== CUSTOMER-FACING TRACKING LINK =====================
-// A shareable, single-order link (no login) the customer's own site agent can
-// open to see just that order's trucks — nothing else, not even a different
-// order for the same customer.
-function newToken() {
-  return randomBytes(24).toString("base64url");
-}
-
-router.get("/:orderId/tracking-link", requireRole("manager", "administrator"), async (req, res) => {
-  const { rows } = await query(
-    `SELECT id, token, created_at FROM order_tracking_links
-     WHERE order_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1`,
-    [req.params.orderId]
-  );
-  res.json({ active_link: rows[0] || null });
-});
-
-// Creating a new link automatically revokes whatever link was active before —
-// this is the actual fix for "shared it to the wrong person by mistake": there
-// is deliberately no way for two links to be valid for the same order at
-// once, so making a fresh one is itself the safe way to kill the old one.
-router.post("/:orderId/tracking-link", requireRole("manager", "administrator"), async (req, res) => {
-  const { rows: orderCheck } = await query("SELECT id FROM customer_orders WHERE id = $1", [req.params.orderId]);
-  if (!orderCheck.length) return res.status(404).json({ error: "Order not found." });
-
-  await query(
-    `UPDATE order_tracking_links SET revoked_at = now(), revoked_by = $1
-     WHERE order_id = $2 AND revoked_at IS NULL`,
-    [req.user.id, req.params.orderId]
-  );
-  const { rows } = await query(
-    `INSERT INTO order_tracking_links (order_id, token, created_by) VALUES ($1, $2, $3) RETURNING id, token, created_at`,
-    [req.params.orderId, newToken(), req.user.id]
-  );
-  res.status(201).json(rows[0]);
-});
+// Round 122 — the generate/regenerate/revoke management routes that used to
+// live here were removed along with Order Details' "Create & share link"
+// panel: the customer portal's access-code login covers this need now, so
+// there's no in-app way to mint a NEW link any more. The public consumption
+// route (routes/tracking.js, /track/:token) and the order_tracking_links
+// table are deliberately left in place — any link a customer was already
+// sent before this change keeps working until it's revoked or naturally
+// expires (3 hours after the order completes), it just can't be recreated.
 
 // Round 120, item 3f — a logged-in Manager/Administrator previously had no
 // in-app way to see this same per-truck stage view; the only path was
@@ -466,16 +454,6 @@ router.get("/:orderId/tracking", requireRole("manager", "administrator"), async 
   const payload = await getOrderTrackingPayload(req.params.orderId);
   if (!payload) return res.status(404).json({ error: "Order not found." });
   res.json(payload);
-});
-
-// Revoke without replacing — for "just kill it, I'll decide about a new one later."
-router.post("/:orderId/tracking-link/revoke", requireRole("manager", "administrator"), async (req, res) => {
-  const { rows } = await query(
-    `UPDATE order_tracking_links SET revoked_at = now(), revoked_by = $1
-     WHERE order_id = $2 AND revoked_at IS NULL RETURNING id`,
-    [req.user.id, req.params.orderId]
-  );
-  res.json({ ok: true, revoked_count: rows.length });
 });
 
 // Completed trips today, with the full timeline: batching (ticket created),
@@ -603,6 +581,11 @@ router.get("/:id", async (req, res) => {
             m.name AS mix_grade_name, p.pump_code, sup.name AS site_supervisor_name,
             sp.name AS sales_representative_name, creator.name AS created_by_name,
             qc.name AS qc_engineer_name,
+            -- Round 121, item 3 — which billing entity (if any) this order is
+            -- set to invoice under; null when the customer has no profiles or
+            -- none was selected, meaning it just bills under the customer's
+            -- own name/billing_address as before this feature existed.
+            ba.name AS billing_address_name, ba.address AS billing_address_text, ba.gstin AS billing_gstin,
             COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0)
               - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS delivered_qty_m3
      FROM customer_orders o
@@ -614,10 +597,12 @@ router.get("/:id", async (req, res) => {
      LEFT JOIN salespersons sp ON sp.id = COALESCE(s.assigned_sales_representative_id, o.sales_representative_id)
      LEFT JOIN users creator ON creator.id = o.created_by
      LEFT JOIN users qc ON qc.id = o.assigned_qc_engineer_id
+     LEFT JOIN customer_billing_addresses ba ON ba.id = o.billing_address_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = o.id
      LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE o.id = $1
-     GROUP BY o.id, c.name, s.name, s.address, m.name, p.pump_code, sup.name, sp.name, creator.name, qc.name`,
+     GROUP BY o.id, c.name, s.name, s.address, m.name, p.pump_code, sup.name, sp.name, creator.name, qc.name,
+              ba.name, ba.address, ba.gstin`,
     [req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found." });

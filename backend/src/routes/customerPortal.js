@@ -4,6 +4,7 @@ import { rateLimit } from "express-rate-limit";
 import { query } from "../db.js";
 import { getOrderTrackingPayload } from "../lib/orderTracking.js";
 import { pushToRole } from "../lib/push.js";
+import { resolveCubeTestDnSummary } from "../lib/cubeTestDns.js";
 
 // ===================== CUSTOMER PORTAL (round 119) =====================
 // Public, no-login-by-password page — a customer signs in with a short
@@ -113,7 +114,7 @@ async function requireCustomerAuth(req, res, next) {
   }
 
   const { rows } = await query(
-    `SELECT cat.customer_id, c.name AS customer_name
+    `SELECT cat.customer_id, cat.covers_all_sites, c.name AS customer_name
      FROM customer_access_tokens cat
      JOIN customers c ON c.id = cat.customer_id
      WHERE cat.id = $1 AND cat.is_active`,
@@ -122,13 +123,25 @@ async function requireCustomerAuth(req, res, next) {
   if (!rows.length) {
     return res.status(401).json({ error: "This access code has been revoked. Please contact us for a new one." });
   }
-  const { rows: siteRows } = await query(
-    "SELECT site_id FROM customer_access_token_sites WHERE token_id = $1",
-    [payload.token_id]
-  );
   req.customerId = rows[0].customer_id;
   req.customerName = rows[0].customer_name;
-  req.siteIds = siteRows.map((r) => r.site_id);
+  // Round 122 — a covers_all_sites code (see schema.sql) resolves its site
+  // list live from the customer's CURRENT sites on every request, same
+  // "re-check, don't just trust what was true at sign-in" reasoning as the
+  // is_active check above — so a site added after the code was issued is
+  // covered on the customer's very next request, no one needs to come back
+  // and re-grant anything. A specific-sites code keeps reading the fixed
+  // list it was generated with.
+  if (rows[0].covers_all_sites) {
+    const { rows: siteRows } = await query("SELECT id AS site_id FROM sites WHERE customer_id = $1", [req.customerId]);
+    req.siteIds = siteRows.map((r) => r.site_id);
+  } else {
+    const { rows: siteRows } = await query(
+      "SELECT site_id FROM customer_access_token_sites WHERE token_id = $1",
+      [payload.token_id]
+    );
+    req.siteIds = siteRows.map((r) => r.site_id);
+  }
   // Re-read live on every request, same reasoning as the is_active check
   // above: Manager flipping a switch on Booking Links should take effect on
   // the customer's very next request, not wait for their 180-day session.
@@ -600,9 +613,7 @@ router.get("/qc-reports", requireCustomerAuth, async (req, res) => {
     `SELECT 'plant' AS source, ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at,
             co.id AS order_id, s.name AS site_name, m.name AS mix_grade_name
      FROM cube_test_results ctr
-     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customer_orders co ON co.id = ctr.order_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
      WHERE co.customer_id = $1 AND co.site_id = ANY($2::int[]) AND ctr.visible_to_customer
@@ -678,9 +689,7 @@ router.get("/orders/:id/cube-tests", requireCustomerAuth, async (req, res) => {
   const { rows } = await query(
     `SELECT 'plant' AS source, ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at
      FROM cube_test_results ctr
-     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     WHERE dt.order_id = $1 AND ctr.visible_to_customer
+     WHERE ctr.order_id = $1 AND ctr.visible_to_customer
      UNION ALL
      SELECT 'site' AS source, sctr.id, sctr.testing_age_days, sctr.average_strength_mpa, sctr.tested_at
      FROM site_cube_test_results sctr
@@ -698,17 +707,13 @@ router.get("/cube-tests/:resultId/pdf-data", requireCustomerAuth, async (req, re
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
             ctr.visible_to_customer,
             u.name AS tested_by_name,
-            pq.id AS plant_qc_id, pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
-            dt.ticket_number, dt.order_id,
             co.id AS order_id, co.casting_location, co.order_date, co.customer_id, co.site_id,
             c.name AS customer_name, s.name AS site_name, s.address AS site_address,
             m.name AS mix_grade_name,
             md.id AS mix_design_id, md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
      FROM cube_test_results ctr
      JOIN users u ON u.id = ctr.tested_by
-     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customer_orders co ON co.id = ctr.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
@@ -732,8 +737,9 @@ router.get("/cube-tests/:resultId/pdf-data", requireCustomerAuth, async (req, re
      FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
     [req.params.resultId]
   );
+  const dnSummary = await resolveCubeTestDnSummary(req.params.resultId);
   // Same real PDF data a staff member would see — no redaction.
-  res.json({ ...row, cubes, is_site_cast: false });
+  res.json({ ...row, ...dnSummary, number_of_cubes: cubes.length, cubes, is_site_cast: false });
 });
 
 // Round 120, items 4b/4e — same shape/checks as the plant route above, for a
@@ -797,17 +803,13 @@ router.get("/cube-tests/by-date/:date/pdf-data", requireCustomerAuth, async (req
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
             u.name AS tested_by_name,
-            pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
-            dt.ticket_number,
             co.id AS order_id, co.casting_location, co.order_date,
             c.name AS customer_name, s.name AS site_name, s.address AS site_address,
             m.name AS mix_grade_name,
             md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
      FROM cube_test_results ctr
      JOIN users u ON u.id = ctr.tested_by
-     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
-     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customer_orders co ON co.id = ctr.order_id
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
@@ -845,7 +847,8 @@ router.get("/cube-tests/by-date/:date/pdf-data", requireCustomerAuth, async (req
        FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
       [r.id]
     );
-    results.push({ ...r, cubes, is_site_cast: false });
+    const dnSummary = await resolveCubeTestDnSummary(r.id);
+    results.push({ ...r, ...dnSummary, number_of_cubes: cubes.length, cubes, is_site_cast: false });
   }
   for (const r of siteRows) {
     const { rows: cubes } = await query(
