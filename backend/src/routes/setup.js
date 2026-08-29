@@ -1490,6 +1490,63 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (cube_test_results — cube testing moves from per-DN to per-pour; plant_qc_id is now nullable and order_id added/backfilled, with a partial unique index covering only new pour-level rows so no existing per-DN result is touched; cube_test_cubes.plant_qc_id — per-cube DN provenance for a multi-DN pour; cube_pour_status — pour-level close/reopen, parallel to the existing cube_batch_status).");
 
+    // Round 127 — data repair, not a schema change. The averaging bug fixed
+    // in round 124 (an untested cube's blank field silently pulling the
+    // average toward zero — see the POST routes below) only fixed how a
+    // NEW submission gets averaged; any result that was already stored
+    // before that fix kept its wrong average forever, since the PDF/report
+    // routes just display the stored average_* columns rather than
+    // recomputing them. This recomputes every stored average directly from
+    // its own cube_test_cubes/site_cube_test_cubes rows — which have always
+    // correctly distinguished a tested cube from an untested one (a real
+    // NULL, never a phantom zero) — and only writes back rows whose stored
+    // figure is actually wrong (IS DISTINCT FROM), so this is cheap and
+    // idempotent to re-run on every startup, and touches nothing for a
+    // result that was already correct.
+    await query(`
+      UPDATE cube_test_results ctr SET
+        average_weight_kg = sub.avg_weight,
+        average_load_kn = sub.avg_load,
+        average_density_kgm3 = sub.avg_density,
+        average_strength_mpa = sub.avg_strength
+      FROM (
+        SELECT cube_test_result_id,
+               AVG(weight_kg) FILTER (WHERE weight_kg IS NOT NULL) AS avg_weight,
+               AVG(testing_load_kn) FILTER (WHERE testing_load_kn IS NOT NULL) AS avg_load,
+               AVG(density_kgm3) FILTER (WHERE density_kgm3 IS NOT NULL) AS avg_density,
+               AVG(strength_mpa) FILTER (WHERE strength_mpa IS NOT NULL) AS avg_strength
+        FROM cube_test_cubes
+        GROUP BY cube_test_result_id
+      ) sub
+      WHERE ctr.id = sub.cube_test_result_id
+        AND (ctr.average_weight_kg IS DISTINCT FROM sub.avg_weight
+          OR ctr.average_load_kn IS DISTINCT FROM sub.avg_load
+          OR ctr.average_density_kgm3 IS DISTINCT FROM sub.avg_density
+          OR ctr.average_strength_mpa IS DISTINCT FROM sub.avg_strength);
+    `);
+    await query(`
+      UPDATE site_cube_test_results sctr SET
+        average_weight_kg = sub.avg_weight,
+        average_load_kn = sub.avg_load,
+        average_density_kgm3 = sub.avg_density,
+        average_strength_mpa = sub.avg_strength
+      FROM (
+        SELECT site_cube_test_result_id,
+               AVG(weight_kg) FILTER (WHERE weight_kg IS NOT NULL) AS avg_weight,
+               AVG(testing_load_kn) FILTER (WHERE testing_load_kn IS NOT NULL) AS avg_load,
+               AVG(density_kgm3) FILTER (WHERE density_kgm3 IS NOT NULL) AS avg_density,
+               AVG(strength_mpa) FILTER (WHERE strength_mpa IS NOT NULL) AS avg_strength
+        FROM site_cube_test_cubes
+        GROUP BY site_cube_test_result_id
+      ) sub
+      WHERE sctr.id = sub.site_cube_test_result_id
+        AND (sctr.average_weight_kg IS DISTINCT FROM sub.avg_weight
+          OR sctr.average_load_kn IS DISTINCT FROM sub.avg_load
+          OR sctr.average_density_kgm3 IS DISTINCT FROM sub.avg_density
+          OR sctr.average_strength_mpa IS DISTINCT FROM sub.avg_strength);
+    `);
+    log.push("Data repair applied (cube_test_results/site_cube_test_results average_* columns recomputed from their own cube rows, excluding untested/blank cubes — fixes any result stored before round 124's averaging fix, no schema change).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

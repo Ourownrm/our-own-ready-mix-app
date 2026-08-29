@@ -4951,3 +4951,67 @@ cadence strip.
    now ORs that in directly instead of trying to reconstruct the exact punch-in/out interval.
 
 Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 127 (Ver. 9.47): Sales nav/labels, cube-test averaging data repair, mix design PDF layout
+
+Eight items from a follow-up round of screenshots + a PDF showing the averaging bug still live in a
+result tested today. No new columns/tables — item 6 is a data repair, not a schema change.
+
+1. **Collections tile now reads "Collections & Follow-ups"** on the Sales Executive home grid,
+   matching the in-page heading Round 126 already added inside the tab itself.
+2. **Leads: "Assigned to {name}" → "Assigned by {name}"**. A sales executive only ever sees their
+   *own* leads on this screen (`GET /sales/leads` filters to `assigned_to = req.user.id` for that
+   role) — so "Assigned to" was always just their own name reflected back at them. Switched to the
+   lead's creator (`created_by_name`, already returned by that same query, just unused) — who
+   assigned it to them is the useful half of that fact.
+3. **Sales Executive's bottom nav wasn't pinned to the bottom of the screen.** Root cause:
+   `.se-bottomnav`'s `position: sticky; bottom: 0` only pins to the viewport once its flex ancestor
+   chain actually fills the viewport height — this page's wrapper `<div>` had neither a height nor
+   `display: flex`, so on any view shorter than one screen (Forecast with a single row, e.g.) the
+   nav sat right under the content with dead space below it instead of at the bottom, exactly as
+   screenshotted. Restructured to the same shell/content/bottomnav flex pattern the customer portal
+   already uses correctly (`.portal-shell` in `index.css`) — outer flex column at least
+   viewport-tall, centered content column as a `flex: 1` child, nav after it. `.se-bottomnav` no
+   longer needs the old negative-margin bleed hack since it's not nested inside the padded content
+   div anymore.
+4. **Bumped the font size of both modules' menu/tile labels** — customer portal's home tiles (My
+   Orders, Live Tracking, New Order, QC Reports — `.portal-tile-title`) and bottom nav (`.portal-navitem`),
+   and Sales Executive's equivalents (`.se-tile-title`, `.se-navitem`): tile titles 13px → 14.5px,
+   nav labels 10px → 11.5px.
+5. **"Deleted cube test results but Completed page now shows nothing"** — investigated; this is the
+   Completed/Active bucket working as designed, not a bug. `GET /cube-pours` computes a pour's
+   bucket live from whichever results currently exist for it (never stored), specifically so it can
+   never drift — see the Round 122 comment on that route. Deleting one age's result on an
+   already-complete pour correctly (and immediately) drops it back to Active until that age is
+   re-tested; if that was the only pour that had both ages done, Completed goes empty, which is
+   exactly what was reported. Didn't change the bucket logic — that would reintroduce drift — but
+   the delete confirmation on a currently-complete pour now says so up front instead of it reading
+   as data loss: "Both ages are currently tested (this pour shows as Completed) — deleting this one
+   will move the pour back to Active until it's re-tested."
+6. **Cube-test averaging still showing wrong figures** — the attached PDF (DT-2486, 7-day, tested
+   today) proved it: stated average 16.2 N/mm2 is exactly what you get dividing the 6 real results
+   by 9 (i.e. still counting the 3 untested/blank cubes as zero), not the correct 24.35 over 6.
+   Traced this precisely: Round 124's fix corrected how a *new* submission gets averaged
+   (`labTechnician.js`'s `avg()`, still verified correct on re-read), but the PDF/report routes have
+   always just displayed each result's stored `average_*` columns rather than recomputing them — so
+   any result stored *before* that fix kept its wrong average permanently, with no way for a later
+   code fix to reach back and correct already-written data. This round adds a one-time-per-startup
+   data repair (`setup.js`, additive, no schema change): recomputes `average_weight_kg` /
+   `average_load_kn` / `average_density_kgm3` / `average_strength_mpa` on both `cube_test_results`
+   and `site_cube_test_results` directly from their own child cube rows — which have always
+   correctly told a tested cube (a real value) from an untested one (a real `NULL`, never a phantom
+   zero) — and only writes back a row whose stored figure is actually wrong, so it's cheap and safe
+   to run on every startup. Fixes every already-corrupted historical result the moment this round's
+   backend starts, no re-entry needed.
+7. **Mix design PDF header collapsed to one row**: Mix Grade | Mix Description | Design Ref. Code |
+   Rev | Status, replacing the old two-row identification block. Created/Approved (who/when) moved
+   out of the header entirely, down to a small line above the disclaimer — it's record-keeping
+   metadata, not something a reader needs before the design's own numbers.
+8. **Mix design PDF's Aggregate Proportions table and its coarse/fine bar are shorter** (tighter row
+   heights), the **Aggregate Proportion pie chart's legend is now one inline row** instead of a
+   stacked list ("Fine 38%   20 mm 37%   12.5 mm 25%"), and the **pie itself is bigger** (radius cap
+   16mm → 20mm) now that the legend beneath it needs far less vertical room.
+
+Verified with `node --check` on every touched backend file, a clean `npm run build`, and a rendered
+sample of the mix design PDF (checked visually — single page, no overlap, legend/pie/table all read
+correctly at the new sizes).
