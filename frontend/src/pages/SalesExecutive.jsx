@@ -372,12 +372,27 @@ function Icon({ size = 18, color = "currentColor", children }) {
 // sold this month and what's still owed. Follow-ups due lives here too since
 // chasing an overdue follow-up and chasing an outstanding payment are the
 // same daily task for a rep, not two different ones.
+//
+// Round 125 — the bottom-nav tab is labeled "Collections" for space, but
+// that alone undersold what's actually on it (this same card is also where
+// Follow-ups Due lives), so the tab content itself now opens with its own
+// "Collections & Follow-ups" heading. "Achieved Sales" also went from
+// amount-only to amount + quantity — a rep talks about a month's sales in
+// both m³ and ₹, and `orders_month_qty` was already sitting unused on the
+// same /my-dashboard response since round 115.
 function CollectionsTab({ dashboard, asUser }) {
   const [showOutstanding, setShowOutstanding] = useState(false);
   return (
     <>
+      <div style={{ fontSize: 16, fontWeight: 800, color: "var(--charcoal)", margin: "16px 0 12px" }}>
+        Collections &amp; Follow-ups
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
-        <Kpi label="Achieved Sales" value={dashboard ? inr(dashboard.orders_month_value) : "..."} />
+        <Kpi
+          label="Achieved Sales"
+          value={dashboard ? inr(dashboard.orders_month_value) : "..."}
+          sub={dashboard ? `${dashboard.orders_month_qty} m³ this month` : ""}
+        />
         <Kpi label="Outstanding Collection" value={dashboard ? inr(dashboard.outstanding) : "..."} danger={Number(dashboard?.outstanding) > 0} />
       </div>
       {dashboard?.outstanding_by_customer?.length > 0 && (
@@ -589,6 +604,7 @@ function LeadsList({ leads, onOpen, onNew, onDuty }) {
                 </div>
               )}
               {l.contact_phone && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>{l.contact_phone}</div>}
+              {l.assigned_to_name && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>Assigned to {l.assigned_to_name}</div>}
               {l.quotation_issued && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>Quoted ₹{l.latest_quotation_amount}</div>}
               {l.latest_activity_type === "site_visit" && !["won", "lost"].includes(l.status) && (
                 <div style={{ color: "var(--info)", fontSize: 11, marginTop: 3 }}>Site visit logged</div>
@@ -1364,11 +1380,12 @@ function NewVisitForm({ onDone, onCancel }) {
   );
 }
 
-function Kpi({ label, value, danger }) {
+function Kpi({ label, value, danger, sub }) {
   return (
     <div className="kpi">
       <div className="kpi-label">{label}</div>
       <div className={`kpi-value ${danger ? "danger" : ""}`}>{value}</div>
+      {sub && <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 3 }}>{sub}</div>}
     </div>
   );
 }

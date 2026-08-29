@@ -412,11 +412,9 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
                 {isAdmin && editingDateFor !== r.id && (
                   <span style={{ display: "flex", gap: 4 }}>
                     <button type="button" style={{ fontSize: 10.5, padding: "2px 6px" }} onClick={() => startDateEdit(r)}>Change date</button>
-                    {r.is_pour_level && (
-                      <button type="button" style={{ fontSize: 10.5, padding: "2px 6px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => deleteResult(r.id)}>
-                        Delete
-                      </button>
-                    )}
+                    <button type="button" style={{ fontSize: 10.5, padding: "2px 6px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => deleteResult(r.id)}>
+                      Delete
+                    </button>
                   </span>
                 )}
               </div>
