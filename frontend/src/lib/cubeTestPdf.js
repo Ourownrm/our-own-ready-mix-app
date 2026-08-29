@@ -5,16 +5,16 @@
 // grid, navy "TEST SUMMARY" bar, red "STANDARDS FOLLOWED" reference table,
 // navy "CUBE TEST ANALYSIS" per-cube table, remarks + signatory).
 //
-// Casting location and curing method are NOT columns anywhere in the data
-// model — every cube batch in this app is cast during the Plant QC step
-// (there is no separate site-casting workflow), and curing always follows
-// the standard IS 516 water-curing method, so both are fixed reference
-// text here, the same treatment as the specimen size and load-rate figures
-// below them. Type of failure IS variable per test (how a given cube
-// actually failed under load), so unlike those two it is a real captured
-// field — cube_test_results.failure_type — filled in by the Lab Technician
-// at result-entry time; everything else here comes straight from
-// GET /lab-technician/cube-tests/:resultId/pdf-data.
+// Curing method always follows the standard IS 516 water-curing method, so
+// it's fixed reference text here, the same treatment as the specimen size
+// and load-rate figures below it. Casting location USED to be fixed too
+// ("every cube batch in this app is cast during Plant QC" — no longer true
+// as of round 120's site-cast cube testing, items 4b/4e: see `is_site_cast`
+// below) and is now genuinely variable per test, same as Type of Failure
+// (cube_test_results.failure_type, filled in by the Lab Technician at
+// result-entry time). Data comes from GET /lab-technician/cube-tests/:resultId/pdf-data
+// (plant-cast) or GET /lab-technician/site-cube-tests/:resultId/pdf-data
+// (site-cast) — same shape either way, `is_site_cast` tells them apart.
 //
 // jsPDF's standard 14 fonts (Helvetica) use WinAnsiEncoding and do not
 // reliably render Unicode outside that set — superscript "2"/"3" render as
@@ -67,13 +67,14 @@ function fmtInt(v) {
   return Math.round(Number(v)).toLocaleString("en-IN");
 }
 
-export async function generateCubeTestPdf(data) {
-  const { jsPDF } = await import("jspdf");
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-
-  let logoData = null;
-  try { logoData = await loadLogoBase64(); } catch { /* logo optional — proceed without it */ }
-
+// Round 120, item 4d — one result's full report, as its own function so it
+// can be called either standalone (generateCubeTestPdf, one page, save
+// immediately) or in a loop onto a shared document (generateCombinedCubeTestPdf
+// below, for "these results all landed on the same day" — one PDF, one
+// section per result, per how that question was resolved). Draws onto the
+// `doc` it's given starting at the top of whatever page it's currently on —
+// the caller is responsible for adding a new page between results.
+async function renderCubeTestSection(doc, data, logoData) {
   function ensureSpace(y, needed) {
     if (y + needed > BOTTOM_LIMIT) {
       doc.addPage();
@@ -123,7 +124,10 @@ export async function generateCubeTestPdf(data) {
     ["Grade", data.mix_grade_name || "—"],
     ["Casting Date", fmtDate(data.cast_at)],
     ["Structure", data.casting_location || "—"],
-    ["Delivery Ticket", data.ticket_number ? `#${data.ticket_number}` : "—"],
+    // Round 120, items 4b/4e — a site-cast batch has no delivery ticket to
+    // show here (there's no delivery it's tied to); says so plainly instead
+    // of a bare "—", which would otherwise look like a data gap.
+    ["Delivery Ticket", data.is_site_cast ? "Site cast — no ticket" : (data.ticket_number ? `#${data.ticket_number}` : "—")],
     ["Sample IDs", data.sample_ids || "—"],
     ["No. of Cubes", String(cubeCount)],
     ["Testing Age", data.testing_age_days ? `${data.testing_age_days} days` : "—"],
@@ -223,7 +227,11 @@ export async function generateCubeTestPdf(data) {
     // as the specimen size and load-rate figures already below them.
     const rows = [
       ["Sampling of Fresh Concrete", "IS 1199 (1959)"],
-      ["Casting Location", "Plant (cast during Plant QC, at batching plant)"],
+      // Round 120, items 4b/4e — this used to be a fixed reference line
+      // ("every cube batch in this app is cast during Plant QC" — see this
+      // file's own header comment, written before a site-casting workflow
+      // existed). Now genuinely variable per test.
+      ["Casting Location", data.is_site_cast ? "Customer site (site-cast sample)" : "Plant (cast during Plant QC, at batching plant)"],
       ["Curing Method", "Water Curing (IS 516)"],
       ["Rate of Loading", "140 kg/cm2 per minute"],
       ["Compressive Strength of Concrete Cubes", "IS 456:2000"],
@@ -376,7 +384,35 @@ export async function generateCubeTestPdf(data) {
     PAGE_W / 2, y, { align: "center" }
   );
 
-  const label = data.sample_ids ? data.sample_ids.split(",")[0].trim() : data.plant_qc_id;
+}
+
+export async function generateCubeTestPdf(data) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  let logoData = null;
+  try { logoData = await loadLogoBase64(); } catch { /* logo optional — proceed without it */ }
+  await renderCubeTestSection(doc, data, logoData);
+  const label = data.sample_ids ? data.sample_ids.split(",")[0].trim() : (data.is_site_cast ? data.site_cube_cast_id : data.plant_qc_id);
   doc.save(`Cube_Test_${label}_${data.testing_age_days || ""}day.pdf`);
+  return doc;
+}
+
+// Round 120, item 4d — "what if a customer's 7-day and 28-day results land
+// on the same day, possibly from different pours?" was resolved as: combine
+// them into one PDF rather than making the customer open several. Same
+// per-result section as the single-result PDF above, just looped onto one
+// shared document with a page break between each. `payload` is
+// GET /cube-tests/by-date/:date/pdf-data's response shape ({date, results}).
+export async function generateCombinedCubeTestPdf(payload) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  let logoData = null;
+  try { logoData = await loadLogoBase64(); } catch { /* logo optional — proceed without it */ }
+  const results = payload.results || [];
+  for (let i = 0; i < results.length; i++) {
+    if (i > 0) doc.addPage();
+    await renderCubeTestSection(doc, results[i], logoData);
+  }
+  doc.save(`Cube_Test_Combined_${payload.date}.pdf`);
   return doc;
 }

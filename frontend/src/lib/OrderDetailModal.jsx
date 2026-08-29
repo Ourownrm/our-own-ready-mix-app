@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import { formatOrderNumber } from "./orderNumber.js";
+import { TruckCard } from "./DeliveryTrackingView.jsx";
 
 export default function OrderDetailModal({ orderId, onClose }) {
   const [order, setOrder] = useState(null);
@@ -49,7 +50,7 @@ export default function OrderDetailModal({ orderId, onClose }) {
             {order.pump_code && <Row label="Pump assigned" value={order.pump_code} />}
             {order.pump_departure_time && <Row label="Pump crew departure time" value={order.pump_departure_time} />}
             <Row label="Site technician required" value={order.site_technician_required ? "Yes" : "No"} />
-            <Row label="Cube samples required" value={order.cube_samples_required ? "Yes" : "No"} />
+            <Row label="Cube samples required" value={order.cube_samples_required ?? "–"} />
             <Row label="Assigned pump crew" value={order.assigned_pump_crew || "–"} />
             <Row label="Site supervisor" value={order.site_supervisor_name || "None assigned"} />
             <Row label="Site contact number" value={order.site_contact_number} />
@@ -73,11 +74,41 @@ export default function OrderDetailModal({ orderId, onClose }) {
             <Row label="Remarks" value={order.remarks || "–"} />
             <Row label="Created by" value={order.created_by_name || "–"} />
             {["manager", "administrator"].includes(user?.role) && (
-              <TrackingLinkPanel orderId={order.id} />
+              <>
+                <TruckTrackingPanel orderId={order.id} />
+                <TrackingLinkPanel orderId={order.id} />
+              </>
             )}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Round 120, item 3f — Manager/Administrator-only in-app view of this
+// order's truck tracking, the same per-truck stage cards a customer sees on
+// their shared /track/:token link, fed by the new authenticated
+// GET /orders/:id/tracking route (backend/src/routes/orders.js). Previously
+// the only way for staff to see this was opening the customer-facing link
+// themselves.
+function TruckTrackingPanel({ orderId }) {
+  const [payload, setPayload] = useState(undefined); // undefined = loading, null = failed
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest(`/orders/${orderId}/tracking`)
+      .then(setPayload)
+      .catch((err) => { setError(err.message); setPayload(null); });
+  }, [orderId]);
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 10, borderTop: "1px dashed var(--border-strong)" }}>
+      <div style={{ color: "var(--slate)", marginBottom: 6 }}>Truck tracking</div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{error}</div>}
+      {payload === undefined && <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading...</div>}
+      {payload && payload.trucks.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>No deliveries raised for this order yet.</div>}
+      {payload && payload.trucks.map((t) => <TruckCard key={t.ticket_number} truck={t} />)}
     </div>
   );
 }

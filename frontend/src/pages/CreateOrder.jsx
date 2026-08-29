@@ -13,7 +13,13 @@ const initialForm = {
   pump_requirement: "without_pump",
   pump_id: "",
   site_technician_required: false,
-  cube_samples_required: 3,
+  // Round 120, item 4c — was hardcoded to 3, so nearly every order kept
+  // whatever the form pre-filled instead of an actual decision, and every
+  // delivery note under it inherited that same "3" by default. Left blank so
+  // sales/admin has to actively enter a count for each order (based on the
+  // pour quantity, per the applicable testing standard) rather than silently
+  // carrying over a number that was never really chosen.
+  cube_samples_required: "",
   assigned_pump_crew: "",
   assigned_site_supervisor_id: "",
   site_contact_number: "",
@@ -250,7 +256,7 @@ export default function CreateOrder({ onDone }) {
           </select>
         </Field>
         <Field label="Cube samples required">
-          <input type="number" value={form.cube_samples_required} onChange={(e) => set("cube_samples_required", e.target.value)} />
+          <input type="number" min="0" placeholder="e.g. based on pour quantity" value={form.cube_samples_required} onChange={(e) => set("cube_samples_required", e.target.value)} />
         </Field>
         <Field label="Assigned pump crew">
           <input type="text" value={form.assigned_pump_crew} onChange={(e) => set("assigned_pump_crew", e.target.value)} />

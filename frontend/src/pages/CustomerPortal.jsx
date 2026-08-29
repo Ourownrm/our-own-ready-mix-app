@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { customerPortalRequest, getCustomerSession, setCustomerSession, clearCustomerSession } from "../lib/customerPortalApi.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
-import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
+import { generateCubeTestPdf, generateCombinedCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { APP_VERSION } from "../lib/version.js";
 import { TruckCard } from "../lib/DeliveryTrackingView.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
@@ -76,6 +76,24 @@ function fmtTime5(t) {
 }
 function fmtDateTime(ts) {
   return ts ? new Date(ts).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+}
+// Round 120, item 4d — groups cube-test rows by their tested_at calendar date
+// (local date, not UTC slice) so same-day 7-day/28-day results collapse into
+// one card. The "YYYY-MM-DD" key doubles as the literal date string passed to
+// GET /cube-tests/by-date/:date/pdf-data, which matches it via Postgres
+// tested_at::date — so this must stay a plain calendar-date string, in the
+// order results already arrive in (backend orders by tested_at).
+function groupByDate(rows) {
+  const byDate = new Map();
+  for (const r of rows) {
+    const d = new Date(r.tested_at);
+    const key = Number.isNaN(d.getTime())
+      ? "unknown"
+      : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (!byDate.has(key)) byDate.set(key, []);
+    byDate.get(key).push(r);
+  }
+  return [...byDate.entries()].map(([date, results]) => ({ date, results }));
 }
 const PUMP_LABELS = { without_pump: "No pump", boom_pump: "Boom pump", line_pump: "Line pump" };
 
@@ -565,10 +583,13 @@ function OrderDetailScreen({ orderId, onOpenTracking }) {
       setBusy(false);
     }
   }
-  async function viewCubeTest(resultId) {
+  // Round 120, items 4b/4e — `source` picks which endpoint a result actually
+  // lives behind (plant-cast vs. site-cast are separate tables/id spaces).
+  async function viewCubeTest(t) {
     setError(""); setBusy(true);
     try {
-      const data = await customerPortalRequest(`/cube-tests/${resultId}/pdf-data`);
+      const path = t.source === "site" ? `/site-cube-tests/${t.id}/pdf-data` : `/cube-tests/${t.id}/pdf-data`;
+      const data = await customerPortalRequest(path);
       await generateCubeTestPdf(data);
     } catch (e) {
       setError(e.message);
@@ -683,12 +704,13 @@ function OrderDetailScreen({ orderId, onOpenTracking }) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {cubeTests.map((t) => (
-                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--concrete)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}>
+                <div key={`${t.source}-${t.id}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--concrete)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}>
                   <span>
+                    {t.source === "site" && <span className="badge badge-warning" style={{ marginRight: 5, fontSize: 10 }}>Site cast</span>}
                     {t.testing_age_days}-day{t.average_strength_mpa ? ` · ${t.average_strength_mpa} N/mm²` : ""}
                     {t.tested_at ? ` · ${fmtDateShort(t.tested_at)}` : ""}
                   </span>
-                  <button type="button" onClick={() => viewCubeTest(t.id)} disabled={busy} style={{ fontSize: 11, padding: "3px 8px" }}>PDF</button>
+                  <button type="button" onClick={() => viewCubeTest(t)} disabled={busy} style={{ fontSize: 11, padding: "3px 8px" }}>PDF</button>
                 </div>
               ))}
             </div>
@@ -888,11 +910,28 @@ function QcReportsScreen() {
 
   useEffect(() => { customerPortalRequest("/qc-reports").then(setData).catch((e) => setError(e.message)); }, []);
 
-  async function viewCubeTest(resultId) {
+  // Round 120, items 4b/4e — `source` picks the right endpoint.
+  async function viewCubeTest(t) {
     setError(""); setBusy(true);
     try {
-      const d = await customerPortalRequest(`/cube-tests/${resultId}/pdf-data`);
+      const path = t.source === "site" ? `/site-cube-tests/${t.id}/pdf-data` : `/cube-tests/${t.id}/pdf-data`;
+      const d = await customerPortalRequest(path);
       await generateCubeTestPdf(d);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Round 120, item 4d — "what if 7-day and 28-day land on the same day?"
+  // resolved as: combine into one PDF when they coincide. Grouped by
+  // tested_at's calendar date below; a date with only one ready result just
+  // opens that single result's own PDF instead of a pointless combined one.
+  async function viewCombinedForDate(date) {
+    setError(""); setBusy(true);
+    try {
+      const d = await customerPortalRequest(`/cube-tests/by-date/${date}/pdf-data`);
+      await generateCombinedCubeTestPdf(d);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -925,16 +964,35 @@ function QcReportsScreen() {
         data.cube_tests.length === 0 ? (
           <div className="card" style={{ fontSize: 12.5, color: "var(--slate)" }}>No cube test results yet.</div>
         ) : (
-          data.cube_tests.map((t) => (
-            <div key={t.id} className="card" style={{ marginBottom: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <div style={{ fontWeight: 700, fontSize: 12.5 }}>{formatOrderNumber(t.order_id)} · {t.site_name}</div>
-                <span style={{ fontSize: 11, color: "var(--slate)" }}>{fmtDateShort(t.tested_at)}</span>
-              </div>
-              <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4 }}>
-                {t.mix_grade_name} · {t.testing_age_days}-day{t.average_strength_mpa ? ` · ${t.average_strength_mpa} N/mm²` : ""}
-              </div>
-              <button type="button" onClick={() => viewCubeTest(t.id)} disabled={busy} style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }}>View PDF</button>
+          groupByDate(data.cube_tests).map((group) => (
+            <div key={group.date} className="card" style={{ marginBottom: 10 }}>
+              {group.results.length > 1 && (
+                <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 6 }}>
+                  {group.results.length} results ready {fmtDateShort(group.date)}
+                </div>
+              )}
+              {group.results.map((t) => (
+                <div key={`${t.source}-${t.id}`} style={{ marginBottom: group.results.length > 1 ? 8 : 0, paddingBottom: group.results.length > 1 ? 8 : 0, borderBottom: group.results.length > 1 ? "1px dashed var(--border)" : "none" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <div style={{ fontWeight: 700, fontSize: 12.5 }}>
+                      {t.source === "site" && <span className="badge badge-warning" style={{ marginRight: 5, fontSize: 10 }}>Site cast</span>}
+                      {formatOrderNumber(t.order_id)} · {t.site_name}
+                    </div>
+                    {group.results.length === 1 && <span style={{ fontSize: 11, color: "var(--slate)" }}>{fmtDateShort(t.tested_at)}</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4 }}>
+                    {t.mix_grade_name} · {t.testing_age_days}-day{t.average_strength_mpa ? ` · ${t.average_strength_mpa} N/mm²` : ""}
+                  </div>
+                  {group.results.length === 1 && (
+                    <button type="button" onClick={() => viewCubeTest(t)} disabled={busy} style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }}>View PDF</button>
+                  )}
+                </div>
+              ))}
+              {group.results.length > 1 && (
+                <button type="button" onClick={() => viewCombinedForDate(group.date)} disabled={busy} style={{ fontSize: 11.5, padding: "5px 10px", width: "100%" }}>
+                  {busy ? "Generating..." : "View combined PDF"}
+                </button>
+              )}
             </div>
           ))
         )

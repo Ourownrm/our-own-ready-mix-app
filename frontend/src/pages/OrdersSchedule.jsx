@@ -50,7 +50,12 @@ export default function OrdersSchedule() {
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
-        <PictureReportPanel orders={orders} />
+        {/* Round 120, item 2a — the picture-report share feature is a
+            manager-specific tool (it's how a manager keeps site staff/
+            customers in the loop on the day's schedule); everyone else who
+            lands on this shared /orders page — site supervisors, drivers
+            checking today's list, etc. — never sees it at all. */}
+        {user?.role === "manager" && <PictureReportPanel orders={orders} />}
 
         {overdue.length > 0 && (
           <OrderTable
@@ -148,15 +153,19 @@ function startOfDay(date) {
 // Reuses the same html2canvas capture pattern as
 // lib/ShareableVisitReport.jsx rather than reinventing it.
 function PictureReportPanel({ orders }) {
-  const [day, setDay] = useState("today");
+  // Round 120, item 2a — was defaulting to "today" and fetching/rendering the
+  // report immediately on page load. Now nothing is selected (and nothing
+  // fetched) until the manager explicitly taps "Today" or "Tomorrow" — the
+  // card and Share button only appear after that tap.
+  const [day, setDay] = useState(null);
   const [detailed, setDetailed] = useState([]);
   const [loading, setLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [error, setError] = useState("");
   const captureRef = useRef(null);
 
-  const targetDate = day === "today" ? new Date() : addDays(new Date(), 1);
-  const scheduled = orders.filter((o) => o.status === "planned" && isSameDay(o.order_date, targetDate));
+  const targetDate = day === "tomorrow" ? addDays(new Date(), 1) : new Date();
+  const scheduled = day ? orders.filter((o) => o.status === "planned" && isSameDay(o.order_date, targetDate)) : [];
   const scheduledIds = scheduled.map((o) => o.id).join(",");
 
   useEffect(() => {
@@ -224,7 +233,9 @@ function PictureReportPanel({ orders }) {
 
       {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
-      {scheduled.length === 0 ? (
+      {!day ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>Tap "Today" or "Tomorrow" above to build the report.</div>
+      ) : scheduled.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--slate)" }}>No scheduled (not yet started) orders for {day}.</div>
       ) : (
         <>
@@ -237,22 +248,27 @@ function PictureReportPanel({ orders }) {
               below) rather than side-by-side, so it reads top-to-bottom like
               a phone screen either way — one order or several. */}
           <div ref={captureRef} style={{ background: "#fff", border: "1px solid #DEDAD1", borderRadius: 10, overflow: "hidden", maxWidth: 420, margin: "0 auto" }}>
-            <div style={{ background: "#1A1D21", color: "#fff", padding: "16px 18px", borderTop: "5px solid #C75B12" }}>
-              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", color: "#E7E4DC" }}>Our Own Ready Mix</div>
-              <div style={{ fontSize: 10.5, color: "#8A8F96", marginBottom: 10 }}>Scheduled orders · shared from OORM Smart App</div>
-              <div style={{ fontSize: 26, fontWeight: 800, textTransform: "uppercase" }}>{day === "today" ? "Today" : "Tomorrow"}</div>
-              <div style={{ fontSize: 12, color: "#C9CDD2", marginTop: 4 }}>
-                {targetDate.toLocaleDateString([], { weekday: "long", day: "2-digit", month: "long", year: "numeric" })} · generated {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            {/* Round 120, item 2d/2e — the order-count/total-qty tiles used
+                to be a separate full-width strip below the header; moved into
+                the header itself, right-aligned, so the header carries both
+                identity and the headline numbers in one glance. The
+                "generated HH:MM" timestamp used to live in this header's date
+                line; it now lives in the footer below the order list (2e) so
+                the header stays focused on "what report is this". */}
+            <div style={{ background: "#1A1D21", color: "#fff", padding: "16px 18px", borderTop: "5px solid #C75B12", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", color: "#E7E4DC" }}>Our Own Ready Mix</div>
+                <div style={{ fontSize: 10.5, color: "#8A8F96", marginBottom: 10 }}>Scheduled orders · shared from OORM Smart App</div>
+                <div style={{ fontSize: 26, fontWeight: 800, textTransform: "uppercase" }}>{day === "today" ? "Today" : "Tomorrow"}</div>
+                <div style={{ fontSize: 12, color: "#C9CDD2", marginTop: 4 }}>
+                  {targetDate.toLocaleDateString([], { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
+                </div>
               </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", borderBottom: "1px solid #DEDAD1" }}>
-              <div style={{ padding: "11px 10px", textAlign: "center", borderRight: "1px solid #DEDAD1" }}>
-                <div style={{ fontFamily: "monospace", fontSize: 17, fontWeight: 600 }}>{detailed.length}</div>
-                <div style={{ fontSize: 9.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7D8590" }}>Orders scheduled</div>
-              </div>
-              <div style={{ padding: "11px 10px", textAlign: "center" }}>
-                <div style={{ fontFamily: "monospace", fontSize: 17, fontWeight: 600 }}>{totalQty}</div>
-                <div style={{ fontSize: 9.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7D8590" }}>Total m³</div>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, lineHeight: 1.1 }}>{detailed.length}</div>
+                <div style={{ fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", color: "#9AA0A8", whiteSpace: "nowrap" }}>Orders</div>
+                <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, lineHeight: 1.1, marginTop: 8 }}>{totalQty}</div>
+                <div style={{ fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", color: "#9AA0A8", whiteSpace: "nowrap" }}>Total m³</div>
               </div>
             </div>
             <div style={{ padding: "14px 16px 4px" }}>
@@ -262,6 +278,11 @@ function PictureReportPanel({ orders }) {
               <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingBottom: 14 }}>
                 {loading && detailed.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading order details...</div>}
                 {detailed.map((o) => <PictureReportOrderCard key={o.id} order={o} />)}
+              </div>
+            </div>
+            <div style={{ padding: "8px 16px", borderTop: "1px solid #DEDAD1", textAlign: "center" }}>
+              <div style={{ fontSize: 9.5, color: "#9AA0A8" }}>
+                Generated {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </div>
             </div>
           </div>
@@ -274,47 +295,60 @@ function PictureReportPanel({ orders }) {
   );
 }
 
+// Round 120, item 2b/2c — field set trimmed to exactly what the manager asked
+// to keep on the shared picture (everything else — truck interval, site
+// contact, sales rep, QC engineer, casting location — is still visible in
+// the in-app Order Details modal, just not on this image), reordered to the
+// exact sequence requested, and rendered as compact label:value rows instead
+// of the old two-column grid of stacked micro-labels — the old layout's
+// biggest cost was a full text-height given to every label, which is what
+// was reported as "a lot of white space"; a one-line-per-field list at a
+// larger font fixes both complaints at once.
 function PictureReportOrderCard({ order: o }) {
   const isOverdue = new Date(`${o.order_date?.slice(0, 10)}T${o.scheduled_batching_time || "00:00"}`) < new Date();
+  const hasPump = o.pump_requirement !== "without_pump";
   return (
     <div style={{ border: "1px solid #DEDAD1", borderRadius: 8, padding: "11px 12px", background: isOverdue ? "#F8E9E7" : "#fff" }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-        <span style={{ fontFamily: "monospace", fontSize: 11.5, fontWeight: 600, color: "#A94B0C" }}>{formatOrderNumber(o.id)}</span>
-        <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: isOverdue ? "#B03A2E" : "#F5EDDD", color: isOverdue ? "#fff" : "#9C6B12" }}>
+        <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 600, color: "#A94B0C" }}>{formatOrderNumber(o.id)}</span>
+        <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: isOverdue ? "#B03A2E" : "#F5EDDD", color: isOverdue ? "#fff" : "#9C6B12" }}>
           {isOverdue ? "Overdue" : o.scheduled_batching_time?.slice(0, 5)}
         </span>
       </div>
-      <div style={{ fontWeight: 700, fontSize: 13.5 }}>{o.customer_name}</div>
-      <div style={{ fontSize: 11.5, color: "#5B6470", marginBottom: 8 }}>{o.site_name}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 10px", paddingTop: 8, borderTop: "1px dashed #DEDAD1", fontSize: 11.5 }}>
-        <PRField label="Order date" value={o.order_date?.slice(0, 10)} />
-        <PRField label="Batching time" value={o.scheduled_batching_time?.slice(0, 5)} />
-        <PRField label="Required at site" value={o.required_at_site_time ? o.required_at_site_time.slice(0, 5) : "–"} />
-        <PRField label="Mix grade" value={o.mix_grade_name} />
-        <PRField label="Quantity" value={`${o.order_quantity_m3} m³`} />
-        <PRField label="Truck interval" value={o.truck_dispatch_interval_minutes ? `${o.truck_dispatch_interval_minutes} min` : "–"} />
-        <PRField label="Pump" value={o.pump_requirement === "without_pump" ? "Without pump" : (o.pump_code || o.pump_requirement)} />
-        {o.pump_requirement !== "without_pump" && <PRField label="Pump leaving time" value={o.pump_departure_time ? o.pump_departure_time.slice(0, 5) : "–"} />}
-        {o.pump_requirement !== "without_pump" && <PRField label="Pump crew" value={o.assigned_pump_crew || "–"} />}
-        <PRField label="Site technician" value={o.site_technician_required ? "Required" : "Not required"} />
-        <PRField label="Cube samples" value={o.cube_samples_required ?? "–"} />
-        <PRField label="Site supervisor" value={o.site_supervisor_name || "None assigned"} />
-        <PRField label="Site contact" value={o.site_contact_number || "–"} />
-        <PRField label="Sales rep" value={o.sales_representative_name || "–"} />
-        <PRField label="QC Engineer" value={o.qc_engineer_name || "–"} />
-        <PRField label="Casting location" value={o.casting_location || "–"} full />
-        <PRField label="Slump" value={o.specified_slump_mm ? `${o.specified_slump_mm} mm` : "–"} />
-        <PRField label="Remarks" value={o.remarks || "–"} />
+      <div style={{ fontWeight: 700, fontSize: 14.5 }}>{o.customer_name}</div>
+      <div style={{ fontSize: 12.5, color: "#5B6470", marginBottom: 6 }}>{o.site_name}</div>
+      <div style={{ paddingTop: 6, borderTop: "1px dashed #DEDAD1", fontSize: 13.5 }}>
+        <PRRow label="Order date" value={o.order_date?.slice(0, 10)} />
+        <PRRow label="Order Qty" value={`${o.order_quantity_m3} m³`} />
+        <PRRow label="Mix Grade" value={o.mix_grade_name} />
+        <PRRow label="Batching Time" value={o.scheduled_batching_time?.slice(0, 5)} />
+        <PRRow label="Required at Site" value={o.required_at_site_time ? o.required_at_site_time.slice(0, 5) : "–"} />
+        <PRRow label="Pump" value={hasPump ? (o.pump_code || o.pump_requirement) : "Without pump"} />
+        {hasPump && <PRRow label="Pump Leaving Time" value={o.pump_departure_time ? o.pump_departure_time.slice(0, 5) : "–"} />}
+        {hasPump && <PRRow label="Pump Crew" value={o.assigned_pump_crew || "–"} />}
+        <PRRow label="Site Supervisor" value={o.site_supervisor_name || "None assigned"} />
+        <PRRow label="Site Technician" value={o.site_technician_required ? "Required" : "Not required"} />
+        <PRRow label="Cube Samples" value={o.cube_samples_required ?? "–"} />
+        <PRRow label="Slump" value={o.specified_slump_mm ? `${o.specified_slump_mm} mm` : "–"} />
+        <PRRow label="Remarks" value={o.remarks || "–"} stacked />
       </div>
     </div>
   );
 }
 
-function PRField({ label, value, full }) {
+function PRRow({ label, value, stacked }) {
+  if (stacked) {
+    return (
+      <div style={{ padding: "4px 0" }}>
+        <div style={{ color: "#7D8590", fontWeight: 600, fontSize: 11.5, marginBottom: 1 }}>{label}</div>
+        <div style={{ fontWeight: 600 }}>{value}</div>
+      </div>
+    );
+  }
   return (
-    <div style={full ? { gridColumn: "1 / -1" } : undefined}>
-      <div style={{ fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7D8590", marginBottom: 1 }}>{label}</div>
-      <div style={{ fontWeight: 500 }}>{value}</div>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "4px 0" }}>
+      <span style={{ color: "#7D8590", fontWeight: 600 }}>{label}</span>
+      <span style={{ fontWeight: 700, textAlign: "right" }}>{value}</span>
     </div>
   );
 }

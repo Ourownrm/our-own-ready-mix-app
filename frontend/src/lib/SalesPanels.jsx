@@ -198,7 +198,9 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     pump_id: "",
     assigned_pump_crew: "",
     site_technician_required: false,
-    cube_samples_required: 3,
+    // Round 120, item 4c — see the matching comment/fix in CreateOrder.jsx;
+    // same hardcoded-3 default, same fix.
+    cube_samples_required: "",
     assigned_site_supervisor_id: "",
     site_contact_number: booking.site_contact_number || "",
     sales_representative_id: "",
@@ -412,7 +414,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
         </div>
         <div>
           <div style={{ color: "var(--slate)" }}>Cube samples required</div>
-          <input type="number" value={form.cube_samples_required} onChange={(e) => setForm({ ...form, cube_samples_required: e.target.value })} />
+          <input type="number" min="0" placeholder="e.g. based on pour quantity" value={form.cube_samples_required} onChange={(e) => setForm({ ...form, cube_samples_required: e.target.value })} />
         </div>
         <div>
           <div style={{ color: "var(--slate)" }}>Site contact</div>

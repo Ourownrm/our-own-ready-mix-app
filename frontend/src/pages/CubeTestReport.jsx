@@ -4,10 +4,11 @@
 // Administrator only (see backend route + App.jsx ProtectedRoute) — unlike
 // the single-batch detail in LabTechnician.jsx, this is a reporting view
 // across the whole plant's testing history, so it's gated more narrowly.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
+import { formatOrderNumber } from "../lib/orderNumber.js";
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -31,6 +32,10 @@ export default function CubeTestReport() {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
+  // Round 120, item 4d — "pour-based reporting" scoped as a display-only
+  // grouping over the existing flat result set (see the backend route's own
+  // comment) — toggles between one row per test and one group per order/pour.
+  const [groupByPour, setGroupByPour] = useState(false);
 
   useEffect(() => {
     Promise.all([apiRequest("/master/customers"), apiRequest("/master/mix-grades")])
@@ -56,12 +61,31 @@ export default function CubeTestReport() {
   }
   useEffect(() => { runReport(); }, []); // run once with the default (this-month) range on load
 
-  async function viewPdf(resultId) {
+  // Round 120, items 4b/4e — `source` ('plant' | 'site') picks which
+  // pdf-data endpoint this result actually lives behind, since plant-cast
+  // and site-cast results are two separate tables with their own id spaces.
+  async function viewPdf(row) {
     try {
-      const data = await apiRequest(`/lab-technician/cube-tests/${resultId}/pdf-data`);
+      const path = row.source === "site" ? `/lab-technician/site-cube-tests/${row.id}/pdf-data` : `/lab-technician/cube-tests/${row.id}/pdf-data`;
+      const data = await apiRequest(path);
       await generateCubeTestPdf(data);
     } catch (err) { setError(err.message); }
   }
+
+  // Round 120, item 4d — groups the same flat rows by order_id for the
+  // "group by pour" view; each group also flags whether it already has both
+  // a 7-day and 28-day result (same-day-or-not doesn't matter here — this is
+  // the staff-facing report, not the customer-facing combine decision, which
+  // lives in CustomerPortal.jsx/cubeTestPdf.js's generateCombinedCubeTestPdf).
+  const grouped = useMemo(() => {
+    if (!rows) return [];
+    const byOrder = new Map();
+    for (const r of rows) {
+      if (!byOrder.has(r.order_id)) byOrder.set(r.order_id, []);
+      byOrder.get(r.order_id).push(r);
+    }
+    return [...byOrder.entries()].map(([orderId, results]) => ({ orderId, results }));
+  }, [rows]);
 
   async function exportExcel() {
     if (!rows || rows.length === 0) { setError("Nothing to export for these filters."); return; }
@@ -71,6 +95,8 @@ export default function CubeTestReport() {
       const sheetRows = rows.map((r) => ({
         "Test Date": fmtDate(r.tested_at),
         "Casting Date": fmtDate(r.cast_at),
+        Source: r.source === "site" ? "Site cast" : "Plant cast",
+        "Order": formatOrderNumber(r.order_id),
         "Ticket No.": r.ticket_number || "",
         Customer: r.customer_name,
         Site: r.site_name,
@@ -137,11 +163,15 @@ export default function CubeTestReport() {
           </div>
           <button onClick={runReport} disabled={loading}>{loading ? "Loading..." : "Run report"}</button>
           <button onClick={exportExcel} disabled={exporting || !rows || rows.length === 0}>{exporting ? "Exporting..." : "Export Excel"}</button>
+          <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12.5 }}>
+            <input type="checkbox" checked={groupByPour} onChange={(e) => setGroupByPour(e.target.checked)} />
+            Group by pour
+          </label>
         </div>
 
         {error && <div style={{ color: "var(--alert-red)", marginBottom: 12 }}>{error}</div>}
 
-        {rows && (
+        {rows && !groupByPour && (
           <div className="card" style={{ overflowX: "auto" }}>
             <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>
               {rows.length} result{rows.length === 1 ? "" : "s"}{rows.length === 1000 ? " (showing first 1000 — narrow the filters for a complete list)" : ""}
@@ -149,14 +179,16 @@ export default function CubeTestReport() {
             <table style={{ fontSize: 12 }}>
               <thead>
                 <tr>
-                  <th>Test Date</th><th>Customer</th><th>Site</th><th>Grade</th><th>Design Ref</th>
+                  <th>Test Date</th><th>Order</th><th>Source</th><th>Customer</th><th>Site</th><th>Grade</th><th>Design Ref</th>
                   <th>Age</th><th>Avg Strength</th><th>Result</th><th>Failure</th><th>Tested By</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.id}>
+                  <tr key={`${r.source}-${r.id}`}>
                     <td>{fmtDate(r.tested_at)}</td>
+                    <td>{formatOrderNumber(r.order_id)}</td>
+                    <td><span className={`badge ${r.source === "site" ? "badge-warning" : "badge-neutral"}`}>{r.source === "site" ? "Site" : "Plant"}</span></td>
                     <td>{r.customer_name}</td>
                     <td>{r.site_name}</td>
                     <td>{r.mix_grade_name}</td>
@@ -170,12 +202,46 @@ export default function CubeTestReport() {
                     </td>
                     <td>{r.failure_type || "—"}</td>
                     <td>{r.tested_by_name}</td>
-                    <td><button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>PDF</button></td>
+                    <td><button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r)}>PDF</button></td>
                   </tr>
                 ))}
               </tbody>
             </table>
             {rows.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)", padding: "8px 0" }}>No cube test results match these filters.</div>}
+          </div>
+        )}
+
+        {rows && groupByPour && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {grouped.map((g) => (
+              <div key={g.orderId} className="card">
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+                  {formatOrderNumber(g.orderId)} — {g.results[0].customer_name} — {g.results[0].site_name}
+                </div>
+                <table style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr><th>Test Date</th><th>Source</th><th>Age</th><th>Avg Strength</th><th>Result</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    {g.results.map((r) => (
+                      <tr key={`${r.source}-${r.id}`}>
+                        <td>{fmtDate(r.tested_at)}</td>
+                        <td><span className={`badge ${r.source === "site" ? "badge-warning" : "badge-neutral"}`}>{r.source === "site" ? "Site" : "Plant"}</span></td>
+                        <td>{r.testing_age_days}d</td>
+                        <td>{Number(r.average_strength_mpa).toFixed(1)} N/mm²</td>
+                        <td>
+                          {r.meets_target === null || r.meets_target === undefined
+                            ? <span style={{ color: "var(--slate)" }}>—</span>
+                            : <span className={`badge ${r.meets_target ? "badge-success" : "badge-danger"}`}>{r.meets_target ? "Pass" : "Below target"}</span>}
+                        </td>
+                        <td><button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r)}>PDF</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+            {grouped.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No cube test results match these filters.</div>}
           </div>
         )}
       </div>

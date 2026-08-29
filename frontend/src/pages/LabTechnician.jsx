@@ -10,6 +10,7 @@ import { apiRequest } from "../lib/api.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
 import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { formatOrderNumber } from "../lib/orderNumber.js";
 
 // IS 516 doesn't mandate a fixed vocabulary for failure mode, but these are
 // the patterns a lab technician actually sees in practice — kept as
@@ -49,7 +50,7 @@ const STATUS_COLOR = {
 };
 
 export default function LabTechnician() {
-  const [tab, setTab] = useState("batches"); // batches | mix-designs
+  const [tab, setTab] = useState("batches"); // batches | site-cast | mix-designs
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -59,6 +60,10 @@ export default function LabTechnician() {
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <button className={`btn-tab ${tab === "batches" ? "active" : ""}`} onClick={() => setTab("batches")}>Cube Testing</button>
+          {/* Round 120, items 4b/4e — cubes prepared at the customer's site,
+              not plant-cast; a separate workflow since there's no delivery
+              ticket to anchor it to. */}
+          <button className={`btn-tab ${tab === "site-cast" ? "active" : ""}`} onClick={() => setTab("site-cast")}>Site-Cast Cubes</button>
           <button className={`btn-tab ${tab === "mix-designs" ? "active" : ""}`} onClick={() => setTab("mix-designs")}>Mix Designs</button>
           <Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link>
           <Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link>
@@ -67,6 +72,7 @@ export default function LabTechnician() {
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
 
         {tab === "batches" && <CubeTestingTab setError={setError} setNotice={setNotice} />}
+        {tab === "site-cast" && <SiteCubeTestingTab setError={setError} setNotice={setNotice} />}
         {tab === "mix-designs" && <MixDesignsTab setError={setError} setNotice={setNotice} />}
       </div>
     </>
@@ -256,6 +262,17 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 120, item 4a — not every internal test needs to reach the customer
+  // module; defaults to visible (see the schema migration) so this is only
+  // ever used to actively hide one.
+  async function toggleVisible(resultId, visible) {
+    setError("");
+    try {
+      await apiRequest(`/lab-technician/cube-tests/${resultId}/visibility`, { method: "PATCH", body: { visible_to_customer: visible } });
+      await loadDetail();
+    } catch (err) { setError(err.message); }
+  }
+
   function startDateEdit(r) {
     setEditingDateFor(r.id);
     // Local calendar date, not toISOString()'s UTC date — the app's home
@@ -305,6 +322,10 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
                   <button type="button" style={{ fontSize: 10.5, padding: "2px 6px" }} onClick={() => startDateEdit(r)}>Change date</button>
                 )}
               </div>
+              <label style={{ display: "flex", gap: 5, alignItems: "center", marginTop: 3, color: "var(--slate)" }}>
+                <input type="checkbox" checked={r.visible_to_customer !== false} onChange={(e) => toggleVisible(r.id, e.target.checked)} />
+                Visible in customer module
+              </label>
               {isAdmin && editingDateFor === r.id && (
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}>
                   <input type="date" value={dateDraft} onChange={(e) => setDateDraft(e.target.value)} style={{ fontSize: 11 }} />
@@ -314,6 +335,293 @@ function BatchDetail({ plantQcId, setError, setNotice, onSaved }) {
                   <button type="button" style={{ fontSize: 10.5, padding: "2px 8px" }} onClick={() => setEditingDateFor(null)}>Cancel</button>
                 </div>
               )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+        <div style={{ display: "flex", gap: 16 }}>
+          <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <input type="radio" checked={age === 7} onChange={() => setAge(7)} /> 7-day
+          </label>
+          <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <input type="radio" checked={age === 28} onChange={() => setAge(28)} /> 28-day
+          </label>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Compare against mix design</div>
+          <select value={mixDesignId} onChange={(e) => setMixDesignId(e.target.value)}>
+            <option value="">— none on file —</option>
+            {detail.approved_designs.map((d) => <option key={d.id} value={d.id}>{d.design_ref_code}</option>)}
+          </select>
+        </div>
+        {cubes.map((c, i) => (
+          <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, alignItems: "end" }}>
+            <div>
+              <div style={{ color: "var(--slate)", fontSize: 11 }}>{i === 0 ? "Cube" : ""}</div>
+              <input value={c.cube_label} onChange={(e) => updateCube(i, "cube_label", e.target.value)} style={{ width: "100%" }} />
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)", fontSize: 11 }}>{i === 0 ? "Weight (kg)" : ""}</div>
+              <input type="number" step="0.001" value={c.weight_kg} onChange={(e) => updateCube(i, "weight_kg", e.target.value)} style={{ width: "100%" }} />
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)", fontSize: 11 }}>{i === 0 ? "Load (kN)" : ""}</div>
+              <input type="number" step="0.01" value={c.testing_load_kn} onChange={(e) => updateCube(i, "testing_load_kn", e.target.value)} style={{ width: "100%" }} />
+            </div>
+            <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--slate)" }}>
+              {c.weight_kg && `Density: ${computeDensity(c.weight_kg)} kg/m³`} {c.testing_load_kn && `· Strength: ${computeStrength(c.testing_load_kn)} MPa`}
+            </div>
+          </div>
+        ))}
+        {avgStrength && (
+          <div style={{ background: "var(--concrete)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5 }}>
+            Average strength: <b>{avgStrength} MPa</b>
+          </div>
+        )}
+        <div>
+          <div style={{ color: "var(--slate)" }}>Type of failure (optional)</div>
+          <input
+            list="failure-type-options"
+            value={failureType}
+            onChange={(e) => setFailureType(e.target.value)}
+            placeholder="e.g. Cone, Shear — or describe what you observed"
+            style={{ width: "100%" }}
+          />
+          <datalist id="failure-type-options">
+            {FAILURE_TYPES.map((f) => <option key={f} value={f} />)}
+          </datalist>
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Remarks</div>
+          <textarea rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
+        </div>
+        <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save test result"}</button>
+      </form>
+    </div>
+  );
+}
+
+// ===== Site-cast cube tests (round 120, items 4b/4e) =====
+// Cubes prepared at the customer's site rather than plant-cast — there's no
+// delivery ticket to hang a batch off, so a cast record is created directly
+// against an order instead. Everything downstream (age entry, averaging,
+// PDF, visibility toggle) mirrors CubeTestingTab/BatchDetail above exactly;
+// only the create-a-batch step is new (a plant batch is created implicitly
+// by QC Engineer casting cubes — this one needs an explicit "record a cast"
+// action since nothing else in the app would ever create it).
+
+function SiteCubeTestingTab({ setError, setNotice }) {
+  const [casts, setCasts] = useState([]);
+  const [openCastId, setOpenCastId] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  async function load() {
+    try { setCasts(await apiRequest("/lab-technician/site-cube-casts")); } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  if (creating) {
+    return (
+      <NewSiteCastForm
+        setError={setError} setNotice={setNotice}
+        onDone={(castId) => { setCreating(false); load(); setOpenCastId(castId); }}
+        onCancel={() => setCreating(false)}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <button type="button" className="btn-primary" style={{ marginBottom: 12 }} onClick={() => setCreating(true)}>+ Record a site cast</button>
+      {casts.map((b) => (
+        <div key={b.cast_id} className="card" style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontWeight: 600 }}>{formatOrderNumber(b.order_id)} · {b.mix_grade_name} · {b.number_of_cubes || "?"} cubes</div>
+              <div style={{ fontSize: 12, color: "var(--slate)" }}>{b.customer_name} — {b.site_name}</div>
+              <div style={{ fontSize: 11, color: "var(--slate)" }}>Cast {fmtDate(b.cast_date)} · Sample IDs: {b.sample_ids || "—"}</div>
+            </div>
+            <button type="button" style={{ fontSize: 12, padding: "4px 10px", flexShrink: 0 }} onClick={() => setOpenCastId(openCastId === b.cast_id ? null : b.cast_id)}>
+              {openCastId === b.cast_id ? "Hide" : "Open"}
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <AgeBadge label="7-day" status={b.result_7day_id ? "done" : "upcoming"} strength={b.result_7day_strength} />
+            <AgeBadge label="28-day" status={b.result_28day_id ? "done" : "upcoming"} strength={b.result_28day_strength} />
+          </div>
+          {openCastId === b.cast_id && (
+            <SiteCastDetail castId={b.cast_id} setError={setError} setNotice={setNotice} onSaved={() => load()} />
+          )}
+        </div>
+      ))}
+      {casts.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No site-cast cube batches recorded yet.</div>}
+    </div>
+  );
+}
+
+function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
+  const [orders, setOrders] = useState([]);
+  const [orderId, setOrderId] = useState("");
+  const [castDate, setCastDate] = useState(new Date().toISOString().slice(0, 10));
+  const [numberOfCubes, setNumberOfCubes] = useState("");
+  const [sampleIds, setSampleIds] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { apiRequest("/orders").then(setOrders).catch((err) => setError(err.message)); }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!orderId) { setError("Select which order these cubes were cast for."); return; }
+    setSaving(true); setError(""); setNotice("");
+    try {
+      const created = await apiRequest("/lab-technician/site-cube-casts", {
+        method: "POST",
+        body: { order_id: orderId, cast_date: castDate, number_of_cubes: numberOfCubes || null, sample_ids: sampleIds || null, remarks: remarks || null },
+      });
+      setNotice("Site cast recorded — enter test results below once ready.");
+      onDone(created.id);
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  return (
+    <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+      <button type="button" onClick={onCancel} style={{ alignSelf: "flex-start" }}>← Cancel</button>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Order</div>
+        <select value={orderId} onChange={(e) => setOrderId(e.target.value)} required>
+          <option value="">Select the order these cubes were cast for</option>
+          {orders.map((o) => <option key={o.id} value={o.id}>{formatOrderNumber(o.id)} — {o.customer_name} — {o.site_name}</option>)}
+        </select>
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Cast date</div>
+        <input type="date" value={castDate} onChange={(e) => setCastDate(e.target.value)} required />
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Number of cubes</div>
+        <input type="number" min="1" value={numberOfCubes} onChange={(e) => setNumberOfCubes(e.target.value)} />
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Sample IDs (comma-separated, optional)</div>
+        <input value={sampleIds} onChange={(e) => setSampleIds(e.target.value)} />
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Remarks</div>
+        <textarea rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
+      </div>
+      <button type="submit" disabled={saving}>{saving ? "Saving..." : "Record cast"}</button>
+    </form>
+  );
+}
+
+function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
+  const [detail, setDetail] = useState(null);
+  const [age, setAge] = useState(7);
+  const [mixDesignId, setMixDesignId] = useState("");
+  const [cubes, setCubes] = useState([]);
+  const [remarks, setRemarks] = useState("");
+  const [failureType, setFailureType] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedNotice, setSavedNotice] = useState("");
+
+  function resetCubesFor(d) {
+    const labels = (d.sample_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const count = d.number_of_cubes || labels.length || 3;
+    setCubes(Array.from({ length: count }, (_, i) => ({
+      cube_label: labels[i] || `Cube ${i + 1}`, weight_kg: "", testing_load_kn: "",
+    })));
+  }
+
+  async function loadDetail() {
+    try {
+      const d = await apiRequest(`/lab-technician/site-cube-casts/${castId}`);
+      setDetail(d);
+      setMixDesignId(d.resolved_mix_design_id || (d.approved_designs[0]?.id ?? ""));
+      const testedAges = d.results.map((r) => r.testing_age_days);
+      setAge(testedAges.includes(7) && !testedAges.includes(28) ? 28 : 7);
+      resetCubesFor(d);
+      return d;
+    } catch (err) { setError(err.message); return null; }
+  }
+
+  useEffect(() => { loadDetail(); }, [castId]);
+
+  function updateCube(i, field, value) {
+    setCubes((cs) => cs.map((c, idx) => idx === i ? { ...c, [field]: value } : c));
+  }
+
+  const avgStrength = (() => {
+    const vals = cubes.map((c) => Number(computeStrength(c.testing_load_kn))).filter((v) => v > 0);
+    return vals.length ? (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : null;
+  })();
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice(""); setSavedNotice("");
+    try {
+      const payload = {
+        testing_age_days: age,
+        mix_design_id: mixDesignId || null,
+        remarks,
+        failure_type: failureType || null,
+        cubes: cubes.map((c) => ({
+          cube_label: c.cube_label,
+          weight_kg: c.weight_kg || null,
+          testing_load_kn: c.testing_load_kn || null,
+          density_kgm3: computeDensity(c.weight_kg) || null,
+          strength_mpa: computeStrength(c.testing_load_kn) || null,
+        })),
+      };
+      await apiRequest(`/lab-technician/site-cube-casts/${castId}/results`, { method: "POST", body: payload });
+      setSavedNotice(`${age}-day result saved.`);
+      setRemarks(""); setFailureType("");
+      await loadDetail();
+      onSaved();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function viewPdf(resultId) {
+    try {
+      const data = await apiRequest(`/lab-technician/site-cube-tests/${resultId}/pdf-data`);
+      await generateCubeTestPdf(data);
+    } catch (err) { setError(err.message); }
+  }
+
+  async function toggleVisible(resultId, visible) {
+    setError("");
+    try {
+      await apiRequest(`/lab-technician/site-cube-tests/${resultId}/visibility`, { method: "PATCH", body: { visible_to_customer: visible } });
+      await loadDetail();
+    } catch (err) { setError(err.message); }
+  }
+
+  if (!detail) return <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Loading…</div>;
+
+  return (
+    <div style={{ marginTop: 12, borderTop: "1px solid var(--concrete)", paddingTop: 12 }}>
+      {savedNotice && (
+        <div style={{ color: "var(--signal-green)", fontSize: 12.5, marginBottom: 10, background: "var(--concrete)", borderRadius: 8, padding: "6px 10px" }}>
+          ✓ {savedNotice}
+        </div>
+      )}
+      {detail.results.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          {detail.results.map((r) => (
+            <div key={r.id} style={{ fontSize: 12, marginBottom: 8, borderBottom: "1px solid var(--concrete)", paddingBottom: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>{r.testing_age_days}-day — {Number(r.average_strength_mpa).toFixed(1)} MPa avg, tested by {r.tested_by_name}</span>
+                <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+              </div>
+              <div style={{ color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
+                Tested on {fmtDate(r.tested_at)}{r.failure_type ? ` · Failure: ${r.failure_type}` : ""}
+              </div>
+              <label style={{ display: "flex", gap: 5, alignItems: "center", marginTop: 3, color: "var(--slate)" }}>
+                <input type="checkbox" checked={r.visible_to_customer !== false} onChange={(e) => toggleVisible(r.id, e.target.checked)} />
+                Visible in customer module
+              </label>
             </div>
           ))}
         </div>

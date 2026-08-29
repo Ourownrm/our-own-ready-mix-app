@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { ROLE_HOME } from "../lib/roleHome.js";
+import { getCustomerSession } from "../lib/customerPortalApi.js";
 
 export default function Login() {
   const [phone, setPhone] = useState("");
@@ -15,6 +16,24 @@ export default function Login() {
   // entirely instead of making them type their password in again.
   if (user) {
     return <Navigate to={ROLE_HOME[user.role] || "/"} replace />;
+  }
+
+  // Round 120, item 1 — App.jsx's RootRedirect already forwards an anonymous
+  // visit to "/" onward to "/portal" for anyone with a live customer-portal
+  // session, but that check never ran for someone landing directly on
+  // "/login" itself. That gap matters because of how iOS actually installs a
+  // home-screen icon: Safari doesn't reliably honor the Web App Manifest's
+  // start_url (a long-standing WebKit limitation) — it bookmarks whatever URL
+  // was in the address bar the moment "Add to Home Screen" was tapped. A
+  // customer who tapped the site's bare domain (rather than a link straight
+  // to /portal) would have been client-side-redirected to /login by
+  // RootRedirect before they got to the share sheet, so THAT is the URL that
+  // got saved — meaning the installed icon opens directly on this staff
+  // sign-in screen every time, forever, no matter what RootRedirect does.
+  // Catching it here — on /login itself — recovers anyone in that situation
+  // who still has a valid customer session.
+  if (getCustomerSession()) {
+    return <Navigate to="/portal" replace />;
   }
 
   async function handleSubmit(e) {
@@ -63,6 +82,20 @@ export default function Login() {
             {loading ? "Signing in..." : "Sign in"}
           </button>
         </form>
+
+        {/* Round 120, item 1 — the redirect above only recovers a customer
+            who still has a live session. Someone opening a stale home-screen
+            icon for the very first time (no session yet, per the same iOS
+            start_url gap explained above) would otherwise have no way off
+            this staff-only screen short of typing "/portal" in by hand. This
+            link is the unconditional fallback: it costs staff nothing (they
+            never tap it) and gives a stuck customer one tap back to where
+            they need to be, regardless of what URL their icon is stuck on. */}
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--concrete)", textAlign: "center" }}>
+          <Link to="/portal" style={{ fontSize: 13, color: "var(--rebar)" }}>
+            Are you a customer? Open the Customer Portal
+          </Link>
+        </div>
       </div>
     </div>
   );

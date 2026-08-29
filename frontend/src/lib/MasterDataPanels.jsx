@@ -1309,6 +1309,14 @@ export function PlantLocationsPanel({ setError }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 120, item 3a — the auto plant-out-delay report (scheduledChecks.js)
+  // depends entirely on an active row here existing; with rows present but
+  // none marked active (someone added one but never hit "Set active", or the
+  // active one got deleted), the whole geofence pipeline goes silently quiet
+  // — no error anywhere, it just never fires. The old empty-table message
+  // only covered zero rows total; this also covers "rows exist, none active."
+  const hasActive = plants.some((p) => p.is_active);
+
   return (
     <div>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Plant location (geofence anchor)</div>
@@ -1316,6 +1324,12 @@ export function PlantLocationsPanel({ setError }) {
         Used to auto-detect when a truck leaves or returns to the plant, so drivers get a nudge to confirm Plant Out / Plant In.
         This never confirms anything by itself — the driver still has to tap it.
       </div>
+      {plants.length > 0 && !hasActive && (
+        <div style={{ fontSize: 12.5, color: "var(--alert-red)", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>
+          No plant location is currently set active — auto plant-out/plant-in detection (and the auto delay report) is completely off
+          until you tap "Set active" on one below.
+        </div>
+      )}
       <div className="card" style={{ marginBottom: 12 }}>
         <table>
           <thead><tr><th>Name</th><th>Latitude</th><th>Longitude</th><th>Radius (m)</th><th>Status</th><th></th></tr></thead>
