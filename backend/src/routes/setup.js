@@ -1367,6 +1367,65 @@ router.get("/setup", async (req, res) => {
     await query(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS required_at_site_time TIME;`);
     log.push("Schema migration applied (customer_orders.required_at_site_time — the customer-facing 'needed at site' time, distinct from the internal plant batching time).");
 
+    // Round 120, item 4a — per-result show/hide switch so not every internal
+    // cube test needs to be visible in the customer module. Defaults true so
+    // every existing result stays exactly as visible as it is today; a Lab
+    // Technician/Administrator has to actively hide one.
+    await query(`ALTER TABLE cube_test_results ADD COLUMN IF NOT EXISTS visible_to_customer BOOLEAN NOT NULL DEFAULT true;`);
+    log.push("Schema migration applied (cube_test_results.visible_to_customer — per-result switch for whether a test appears in the customer module; defaults true).");
+
+    // Round 120, items 4b/4e — cubes prepared AT THE CUSTOMER'S SITE (not
+    // plant-cast), a genuinely separate workflow from plant_qc/cube_test_results
+    // since there's no delivery ticket to anchor a site-cast batch to — it
+    // belongs to the order/pour as a whole instead. Deliberately mirrors the
+    // existing plant_qc → cube_test_results → cube_test_cubes three-table
+    // shape (a "cast" record, one "test result" row per testing age, each
+    // with its own cube rows) so the same reporting/PDF patterns apply with
+    // minimal new concepts — the only structural difference is order_id
+    // instead of ticket_id as the anchor. Same visible_to_customer switch as
+    // plant-cast results, defaulting true.
+    await query(`
+      CREATE TABLE IF NOT EXISTS site_cube_casts (
+        id SERIAL PRIMARY KEY,
+        order_id INTEGER REFERENCES customer_orders(id) NOT NULL,
+        cast_date DATE NOT NULL,
+        number_of_cubes INTEGER,
+        sample_ids TEXT,
+        remarks TEXT,
+        entered_by INTEGER REFERENCES users(id),
+        entered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_site_cube_casts_order ON site_cube_casts(order_id);
+      CREATE TABLE IF NOT EXISTS site_cube_test_results (
+        id SERIAL PRIMARY KEY,
+        site_cube_cast_id INTEGER REFERENCES site_cube_casts(id) NOT NULL,
+        testing_age_days INTEGER NOT NULL CHECK (testing_age_days IN (7, 28)),
+        mix_design_id INTEGER REFERENCES mix_designs(id),
+        average_weight_kg NUMERIC(6,3),
+        average_load_kn NUMERIC(7,2),
+        average_density_kgm3 NUMERIC(7,1),
+        average_strength_mpa NUMERIC(6,2),
+        failure_type VARCHAR(60),
+        remarks TEXT,
+        visible_to_customer BOOLEAN NOT NULL DEFAULT true,
+        tested_by INTEGER REFERENCES users(id) NOT NULL,
+        tested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (site_cube_cast_id, testing_age_days)
+      );
+      CREATE TABLE IF NOT EXISTS site_cube_test_cubes (
+        id SERIAL PRIMARY KEY,
+        site_cube_test_result_id INTEGER REFERENCES site_cube_test_results(id) ON DELETE CASCADE NOT NULL,
+        cube_label VARCHAR(40) NOT NULL,
+        weight_kg NUMERIC(6,3),
+        testing_load_kn NUMERIC(7,2),
+        density_kgm3 NUMERIC(7,1),
+        strength_mpa NUMERIC(6,2),
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_site_cube_test_cubes_result ON site_cube_test_cubes(site_cube_test_result_id);
+    `);
+    log.push("Schema migration applied (site_cube_casts/site_cube_test_results/site_cube_test_cubes — cube samples cast at the customer's site rather than the plant, anchored to the order instead of a delivery ticket; same visible_to_customer switch as plant-cast results).");
+
     const { rows: existingAdmin } = await query("SELECT id FROM users WHERE phone = '9999999999'");
     if (existingAdmin.length === 0) {
       const passwordHash = await bcrypt.hash("ChangeMe123!", 10);

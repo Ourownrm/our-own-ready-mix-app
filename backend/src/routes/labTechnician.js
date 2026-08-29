@@ -100,12 +100,24 @@ router.get("/cube-batches/:plantQcId", async (req, res) => {
   const { rows: results } = await query(
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.mix_design_id,
-            ctr.failure_type, u.name AS tested_by_name, ctr.tested_at
+            ctr.failure_type, ctr.visible_to_customer, u.name AS tested_by_name, ctr.tested_at
      FROM cube_test_results ctr JOIN users u ON u.id = ctr.tested_by
      WHERE ctr.plant_qc_id = $1 ORDER BY ctr.testing_age_days`,
     [batch.plant_qc_id]
   );
   res.json({ ...batch, approved_designs: designs, results });
+});
+
+// Round 120, item 4a — Lab Technician/Administrator toggles whether one
+// result is shown in the customer module. Defaults true (see the schema
+// migration), so this is only ever hit to actively hide something.
+router.patch("/cube-tests/:resultId/visibility", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `UPDATE cube_test_results SET visible_to_customer = $1 WHERE id = $2 RETURNING id`,
+    [!!req.body.visible_to_customer, req.params.resultId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Test result not found." });
+  res.json({ ok: true });
 });
 
 // Close a batch that isn't going to be tested (cubes damaged, order
@@ -212,6 +224,172 @@ router.post("/cube-batches/:plantQcId/results", requireRole("lab_technician", "a
   res.status(201).json({ ok: true, result_id: resultId });
 });
 
+// ===== Site-cast cube tests (round 120, items 4b/4e) =====
+// Cubes prepared AT THE CUSTOMER'S SITE rather than plant-cast — a genuinely
+// separate workflow since there's no delivery ticket to anchor a batch to.
+// A "site cube cast" plays the same role plant_qc plays for plant batches;
+// everything below deliberately mirrors the plant cube-batches routes above
+// (same shape, same averaging-recomputed-server-side rule, same
+// visibility-toggle pattern), just anchored to an order instead of a ticket.
+
+router.get("/site-cube-casts", async (req, res) => {
+  const { rows } = await query(
+    `SELECT scc.id AS cast_id, scc.order_id, scc.cast_date, scc.number_of_cubes, scc.sample_ids, scc.entered_at,
+            co.mix_grade_id, m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name,
+            r7.id AS result_7day_id, r7.average_strength_mpa AS result_7day_strength,
+            r28.id AS result_28day_id, r28.average_strength_mpa AS result_28day_strength
+     FROM site_cube_casts scc
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN site_cube_test_results r7 ON r7.site_cube_cast_id = scc.id AND r7.testing_age_days = 7
+     LEFT JOIN site_cube_test_results r28 ON r28.site_cube_cast_id = scc.id AND r28.testing_age_days = 28
+     ORDER BY scc.entered_at DESC
+     LIMIT 200`
+  );
+  res.json(rows);
+});
+
+router.post("/site-cube-casts", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { order_id, cast_date, number_of_cubes, sample_ids, remarks } = req.body;
+  if (!order_id || !cast_date) {
+    return res.status(400).json({ error: "Order and cast date are required." });
+  }
+  const { rows: orderCheck } = await query("SELECT id FROM customer_orders WHERE id = $1", [order_id]);
+  if (!orderCheck.length) return res.status(404).json({ error: "Order not found." });
+  const { rows } = await query(
+    `INSERT INTO site_cube_casts (order_id, cast_date, number_of_cubes, sample_ids, remarks, entered_by)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [order_id, cast_date, number_of_cubes || null, sample_ids || null, remarks || null, req.user.id]
+  );
+  res.status(201).json({ id: rows[0].id });
+});
+
+router.get("/site-cube-casts/:castId", async (req, res) => {
+  const { rows } = await query(
+    `SELECT scc.id AS cast_id, scc.order_id, scc.cast_date, scc.number_of_cubes, scc.sample_ids, scc.remarks, scc.entered_at,
+            co.mix_grade_id, co.resolved_mix_design_id, co.casting_location, co.order_date,
+            m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name, s.address AS site_address
+     FROM site_cube_casts scc
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     WHERE scc.id = $1`,
+    [req.params.castId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Site cube cast not found." });
+  const batch = rows[0];
+
+  const { rows: designs } = await query(
+    `SELECT id, design_ref_code, mix_description FROM mix_designs
+     WHERE mix_grade_id = $1 AND status = 'approved' ORDER BY design_ref_code`,
+    [batch.mix_grade_id]
+  );
+  const { rows: results } = await query(
+    `SELECT sctr.id, sctr.testing_age_days, sctr.average_weight_kg, sctr.average_load_kn,
+            sctr.average_density_kgm3, sctr.average_strength_mpa, sctr.remarks, sctr.mix_design_id,
+            sctr.failure_type, sctr.visible_to_customer, u.name AS tested_by_name, sctr.tested_at
+     FROM site_cube_test_results sctr JOIN users u ON u.id = sctr.tested_by
+     WHERE sctr.site_cube_cast_id = $1 ORDER BY sctr.testing_age_days`,
+    [batch.cast_id]
+  );
+  res.json({ ...batch, approved_designs: designs, results });
+});
+
+router.post("/site-cube-casts/:castId/results", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { testing_age_days, mix_design_id, cubes, remarks, failure_type } = req.body;
+  if (![7, 28].includes(Number(testing_age_days))) {
+    return res.status(400).json({ error: "Testing age must be 7 or 28 days." });
+  }
+  if (!Array.isArray(cubes) || cubes.length === 0) {
+    return res.status(400).json({ error: "At least one cube's weight/load is required." });
+  }
+  const { rows: castRows } = await query("SELECT id FROM site_cube_casts WHERE id = $1", [req.params.castId]);
+  if (!castRows.length) return res.status(404).json({ error: "Site cube cast not found." });
+
+  const avg = (key) => {
+    const vals = cubes.map((c) => Number(c[key])).filter((v) => !isNaN(v));
+    if (!vals.length) return null;
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  };
+  const avgWeight = avg("weight_kg");
+  const avgLoad = avg("testing_load_kn");
+  const avgDensity = avg("density_kgm3");
+  const avgStrength = avg("strength_mpa");
+
+  const { rows: resultRows } = await query(
+    `INSERT INTO site_cube_test_results
+      (site_cube_cast_id, testing_age_days, mix_design_id, average_weight_kg, average_load_kn,
+       average_density_kgm3, average_strength_mpa, remarks, failure_type, tested_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     ON CONFLICT (site_cube_cast_id, testing_age_days) DO UPDATE SET
+       mix_design_id = $3, average_weight_kg = $4, average_load_kn = $5,
+       average_density_kgm3 = $6, average_strength_mpa = $7, remarks = $8,
+       failure_type = $9, tested_by = $10, tested_at = now()
+     RETURNING id`,
+    [req.params.castId, testing_age_days, mix_design_id || null, avgWeight, avgLoad, avgDensity, avgStrength, remarks || null, failure_type || null, req.user.id]
+  );
+  const resultId = resultRows[0].id;
+
+  await query("DELETE FROM site_cube_test_cubes WHERE site_cube_test_result_id = $1", [resultId]);
+  let i = 0;
+  for (const c of cubes) {
+    i += 1;
+    await query(
+      `INSERT INTO site_cube_test_cubes (site_cube_test_result_id, cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [resultId, c.cube_label || `Cube ${i}`, c.weight_kg || null, c.testing_load_kn || null, c.density_kgm3 || null, c.strength_mpa || null, i]
+    );
+  }
+  res.status(201).json({ ok: true, result_id: resultId });
+});
+
+// Round 120, item 4a — same toggle as the plant-cast one above, mirrored for
+// site-cast results.
+router.patch("/site-cube-tests/:resultId/visibility", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `UPDATE site_cube_test_results SET visible_to_customer = $1 WHERE id = $2 RETURNING id`,
+    [!!req.body.visible_to_customer, req.params.resultId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Test result not found." });
+  res.json({ ok: true });
+});
+
+// Flat JSON for the client-side PDF generator — same shape as the plant
+// cube-tests/:resultId/pdf-data below, minus the ticket_number a site-cast
+// batch doesn't have.
+router.get("/site-cube-tests/:resultId/pdf-data", async (req, res) => {
+  const { rows } = await query(
+    `SELECT sctr.id, sctr.testing_age_days, sctr.average_weight_kg, sctr.average_load_kn,
+            sctr.average_density_kgm3, sctr.average_strength_mpa, sctr.remarks, sctr.failure_type, sctr.tested_at,
+            u.name AS tested_by_name,
+            scc.id AS site_cube_cast_id, scc.sample_ids, scc.cast_date, scc.number_of_cubes,
+            co.id AS order_id, co.casting_location, co.order_date,
+            c.name AS customer_name, s.name AS site_name, s.address AS site_address,
+            m.name AS mix_grade_name,
+            md.id AS mix_design_id, md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
+     FROM site_cube_test_results sctr
+     JOIN users u ON u.id = sctr.tested_by
+     JOIN site_cube_casts scc ON scc.id = sctr.site_cube_cast_id
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = sctr.mix_design_id
+     WHERE sctr.id = $1`,
+    [req.params.resultId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Test result not found." });
+  const { rows: cubes } = await query(
+    `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+     FROM site_cube_test_cubes WHERE site_cube_test_result_id = $1 ORDER BY sort_order`,
+    [req.params.resultId]
+  );
+  res.json({ ...rows[0], cubes, is_site_cast: true });
+});
+
 // Correct a saved test's recorded date — administrator only. Exists purely
 // for after-the-fact data-entry corrections (a result entered days later
 // but back-dated to when the test actually happened, or a typo caught after
@@ -239,6 +417,7 @@ router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
   const { rows } = await query(
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
+            ctr.visible_to_customer,
             u.name AS tested_by_name,
             pq.id AS plant_qc_id, pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
             dt.ticket_number,
@@ -264,7 +443,7 @@ router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
      FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
     [req.params.resultId]
   );
-  res.json({ ...rows[0], cubes });
+  res.json({ ...rows[0], cubes, is_site_cast: false });
 });
 
 // Configurable summary table across every cube test result — date range,
@@ -272,6 +451,15 @@ router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
 // Lab Technician + Administrator only (tighter than this router's general
 // read access above) since this is a cross-batch report, not a single
 // batch's own detail.
+//
+// Round 120, item 4d — "pour-based reporting" was scoped (per discussion) to
+// a reporting-layer change only, not a restructure of how/where casting is
+// recorded: `order_id` is now included on every row precisely so the
+// frontend (CubeTestReport.jsx) can group these by order/pour for display,
+// without any change to the underlying plant_qc/cube_test_results shape.
+// Round 120, items 4b/4e — UNIONed with site_cube_test_results (cubes cast
+// at the customer's site rather than the plant) so this one report covers
+// both; `source` tells the two apart since they don't share an id space.
 router.get("/cube-test-report", requireRole("lab_technician", "administrator"), async (req, res) => {
   const { from_date, to_date, customer_id, mix_grade_id, design_ref_code, testing_age_days } = req.query;
   const conditions = [];
@@ -285,10 +473,10 @@ router.get("/cube-test-report", requireRole("lab_technician", "administrator"), 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const { rows } = await query(
-    `SELECT ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.average_load_kn,
-            ctr.average_density_kgm3, ctr.failure_type, ctr.remarks, ctr.tested_at,
+    `SELECT 'plant' AS source, ctr.id, co.id AS order_id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.average_load_kn,
+            ctr.average_density_kgm3, ctr.failure_type, ctr.remarks, ctr.tested_at, ctr.visible_to_customer,
             u.name AS tested_by_name,
-            pq.id AS plant_qc_id, pq.entered_at AS cast_at, pq.sample_ids,
+            pq.id AS batch_id, pq.entered_at AS cast_at, pq.sample_ids,
             dt.ticket_number,
             c.id AS customer_id, c.name AS customer_name,
             s.id AS site_id, s.name AS site_name,
@@ -306,8 +494,33 @@ router.get("/cube-test-report", requireRole("lab_technician", "administrator"), 
      JOIN mix_grades m ON m.id = co.mix_grade_id
      LEFT JOIN mix_designs md ON md.id = ctr.mix_design_id
      ${where}
-     ORDER BY ctr.tested_at DESC
+     UNION ALL
+     SELECT 'site' AS source, ctr.id, co.id AS order_id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.average_load_kn,
+            ctr.average_density_kgm3, ctr.failure_type, ctr.remarks, ctr.tested_at, ctr.visible_to_customer,
+            u.name AS tested_by_name,
+            scc.id AS batch_id, scc.cast_date::timestamptz AS cast_at, scc.sample_ids,
+            NULL AS ticket_number,
+            c.id AS customer_id, c.name AS customer_name,
+            s.id AS site_id, s.name AS site_name,
+            m.id AS mix_grade_id, m.name AS mix_grade_name,
+            md.id AS mix_design_id, md.design_ref_code, md.fck_28day_mpa,
+            CASE WHEN ctr.testing_age_days = 28 AND md.fck_28day_mpa IS NOT NULL
+                 THEN (ctr.average_strength_mpa >= md.fck_28day_mpa) END AS meets_target
+     FROM site_cube_test_results ctr
+     JOIN users u ON u.id = ctr.tested_by
+     JOIN site_cube_casts scc ON scc.id = ctr.site_cube_cast_id
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = ctr.mix_design_id
+     ${where}
+     ORDER BY tested_at DESC
      LIMIT 1000`,
+    // Both halves of the UNION ALL reuse the exact same \`where\` text (built
+    // once above, with matching aliases in both SELECTs — ctr/c/m/md — so the
+    // same $N placeholders apply to both), so the same params array covers
+    // both; there's no separate second set of placeholders to fill.
     params
   );
   res.json(rows);

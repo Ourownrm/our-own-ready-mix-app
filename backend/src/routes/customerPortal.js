@@ -590,8 +590,14 @@ router.get("/qc-reports", requireCustomerAuth, async (req, res) => {
   const qcSiteIds = req.sites.filter((s) => s.allow_qc_reports).map((s) => s.site_id);
   if (!qcSiteIds.length) return res.json({ cube_tests: [], mix_designs: [] });
 
+  // Round 120, item 4a — only results a Lab Technician/Administrator has left
+  // visible are included (visible_to_customer defaults true, so this is a
+  // pure narrowing, never a behavior change for anyone who hasn't hidden
+  // anything). Round 120, items 4b/4e — UNIONed with site_cube_test_results
+  // (cubes cast at the customer's site) so both appear in one list; `source`
+  // tells them apart since the two share no id space.
   const { rows: cubeTests } = await query(
-    `SELECT ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at,
+    `SELECT 'plant' AS source, ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at,
             co.id AS order_id, s.name AS site_name, m.name AS mix_grade_name
      FROM cube_test_results ctr
      JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
@@ -599,8 +605,17 @@ router.get("/qc-reports", requireCustomerAuth, async (req, res) => {
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
-     WHERE co.customer_id = $1 AND co.site_id = ANY($2::int[])
-     ORDER BY ctr.tested_at DESC NULLS LAST
+     WHERE co.customer_id = $1 AND co.site_id = ANY($2::int[]) AND ctr.visible_to_customer
+     UNION ALL
+     SELECT 'site' AS source, sctr.id, sctr.testing_age_days, sctr.average_strength_mpa, sctr.tested_at,
+            co.id AS order_id, s.name AS site_name, m.name AS mix_grade_name
+     FROM site_cube_test_results sctr
+     JOIN site_cube_casts scc ON scc.id = sctr.site_cube_cast_id
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     WHERE co.customer_id = $1 AND co.site_id = ANY($2::int[]) AND sctr.visible_to_customer
+     ORDER BY tested_at DESC NULLS LAST
      LIMIT 50`,
     [req.customerId, qcSiteIds]
   );
@@ -661,12 +676,17 @@ router.get("/orders/:id/cube-tests", requireCustomerAuth, async (req, res) => {
     return res.status(403).json({ error: "QC reports aren't enabled for this site." });
   }
   const { rows } = await query(
-    `SELECT ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at
+    `SELECT 'plant' AS source, ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at
      FROM cube_test_results ctr
      JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
      JOIN delivery_tickets dt ON dt.id = pq.ticket_id
-     WHERE dt.order_id = $1
-     ORDER BY ctr.tested_at DESC`,
+     WHERE dt.order_id = $1 AND ctr.visible_to_customer
+     UNION ALL
+     SELECT 'site' AS source, sctr.id, sctr.testing_age_days, sctr.average_strength_mpa, sctr.tested_at
+     FROM site_cube_test_results sctr
+     JOIN site_cube_casts scc ON scc.id = sctr.site_cube_cast_id
+     WHERE scc.order_id = $1 AND sctr.visible_to_customer
+     ORDER BY tested_at DESC`,
     [order.id]
   );
   res.json(rows);
@@ -676,6 +696,7 @@ router.get("/cube-tests/:resultId/pdf-data", requireCustomerAuth, async (req, re
   const { rows } = await query(
     `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
             ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
+            ctr.visible_to_customer,
             u.name AS tested_by_name,
             pq.id AS plant_qc_id, pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
             dt.ticket_number, dt.order_id,
@@ -696,7 +717,11 @@ router.get("/cube-tests/:resultId/pdf-data", requireCustomerAuth, async (req, re
     [req.params.resultId]
   );
   const row = rows[0];
-  if (!row || row.customer_id !== req.customerId || !req.siteIds.includes(row.site_id)) {
+  // Round 120, item 4a — a hidden result 404s exactly like a result that
+  // doesn't belong to this customer, rather than a distinguishable 403 —
+  // same reasoning as the ownership check just below it: don't let the
+  // response shape reveal that something exists but is being withheld.
+  if (!row || row.customer_id !== req.customerId || !req.siteIds.includes(row.site_id) || !row.visible_to_customer) {
     return res.status(404).json({ error: "Test result not found." });
   }
   if (!siteAllows(req, row.site_id, "qc_reports")) {
@@ -708,7 +733,129 @@ router.get("/cube-tests/:resultId/pdf-data", requireCustomerAuth, async (req, re
     [req.params.resultId]
   );
   // Same real PDF data a staff member would see — no redaction.
-  res.json({ ...row, cubes });
+  res.json({ ...row, cubes, is_site_cast: false });
+});
+
+// Round 120, items 4b/4e — same shape/checks as the plant route above, for a
+// site-cast result.
+router.get("/site-cube-tests/:resultId/pdf-data", requireCustomerAuth, async (req, res) => {
+  const { rows } = await query(
+    `SELECT sctr.id, sctr.testing_age_days, sctr.average_weight_kg, sctr.average_load_kn,
+            sctr.average_density_kgm3, sctr.average_strength_mpa, sctr.remarks, sctr.failure_type, sctr.tested_at,
+            sctr.visible_to_customer,
+            u.name AS tested_by_name,
+            scc.id AS site_cube_cast_id, scc.sample_ids, scc.cast_date, scc.number_of_cubes,
+            co.id AS order_id, co.casting_location, co.order_date, co.customer_id, co.site_id,
+            c.name AS customer_name, s.name AS site_name, s.address AS site_address,
+            m.name AS mix_grade_name,
+            md.id AS mix_design_id, md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
+     FROM site_cube_test_results sctr
+     JOIN users u ON u.id = sctr.tested_by
+     JOIN site_cube_casts scc ON scc.id = sctr.site_cube_cast_id
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = sctr.mix_design_id
+     WHERE sctr.id = $1`,
+    [req.params.resultId]
+  );
+  const row = rows[0];
+  if (!row || row.customer_id !== req.customerId || !req.siteIds.includes(row.site_id) || !row.visible_to_customer) {
+    return res.status(404).json({ error: "Test result not found." });
+  }
+  if (!siteAllows(req, row.site_id, "qc_reports")) {
+    return res.status(403).json({ error: "QC reports aren't enabled for this site." });
+  }
+  const { rows: cubes } = await query(
+    `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+     FROM site_cube_test_cubes WHERE site_cube_test_result_id = $1 ORDER BY sort_order`,
+    [req.params.resultId]
+  );
+  res.json({ ...row, cubes, is_site_cast: true });
+});
+
+// Round 120, item 4d — "what if 7-day and 28-day results land on the same
+// day?" was decided as: combine them into one report when they coincide.
+// Scoped at the customer+day level (not just one order's own two ages),
+// since the day two DIFFERENT pours both happen to have a result ready is
+// the actual case that was raised — gathers every visible plant + site
+// result across every order/site this customer can see whose tested_at
+// falls on the given calendar day, so the frontend can render one combined
+// PDF instead of making the customer open several. A day with only one
+// ready result still works fine here — the frontend falls back to the
+// single-result PDF in that case (see CustomerPortal.jsx).
+router.get("/cube-tests/by-date/:date/pdf-data", requireCustomerAuth, async (req, res) => {
+  const date = req.params.date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: "Invalid date." });
+  }
+  const qcSiteIds = req.sites.filter((s) => s.allow_qc_reports).map((s) => s.site_id);
+  if (!qcSiteIds.length) return res.json({ date, results: [] });
+
+  const { rows: plantRows } = await query(
+    `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
+            ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
+            u.name AS tested_by_name,
+            pq.sample_ids, pq.entered_at AS cast_at, pq.number_of_cubes,
+            dt.ticket_number,
+            co.id AS order_id, co.casting_location, co.order_date,
+            c.name AS customer_name, s.name AS site_name, s.address AS site_address,
+            m.name AS mix_grade_name,
+            md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
+     FROM cube_test_results ctr
+     JOIN users u ON u.id = ctr.tested_by
+     JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
+     JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = ctr.mix_design_id
+     WHERE co.customer_id = $1 AND co.site_id = ANY($2::int[]) AND ctr.visible_to_customer AND ctr.tested_at::date = $3
+     ORDER BY ctr.tested_at`,
+    [req.customerId, qcSiteIds, date]
+  );
+  const { rows: siteRows } = await query(
+    `SELECT sctr.id, sctr.testing_age_days, sctr.average_weight_kg, sctr.average_load_kn,
+            sctr.average_density_kgm3, sctr.average_strength_mpa, sctr.remarks, sctr.failure_type, sctr.tested_at,
+            u.name AS tested_by_name,
+            scc.sample_ids, scc.cast_date AS cast_at, scc.number_of_cubes,
+            co.id AS order_id, co.casting_location, co.order_date,
+            c.name AS customer_name, s.name AS site_name, s.address AS site_address,
+            m.name AS mix_grade_name,
+            md.design_ref_code, md.fck_28day_mpa, md.target_mean_strength_mpa
+     FROM site_cube_test_results sctr
+     JOIN users u ON u.id = sctr.tested_by
+     JOIN site_cube_casts scc ON scc.id = sctr.site_cube_cast_id
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = sctr.mix_design_id
+     WHERE co.customer_id = $1 AND co.site_id = ANY($2::int[]) AND sctr.visible_to_customer AND sctr.tested_at::date = $3
+     ORDER BY sctr.tested_at`,
+    [req.customerId, qcSiteIds, date]
+  );
+
+  const results = [];
+  for (const r of plantRows) {
+    const { rows: cubes } = await query(
+      `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+       FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
+      [r.id]
+    );
+    results.push({ ...r, cubes, is_site_cast: false });
+  }
+  for (const r of siteRows) {
+    const { rows: cubes } = await query(
+      `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+       FROM site_cube_test_cubes WHERE site_cube_test_result_id = $1 ORDER BY sort_order`,
+      [r.id]
+    );
+    results.push({ ...r, cubes, is_site_cast: true });
+  }
+  res.json({ date, results });
 });
 
 export default router;

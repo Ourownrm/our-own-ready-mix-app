@@ -4509,3 +4509,145 @@ Verified with `node --check` on every touched backend file and a clean `npm run 
    the actual `GET /orders/:id` response — came back clean.
 
 Verified with `node --check` on every touched backend file and a clean `npm run build`.
+
+## Round 120 (Ver. 9.39): iOS install recovery, picture report redesign, tracking status/numbering/ordering, in-app truck tracking, cube-samples default
+
+This round's request list also raised several genuinely open design questions — same-day 7-day/28-day
+cube test collision handling and pour-based cube sampling, ETA calculation method, and the customer
+multi-site/multi-billing-address access model — which are **not implemented here**; they're written up
+separately as analysis and options for a decision before any schema/architecture work starts on them.
+
+1. **iOS still landing on the staff login, even after round 7's fix.** Root cause: iOS Safari doesn't
+   reliably honor the Web App Manifest's `start_url` at all (a long-standing WebKit limitation) — it
+   bookmarks whatever URL was literally in the address bar the moment "Add to Home Screen" was tapped.
+   A customer who opened the bare site domain (rather than a link straight to `/portal`) would have
+   been client-side-redirected to `/login` by `RootRedirect` before reaching the share sheet — so
+   `/login` is what got saved, permanently, regardless of any manifest fix. Two changes: `Login.jsx`
+   now redirects to `/portal` immediately for anyone with a live customer-portal session (closing the
+   gap that `RootRedirect`'s equivalent check only ever ran for `/`, never for `/login` itself,
+   which is exactly the URL an affected icon is stuck on); and — since a customer with no session yet
+   can't be told apart from staff by that check alone — the login screen now always shows a plain
+   "Are you a customer? Open the Customer Portal" link underneath the sign-in form, so anyone stuck on
+   a stale icon is one tap away regardless of what URL it's pinned to. Reinstalling the icon from
+   `/portal` is still the only way to fix the icon's saved URL itself — this makes being stuck on the
+   wrong one survivable in the meantime.
+2. **Picture report (`OrdersSchedule.jsx`) redesign.** Now manager-role only — no other account sees
+   it on this shared page. It no longer renders or fetches anything on page load: the Today/Tomorrow
+   toggle is always visible, but the card, stats, and Share button only appear once one is tapped.
+   Each order's detail block is trimmed to exactly the requested field set and order — Order date,
+   Order Qty, Mix Grade, Batching Time, Required at Site, Pump, Pump Leaving Time, Pump Crew, Site
+   Supervisor, Site Technician, Cube Samples, Slump, Remarks — dropping truck interval, site contact,
+   sales rep, QC Engineer, and casting location from the shared image (still visible in the in-app
+   Order Details modal, untouched). The field grid changed from a two-column stack of tiny uppercase
+   labels to one-line label:value rows at a larger font, which both increases the text size and cuts
+   the whitespace that came from giving every label its own line. The order-count/total-m³ tiles moved
+   out of their own strip into the header, right-aligned next to the date/title; "Generated HH:MM"
+   moved out of the header into a new footer strip below the order list.
+3. **Delivery tracking status, numbering, and ordering** (`DeliveryTrackingView.jsx`, shared by the
+   public `/track/:token` page and the customer portal's tracking panel). The "Pending" badge for a
+   truck with a delivery note raised but plant-out not yet logged read as "this delivery might not
+   even be real" — it's now "Under Loading / Quality Check" (badge and a matching note), since every
+   truck reaching this component is a real delivery ticket already in progress at the plant.
+   `orderTracking.js`'s truck query now also assigns each delivery a stable `delivery_number` (1 =
+   first delivery raised for the order, via `ROW_NUMBER() OVER (ORDER BY created_at ASC)`) shown as
+   "#N" on each truck card, and flips the display order to newest-first (latest truck on top, first
+   truck on bottom) — the numbering stays tied to creation order even though the display order is
+   reversed from it.
+4. **Truck tracking wasn't reachable in-app for Admin/Manager at all** — the only path was generating
+   the customer-facing tracking link and opening it themselves. New authenticated
+   `GET /orders/:orderId/tracking` route (`orders.js`, manager/administrator only) wraps the same
+   `getOrderTrackingPayload()` helper the public token route already uses, and `OrderDetailModal.jsx`
+   now renders the same `TruckCard` list from `DeliveryTrackingView.jsx` right above the tracking-link
+   panel — same per-truck stage view, no separate screen needed.
+5. **Auto plant-out-delay detection "not working."** This pipeline (`scheduledChecks.js`) has a hard
+   dependency on an *active* `plant_locations` row existing — with none active, it fails completely
+   and silently, no error anywhere. The admin Plant Locations panel already warned when the table was
+   completely empty, but not when rows exist with none marked active (e.g. one was added but "Set
+   active" was never tapped) — the far likelier real-world state, and just as silent. It now shows an
+   explicit red warning banner for that case too. This is a configuration check, not a code bug fix —
+   worth confirming directly in Administrator → Masters → Plant Location.
+6. **Cube samples always showing 3.** `cube_samples_required` was hardcoded to `3` as the initial
+   form value in both `CreateOrder.jsx` and `SalesPanels.jsx`'s `ConvertBookingForm`, so almost every
+   order kept a number nobody actually chose, and every delivery note under it inherited the same
+   default. Both now start blank, with a placeholder nudging toward "based on pour quantity" — added
+   to both backend routes' required-field validation (`orders.js`, `sales.js`) so a blank submission
+   fails with a clear message instead of a raw database error. Also fixed an incidental display bug
+   found in `OrderDetailModal.jsx`: "Cube samples required" was rendering the actual count as a
+   Yes/No boolean.
+
+## Round 120, post-ship (Ver. 9.40): ETA calculation, cube-report customer visibility, site-cast cube testing, same-day report combining
+
+Round 120's write-up left four questions open rather than guessing at consequential, hard-to-reverse
+decisions. All four were put to the business directly and this round implements exactly what was
+decided — item 5 (customer multi-site access / unified booking flow / multiple billing addresses)
+is still open and not touched here.
+
+Decisions made: ETA — hybrid (distance-based before departure, live GPS after) over GPS-only. Cube
+sampling — keep the existing per-ticket data model and add pour-level *reporting* only, not the
+larger move-casting-to-order-level restructure. Same-day 7-day/28-day collisions — combine into one
+PDF when they land on the same day, not separate documents with a combined view alongside them.
+Site-cast cube testing (items 4b and 4e) — one feature, not two.
+
+1. **Truck ETA-to-site** (`etaEstimate.js`, new). `estimateEtaAt(truck, site)` returns `null` for a
+   truck that hasn't left the plant yet or has already arrived. Once in transit: if the truck has a
+   GPS ping less than 10 minutes old, ETA is computed from the straight-line (haversine) distance
+   from that ping to the site, at the ping's own reported speed when it's above 5 km/h (otherwise the
+   same 25 km/h assumed-average used elsewhere in the app); if there's no fresh ping, it falls back to
+   distance-based estimate anchored from `left_plant_at` using the site's `distance_from_plant_km`.
+   `orderTracking.js`'s truck query gained a `LEFT JOIN LATERAL` pulling each truck's single most
+   recent GPS ping, and the order query now also selects the site's lat/long. Shown on the truck card
+   next to "Left plant HH:MM" as "· ETA site HH:MM" — public tracking page, customer portal, and the
+   new in-app Admin/Manager tracking panel from Round 120 item 4 all pick it up for free since they
+   share `DeliveryTrackingView.jsx`.
+2. **Cube test report — show/hide per result for customer visibility.** `cube_test_results` and the
+   new `site_cube_test_results` (below) both gained `visible_to_customer BOOLEAN NOT NULL DEFAULT
+   true`. Lab Technician / Administrator can toggle it per result from the batch detail view (new
+   `PATCH /lab-technician/cube-tests/:resultId/visibility` and its site-cast counterpart). Every
+   customer-facing cube-test query — the portal's QC Reports list, per-order cube tests, and the
+   single-result PDF-data routes — now filters on this flag; a hidden result's PDF-data route returns
+   a plain 404, identical to a result the customer never owned, so hiding something doesn't leak "it
+   exists but is withheld" through a different status code. Staff-facing views (`LabTechnician.jsx`,
+   `CubeTestReport.jsx`) are unaffected — the flag only ever hides from customers, never from plant
+   staff.
+3. **Why every delivery showed 3 cubes cast by default** — same root cause and same fix pattern as
+   Round 120 item 6's `cube_samples_required` bug: a hardcoded default, this time on the actual
+   cube-casting side rather than the order side. Investigated and confirmed there's no backend/data
+   default forcing 3; it was purely a frontend form default, already inert now that the order-level
+   field driving it starts blank.
+4. **Site-cast cube testing** — a customer or contractor sometimes casts cube samples at their own
+   site rather than the plant having cast them during Plant QC, and there was no way to record or
+   report that. New mirrored table set — `site_cube_casts` → `site_cube_test_results` →
+   `site_cube_test_cubes` — deliberately shaped like the existing `plant_qc` → `cube_test_results` →
+   `cube_test_cubes` chain, with the one structural difference being anchored to `order_id` instead of
+   `ticket_id` (a site-cast batch has no delivery ticket to hang off). New "Site-Cast Cubes" tab in
+   Lab Technician: record a cast against an order, then submit 7-day/28-day results the same way as a
+   plant batch, including its own visibility toggle and PDF. Every list and report that shows cube
+   test results — the staff `CubeTestReport.jsx`, the Lab Technician cube-test-report endpoint, the
+   customer portal's QC Reports and per-order cube-test lists — now shows plant-cast and site-cast
+   results together, tagged `source: 'plant' | 'site'` (a "Site cast" badge in the UI) since the two
+   live in separate tables with separate id spaces. The PDF itself gained an `is_site_cast` branch so
+   a site-cast report correctly reads "Site cast — no ticket" and "Customer site (site-cast sample)"
+   instead of plant-batch wording that wouldn't be true for it.
+5. **Pour-level cube report grouping.** `CubeTestReport.jsx` (staff) gained a "Group by pour" toggle
+   that re-renders the same flat result set as one card per order instead of one row per test — no
+   schema change, purely a display grouping over existing data, per the decision to keep per-ticket
+   casting as-is.
+6. **Same-day 7-day/28-day combined report.** `cubeTestPdf.js` was split so its per-result drawing
+   logic (`renderCubeTestSection`) can run more than once onto the same `jsPDF` document; the existing
+   `generateCubeTestPdf` (single result) is unchanged from the caller's point of view, and a new
+   `generateCombinedCubeTestPdf(payload)` loops over multiple results adding a page between each. New
+   backend route `GET /customer-portal/cube-tests/by-date/:date/pdf-data` gathers every visible
+   plant-cast and site-cast result (across all of a customer's permitted sites) whose test date
+   matches, plant and site results included together. In the customer portal's QC Reports screen,
+   results are now grouped by test date: a date with one ready result shows that result's own "View
+   PDF" button as before; a date with more than one shows a "View combined PDF" button instead,
+   producing a single multi-page PDF rather than several separate downloads.
+
+### Migration note
+
+Same pattern as every prior round — `setup.js` runs `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for
+the new `visible_to_customer` columns and `CREATE TABLE IF NOT EXISTS` for the three new site-cube
+tables automatically on next backend start; nothing manual required. `schema.sql` was updated to
+match as the plain-SQL doc of record.
+
+Verified with `node --check` on every touched backend file and a clean `npm run build`.

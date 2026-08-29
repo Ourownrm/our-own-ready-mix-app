@@ -3,6 +3,7 @@ import { randomBytes } from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { pushToRole } from "../lib/push.js";
+import { getOrderTrackingPayload } from "../lib/orderTracking.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -58,8 +59,13 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
     pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
   } = req.body;
 
+  // Round 120, item 4c — cube_samples_required added to this list: the
+  // frontend form no longer pre-fills it with 3, so a blank submission now
+  // needs to fail with a clear message here instead of falling through to a
+  // raw "column is NOT NULL" database error.
   const required = { order_date, scheduled_batching_time, truck_dispatch_interval_minutes,
-    customer_id, site_id, mix_grade_id, pump_requirement, site_contact_number, order_quantity_m3 };
+    customer_id, site_id, mix_grade_id, pump_requirement, site_contact_number, order_quantity_m3,
+    cube_samples_required };
   for (const [key, val] of Object.entries(required)) {
     if (val === undefined || val === null || val === "") {
       return res.status(400).json({ error: `${key.replaceAll("_", " ")} is required.` });
@@ -447,6 +453,19 @@ router.post("/:orderId/tracking-link", requireRole("manager", "administrator"), 
     [req.params.orderId, newToken(), req.user.id]
   );
   res.status(201).json(rows[0]);
+});
+
+// Round 120, item 3f — a logged-in Manager/Administrator previously had no
+// in-app way to see this same per-truck stage view; the only path was
+// generating the customer-facing /track/:token link above and opening it
+// themselves. This wraps the exact same getOrderTrackingPayload() helper the
+// public token route uses, just behind normal staff auth instead of a token
+// — same data shape, so the frontend can reuse DeliveryTrackingView.jsx
+// as-is.
+router.get("/:orderId/tracking", requireRole("manager", "administrator"), async (req, res) => {
+  const payload = await getOrderTrackingPayload(req.params.orderId);
+  if (!payload) return res.status(404).json({ error: "Order not found." });
+  res.json(payload);
 });
 
 // Revoke without replacing — for "just kill it, I'll decide about a new one later."

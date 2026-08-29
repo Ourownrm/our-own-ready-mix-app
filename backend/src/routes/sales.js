@@ -392,8 +392,12 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
     const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [booking.requested_by]);
     finalSalesRepId = spRows[0]?.id || null;
   }
+  // Round 120, item 4c — cube_samples_required added, same as orders.js's own
+  // POST / (see comment there): the form no longer defaults this to 3, so a
+  // blank value needs a clean error here rather than a raw NOT NULL failure.
   const required = { order_date, scheduled_batching_time, truck_dispatch_interval_minutes,
-    site_id: finalSiteId, mix_grade_id: finalMixGradeId, pump_requirement, site_contact_number, order_quantity_m3: finalQty };
+    site_id: finalSiteId, mix_grade_id: finalMixGradeId, pump_requirement, site_contact_number, order_quantity_m3: finalQty,
+    cube_samples_required };
   for (const [key, val] of Object.entries(required)) {
     if (val === undefined || val === null || val === "") {
       return res.status(400).json({ error: `${key.replaceAll("_", " ")} is required.` });

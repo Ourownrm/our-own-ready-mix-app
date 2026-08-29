@@ -1099,6 +1099,10 @@ CREATE TABLE cube_test_results (
   remarks TEXT,
   tested_by INTEGER REFERENCES users(id) NOT NULL,
   tested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Round 120, item 4a — per-result switch for whether this test appears in
+  -- the customer module. Defaults true so existing/plant behavior is
+  -- unchanged; a Lab Technician/Administrator hides one explicitly.
+  visible_to_customer BOOLEAN NOT NULL DEFAULT true,
   UNIQUE (plant_qc_id, testing_age_days)
 );
 
@@ -1129,6 +1133,53 @@ CREATE TABLE cube_batch_status (
   closed_by INTEGER REFERENCES users(id) NOT NULL,
   closed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Round 120, items 4b/4e — cubes prepared AT THE CUSTOMER'S SITE, not
+-- plant-cast. Deliberately mirrors plant_qc -> cube_test_results ->
+-- cube_test_cubes above (a "cast" record, one "test result" row per testing
+-- age, each with its own cube rows), with one structural difference: there's
+-- no delivery ticket to anchor a site-cast batch to, so it's anchored to the
+-- order/pour itself instead.
+CREATE TABLE site_cube_casts (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER REFERENCES customer_orders(id) NOT NULL,
+  cast_date DATE NOT NULL,
+  number_of_cubes INTEGER,
+  sample_ids TEXT,
+  remarks TEXT,
+  entered_by INTEGER REFERENCES users(id),
+  entered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_site_cube_casts_order ON site_cube_casts(order_id);
+
+CREATE TABLE site_cube_test_results (
+  id SERIAL PRIMARY KEY,
+  site_cube_cast_id INTEGER REFERENCES site_cube_casts(id) NOT NULL,
+  testing_age_days INTEGER NOT NULL CHECK (testing_age_days IN (7, 28)),
+  mix_design_id INTEGER REFERENCES mix_designs(id),
+  average_weight_kg NUMERIC(6,3),
+  average_load_kn NUMERIC(7,2),
+  average_density_kgm3 NUMERIC(7,1),
+  average_strength_mpa NUMERIC(6,2),
+  failure_type VARCHAR(60),
+  remarks TEXT,
+  visible_to_customer BOOLEAN NOT NULL DEFAULT true,
+  tested_by INTEGER REFERENCES users(id) NOT NULL,
+  tested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (site_cube_cast_id, testing_age_days)
+);
+
+CREATE TABLE site_cube_test_cubes (
+  id SERIAL PRIMARY KEY,
+  site_cube_test_result_id INTEGER REFERENCES site_cube_test_results(id) ON DELETE CASCADE NOT NULL,
+  cube_label VARCHAR(40) NOT NULL,
+  weight_kg NUMERIC(6,3),
+  testing_load_kn NUMERIC(7,2),
+  density_kgm3 NUMERIC(7,1),
+  strength_mpa NUMERIC(6,2),
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_site_cube_test_cubes_result ON site_cube_test_cubes(site_cube_test_result_id);
 
 -- ===================== PUMP MODULE (SRS §10) =====================
 
