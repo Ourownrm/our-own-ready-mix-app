@@ -85,14 +85,18 @@ async function renderCubeTestSection(doc, data, logoData) {
 
   // ---------------- Header ----------------
   let y = 16;
+  // Round 128 — logo up 10% (15mm -> 16.5mm); kept centered on the same spot
+  // the old 15mm logo occupied (y-9 to y+6, center y-1.5) rather than just
+  // growing from the same top-left corner, and the address text's left
+  // margin nudged out to match (15mm + 4mm gap -> 16.5mm + 4mm gap).
   if (logoData) {
-    try { doc.addImage(logoData, "JPEG", MARGIN_X, y - 9, 15, 15); } catch { /* ignore bad image */ }
+    try { doc.addImage(logoData, "JPEG", MARGIN_X, y - 9.75, 16.5, 16.5); } catch { /* ignore bad image */ }
   }
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.6);
   doc.setTextColor(...SLATE);
-  doc.text("Plot 3C-2, Ananthapuram Development Plot, Kasaragod, Kerala.", MARGIN_X + 19, y - 4);
-  doc.text("+91 83 4007 4006  ·  mail@ourownrm.com", MARGIN_X + 19, y);
+  doc.text("Plot 3C-2, Ananthapuram Development Plot, Kasaragod, Kerala.", MARGIN_X + 20.5, y - 4);
+  doc.text("+91 83 4007 4006  ·  mail@ourownrm.com", MARGIN_X + 20.5, y);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(17);
@@ -106,9 +110,10 @@ async function renderCubeTestSection(doc, data, logoData) {
   doc.setTextColor(...SLATE);
   doc.text("IS 516 (Part 1)  |  IS:456-2000  |  IS 1199 (1959)", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
 
-  // Gap before the rule: the logo's bottom edge sits at y+6 (addImage was
-  // placed at y-9 with a 15mm height), so the rule needs to clear that,
-  // not sit flush on top of it — same for the address/IS-code text above.
+  // Gap before the rule: the logo's bottom edge sits at y+6.75 (round 128 —
+  // addImage placed at y-9.75 with a 16.5mm height), so the rule needs to
+  // clear that, not sit flush on top of it — same for the address/IS-code
+  // text above.
   y += 9;
   doc.setDrawColor(...RED);
   doc.setLineWidth(0.8);
@@ -116,39 +121,54 @@ async function renderCubeTestSection(doc, data, logoData) {
   doc.setLineWidth(0.2);
   y += 7;
 
-  // ---------------- Spec grid (4 columns) ----------------
+  // ---------------- Spec grid ----------------
   const cubeCount = data.cubes?.length || data.number_of_cubes || 0;
-  const specs = [
+  // Round 128, items 1/2/6 — Customer and Site pulled out into their own
+  // 50/50 row so a long customer name isn't clipped to a quarter-width
+  // column; Delivery Ticket dropped (not required to show) and Tested By
+  // dropped (it already appears once, in the signature block below — showing
+  // it here too was a straight repetition).
+  const topSpecs = [
     ["Customer", data.customer_name || "—"],
     ["Site", data.site_name || "—"],
+  ];
+  const specs = [
     ["Grade", data.mix_grade_name || "—"],
     ["Casting Date", fmtDate(data.cast_at)],
     ["Structure", data.casting_location || "—"],
-    // Round 120, items 4b/4e — a site-cast batch has no delivery ticket to
-    // show here (there's no delivery it's tied to); says so plainly instead
-    // of a bare "—", which would otherwise look like a data gap. Round 122 —
-    // a pour-level result can draw cubes from more than one DN, so
-    // ticket_number may already be a comma-joined list; "#" reads oddly
-    // prefixed to more than one, so that prefix is only used for a single
-    // ticket.
-    ["Delivery Ticket", data.is_site_cast
-      ? "Site cast — no ticket"
-      : (data.ticket_number
-        ? (data.ticket_number.includes(",") ? `DNs: ${data.ticket_number}` : `#${data.ticket_number}`)
-        : "—")],
     ["Sample IDs", data.sample_ids || "—"],
     ["No. of Cubes", String(cubeCount)],
     ["Testing Age", data.testing_age_days ? `${data.testing_age_days} days` : "—"],
     ["Test Date", fmtDate(data.tested_at)],
     ["Compared Design", data.design_ref_code || "— none on file —"],
-    ["Tested By", data.tested_by_name || "—"],
   ];
   {
-    const cw = CONTENT_W / 4;
     const rh = 8.6;
+
+    // Top row — Customer | Site, 50/50 width.
+    y = ensureSpace(y, rh + 2);
+    const cw2 = CONTENT_W / 2;
+    doc.setDrawColor(...BORDER);
+    doc.rect(MARGIN_X, y, CONTENT_W, rh);
+    doc.line(MARGIN_X + cw2, y, MARGIN_X + cw2, y + rh);
+    topSpecs.forEach((s, i) => {
+      const cx = MARGIN_X + i * cw2;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6.6);
+      doc.setTextColor(...SLATE);
+      doc.text(s[0].toUpperCase(), cx + 2.2, y + 3.5);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.2);
+      doc.setTextColor(...CHARCOAL);
+      const valLines = doc.splitTextToSize(String(s[1]), cw2 - 4.4);
+      doc.text(valLines[0], cx + 2.2, y + rh - 2.2);
+    });
+    y += rh;
+
+    // Remaining fields — 4-column grid.
+    const cw = CONTENT_W / 4;
     const rows = Math.ceil(specs.length / 4);
     y = ensureSpace(y, rh * rows + 2);
-    doc.setDrawColor(...BORDER);
     doc.rect(MARGIN_X, y, CONTENT_W, rh * rows);
     specs.forEach((s, i) => {
       const col = i % 4, row = Math.floor(i / 4);
@@ -190,7 +210,10 @@ async function renderCubeTestSection(doc, data, logoData) {
   ];
   {
     const cw = CONTENT_W / 3;
-    const rh = 9.5;
+    // Round 128, item 7 — row height up (9.5 -> 12.5) and the value pulled
+    // further from the bottom edge, so the gap between each label and its
+    // result reads clearly instead of the two nearly touching.
+    const rh = 12.5;
     y = ensureSpace(y, rh + 1);
     doc.setDrawColor(...BORDER);
     doc.rect(MARGIN_X, y, CONTENT_W, rh);
@@ -204,7 +227,7 @@ async function renderCubeTestSection(doc, data, logoData) {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(10);
       doc.setTextColor(...item[2]);
-      doc.text(item[1], cx + 2.5, y + rh - 2.4);
+      doc.text(item[1], cx + 2.5, y + rh - 3.2);
     });
     y += rh;
     if (meetsTarget !== null) {
@@ -275,8 +298,12 @@ async function renderCubeTestSection(doc, data, logoData) {
   y += 6.4;
   {
     const cubes = data.cubes || [];
-    const headers = ["Cube No", "Dimension (mm)", "Weight (kg)", "Density (kg/m3)", "Load (kN)", "Strength (N/mm2)", "Average (N/mm2)"];
-    const widths = [0.16, 0.16, 0.13, 0.16, 0.13, 0.14, 0.12].map((f) => f * CONTENT_W);
+    // Round 128, item 3 — the "Average" column dropped. It showed the same
+    // all-cubes average on every row, which read as though each cube had its
+    // own average — the actual average already has its own line in TEST
+    // SUMMARY above.
+    const headers = ["Cube No", "Dimension (mm)", "Weight (kg)", "Density (kg/m3)", "Load (kN)", "Strength (N/mm2)"];
+    const widths = [0.18, 0.18, 0.15, 0.18, 0.15, 0.16].map((f) => f * CONTENT_W);
     const headH = 8.6;
     y = ensureSpace(y, headH + 1);
     doc.setFillColor(...SHADE);
@@ -308,14 +335,13 @@ async function renderCubeTestSection(doc, data, logoData) {
         fmtInt(c.density_kgm3),
         fmtDec(c.testing_load_kn, 2),
         fmtDec(c.strength_mpa, 1),
-        fmtDec(data.average_strength_mpa, 1),
       ];
       let vx = MARGIN_X;
       doc.setFont("helvetica", "bold");
       doc.setFontSize(7.4);
       vals.forEach((v, vi) => {
         if (vi > 0) doc.line(vx, ry, vx, ry + rh);
-        doc.setTextColor(vi === vals.length - 1 ? GREEN[0] : CHARCOAL[0], vi === vals.length - 1 ? GREEN[1] : CHARCOAL[1], vi === vals.length - 1 ? GREEN[2] : CHARCOAL[2]);
+        doc.setTextColor(...CHARCOAL);
         doc.text(String(v), vx + widths[vi] / 2, ry + rh / 2 + 1.3, { align: "center" });
         vx += widths[vi];
       });
@@ -324,8 +350,12 @@ async function renderCubeTestSection(doc, data, logoData) {
   }
 
   // ---------------- Remarks + signatory ----------------
-  y = ensureSpace(y, 28);
-  const noteW = CONTENT_W * 0.6;
+  // Round 128, items 4/5 — Tested By moved from the right-hand signature
+  // column to underneath the Remarks box on the left (Checked By stays put,
+  // bottom-right); the Remarks box's minimum height increased to use the
+  // vertical space that move freed up on the right.
+  y = ensureSpace(y, 42);
+  const noteW = CONTENT_W * 0.62;
   const sigW = CONTENT_W - noteW - 6;
   const noteX = MARGIN_X;
   const sigX = MARGIN_X + noteW + 6;
@@ -341,36 +371,39 @@ async function renderCubeTestSection(doc, data, logoData) {
   doc.text("REMARKS", noteX + 3, y + 3.9);
   const remarksText = data.remarks || "No remarks.";
   const remarkLines = doc.splitTextToSize(remarksText, noteW - 6);
-  const remarksH = Math.max(remarkLines.length * 3.6 + 4, 14);
+  const remarksH = Math.max(remarkLines.length * 3.6 + 4, 22);
   doc.rect(noteX, y + 5.5, noteW, remarksH);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.4);
   doc.setTextColor(...CHARCOAL);
   remarkLines.forEach((line, i) => doc.text(line, noteX + 3, y + 5.5 + 4.4 + i * 3.6));
-  const noteBottom = y + 5.5 + remarksH;
+  const remarksBottom = y + 5.5 + remarksH;
 
+  // Tested By — bottom-left, under the Remarks box.
   doc.setDrawColor(...CHARCOAL);
-  const sigLine1Y = noteTopY + 11;
-  doc.line(sigX, sigLine1Y, sigX + sigW, sigLine1Y);
+  const testedLineY = remarksBottom + 6;
+  doc.line(noteX, testedLineY, noteX + sigW, testedLineY);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8.2);
   doc.setTextColor(...CHARCOAL);
-  doc.text(data.tested_by_name || "—", sigX, sigLine1Y + 3.8);
+  doc.text(data.tested_by_name || "—", noteX, testedLineY + 3.8);
   doc.setFont("helvetica", "italic");
   doc.setFontSize(6.9);
   doc.setTextColor(...SLATE);
-  doc.text("Tested By — Lab Technician", sigX, sigLine1Y + 7);
+  doc.text("Tested By — Lab Technician", noteX, testedLineY + 7);
+  const noteBottom = testedLineY + 7;
 
-  const sigLine2Y = sigLine1Y + 17;
+  // Checked By — bottom-right, alone, at roughly the same spot Tested By
+  // used to occupy.
   doc.setDrawColor(...CHARCOAL);
-  doc.line(sigX, sigLine2Y, sigX + sigW, sigLine2Y);
-  doc.setFont("helvetica", "normal");
+  const sigLineY = noteTopY + 11;
+  doc.line(sigX, sigLineY, sigX + sigW, sigLineY);
+  doc.setFont("helvetica", "italic");
   doc.setFontSize(6.9);
   doc.setTextColor(...SLATE);
-  doc.setFont("helvetica", "italic");
-  doc.text("Checked By — QA/QC", sigX, sigLine2Y + 3.8);
+  doc.text("Checked By — QA/QC", sigX, sigLineY + 3.8);
 
-  y = Math.max(noteBottom, sigLine2Y + 7) + 3;
+  y = Math.max(noteBottom, sigLineY + 7) + 3;
 
   // ---------------- Footer ----------------
   y = ensureSpace(y, 16);

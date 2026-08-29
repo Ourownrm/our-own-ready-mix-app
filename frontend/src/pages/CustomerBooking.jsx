@@ -100,6 +100,7 @@ function CustomerAccessTab() {
   const [ensuringSiteId, setEnsuringSiteId] = useState(null);
   const [savingPermId, setSavingPermId] = useState(null);
   const [expandedTokenId, setExpandedTokenId] = useState(null);
+  const [ensuringTokenId, setEnsuringTokenId] = useState(null);
 
   async function loadTokens() {
     try {
@@ -147,6 +148,40 @@ function CustomerAccessTab() {
       setError(err.message);
     } finally {
       setEnsuringSiteId(null);
+    }
+  }
+
+  // Round 128 — a customer_booking_links row only gets auto-created for the
+  // "specific sites" checkbox flow at grant-creation time (toggleSite,
+  // above). An "all sites" grant, or a site added to a customer after an
+  // existing grant was created, never gets one — so opening "Manage sites"
+  // on those used to just dead-end on "No booking-link permissions row yet
+  // — reopen this after saving once", with no actual reopen-and-save action
+  // available. Ensure a link exists for every site under this token the
+  // moment the panel opens, using the same /booking-links/ensure call
+  // toggleSite already relies on.
+  async function ensureSiteLinks(token) {
+    const missing = (token.sites || []).filter((s) => !linkFor(token.customer_id, s.id));
+    if (missing.length === 0) return;
+    setEnsuringTokenId(token.id); setError("");
+    try {
+      const created = await Promise.all(
+        missing.map((s) => apiRequest("/booking-links/ensure", { method: "POST", body: { customer_id: token.customer_id, site_id: s.id } }))
+      );
+      setLinks((prev) => {
+        let next = prev;
+        created.forEach((link, i) => {
+          const siteId = missing[i].id;
+          next = next.some((l) => l.id === link.id)
+            ? next.map((l) => (l.id === link.id ? { ...l, ...link, customer_id: token.customer_id, site_id: siteId } : l))
+            : [...next, { ...link, customer_id: token.customer_id, site_id: siteId }];
+        });
+        return next;
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setEnsuringTokenId(null);
     }
   }
 
@@ -441,7 +476,11 @@ function CustomerAccessTab() {
                   <td style={{ ...td, color: "var(--slate)" }}>{t.last_used_at ? new Date(t.last_used_at).toLocaleDateString([], { day: "2-digit", month: "short" }) : "Never"}</td>
                   <td style={td}>
                     <span style={{ display: "flex", gap: 4 }}>
-                      <button type="button" onClick={() => setExpandedTokenId(expandedTokenId === t.id ? null : t.id)} style={{ fontSize: 11.5, padding: "5px 10px" }}>
+                      <button type="button" onClick={() => {
+                        const next = expandedTokenId === t.id ? null : t.id;
+                        setExpandedTokenId(next);
+                        if (next) ensureSiteLinks(t);
+                      }} style={{ fontSize: 11.5, padding: "5px 10px" }}>
                         {expandedTokenId === t.id ? "Hide" : "Manage sites"}
                       </button>
                       <button type="button" className="btn-danger" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => revoke(t)}>
@@ -465,7 +504,9 @@ function CustomerAccessTab() {
                             <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
                               <b style={{ fontSize: 12.5, minWidth: 120 }}>{s.name}</b>
                               {!link ? (
-                                <span style={{ fontSize: 11.5, color: "var(--slate)" }}>No booking-link permissions row yet — reopen this after saving once.</span>
+                                <span style={{ fontSize: 11.5, color: "var(--slate)" }}>
+                                  {ensuringTokenId === t.id ? "Setting up access for this site…" : "Couldn't set up access for this site — try Hide, then Manage sites again."}
+                                </span>
                               ) : (
                                 <>
                                   <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>

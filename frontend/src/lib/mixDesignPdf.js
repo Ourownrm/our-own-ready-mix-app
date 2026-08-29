@@ -87,14 +87,19 @@ export async function generateMixDesignPdf(data) {
 
   // ---------------- Header ----------------
   let y = 16;
+  // Round 128 — logo up 10% (15mm -> 16.5mm); kept centered on the same spot
+  // the old 15mm logo occupied (y-9 to y+6, center y-1.5) rather than just
+  // growing from the same top-left corner, and the address text's left
+  // margin nudged out to match (15mm + 4mm gap -> 16.5mm + 4mm gap) — same
+  // fix as cubeTestPdf.js.
   if (logoData) {
-    try { doc.addImage(logoData, "JPEG", MARGIN_X, y - 9, 15, 15); } catch { /* ignore bad image */ }
+    try { doc.addImage(logoData, "JPEG", MARGIN_X, y - 9.75, 16.5, 16.5); } catch { /* ignore bad image */ }
   }
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.6);
   doc.setTextColor(...SLATE);
-  doc.text("Plot 3C-2, Ananthapuram Development Plot, Kasaragod, Kerala.", MARGIN_X + 19, y - 4);
-  doc.text("+91 83 4007 4006  ·  mail@ourownrm.com", MARGIN_X + 19, y);
+  doc.text("Plot 3C-2, Ananthapuram Development Plot, Kasaragod, Kerala.", MARGIN_X + 20.5, y - 4);
+  doc.text("+91 83 4007 4006  ·  mail@ourownrm.com", MARGIN_X + 20.5, y);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(17);
@@ -108,9 +113,10 @@ export async function generateMixDesignPdf(data) {
   doc.setTextColor(...SLATE);
   doc.text("IS:10262-2019  |  IS:456-2000  |  IS 4926:2003", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
 
-  // Gap before the rule: the logo's bottom edge sits at y+6 (addImage was
-  // placed at y-9 with a 15mm height), so the rule needs to clear that,
-  // not sit flush on top of it — same for the address/IS-code text above.
+  // Gap before the rule: the logo's bottom edge sits at y+6.75 (round 128 —
+  // addImage placed at y-9.75 with a 16.5mm height), so the rule needs to
+  // clear that, not sit flush on top of it — same for the address/IS-code
+  // text above.
   y += 9;
   doc.setDrawColor(...RED);
   doc.setLineWidth(0.8);
@@ -192,7 +198,12 @@ export async function generateMixDesignPdf(data) {
     ["Free Water / Binder Ratio (W/B)", fmtDec(data.wb_ratio, 3)],
     ["Water Content", `${fmtInt(data.free_water_kgm3)} kg/m3`],
     ["Total Binder (Cement + Fly Ash)", `${fmtInt(data.total_binder_kgm3)} kg/m3`],
-    ["Target Workability at Site", data.target_workability_mm || "—"],
+    // Round 128 — incidental fix found while verifying the logo-size change:
+    // this was passing the raw number straight to doc.text(), which jsPDF
+    // rejects outright ("Type of text must be string or Array") the moment
+    // a design actually has a workability value on file — every other row
+    // in this grid already stringifies/formats its value first.
+    ["Target Workability at Site", data.target_workability_mm ? `${data.target_workability_mm} mm` : "—"],
     ["Design Density", data.design_density_kgm3 ? `${fmtInt(data.design_density_kgm3)} kg/m3` : "—"],
   ];
   {
