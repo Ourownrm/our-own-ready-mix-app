@@ -277,7 +277,18 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
   }
 
   async function deleteResult(resultId) {
-    if (!window.confirm("Delete this result? This can't be undone.")) return;
+    // Round 127 — a pour's Completed/Active bucket is computed live from
+    // whichever results are on file (see the GET /cube-pours comment), never
+    // stored, so deleting the 7-day or 28-day result of an already-complete
+    // pour correctly (and immediately) moves it back to Active until that
+    // age is re-tested. That's by design, but it reads as "my data
+    // vanished" if it's a surprise — so say it up front here instead.
+    const testedAges = new Set((detail?.results || []).map((r) => r.testing_age_days));
+    const wasComplete = testedAges.size >= 2;
+    const msg = wasComplete
+      ? "Delete this result? This can't be undone. Both ages are currently tested (this pour shows as Completed) — deleting this one will move the pour back to Active until it's re-tested."
+      : "Delete this result? This can't be undone.";
+    if (!window.confirm(msg)) return;
     setError(""); setNotice("");
     try {
       await apiRequest(`/lab-technician/cube-pours/${orderId}/results/${resultId}`, { method: "DELETE" });

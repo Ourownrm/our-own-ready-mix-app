@@ -210,9 +210,21 @@ export default function SalesExecutive() {
   ];
 
   return (
-    <>
+    // Round 127 — the bottom nav (below) used to sit right after the
+    // content in normal document flow: `position: sticky` only pins an
+    // element to the viewport once its flex ancestor chain actually fills
+    // the viewport height, and this page's wrapper div had neither a height
+    // nor `display: flex`, so on a short view (e.g. Forecast with one row)
+    // the nav rendered right under the content with empty page below it
+    // instead of at the bottom of the screen. Mirrors the customer portal's
+    // working shell/content/bottomnav pattern (see .portal-shell in
+    // index.css): an outer flex column at least viewport-tall, with the
+    // centered content column as a flex:1 child so it — and the nav after
+    // it — always fill down to the screen's bottom.
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <TopBar title="Sales Executive" />
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
+      <div style={{ maxWidth: 560, width: "100%", margin: "0 auto", flex: 1, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
         {isAdmin && (
@@ -288,7 +300,7 @@ export default function SalesExecutive() {
               </button>
               <button type="button" className="se-tile" onClick={() => setView("collections")}>
                 <div className="se-tile-ic"><IconCollections color="#C75B12" size={17} /></div>
-                <div className="se-tile-title">Collections</div>
+                <div className="se-tile-title">Collections &amp; Follow-ups</div>
                 <div className="se-tile-sub">{dashboard ? `${inr(dashboard.outstanding)} outstanding` : "Loading..."}</div>
               </button>
               <button type="button" className="se-tile cta" onClick={() => setView("forecast")}>
@@ -331,6 +343,7 @@ export default function SalesExecutive() {
         {view === "forecast" && (
           <ForecastTab forecasts={forecasts} onDuty={onDuty} onReload={loadAll} />
         )}
+      </div>
 
         <div className="se-bottomnav">
           {TABS.map(([key, label, Icon]) => (
@@ -341,7 +354,7 @@ export default function SalesExecutive() {
           ))}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -604,7 +617,11 @@ function LeadsList({ leads, onOpen, onNew, onDuty }) {
                 </div>
               )}
               {l.contact_phone && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>{l.contact_phone}</div>}
-              {l.assigned_to_name && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>Assigned to {l.assigned_to_name}</div>}
+              {/* Round 127 — was "Assigned to {assigned_to_name}", but a
+                  salesperson only ever sees their OWN leads here, so that
+                  name was always just themselves — pointless to show. What's
+                  actually useful is who assigned it to them. */}
+              {l.created_by_name && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>Assigned by {l.created_by_name}</div>}
               {l.quotation_issued && <div style={{ color: "var(--slate)", fontSize: 12, marginTop: 3 }}>Quoted ₹{l.latest_quotation_amount}</div>}
               {l.latest_activity_type === "site_visit" && !["won", "lost"].includes(l.status) && (
                 <div style={{ color: "var(--info)", fontSize: 11, marginTop: 3 }}>Site visit logged</div>

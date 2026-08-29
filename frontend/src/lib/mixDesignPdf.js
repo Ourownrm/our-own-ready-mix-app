@@ -136,48 +136,28 @@ export async function generateMixDesignPdf(data) {
     doc.text(fitted, x, y + 4.6);
   }
 
-  // Two-line variant for fields that combine a date and a person's name —
-  // stacking them (instead of one long "date · name" string at a large
-  // font) is what actually fixes the overlap, not just a smaller font.
-  function idFieldTwoLine(x, w, label, line1, line2) {
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(6.8);
-    doc.setTextColor(...SLATE);
-    doc.text(label.toUpperCase(), x, y);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.2);
-    doc.setTextColor(...CHARCOAL);
-    const l1 = doc.splitTextToSize(line1 || "—", w - 1)[0] || (line1 || "—");
-    doc.text(l1, x, y + 4.2);
-    if (line2) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(6.8);
-      doc.setTextColor(...SLATE);
-      const l2 = doc.splitTextToSize(line2, w - 1)[0] || line2;
-      doc.text(l2, x, y + 7.6);
-    }
-  }
-
   const statusColor = data.status === "approved" ? GREEN : [163, 120, 20];
   const statusLabel = data.status === "approved" ? "APPROVED" : "DRAFT";
 
-  const c4 = CONTENT_W / 4;
-  idField(MARGIN_X, c4, "Mix Grade", data.mix_grade_name);
-  idField(MARGIN_X + c4, c4 * 1.6, "Design Ref. Code", data.design_ref_code);
-  idField(MARGIN_X + c4 * 2.6, c4 * 0.7, "Revision", data.revision);
-  idField(MARGIN_X + c4 * 3.3, c4 * 0.7, "Status", statusLabel, { color: statusColor, size: 8.5 });
-  y += 10;
-
-  idField(MARGIN_X, CONTENT_W * 0.5, "Mix Description", data.mix_description || "—");
-  idFieldTwoLine(MARGIN_X + CONTENT_W * 0.5, CONTENT_W * 0.25, "Created", fmtDate(data.created_at), data.created_by_name || "");
-  idFieldTwoLine(
-    MARGIN_X + CONTENT_W * 0.75,
-    CONTENT_W * 0.25,
-    "Approved",
-    data.approved_at ? fmtDate(data.approved_at) : "Pending",
-    data.approved_at ? "Quality Control Engineer" : ""
-  );
-  y += 8;
+  // Round 127 — collapsed to the single row feedback asked for (Mix Grade |
+  // Mix Description | Design Ref. Code | Rev | Status). Created/Approved
+  // used to live in a second header row here; they're record-keeping
+  // metadata rather than identification a reader needs first, so they've
+  // moved down to the footer, smaller — see the signature block below.
+  const idCols = [
+    { w: 0.14, label: "Mix Grade", value: data.mix_grade_name },
+    { w: 0.38, label: "Mix Description", value: data.mix_description || "—" },
+    { w: 0.24, label: "Design Ref. Code", value: data.design_ref_code },
+    { w: 0.09, label: "Rev", value: data.revision },
+    { w: 0.15, label: "Status", value: statusLabel, opts: { color: statusColor, size: 8.5 } },
+  ];
+  let idX = MARGIN_X;
+  idCols.forEach((c) => {
+    const w = CONTENT_W * c.w;
+    idField(idX, w, c.label, c.value, c.opts || {});
+    idX += w;
+  });
+  y += 9;
 
   // ---------------- Section helpers ----------------
   function navyBar(label, w = CONTENT_W, x = MARGIN_X) {
@@ -398,7 +378,7 @@ export async function generateMixDesignPdf(data) {
   navyBar("AGGREGATE PROPORTIONS", aggColW, aggX);
   {
     const w1 = aggColW * 0.5, w2 = aggColW * 0.28, w3 = aggColW - w1 - w2;
-    const rh = 6.1, headH = 6;
+    const rh = 5.3, headH = 5.3; // Round 127 — shorter table per feedback
     doc.setFillColor(...SHADE);
     doc.rect(aggX, y, aggColW, headH, "F");
     doc.setDrawColor(...BORDER);
@@ -444,7 +424,7 @@ export async function generateMixDesignPdf(data) {
     doc.setTextColor(...SLATE);
     doc.text("Coarse / Fine Aggregate Ratio", aggX, y + 3);
     y += 4.5;
-    const barH = 6.4;
+    const barH = 5.4; // Round 127 — shorter, to match the tightened table above
     const coarseW = (coarsePct / 100) * aggColW;
     doc.setFillColor(...ALERT);
     doc.rect(aggX, y, coarseW, barH, "F");
@@ -469,7 +449,7 @@ export async function generateMixDesignPdf(data) {
   doc.setTextColor(...SLATE);
   doc.text("Aggregate Proportion", pieX + pieColW / 2, y + 3, { align: "center" });
   y += 7;
-  const pieR = Math.min(16, pieColW / 2 - 4);
+  const pieR = Math.min(20, pieColW / 2 - 4); // Round 127 — bigger now the legend below is one inline row, not a stacked list
   const pieCx = pieX + pieColW / 2;
   const pieCy = y + pieR;
 
@@ -505,21 +485,31 @@ export async function generateMixDesignPdf(data) {
     cursor = end;
   });
 
-  y = pieCy + pieR + 5;
+  // Round 127 — inline (one row) instead of a stacked list, per feedback;
+  // wraps to a second row only if the three items genuinely don't fit at
+  // this column's width.
+  y = pieCy + pieR + 6;
   const legend = [
-    ["M-Sand (fine)", INFO, finePct],
-    ["20 mm (coarse)", ALERT, c20Pct],
-    ["12.5 mm (coarse)", GREEN, c125Pct],
+    ["Fine", INFO, finePct],
+    ["20 mm", ALERT, c20Pct],
+    ["12.5 mm", GREEN, c125Pct],
   ];
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.2);
+  let lx = pieX;
+  const legendTopY = y;
   legend.forEach((item) => {
+    const label = `${item[0]} ${item[2].toFixed(0)}%`;
+    const labelW = doc.getTextWidth(label);
+    const itemW = 4.2 + labelW + 5;
+    if (lx + itemW > pieX + pieColW && lx > pieX) { lx = pieX; y += 4.6; }
     doc.setFillColor(...item[1]);
-    doc.rect(pieX + 4, y - 2.4, 2.8, 2.8, "F");
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.2);
+    doc.rect(lx, y - 2.4, 2.8, 2.8, "F");
     doc.setTextColor(...CHARCOAL);
-    doc.text(`${item[0]} — ${item[2].toFixed(0)}%`, pieX + 9, y);
-    y += 4.5;
+    doc.text(label, lx + 4.2, y);
+    lx += itemW;
   });
+  y = Math.max(y, legendTopY);
 
   y = Math.max(aggBottom, y) + 5;
 
@@ -571,6 +561,22 @@ export async function generateMixDesignPdf(data) {
   doc.text("Quality Control, Our Own Ready Mix", sigX, sigLineY + 8);
 
   y = Math.max(noteBottom, sigLineY + 11) + 3;
+
+  // ---------------- Created / Approved (round 127) ----------------
+  // Moved down from the header (see the identification block above) and
+  // shrunk — this is record-keeping metadata (who/when), not something a
+  // reader needs before the design's own numbers.
+  y = ensureSpace(y, 6);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.4);
+  doc.setTextColor(...SLATE);
+  const createdLine = `Created ${fmtDate(data.created_at)}${data.created_by_name ? ` by ${data.created_by_name}` : ""}`;
+  const approvedLine = data.approved_at
+    ? `Approved ${fmtDate(data.approved_at)} by Quality Control Engineer`
+    : "Approval pending";
+  doc.text(createdLine, MARGIN_X, y + 3);
+  doc.text(approvedLine, PAGE_W - MARGIN_X, y + 3, { align: "right" });
+  y += 6;
 
   // ---------------- Disclaimer + footer ----------------
   y = ensureSpace(y, 24);
