@@ -6,15 +6,32 @@ import { estimateEtaAt } from "./etaEstimate.js";
 // both need "here's this order's per-truck delivery progress" in the exact
 // same shape, so it's pulled into one place instead of copy-pasted twice.
 
-// A link stays valid while the order is still active. Once the order reaches
-// a terminal state (completed/closed/cancelled), it stays valid for a further
-// 3 hours (covers "delivery finished, customer still confirming with their
-// site team") then goes stale on its own.
+// A PUBLIC, unauthenticated share link (routes/tracking.js, and the booking
+// link in customerBooking.js — the token itself is the whole access
+// boundary) stays valid while the order is still active. Once the order
+// reaches a terminal state (completed/closed/cancelled), it stays valid for
+// a further 3 hours (covers "delivery finished, customer still confirming
+// with their site team") then goes stale on its own — the intent is a
+// short-lived link, not a permanent record.
 export const TRACKING_GRACE_HOURS = 3;
 
-// Returns null if the order doesn't exist, or if it's terminal and past the
-// grace window — callers should treat either the same as "nothing to show".
-export async function getOrderTrackingPayload(orderId) {
+// Round 131 — this same grace expiry was also being applied to the
+// AUTHENTICATED customer portal's own tracking screen and the staff
+// (Manager/Administrator/Site Supervisor/Sales Executive) tracking view —
+// neither is a shareable link with an expiry problem, and Round 130
+// explicitly built a "post-completion delivery summary" for the customer
+// portal that's supposed to keep working indefinitely after an order
+// completes, not just for 3 hours. Reported as "truck info missing for a
+// completed order, but showing for a closed one" — the real pattern was
+// terminal_at getting reset (and the grace window with it) at the LATER
+// 'closed' transition, so it only ever looked fine by coincidence, right
+// after closing. enforceGrace:false (passed by customerPortal.js and
+// orders.js) skips the expiry check entirely; the public-link callers keep
+// the default (true) so their real expiry behavior is unchanged.
+// Returns null if the order doesn't exist, or (only when enforceGrace) if
+// it's terminal and past the grace window — callers should treat either the
+// same as "nothing to show".
+export async function getOrderTrackingPayload(orderId, { enforceGrace = true } = {}) {
   const { rows: orderRows } = await query(
     `SELECT o.id, o.status, o.order_quantity_m3, o.order_date, o.terminal_at,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
@@ -40,7 +57,7 @@ export async function getOrderTrackingPayload(orderId) {
   if (!order) return null;
 
   const isTerminal = ["completed", "closed", "cancelled"].includes(order.status);
-  if (isTerminal && order.terminal_at && new Date(order.terminal_at) < new Date(Date.now() - TRACKING_GRACE_HOURS * 3600 * 1000)) {
+  if (enforceGrace && isTerminal && order.terminal_at && new Date(order.terminal_at) < new Date(Date.now() - TRACKING_GRACE_HOURS * 3600 * 1000)) {
     return null;
   }
 

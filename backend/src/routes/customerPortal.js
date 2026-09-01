@@ -211,6 +211,29 @@ router.get("/technical-writings/:id/file", requireCustomerAuth, async (req, res)
   });
 });
 
+// Round 131, item 4 — "From our plant & sites" rotating photo widget on
+// Home (see routes/homeScreenPhotos.js for the Manager/Admin management
+// side). Not gated on any per-site permission like tracking/QC/technical
+// writings above — every signed-in customer code sees the same shared
+// gallery, same reasoning as feedback in MoreScreen. List never returns
+// image_data; the bytes only travel on the specific /image request below.
+router.get("/home-photos", requireCustomerAuth, async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, caption, location_tag, display_order
+     FROM home_screen_photos WHERE is_visible ORDER BY display_order, id`
+  );
+  res.json(rows);
+});
+
+router.get("/home-photos/:id/image", requireCustomerAuth, async (req, res) => {
+  const { rows } = await query(
+    "SELECT mime_type, image_data FROM home_screen_photos WHERE id = $1 AND is_visible",
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Photo not found." });
+  res.json({ mime_type: rows[0].mime_type, data_base64: rows[0].image_data.toString("base64") });
+});
+
 // Ownership-checked lookup used by the routes below — an order only counts
 // as "this customer's" if it's both their customer_id AND one of the sites
 // their access code actually covers, so a guessed order id from a
@@ -238,7 +261,12 @@ router.get("/orders/:id/tracking", requireCustomerAuth, async (req, res) => {
   if (!siteAllows(req, order.site_id, "tracking")) {
     return res.status(403).json({ error: "Delivery tracking isn't enabled for this site." });
   }
-  const payload = await getOrderTrackingPayload(order.id);
+  // Round 131 — authenticated, not a shareable link, so the 3-hour
+  // post-terminal expiry (built for public tracking links) doesn't apply
+  // here; this is what backs the post-completion "delivery summary" view,
+  // which should keep working for as long as the order stays visible to
+  // this customer at all, not just briefly after it finishes.
+  const payload = await getOrderTrackingPayload(order.id, { enforceGrace: false });
   if (!payload) return res.status(404).json({ error: "No live tracking available for this order right now." });
   res.json(payload);
 });

@@ -476,7 +476,11 @@ router.get("/:orderId/tracking", requireRole("manager", "administrator", "site_s
     );
     if (!rows.length) return res.status(404).json({ error: "Order not found." });
   }
-  const payload = await getOrderTrackingPayload(req.params.orderId);
+  // Round 131 — same reasoning as customerPortal.js's own call: this is
+  // behind real staff auth, not a shareable link, so the 3-hour post-terminal
+  // expiry (meant for public tracking links) shouldn't hide a completed
+  // order's truck info from staff who are actually allowed to see it.
+  const payload = await getOrderTrackingPayload(req.params.orderId, { enforceGrace: false });
   if (!payload) return res.status(404).json({ error: "Order not found." });
   res.json(payload);
 });

@@ -191,8 +191,43 @@ router.post("/:id/issue", requireRole("store", "administrator"), async (req, res
      WHERE id = $4 RETURNING *`,
     [req.user.id, actual_quantity_issued, fuel_cost || null, req.params.id]
   );
+
+  // Round 131, item 5 — a plant issue (Store physically hands it over,
+  // scanned via QR here) draws down the Store stock balance tracked in
+  // storeStock.js. An external-station fill (confirm-external-fill, below)
+  // deliberately does NOT touch this balance — nothing left the plant's own
+  // stock in that case. Best-effort: if no matching stock item exists yet
+  // (deployments that haven't opened Store Stock at all), this silently
+  // does nothing rather than blocking the issue.
+  await deductStoreStock(existing[0], actual_quantity_issued, req.user.id, req.params.id);
+
   res.json(rows[0]);
 });
+
+// Looks up the one matching store_stock_items row for this request (the
+// fuel singleton, or the lubricant row for this specific lubricant_type_id)
+// and debits it, logging a store_stock_transactions row so the balance
+// stays auditable. See storeStock.js for the item/transaction schema.
+async function deductStoreStock(request, qty, userId, requestId) {
+  const { rows: stockItem } = request.request_type === "fuel"
+    ? await query("SELECT * FROM store_stock_items WHERE item_type = 'fuel' AND is_active LIMIT 1")
+    : await query(
+        "SELECT * FROM store_stock_items WHERE item_type = 'lubricant' AND lubricant_type_id = $1 AND is_active LIMIT 1",
+        [request.lubricant_type_id]
+      );
+  if (!stockItem.length) return; // not provisioned — nothing to deduct from
+
+  const { rows: updated } = await query(
+    "UPDATE store_stock_items SET current_qty = current_qty - $1 WHERE id = $2 RETURNING current_qty",
+    [qty, stockItem[0].id]
+  );
+  await query(
+    `INSERT INTO store_stock_transactions
+     (stock_item_id, txn_type, qty_change, balance_after, reference_type, reference_id, created_by)
+     VALUES ($1, 'issue_deduct', $2, $3, 'supply_request', $4, $5)`,
+    [stockItem[0].id, -qty, updated[0].current_qty, requestId, userId]
+  );
+}
 
 // Manager can clear a pending request outright — distinct from reject
 // (which keeps a record and notifies the requester with a reason). This is

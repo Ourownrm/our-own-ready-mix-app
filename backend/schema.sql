@@ -1340,6 +1340,100 @@ CREATE TABLE supply_requests (
   requested_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- ===================== STORE STOCK (Round 131, item 5) =====================
+-- A purchase/receive/balance layer on top of the give-fuel-out workflow
+-- above (supply_requests handles Store ISSUING fuel/lubricant to a driver
+-- or machine; this handles Store RECEIVING it from a supplier in the first
+-- place). One row per trackable item: fuel is a single plant-store item —
+-- there's effectively one tank Store draws from, matching fuel_stations'
+-- own is_plant singleton — and lubricants get one row per lubricant_types
+-- entry. current_qty is the running balance; store_stock_transactions is
+-- the append-only ledger explaining every change to it (purchase receipts,
+-- plant-issue deductions, manual physical adjustments), so the balance is
+-- always auditable, not just a number that changes silently.
+CREATE TYPE store_stock_item_type AS ENUM ('fuel', 'lubricant');
+
+CREATE TABLE store_stock_items (
+  id SERIAL PRIMARY KEY,
+  item_type store_stock_item_type NOT NULL,
+  lubricant_type_id INTEGER REFERENCES lubricant_types(id), -- NULL for the fuel item
+  unit VARCHAR(10) NOT NULL DEFAULT 'L',
+  current_qty NUMERIC(10,2) NOT NULL DEFAULT 0,
+  reorder_level NUMERIC(10,2),
+  is_active BOOLEAN DEFAULT TRUE
+);
+-- At most one fuel stock item; at most one row per lubricant type.
+CREATE UNIQUE INDEX store_stock_items_fuel_singleton ON store_stock_items (item_type) WHERE item_type = 'fuel';
+CREATE UNIQUE INDEX store_stock_items_lubricant_unique ON store_stock_items (lubricant_type_id) WHERE item_type = 'lubricant';
+
+-- Request -> approve -> receive, mirroring supply_requests' own
+-- request/approve/issue shape: Store requests a purchase, Manager approves
+-- (can adjust quantity), Store later confirms what actually arrived and at
+-- what cost — that receipt is what credits current_qty.
+CREATE TYPE store_purchase_status AS ENUM ('pending', 'approved', 'rejected', 'received');
+
+CREATE TABLE store_stock_purchases (
+  id SERIAL PRIMARY KEY,
+  stock_item_id INTEGER REFERENCES store_stock_items(id) NOT NULL,
+  requested_by INTEGER REFERENCES users(id) NOT NULL,
+  requested_qty NUMERIC(10,2) NOT NULL,
+  supplier_name VARCHAR(150),
+  notes TEXT,
+  status store_purchase_status DEFAULT 'pending',
+  approved_qty NUMERIC(10,2),
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TIMESTAMPTZ,
+  rejected_reason TEXT,
+  received_qty NUMERIC(10,2),
+  unit_cost NUMERIC(10,2),
+  total_cost NUMERIC(10,2),
+  received_by INTEGER REFERENCES users(id),
+  received_at TIMESTAMPTZ,
+  requested_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Append-only — every change to a stock item's balance gets one row here,
+-- whatever caused it, so the balance is always explainable after the fact.
+CREATE TYPE store_stock_txn_type AS ENUM ('purchase_receive', 'issue_deduct', 'adjustment');
+
+CREATE TABLE store_stock_transactions (
+  id SERIAL PRIMARY KEY,
+  stock_item_id INTEGER REFERENCES store_stock_items(id) NOT NULL,
+  txn_type store_stock_txn_type NOT NULL,
+  qty_change NUMERIC(10,2) NOT NULL, -- positive = added, negative = removed
+  balance_after NUMERIC(10,2) NOT NULL,
+  reference_type VARCHAR(30), -- 'store_stock_purchase' | 'supply_request' | 'manual_adjustment'
+  reference_id INTEGER,
+  note TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ===================== HOME SCREEN PHOTOS (Round 131, item 4) =====================
+-- Small photo gallery Manager/Admin curate (plant/site photos) shown as a
+-- rotating widget on the customer portal's home screen, replacing the old
+-- "Why ready-mix beats site-mix" strip there (that article is still
+-- reachable from the More tab and the guest sign-in screen — only the
+-- Home-screen placement changed). BYTEA storage, same reasoning as
+-- technical_documents above (no object storage set up elsewhere in this
+-- app). display_order + is_visible let Manager/Admin reorder and hide a
+-- photo without deleting it (a single reorder call rewrites display_order
+-- for the whole set).
+CREATE TABLE home_screen_photos (
+  id SERIAL PRIMARY KEY,
+  caption VARCHAR(150),
+  location_tag VARCHAR(10) NOT NULL DEFAULT 'plant' CHECK (location_tag IN ('plant', 'site')),
+  filename VARCHAR(200) NOT NULL,
+  mime_type VARCHAR(50) NOT NULL DEFAULT 'image/jpeg',
+  size_bytes INTEGER NOT NULL,
+  image_data BYTEA NOT NULL,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  is_visible BOOLEAN NOT NULL DEFAULT TRUE,
+  uploaded_by INTEGER REFERENCES users(id) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_home_screen_photos_order ON home_screen_photos(display_order, id);
+
 -- ===================== BREAKDOWN REPORTING =====================
 -- Covers trucks (mixers), pumps, and the batching plant itself — equipment_type
 -- says which. truck_id/pump_id are set only for their matching equipment_type;

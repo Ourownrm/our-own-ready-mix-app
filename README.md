@@ -5214,3 +5214,78 @@ unconfirmed geofence hint, not a real driver-confirmed event — every other tim
 uses `unloading_completed` for that stage. Fixed in `orders.js`'s `truck-timing-report` route before
 delivery; the report's actual column label ("Site Out") and position are unchanged, only the
 underlying event type.
+
+## Round 131 (Ver. 9.52): Completed-order truck info, PWA refresh, cube PDF cleanup, store stock, home screen photo widget
+
+1. **Customer module — completed-order truck info was disappearing.** Root cause:
+   `getOrderTrackingPayload` (`orderTracking.js`) applies a `TRACKING_GRACE_HOURS` (3-hour)
+   post-terminal expiry designed for the *public* share-link routes (`tracking.js`,
+   `customerBooking.js`), but the two *authenticated* callers — `customerPortal.js`'s
+   `GET /orders/:id/tracking` and `orders.js`'s staff tracking route — were applying it too. A
+   'completed' order sitting in that status for a while (normal — nothing else moves it) had long
+   since expired the grace window by the time anyone opened it; a 'closed' order only "worked" by
+   coincidence, because closing resets `terminal_at` and restarts the 3-hour clock. Fixed by adding an
+   `enforceGrace` option (default `true`, so the public-link behavior is unchanged) and passing
+   `enforceGrace: false` from both authenticated callers — sign-in itself is already the access
+   control there, so the extra expiry was never doing anything except hiding real data.
+2. **Customer module — refresh button + auto-detect a new deploy.** `CustomerPortal.jsx` now mirrors
+   the staff app's existing service-worker-update pattern (`TopBar.jsx`): a small "↻" button in the
+   top bar refreshes and checks for the latest version on demand, and a full-width banner appears
+   automatically ("A new version is available — tap to refresh") the moment a new deploy's service
+   worker has installed, without waiting for the customer to notice anything looks stale. Also added
+   as a plain text link next to the app version number on the Guest and More screens.
+3. **Cube test PDF — untested-sample omission, one report option, and the "old format" replaced.**
+   - **3a.** A cube slot exists in `cube_test_cubes`/`site_cube_test_cubes` for every sample taken,
+     but one never actually tested has null weight/load — the combined report was still drawing a row
+     for it ("samples taken but not tested"). New `testedCubesOf()` helper in `cubeTestPdf.js` filters
+     these out of every table row and every "N cubes tested" summary line, in both renderers.
+   - **3b.** Once both ages of a pour/cast are tested, `GenerateReportBar` (`LabTechnician.jsx`) now
+     offers only **Combined (both ages)** — the separate "7-Day only"/"28-Day only" buttons are gone,
+     and the per-result "View PDF" button in the Recorded Results list is hidden too once both ages
+     are on file (it stays visible while only one age is tested, since Combined has nothing to combine
+     yet at that point and it's the only way to see that age's report early).
+   - **3c.** `generateCubeTestPdf` (the single-age report — used by Lab Technician's own "View PDF",
+     the customer portal, the public booking form, and the staff Cube Test Report page) was still
+     rendering through the old per-result layout. It's now reshaped into the same `{day7, day28}` shape
+     Round 130's combined renderer (`renderCombinedPourSection`) expects and routed through that
+     instead — so every one of item 3c's asks lands in one change, for every caller, with no call-site
+     changes needed: no Sample ID in the header, Testing Age + Average shown in the cube analysis
+     table, Tested By/Checked By/Remarks laid out exactly as the combined format, untested samples
+     omitted (3a's fix applies here too), and the header title/TEST SUMMARY bar/remarks text correctly
+     say "7 DAY" or "28 DAY" (not "COMBINED") when only one age is present.
+   - **3v (casting location).** Investigated and confirmed no change needed — the STANDARDS FOLLOWED
+     row's "Casting Location" (Plant vs. customer site) is already correctly derived per-route from
+     which table a result came from (`is_site_cast`); it's a different field from the order-level
+     "Structure / casting location" free-text entered at booking, which was never in question here.
+4. **Customer module home screen — "Why ready-mix beats site-mix" link replaced with a photo widget.**
+   Mocked up first (two widget layouts + the admin photo manager), then built once "Option B" (a
+   single large rotating photo with dot indicators) was picked. New table `home_screen_photos`
+   (caption, `location_tag` plant/site, image bytes as BYTEA — same storage approach as
+   `technical_documents`, no object storage set up elsewhere in this app — `display_order`,
+   `is_visible`). New staff route file `homeScreenPhotos.js` (`/api/home-screen-photos`,
+   Manager/Admin only: upload, caption/tag/visibility edits, reorder, delete) and new page
+   `HomeScreenPhotos.jsx` reachable from Masters → Customer Booking → "Home Screen Photos" (upload
+   form; a card grid with a Plant/Site tag, editable caption, visible/hidden toggle, ↑/↓ reorder, and
+   delete — deliberately move-up/move-down buttons rather than drag-and-drop, since no drag library
+   exists anywhere else in this app). Two new read-only routes on `customerPortal.js`
+   (`/home-photos`, `/home-photos/:id/image`) feed a new `HomePhotoWidget` in `CustomerPortal.jsx`
+   that replaces the old link on the Home screen only — the "Why ready-mix beats site-mix" article
+   itself is untouched and still reachable from the guest sign-in screen and the More tab. The widget
+   auto-advances every 5s with manual arrow/dot controls, and renders nothing at all when the gallery
+   is empty.
+5. **New: Store stock — request/approve/receive purchases, running balance, Manager physical
+   adjustment.** A purchase/receive/balance layer on top of the existing give-fuel-out workflow
+   (`supply_requests`, unchanged): new tables `store_stock_items` (one row per trackable item — a
+   singleton for fuel, one per `lubricant_types` row, auto-provisioned), `store_stock_purchases`
+   (Store requests → Manager approves → Store confirms what actually arrived, mirroring
+   `supply_requests`' own shape), and `store_stock_transactions` (an append-only ledger — every
+   balance change, whatever caused it, logged so the running total is always explainable). New route
+   file `storeStock.js` (`/api/store-stock`), new page `StoreStock.jsx` (Store: request purchases,
+   confirm receipt, view balance + history; Manager/Administrator additionally: adjust a balance
+   against a physical count, with a required reason), a `StoreStockCard` low-stock summary on the
+   Manager dashboard alongside the existing raw-material one, and a new "Store stock purchase
+   requests" section on the existing Supply Approvals screen so Manager's fuel-related approvals stay
+   on one page. Per explicit scope: both fuel and lubricants are tracked; only a **plant** issue
+   (Store scans the QR — `supplyRequests.js`'s `/:id/issue`) auto-deducts from the balance — an
+   external-station fill (`/:id/confirm-external-fill`) deliberately does not, since nothing left the
+   plant's own stock in that case.

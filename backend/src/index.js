@@ -21,6 +21,7 @@ import productionReportRoutes from "./routes/productionReport.js";
 import pushRoutes from "./routes/push.js";
 import fuelRoutes from "./routes/fuel.js";
 import supplyRequestsRoutes from "./routes/supplyRequests.js";
+import storeStockRoutes from "./routes/storeStock.js";
 import salesRoutes from "./routes/sales.js";
 import complianceRoutes from "./routes/compliance.js";
 import notificationsRoutes from "./routes/notifications.js";
@@ -33,6 +34,7 @@ import customerPortalRoutes from "./routes/customerPortal.js";
 import publicInquiryRoutes from "./routes/publicInquiry.js";
 import siteContentRoutes from "./routes/siteContent.js";
 import technicalWritingsRoutes from "./routes/technicalWritings.js";
+import homeScreenPhotosRoutes from "./routes/homeScreenPhotos.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -91,6 +93,7 @@ app.use("/api/production-report", productionReportRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/fuel", fuelRoutes);
 app.use("/api/supply-requests", supplyRequestsRoutes);
+app.use("/api/store-stock", storeStockRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/compliance", complianceRoutes);
 app.use("/api/notifications", notificationsRoutes);
@@ -103,6 +106,11 @@ app.use("/api/customer-access", customerAccessRoutes);
 // library (routes/technicalWritings.js). The customer-facing list/download
 // side lives inside customerPortalRoutes below, gated per access code.
 app.use("/api/technical-writings", technicalWritingsRoutes);
+// Manager/Admin-only — upload/reorder/hide/delete the Home Screen Photos
+// gallery (routes/homeScreenPhotos.js). The customer-facing read side
+// (list + image) lives inside customerPortalRoutes below, same split as
+// technical-writings above.
+app.use("/api/home-screen-photos", homeScreenPhotosRoutes);
 // Deliberately NOT behind requireAuth — these are the public, token-scoped
 // customer-facing links (see routes/tracking.js and routes/customerBooking.js
 // for why that's safe), plus (round 119) the customer portal's own
