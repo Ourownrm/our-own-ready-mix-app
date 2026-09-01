@@ -1017,14 +1017,119 @@ router.post("/mix-designs", requireRole("lab_technician", "administrator"), asyn
   res.status(201).json({ id: designId });
 });
 
+// Round 132, item 2 — edit a draft before it's approved. Draft-only (an
+// approved design is what past PDFs/orders were built against, and
+// cube_test_results snapshots the design it tested at the time — editing
+// it after approval would silently rewrite history for anyone who already
+// relied on it). Same required-field validation as creation; admixtures
+// are replaced wholesale (delete + reinsert) rather than diffed, same
+// "keep it simple" call as everywhere else in this file that doesn't need
+// per-row admixture history.
+router.patch("/mix-designs/:id", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { rows: existingRows } = await query("SELECT id, status FROM mix_designs WHERE id = $1", [req.params.id]);
+  if (!existingRows.length) return res.status(404).json({ error: "Mix design not found." });
+  if (existingRows[0].status !== "draft") {
+    return res.status(400).json({ error: "Only a draft (not yet approved) mix design can be edited." });
+  }
+
+  const b = req.body;
+  const required = ["mix_grade_id", "design_ref_code", "fck_28day_mpa", "std_deviation_mpa", "cement_kgm3", "free_water_kgm3", "fine_agg_kgm3", "coarse_20mm_kgm3", "coarse_12_5mm_kgm3"];
+  for (const key of required) {
+    if (b[key] === undefined || b[key] === null || b[key] === "") {
+      return res.status(400).json({ error: `${key.replaceAll("_", " ")} is required.` });
+    }
+  }
+  const { rows: dupe } = await query("SELECT id FROM mix_designs WHERE design_ref_code = $1 AND id != $2", [b.design_ref_code, req.params.id]);
+  if (dupe.length) return res.status(400).json({ error: "A mix design with that reference code already exists." });
+
+  await query(
+    `UPDATE mix_designs SET
+       mix_grade_id=$1, design_ref_code=$2, mix_description=$3, fck_28day_mpa=$4, std_deviation_mpa=$5, max_agg_size_mm=$6,
+       target_workability_mm=$7, design_density_kgm3=$8, cement_kgm3=$9, fly_ash_kgm3=$10, free_water_kgm3=$11,
+       fine_agg_kgm3=$12, coarse_20mm_kgm3=$13, coarse_12_5mm_kgm3=$14,
+       cement_type_source=$15, cement_sp_gr=$16, fly_ash_type_source=$17, fly_ash_sp_gr=$18,
+       fine_agg_type_source=$19, fine_agg_sp_gr=$20, coarse_20mm_type_source=$21, coarse_20mm_sp_gr=$22,
+       coarse_12_5mm_type_source=$23, coarse_12_5mm_sp_gr=$24,
+       fine_moisture_pct=$25, fine_absorption_pct=$26, coarse_20mm_moisture_pct=$27, coarse_20mm_absorption_pct=$28,
+       coarse_12_5mm_moisture_pct=$29, coarse_12_5mm_absorption_pct=$30, revision=$31, notes=$32
+     WHERE id = $33`,
+    [b.mix_grade_id, b.design_ref_code, b.mix_description || null, b.fck_28day_mpa, b.std_deviation_mpa, b.max_agg_size_mm || null,
+     b.target_workability_mm || null, b.design_density_kgm3 || null, b.cement_kgm3, b.fly_ash_kgm3 || 0, b.free_water_kgm3,
+     b.fine_agg_kgm3, b.coarse_20mm_kgm3, b.coarse_12_5mm_kgm3,
+     b.cement_type_source || null, b.cement_sp_gr || null, b.fly_ash_type_source || null, b.fly_ash_sp_gr || null,
+     b.fine_agg_type_source || null, b.fine_agg_sp_gr || null, b.coarse_20mm_type_source || null, b.coarse_20mm_sp_gr || null,
+     b.coarse_12_5mm_type_source || null, b.coarse_12_5mm_sp_gr || null,
+     b.fine_moisture_pct || null, b.fine_absorption_pct || null, b.coarse_20mm_moisture_pct || null, b.coarse_20mm_absorption_pct || null,
+     b.coarse_12_5mm_moisture_pct || null, b.coarse_12_5mm_absorption_pct || null, b.revision || "00", b.notes || null, req.params.id]
+  );
+
+  const totalBinder = Number(b.cement_kgm3) + (Number(b.fly_ash_kgm3) || 0);
+  await query("DELETE FROM mix_design_admixtures WHERE mix_design_id = $1", [req.params.id]);
+  const admixtures = Array.isArray(b.admixtures) ? b.admixtures : [];
+  let i = 0;
+  for (const a of admixtures) {
+    if (!a.type_brand || !a.qty_kgm3) continue;
+    i += 1;
+    const dosagePct = totalBinder > 0 ? Number(((Number(a.qty_kgm3) / totalBinder) * 100).toFixed(2)) : null;
+    await query(
+      `INSERT INTO mix_design_admixtures (mix_design_id, type_brand, dosage_pct_of_binder, qty_kgm3, sp_gr, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [req.params.id, a.type_brand, dosagePct, a.qty_kgm3, a.sp_gr || null, i]
+    );
+  }
+  res.json({ ok: true });
+});
+
+// Round 132, item 3 — Administrator-only delete. Blocked whenever the
+// design is actually in use (assigned to a customer, marked standard for
+// its grade, or already snapshotted onto a cube test result) rather than
+// letting Postgres's own foreign-key error surface — those cases mean
+// real data depends on this row, and the fix there is to reassign/replace
+// it first, not delete it out from under something that references it.
+router.delete("/mix-designs/:id", requireRole("administrator"), async (req, res) => {
+  const { rows: existingRows } = await query("SELECT id FROM mix_designs WHERE id = $1", [req.params.id]);
+  if (!existingRows.length) return res.status(404).json({ error: "Mix design not found." });
+
+  const { rows: usage } = await query(
+    `SELECT
+       (SELECT COUNT(*) FROM mix_design_assignments WHERE mix_design_id = $1) AS assignments,
+       (SELECT COUNT(*) FROM customer_orders WHERE resolved_mix_design_id = $1) AS orders,
+       (SELECT COUNT(*) FROM cube_test_results WHERE mix_design_id = $1) AS cube_results,
+       (SELECT COUNT(*) FROM site_cube_test_results WHERE mix_design_id = $1) AS site_cube_results,
+       (SELECT is_standard_for_grade FROM mix_designs WHERE id = $1) AS is_standard`,
+    [req.params.id]
+  );
+  const u = usage[0];
+  const usedCount = Number(u.assignments) + Number(u.orders) + Number(u.cube_results) + Number(u.site_cube_results);
+  if (usedCount > 0 || u.is_standard) {
+    const reasons = [];
+    if (u.is_standard) reasons.push("it's set as the standard for its grade");
+    if (Number(u.assignments) > 0) reasons.push(`assigned to ${u.assignments} customer(s)`);
+    if (Number(u.orders) > 0) reasons.push(`used on ${u.orders} order(s)`);
+    if (Number(u.cube_results) + Number(u.site_cube_results) > 0) reasons.push("referenced by cube test results already on file");
+    return res.status(400).json({ error: `Can't delete — ${reasons.join(", ")}. Unassign/replace it first if it's no longer needed.` });
+  }
+
+  await query("DELETE FROM mix_designs WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
 // A draft needs a second, different person to approve it — either another
 // Lab Technician or a QC lead (QC Engineer/Manager/Administrator).
+// Round 132, item 1 — Administrator is exempted from this check. Only
+// lab_technician/administrator can draft a design in the first place; in
+// practice a small team's only Administrator account is often the one
+// drafting designs too, and there may be no separate qualifying approver
+// at all, which silently blocked every approval for that account (read as
+// "approval isn't working"). Manager can never hit this anyway (manager
+// can't create a design), and the two-person rule still fully applies to
+// a lab_technician/qc_engineer-drafted design.
 router.post("/mix-designs/:id/approve", requireRole("lab_technician", "qc_engineer", "manager", "administrator"), async (req, res) => {
   const { rows } = await query("SELECT id, created_by, status FROM mix_designs WHERE id = $1", [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: "Mix design not found." });
   const design = rows[0];
   if (design.status === "approved") return res.status(400).json({ error: "Already approved." });
-  if (design.created_by === req.user.id) {
+  if (design.created_by === req.user.id && req.user.role !== "administrator") {
     return res.status(400).json({ error: "The design's own creator can't approve it — a second person needs to sign off." });
   }
   await query(

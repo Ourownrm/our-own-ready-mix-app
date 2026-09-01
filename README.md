@@ -5289,3 +5289,58 @@ underlying event type.
    (Store scans the QR — `supplyRequests.js`'s `/:id/issue`) auto-deducts from the balance — an
    external-station fill (`/:id/confirm-external-fill`) deliberately does not, since nothing left the
    plant's own stock in that case.
+
+## Round 132 (Ver. 9.53): Mix design approval/edit/delete, combined cube test PDFs in the customer module, dated mix design assignments, Manager Dashboard purchase requests
+
+1. **Mix design approval wasn't working for Administrator.** Root cause: `POST
+   /lab-technician/mix-designs/:id/approve` blocks a draft's own creator from approving it (a
+   deliberate two-person rule — see item 2 below), with no exception. On a small team, the one
+   Administrator account is routinely the same person who drafted the design too, and there may be no
+   separate qualifying approver at all — every approval attempt from that account silently failed the
+   self-approval check, which read as "approval isn't working." Confirmed with the user before
+   changing the rule: Administrator is now exempted from the self-approval block (both the backend
+   check and the frontend's `isOwnDraft`/disabled-button logic in `MasterDataPanels.jsx` and
+   `LabTechnician.jsx`) — Manager can never hit this anyway (can't draft a design), and the two-person
+   rule still fully applies to a Lab Technician/QC Engineer-drafted design.
+2. **New: mix design edit, before approval.** New `PATCH /lab-technician/mix-designs/:id`
+   (Lab Technician/Administrator, draft-only — a design already snapshotted onto cube test results and
+   orders can't be silently rewritten once approved) — full field validation and dupe-ref-code check
+   matching the existing create route, admixtures replaced wholesale with the same dosage recompute.
+   `LabTechnician.jsx`'s `MixDesignForm` now doubles as the edit form (pre-filled from the design being
+   edited, PATCH instead of POST on submit) via a new "Edit" button next to "Approve" on draft cards.
+3. **New: mix design delete, for Administrator.** New `DELETE /lab-technician/mix-designs/:id`
+   (Administrator only) — a pre-delete usage check (assignments, orders, cube test results, "standard
+   for grade") returns a friendly, itemized reason instead of letting a raw database constraint
+   violation surface. New Delete button in `MasterDataPanels.jsx`'s mix designs list, Administrator-only.
+4. **Customer module — cube test report showed two separate reports (7-day/28-day) instead of one
+   combined report, even when both were actually tested.** Root cause: the customer portal only ever
+   used single-result or same-calendar-day endpoints, never Lab Technician's own pour-level combined
+   report — and a pour's 7-day and 28-day results normally land ~3 weeks apart, so the "same day"
+   heuristic almost never actually combined them; each single-age PDF then correctly, but confusingly,
+   showed the other age as "not tested." Fixed by mirroring Lab Technician's own pattern into the
+   customer module: two new ownership/permission-checked routes,
+   `GET /orders/:id/cube-tests/combined-pdf-data` (plant-cast) and
+   `GET /site-cube-casts/:castId/combined-pdf-data` (site-cast), both filtered to
+   `visible_to_customer` results. `CustomerPortal.jsx`'s order-detail screen and cross-order QC Reports
+   screen now group cube test results **by pour** (plant: per order; site-cast: per
+   `site_cube_cast_id`, newly threaded through the list endpoints) instead of by calendar date — once
+   both ages of a pour are ready, the per-age "PDF" buttons are replaced with one "View combined PDF"
+   button, exactly matching the Lab Technician screen's own "Combined (both ages)" pattern from Round
+   131, item 3b.
+5. **New: mix design assignments can now be dated, and retroactively apply to existing orders.**
+   Reported alongside item 4: an Administrator-assigned mix design wasn't appearing in the customer
+   module for orders already on the books — assigning only ever affected orders placed *after* the
+   assignment, since `resolved_mix_design_id` is snapshotted once at order creation and never revisited.
+   New `effective_from` column on `mix_design_assignments` (date, defaults to today); the assignment
+   form in `MasterDataPanels.jsx` now has a "Since" date picker, and saving (`POST
+   /administrator/mix-design-assignments`) also rewrites `resolved_mix_design_id` on every existing
+   order for that customer+grade dated on/after it — so a newly assigned design shows up correctly in
+   the customer portal for past orders too, not just new ones. Removing an assignment deliberately
+   does *not* roll existing orders back (no single obviously-correct design to revert to).
+6. **Manager Dashboard — fuel/lubricant requests card was missing store stock purchase requests.**
+   The "Fuel and lubricant requests" summary card only ever counted plant issue requests
+   (`supply_requests`); Round 131's new Store Stock purchase-request flow (Store → Manager approval)
+   was never added to it, so pending purchase requests didn't surface on the dashboard at all even
+   though the Supply Approvals screen itself already showed them correctly. Fixed by adding
+   `GET /store-stock/purchases/pending` to the dashboard's existing parallel data load and folding its
+   count into the same card's badge/subtitle.

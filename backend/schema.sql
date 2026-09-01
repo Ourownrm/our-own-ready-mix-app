@@ -1114,6 +1114,14 @@ CREATE TABLE mix_design_assignments (
   assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by INTEGER REFERENCES users(id),
   updated_at TIMESTAMPTZ,
+  -- Round 132, item 6 — when this assignment actually starts applying, as
+  -- Administrator/Manager chooses it (defaults to today). Distinct from
+  -- assigned_at (when the action was clicked): saving the assignment also
+  -- retroactively rewrites customer_orders.resolved_mix_design_id for every
+  -- existing order of this customer+grade with order_date >= effective_from,
+  -- so the newly assigned design actually shows up in the customer portal
+  -- for orders already on the books, not just brand-new ones going forward.
+  effective_from DATE NOT NULL DEFAULT CURRENT_DATE,
   UNIQUE (customer_id, mix_grade_id)
 );
 

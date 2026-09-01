@@ -650,9 +650,13 @@ router.get("/qc-reports", requireCustomerAuth, async (req, res) => {
   // anything). Round 120, items 4b/4e — UNIONed with site_cube_test_results
   // (cubes cast at the customer's site) so both appear in one list; `source`
   // tells them apart since the two share no id space.
+  // Round 132, item 4 — site_cube_cast_id is carried through (null for plant
+  // rows) so the frontend can group results by pour instead of by calendar
+  // date: 7-day/28-day results from the same pour normally land ~21 days
+  // apart, so the old same-day grouping almost never actually combined them.
   const { rows: cubeTests } = await query(
     `SELECT 'plant' AS source, ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at,
-            co.id AS order_id, s.name AS site_name, m.name AS mix_grade_name
+            co.id AS order_id, NULL::int AS site_cube_cast_id, s.name AS site_name, m.name AS mix_grade_name
      FROM cube_test_results ctr
      JOIN customer_orders co ON co.id = ctr.order_id
      JOIN sites s ON s.id = co.site_id
@@ -660,7 +664,7 @@ router.get("/qc-reports", requireCustomerAuth, async (req, res) => {
      WHERE co.customer_id = $1 AND co.site_id = ANY($2::int[]) AND ctr.visible_to_customer
      UNION ALL
      SELECT 'site' AS source, sctr.id, sctr.testing_age_days, sctr.average_strength_mpa, sctr.tested_at,
-            co.id AS order_id, s.name AS site_name, m.name AS mix_grade_name
+            co.id AS order_id, scc.id AS site_cube_cast_id, s.name AS site_name, m.name AS mix_grade_name
      FROM site_cube_test_results sctr
      JOIN site_cube_casts scc ON scc.id = sctr.site_cube_cast_id
      JOIN customer_orders co ON co.id = scc.order_id
@@ -728,11 +732,11 @@ router.get("/orders/:id/cube-tests", requireCustomerAuth, async (req, res) => {
     return res.status(403).json({ error: "QC reports aren't enabled for this site." });
   }
   const { rows } = await query(
-    `SELECT 'plant' AS source, ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at
+    `SELECT 'plant' AS source, ctr.id, ctr.testing_age_days, ctr.average_strength_mpa, ctr.tested_at, NULL::int AS site_cube_cast_id
      FROM cube_test_results ctr
      WHERE ctr.order_id = $1 AND ctr.visible_to_customer
      UNION ALL
-     SELECT 'site' AS source, sctr.id, sctr.testing_age_days, sctr.average_strength_mpa, sctr.tested_at
+     SELECT 'site' AS source, sctr.id, sctr.testing_age_days, sctr.average_strength_mpa, sctr.tested_at, scc.id AS site_cube_cast_id
      FROM site_cube_test_results sctr
      JOIN site_cube_casts scc ON scc.id = sctr.site_cube_cast_id
      WHERE scc.order_id = $1 AND sctr.visible_to_customer
@@ -740,6 +744,133 @@ router.get("/orders/:id/cube-tests", requireCustomerAuth, async (req, res) => {
     [order.id]
   );
   res.json(rows);
+});
+
+// Round 132, item 4 — pour-level combined report (both testing ages on one
+// PDF), the customer-facing twin of Lab Technician's
+// GET /lab-technician/cube-pours/:orderId/combined-pdf-data. Previously the
+// customer module only ever showed single-age PDFs (or, for same-calendar-day
+// coincidences, an old "combined" report that concatenated two full per-age
+// reports) — since 7-day and 28-day results for the same pour normally land
+// ~21 days apart, that meant the customer almost always saw two separate
+// reports even when both ages were actually tested. This mirrors the
+// Lab Technician route's query, layered with this module's ownership/site
+// permission checks, and filters to visible_to_customer rows only.
+router.get("/orders/:id/cube-tests/combined-pdf-data", requireCustomerAuth, async (req, res) => {
+  const order = await ownOrder(req, req.params.id);
+  if (!order) return res.status(404).json({ error: "Order not found." });
+  if (!siteAllows(req, order.site_id, "qc_reports")) {
+    return res.status(403).json({ error: "QC reports aren't enabled for this site." });
+  }
+  const { rows: orderRows } = await query(
+    `SELECT co.id AS order_id, co.casting_location, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            MIN(pq.entered_at) AS cast_at
+     FROM customer_orders co
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN delivery_tickets dt ON dt.order_id = co.id
+     LEFT JOIN plant_qc pq ON pq.ticket_id = dt.id AND COALESCE(pq.number_of_cubes, 0) > 0
+     WHERE co.id = $1
+     GROUP BY co.id, co.casting_location, c.name, s.name, m.name`,
+    [order.id]
+  );
+
+  const { rows: results } = await query(
+    `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
+            ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
+            u.name AS tested_by_name, md.design_ref_code, md.fck_28day_mpa
+     FROM cube_test_results ctr
+     JOIN users u ON u.id = ctr.tested_by
+     LEFT JOIN mix_designs md ON md.id = ctr.mix_design_id
+     WHERE ctr.order_id = $1 AND ctr.visible_to_customer
+     ORDER BY ctr.testing_age_days, ctr.tested_at DESC`,
+    [order.id]
+  );
+  if (!results.length) return res.status(404).json({ error: "No test results found for this pour." });
+
+  for (const r of results) {
+    const { rows: cubes } = await query(
+      `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+       FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
+      [r.id]
+    );
+    r.cubes = cubes;
+  }
+  const day7 = results.find((r) => r.testing_age_days === 7) || null;
+  const day28 = results.find((r) => r.testing_age_days === 28) || null;
+  const designSource = day28 || day7;
+
+  res.json({
+    ...orderRows[0],
+    is_site_cast: false,
+    design_ref_code: designSource?.design_ref_code || null,
+    fck_28day_mpa: designSource?.fck_28day_mpa || null,
+    day7, day28,
+  });
+});
+
+// Round 132, item 4 — site-cast twin of the combined pour report above.
+router.get("/site-cube-casts/:castId/combined-pdf-data", requireCustomerAuth, async (req, res) => {
+  const { rows: castRows } = await query(
+    `SELECT scc.id AS site_cube_cast_id, scc.cast_date, scc.order_id,
+            co.casting_location, co.customer_id, co.site_id,
+            c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name
+     FROM site_cube_casts scc
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     WHERE scc.id = $1`,
+    [req.params.castId]
+  );
+  const cast = castRows[0];
+  // Same not-found-vs-not-permitted collapsing as the single-result routes
+  // below — an out-of-scope cast id 404s exactly like a nonexistent one.
+  if (!cast || cast.customer_id !== req.customerId || !req.siteIds.includes(cast.site_id)) {
+    return res.status(404).json({ error: "Site cast not found." });
+  }
+  if (!siteAllows(req, cast.site_id, "qc_reports")) {
+    return res.status(403).json({ error: "QC reports aren't enabled for this site." });
+  }
+
+  const { rows: results } = await query(
+    `SELECT sctr.id, sctr.testing_age_days, sctr.average_weight_kg, sctr.average_load_kn,
+            sctr.average_density_kgm3, sctr.average_strength_mpa, sctr.remarks, sctr.failure_type, sctr.tested_at,
+            u.name AS tested_by_name, md.design_ref_code, md.fck_28day_mpa
+     FROM site_cube_test_results sctr
+     JOIN users u ON u.id = sctr.tested_by
+     LEFT JOIN mix_designs md ON md.id = sctr.mix_design_id
+     WHERE sctr.site_cube_cast_id = $1 AND sctr.visible_to_customer
+     ORDER BY sctr.testing_age_days, sctr.tested_at DESC`,
+    [req.params.castId]
+  );
+  if (!results.length) return res.status(404).json({ error: "No test results found for this cast." });
+
+  for (const r of results) {
+    const { rows: cubes } = await query(
+      `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+       FROM site_cube_test_cubes WHERE site_cube_test_result_id = $1 ORDER BY sort_order`,
+      [r.id]
+    );
+    r.cubes = cubes;
+  }
+  const day7 = results.find((r) => r.testing_age_days === 7) || null;
+  const day28 = results.find((r) => r.testing_age_days === 28) || null;
+  const designSource = day28 || day7;
+
+  res.json({
+    order_id: cast.order_id,
+    casting_location: cast.casting_location,
+    customer_name: cast.customer_name,
+    site_name: cast.site_name,
+    mix_grade_name: cast.mix_grade_name,
+    cast_at: cast.cast_date,
+    is_site_cast: true,
+    design_ref_code: designSource?.design_ref_code || null,
+    fck_28day_mpa: designSource?.fck_28day_mpa || null,
+    day7, day28,
+  });
 });
 
 router.get("/cube-tests/:resultId/pdf-data", requireCustomerAuth, async (req, res) => {

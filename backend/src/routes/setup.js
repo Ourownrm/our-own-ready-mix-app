@@ -1699,6 +1699,14 @@ router.get("/setup", async (req, res) => {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_home_screen_photos_order ON home_screen_photos(display_order, id);`);
     log.push("Schema migration applied (home_screen_photos — Manager/Admin-managed plant/site photo gallery shown as a rotating widget on the customer portal's Home screen).");
 
+    // Round 132, item 6 — Administrator/Manager can now set (and change) a
+    // "since" date on a mix design assignment; saving one retroactively
+    // rewrites customer_orders.resolved_mix_design_id for that customer+
+    // grade's existing orders from that date onward, so a newly assigned
+    // design actually appears in the customer portal for orders already on
+    // the books, not just future ones.
+    await query(`ALTER TABLE mix_design_assignments ADD COLUMN IF NOT EXISTS effective_from DATE NOT NULL DEFAULT CURRENT_DATE;`);
+
     // Seed/sample data (customer, site, pumps, a starter rate) has been
     // moved to run only on a genuinely fresh install, right after the tables
     // are first created — see above. It used to run unconditionally on every

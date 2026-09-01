@@ -1082,7 +1082,7 @@ router.patch("/site-contacts/:id", requireRole("administrator"), async (req, res
 router.get("/mix-design-assignments", requireRole("administrator", "manager"), async (req, res) => {
   const { rows } = await query(
     `SELECT a.id, a.customer_id, c.name AS customer_name, a.mix_grade_id, m.name AS mix_grade_name,
-            a.mix_design_id, md.design_ref_code, a.assigned_at,
+            a.mix_design_id, md.design_ref_code, a.assigned_at, a.effective_from,
             (SELECT COUNT(*) FROM mix_design_assignments a2 WHERE a2.mix_design_id = a.mix_design_id) AS design_shared_count
      FROM mix_design_assignments a
      JOIN customers c ON c.id = a.customer_id
@@ -1095,11 +1095,21 @@ router.get("/mix-design-assignments", requireRole("administrator", "manager"), a
 
 // Upsert on (customer_id, mix_grade_id) — assigning again for the same
 // customer+grade updates the existing link rather than creating a second one.
+// Round 132, item 6 — `effective_from` (default today) is more than a label:
+// saving here also rewrites resolved_mix_design_id on every existing order
+// for this customer+grade dated on/after it, so the newly assigned design
+// actually shows up in the customer portal for orders already placed, not
+// just brand-new ones — previously an assignment only ever affected orders
+// created after the fact, which read as "the assigned design doesn't appear
+// in the customer module" for anything already on the books.
 router.post("/mix-design-assignments", requireRole("administrator", "manager"), async (req, res) => {
-  const { customer_id, mix_grade_id, mix_design_id } = req.body;
+  const { customer_id, mix_grade_id, mix_design_id, effective_from } = req.body;
   if (!customer_id || !mix_grade_id || !mix_design_id) {
     return res.status(400).json({ error: "Customer, grade, and mix design are all required." });
   }
+  const since = effective_from ? new Date(effective_from) : new Date();
+  if (isNaN(since)) return res.status(400).json({ error: "Invalid effective date." });
+  const sinceStr = since.toISOString().slice(0, 10);
   const { rows: designCheck } = await query(
     "SELECT id, mix_grade_id, status FROM mix_designs WHERE id = $1", [mix_design_id]
   );
@@ -1110,16 +1120,26 @@ router.post("/mix-design-assignments", requireRole("administrator", "manager"), 
     return res.status(400).json({ error: "That mix design is for a different grade." });
   }
   const { rows } = await query(
-    `INSERT INTO mix_design_assignments (customer_id, mix_grade_id, mix_design_id, assigned_by)
-     VALUES ($1,$2,$3,$4)
+    `INSERT INTO mix_design_assignments (customer_id, mix_grade_id, mix_design_id, assigned_by, effective_from)
+     VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (customer_id, mix_grade_id) DO UPDATE SET
-       mix_design_id = $3, updated_by = $4, updated_at = now()
+       mix_design_id = $3, updated_by = $4, updated_at = now(), effective_from = $5
      RETURNING id`,
-    [customer_id, mix_grade_id, mix_design_id, req.user.id]
+    [customer_id, mix_grade_id, mix_design_id, req.user.id, sinceStr]
   );
-  res.status(201).json({ id: rows[0].id });
+  const { rowCount: ordersUpdated } = await query(
+    `UPDATE customer_orders SET resolved_mix_design_id = $1
+     WHERE customer_id = $2 AND mix_grade_id = $3 AND order_date >= $4 AND resolved_mix_design_id IS DISTINCT FROM $1`,
+    [mix_design_id, customer_id, mix_grade_id, sinceStr]
+  );
+  res.status(201).json({ id: rows[0].id, orders_updated: ordersUpdated });
 });
 
+// Deliberately doesn't touch resolved_mix_design_id on any existing order —
+// unlike assigning (above), there's no single obviously-correct design to
+// roll those orders back to (the grade's standard design may have changed
+// since, or another assignment may apply going forward), so removing an
+// assignment only stops it from applying to brand-new orders.
 router.delete("/mix-design-assignments/:id", requireRole("administrator", "manager"), async (req, res) => {
   await query("DELETE FROM mix_design_assignments WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
