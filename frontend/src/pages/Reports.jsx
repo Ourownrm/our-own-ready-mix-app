@@ -112,6 +112,7 @@ export default function Reports() {
               items={[
                 { label: "Booking Links & Requests", to: "/customer-booking" },
                 { label: "Website Content", to: "/site-content" },
+                { label: "Home Screen Photos", to: "/home-screen-photos" },
               ]}
             />
           </div>

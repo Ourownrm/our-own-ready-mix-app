@@ -8,6 +8,7 @@ import { PieChart } from "../lib/PieChart.jsx";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
+import StoreStockCard from "../lib/StoreStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { BookingsQueue, CreateLeadForm, CustomerInquiriesCard } from "../lib/SalesPanels.jsx";
@@ -266,10 +267,12 @@ export default function ManagerDashboard() {
             items={[
               { label: "Booking Links & Requests", to: "/customer-booking" },
               { label: "Website Content", to: "/site-content" },
+              { label: "Home Screen Photos", to: "/home-screen-photos" },
             ]}
           />
           <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
           <Link to="/fuel"><button type="button">Fuel filling</button></Link>
+          <Link to="/store-stock"><button type="button">Store stock</button></Link>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
@@ -327,6 +330,7 @@ export default function ManagerDashboard() {
         </Link>
         <FollowupsDue />
         <RawMaterialStockCard />
+        <StoreStockCard />
         <ComplianceAlertsCard />
         <div className="card" style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Pump utilization this month</div>

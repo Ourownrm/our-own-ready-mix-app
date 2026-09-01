@@ -212,6 +212,23 @@ a { color: var(--rebar); }
 .portal-tile.cta .portal-tile-sub { color: rgba(255,255,255,.8); }
 .portal-strip { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; margin-top: 14px; display: flex; gap: 12px; align-items: center; text-align: left; width: 100%; font-family: inherit; text-decoration: none; color: inherit; }
 
+/* Round 131, item 4 — "From our plant & sites" rotating photo widget on
+   the customer Home screen (replaces the old rmc-vs-sitemix strip there;
+   photos are Manager/Admin-managed from Masters > Home Screen Photos). */
+.portal-photo-widget { margin-top: 14px; }
+.portal-photo-head { font-size: 12.5px; font-weight: 700; color: var(--charcoal); margin-bottom: 8px; letter-spacing: .2px; }
+.portal-photo-feature { position: relative; height: 168px; border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border); background: var(--concrete); }
+.portal-photo-feature img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.portal-photo-loading { width: 100%; height: 100%; background: linear-gradient(160deg, #DAD5C8 0%, #C8C2B5 100%); }
+.portal-photo-tag { position: absolute; top: 12px; left: 12px; font-size: 9.5px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase; color: #fff; background: rgba(0,0,0,.38); padding: 4px 9px; border-radius: 20px; }
+.portal-photo-arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 50%; background: rgba(0,0,0,.32); border: none; color: #fff; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
+.portal-photo-arrow.left { left: 10px; }
+.portal-photo-arrow.right { right: 10px; }
+.portal-photo-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 14px 12px; background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.62) 100%); color: #fff; font-size: 13px; font-weight: 700; }
+.portal-photo-dots { display: flex; justify-content: center; gap: 5px; margin-top: 9px; }
+.portal-photo-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); border: none; padding: 0; cursor: pointer; }
+.portal-photo-dot.active { background: var(--rebar); width: 16px; border-radius: 3px; }
+
 .portal-group-label { font-size: 11px; font-weight: 700; color: var(--slate); text-transform: uppercase; letter-spacing: .5px; margin: 14px 0 8px; }
 .portal-group-label:first-child { margin-top: 0; }
 .portal-order-card { display: block; width: 100%; text-align: left; font-family: inherit; margin-bottom: 10px; cursor: pointer; }

@@ -62,6 +62,58 @@ const IconChevron = (p) => <Icon {...p}><polyline points="9 18 15 12 9 6" /></Ic
 const IconBuilding = (p) => <Icon {...p}><rect x="2" y="7" width="20" height="14" rx="2" /><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" /></Icon>;
 const IconWritings = (p) => <Icon {...p}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></Icon>;
 
+// Round 131 — the customer module had no equivalent of the staff app's own
+// refresh-and-check-for-update control (lib/TopBar.jsx's handleRefresh). On
+// a PWA, an already-open tab can keep running an old cached bundle even
+// after a newer deploy is live (see version.js's own comment on this). Two
+// parts: `refreshApp` is a manual "check now" action always available;
+// `useServiceWorkerUpdate` passively listens for a new service worker
+// actually taking over and returns true so callers can show a small "update
+// available" prompt — never a forced, unannounced reload, since that could
+// interrupt someone mid-form.
+async function refreshApp() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update();
+  } catch {
+    // no service worker, or the check itself failed — a plain reload below still helps
+  }
+  window.location.reload();
+}
+
+function useServiceWorkerUpdate() {
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    let cancelled = false;
+    const onControllerChange = () => { if (!cancelled) setUpdateAvailable(true); };
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+
+    async function checkNow() {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        await reg?.update();
+      } catch {
+        // offline, or nothing registered yet — nothing to do
+      }
+    }
+    checkNow();
+    // Re-check whenever the tab comes back into view — covers "left the app
+    // open in the background overnight" without polling while it's in use.
+    function onVisible() { if (document.visibilityState === "visible") checkNow(); }
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  return updateAvailable;
+}
+
 function initialsOf(name) {
   return (name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
 }
@@ -280,6 +332,10 @@ function LoginForm({ onSignedIn }) {
       </div>
       <div style={{ textAlign: "center", fontSize: 10.5, color: "var(--slate)", padding: "8px 16px 22px" }}>
         Our Own Ready Mix · Ver. {APP_VERSION}
+        {" · "}
+        <button type="button" onClick={() => refreshApp()} style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "var(--rebar)", cursor: "pointer" }}>
+          Refresh
+        </button>
       </div>
     </div>
   );
@@ -288,6 +344,9 @@ function LoginForm({ onSignedIn }) {
 // ===================== Authenticated shell: tabs + a tiny nav stack =====================
 function PortalShell({ me, onSignOut, onRefreshMe }) {
   const { t } = useCustomerLanguage();
+  const updateAvailable = useServiceWorkerUpdate();
+  const [refreshing, setRefreshing] = useState(false);
+  function handleRefresh() { setRefreshing(true); refreshApp(); } // page reloads on success; refreshing stays true through the unmount
   const [tab, setTab] = useState("home"); // home | orders | track | more
   const [stack, setStack] = useState([{ name: "root" }]); // drill-down screens on top of the current tab's root
 
@@ -326,10 +385,31 @@ function PortalShell({ me, onSignOut, onRefreshMe }) {
           <div className="topbar-title">{title}</div>
           {subtitle && <div style={{ color: "#B8BFC7", fontWeight: 400, fontSize: 11.5, marginTop: 1 }}>{subtitle}</div>}
         </div>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Refresh and check for the latest version"
+          aria-label="Refresh and check for the latest version"
+          style={{ marginLeft: "auto", background: "transparent", border: "1px solid rgba(255,255,255,0.35)", color: "#fff", opacity: 0.85, fontSize: 13, width: 26, height: 26, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}
+        >
+          {refreshing ? "…" : "↻"}
+        </button>
         {!showBack && tab === "home" && (
-          <div className="portal-avatar" style={{ marginLeft: "auto" }}>{initialsOf(me.customer_name)}</div>
+          <div className="portal-avatar">{initialsOf(me.customer_name)}</div>
         )}
       </div>
+
+      {updateAvailable && (
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, width: "100%", padding: "7px 12px", fontSize: 12, fontWeight: 700, color: "#fff", background: "var(--rebar)", border: "none", cursor: "pointer" }}
+        >
+          ↻ {refreshing ? "Refreshing…" : "A new version is available — tap to refresh"}
+        </button>
+      )}
 
       <div className="portal-content">
         {tab === "home" && top.name === "root" && (
@@ -446,16 +526,95 @@ function HomeScreen({ me, onGoTab, onPush }) {
         )}
       </div>
 
-      <a href="/rmc-vs-sitemix" className="portal-strip">
-        <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--concrete)", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
-          <IconInfo color="#C75B12" size={17} />
-        </div>
-        <div>
-          <div style={{ fontSize: 12.5, fontWeight: 700 }}>Why ready-mix beats site-mix</div>
-          <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 1 }}>2-minute read →</div>
-        </div>
-      </a>
+      <HomePhotoWidget />
     </>
+  );
+}
+
+// Round 131, item 4 — "From our plant & sites": a single large rotating
+// photo (chosen direction — "Option B" from the mockup) replacing the old
+// rmc-vs-sitemix strip that used to sit here. Photos are Manager/Admin-
+// managed (routes/homeScreenPhotos.js); this fetches the visible set once,
+// then auto-advances every 5s with manual arrow/dot controls on top.
+// Renders nothing at all if there are no photos yet, so a fresh install
+// with an empty gallery doesn't show a broken/empty widget.
+function HomePhotoWidget() {
+  const [photos, setPhotos] = useState(undefined); // undefined = loading, [] = none
+  const [images, setImages] = useState({}); // id -> data: URL
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    customerPortalRequest("/home-photos")
+      .then(async (list) => {
+        if (cancelled) return;
+        setPhotos(list);
+        const entries = await Promise.all(
+          list.map((p) =>
+            customerPortalRequest(`/home-photos/${p.id}/image`)
+              .then((d) => [p.id, `data:${d.mime_type};base64,${d.data_base64}`])
+              .catch(() => [p.id, null])
+          )
+        );
+        if (!cancelled) setImages(Object.fromEntries(entries));
+      })
+      .catch(() => setPhotos([]));
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!photos || photos.length < 2) return;
+    const t = setInterval(() => setIndex((i) => (i + 1) % photos.length), 5000);
+    return () => clearInterval(t);
+  }, [photos]);
+
+  if (!photos || photos.length === 0) return null;
+
+  const current = photos[index % photos.length];
+  const src = images[current.id];
+
+  return (
+    <div className="portal-photo-widget">
+      <div className="portal-photo-head">FROM OUR PLANT &amp; SITES</div>
+      <div className="portal-photo-feature">
+        {src ? <img src={src} alt={current.caption || "Plant/site photo"} /> : <div className="portal-photo-loading" />}
+        <span className="portal-photo-tag">{current.location_tag === "site" ? "Site" : "Plant"}</span>
+        {photos.length > 1 && (
+          <>
+            <button
+              type="button"
+              className="portal-photo-arrow left"
+              onClick={() => setIndex((i) => (i - 1 + photos.length) % photos.length)}
+              aria-label="Previous photo"
+            >
+              <IconBack size={14} color="#fff" strokeWidth={2.5} />
+            </button>
+            <button
+              type="button"
+              className="portal-photo-arrow right"
+              onClick={() => setIndex((i) => (i + 1) % photos.length)}
+              aria-label="Next photo"
+            >
+              <IconChevron size={14} color="#fff" strokeWidth={2.5} />
+            </button>
+          </>
+        )}
+        {current.caption && <div className="portal-photo-cap">{current.caption}</div>}
+      </div>
+      {photos.length > 1 && (
+        <div className="portal-photo-dots">
+          {photos.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              className={`portal-photo-dot${i === index ? " active" : ""}`}
+              onClick={() => setIndex(i)}
+              aria-label={`Go to photo ${i + 1}`}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -993,7 +1152,13 @@ function MoreScreen({ me, onSignOut, onPush }) {
         <button type="button" onClick={onSignOut} style={{ marginTop: 12, width: "100%", fontSize: 12.5 }}>{t("sign_out")}</button>
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10.5, color: "var(--slate)" }}>Our Own Ready Mix · Ver. {APP_VERSION}</div>
+      <div style={{ textAlign: "center", fontSize: 10.5, color: "var(--slate)" }}>
+        Our Own Ready Mix · Ver. {APP_VERSION}
+        {" · "}
+        <button type="button" onClick={() => refreshApp()} style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "var(--rebar)", cursor: "pointer" }}>
+          Check for update
+        </button>
+      </div>
     </>
   );
 }

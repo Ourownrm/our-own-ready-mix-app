@@ -81,6 +81,7 @@ export default function Administrator() {
           items={[
             { label: "Booking Links & Requests", to: "/customer-booking" },
             { label: "Website Content", to: "/site-content" },
+            { label: "Home Screen Photos", to: "/home-screen-photos" },
           ]}
         />
       </div>

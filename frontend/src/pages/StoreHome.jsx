@@ -46,7 +46,8 @@ export default function StoreHome() {
             </form>
           </>
         )}
-        <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 20 }}>Fuel and lubricant report</button></Link>
+        <Link to="/store-stock"><button type="button" style={{ width: "100%", marginTop: 20 }}>Stock &amp; purchases</button></Link>
+        <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 10 }}>Fuel and lubricant report</button></Link>
       </div>
     </>
   );

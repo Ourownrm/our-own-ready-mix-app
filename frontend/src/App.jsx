@@ -31,6 +31,7 @@ import FuelFilling from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
 import StoreHome from "./pages/StoreHome.jsx";
 import StoreScan from "./pages/StoreScan.jsx";
+import StoreStock from "./pages/StoreStock.jsx";
 import SalesExecutive from "./pages/SalesExecutive.jsx";
 import SalesPerformance from "./pages/SalesPerformance.jsx";
 import LeadsBrowser from "./pages/LeadsBrowser.jsx";
@@ -49,6 +50,7 @@ import ServicesPublic from "./pages/ServicesPublic.jsx";
 import RmcVsSitemix from "./pages/RmcVsSitemix.jsx";
 import TechnicalAssistance from "./pages/TechnicalAssistance.jsx";
 import SiteContentEditor from "./pages/SiteContentEditor.jsx";
+import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -179,6 +181,9 @@ export default function App() {
           <Route path="/site-content" element={
             <ProtectedRoute roles={["manager", "administrator"]}><SiteContentEditor /></ProtectedRoute>
           } />
+          <Route path="/home-screen-photos" element={
+            <ProtectedRoute roles={["manager", "administrator"]}><HomeScreenPhotos /></ProtectedRoute>
+          } />
           <Route path="/fuel" element={
             <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator"]}><FuelFilling /></ProtectedRoute>
           } />
@@ -190,6 +195,9 @@ export default function App() {
           } />
           <Route path="/store/scan/:token" element={
             <ProtectedRoute roles={["store", "administrator"]}><StoreScan /></ProtectedRoute>
+          } />
+          <Route path="/store-stock" element={
+            <ProtectedRoute roles={["store", "manager", "administrator"]}><StoreStock /></ProtectedRoute>
           } />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>

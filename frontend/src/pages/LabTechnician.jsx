@@ -195,13 +195,18 @@ function AgeBadge({ label, status, due, strength }) {
 }
 
 // Round 130 — "generate combined or individual results for completed tests"
-// (explicit feedback): once both ages of a pour/cast are tested, offer a
-// choice of the single combined report or either age on its own — before
-// that, there's just the one result on file, so nothing to choose between
-// (View PDF next to that single result already covers it). Shared between
-// PourDetail (plant) and SiteCastDetail (site-cast) below — same shape of
-// `results` (an array of {id, testing_age_days, ...}) either way.
-function GenerateReportBar({ results, onCombined, onIndividual }) {
+// (explicit feedback): once both ages of a pour/cast are tested, offer the
+// combined report — before that, there's just the one result on file, so
+// there's nothing to combine (View PDF next to that single result already
+// covers it). Shared between PourDetail (plant) and SiteCastDetail
+// (site-cast) below — same shape of `results` (an array of
+// {id, testing_age_days, ...}) either way.
+//
+// Round 131, item 3b (explicit feedback) — once both ages are tested,
+// Combined is the only report that makes sense: it supersedes the separate
+// 7-day/28-day PDFs (and the individual "View PDF" buttons above are hidden
+// at that point too), so those per-age buttons were dropped here.
+function GenerateReportBar({ results, onCombined }) {
   const [busy, setBusy] = useState(false);
   const day7 = results.find((r) => r.testing_age_days === 7);
   const day28 = results.find((r) => r.testing_age_days === 28);
@@ -216,8 +221,6 @@ function GenerateReportBar({ results, onCombined, onIndividual }) {
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: "var(--concrete)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
       <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--slate)" }}>Generate PDF for this pour:</span>
       <button type="button" disabled={busy} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => run(onCombined)}>Combined (both ages)</button>
-      <button type="button" disabled={busy} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => run(() => onIndividual(day7.id))}>7-Day only</button>
-      <button type="button" disabled={busy} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => run(() => onIndividual(day28.id))}>28-Day only</button>
     </div>
   );
 }
@@ -471,11 +474,17 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
           <div style={{ fontSize: 11, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>
             Recorded results
           </div>
+          {/* Round 131, item 3b — once both ages are on file, Combined (below,
+              via GenerateReportBar) supersedes the individual reports, so the
+              per-result View PDF is hidden here; with only one age tested,
+              it's still the only way to see that age's report early. */}
           {detail.results.map((r) => (
             <div key={r.id} style={{ fontSize: 12, marginBottom: 8, borderBottom: "1px solid var(--concrete)", paddingBottom: 6 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>{r.testing_age_days}-day — {Number(r.average_strength_mpa).toFixed(1)} MPa avg, tested by {r.tested_by_name}</span>
-                <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+                {!(detail.results.some((x) => x.testing_age_days === 7) && detail.results.some((x) => x.testing_age_days === 28)) && (
+                  <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+                )}
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
                 <span>
@@ -514,7 +523,7 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
         </div>
       )}
 
-      <GenerateReportBar results={detail.results} onCombined={viewCombinedPdf} onIndividual={viewPdf} />
+      <GenerateReportBar results={detail.results} onCombined={viewCombinedPdf} />
 
       <div style={{ fontSize: 11, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>
         {detail.results.some((r) => r.is_pour_level && r.testing_age_days === age) ? `Editing the ${age}-day result` : `Enter ${age}-day results`}
@@ -863,12 +872,17 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
       )}
       {detail.results.length > 0 && (
         <div style={{ marginBottom: 12 }}>
+          {/* Round 131, item 3b — same rule as PourDetail: once both ages
+              are on file, Combined (below) supersedes the per-age reports,
+              so the individual View PDF is hidden once this cast is complete. */}
           {detail.results.map((r) => (
             <div key={r.id} style={{ fontSize: 12, marginBottom: 8, borderBottom: "1px solid var(--concrete)", paddingBottom: 6 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>{r.testing_age_days}-day — {Number(r.average_strength_mpa).toFixed(1)} MPa avg, tested by {r.tested_by_name}</span>
                 <span style={{ display: "flex", gap: 4 }}>
-                  <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+                  {!(detail.results.some((x) => x.testing_age_days === 7) && detail.results.some((x) => x.testing_age_days === 28)) && (
+                    <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
+                  )}
                   {canManageResults && (
                     <button type="button" style={{ fontSize: 11, padding: "3px 8px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => deleteResult(r.id)}>
                       Delete
@@ -891,7 +905,7 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
         </div>
       )}
 
-      <GenerateReportBar results={detail.results} onCombined={viewCombinedPdf} onIndividual={viewPdf} />
+      <GenerateReportBar results={detail.results} onCombined={viewCombinedPdf} />
 
       <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
         {detail.results.some((r) => r.testing_age_days === age) && (
