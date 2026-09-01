@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import { formatOrderNumber } from "./orderNumber.js";
-import { TruckCard } from "./DeliveryTrackingView.jsx";
+import { TruckTrackingPanel } from "./DeliveryTrackingView.jsx";
 
 export default function OrderDetailModal({ orderId, onClose }) {
   const [order, setOrder] = useState(null);
@@ -82,33 +82,6 @@ export default function OrderDetailModal({ orderId, onClose }) {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-// Round 120, item 3f — Manager/Administrator-only in-app view of this
-// order's truck tracking, the same per-truck stage cards a customer sees on
-// their shared /track/:token link, fed by the new authenticated
-// GET /orders/:id/tracking route (backend/src/routes/orders.js). Previously
-// the only way for staff to see this was opening the customer-facing link
-// themselves.
-function TruckTrackingPanel({ orderId }) {
-  const [payload, setPayload] = useState(undefined); // undefined = loading, null = failed
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    apiRequest(`/orders/${orderId}/tracking`)
-      .then(setPayload)
-      .catch((err) => { setError(err.message); setPayload(null); });
-  }, [orderId]);
-
-  return (
-    <div style={{ marginTop: 8, paddingTop: 10, borderTop: "1px dashed var(--border-strong)" }}>
-      <div style={{ color: "var(--slate)", marginBottom: 6 }}>Truck tracking</div>
-      {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{error}</div>}
-      {payload === undefined && <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading...</div>}
-      {payload && payload.trucks.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>No deliveries raised for this order yet.</div>}
-      {payload && payload.trucks.map((t) => <TruckCard key={t.ticket_number} truck={t} />)}
     </div>
   );
 }

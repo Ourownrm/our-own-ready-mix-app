@@ -7,6 +7,7 @@ import FollowupsDue from "../lib/FollowupsDue.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
 import ShareableVisitReport from "../lib/ShareableVisitReport.jsx";
 import VisitCadenceStrip from "../lib/VisitCadenceStrip.jsx";
+import { TruckTrackingPanel } from "../lib/DeliveryTrackingView.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -65,6 +66,11 @@ export default function SalesExecutive() {
   const [visits, setVisits] = useState([]);
   const [forecasts, setForecasts] = useState([]);
   const [visitCadence, setVisitCadence] = useState([]);
+  // Round 129 — today's orders for this Sales Executive's own customers/
+  // sites, so they can check truck tracking themselves instead of always
+  // going through Manager/Administrator.
+  const [ordersToday, setOrdersToday] = useState([]);
+  const [trackingOrderId, setTrackingOrderId] = useState(null);
   const [error, setError] = useState("");
   const [onDuty, setOnDuty] = useState(false);
   const [dutyStatus, setDutyStatus] = useState(null);
@@ -92,6 +98,13 @@ export default function SalesExecutive() {
       setDashboard(d); setLeads(l); setVisits(v); setForecasts(fc); setVisitCadence(vc);
     } catch (err) {
       setError(err.message);
+    }
+    // Round 129 — /sales/my-orders-today is sales_executive-only (no
+    // ?as_user support, unlike the routes above), so it's only meaningful
+    // for a real Sales Executive login, not Admin viewing their own (empty)
+    // dashboard.
+    if (!isAdmin) {
+      apiRequest("/sales/my-orders-today").then(setOrdersToday).catch(() => {});
     }
   }
   async function loadDutyStatus() {
@@ -316,6 +329,39 @@ export default function SalesExecutive() {
                 </Link>
               )}
             </div>
+
+            {/* Round 129 — today's orders for this Sales Executive's own
+                customers/sites, with truck tracking access (previously
+                Manager/Administrator only), so they can check delivery
+                progress themselves instead of always asking. Mirrors the
+                "Today's orders" card already shipped on Site Supervisor's
+                page. Admin never fetches ordersToday (see loadAll), so this
+                naturally stays hidden for that view. */}
+            {ordersToday.length > 0 && (
+              <div className="card" style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Today's orders</div>
+                {ordersToday.map((o) => (
+                  <div key={o.id} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 8, fontSize: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <div>
+                        <div style={{ fontWeight: 600 }}>{o.customer_name} — {o.site_name}</div>
+                        <div style={{ color: "var(--slate)" }}>{o.mix_grade_name} · {o.order_quantity_m3} m³</div>
+                        <div style={{ color: "var(--slate)" }}>Batching scheduled {o.scheduled_batching_time}</div>
+                      </div>
+                      <span className="badge badge-neutral" style={{ flex: "none" }}>{o.status?.replace(/_/g, " ")}</span>
+                    </div>
+                    <button
+                      type="button"
+                      style={{ width: "100%", fontSize: 12, padding: "6px", marginTop: 6 }}
+                      onClick={() => setTrackingOrderId(trackingOrderId === o.id ? null : o.id)}
+                    >
+                      {trackingOrderId === o.id ? "Hide truck tracking" : "Track all trucks for this order"}
+                    </button>
+                    {trackingOrderId === o.id && <TruckTrackingPanel orderId={o.id} />}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {sitesOverdueCount > 0 && (
               <button type="button" className="se-strip" onClick={() => setView("visits")}>

@@ -427,6 +427,381 @@ async function renderCubeTestSection(doc, data, logoData) {
 
 }
 
+// Round 130 — the ONE-PAGE combined pour report: both testing ages merged
+// into a single report (one header/spec block, one two-column TEST SUMMARY,
+// one CUBE TEST ANALYSIS table spanning both ages with a rowspan-style
+// Average column), replacing the old idea of "combined" meaning two full
+// per-age reports concatenated (that's still what generateCombinedCubeTestPdf
+// below does, for its own different job — same-day results, possibly from
+// different pours). Data comes from GET /lab-technician/cube-pours/:orderId/combined-pdf-data
+// (plant-cast) or GET /lab-technician/site-cube-casts/:castId/combined-pdf-data
+// (site-cast) — `day7`/`day28` are each either that age's full result+cubes,
+// or null if that age hasn't been tested yet (the caller only offers this
+// option once both are done, but this renders sensibly either way).
+async function renderCombinedPourSection(doc, data, logoData) {
+  function ensureSpace(y, needed) {
+    if (y + needed > BOTTOM_LIMIT) {
+      doc.addPage();
+      return 15;
+    }
+    return y;
+  }
+
+  const { day7, day28 } = data;
+  const ages = [["7-Day", 7, day7], ["28-Day", 28, day28]].filter(([, , r]) => r);
+
+  // ---------------- Header ----------------
+  let y = 16;
+  if (logoData) {
+    try { doc.addImage(logoData, "JPEG", MARGIN_X, y - 9.75, 16.5, 16.5); } catch { /* ignore bad image */ }
+  }
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.6);
+  doc.setTextColor(...SLATE);
+  doc.text("Plot 3C-2, Ananthapuram Development Plot, Kasaragod, Kerala.", MARGIN_X + 20.5, y - 4);
+  doc.text("+91 83 4007 4006  ·  mail@ourownrm.com", MARGIN_X + 20.5, y);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(17);
+  doc.setTextColor(...RED);
+  doc.text("OUR OWN READY-MIX", PAGE_W - MARGIN_X, y - 6, { align: "right" });
+  doc.setFontSize(10.5);
+  doc.setTextColor(...CHARCOAL);
+  doc.text("CONCRETE CUBE TEST REPORT — COMBINED", PAGE_W - MARGIN_X, y - 1, { align: "right" });
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.2);
+  doc.setTextColor(...SLATE);
+  doc.text("IS 516 (Part 1)  |  IS:456-2000  |  IS 1199 (1959)", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
+
+  y += 9;
+  doc.setDrawColor(...RED);
+  doc.setLineWidth(0.8);
+  doc.line(MARGIN_X, y, PAGE_W - MARGIN_X, y);
+  doc.setLineWidth(0.2);
+  y += 7;
+
+  // ---------------- Spec grid ----------------
+  // Round 129 feedback — no Sample IDs in the header (this is a pour-level,
+  // possibly multi-DN, report — a single "sample IDs" field doesn't read
+  // cleanly any more) and Casting Date takes its place.
+  {
+    const rh = 8.6;
+    y = ensureSpace(y, rh + 2);
+    const cw2 = CONTENT_W / 2;
+    doc.setDrawColor(...BORDER);
+    doc.rect(MARGIN_X, y, CONTENT_W, rh);
+    doc.line(MARGIN_X + cw2, y, MARGIN_X + cw2, y + rh);
+    [["Customer", data.customer_name || "—"], ["Site", data.site_name || "—"]].forEach((s, i) => {
+      const cx = MARGIN_X + i * cw2;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6.6);
+      doc.setTextColor(...SLATE);
+      doc.text(s[0].toUpperCase(), cx + 2.2, y + 3.5);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.2);
+      doc.setTextColor(...CHARCOAL);
+      const valLines = doc.splitTextToSize(String(s[1]), cw2 - 4.4);
+      doc.text(valLines[0], cx + 2.2, y + rh - 2.2);
+    });
+    y += rh;
+
+    const specs = [
+      ["Grade", data.mix_grade_name || "—"],
+      ["Structure", data.casting_location || "—"],
+      ["Casting Date", fmtDate(data.cast_at)],
+      ["Compared Design", data.design_ref_code || "— none on file —"],
+    ];
+    const cw = CONTENT_W / 4;
+    y = ensureSpace(y, rh + 2);
+    doc.rect(MARGIN_X, y, CONTENT_W, rh);
+    specs.forEach((s, i) => {
+      const cx = MARGIN_X + i * cw;
+      if (i > 0) doc.line(cx, y, cx, y + rh);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6.6);
+      doc.setTextColor(...SLATE);
+      doc.text(s[0].toUpperCase(), cx + 2.2, y + 3.5);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.2);
+      doc.setTextColor(...CHARCOAL);
+      const valLines = doc.splitTextToSize(String(s[1]), cw - 4.4);
+      doc.text(valLines[0], cx + 2.2, y + rh - 2.2);
+    });
+    y += rh + 5;
+  }
+
+  // ---------------- Standards followed (restored per feedback) ----------------
+  y = ensureSpace(y, 8);
+  doc.setFillColor(...RED);
+  doc.rect(MARGIN_X, y, CONTENT_W, 6.4, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(...WHITE);
+  doc.text("STANDARDS FOLLOWED", MARGIN_X + 3, y + 4.4);
+  y += 6.4;
+  {
+    const failureText = day7 || day28
+      ? `7-Day: ${day7?.failure_type || "Not recorded"}  ·  28-Day: ${day28?.failure_type || "Not recorded"}`
+      : "Not recorded";
+    const rows = [
+      ["Sampling of Fresh Concrete", "IS 1199 (1959)"],
+      ["Casting Location", data.is_site_cast ? "Customer site (site-cast sample)" : "Plant (cast during Plant QC, at batching plant)"],
+      ["Curing Method", "Water Curing (IS 516)"],
+      ["Rate of Loading", "140 kg/cm2 per minute"],
+      ["Compressive Strength of Concrete Cubes", "IS 456:2000"],
+      ["Size of the Specimen", "150 mm x 150 mm x 150 mm"],
+      ["Type of Failure", failureText],
+    ];
+    const rh = 6.1;
+    y = ensureSpace(y, rh * rows.length + 2);
+    doc.setDrawColor(...BORDER);
+    doc.rect(MARGIN_X, y, CONTENT_W, rh * rows.length);
+    rows.forEach((r, i) => {
+      const ry = y + i * rh;
+      if (i > 0) doc.line(MARGIN_X, ry, MARGIN_X + CONTENT_W, ry);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.8);
+      doc.setTextColor(...SLATE);
+      doc.text(r[0], MARGIN_X + 3, ry + rh / 2 + 1.2);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...CHARCOAL);
+      doc.text(r[1], MARGIN_X + CONTENT_W - 3, ry + rh / 2 + 1.2, { align: "right" });
+    });
+    y += rh * rows.length + 5;
+  }
+
+  // ---------------- Test summary — 7 & 28 day averages side by side ----------------
+  // Round 129 feedback (2nd round) — load/density moved beside the headline
+  // number instead of stacked below it (shorter panel), and the f'ck
+  // pass/fail line moved into the bar itself, right-aligned, instead of its
+  // own line below the panel.
+  const meetsTarget = data.fck_28day_mpa != null && day28?.average_strength_mpa != null
+    ? Number(day28.average_strength_mpa) >= Number(data.fck_28day_mpa)
+    : null;
+  y = ensureSpace(y, 8);
+  doc.setFillColor(...NAVY);
+  doc.rect(MARGIN_X, y, CONTENT_W, 6.4, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(...WHITE);
+  doc.text("TEST SUMMARY — 7 & 28 DAY AVERAGES", MARGIN_X + 3, y + 4.4);
+  if (meetsTarget !== null) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.6);
+    doc.setTextColor(...(meetsTarget ? [169, 224, 201] : [240, 190, 185]));
+    doc.text(
+      meetsTarget ? `Meets characteristic strength f'ck (${fmtDec(data.fck_28day_mpa)} MPa)` : `Below characteristic strength f'ck (${fmtDec(data.fck_28day_mpa)} MPa)`,
+      PAGE_W - MARGIN_X - 3, y + 4.4, { align: "right" }
+    );
+  }
+  y += 6.4;
+  {
+    const cw = CONTENT_W / 2;
+    const rh = 13.5;
+    y = ensureSpace(y, rh + 1);
+    doc.setDrawColor(...BORDER);
+    doc.rect(MARGIN_X, y, CONTENT_W, rh);
+    doc.line(MARGIN_X + cw, y, MARGIN_X + cw, y + rh);
+    [["7-Day Avg.", day7], ["28-Day Avg.", day28]].forEach(([label, r], i) => {
+      const cx = MARGIN_X + i * cw + 3;
+      const color = i === 1 && r ? GREEN : CHARCOAL;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6.6);
+      doc.setTextColor(...SLATE);
+      doc.text(label.toUpperCase(), cx, y + 4.2);
+      if (r) {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(13.5);
+        doc.setTextColor(...color);
+        doc.text(`${fmtDec(r.average_strength_mpa)}`, cx, y + rh - 3);
+        const numW = doc.getTextWidth(`${fmtDec(r.average_strength_mpa)} `);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7.4);
+        doc.setTextColor(...SLATE);
+        doc.text("N/mm2", cx + numW, y + rh - 3);
+
+        const dividerX = cx + cw - 6 - 32;
+        doc.setDrawColor(...BORDER);
+        doc.line(dividerX, y + 3, dividerX, y + rh - 3);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.6);
+        doc.setTextColor(...SLATE);
+        doc.text(`Load ${fmtDec(r.average_load_kn, 1)} kN`, dividerX + 3, y + 6);
+        doc.text(`Density ${fmtInt(r.average_density_kgm3)} kg/m3`, dividerX + 3, y + 10.2);
+      } else {
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(8.5);
+        doc.setTextColor(...SLATE);
+        doc.text("Not yet tested", cx, y + rh - 4.5);
+      }
+    });
+    y += rh + 5;
+  }
+
+  // ---------------- Cube test analysis — both ages, one table ----------------
+  // Round 129 feedback (2nd round) — no "7 DAY RESULTS"/"28 DAY RESULTS"
+  // divider rows (the Age column already says so); each age's rows share one
+  // rowspan-style Average cell on the right, drawn as a single tall rect
+  // rather than one full-width label row per age.
+  y = ensureSpace(y, 8);
+  doc.setFillColor(...NAVY);
+  doc.rect(MARGIN_X, y, CONTENT_W, 6.4, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(...WHITE);
+  doc.text("CUBE TEST ANALYSIS", MARGIN_X + 3, y + 4.4);
+  y += 6.4;
+  {
+    const headers = ["Cube No", "Date of Test", "Age (Days)", "Weight (kg)", "Density (kg/m3)", "Load (kN)", "Strength (N/mm2)", "Average (N/mm2)"];
+    const widths = [0.15, 0.13, 0.08, 0.12, 0.14, 0.12, 0.13, 0.13].map((f) => f * CONTENT_W);
+    const headH = 8.6;
+    y = ensureSpace(y, headH + 1);
+    doc.setFillColor(...SHADE);
+    doc.rect(MARGIN_X, y, CONTENT_W, headH, "F");
+    doc.setDrawColor(...BORDER);
+    doc.rect(MARGIN_X, y, CONTENT_W, headH);
+    let hx = MARGIN_X;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.2);
+    doc.setTextColor(...NAVY);
+    headers.forEach((h, i) => {
+      if (i > 0) doc.line(hx, y, hx, y + headH);
+      if (i === headers.length - 1) { doc.setFillColor(...HEAD_TINT); doc.rect(hx, y, widths[i], headH, "F"); doc.setDrawColor(...BORDER); doc.rect(hx, y, widths[i], headH); }
+      const lines = doc.splitTextToSize(h.toUpperCase(), widths[i] - 3);
+      doc.setTextColor(...NAVY);
+      lines.forEach((l, li) => doc.text(l, hx + widths[i] / 2, y + 3.3 + li * 2.5, { align: "center" }));
+      hx += widths[i];
+    });
+    y += headH;
+
+    const rh = 6.1;
+    const totalRows = ages.reduce((sum, [, , r]) => sum + Math.max((r.cubes || []).length, 1), 0) || 1;
+    y = ensureSpace(y, rh * totalRows + 1);
+    const tableTop = y;
+    doc.setDrawColor(...BORDER);
+    doc.rect(MARGIN_X, tableTop, CONTENT_W, rh * totalRows);
+    // Column separators for the first 7 columns, full table height.
+    let vx = MARGIN_X;
+    for (let i = 0; i < widths.length - 1; i++) { vx += widths[i]; doc.line(vx, tableTop, vx, tableTop + rh * totalRows); }
+
+    let rowCursor = 0;
+    ages.forEach(([ageLabel, ageDays, r]) => {
+      const cubes = (r.cubes && r.cubes.length ? r.cubes : [{ cube_label: "—", weight_kg: r.average_weight_kg, density_kgm3: r.average_density_kgm3, testing_load_kn: r.average_load_kn, strength_mpa: r.average_strength_mpa }]);
+      const groupTop = tableTop + rowCursor * rh;
+      cubes.forEach((c, i) => {
+        const ry = groupTop + i * rh;
+        if (rowCursor + i > 0) doc.line(MARGIN_X, ry, MARGIN_X + CONTENT_W - widths[widths.length - 1], ry);
+        const vals = [c.cube_label || `Cube ${i + 1}`, fmtDate(r.tested_at), String(ageDays), fmtDec(c.weight_kg, 3), fmtInt(c.density_kgm3), fmtDec(c.testing_load_kn, 2), fmtDec(c.strength_mpa, 1)];
+        let cx = MARGIN_X;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7.2);
+        doc.setTextColor(...CHARCOAL);
+        vals.forEach((v, vi) => { doc.text(String(v), cx + widths[vi] / 2, ry + rh / 2 + 1.3, { align: "center" }); cx += widths[vi]; });
+      });
+      // The rowspan-style Average cell — one rect + one centered value for
+      // the whole group, colored green for the 28-day group like the
+      // confirmed mockup.
+      const groupH = cubes.length * rh;
+      const avgX = MARGIN_X + CONTENT_W - widths[widths.length - 1];
+      doc.setFillColor(...HEAD_TINT);
+      doc.rect(avgX, groupTop, widths[widths.length - 1], groupH, "F");
+      doc.setDrawColor(...BORDER);
+      doc.rect(avgX, groupTop, widths[widths.length - 1], groupH);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.setTextColor(...(ageDays === 28 ? GREEN : CHARCOAL));
+      doc.text(fmtDec(r.average_strength_mpa), avgX + widths[widths.length - 1] / 2, groupTop + groupH / 2 + 1.6, { align: "center" });
+      if (rowCursor > 0) doc.line(MARGIN_X, groupTop, MARGIN_X + CONTENT_W - widths[widths.length - 1], groupTop);
+      rowCursor += cubes.length;
+    });
+    y = tableTop + rh * totalRows + 5;
+  }
+
+  // ---------------- Remarks + signatories ----------------
+  // Round 129 feedback (both rounds) — Remarks is full-width (not sharing a
+  // row with the signatures), and Tested By / Checked By sit side by side on
+  // one row well below it (more breathing room), instead of Tested By under
+  // Remarks and Checked By floating at the top-right like the single-result
+  // layout above uses.
+  y = ensureSpace(y, 46);
+  doc.setFillColor(...HEAD_TINT);
+  doc.rect(MARGIN_X, y, CONTENT_W, 5.5, "F");
+  doc.setDrawColor(...BORDER);
+  doc.rect(MARGIN_X, y, CONTENT_W, 5.5);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(7.6);
+  doc.setTextColor(...RED);
+  doc.text("REMARKS", MARGIN_X + 3, y + 3.9);
+  const remarksParts = [];
+  if (day7?.remarks) remarksParts.push(`7-Day: ${day7.remarks}`);
+  if (day28?.remarks) remarksParts.push(`28-Day: ${day28.remarks}`);
+  const remarksText = remarksParts.length ? remarksParts.join("   ·   ") : "No remarks.";
+  const remarkLines = doc.splitTextToSize(remarksText, CONTENT_W - 6);
+  const remarksH = Math.max(remarkLines.length * 3.6 + 4, 16);
+  doc.rect(MARGIN_X, y + 5.5, CONTENT_W, remarksH);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.4);
+  doc.setTextColor(...CHARCOAL);
+  remarkLines.forEach((line, i) => doc.text(line, MARGIN_X + 3, y + 5.5 + 4.4 + i * 3.6));
+  y = y + 5.5 + remarksH + 14;
+
+  const testedByName = day7 && day28
+    ? (day7.tested_by_name === day28.tested_by_name ? day7.tested_by_name : `${day7.tested_by_name} (7-Day) / ${day28.tested_by_name} (28-Day)`)
+    : (day7 || day28)?.tested_by_name || "—";
+  const halfW = (CONTENT_W - 14) / 2;
+  doc.setDrawColor(...CHARCOAL);
+  doc.line(MARGIN_X, y, MARGIN_X + halfW, y);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8.2);
+  doc.setTextColor(...CHARCOAL);
+  doc.text(testedByName, MARGIN_X, y + 3.8);
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(6.9);
+  doc.setTextColor(...SLATE);
+  doc.text("Tested By — Lab Technician", MARGIN_X, y + 7);
+
+  const sigX = MARGIN_X + halfW + 14;
+  doc.line(sigX, y, sigX + halfW, y);
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(6.9);
+  doc.setTextColor(...SLATE);
+  doc.text("Checked By — QA/QC", sigX, y + 3.8);
+  y += 7 + 5;
+
+  // ---------------- Footer ----------------
+  y = ensureSpace(y, 16);
+  const reportDate = [day7?.tested_at, day28?.tested_at].filter(Boolean).sort().pop();
+  doc.setFillColor(...NAVY);
+  doc.rect(MARGIN_X, y, CONTENT_W, 7.5, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(7.2);
+  doc.setTextColor(220, 228, 236);
+  doc.text("OORM-QC-13", MARGIN_X + 3, y + 5);
+  doc.text(`REPORT DATE: ${fmtDate(reportDate)}`, PAGE_W / 2, y + 5, { align: "center" });
+  doc.text("REV. 0", PAGE_W - MARGIN_X - 3, y + 5, { align: "right" });
+  y += 7.5 + 3.5;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.8);
+  doc.setTextColor(...SLATE);
+  doc.text(
+    "Our Own Ready Mix, Plot No 3C-2, Industrial Area, Ananthapuram, Kasaragod, Kerala, India — 671321  ·  +91 83 4007 4006  ·  mail@ourownrm.com  ·  www.ourownrm.com",
+    PAGE_W / 2, y, { align: "center" }
+  );
+}
+
+// Round 130 — the pour's single combined report (both ages, one page). See
+// renderCombinedPourSection above for what changed vs. the per-age report.
+export async function generateCombinedPourCubeTestPdf(data) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  let logoData = null;
+  try { logoData = await loadLogoBase64(); } catch { /* logo optional — proceed without it */ }
+  await renderCombinedPourSection(doc, data, logoData);
+  doc.save(`Cube_Test_Combined_Pour_${data.order_id}.pdf`);
+  return doc;
+}
+
 export async function generateCubeTestPdf(data) {
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });

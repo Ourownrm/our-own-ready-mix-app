@@ -108,6 +108,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .badge-neutral { background: #ECEAE4; color: var(--slate); }
 .badge-info { background: var(--info-bg); color: var(--info); }
 .badge-progress { background: var(--violet-bg); color: var(--violet); }
+/* Round 130 — same violet tokens as badge-progress, but its own class: this
+   one labels WHERE a cube sample was cast ("At Site" vs. "Plant"), not a
+   trip's progress state — reusing badge-progress here would read fine
+   visually but be a confusing name at the call site. */
+.badge-violet { background: var(--violet-bg); color: var(--violet); }
 
 /* ===== Tables ===== */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }

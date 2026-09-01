@@ -8,7 +8,7 @@ import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
-import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
+import { generateCubeTestPdf, generateCombinedPourCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
 
@@ -194,6 +194,34 @@ function AgeBadge({ label, status, due, strength }) {
   );
 }
 
+// Round 130 — "generate combined or individual results for completed tests"
+// (explicit feedback): once both ages of a pour/cast are tested, offer a
+// choice of the single combined report or either age on its own — before
+// that, there's just the one result on file, so nothing to choose between
+// (View PDF next to that single result already covers it). Shared between
+// PourDetail (plant) and SiteCastDetail (site-cast) below — same shape of
+// `results` (an array of {id, testing_age_days, ...}) either way.
+function GenerateReportBar({ results, onCombined, onIndividual }) {
+  const [busy, setBusy] = useState(false);
+  const day7 = results.find((r) => r.testing_age_days === 7);
+  const day28 = results.find((r) => r.testing_age_days === 28);
+  if (!day7 || !day28) return null;
+
+  async function run(fn) {
+    setBusy(true);
+    try { await fn(); } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: "var(--concrete)", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
+      <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--slate)" }}>Generate PDF for this pour:</span>
+      <button type="button" disabled={busy} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => run(onCombined)}>Combined (both ages)</button>
+      <button type="button" disabled={busy} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => run(() => onIndividual(day7.id))}>7-Day only</button>
+      <button type="button" disabled={busy} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => run(() => onIndividual(day28.id))}>28-Day only</button>
+    </div>
+  );
+}
+
 // Round 122 — one pour's expanded card: the DN reference list ("cube samples
 // for this pour"), any results already on file (pour-level and legacy — see
 // the backend route's own comment), and the entry form, which groups its
@@ -201,7 +229,10 @@ function AgeBadge({ label, status, due, strength }) {
 // mockup this was built from.
 function PourDetail({ orderId, setError, setNotice, onSaved }) {
   const { user } = useAuth();
-  const isAdmin = user?.role === "administrator";
+  // Round 129 — date-change and delete on a recorded result used to be
+  // administrator-only (Round 124/125); opened up to Lab Technician too,
+  // since they're the ones who entered the result in the first place.
+  const canManageResults = user?.role === "administrator" || user?.role === "lab_technician";
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
@@ -210,7 +241,7 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
   const [failureType, setFailureType] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(""); // shown inline on this card, not just the page-top notice
-  const [editingDateFor, setEditingDateFor] = useState(null); // result id currently being date-corrected (admin only)
+  const [editingDateFor, setEditingDateFor] = useState(null); // result id currently being date-corrected
   const [dateDraft, setDateDraft] = useState("");
   const [savingDate, setSavingDate] = useState(false);
 
@@ -345,6 +376,15 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 130 — the pour's single combined report (both ages, one page); see
+  // GenerateReportBar and generateCombinedPourCubeTestPdf.
+  async function viewCombinedPdf() {
+    try {
+      const data = await apiRequest(`/lab-technician/cube-pours/${orderId}/combined-pdf-data`);
+      await generateCombinedPourCubeTestPdf(data);
+    } catch (err) { setError(err.message); }
+  }
+
   // Round 120, item 4a — not every internal test needs to reach the customer
   // module; defaults to visible (see the schema migration) so this is only
   // ever used to actively hide one.
@@ -395,10 +435,32 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
       </div>
       <div style={{ marginBottom: 12 }}>
         {detail.dns.map((dn) => (
-          <div key={dn.plant_qc_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--concrete)", fontSize: 12.5 }}>
+          <div key={`dn-${dn.plant_qc_id}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--concrete)", fontSize: 12.5 }}>
             <div>
-              <div style={{ fontWeight: 600 }}>{dn.ticket_number}{dn.truck_number ? ` · Truck ${dn.truck_number}` : ""}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="badge badge-info" style={{ fontSize: 10 }}>Plant</span>
+                <span style={{ fontWeight: 600 }}>{dn.ticket_number}{dn.truck_number ? ` · Truck ${dn.truck_number}` : ""}</span>
+              </div>
               <div style={{ color: "var(--slate)", fontSize: 11.5, marginTop: 1 }}>{dn.number_of_cubes || "?"} cubes · Sampled {fmtDate(dn.cast_at)}</div>
+            </div>
+          </div>
+        ))}
+        {/* Round 130 — a Site Supervisor's own independent cube recording
+            (siteSupervisor.js's POST .../site-cubes) shows up here too,
+            labeled "At Site" instead of a DN/truck, so it isn't missed when
+            reviewing this pour's samples. Results for these are still
+            entered from the separate Site-Cast Cubes tab (a different table
+            underneath — see the backend route's comment), not this form. */}
+        {(detail.site_casts || []).map((sc) => (
+          <div key={`site-${sc.site_cube_cast_id}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--concrete)", fontSize: 12.5 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="badge badge-violet" style={{ fontSize: 10 }}>At Site</span>
+                <span style={{ fontWeight: 600 }}>{sc.entered_by_name ? `Recorded by ${sc.entered_by_name}` : "Recorded at site"}</span>
+              </div>
+              <div style={{ color: "var(--slate)", fontSize: 11.5, marginTop: 1 }}>
+                {sc.number_of_cubes || "?"} cubes · Sampled {fmtDate(sc.cast_date)} · enter results from the Site-Cast Cubes tab
+              </div>
             </div>
           </div>
         ))}
@@ -420,7 +482,7 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
                   Tested on {fmtDate(r.tested_at)}{r.failure_type ? ` · Failure: ${r.failure_type}` : ""}
                   {!r.is_pour_level && " · legacy — recorded before pour-basis testing"}
                 </span>
-                {isAdmin && editingDateFor !== r.id && (
+                {canManageResults && editingDateFor !== r.id && (
                   <span style={{ display: "flex", gap: 4 }}>
                     <button type="button" style={{ fontSize: 10.5, padding: "2px 6px" }} onClick={() => startDateEdit(r)}>Change date</button>
                     <button type="button" style={{ fontSize: 10.5, padding: "2px 6px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => deleteResult(r.id)}>
@@ -438,7 +500,7 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
                 <input type="checkbox" checked={r.visible_to_customer !== false} onChange={(e) => toggleVisible(r.id, e.target.checked)} />
                 Visible in customer module
               </label>
-              {isAdmin && editingDateFor === r.id && (
+              {canManageResults && editingDateFor === r.id && (
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}>
                   <input type="date" value={dateDraft} onChange={(e) => setDateDraft(e.target.value)} style={{ fontSize: 11 }} />
                   <button type="button" style={{ fontSize: 10.5, padding: "2px 8px" }} disabled={savingDate} onClick={() => saveDate(r.id)}>
@@ -451,6 +513,8 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
           ))}
         </div>
       )}
+
+      <GenerateReportBar results={detail.results} onCombined={viewCombinedPdf} onIndividual={viewPdf} />
 
       <div style={{ fontSize: 11, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>
         {detail.results.some((r) => r.is_pour_level && r.testing_age_days === age) ? `Editing the ${age}-day result` : `Enter ${age}-day results`}
@@ -649,7 +713,10 @@ function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
 
 function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
   const { user } = useAuth();
-  const isAdmin = user?.role === "administrator";
+  // Round 129 — delete on a recorded site-cast result opened up to Lab
+  // Technician too, matching the plant-side change above (no date-change
+  // route exists for site-cast results, so there's nothing to mirror there).
+  const canManageResults = user?.role === "administrator" || user?.role === "lab_technician";
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
@@ -751,6 +818,14 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 130 — the site cast's single combined report (both ages, one page).
+  async function viewCombinedPdf() {
+    try {
+      const data = await apiRequest(`/lab-technician/site-cube-casts/${castId}/combined-pdf-data`);
+      await generateCombinedPourCubeTestPdf(data);
+    } catch (err) { setError(err.message); }
+  }
+
   async function toggleVisible(resultId, visible) {
     setError("");
     try {
@@ -794,7 +869,7 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
                 <span>{r.testing_age_days}-day — {Number(r.average_strength_mpa).toFixed(1)} MPa avg, tested by {r.tested_by_name}</span>
                 <span style={{ display: "flex", gap: 4 }}>
                   <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r.id)}>View PDF</button>
-                  {isAdmin && (
+                  {canManageResults && (
                     <button type="button" style={{ fontSize: 11, padding: "3px 8px", color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => deleteResult(r.id)}>
                       Delete
                     </button>
@@ -815,6 +890,8 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
           ))}
         </div>
       )}
+
+      <GenerateReportBar results={detail.results} onCombined={viewCombinedPdf} onIndividual={viewPdf} />
 
       <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
         {detail.results.some((r) => r.testing_age_days === age) && (

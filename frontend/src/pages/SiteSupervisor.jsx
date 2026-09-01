@@ -4,11 +4,15 @@ import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { TruckTrackingPanel } from "../lib/DeliveryTrackingView.jsx";
 
 export default function SiteSupervisor() {
   const [deliveries, setDeliveries] = useState([]);
   const [orders, setOrders] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
+  // Round 129 — which order's full truck-tracking panel (every truck on
+  // that order, not just whichever one is "selected" below) is expanded.
+  const [trackingOrderId, setTrackingOrderId] = useState(null);
   const [showReject, setShowReject] = useState(false);
   const [workCompleteOrderId, setWorkCompleteOrderId] = useState(null);
   const [delaySheet, setDelaySheet] = useState(null); // { kind: 'pump'|'site-ready', orderId, loc? }
@@ -63,9 +67,15 @@ export default function SiteSupervisor() {
   async function act(path, body) {
     setError("");
     try {
-      await queuedRequest(`/site-supervisor/${selected.id}/${path}`, { method: "POST", body });
+      // Round 130 — returning the response (instead of discarding it) so the
+      // new cube-recording card can show back what was actually saved (or,
+      // offline, that it's queued) without a second round-trip. Every
+      // existing caller (arrival/unloading-start/unloading-complete/reject)
+      // already ignored this call's return value, so this is additive.
+      const result = await queuedRequest(`/site-supervisor/${selected.id}/${path}`, { method: "POST", body });
       setPending(pendingCount());
       await load();
+      return result;
     } catch (err) {
       setError(err.message);
       throw err; // let CompleteForm/RejectForm know their own submit didn't actually succeed
@@ -304,6 +314,18 @@ export default function SiteSupervisor() {
                     Flag work completed for Manager
                   </button>
                 )}
+
+                {/* Round 129 — every truck on this order, not just the one
+                    delivery below happens to have selected; useful when an
+                    order has more than one truck on it. */}
+                <button
+                  type="button"
+                  style={{ width: "100%", fontSize: 12, padding: "6px", marginTop: 6 }}
+                  onClick={() => setTrackingOrderId(trackingOrderId === o.id ? null : o.id)}
+                >
+                  {trackingOrderId === o.id ? "Hide truck tracking" : "Track all trucks for this order"}
+                </button>
+                {trackingOrderId === o.id && <TruckTrackingPanel orderId={o.id} />}
               </div>
             ))}
           </div>
@@ -360,6 +382,14 @@ export default function SiteSupervisor() {
               </button>
             </div>
 
+            {/* Round 130 — a separate sibling card, not nested in the one
+                above: per explicit feedback, recording cube samples must work
+                "anytime when truck is at site" and save "independently
+                without affecting other activity buttons" (arrival/unloading/
+                reject above). It has its own Save action and touches nothing
+                else on this screen. */}
+            <SiteCubeRecordingCard ticket={selected} onAct={act} />
+
             {/* Round 119, post-ship again round 3, item 9: replaces the plain
                 <select> switcher with a stack — the "up next" delivery stays
                 expanded above (with the full stage tracker), everything else
@@ -390,6 +420,113 @@ export default function SiteSupervisor() {
         )}
       </div>
     </>
+  );
+}
+
+// Round 130 — "record cube samples taken against truck anytime when truck is
+// at site and save it independently without effecting other activity
+// buttons" (explicit feedback). Its own load (today's already-saved count,
+// if any — GET /site-supervisor/:ticketId/site-cubes/today) and its own save
+// (POST .../site-cubes, upserts today's own entry — see the backend route's
+// comment), sharing nothing with SupervisorStageTracker/CompleteForm/
+// RejectForm above beyond `onAct` (the same offline-queue-aware `act` helper
+// they already use, keyed to a different path).
+function SiteCubeRecordingCard({ ticket, onAct }) {
+  const [prepared, setPrepared] = useState(true);
+  const [count, setCount] = useState("");
+  const [existing, setExisting] = useState(undefined); // undefined = loading, null = none yet today
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setExisting(undefined);
+    setSaved(false);
+    setError("");
+    apiRequest(`/site-supervisor/${ticket.id}/site-cubes/today`)
+      .then((d) => {
+        if (cancelled) return;
+        setExisting(d);
+        if (d) setCount(String(d.number_of_cubes));
+      })
+      .catch(() => { if (!cancelled) setExisting(null); }); // offline/failed load — save still works, just no "already saved" hint
+    return () => { cancelled = true; };
+  }, [ticket.id]);
+
+  async function save() {
+    const n = Number(count);
+    if (!n || n <= 0) { setError("Enter how many cube samples were taken."); return; }
+    setError(""); setSaving(true); setSaved(false);
+    try {
+      const result = await onAct("site-cubes", { number_of_cubes: n });
+      setExisting(result?.queued ? { number_of_cubes: n, entered_at: new Date().toISOString(), queued: true } : result);
+      setSaved(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>Cubes prepared at site</div>
+      <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
+        Record any time while this truck is at site — independent of the delivery steps above, saved on its own.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button
+          type="button"
+          onClick={() => setPrepared(true)}
+          style={{
+            flex: 1, textAlign: "center", padding: "9px 6px", fontSize: 12, fontWeight: 700, borderRadius: 8,
+            border: `1px solid ${prepared ? "var(--rebar)" : "var(--border-strong)"}`,
+            background: prepared ? "var(--rebar)" : "var(--surface)", color: prepared ? "#fff" : "inherit",
+          }}
+        >
+          Yes, cubes prepared
+        </button>
+        <button
+          type="button"
+          onClick={() => setPrepared(false)}
+          style={{
+            flex: 1, textAlign: "center", padding: "9px 6px", fontSize: 12, fontWeight: 700, borderRadius: 8,
+            border: `1px solid ${!prepared ? "var(--rebar)" : "var(--border-strong)"}`,
+            background: !prepared ? "var(--rebar)" : "var(--surface)", color: !prepared ? "#fff" : "inherit",
+          }}
+        >
+          No
+        </button>
+      </div>
+
+      {prepared && (
+        <>
+          <div style={{ color: "var(--slate)", marginBottom: 4, fontSize: 13 }}>Number of cube samples taken</div>
+          <input type="number" min="1" inputMode="numeric" value={count} onChange={(e) => setCount(e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} />
+
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginTop: 8 }}>{error}</div>}
+          {saved && !error && <div style={{ color: "var(--signal-green)", fontSize: 12, marginTop: 8 }}>✓ Saved.</div>}
+
+          <button type="button" className="btn-primary" style={{ width: "100%", marginTop: 14 }} onClick={save} disabled={saving}>
+            {saving ? "Saving..." : "Save cube record"}
+          </button>
+        </>
+      )}
+
+      {existing && (
+        <div style={{ marginTop: 12, padding: "10px 12px", background: "var(--amber-bg)", borderRadius: 8, fontSize: 11.5, color: "var(--amber)" }}>
+          {existing.queued
+            ? `Queued — will save ${existing.number_of_cubes} cube${existing.number_of_cubes === 1 ? "" : "s"} once back online.`
+            : `Already saved once today: ${existing.number_of_cubes} cube${existing.number_of_cubes === 1 ? "" : "s"} recorded at ${new Date(existing.entered_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Saving again updates that count.`}
+        </div>
+      )}
+
+      <div style={{ marginTop: 8, fontSize: 11, color: "var(--slate)", lineHeight: 1.5 }}>
+        Once saved, these samples show up in Lab Technician's sample list for this pour, labeled <strong>At Site</strong> so they're picked up for testing alongside the plant-cast ones.
+      </div>
+    </div>
   );
 }
 

@@ -618,10 +618,13 @@ function OrderDetailScreen({ orderId, onOpenTracking }) {
         <div>
           <div style={{ fontSize: 12, color: "var(--slate)" }}>{order.mix_grade_name} · {order.order_quantity_m3} m³</div>
           <div style={{ fontSize: 13.5, fontWeight: 700, marginTop: 2 }}>Scheduled {fmtDate(order.order_date)}, {fmtTime5(order.scheduled_batching_time)}</div>
-          <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>Delivered so far: {order.delivered_qty_m3} m³</div>
         </div>
         <span className={`badge badge-${order.status_tone}`}>{order.display_status}</span>
       </div>
+
+      {order.status !== "cancelled" && (order.dispatched_qty_m3 > 0 || order.delivered_qty_m3 > 0) && (
+        <DeliveryProgressCard order={order} />
+      )}
 
       {order.status !== "cancelled" ? (
         <div className="card" style={{ marginBottom: 12 }}>
@@ -669,9 +672,17 @@ function OrderDetailScreen({ orderId, onOpenTracking }) {
         </div>
       )}
 
-      {order.tracking_allowed && (order.status === "in_progress" || order.status === "partially_completed") && (
+      {/* Round 130 — a customer used to lose the ability to open tracking the
+          moment an order finished (button only showed for in_progress /
+          partially_completed), even though the tracking payload itself stays
+          available for a further TRACKING_GRACE_HOURS. Now offered for a
+          terminal order too, relabeled — the tracking screen itself renders a
+          delivery summary instead of the live view once it sees the order is
+          done, and falls back to its own "no longer available" message once
+          the grace window has actually passed. */}
+      {order.tracking_allowed && ["in_progress", "partially_completed", "completed", "closed"].includes(order.status) && (
         <button type="button" className="btn-primary" style={{ width: "100%", marginBottom: 12 }} onClick={() => onOpenTracking(order.id, order.site_name)}>
-          Track this delivery
+          {order.status === "in_progress" || order.status === "partially_completed" ? "Track this delivery" : "View delivery summary"}
         </button>
       )}
 
@@ -726,6 +737,51 @@ function OrderDetailScreen({ orderId, onOpenTracking }) {
 
 function IconCheck() {
   return <Icon size={12} color="#fff" strokeWidth={3}><polyline points="20 6 9 17 4 12" /></Icon>;
+}
+
+// Round 130 — Ordered / Delivered / Completed at a glance, with a layered
+// progress bar (Delivered = everything dispatched so far, including a truck
+// still on site; Completed = only what's actually finished unloading).
+// Skipped by the caller until at least something has gone out on the order.
+function DeliveryProgressCard({ order }) {
+  const ordered = Number(order.order_quantity_m3) || 0;
+  const dispatched = Number(order.dispatched_qty_m3) || 0;
+  const completed = Number(order.delivered_qty_m3) || 0;
+  const dispatchedPct = ordered > 0 ? Math.min(100, Math.round((dispatched / ordered) * 100)) : 0;
+  const completedPct = ordered > 0 ? Math.min(100, Math.round((completed / ordered) * 100)) : 0;
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="portal-sec-title">Delivery progress</div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 21, fontWeight: 700 }}>{ordered}<span style={{ fontSize: 12, fontWeight: 500, color: "var(--slate)" }}> m³</span></div>
+          <div style={{ fontSize: 10.5, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginTop: 2 }}>Ordered</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 21, fontWeight: 700, color: "var(--info)" }}>{dispatched}<span style={{ fontSize: 12, fontWeight: 500, color: "var(--slate)" }}> m³</span></div>
+          <div style={{ fontSize: 10.5, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginTop: 2 }}>Delivered</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 21, fontWeight: 700, color: "var(--signal-green)" }}>{completed}<span style={{ fontSize: 12, fontWeight: 500, color: "var(--slate)" }}> m³</span></div>
+          <div style={{ fontSize: 10.5, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3, marginTop: 2 }}>Completed</div>
+        </div>
+      </div>
+
+      <div style={{ position: "relative", height: 8, borderRadius: 4, background: "var(--concrete)", overflow: "hidden" }}>
+        <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${dispatchedPct}%`, background: "rgba(42,111,151,.35)", borderRadius: 4 }} />
+        <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${completedPct}%`, background: "var(--signal-green)", borderRadius: 4 }} />
+      </div>
+      <div style={{ display: "flex", gap: 16, marginTop: 9, fontSize: 10.5, color: "var(--slate)" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--signal-green)", display: "inline-block" }} />Completed (unloaded)
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: "rgba(42,111,151,.35)", border: "1px solid var(--info)", display: "inline-block" }} />Delivered so far
+        </span>
+      </div>
+    </div>
+  );
 }
 
 // ===================== Track =====================
@@ -788,12 +844,50 @@ function OrderTrackingScreen({ orderId }) {
   }
   if (tracking === undefined) return <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>;
 
+  const { order } = tracking;
   const trucks = tracking.trucks.filter((t) => t.status !== "rejected");
+  // Round 130 — this screen used to only ever render the live in-progress
+  // view; once an order finished, its data still comes back (within
+  // TRACKING_GRACE_HOURS) but there was nothing here that acknowledged the
+  // order was actually done. isTerminal switches the banner/badge/copy to a
+  // "delivery summary" framing instead — same truck cards below either way
+  // (each truck's own stage-tracker already ends in a green "Delivered").
+  const isTerminal = order.status === "completed" || order.status === "closed";
+  const dispatchedQty = trucks.reduce((sum, t) => sum + Number(t.quantity_m3 || 0), 0);
+  const pct = order.order_quantity_m3 > 0 ? Math.min(100, Math.round((Number(order.delivered_qty_m3) / Number(order.order_quantity_m3)) * 100)) : 0;
+
   return (
     <>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--slate)", marginBottom: 12 }}>
-        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--signal-green)" }} /> Updates automatically
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div className="portal-sec-title" style={{ marginBottom: 3 }}>Order status</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: isTerminal ? "var(--signal-green)" : "var(--rebar)" }}>
+              {isTerminal ? "Completed" : "In Progress"}
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 4 }}>
+              {order.mix_grade_name} · {isTerminal ? order.delivered_qty_m3 : dispatchedQty} of {order.order_quantity_m3} m³ {isTerminal ? "delivered" : "dispatched"}
+            </div>
+            {isTerminal && order.terminal_at && (
+              <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>Completed {fmtDateTime(order.terminal_at)}</div>
+            )}
+          </div>
+          <span className={`badge badge-${isTerminal ? "success" : "progress"}`} style={{ flex: "none" }}>{isTerminal ? "Delivered" : "In Progress"}</span>
+        </div>
+        {!isTerminal && (
+          <div style={{ marginTop: 10, height: 6, borderRadius: 4, background: "var(--concrete)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${pct}%`, background: "var(--rebar)", borderRadius: 4 }} />
+          </div>
+        )}
       </div>
+
+      {!isTerminal && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--slate)", marginBottom: 12 }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--signal-green)" }} /> Updates automatically
+        </div>
+      )}
+
+      <div className="portal-sec-title" style={{ margin: isTerminal ? "0 0 10px" : undefined }}>{isTerminal ? "Delivery summary" : "Trucks"}</div>
       {trucks.length === 0 ? (
         <div className="card" style={{ fontSize: 12.5, color: "var(--slate)" }}>No trucks dispatched on this order yet.</div>
       ) : (

@@ -6,6 +6,9 @@
 // (lib/orderTracking.js's getOrderTrackingPayload), so this is purely a
 // display-layer reuse — no behavior change to the existing /track page.
 
+import { useState, useEffect } from "react";
+import { apiRequest } from "./api.js";
+
 export const STAGES = [
   { key: "left_plant_at", label: "Left\nPlant" },
   { key: "reached_site_at", label: "At\nSite" },
@@ -124,4 +127,32 @@ export function TruckStatusBadge({ stage }) {
   if (stage === 2) return <span className="badge badge-warning">Unloading</span>;
   if (stage === 3) return <span className="badge badge-success">Delivered</span>;
   return null;
+}
+
+// Round 120, item 3f — originally a local, unexported component inside
+// OrderDetailModal.jsx (Manager/Administrator-only in-app view of an order's
+// truck tracking, fed by GET /orders/:id/tracking). Round 129 — moved here so
+// Site Supervisor's and Sales Executive's own pages, which just got granted
+// access to that same route (scoped to their own orders — see orders.js),
+// can reuse this exact panel instead of a third reimplementation.
+// OrderDetailModal.jsx now imports this instead of defining its own copy.
+export function TruckTrackingPanel({ orderId }) {
+  const [payload, setPayload] = useState(undefined); // undefined = loading, null = failed
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest(`/orders/${orderId}/tracking`)
+      .then(setPayload)
+      .catch((err) => { setError(err.message); setPayload(null); });
+  }, [orderId]);
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 10, borderTop: "1px dashed var(--border-strong)" }}>
+      <div style={{ color: "var(--slate)", marginBottom: 6 }}>Truck tracking</div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{error}</div>}
+      {payload === undefined && <div style={{ fontSize: 12, color: "var(--slate)" }}>Loading...</div>}
+      {payload && payload.trucks.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>No deliveries raised for this order yet.</div>}
+      {payload && payload.trucks.map((t) => <TruckCard key={t.ticket_number} truck={t} />)}
+    </div>
+  );
 }
