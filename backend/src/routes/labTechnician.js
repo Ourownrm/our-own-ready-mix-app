@@ -1159,4 +1159,24 @@ router.get("/mix-designs/:id/pdf-data", async (req, res) => {
   res.json({ ...rows[0], admixtures });
 });
 
+// Round 132, follow-up — Lab Technician can see the design each design card
+// already flags with an "N customer(s)" badge (assigned_customer_count on
+// GET /mix-designs above), but had no way to see WHICH customers, or since
+// when. Read-only twin of GET /administrator/mix-design-assignments — only
+// Administrator/Manager can actually create or remove an assignment
+// (administrator.js); this just makes the existing data visible here too.
+router.get("/mix-design-assignments", async (req, res) => {
+  const { rows } = await query(
+    `SELECT a.id, a.customer_id, c.name AS customer_name, a.mix_grade_id, m.name AS mix_grade_name,
+            a.mix_design_id, md.design_ref_code, a.effective_from,
+            (SELECT COUNT(*) FROM mix_design_assignments a2 WHERE a2.mix_design_id = a.mix_design_id) AS design_shared_count
+     FROM mix_design_assignments a
+     JOIN customers c ON c.id = a.customer_id
+     JOIN mix_grades m ON m.id = a.mix_grade_id
+     JOIN mix_designs md ON md.id = a.mix_design_id
+     ORDER BY c.name, m.name`
+  );
+  res.json(rows);
+});
+
 export default router;

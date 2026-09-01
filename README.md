@@ -5344,3 +5344,32 @@ underlying event type.
    though the Supply Approvals screen itself already showed them correctly. Fixed by adding
    `GET /store-stock/purchases/pending` to the dashboard's existing parallel data load and folding its
    count into the same card's badge/subtitle.
+
+## Round 132, follow-up (Ver. 9.54): assignments-page error explained, Lab Technician can now see assignments
+
+Two items from a screenshot of the "Approved mix assignments" page showing a generic error banner.
+
+1. **"Something went wrong" on the Mix Design Assignments page — not a code bug, a deployment
+   step.** This app's DB migrations (`backend/src/routes/setup.js`) are additive `ALTER TABLE ...
+   ADD COLUMN IF NOT EXISTS` statements, but they only run when someone visits
+   `<your backend URL>/setup?key=<SETUP_SECRET>` in a browser — they do **not** run automatically
+   on backend startup or on deploy. Round 132 item 5 added a new `mix_design_assignments
+   .effective_from` column and a query that selects it; on a backend that's already running Round
+   132's code but hasn't had `/setup` visited since, that column doesn't exist yet, so the query
+   throws and the generic error handler (`index.js`, deliberately plain-language — "Keep error
+   messages plain-language, this app is used by non-technical field staff") returns exactly
+   "Something went wrong. Please try again." with no more specific detail. **Fix: visit `/setup`
+   with your setup key once after this deploy** — it's safe to run any number of times (skips
+   anything already applied) and the page will then load normally.
+2. **New: Lab Technician can now see mix design assignments** — a customer detail/report view was
+   missing entirely; Lab Technician's own Mix Designs list already showed a "N customer(s)" badge
+   per design (`assigned_customer_count`, existing) but had no way to see *which* customers, or
+   since when. New read-only `GET /lab-technician/mix-design-assignments` (same query
+   Administrator's own list uses, no new role check needed — the whole `labTechnician.js` router
+   already allows lab_technician/administrator/manager/qc_engineer) and a new "Assignments" tab on
+   the Lab Technician dashboard (`AssignmentsTab` in `LabTechnician.jsx`) — Customer/Grade/Assigned
+   design/Since, with a simple search box, no add/remove (that stays an Administrator/Manager
+   action from Masters → Mix Design Assignments, unchanged).
+
+No schema changes this follow-up. Verified with `node --check` on `labTechnician.js` and a clean
+`npm run build`.
