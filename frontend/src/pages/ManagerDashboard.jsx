@@ -24,6 +24,7 @@ export default function ManagerDashboard() {
   const [onDutyDrivers, setOnDutyDrivers] = useState([]);
   const [pumpUtilization, setPumpUtilization] = useState([]);
   const [pendingSupply, setPendingSupply] = useState([]);
+  const [pendingPurchases, setPendingPurchases] = useState([]);
   const [view, setView] = useState("dashboard"); // dashboard | create-order | customers | sites
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
@@ -32,7 +33,7 @@ export default function ManagerDashboard() {
 
   async function load() {
     try {
-      const [dashboard, orderList, trucks, trips, locations, drivers, pumpUtil, supply] = await Promise.all([
+      const [dashboard, orderList, trucks, trips, locations, drivers, pumpUtil, supply, purchases] = await Promise.all([
         apiRequest("/orders/dashboard"),
         apiRequest("/orders"),
         apiRequest("/orders/active-trucks"),
@@ -41,6 +42,11 @@ export default function ManagerDashboard() {
         apiRequest("/orders/on-duty-drivers"),
         apiRequest("/orders/pump-utilization-month"),
         apiRequest("/supply-requests/pending"),
+        // Round 132, item 5 — store stock restock requests (distinct from
+        // the issue-out requests above) weren't reflected here at all, so a
+        // pending purchase request was invisible until Manager happened to
+        // open Supply Approvals and scroll to its own section.
+        apiRequest("/store-stock/purchases/pending"),
       ]);
       setStats(dashboard);
       setOrders(orderList);
@@ -50,6 +56,7 @@ export default function ManagerDashboard() {
       setOnDutyDrivers(drivers);
       setPumpUtilization(pumpUtil);
       setPendingSupply(supply);
+      setPendingPurchases(purchases);
     } catch (err) {
       setError(err.message);
     }
@@ -320,11 +327,16 @@ export default function ManagerDashboard() {
             <div>
               <div style={{ fontSize: 13, fontWeight: 600 }}>Fuel and lubricant requests</div>
               <div style={{ fontSize: 12, color: "var(--slate)" }}>
-                {pendingSupply.length === 0 ? "Nothing waiting on you" : `${pendingSupply.length} pending approval`}
+                {pendingSupply.length === 0 && pendingPurchases.length === 0
+                  ? "Nothing waiting on you"
+                  : [
+                      pendingSupply.length > 0 ? `${pendingSupply.length} issue request${pendingSupply.length === 1 ? "" : "s"}` : null,
+                      pendingPurchases.length > 0 ? `${pendingPurchases.length} store purchase request${pendingPurchases.length === 1 ? "" : "s"}` : null,
+                    ].filter(Boolean).join(" · ")}
               </div>
             </div>
-            {pendingSupply.length > 0 && (
-              <span className="badge badge-warning" style={{ fontSize: 13, padding: "4px 10px" }}>{pendingSupply.length}</span>
+            {pendingSupply.length + pendingPurchases.length > 0 && (
+              <span className="badge badge-warning" style={{ fontSize: 13, padding: "4px 10px" }}>{pendingSupply.length + pendingPurchases.length}</span>
             )}
           </div>
         </Link>

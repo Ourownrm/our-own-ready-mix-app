@@ -2188,7 +2188,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [grades, setGrades] = useState([]);
   const [designs, setDesigns] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", mix_design_id: "" });
+  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", mix_design_id: "", effective_from: new Date().toISOString().slice(0, 10) });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -2217,9 +2217,12 @@ export function MixDesignAssignmentsPanel({ setError }) {
     e.preventDefault();
     setSaving(true); setError(""); setNotice("");
     try {
-      await apiRequest("/administrator/mix-design-assignments", { method: "POST", body: form });
-      setNotice("Saved.");
-      setForm({ customer_id: "", mix_grade_id: "", mix_design_id: "" });
+      // Round 132, item 6 — saving retroactively points every existing order
+      // for this customer+grade dated on/after "Since" at the newly assigned
+      // design too, not just orders placed from now on.
+      const result = await apiRequest("/administrator/mix-design-assignments", { method: "POST", body: form });
+      setNotice(result.orders_updated > 0 ? `Saved — updated ${result.orders_updated} existing order(s) to this design.` : "Saved.");
+      setForm({ customer_id: "", mix_grade_id: "", mix_design_id: "", effective_from: new Date().toISOString().slice(0, 10) });
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
@@ -2240,7 +2243,9 @@ export function MixDesignAssignmentsPanel({ setError }) {
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
         A customer's order only ever records a grade — this resolves which specific, approved mix
         design that grade actually batches to for them. No row for a customer+grade means the
-        grade's standard design is used (set from the Lab Technician's Mix Designs list).
+        grade's standard design is used (set from the Lab Technician's Mix Designs list). Saving
+        also updates every existing order for that customer+grade dated on/after "Since" to this
+        design, so it shows correctly in their customer portal too — not just new orders going forward.
       </div>
       <form onSubmit={submit} className="field-input card" style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", fontSize: 13, marginBottom: 12 }}>
         <div>
@@ -2267,6 +2272,10 @@ export function MixDesignAssignmentsPanel({ setError }) {
             <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>No approved designs for this grade yet.</div>
           )}
         </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Since</div>
+          <input type="date" value={form.effective_from} onChange={(e) => setForm((f) => ({ ...f, effective_from: e.target.value }))} required />
+        </div>
         <button type="submit" disabled={saving}>{saving ? "Saving..." : "Assign"}</button>
         {notice && <span style={{ color: "var(--signal-green)" }}>{notice}</span>}
       </form>
@@ -2289,7 +2298,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
                     <span className="badge badge-success">Custom</span>
                   )}
                 </td>
-                <td>{new Date(a.assigned_at).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
+                <td>{new Date(a.effective_from).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
                 <td><button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => remove(a.id)}>Remove</button></td>
               </tr>
             ))}
@@ -2335,12 +2344,28 @@ export function MixDesignsPanel({ setError }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 132, item 3 — Administrator-only. Blocked server-side (with a
+  // plain-language reason) whenever the design is actually in use, so the
+  // confirm dialog here is just about intent, not a false promise that
+  // every design can always be removed.
+  async function remove(d) {
+    if (!window.confirm(`Delete mix design "${d.design_ref_code}"? This can't be undone.`)) return;
+    setBusyId(d.id); setError(""); setNotice("");
+    try {
+      await apiRequest(`/lab-technician/mix-designs/${d.id}`, { method: "DELETE" });
+      setNotice("Deleted.");
+      load();
+    } catch (err) { setError(err.message); } finally { setBusyId(null); }
+  }
+
   return (
     <div>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
         A draft mix design needs a second, different person to approve it before it can be
         assigned to customers or used as a grade's standard — the design's own creator can't
-        approve their own draft. New designs are created from the Lab Technician screen.
+        approve their own draft (Administrator accounts are exempt from this, since there's not
+        always a separate person available to sign off). New designs are created from the Lab
+        Technician screen.
       </div>
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
       <div className="card">
@@ -2350,7 +2375,12 @@ export function MixDesignsPanel({ setError }) {
           </thead>
           <tbody>
             {designs.map((d) => {
-              const isOwnDraft = d.status === "draft" && user && String(d.created_by) === String(user.id);
+              // Round 132, item 1 — Administrator is exempt from the
+              // two-person rule (matches the backend's own exemption below)
+              // since a small team's only Administrator account is often
+              // the same one drafting designs, with no separate qualifying
+              // approver at all.
+              const isOwnDraft = d.status === "draft" && user && String(d.created_by) === String(user.id) && user.role !== "administrator";
               return (
                 <tr key={d.id}>
                   <td>{d.design_ref_code}{d.mix_description ? <div style={{ fontSize: 11, color: "var(--slate)" }}>{d.mix_description}</div> : null}</td>
@@ -2379,6 +2409,15 @@ export function MixDesignsPanel({ setError }) {
                       </button>
                     )}
                     <button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
+                    {user?.role === "administrator" && (
+                      <button
+                        style={{ fontSize: 12, padding: "4px 10px", color: "var(--alert-red)" }}
+                        disabled={busyId === d.id}
+                        onClick={() => remove(d)}
+                      >
+                        {busyId === d.id ? "Deleting..." : "Delete"}
+                      </button>
+                    )}
                   </td>
                 </tr>
               );

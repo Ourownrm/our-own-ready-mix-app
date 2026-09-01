@@ -978,8 +978,10 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
 // ===== Mix Designs =====
 
 function MixDesignsTab({ setError, setNotice }) {
+  const { user } = useAuth();
   const [designs, setDesigns] = useState([]);
   const [creating, setCreating] = useState(false);
+  const [editingDesign, setEditingDesign] = useState(null); // full design + admixtures, or null
   const [me, setMe] = useState(null);
 
   async function load() {
@@ -1010,8 +1012,30 @@ function MixDesignsTab({ setError, setNotice }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 132, item 2 — a draft can be edited before it's approved, so a
+  // typo doesn't have to be caught only after it's already gone out on a
+  // PDF. Fetches the full row (including admixtures — the list endpoint
+  // above doesn't return those) so the form opens pre-filled.
+  async function startEdit(id) {
+    setError("");
+    try {
+      const full = await apiRequest(`/lab-technician/mix-designs/${id}`);
+      setEditingDesign(full);
+    } catch (err) { setError(err.message); }
+  }
+
   if (creating) {
     return <MixDesignForm setError={setError} setNotice={setNotice} onDone={() => { setCreating(false); load(); }} onCancel={() => setCreating(false)} />;
+  }
+  if (editingDesign) {
+    return (
+      <MixDesignForm
+        setError={setError} setNotice={setNotice}
+        editingDesign={editingDesign}
+        onDone={() => { setEditingDesign(null); load(); }}
+        onCancel={() => setEditingDesign(null)}
+      />
+    );
   }
 
   return (
@@ -1036,9 +1060,12 @@ function MixDesignsTab({ setError, setNotice }) {
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             {d.status === "draft" && (
-              <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} disabled={me && d.created_by_name === me.name} onClick={() => approve(d.id)}>
-                Approve
-              </button>
+              <>
+                <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} disabled={me && d.created_by_name === me.name && user?.role !== "administrator"} onClick={() => approve(d.id)}>
+                  Approve
+                </button>
+                <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => startEdit(d.id)}>Edit</button>
+              </>
             )}
             {d.status === "approved" && (
               <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
@@ -1051,8 +1078,23 @@ function MixDesignsTab({ setError, setNotice }) {
   );
 }
 
-function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
-  const [form, setForm] = useState({
+function MixDesignForm({ setError, setNotice, onDone, onCancel, editingDesign }) {
+  const isEditing = !!editingDesign;
+  const [form, setForm] = useState(() => editingDesign ? {
+    mix_grade_id: editingDesign.mix_grade_id ?? "", design_ref_code: editingDesign.design_ref_code ?? "", mix_description: editingDesign.mix_description ?? "",
+    fck_28day_mpa: editingDesign.fck_28day_mpa ?? "", std_deviation_mpa: editingDesign.std_deviation_mpa ?? "4.0", max_agg_size_mm: editingDesign.max_agg_size_mm ?? "20", target_workability_mm: editingDesign.target_workability_mm ?? "", design_density_kgm3: editingDesign.design_density_kgm3 ?? "",
+    cement_kgm3: editingDesign.cement_kgm3 ?? "", fly_ash_kgm3: editingDesign.fly_ash_kgm3 ?? "0", free_water_kgm3: editingDesign.free_water_kgm3 ?? "",
+    fine_agg_kgm3: editingDesign.fine_agg_kgm3 ?? "", coarse_20mm_kgm3: editingDesign.coarse_20mm_kgm3 ?? "", coarse_12_5mm_kgm3: editingDesign.coarse_12_5mm_kgm3 ?? "",
+    cement_type_source: editingDesign.cement_type_source ?? "", cement_sp_gr: editingDesign.cement_sp_gr ?? "3.15",
+    fly_ash_type_source: editingDesign.fly_ash_type_source ?? "", fly_ash_sp_gr: editingDesign.fly_ash_sp_gr ?? "",
+    fine_agg_type_source: editingDesign.fine_agg_type_source ?? "", fine_agg_sp_gr: editingDesign.fine_agg_sp_gr ?? "2.75",
+    coarse_20mm_type_source: editingDesign.coarse_20mm_type_source ?? "", coarse_20mm_sp_gr: editingDesign.coarse_20mm_sp_gr ?? "2.72",
+    coarse_12_5mm_type_source: editingDesign.coarse_12_5mm_type_source ?? "", coarse_12_5mm_sp_gr: editingDesign.coarse_12_5mm_sp_gr ?? "2.71",
+    fine_moisture_pct: editingDesign.fine_moisture_pct ?? "", fine_absorption_pct: editingDesign.fine_absorption_pct ?? "",
+    coarse_20mm_moisture_pct: editingDesign.coarse_20mm_moisture_pct ?? "", coarse_20mm_absorption_pct: editingDesign.coarse_20mm_absorption_pct ?? "",
+    coarse_12_5mm_moisture_pct: editingDesign.coarse_12_5mm_moisture_pct ?? "", coarse_12_5mm_absorption_pct: editingDesign.coarse_12_5mm_absorption_pct ?? "",
+    notes: editingDesign.notes ?? "",
+  } : {
     mix_grade_id: "", design_ref_code: "", mix_description: "",
     fck_28day_mpa: "", std_deviation_mpa: "4.0", max_agg_size_mm: "20", target_workability_mm: "", design_density_kgm3: "",
     cement_kgm3: "", fly_ash_kgm3: "0", free_water_kgm3: "",
@@ -1067,7 +1109,11 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
     coarse_12_5mm_moisture_pct: "", coarse_12_5mm_absorption_pct: "",
     notes: "",
   });
-  const [admixtures, setAdmixtures] = useState([{ type_brand: "", qty_kgm3: "", sp_gr: "" }]);
+  const [admixtures, setAdmixtures] = useState(() =>
+    editingDesign?.admixtures?.length
+      ? editingDesign.admixtures.map((a) => ({ type_brand: a.type_brand, qty_kgm3: a.qty_kgm3, sp_gr: a.sp_gr ?? "" }))
+      : [{ type_brand: "", qty_kgm3: "", sp_gr: "" }]
+  );
   const [grades, setGrades] = useState([]);
   const [saving, setSaving] = useState(false);
 
@@ -1092,11 +1138,19 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
     e.preventDefault();
     setSaving(true); setError(""); setNotice("");
     try {
-      await apiRequest("/lab-technician/mix-designs", {
-        method: "POST",
-        body: { ...form, admixtures: admixtures.filter((a) => a.type_brand && a.qty_kgm3) },
-      });
-      setNotice("Mix design saved as draft.");
+      if (isEditing) {
+        await apiRequest(`/lab-technician/mix-designs/${editingDesign.id}`, {
+          method: "PATCH",
+          body: { ...form, admixtures: admixtures.filter((a) => a.type_brand && a.qty_kgm3) },
+        });
+        setNotice("Mix design updated.");
+      } else {
+        await apiRequest("/lab-technician/mix-designs", {
+          method: "POST",
+          body: { ...form, admixtures: admixtures.filter((a) => a.type_brand && a.qty_kgm3) },
+        });
+        setNotice("Mix design saved as draft.");
+      }
       onDone();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
@@ -1235,8 +1289,12 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel }) {
         </div>
       </div>
 
-      <button type="submit" className="btn-primary" disabled={saving}>{saving ? "Saving..." : "Save as draft"}</button>
-      <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center" }}>Draft designs show "Pending approval" until a second person approves them.</div>
+      <button type="submit" className="btn-primary" disabled={saving}>
+        {saving ? "Saving..." : isEditing ? "Save changes" : "Save as draft"}
+      </button>
+      <div style={{ fontSize: 11, color: "var(--slate)", textAlign: "center" }}>
+        {isEditing ? "Still a draft until a second person approves it." : "Draft designs show \"Pending approval\" until a second person approves them."}
+      </div>
     </form>
   );
 }
