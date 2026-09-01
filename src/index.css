@@ -1,0 +1,300 @@
+/* ===== Design tokens ===== */
+:root {
+  /* Color: grounded in the material itself — cured concrete, rebar, plant-floor signage */
+  --concrete: #F3F1EC;       /* page background — warm cast-concrete gray, not sterile white */
+  --charcoal: #22262B;       /* primary text, top bar */
+  --slate: #5B6470;          /* secondary text */
+  --rebar: #C75B12;          /* primary accent — safety-orange, used with restraint */
+  --rebar-dark: #A94B0C;
+  --signal-green: #1D7A55;   /* on / active / paid / completed */
+  --signal-green-bg: #E4F2EC;
+  --alert-red: #B03A2E;      /* off / rejected / overdue */
+  --alert-red-bg: #F8E9E7;
+  --amber: #9C6B12;          /* pending / waiting */
+  --amber-bg: #F5EDDD;
+  --info: #2A6F97;           /* dispatched / in transit */
+  --info-bg: #E3EEF4;
+  --violet: #6B4C9A;         /* unloading in progress */
+  --violet-bg: #ECE6F3;
+  --surface: #FFFFFF;
+  --border: #DEDAD1;
+  --border-strong: #C8C2B5;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(34, 38, 43, 0.06), 0 1px 8px rgba(34, 38, 43, 0.04);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--charcoal);
+  background: var(--concrete);
+  margin: 0;
+}
+
+/* Signature: a rebar-orange stripe along the very top of the app, like hazard
+   striping on plant equipment — the one deliberate accent, everything else stays quiet. */
+#root {
+  border-top: 4px solid var(--rebar);
+  min-height: 100vh;
+}
+
+h1, h2, h3 { color: var(--charcoal); margin: 0; }
+
+/* ===== Top bar (shared across every signed-in screen) ===== */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--charcoal);
+  color: #fff;
+  padding: 14px 20px;
+  margin-bottom: 20px;
+}
+.topbar-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+.topbar-title span { color: #B8BFC7; font-weight: 400; }
+.topbar-signout {
+  background: none; border: 1px solid #454B52; color: #D7DBDF;
+  padding: 6px 12px; font-size: 12px; border-radius: 6px;
+}
+.topbar-signout:hover { background: #2C3138; }
+
+/* ===== Buttons ===== */
+button {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--charcoal);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+button:hover:not(:disabled) { border-color: var(--slate); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary, button[type="submit"] {
+  background: var(--rebar);
+  border-color: var(--rebar);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled), button[type="submit"]:hover:not(:disabled) { background: var(--rebar-dark); }
+
+.btn-danger { background: var(--alert-red); border-color: var(--alert-red); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #8E2F25; }
+
+.btn-tab { background: var(--surface); }
+.btn-tab.active { background: var(--charcoal); border-color: var(--charcoal); color: #fff; }
+
+/* ===== Cards / KPIs ===== */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow); }
+.kpi-label { font-size: 12px; color: var(--slate); text-transform: uppercase; letter-spacing: 0.4px; }
+.kpi-value { font-size: 26px; font-weight: 600; color: var(--charcoal); margin-top: 2px; }
+.kpi-value.danger { color: var(--alert-red); }
+
+/* ===== Status badges ===== */
+.badge { display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 20px; font-weight: 500; }
+.badge-success { background: var(--signal-green-bg); color: var(--signal-green); }
+.badge-danger { background: var(--alert-red-bg); color: var(--alert-red); }
+.badge-warning { background: var(--amber-bg); color: var(--amber); }
+.badge-neutral { background: #ECEAE4; color: var(--slate); }
+.badge-info { background: var(--info-bg); color: var(--info); }
+.badge-progress { background: var(--violet-bg); color: var(--violet); }
+/* Round 130 — same violet tokens as badge-progress, but its own class: this
+   one labels WHERE a cube sample was cast ("At Site" vs. "Plant"), not a
+   trip's progress state — reusing badge-progress here would read fine
+   visually but be a confusing name at the call site. */
+.badge-violet { background: var(--violet-bg); color: var(--violet); }
+
+/* ===== Tables ===== */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--slate); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border-strong); font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
+td { padding: 8px 6px; border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: none; }
+
+/* ===== Forms ===== */
+.field-input input,
+.field-input select,
+.field-input textarea {
+  width: 100%;
+  padding: 9px 10px;
+  font-size: 13px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--charcoal);
+  font-family: inherit;
+}
+.field-input input:focus,
+.field-input select:focus,
+.field-input textarea:focus {
+  outline: 2px solid var(--rebar);
+  outline-offset: 1px;
+  border-color: var(--rebar);
+}
+
+a { color: var(--rebar); }
+
+/* ===== Maintenance module / Best Driver of the Month (round 98) =====
+   Meter/stacked-bar follow the dataviz skill's contracts: a meter's fill
+   carries severity with the track a lighter neutral step; a stacked bar's
+   segments are a fixed-order categorical palette with a 2px surface gap
+   between segments (never a border) so touching segments stay legible. */
+.meter-track { height: 8px; border-radius: 4px; background: var(--concrete); overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+
+.stack-bar { display: flex; height: 14px; border-radius: 4px; overflow: hidden; width: 100%; }
+.stack-seg { height: 100%; }
+.stack-seg + .stack-seg { margin-left: 2px; }
+
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--slate); margin: 10px 0 4px; }
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; display: inline-block; }
+
+.kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.kanban-col { background: var(--concrete); border-radius: var(--radius); padding: 10px; min-width: 0; }
+.kanban-col-head { font-size: 11.5px; font-weight: 600; color: var(--slate); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+.kanban-count { background: var(--surface); color: var(--slate); border-radius: 10px; padding: 1px 7px; font-size: 10.5px; border: 1px solid var(--border); }
+.kanban-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 11px; margin-bottom: 8px; box-shadow: var(--shadow); }
+.kanban-card .veh { font-weight: 600; font-size: 12.5px; }
+.kanban-card .meta { font-size: 11px; color: var(--slate); margin-top: 3px; line-height: 1.5; }
+
+.timeline { position: relative; padding-left: 20px; }
+.timeline::before { content: ""; position: absolute; left: 5px; top: 4px; bottom: 4px; width: 2px; background: var(--border-strong); }
+.timeline-item { position: relative; padding-bottom: 16px; }
+.timeline-item:last-child { padding-bottom: 0; }
+.timeline-dot { position: absolute; left: -20px; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--signal-green); border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border-strong); }
+.timeline-date { font-size: 11px; color: var(--slate); font-weight: 600; }
+.timeline-action { font-size: 13px; margin-top: 1px; }
+.timeline-meta { font-size: 11.5px; color: var(--slate); margin-top: 1px; }
+
+.spotlight { display: flex; gap: 20px; align-items: center; background: linear-gradient(135deg, #2A2117 0%, var(--charcoal) 55%); color: #fff; border-radius: var(--radius); padding: 22px 24px; box-shadow: var(--shadow); }
+.spotlight-badge { width: 56px; height: 56px; border-radius: 50%; background: var(--rebar); display: flex; align-items: center; justify-content: center; font-size: 24px; flex: none; }
+.spotlight-name { font-size: 19px; font-weight: 700; }
+.spotlight-sub { font-size: 12px; color: #C9CDD2; margin-top: 2px; }
+.spotlight-score { margin-left: auto; text-align: right; }
+.spotlight-score .num { font-size: 36px; font-weight: 700; line-height: 1; }
+.spotlight-score .lbl { font-size: 11px; color: #C9CDD2; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+.open-q { background: var(--info-bg); border: 1px solid #BFD8E5; border-radius: var(--radius); padding: 12px 14px; font-size: 12.5px; line-height: 1.55; }
+.open-q b { color: var(--charcoal); }
+
+@media (max-width: 720px) {
+  .kanban { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ===== Customer portal (round 119) — mockup-fidelity rebuild =====
+   Scoped to pages/CustomerPortal.jsx only; class names below are
+   deliberately prefixed "portal-" so they can never collide with a class
+   used anywhere else in this file. */
+.portal-shell { max-width: 460px; margin: 0 auto; min-height: 100vh; background: var(--concrete); display: flex; flex-direction: column; }
+.portal-content { flex: 1; padding: 16px; padding-bottom: 28px; }
+.portal-topbar-back { background: none; border: none; padding: 0; margin-right: 12px; color: #fff; cursor: pointer; display: flex; align-items: center; }
+.portal-avatar { width: 30px; height: 30px; border-radius: 50%; background: #3A4048; color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; }
+
+.portal-hero { background: linear-gradient(135deg, #2A2117 0%, var(--charcoal) 55%); color: #fff; border-radius: var(--radius); padding: 20px 18px; box-shadow: var(--shadow); margin-bottom: 16px; }
+.portal-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.portal-tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; text-align: left; font-family: inherit; width: 100%; }
+.portal-tile.cta { background: var(--rebar); border-color: var(--rebar); color: #fff; }
+.portal-tile-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--concrete); display: flex; align-items: center; justify-content: center; }
+.portal-tile.cta .portal-tile-ic { background: rgba(255,255,255,.15); }
+.portal-tile-title { font-weight: 700; font-size: 14.5px; }
+.portal-tile-sub { font-size: 11px; color: var(--slate); }
+.portal-tile.cta .portal-tile-sub { color: rgba(255,255,255,.8); }
+.portal-strip { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; margin-top: 14px; display: flex; gap: 12px; align-items: center; text-align: left; width: 100%; font-family: inherit; text-decoration: none; color: inherit; }
+
+.portal-group-label { font-size: 11px; font-weight: 700; color: var(--slate); text-transform: uppercase; letter-spacing: .5px; margin: 14px 0 8px; }
+.portal-group-label:first-child { margin-top: 0; }
+.portal-order-card { display: block; width: 100%; text-align: left; font-family: inherit; margin-bottom: 10px; cursor: pointer; }
+
+.portal-bottomnav { position: sticky; bottom: 0; display: flex; border-top: 1px solid var(--border); background: var(--surface); padding: 9px 4px 12px; }
+.portal-navitem { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11.5px; color: var(--slate); font-weight: 700; background: none; border: none; padding: 4px; font-family: inherit; }
+.portal-navitem.active { color: var(--rebar); }
+
+.portal-sec-title { font-size: 11.5px; font-weight: 700; color: var(--slate); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 11px; }
+.portal-step { position: relative; padding-left: 32px; padding-bottom: 26px; }
+.portal-step:last-child { padding-bottom: 0; }
+.portal-step::before { content: ""; position: absolute; left: 10px; top: 22px; bottom: -4px; width: 2px; background: var(--border-strong); }
+.portal-step:last-child::before { display: none; }
+.portal-step-dot { position: absolute; left: 0; top: 0; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; }
+.portal-step-dot.done { background: var(--signal-green); color: #fff; }
+.portal-step-dot.current { background: var(--rebar); color: #fff; box-shadow: 0 0 0 4px rgba(199,91,18,.15); }
+.portal-step-dot.future { background: #ECEAE4; color: var(--slate); }
+.portal-step-label { font-size: 13.5px; font-weight: 700; line-height: 1.4; }
+.portal-step-label.future { color: var(--slate); font-weight: 600; }
+.portal-step-meta { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
+
+.portal-contact-row { display: flex; align-items: center; gap: 11px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.portal-contact-row:last-child { border-bottom: none; padding-bottom: 0; }
+.portal-contact-row:first-child { padding-top: 0; }
+.portal-contact-row.highlight { background: var(--signal-green-bg); margin: 0 -15px; padding: 10px 15px; border-radius: 8px; border-bottom: none; }
+.portal-contact-avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--concrete); color: var(--charcoal); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex: none; border: 1px solid var(--border-strong); }
+.portal-contact-row.highlight .portal-contact-avatar { background: #fff; }
+.portal-callbtn { width: 34px; height: 34px; border-radius: 50%; background: var(--rebar); display: flex; align-items: center; justify-content: center; flex: none; border: none; }
+.portal-contact-row.highlight .portal-callbtn { background: var(--signal-green); }
+
+.portal-guest-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border); width: 100%; text-align: left; background: none; border-left: none; border-right: none; border-top: none; font-family: inherit; text-decoration: none; color: inherit; }
+.portal-guest-row:last-child { border-bottom: none; }
+.portal-guest-ic { width: 36px; height: 36px; border-radius: 9px; background: var(--concrete); display: flex; align-items: center; justify-content: center; flex: none; }
+
+.portal-seg { display: flex; gap: 8px; }
+.portal-segopt { flex: 1; text-align: center; padding: 10px 6px; border: 1px solid var(--border-strong); border-radius: 8px; font-size: 12.5px; font-weight: 700; background: var(--surface); font-family: inherit; }
+.portal-segopt.selected { background: var(--rebar); border-color: var(--rebar); color: #fff; }
+.portal-field-label { display: block; font-size: 11.5px; font-weight: 700; color: var(--slate); text-transform: uppercase; letter-spacing: .4px; margin: 13px 0 6px; }
+.portal-field-label:first-of-type { margin-top: 0; }
+
+.portal-more-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border); width: 100%; text-align: left; background: none; border-left: none; border-right: none; border-top: none; font-family: inherit; cursor: pointer; }
+.portal-more-row:last-child { border-bottom: none; }
+.portal-more-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--concrete); display: flex; align-items: center; justify-content: center; flex: none; }
+
+/* ===== Sales Executive home + tabs (round 122) =====
+   Same visual pattern as the customer portal's home+tiles+bottomnav (see
+   .portal-hero etc. above), deliberately kept under its own "se-" prefix
+   rather than reusing the portal- classes — pages/SalesExecutive.jsx isn't
+   pages/CustomerPortal.jsx and shouldn't be coupled to it just because the
+   two happen to look alike right now. */
+.se-hero { display: flex; align-items: stretch; gap: 12px; background: linear-gradient(135deg, #2A2117 0%, var(--charcoal) 55%); border-radius: var(--radius); padding: 16px 16px 16px 18px; box-shadow: var(--shadow); margin: 16px 0 12px; }
+.se-hero-left { flex: 1; display: flex; flex-direction: column; justify-content: center; color: #fff; min-width: 0; }
+.se-hero-h { font-size: 16px; font-weight: 800; line-height: 1.32; }
+.se-hero-sub { font-size: 11.5px; color: #C9CDD2; margin-top: 6px; line-height: 1.5; }
+.se-hero-since { font-size: 10.5px; color: #9BA2AA; margin-top: 9px; font-weight: 700; }
+.se-punch { flex: none; width: 96px; border: none; border-radius: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-family: inherit; background: var(--alert-red); color: #fff; }
+.se-punch.off { background: var(--rebar); color: #fff; }
+.se-punch span { font-size: 12.5px; font-weight: 800; line-height: 1.25; text-align: center; }
+
+.se-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.se-tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; text-align: left; font-family: inherit; width: 100%; }
+.se-tile.cta { background: var(--rebar); border-color: var(--rebar); color: #fff; }
+.se-tile-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--concrete); display: flex; align-items: center; justify-content: center; }
+.se-tile.cta .se-tile-ic { background: rgba(255,255,255,.15); }
+.se-tile-title { font-weight: 700; font-size: 14.5px; }
+.se-tile-sub { font-size: 11px; color: var(--slate); }
+.se-tile.cta .se-tile-sub { color: rgba(255,255,255,.8); }
+
+.se-strip { background: var(--amber-bg); border: 1px solid #E7D8AE; border-radius: var(--radius); padding: 11px 13px; display: flex; gap: 11px; align-items: center; width: 100%; text-align: left; font-family: inherit; margin-bottom: 14px; }
+.se-strip-ic { width: 30px; height: 30px; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
+.se-strip-title { font-size: 12px; font-weight: 700; color: var(--charcoal); }
+.se-strip-sub { font-size: 10.5px; color: var(--amber); margin-top: 1px; font-weight: 600; }
+
+/* Round 127 — no longer nested inside the padded content column (see the
+   flex-shell restructure in SalesExecutive.jsx that actually makes `sticky`
+   pin this to the viewport bottom instead of sitting wherever the short
+   content happened to end); the old negative margin existed only to bleed
+   out of that padding, so it's gone and this owns its own side padding
+   instead, matching .portal-bottomnav's pattern. */
+.se-bottomnav { position: sticky; bottom: 0; display: flex; border-top: 1px solid var(--border); background: var(--surface); padding: 9px 16px 12px; }
+.se-navitem { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11.5px; color: var(--slate); font-weight: 700; background: none; border: none; padding: 4px; font-family: inherit; }
+.se-navitem.active { color: var(--rebar); }
+
+@media (max-width: 480px) {
+  .se-tiles { grid-template-columns: 1fr 1fr; }
+}

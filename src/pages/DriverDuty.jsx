@@ -1,0 +1,1084 @@
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { apiRequest } from "../lib/api.js";
+import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
+import { TopBar } from "../lib/TopBar.jsx";
+import { useT, SUPPORTED_LANGUAGES } from "../lib/i18n.js";
+import { useAuth } from "../lib/AuthContext.jsx";
+
+// Round 119, post-ship again round 3, item "language switcher": previously
+// language selection lived only on a separate Settings screen (still there,
+// unchanged, for anyone who prefers it) — this puts it at the top of the
+// driver's own translated screens as one-tap tabs, matching the mockup.
+// Scoped to the screens that are actually translated today (home, other
+// trucks, site out, allowance) — Reject/Breakdown/Repair forms and Settings
+// itself were a deliberate untranslated-content decision from round 96/97
+// that this doesn't revisit, so tabs aren't added there (switching language
+// wouldn't change anything on those screens anyway).
+function LanguageTabs() {
+  const { user, updateUser } = useAuth();
+  const current = user?.preferred_language || "en";
+  async function pick(code) {
+    if (code === current) return;
+    updateUser({ preferred_language: code });
+    try {
+      await apiRequest("/driver/language", { method: "PATCH", body: { preferred_language: code } });
+    } catch {
+      // Best-effort — the UI already switched; a failed save just means it
+      // reverts to the server's last-known value next time the app loads.
+    }
+  }
+  return (
+    <div style={{ display: "flex", gap: 4, background: "var(--concrete)", borderRadius: 10, padding: 3, marginBottom: 12 }}>
+      {SUPPORTED_LANGUAGES.map((l) => (
+        <button
+          key={l.code}
+          type="button"
+          onClick={() => pick(l.code)}
+          style={{
+            flex: 1, border: "none", borderRadius: 8, padding: "7px 4px", fontSize: 11.5, fontWeight: 600,
+            background: current === l.code ? "var(--rebar)" : "transparent",
+            color: current === l.code ? "#fff" : "var(--slate)",
+          }}
+        >
+          {l.code === "en" ? "English" : l.label.split(" — ")[1] || l.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const STAGES = [
+  { key: "plant_out", labelKey: "stage_plant_out", path: "plant-out", icon: "check" },
+  { key: "site_in", labelKey: "stage_site_in", path: "arrival", icon: "check" },
+  { key: "site_out", labelKey: "stage_site_out", path: "site-out", icon: "check" },
+  { key: "plant_in", labelKey: "stage_plant_in", path: "plant-in", icon: "check" },
+];
+
+// A trip is done from the driver's own perspective either when the ticket
+// reaches a terminal status, or — on a supervised site — once the driver
+// has logged Plant In. Site In/Out belong to the Site Supervisor there, so
+// waiting on their confirmation before clearing this from the driver's list
+// left them staring at "needs action" for something that was never theirs
+// to finish.
+function isDriverDone(t) {
+  return ["completed", "cancelled", "returned", "rejected"].includes(t.status) || !!t.plant_in_at;
+}
+
+// Item 9 (geofence popup): the four possible hint keys, in the order a real
+// trip would move through them, so if more than one is somehow set at once
+// (shouldn't normally happen — each hint clears itself the moment the real
+// stage is confirmed) the earliest unconfirmed stage wins.
+const HINT_STAGES = [
+  { hintKey: "hint_plant_out_at", stageKey: "plant_out", path: "plant-out", hintTextKey: "hint_left_plant", selfServiceOnly: false, eventType: "left_plant" },
+  { hintKey: "hint_site_in_at", stageKey: "site_in", path: "arrival", hintTextKey: "hint_reached_site", selfServiceOnly: true, eventType: "reached_site" },
+  { hintKey: "hint_site_out_at", stageKey: "site_out", path: "site-out", hintTextKey: "hint_left_site", selfServiceOnly: true, eventType: "left_site" },
+  { hintKey: "hint_plant_in_at", stageKey: "plant_in", path: "plant-in", hintTextKey: "hint_returned_to_plant", selfServiceOnly: false, eventType: "returned_to_plant" },
+];
+
+export default function DriverDuty() {
+  const t = useT();
+  const [onDuty, setOnDuty] = useState(false);
+  const [dutySince, setDutySince] = useState(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [trips, setTrips] = useState([]);
+  const [pending, setPending] = useState(pendingCount());
+  const [view, setView] = useState("home"); // 'home' | 'older' | 'breakdown' | 'reject' | 'repair' | 'allowance'
+  const [activeTicketId, setActiveTicketId] = useState(null); // which trip a form applies to
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const [dismissedHints, setDismissedHints] = useState({}); // `${ticketId}:${hintKey}` -> timestamp string that was dismissed
+  const gpsIntervalRef = useRef(null);
+  const wakeLockRef = useRef(null);
+  const tripsRef = useRef([]);
+  tripsRef.current = trips;
+
+  function loadTrips() {
+    apiRequest("/tickets/my-trips").then(setTrips).catch(() => {});
+  }
+
+  useEffect(() => {
+    loadTrips();
+    apiRequest("/driver/duty-status").then((status) => {
+      setOnDuty(status.on_duty);
+      setDutySince(status.on_duty ? status.since : null);
+      if (status.on_duty) {
+        startGpsPings();
+        requestWakeLock();
+      }
+    }).catch(() => {});
+
+    const flushInterval = startPeriodicFlush();
+    const refreshAfterFlush = setInterval(() => {
+      loadTrips();
+      setPending(pendingCount());
+    }, 30000);
+    // Drives both the on-duty shift timer and the geofence countdown modal —
+    // neither needs to be exact to the second, so once a minute is plenty
+    // and keeps this cheap to have running the whole time the app is open.
+    const tickInterval = setInterval(() => setNowTick(Date.now()), 60000);
+    return () => { clearInterval(flushInterval); clearInterval(refreshAfterFlush); clearInterval(tickInterval); };
+  }, []);
+
+  useEffect(() => {
+    return () => { clearInterval(gpsIntervalRef.current); releaseWakeLock(); };
+  }, []);
+
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === "visible" && wakeLockRef.current === "on") {
+        requestWakeLock();
+        pingOnce();
+      }
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
+  function currentTicketId() {
+    const active = tripsRef.current.filter((t) => !isDriverDone(t));
+    return active[0]?.id || null;
+  }
+
+  function pingOnce() {
+    navigator.geolocation?.getCurrentPosition((pos) => {
+      queuedRequest("/driver/gps-ping", {
+        method: "POST",
+        body: {
+          ticket_id: currentTicketId(),
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          speed_kmh: pos.coords.speed ? pos.coords.speed * 3.6 : null,
+          accuracy_m: pos.coords.accuracy,
+        },
+      }).then(() => setPending(pendingCount())).catch(() => {});
+    });
+  }
+
+  function startGpsPings() {
+    clearInterval(gpsIntervalRef.current);
+    pingOnce();
+    gpsIntervalRef.current = setInterval(pingOnce, 30000);
+  }
+
+  async function requestWakeLock() {
+    wakeLockRef.current = "on";
+    try {
+      await navigator.wakeLock?.request("screen");
+    } catch {
+      // Not supported, or permission denied — tracking still works while the
+      // app is open and in the foreground.
+    }
+  }
+  function releaseWakeLock() {
+    wakeLockRef.current = "off";
+  }
+
+  async function toggleDuty() {
+    const next = !onDuty;
+    setOnDuty(next);
+    setDutySince(next ? new Date().toISOString() : null);
+    if (next) { startGpsPings(); requestWakeLock(); }
+    else { clearInterval(gpsIntervalRef.current); releaseWakeLock(); }
+
+    async function sendDuty(coords) {
+      try {
+        await queuedRequest("/driver/duty", { method: "POST", body: { on: next, ticket_id: currentTicketId(), ...coords } });
+        setPending(pendingCount());
+      } catch (err) {
+        setError(err.message);
+        setOnDuty(!next);
+      }
+    }
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => sendDuty({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => sendDuty({})
+    );
+  }
+
+  async function act(ticketId, path, body) {
+    setError(""); setNotice("");
+    try {
+      await queuedRequest(`/driver/tickets/${ticketId}/${path}`, { method: "POST", body });
+      setPending(pendingCount());
+      loadTrips();
+      return true;
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+      return false;
+    }
+  }
+
+  // Stage taps (Plant Out / Site In / Site Out / Plant In) capture GPS at
+  // that exact moment — that's what makes the manager's cross-check
+  // meaningful; without it there'd be nothing to compare the logged time
+  // against.
+  function actWithLocation(ticketId, path, body = {}) {
+    return new Promise((resolve) => {
+      navigator.geolocation?.getCurrentPosition(
+        (pos) => resolve(act(ticketId, path, { ...body, lat: pos.coords.latitude, lng: pos.coords.longitude })),
+        () => resolve(act(ticketId, path, body)),
+        { timeout: 8000 }
+      );
+      if (!navigator.geolocation) resolve(act(ticketId, path, body));
+    });
+  }
+
+  const activeTrips = trips.filter((t) => !isDriverDone(t));
+  const completedToday = trips.filter(isDriverDone);
+  const current = activeTrips[0] || null;
+  const older = activeTrips.slice(1);
+  const activeTrip = trips.find((t) => t.id === activeTicketId);
+
+  // Item 9: the geofence popup is interruptive (a modal, not just a passive
+  // banner) — it's shown for whichever active trip has the earliest
+  // still-unconfirmed hint, across ALL active trips, not just the one
+  // currently on screen, so a hint on an "older" trip still gets surfaced.
+  // Site In/Out hints only apply on a self-service site (no_site_supervisor)
+  // — on a supervised site those are the Site Supervisor's own to confirm.
+  let popupHint = null;
+  for (const trip of activeTrips) {
+    for (const h of HINT_STAGES) {
+      if (h.selfServiceOnly && !trip.no_site_supervisor) continue;
+      const ts = trip[h.hintKey];
+      if (!ts) continue;
+      const dismissKey = `${trip.id}:${h.hintKey}`;
+      if (dismissedHints[dismissKey] === ts) continue; // already dismissed this exact hint
+      popupHint = { trip, ...h, ts };
+      break;
+    }
+    if (popupHint) break;
+  }
+
+  function dismissPopup() {
+    if (!popupHint) return;
+    setDismissedHints((prev) => ({ ...prev, [`${popupHint.trip.id}:${popupHint.hintKey}`]: popupHint.ts }));
+    // Item 1 (round 101): tell the server the driver actively said "not yet"
+    // for this hint — for Plant Out specifically, this restarts the
+    // auto-record grace period from now instead of the original GPS
+    // detection (see checkPlantOutAutoRecord in scheduledChecks.js).
+    // Queued like the other driver actions so it still lands if offline.
+    queuedRequest(`/driver/tickets/${popupHint.trip.id}/geofence-response`, {
+      method: "POST",
+      body: { event_type: popupHint.eventType },
+    }).then(() => setPending(pendingCount())).catch(() => {});
+  }
+
+  async function confirmPopup() {
+    if (!popupHint) return;
+    if (popupHint.stageKey === "site_out") {
+      // Site Out needs the slump/notes form, not a blind one-tap confirm.
+      dismissPopup();
+      setActiveTicketId(popupHint.trip.id);
+      setView("site-out");
+      return;
+    }
+    dismissPopup();
+    await actWithLocation(popupHint.trip.id, popupHint.path, {});
+  }
+
+  if (view === "breakdown") {
+    return (
+      <BreakdownForm
+        trip={activeTrip || current}
+        onDone={(msg) => { setView("home"); setNotice(msg); setPending(pendingCount()); }}
+        onCancel={() => setView("home")}
+      />
+    );
+  }
+  if (view === "repair") {
+    return (
+      <RequestRepairForm
+        trip={activeTrip || current}
+        onDone={(msg) => { setView("home"); setNotice(msg); setPending(pendingCount()); }}
+        onCancel={() => setView("home")}
+      />
+    );
+  }
+  if (view === "reject") {
+    return (
+      <RejectForm
+        trip={activeTrip}
+        onAct={act}
+        error={error}
+        onDone={() => { setView("home"); loadTrips(); }}
+      />
+    );
+  }
+  if (view === "older") {
+    return (
+      <>
+        <TopBar title={`${t("driver_title")} · ${t("other_trucks_today")}`} />
+        <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+          <LanguageTabs />
+          <button onClick={() => setView("home")} style={{ marginBottom: 16 }}>&larr; {t("back")}</button>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+          {older.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--slate)" }}>No other trucks waiting right now.</div>
+          ) : (
+            older.map((t) => (
+              <TripCard
+                key={t.id}
+                trip={t}
+                onAct={(path, body) => actWithLocation(t.id, path, body)}
+                onSiteOut={() => { setActiveTicketId(t.id); setView("site-out"); }}
+                onReject={() => { setActiveTicketId(t.id); setView("reject"); }}
+                compact
+              />
+            ))
+          )}
+        </div>
+      </>
+    );
+  }
+  if (view === "allowance") {
+    // Round 119, post-ship again round 3, item 3: promotes the "Completed
+    // today" card already on the home screen into its own dedicated wallet
+    // screen — same data (trip_allowance_payouts via /tickets/my-trips), no
+    // backend change. Scoped to today only, same as the mockup itself.
+    const totalToday = completedToday.reduce((s, tr) => s + Number(tr.allowance_paid || 0), 0);
+    return (
+      <>
+        <TopBar title={t("trip_allowance_wallet_title")} />
+        <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+          <LanguageTabs />
+          <button onClick={() => setView("home")} style={{ marginBottom: 16 }}>&larr; {t("back")}</button>
+          <div style={{ background: "var(--rebar)", color: "#fff", borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: "#C9CDD2", textTransform: "uppercase", letterSpacing: 0.4 }}>{t("earned_today")}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: 4 }}>
+              <div style={{ fontSize: 26, fontWeight: 800 }}>₹{totalToday}</div>
+              <div style={{ fontSize: 12, color: "#C9CDD2" }}>{t("trips_completed_suffix", { count: completedToday.length })}</div>
+            </div>
+          </div>
+          {completedToday.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--slate)", textAlign: "center", marginTop: 20 }}>{t("no_trip")}</div>
+          ) : (
+            <div className="card">
+              {completedToday.map((tr, i) => (
+                <div key={tr.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: i === 0 ? "none" : "1px solid var(--concrete)", fontSize: 13 }}>
+                  <div>
+                    <div style={{ fontWeight: 500 }}>{tr.site_name}</div>
+                    <div style={{ fontSize: 11, color: "var(--slate)" }}>
+                      {tr.ticket_number}{tr.plant_in_at ? ` · Plant In ${formatTime(tr.plant_in_at)}` : tr.site_out_at ? ` · Site Out ${formatTime(tr.site_out_at)}` : ""}
+                    </div>
+                  </div>
+                  {tr.allowance_paid ? (
+                    <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>+₹{tr.allowance_paid}</span>
+                  ) : (
+                    <span style={{ color: "var(--slate)", fontSize: 11 }}>{tr.status === "rejected" ? "Rejected" : "—"}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize: 11.5, color: "var(--slate)", textAlign: "center", marginTop: 14 }}>{t("allowance_credit_note")}</div>
+        </div>
+      </>
+    );
+  }
+  if (view === "site-out") {
+    const trip = activeTrip || current;
+    return (
+      <>
+        <TopBar title={`${t("driver_title")} · ${t("stage_site_out")}`} />
+        <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+          <LanguageTabs />
+          <button onClick={() => setView(older.some((t) => t.id === trip?.id) ? "older" : "home")} style={{ marginBottom: 16 }}>&larr; {t("back")}</button>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{trip?.ticket_number}</div>
+          <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.customer_name} &middot; {trip?.site_name}</div>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+          <SiteOutForm onAct={(body) => actWithLocation(trip.id, "site-out", body)} onDone={() => setView("home")} />
+        </div>
+      </>
+    );
+  }
+
+  const shiftElapsed = formatElapsed(dutySince, nowTick);
+
+  return (
+    <>
+      <TopBar title={t("driver_title")} />
+      <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
+        <LanguageTabs />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          {onDuty && shiftElapsed ? (
+            <span style={{ fontSize: 11.5, color: "var(--slate)" }}>{t("on_duty_for", { time: shiftElapsed })}</span>
+          ) : <span />}
+          <Link to="/driver/settings" style={{ fontSize: 12, color: "var(--slate)", textDecoration: "none" }}>
+            ⚙ {t("settings")}
+          </Link>
+        </div>
+
+        {!navigator.onLine && (
+          <div style={{ textAlign: "center", fontSize: 12, background: "var(--amber-bg)", color: "var(--amber)", padding: 6, borderRadius: 8, marginBottom: 12 }}>
+            {t("offline_notice")}
+          </div>
+        )}
+        {pending > 0 && (
+          <div style={{ textAlign: "center", fontSize: 12, color: "var(--slate)", marginBottom: 12 }}>
+            {t("pending_actions", { count: pending })}
+            <button
+              style={{ display: "block", margin: "6px auto 0", fontSize: 11, padding: "4px 10px" }}
+              onClick={async () => { await flushQueue(); setPending(pendingCount()); loadTrips(); }}
+            >
+              {t("sync_now")}
+            </button>
+          </div>
+        )}
+        {notice && <div style={{ textAlign: "center", fontSize: 12, color: "var(--signal-green)", marginBottom: 12 }}>{notice}</div>}
+        {error && <div style={{ textAlign: "center", fontSize: 12, color: "var(--alert-red)", marginBottom: 12 }}>{error}</div>}
+
+        {/* Round 119, post-ship again round 3, item 1: trips/allowance/tools
+            are gated behind Punch In — previously everything below rendered
+            regardless of duty status, which made "Punch In to unlock" a lie.
+            A locked, dimmed preview of the current trip still shows through
+            (if there is one) so a driver can see what's waiting without
+            being able to act on it yet. */}
+        {!onDuty ? (
+          <>
+            <div className="card" style={{ textAlign: "center", padding: "28px 20px", marginBottom: 16 }}>
+              <button
+                onClick={toggleDuty}
+                style={{
+                  width: 84, height: 84, borderRadius: "50%", border: "none", background: "var(--signal-green)",
+                  color: "#fff", fontSize: 13, fontWeight: 700, margin: "0 auto 14px", cursor: "pointer",
+                }}
+              >
+                {t("punch_in")}
+              </button>
+              <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{t("punch_in_gate_title")}</div>
+              <div style={{ fontSize: 12.5, color: "var(--slate)" }}>{t("punch_in_gate_sub")}</div>
+            </div>
+            {current && (
+              <div style={{ position: "relative", marginBottom: 16 }}>
+                <div style={{ opacity: 0.45, pointerEvents: "none", filter: "grayscale(0.3)" }}>
+                  <TripCard trip={current} onAct={() => {}} onSiteOut={() => {}} onReject={() => {}} compact />
+                </div>
+                <div style={{ position: "absolute", top: 10, right: 10, background: "rgba(30,30,30,0.85)", color: "#fff", fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 999 }}>
+                  🔒 {t("locked_after_punch_in")}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <button
+              onClick={toggleDuty}
+              style={{
+                width: "100%", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600,
+                padding: 12, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                background: "var(--alert-red)", color: "#fff",
+              }}
+            >
+              {t("punched_in")}
+            </button>
+
+            {current ? (
+              <TripCard
+                trip={current}
+                onAct={(path, body) => actWithLocation(current.id, path, body)}
+                onSiteOut={() => { setActiveTicketId(current.id); setView("site-out"); }}
+                onReject={() => { setActiveTicketId(current.id); setView("reject"); }}
+              />
+            ) : (
+              <div className="card" style={{ textAlign: "center", fontSize: 13, color: "var(--slate)", marginBottom: 10 }}>
+                {t("no_trip")}
+              </div>
+            )}
+
+            {older.length > 0 && (
+              <a
+                href="#" onClick={(e) => { e.preventDefault(); setView("older"); }}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: "10px 12px", textDecoration: "none", marginBottom: 16 }}
+              >
+                <span style={{ fontSize: 12, color: "var(--alert-red)", fontWeight: 600 }}>
+                  {t("other_trucks_today")} ({older.length})
+                </span>
+                <span style={{ color: "var(--alert-red)" }}>&rsaquo;</span>
+              </a>
+            )}
+
+            {completedToday.length > 0 && (
+              <div className="card" style={{ marginBottom: 16 }}>
+                <a
+                  href="#" onClick={(e) => { e.preventDefault(); setView("allowance"); }}
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", textDecoration: "none", color: "inherit", marginBottom: 8 }}
+                >
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>
+                    {t("completed_label")} ({completedToday.length})
+                    {completedToday.some((t) => t.allowance_paid) && (
+                      <span style={{ color: "var(--signal-green)", fontWeight: 400 }}>
+                        {" "}&middot; ₹{completedToday.reduce((s, t) => s + Number(t.allowance_paid || 0), 0)} {t("earned_suffix")}
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ color: "var(--slate)" }}>&rsaquo;</span>
+                </a>
+                {completedToday.map((tr) => {
+                  const isToday = new Date(tr.ticket_date).toDateString() === new Date().toDateString();
+                  return (
+                    <div key={tr.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
+                      <div>
+                        <div>{tr.ticket_number} &middot; {tr.customer_name}</div>
+                        <div style={{ fontSize: 10, color: "var(--slate)" }}>
+                          {!isToday && `${new Date(tr.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })} · `}
+                          {tr.status === "rejected" ? "Rejected" : tr.plant_in_at ? `Plant In ${formatTime(tr.plant_in_at)}` : `Site Out ${formatTime(tr.site_out_at)}`}
+                        </div>
+                      </div>
+                      {tr.allowance_paid ? <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>+₹{tr.allowance_paid}</span> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <button
+                onClick={() => { setError(""); setNotice(""); setView("breakdown"); }}
+              >
+                {t("report_breakdown")}
+              </button>
+              <Link to="/fuel"><button type="button" style={{ width: "100%" }}>{t("report_fuel")}</button></Link>
+            </div>
+            <button
+              type="button"
+              style={{ width: "100%", marginTop: 8 }}
+              onClick={() => { setError(""); setNotice(""); setView("repair"); }}
+            >
+              {t("request_repair")}
+            </button>
+          </>
+        )}
+      </div>
+
+      {popupHint && (
+        <GeofenceHintModal
+          trip={popupHint.trip}
+          text={t(popupHint.hintTextKey, { time: formatTime(popupHint.ts) })}
+          stageLabel={t(STAGES.find((s) => s.key === popupHint.stageKey)?.labelKey)}
+          minutesLeft={minutesUntilAutoConfirm(popupHint.ts, popupHint.trip.auto_confirm_grace_minutes, nowTick)}
+          onConfirm={confirmPopup}
+          onDismiss={dismissPopup}
+          t={t}
+        />
+      )}
+    </>
+  );
+}
+
+// Item 9: an actual interruptive popup shown when the app is open in the
+// foreground and a geofence hint fires for a stage nobody's confirmed yet.
+// Tapping "Confirm" does exactly what tapping the real stage button would.
+// Round 119 post-ship again round 3: unlike the original "suggest only"
+// version of this modal, if the driver doesn't respond at all, the server
+// really does auto-record this stage once the site's auto-confirm grace
+// period elapses (see checkPlantOutAutoRecord and its 3 siblings in
+// scheduledChecks.js) — minutesLeft mirrors that same deadline so the
+// countdown shown here matches what actually happens, not a made-up number.
+function GeofenceHintModal({ text, stageLabel, minutesLeft, onConfirm, onDismiss, t }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex",
+        alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20,
+      }}
+    >
+      <div className="card" style={{ maxWidth: 320, width: "100%", textAlign: "center" }}>
+        <div style={{ fontSize: 14, marginBottom: 10 }}>{text}</div>
+        {minutesLeft != null && (
+          <div style={{ fontSize: 12, color: "var(--amber, #B7791F)", background: "var(--amber-bg, #FFF6E5)", borderRadius: 8, padding: "6px 10px", marginBottom: 12 }}>
+            {minutesLeft > 0
+              ? t("auto_confirm_countdown", { stage: stageLabel, minutes: minutesLeft })
+              : t("auto_confirm_imminent", { stage: stageLabel })}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ flex: 1 }} onClick={onDismiss} disabled={busy}>{t("not_yet")}</button>
+          <button
+            className="btn-primary"
+            style={{ flex: 1, background: "var(--signal-green)", color: "#fff", border: "none" }}
+            disabled={busy}
+            onClick={async () => { setBusy(true); await onConfirm(); setBusy(false); }}
+          >
+            {t("confirm_stage", { stage: stageLabel })}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatTime(iso) {
+  if (!iso) return "–";
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// "on duty 4h 21m" — mirrors the mockup's shift timer. Rounds down to the
+// minute; a shift that just started shows "0m" rather than nothing.
+function formatElapsed(sinceIso, nowMs) {
+  if (!sinceIso) return null;
+  const ms = Math.max(0, nowMs - new Date(sinceIso).getTime());
+  const totalMinutes = Math.floor(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+// Minutes remaining before the server auto-records this stage from GPS if
+// the driver never responds — mirrors the exact deadline
+// checkPlantOutAutoRecord (and its 3 siblings) compute server-side:
+// hint timestamp + the site's auto-confirm grace period. Best-effort/UI-only
+// (see GeofenceHintModal) — the server's own computed deadline is what
+// actually fires, this is just showing the same math client-side.
+function minutesUntilAutoConfirm(hintTs, graceMinutes, nowMs) {
+  if (!hintTs || !graceMinutes) return null;
+  const deadline = new Date(hintTs).getTime() + graceMinutes * 60000;
+  return Math.max(0, Math.ceil((deadline - nowMs) / 60000));
+}
+
+function TripCard({ trip, onAct, onSiteOut, onReject, compact }) {
+  const t = useT();
+  const canDriverActSiteStages = trip.no_site_supervisor;
+
+  const stageState = (key) => {
+    if (trip[`${key}_at`]) return "done";
+    // On a supervised site, Plant In doesn't wait on Site Out — that's the
+    // Supervisor's own confirmation, on their own timing, and a driver
+    // shouldn't be stuck unable to close a trip just because that hasn't
+    // happened yet. Only a no-supervisor site (where the driver logs Site
+    // Out themselves) keeps the full sequential order.
+    if (key === "plant_in" && !canDriverActSiteStages) {
+      return trip.plant_out_at ? "actionable" : "locked";
+    }
+    const order = ["plant_out", "site_in", "site_out", "plant_in"];
+    const idx = order.indexOf(key);
+    const priorDone = idx === 0 || trip[`${order[idx - 1]}_at`];
+    return priorDone ? "actionable" : "locked";
+  };
+
+  function tapStage(stage) {
+    if (stage.key === "plant_out") onAct("plant-out", {});
+    else if (stage.key === "site_in") onAct("arrival", {});
+    else if (stage.key === "site_out") onSiteOut();
+    else if (stage.key === "plant_in") onAct("plant-in", {});
+  }
+
+  // Matches the mockup's "Not started" pill on each collapsed other-truck
+  // card — round 119 post-ship again round 3 added the `not_started` i18n
+  // key for exactly this but never actually rendered it anywhere (caught on
+  // review). Only shown compact — the expanded current-trip card already has
+  // the full stage tracker doing this job in more detail.
+  const notStarted = compact && !trip.plant_out_at;
+
+  return (
+    <div className="card" style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+        <div>
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>{compact ? t("assigned") : t("current_trip")}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600 }}>{trip.ticket_number}</div>
+            {notStarted && (
+              <span className="badge badge-neutral" style={{ fontSize: 10 }}>{t("not_started")}</span>
+            )}
+          </div>
+        </div>
+        {trip.trip_allowance_amount && (
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 11, color: "var(--slate)" }}>{t("trip_allowance")}</div>
+            <div style={{ fontSize: compact ? 14 : 17, fontWeight: 600, color: "var(--signal-green)" }}>₹{trip.trip_allowance_amount}</div>
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: compact ? 13 : 15, fontWeight: 500 }}>{trip.customer_name}</div>
+      <div style={{ fontSize: compact ? 12 : 14, color: "var(--slate)" }}>{trip.site_name}</div>
+      <div style={{ fontSize: compact ? 11 : 12.5, color: "var(--slate)", marginBottom: 8 }}>
+        {trip.truck_number && <>{trip.truck_number}</>}
+        {trip.mix_grade_name && <>{trip.truck_number ? " · " : ""}{trip.mix_grade_name}</>}
+        {trip.loaded_quantity_m3 && <> · {trip.loaded_quantity_m3} m³</>}
+      </div>
+      {trip.site_latitude && trip.site_longitude && (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: compact ? 10 : 20, fontSize: 13 }}>
+          {trip.distance_from_plant_km && <span style={{ color: "var(--slate)" }}>{trip.distance_from_plant_km} {t("km_from_plant")}</span>}
+          <a href={`https://maps.google.com/?q=${trip.site_latitude},${trip.site_longitude}`} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>
+            {t("site_location")}
+          </a>
+        </div>
+      )}
+
+      {!canDriverActSiteStages && (
+        <div style={{ fontSize: 12, color: "var(--rebar)", background: "var(--concrete)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          {t("site_supervisor_note", { name: trip.site_supervisor_name || t("the_site_supervisor") })}
+        </div>
+      )}
+
+      {/* Geofence hints — the app noticed GPS movement suggesting this stage
+          happened, but nothing is auto-confirmed. Purely a nudge to tap the
+          real button below; disappears the moment that stage is logged for
+          real (server only sends the hint while the real timestamp is null).
+          The same hint also pops up as an interruptive modal (see
+          GeofenceHintModal above) — this banner stays too, since a trip
+          further down the "older trips" list won't be the one shown in the
+          modal at any given moment. */}
+      {trip.hint_plant_out_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          {t("hint_left_plant", { time: formatTime(trip.hint_plant_out_at) })}
+        </div>
+      )}
+      {canDriverActSiteStages && trip.hint_site_in_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          {t("hint_reached_site", { time: formatTime(trip.hint_site_in_at) })}
+        </div>
+      )}
+      {canDriverActSiteStages && trip.hint_site_out_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          {t("hint_left_site", { time: formatTime(trip.hint_site_out_at) })}
+        </div>
+      )}
+      {trip.hint_plant_in_at && (
+        <div style={{ fontSize: 12, color: "var(--info)", background: "var(--info-bg, #EAF3FB)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          {t("hint_returned_to_plant", { time: formatTime(trip.hint_plant_in_at) })}
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "flex-start" }}>
+        {STAGES.map((stage, i) => {
+          const state = stageState(stage.key);
+          const driverCanTap = (stage.key === "plant_out" || stage.key === "plant_in") ? true : canDriverActSiteStages;
+          const tappable = state === "actionable" && driverCanTap;
+          return (
+            <div key={stage.key} style={{ display: "flex", alignItems: "flex-start", flex: i === STAGES.length - 1 ? "0 0 auto" : 1 }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1, minWidth: compact ? 56 : 70 }}>
+                <button
+                  disabled={!tappable}
+                  onClick={() => tappable && tapStage(stage)}
+                  style={{
+                    width: "100%", border: "none", borderRadius: 8, fontSize: compact ? 11 : 13, fontWeight: 600,
+                    padding: compact ? "8px 2px" : "12px 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                    background: state === "done" ? "var(--signal-green)" : tappable ? "var(--rebar)" : "var(--concrete)",
+                    color: state === "done" || tappable ? "#fff" : "var(--slate)",
+                  }}
+                >
+                  {t(stage.labelKey)}
+                </button>
+                <div style={{ fontSize: 10, color: state === "done" ? "var(--slate)" : tappable ? "var(--rebar)" : "var(--slate)", marginTop: 5 }}>
+                  {trip[`${stage.key}_at`] ? formatTime(trip[`${stage.key}_at`]) : tappable ? t("tap_to_log") : t("waiting")}
+                </div>
+              </div>
+              {i < STAGES.length - 1 && <div style={{ height: 1, background: "var(--concrete)", flex: "0 0 10px", marginTop: compact ? 18 : 24 }} />}
+            </div>
+          );
+        })}
+      </div>
+
+      {canDriverActSiteStages && stageState("site_in") === "done" && stageState("site_out") !== "done" && (
+        <button className="btn-danger" style={{ width: "100%", marginTop: 10, fontSize: 12 }} onClick={onReject}>
+          {t("reject_concrete")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Round 119, post-ship again round 3, item 5: the after-pour-care checkbox
+// is labeled "required" but was never actually enforced before submit — a
+// driver could tap "Log Site Out" with it unchecked and it would silently
+// save false. Fixed here (matching the enforcement WorkCompleteForm in
+// SiteSupervisor.jsx already had). Delivery Note Status also switched from a
+// <select> to pill buttons, matching the mockup.
+const NOTE_STATUS_OPTIONS = [
+  { value: "pending", label: "Pending" },
+  { value: "signed", label: "Signed" },
+  { value: "refused", label: "Refused" },
+];
+
+function NoteStatusPills({ value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+      {NOTE_STATUS_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          style={{
+            flex: 1, border: "none", borderRadius: 8, padding: "8px 4px", fontSize: 12.5, fontWeight: 600,
+            background: value === opt.value ? "var(--signal-green)" : "var(--concrete)",
+            color: value === opt.value ? "#fff" : "var(--slate)",
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SiteOutForm({ onAct, onDone }) {
+  const [slump, setSlump] = useState("");
+  const [noteStatus, setNoteStatus] = useState("pending");
+  const [afterPourCare, setAfterPourCare] = useState(false);
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    if (!afterPourCare) {
+      setError("Please confirm you guided the customer on after-pour care before submitting.");
+      return;
+    }
+    setSaving(true); setError("");
+    const ok = await onAct({
+      site_slump_mm: slump,
+      delivery_note_status: noteStatus,
+      after_pour_care_confirmed: afterPourCare,
+      remarks,
+    });
+    setSaving(false);
+    if (ok) onDone();
+  }
+
+  return (
+    <div style={{ fontSize: 13 }}>
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Site slump (mm)</div>
+      <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Delivery note status</div>
+      <NoteStatusPills value={noteStatus} onChange={setNoteStatus} />
+
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={afterPourCare} onChange={(e) => { setAfterPourCare(e.target.checked); setError(""); }} style={{ marginTop: 2 }} />
+        <span>Guided customer on after-pour care (covering with plastic sheet, curing) — required</span>
+      </label>
+
+      <div style={{ color: "var(--slate)", marginBottom: 4 }}>Comments about this supply</div>
+      <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+      {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
+      <button onClick={submit} disabled={saving} style={{ width: "100%" }}>
+        {saving ? "Saving..." : "Log Site Out"}
+      </button>
+    </div>
+  );
+}
+
+function RejectForm({ trip, onAct, onDone, error }) {
+  const [reasons, setReasons] = useState([]);
+  const [reasonId, setReasonId] = useState("");
+  const [slump, setSlump] = useState("");
+  const [qty, setQty] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    apiRequest("/master/rejection-reasons").then(setReasons).catch(() => {});
+  }, []);
+
+  async function submit() {
+    setSaving(true);
+    const ok = await onAct(trip.id, "reject", {
+      rejection_reason_id: reasonId || null,
+      site_slump_mm: slump,
+      rejected_quantity_m3: qty,
+      remarks,
+    });
+    setSaving(false);
+    if (ok) onDone();
+  }
+
+  return (
+    <>
+      <TopBar title="Driver · Reject concrete" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div style={{ fontSize: 15, fontWeight: 600 }}>Reject concrete</div>
+        <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip?.ticket_number} &middot; {trip?.site_name}</div>
+
+        <div className="field-input" style={{ fontSize: 13 }}>
+          <div style={{ background: "var(--alert-red-bg, #FBEAEA)", color: "var(--alert-red)", borderRadius: 8, padding: "8px 10px", marginBottom: 12, fontSize: 12 }}>
+            This load will not be added to your trip allowance. The manager is notified automatically.
+          </div>
+
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Reason for rejection</div>
+          <select value={reasonId} onChange={(e) => setReasonId(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
+            <option value="">Select</option>
+            {reasons.map((r) => <option key={r.id} value={r.id}>{r.reason}</option>)}
+          </select>
+
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Measured site slump (mm)</div>
+          <input type="number" value={slump} onChange={(e) => setSlump(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Quantity rejected (m³)</div>
+          <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Comments</div>
+          <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
+
+          {error && <div style={{ color: "var(--alert-red)", marginBottom: 8 }}>{error}</div>}
+          <button className="btn-danger" onClick={submit} disabled={saving} style={{ width: "100%", marginBottom: 8 }}>
+            {saving ? "Saving..." : "Confirm rejection"}
+          </button>
+          <button onClick={onDone} style={{ width: "100%" }}>Cancel</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Round 101, item 4 — before loading concrete, a driver has no active trip
+// yet, so there's no `trip.truck_id` to fall back on. Rather than block
+// reporting entirely (the actual bug being fixed here), both BreakdownForm
+// and RequestRepairForm fall back to this simple picker whenever there's no
+// active trip — same truck list Plant Operator's own ticket-creation picker
+// uses, `exclude_in_repair=true` so a truck already sent out for repair
+// doesn't show up as pickable a second time.
+function TruckPicker({ truckId, onChange }) {
+  const [trucks, setTrucks] = useState([]);
+  useEffect(() => {
+    apiRequest("/master/trucks?exclude_in_repair=true").then(setTrucks).catch(() => {});
+  }, []);
+  return (
+    <div>
+      <div style={{ color: "var(--slate)" }}>Which truck</div>
+      <select value={truckId} onChange={(e) => onChange(e.target.value)} required>
+        <option value="">Select a truck</option>
+        {trucks.map((tr) => <option key={tr.id} value={tr.id}>{tr.truck_number}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function BreakdownForm({ trip, onDone, onCancel }) {
+  const [issueTypes, setIssueTypes] = useState([]);
+  const [issueType, setIssueType] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [truckId, setTruckId] = useState(trip?.truck_id || "");
+  const [gpsStatus, setGpsStatus] = useState("locating"); // 'locating' | 'ok' | 'failed'
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest("/master/breakdown-issue-types").then(setIssueTypes).catch(() => {});
+  }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!truckId) { setError("Select which truck this is about."); return; }
+    if (!issueType) { setError("Select what happened."); return; }
+    if (issueType === "other" && !remarks.trim()) { setError("Add a short description."); return; }
+    setSaving(true); setError("");
+    try {
+      // Round 97, item 2 (kept, round 99 item 3 — this is now the ONLY way
+      // location is captured; the manual text field is gone): best-effort
+      // GPS, never blocks the report on a GPS failure/timeout.
+      const coords = await new Promise((resolve) => {
+        if (!navigator.geolocation) return resolve({});
+        navigator.geolocation.getCurrentPosition(
+          (pos) => { setGpsStatus("ok"); resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); },
+          () => { setGpsStatus("failed"); resolve({}); },
+          { timeout: 8000 }
+        );
+      });
+      await queuedRequest("/driver/breakdown", {
+        method: "POST",
+        body: { truck_id: truckId, issue_type: issueType, remarks, ...coords },
+      });
+      onDone("Breakdown reported. The manager has been notified.");
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <TopBar title="Driver · Report breakdown" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Report breakdown</div>
+          {trip?.truck_number && <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip.truck_number}</div>}
+          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            {!trip?.truck_id && <TruckPicker truckId={truckId} onChange={setTruckId} />}
+            <div>
+              <div style={{ color: "var(--slate)" }}>What happened</div>
+              <select value={issueType} onChange={(e) => setIssueType(e.target.value)} required>
+                <option value="">Select an issue</option>
+                {issueTypes.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>
+                {issueType === "other" ? "Describe what happened" : "Additional details (optional)"}
+              </div>
+              <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} required={issueType === "other"} />
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--slate)" }}>
+              {gpsStatus === "ok" && "📍 Location captured."}
+              {gpsStatus === "locating" && "📍 Your current location is captured automatically when you submit."}
+              {gpsStatus === "failed" && "📍 Couldn't get your location — you can still submit."}
+            </div>
+            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="submit" disabled={saving}>{saving ? "Saving..." : "Submit"}</button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Round 98, item 10 sub-requirement 2 — driver-initiated request for an
+// external-workshop repair (distinct from Report Breakdown, which is the
+// immediate/reactive report Manager reacts to right away; this is the
+// request that starts the approve → send out → return flow tracked on the
+// Manager's Maintenance screen). Left untranslated like BreakdownForm
+// above — same deliberate scope decision (round 96/97: only the entry
+// button is localized, not every internal form).
+function RequestRepairForm({ trip, onDone, onCancel }) {
+  const [issueDescription, setIssueDescription] = useState("");
+  const [truckId, setTruckId] = useState(trip?.truck_id || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!truckId) { setError("Select which truck this is about."); return; }
+    setSaving(true); setError("");
+    try {
+      await queuedRequest("/driver/external-repair", {
+        method: "POST",
+        body: { truck_id: truckId, issue_description: issueDescription },
+      });
+      onDone("Repair request sent. The manager has been notified.");
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <TopBar title="Driver · Request repair" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Request external repair</div>
+          {trip?.truck_number && <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>{trip.truck_number}</div>}
+          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            {!trip?.truck_id && <TruckPicker truckId={truckId} onChange={setTruckId} />}
+            <div>
+              <div style={{ color: "var(--slate)" }}>What's wrong with the vehicle</div>
+              <textarea rows={3} value={issueDescription} onChange={(e) => setIssueDescription(e.target.value)} required />
+            </div>
+            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="submit" disabled={saving}>{saving ? "Saving..." : "Submit"}</button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}

@@ -1,0 +1,330 @@
+// Driver-facing translation dictionary (round 96, item 6 of the Aug-2026
+// feature list). Scope, confirmed by the business: driver-facing screens
+// only (Duty screen, trip cards, fuel module when used by a driver, and
+// driver push-notification text) — Manager/Admin/Office/QC/Store screens
+// stay English. Malayalam/Hindi phrasing below is a first pass — the
+// business asked for these to be spot-checked by a Malayalam/Hindi speaker
+// on their team before wide rollout, since a literal translation can miss
+// the intended meaning in a work context.
+//
+// Usage: const t = useT(); t("punch_in")  — or with placeholders:
+// t("which_equipment", { label: "truck" })
+//
+// A key missing from the active language silently falls back to English
+// (never to a blank string), so an incomplete translation never breaks a
+// screen — it just shows English for that one label until filled in.
+
+import { useAuth } from "./AuthContext.jsx";
+
+export const SUPPORTED_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "ml", label: "Malayalam — മലയാളം" },
+  { code: "hi", label: "Hindi — हिन्दी" },
+];
+
+const DICT = {
+  en: {
+    // Duty screen
+    driver_title: "Driver",
+    punch_in: "Punch IN",
+    punched_in: "Punched IN — tap for Punch OUT",
+    offline_notice: "No signal — actions are being saved and will sync automatically",
+    pending_actions: "{count} action(s) waiting to sync",
+    sync_now: "Sync now",
+    no_trip: "No trip assigned right now.",
+    older_trips_need_action: "{count} older trip(s) still need(s) action",
+    completed_label: "Completed",
+    earned_suffix: "earned",
+    report_breakdown: "Report breakdown",
+    report_fuel: "Report fuel filling",
+    request_repair: "Request external repair",
+    current_trip: "Current trip",
+    assigned: "Assigned",
+    trip_allowance: "Trip allowance",
+    site_location: "Site location",
+    km_from_plant: "km from plant",
+    site_supervisor_note: "Site In and Site Out are confirmed by {name} for this project, not you — those two will fill in on their own here once they tap it on their end. Nothing for you to do until Plant In.",
+    the_site_supervisor: "the Site Supervisor",
+    tap_to_log: "Tap to log",
+    waiting: "Waiting",
+    reject_concrete: "Reject concrete",
+    back: "Back",
+    stage_plant_out: "Plant Out",
+    stage_site_in: "Site In",
+    stage_site_out: "Site Out",
+    stage_plant_in: "Plant In",
+    settings: "Settings",
+    app_language: "App Language",
+    save: "Save",
+    saved: "Saved",
+
+    // Geofence hints / popup (item 9)
+    hint_left_plant: "Looks like you left the plant around {time} — tap Plant Out below to confirm.",
+    hint_reached_site: "Looks like you've reached site around {time} — tap Site In below to confirm.",
+    hint_left_site: "Looks like you left site around {time} — tap Site Out below to confirm, if unloading is done.",
+    hint_returned_to_plant: "Looks like you're back at the plant around {time} — tap Plant In below to confirm.",
+    confirm_stage: "Confirm {stage}?",
+    not_yet: "Not Yet",
+    auto_confirm_countdown: "This will auto-confirm {stage} in about {minutes} min if you don't respond.",
+    auto_confirm_imminent: "This will auto-confirm {stage} any moment now.",
+
+    // Punch-in gating (round 119, post-ship again round 3)
+    punch_in_gate_title: "Start your shift to begin",
+    punch_in_gate_sub: "Your trips, allowance and other tools unlock right after.",
+    locked_after_punch_in: "Unlocks after Punch In",
+    on_duty_for: "On duty {time}",
+
+    // "Other assigned trucks today" list (was "older trips")
+    other_trucks_today: "Other assigned trucks today",
+    not_started: "Not started",
+
+    // Trip Allowance wallet screen
+    trip_allowance_wallet_title: "Trip Allowance",
+    completed_today: "Completed today",
+    earned_today: "Allowance earned today",
+    trips_completed_suffix: "{count} trip(s) completed",
+    allowance_credit_note: "Allowance is credited per completed trip — nothing shows for a rejected load.",
+
+    // Fuel & lubricant module (driver-visible parts)
+    fuel_title: "Fuel and lubricants",
+    your_requests: "Your requests",
+    new_request: "New request",
+    tab_fuel: "Fuel",
+    tab_lubricant: "Lubricant",
+    vehicle_type_label: "Vehicle or machine type",
+    which_equipment: "Which {label}",
+    select: "Select",
+    odometer_reading: "Odometer reading",
+    hour_meter_reading: "Hour meter reading",
+    enter_at_least_one: "Enter at least one of the two above.",
+    filling_station: "Filling station",
+    lubricant: "Lubricant",
+    quantity_fuel: "Quantity (litres)",
+    quantity_lubricant: "Quantity (litres/kg)",
+    send_request: "Send request",
+    sending: "Sending...",
+    waiting_manager_approval: "Waiting for Manager approval",
+    rejected_prefix: "Rejected —",
+    approved: "Approved",
+    show_to_store: "Show this to Store to receive it. Disappears once issued.",
+    share_to_station: "Share to station",
+    preparing: "Preparing...",
+    mark_as_filled: "Mark as filled",
+    confirm_what_filled: "Confirm what was actually filled",
+    actual_quantity: "Actual quantity (litres)",
+    cost_optional: "Cost (₹, optional)",
+    confirm: "Confirm",
+    saving: "Saving...",
+    issued_today: "Issued today",
+    equipment_truck: "Truck",
+    equipment_pump: "Pump",
+    equipment_pickup_van: "Pickup van",
+    equipment_loader: "Loader",
+    equipment_generator: "Generator",
+  },
+
+  ml: {
+    driver_title: "ഡ്രൈവർ",
+    punch_in: "പഞ്ച് ഇൻ",
+    punched_in: "പഞ്ച് ഇൻ ചെയ്തു — പഞ്ച് ഔട്ടിന് ടാപ്പ് ചെയ്യുക",
+    offline_notice: "സിഗ്നൽ ഇല്ല — പ്രവർത്തനങ്ങൾ സേവ് ചെയ്യുന്നു, കണക്ഷൻ വന്നാൽ സ്വയമേവ സമന്വയിക്കും",
+    pending_actions: "{count} പ്രവർത്തനങ്ങൾ സമന്വയിക്കാൻ ബാക്കിയുണ്ട്",
+    sync_now: "ഇപ്പോൾ സമന്വയിപ്പിക്കുക",
+    no_trip: "ഇപ്പോൾ ട്രിപ്പ് അസൈൻ ചെയ്തിട്ടില്ല.",
+    older_trips_need_action: "{count} പഴയ ട്രിപ്പുകൾക്ക് ഇനിയും നടപടി വേണം",
+    completed_label: "പൂർത്തിയായത്",
+    earned_suffix: "ലഭിച്ചു",
+    report_breakdown: "തകരാർ റിപ്പോർട്ട് ചെയ്യുക",
+    report_fuel: "ഇന്ധനം നിറച്ചത് റിപ്പോർട്ട് ചെയ്യുക",
+    request_repair: "പുറത്തെ വർക്ക്ഷോപ്പ് റിപ്പയർ അഭ്യർത്ഥിക്കുക",
+    current_trip: "നിലവിലെ ട്രിപ്പ്",
+    assigned: "അസൈൻ ചെയ്തത്",
+    trip_allowance: "ട്രിപ്പ് അലവൻസ്",
+    site_location: "സൈറ്റ് ലൊക്കേഷൻ",
+    km_from_plant: "പ്ലാന്റിൽ നിന്ന് കി.മീ",
+    site_supervisor_note: "ഈ പ്രോജക്റ്റിൽ സൈറ്റ് ഇൻ, സൈറ്റ് ഔട്ട് എന്നിവ {name} ആണ് സ്ഥിരീകരിക്കുന്നത്, നിങ്ങളല്ല — അവർ അവരുടെ ഭാഗം ചെയ്യും. പ്ലാന്റ് ഇൻ വരെ നിങ്ങൾ ഒന്നും ചെയ്യേണ്ടതില്ല.",
+    the_site_supervisor: "സൈറ്റ് സൂപ്പർവൈസർ",
+    tap_to_log: "രേഖപ്പെടുത്താൻ ടാപ്പ് ചെയ്യുക",
+    waiting: "കാത്തിരിക്കുന്നു",
+    reject_concrete: "കോൺക്രീറ്റ് നിരസിക്കുക",
+    back: "തിരികെ",
+    stage_plant_out: "പ്ലാന്റ് ഔട്ട്",
+    stage_site_in: "സൈറ്റ് ഇൻ",
+    stage_site_out: "സൈറ്റ് ഔട്ട്",
+    stage_plant_in: "പ്ലാന്റ് ഇൻ",
+    settings: "സെറ്റിംഗ്സ്",
+    app_language: "ആപ്പ് ഭാഷ",
+    save: "സേവ് ചെയ്യുക",
+    saved: "സേവ് ചെയ്തു",
+
+    hint_left_plant: "നിങ്ങൾ ഏകദേശം {time}-ന് പ്ലാന്റ് വിട്ടതായി തോന്നുന്നു — സ്ഥിരീകരിക്കാൻ താഴെ പ്ലാന്റ് ഔട്ട് ടാപ്പ് ചെയ്യുക.",
+    hint_reached_site: "നിങ്ങൾ ഏകദേശം {time}-ന് സൈറ്റിൽ എത്തിയതായി തോന്നുന്നു — സ്ഥിരീകരിക്കാൻ താഴെ സൈറ്റ് ഇൻ ടാപ്പ് ചെയ്യുക.",
+    hint_left_site: "നിങ്ങൾ ഏകദേശം {time}-ന് സൈറ്റ് വിട്ടതായി തോന്നുന്നു — അൺലോഡിംഗ് കഴിഞ്ഞെങ്കിൽ താഴെ സൈറ്റ് ഔട്ട് ടാപ്പ് ചെയ്യുക.",
+    hint_returned_to_plant: "നിങ്ങൾ ഏകദേശം {time}-ന് പ്ലാന്റിൽ തിരിച്ചെത്തിയതായി തോന്നുന്നു — സ്ഥിരീകരിക്കാൻ താഴെ പ്ലാന്റ് ഇൻ ടാപ്പ് ചെയ്യുക.",
+    confirm_stage: "{stage} സ്ഥിരീകരിക്കണോ?",
+    not_yet: "ഇപ്പോൾ വേണ്ട",
+    auto_confirm_countdown: "നിങ്ങൾ പ്രതികരിച്ചില്ലെങ്കിൽ, ഏകദേശം {minutes} മിനിറ്റിനുള്ളിൽ {stage} സ്വയമേവ സ്ഥിരീകരിക്കും.",
+    auto_confirm_imminent: "{stage} ഇപ്പോൾ തന്നെ സ്വയമേവ സ്ഥിരീകരിക്കും.",
+
+    punch_in_gate_title: "തുടങ്ങാൻ ഷിഫ്റ്റ് പഞ്ച് ഇൻ ചെയ്യുക",
+    punch_in_gate_sub: "പഞ്ച് ഇൻ ചെയ്ത ഉടൻ നിങ്ങളുടെ ട്രിപ്പുകൾ, അലവൻസ്, മറ്റ് ടൂളുകൾ എന്നിവ അൺലോക്ക് ആകും.",
+    locked_after_punch_in: "പഞ്ച് ഇൻ ചെയ്താൽ അൺലോക്ക് ആകും",
+    on_duty_for: "{time} ആയി ഡ്യൂട്ടിയിൽ",
+
+    other_trucks_today: "ഇന്ന് നിയോഗിച്ച മറ്റ് ട്രക്കുകൾ",
+    not_started: "തുടങ്ങിയിട്ടില്ല",
+
+    trip_allowance_wallet_title: "ട്രിപ്പ് അലവൻസ്",
+    completed_today: "ഇന്ന് പൂർത്തിയായത്",
+    earned_today: "ഇന്ന് നേടിയ അലവൻസ്",
+    trips_completed_suffix: "{count} ട്രിപ്പ് പൂർത്തിയായി",
+    allowance_credit_note: "പൂർത്തിയായ ഓരോ ട്രിപ്പിനും അലവൻസ് ലഭിക്കും — നിരസിച്ച ലോഡിന് ഒന്നും ലഭിക്കില്ല.",
+
+    fuel_title: "ഇന്ധനവും ലൂബ്രിക്കന്റും",
+    your_requests: "നിങ്ങളുടെ അഭ്യർത്ഥനകൾ",
+    new_request: "പുതിയ അഭ്യർത്ഥന",
+    tab_fuel: "ഇന്ധനം",
+    tab_lubricant: "ലൂബ്രിക്കന്റ്",
+    vehicle_type_label: "വാഹനം / യന്ത്രം തരം",
+    which_equipment: "ഏത് {label}",
+    select: "തിരഞ്ഞെടുക്കുക",
+    odometer_reading: "ഓഡോമീറ്റർ റീഡിംഗ്",
+    hour_meter_reading: "ഹവർ മീറ്റർ റീഡിംഗ്",
+    enter_at_least_one: "മുകളിൽ ഇവയിൽ ഒന്നെങ്കിലും നൽകുക.",
+    filling_station: "ഫില്ലിംഗ് സ്റ്റേഷൻ",
+    lubricant: "ലൂബ്രിക്കന്റ്",
+    quantity_fuel: "അളവ് (ലിറ്റർ)",
+    quantity_lubricant: "അളവ് (ലിറ്റർ/കി.ഗ്രാം)",
+    send_request: "അഭ്യർത്ഥന അയയ്ക്കുക",
+    sending: "അയയ്ക്കുന്നു...",
+    waiting_manager_approval: "മാനേജരുടെ അനുമതിക്കായി കാത്തിരിക്കുന്നു",
+    rejected_prefix: "നിരസിച്ചു —",
+    approved: "അംഗീകരിച്ചു",
+    show_to_store: "സ്വീകരിക്കാൻ ഇത് സ്റ്റോറിനെ കാണിക്കുക. ഇഷ്യൂ ചെയ്തുകഴിഞ്ഞാൽ ഇത് അപ്രത്യക്ഷമാകും.",
+    share_to_station: "സ്റ്റേഷനിലേക്ക് ഷെയർ ചെയ്യുക",
+    preparing: "തയ്യാറാക്കുന്നു...",
+    mark_as_filled: "നിറച്ചതായി അടയാളപ്പെടുത്തുക",
+    confirm_what_filled: "യഥാർത്ഥത്തിൽ നിറച്ചത് സ്ഥിരീകരിക്കുക",
+    actual_quantity: "യഥാർത്ഥ അളവ് (ലിറ്റർ)",
+    cost_optional: "ചെലവ് (₹, ഓപ്ഷണൽ)",
+    confirm: "സ്ഥിരീകരിക്കുക",
+    saving: "സേവ് ചെയ്യുന്നു...",
+    issued_today: "ഇന്ന് ഇഷ്യൂ ചെയ്തത്",
+    equipment_truck: "ട്രക്ക്",
+    equipment_pump: "പമ്പ്",
+    equipment_pickup_van: "പിക്കപ്പ് വാൻ",
+    equipment_loader: "ലോഡർ",
+    equipment_generator: "ജനറേറ്റർ",
+  },
+
+  hi: {
+    driver_title: "ड्राइवर",
+    punch_in: "पंच इन",
+    punched_in: "पंच इन किया गया — पंच आउट के लिए टैप करें",
+    offline_notice: "सिग्नल नहीं है — कार्रवाइयाँ सेव हो रही हैं, कनेक्शन आने पर अपने आप सिंक हो जाएंगी",
+    pending_actions: "{count} कार्रवाइयाँ सिंक होने के लिए बाकी हैं",
+    sync_now: "अभी सिंक करें",
+    no_trip: "अभी कोई ट्रिप असाइन नहीं है।",
+    older_trips_need_action: "{count} पुरानी ट्रिप(ओं) पर अभी भी कार्रवाई बाकी है",
+    completed_label: "पूर्ण",
+    earned_suffix: "अर्जित",
+    report_breakdown: "खराबी की रिपोर्ट करें",
+    report_fuel: "ईंधन भरने की रिपोर्ट करें",
+    request_repair: "बाहरी वर्कशॉप मरम्मत का अनुरोध करें",
+    current_trip: "वर्तमान ट्रिप",
+    assigned: "असाइन की गई",
+    trip_allowance: "ट्रिप भत्ता",
+    site_location: "साइट लोकेशन",
+    km_from_plant: "प्लांट से किमी",
+    site_supervisor_note: "इस प्रोजेक्ट में साइट इन और साइट आउट {name} द्वारा कन्फर्म किए जाते हैं, आपके द्वारा नहीं — वे अपनी ओर से टैप करते ही यह अपने आप भर जाएगा। प्लांट इन तक आपको कुछ नहीं करना है।",
+    the_site_supervisor: "साइट सुपरवाइज़र",
+    tap_to_log: "दर्ज करने के लिए टैप करें",
+    waiting: "प्रतीक्षा में",
+    reject_concrete: "कंक्रीट अस्वीकार करें",
+    back: "वापस",
+    stage_plant_out: "प्लांट आउट",
+    stage_site_in: "साइट इन",
+    stage_site_out: "साइट आउट",
+    stage_plant_in: "प्लांट इन",
+    settings: "सेटिंग्स",
+    app_language: "ऐप भाषा",
+    save: "सेव करें",
+    saved: "सेव हो गया",
+
+    hint_left_plant: "लगता है आपने लगभग {time} बजे प्लांट छोड़ दिया — पुष्टि के लिए नीचे प्लांट आउट पर टैप करें।",
+    hint_reached_site: "लगता है आप लगभग {time} बजे साइट पर पहुंच गए — पुष्टि के लिए नीचे साइट इन पर टैप करें।",
+    hint_left_site: "लगता है आपने लगभग {time} बजे साइट छोड़ दी — अनलोडिंग पूरी हो गई हो तो नीचे साइट आउट पर टैप करें।",
+    hint_returned_to_plant: "लगता है आप लगभग {time} बजे वापस प्लांट पहुंच गए — पुष्टि के लिए नीचे प्लांट इन पर टैप करें।",
+    confirm_stage: "{stage} की पुष्टि करें?",
+    not_yet: "अभी नहीं",
+    auto_confirm_countdown: "अगर आप जवाब नहीं देंगे, तो लगभग {minutes} मिनट में {stage} अपने आप दर्ज हो जाएगा।",
+    auto_confirm_imminent: "{stage} अभी अपने आप दर्ज हो जाएगा।",
+
+    punch_in_gate_title: "शुरू करने के लिए पंच इन करें",
+    punch_in_gate_sub: "पंच इन करते ही आपकी ट्रिप, अलाउंस और बाकी टूल अनलॉक हो जाएंगे।",
+    locked_after_punch_in: "पंच इन के बाद अनलॉक होगा",
+    on_duty_for: "{time} से ड्यूटी पर",
+
+    other_trucks_today: "आज सौंपे गए अन्य ट्रक",
+    not_started: "शुरू नहीं हुआ",
+
+    trip_allowance_wallet_title: "ट्रिप अलाउंस",
+    completed_today: "आज पूरी हुई ट्रिप",
+    earned_today: "आज कमाया गया अलाउंस",
+    trips_completed_suffix: "{count} ट्रिप पूरी हुईं",
+    allowance_credit_note: "हर पूरी हुई ट्रिप पर अलाउंस मिलता है — रिजेक्ट किए गए लोड पर कुछ नहीं मिलता।",
+
+    fuel_title: "ईंधन और लुब्रिकेंट",
+    your_requests: "आपके अनुरोध",
+    new_request: "नया अनुरोध",
+    tab_fuel: "ईंधन",
+    tab_lubricant: "लुब्रिकेंट",
+    vehicle_type_label: "वाहन या मशीन प्रकार",
+    which_equipment: "कौन सा {label}",
+    select: "चुनें",
+    odometer_reading: "ओडोमीटर रीडिंग",
+    hour_meter_reading: "ऑवर मीटर रीडिंग",
+    enter_at_least_one: "ऊपर दोनों में से कम से कम एक भरें।",
+    filling_station: "फिलिंग स्टेशन",
+    lubricant: "लुब्रिकेंट",
+    quantity_fuel: "मात्रा (लीटर)",
+    quantity_lubricant: "मात्रा (लीटर/किग्रा)",
+    send_request: "अनुरोध भेजें",
+    sending: "भेजा जा रहा है...",
+    waiting_manager_approval: "मैनेजर की मंज़ूरी का इंतज़ार है",
+    rejected_prefix: "अस्वीकृत —",
+    approved: "मंज़ूर",
+    show_to_store: "प्राप्त करने के लिए यह स्टोर को दिखाएं। जारी होते ही यह गायब हो जाएगा।",
+    share_to_station: "स्टेशन को शेयर करें",
+    preparing: "तैयार हो रहा है...",
+    mark_as_filled: "भरा हुआ चिह्नित करें",
+    confirm_what_filled: "वास्तव में क्या भरा गया, पुष्टि करें",
+    actual_quantity: "वास्तविक मात्रा (लीटर)",
+    cost_optional: "लागत (₹, वैकल्पिक)",
+    confirm: "पुष्टि करें",
+    saving: "सेव हो रहा है...",
+    issued_today: "आज जारी किया गया",
+    equipment_truck: "ट्रक",
+    equipment_pump: "पंप",
+    equipment_pickup_van: "पिकअप वैन",
+    equipment_loader: "लोडर",
+    equipment_generator: "जनरेटर",
+  },
+};
+
+function interpolate(str, params) {
+  if (!params) return str;
+  return str.replace(/\{(\w+)\}/g, (m, k) => (params[k] !== undefined ? params[k] : m));
+}
+
+export function translate(key, lang, params) {
+  const str = (DICT[lang] && DICT[lang][key]) ?? DICT.en[key] ?? key;
+  return interpolate(str, params);
+}
+
+// Hook form, for use inside components: const t = useT(); t("punch_in")
+export function useT() {
+  const { user } = useAuth();
+  const lang = user?.preferred_language || "en";
+  return (key, params) => translate(key, lang, params);
+}

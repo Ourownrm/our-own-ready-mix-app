@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Round 119, post-ship again — round 7: iOS Safari's "Add to Home
+         Screen" doesn't treat a page as an installable standalone app purely
+         from the Web App Manifest the way Chrome/Android does — it also
+         checks these two meta tags. Without them, an iPhone customer adding
+         /portal to their home screen got a plain Safari bookmark (still
+         opens inside Safari's browser chrome, address bar and all) instead
+         of a standalone app icon — a separate gap from the Android
+         start_url issue this whole feature was originally built to fix. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Our Own Ready Mix" />
+    <title>Our Own Ready Mix</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
