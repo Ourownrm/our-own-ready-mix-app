@@ -50,7 +50,7 @@ const STATUS_COLOR = {
 };
 
 export default function LabTechnician() {
-  const [tab, setTab] = useState("batches"); // batches | site-cast | mix-designs
+  const [tab, setTab] = useState("batches"); // batches | site-cast | mix-designs | assignments
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -65,6 +65,10 @@ export default function LabTechnician() {
               ticket to anchor it to. */}
           <button className={`btn-tab ${tab === "site-cast" ? "active" : ""}`} onClick={() => setTab("site-cast")}>Site-Cast Cubes</button>
           <button className={`btn-tab ${tab === "mix-designs" ? "active" : ""}`} onClick={() => setTab("mix-designs")}>Mix Designs</button>
+          {/* Round 132, follow-up — read-only: which customer is assigned
+              which design, and since when. Assigning/removing stays an
+              Administrator/Manager action (Masters → Mix Design Assignments). */}
+          <button className={`btn-tab ${tab === "assignments" ? "active" : ""}`} onClick={() => setTab("assignments")}>Assignments</button>
           <Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link>
           <Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link>
         </div>
@@ -74,8 +78,72 @@ export default function LabTechnician() {
         {tab === "batches" && <CubeTestingTab setError={setError} setNotice={setNotice} />}
         {tab === "site-cast" && <SiteCubeTestingTab setError={setError} setNotice={setNotice} />}
         {tab === "mix-designs" && <MixDesignsTab setError={setError} setNotice={setNotice} />}
+        {tab === "assignments" && <AssignmentsTab setError={setError} />}
       </div>
     </>
+  );
+}
+
+// ===== Assignments (read-only) =====
+// Round 132, follow-up — "Lab Technician should be able to see assigned mix
+// and customer details". Same data Administrator's "Mix Design Assignments"
+// panel manages, but read-only here — no add/remove, since that's a
+// business decision that stays with Administrator/Manager.
+function AssignmentsTab({ setError }) {
+  const [rows, setRows] = useState(null);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    apiRequest("/lab-technician/mix-design-assignments").then(setRows).catch((err) => setError(err.message));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (rows === null) return <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading...</div>;
+
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? rows.filter((a) => a.customer_name.toLowerCase().includes(q) || a.mix_grade_name.toLowerCase().includes(q) || a.design_ref_code.toLowerCase().includes(q))
+    : rows;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
+        Which specific, approved mix design each customer's grade resolves to. A customer+grade with
+        no row here just uses that grade's standard design. Assigning or removing one is done from
+        Administrator → Masters → Mix Design Assignments.
+      </div>
+      <input
+        type="text" placeholder="Search customer, grade, or design ref..."
+        value={search} onChange={(e) => setSearch(e.target.value)}
+        style={{ marginBottom: 10, width: "100%", maxWidth: 320 }}
+      />
+      <div className="card">
+        <table>
+          <thead><tr><th>Customer</th><th>Grade</th><th>Assigned mix design</th><th>Since</th></tr></thead>
+          <tbody>
+            {filtered.map((a) => (
+              <tr key={a.id}>
+                <td>{a.customer_name}</td>
+                <td>{a.mix_grade_name}</td>
+                <td>
+                  {a.design_ref_code}{" "}
+                  {Number(a.design_shared_count) > 1 ? (
+                    <span className="badge" style={{ background: "var(--info-bg, #E3EEF4)", color: "var(--info, #2A6F97)" }}>
+                      Shared · {a.design_shared_count} customers
+                    </span>
+                  ) : (
+                    <span className="badge badge-success">Custom</span>
+                  )}
+                </td>
+                <td>{new Date(a.effective_from).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={4} style={{ color: "var(--slate)" }}>{rows.length === 0 ? "No customer-specific assignments yet — everyone gets the standard design per grade." : "No match."}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
