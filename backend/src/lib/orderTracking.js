@@ -103,6 +103,11 @@ export async function getOrderTrackingPayload(orderId) {
       order_quantity_m3: order.order_quantity_m3,
       delivered_qty_m3: order.delivered_qty_m3,
       status: order.status,
+      // Round 130 — lets a tracking screen still open (or already open, mid-poll)
+      // when an order finishes tell "Completed just now" from "Completed a
+      // while ago" apart, and is also the anchor this same helper already uses
+      // above to decide when the payload itself goes stale (TRACKING_GRACE_HOURS).
+      terminal_at: order.terminal_at,
     },
     trucks: trucks.map((t) => ({
       ticket_number: t.ticket_number,

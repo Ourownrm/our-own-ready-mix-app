@@ -300,8 +300,26 @@ router.get("/director-dashboard", requireRole("administrator", "manager", "accou
     runningOrders, upcomingOrders,
     salesmanMonthly, pumpUtilization, rejections, unbilled,
   ] = await Promise.all([
-    // Order Qty Today — how much was ordered for today, regardless of how much has shipped
-    query(`SELECT COALESCE(SUM(order_quantity_m3), 0) AS qty FROM customer_orders WHERE order_date = CURRENT_DATE AND status NOT IN ('cancelled', 'closed')`),
+    // Order Qty Today — how much was ordered for today, regardless of how much has shipped.
+    // Round 129 — this previously excluded every cancelled/closed order outright, no matter
+    // what. On paper that still included 'completed'/'in_progress'/'planned' orders, but in
+    // practice this KPI kept reading as "running orders only": a cancelled/closed order that
+    // HAD already received real supply before being cancelled/closed was being dropped
+    // entirely, undercounting genuine demand. Per the business rule as given: a cancelled or
+    // closed order with NO supply at all was never real — exclude it; but completed orders,
+    // still-open orders (not yet supplied or under supply), and even a cancelled/closed order
+    // that did receive some supply, should all count.
+    query(`
+      SELECT COALESCE(SUM(o.order_quantity_m3), 0) AS qty
+      FROM customer_orders o
+      WHERE o.order_date = CURRENT_DATE
+        AND (
+          o.status NOT IN ('cancelled', 'closed')
+          OR EXISTS (
+            SELECT 1 FROM delivery_tickets dt WHERE dt.order_id = o.id AND dt.status != 'cancelled'
+          )
+        )
+    `),
     // Supplied Qty Today — every delivery note issued today counts as supplied as soon as
     // it's created (whether or not the trip has completed), minus whatever got rejected at site.
     query(`SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS qty FROM delivery_tickets WHERE ticket_date = CURRENT_DATE AND status != 'cancelled'`),

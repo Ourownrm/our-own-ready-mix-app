@@ -170,6 +170,22 @@ router.get("/cube-pours/:orderId", async (req, res) => {
   );
   if (!dns.length) return res.status(404).json({ error: "No cube-cast delivery notes found for this order." });
 
+  // Round 130 — "samples collected at site should also appear for testing"
+  // (explicit feedback): a Site Supervisor's own independent cube recording
+  // (see routes/siteSupervisor.js's POST .../site-cubes) writes into the same
+  // site_cube_casts table Lab Technician's own "+ Record a site cast" uses,
+  // so any of those recorded against THIS order show up here too — purely a
+  // reference addition to the sample list (results for these are still
+  // entered via the separate Site-Cast Cubes tab/form, unchanged).
+  const { rows: siteCasts } = await query(
+    `SELECT scc.id AS site_cube_cast_id, scc.number_of_cubes, scc.cast_date, scc.entered_at, u.name AS entered_by_name
+     FROM site_cube_casts scc
+     LEFT JOIN users u ON u.id = scc.entered_by
+     WHERE scc.order_id = $1
+     ORDER BY scc.entered_at`,
+    [req.params.orderId]
+  );
+
   const { rows: designs } = await query(
     `SELECT id, design_ref_code, mix_description FROM mix_designs
      WHERE mix_grade_id = $1 AND status = 'approved' ORDER BY design_ref_code`,
@@ -204,14 +220,14 @@ router.get("/cube-pours/:orderId", async (req, res) => {
   }
   const resultsWithCubes = results.map((r) => (r.is_pour_level ? { ...r, cubes: cubesByResult[r.id] || [] } : r));
 
-  res.json({ ...order, dns, approved_designs: designs, results: resultsWithCubes });
+  res.json({ ...order, dns, site_casts: siteCasts, approved_designs: designs, results: resultsWithCubes });
 });
 
 // Round 124 — a genuine delete for a wrongly-entered result, not just the
-// date-correction PATCH below. Administrator-only, same as that PATCH: this
-// removes already-submitted QC data (unlike the site-cast DELETE above,
-// which only ever removes an un-tested cast), so it gets the same higher
-// bar. cube_test_cubes cascades off cube_test_result_id.
+// date-correction PATCH below. Removes already-submitted QC data (unlike
+// the site-cast DELETE above, which only ever removes an un-tested cast),
+// so it originally got a higher bar (administrator-only). cube_test_cubes
+// cascades off cube_test_result_id.
 //
 // Round 125 fix — this originally required `plant_qc_id IS NULL`, so it
 // only ever worked on a new pour-level result and silently 404'd on a
@@ -220,7 +236,13 @@ router.get("/cube-pours/:orderId", async (req, res) => {
 // every row regardless of shape (see the schema migration, and the same
 // `id AND order_id` pattern the date-correction PATCH above already uses)
 // so there's no reason to treat the two differently here either.
-router.delete("/cube-pours/:orderId/results/:resultId", requireRole("administrator"), async (req, res) => {
+//
+// Round 129 — opened up to Lab Technician too, per explicit request: they're
+// the one entering these results in the first place, so requiring an
+// Administrator to fix their own mistake was just friction, not a real
+// safeguard against anything Lab Technician couldn't already do via the
+// POST above (which freely overwrites a result's values, date included).
+router.delete("/cube-pours/:orderId/results/:resultId", requireRole("lab_technician", "administrator"), async (req, res) => {
   const { rows } = await query(
     `DELETE FROM cube_test_results WHERE id = $1 AND order_id = $2 RETURNING id`,
     [req.params.resultId, req.params.orderId]
@@ -569,9 +591,11 @@ router.patch("/site-cube-tests/:resultId/visibility", requireRole("lab_technicia
 });
 
 // Round 124 — delete a wrongly-entered site-cast result (the plant-side
-// twin of the /cube-pours delete above). Administrator-only, same reasoning:
-// this removes already-submitted QC data, not just an untested cast.
-router.delete("/site-cube-tests/:resultId", requireRole("administrator"), async (req, res) => {
+// twin of the /cube-pours delete above). Removes already-submitted QC data,
+// not just an untested cast.
+// Round 129 — opened up to Lab Technician too, same reasoning as the
+// plant-side delete above.
+router.delete("/site-cube-tests/:resultId", requireRole("lab_technician", "administrator"), async (req, res) => {
   const { rows } = await query(
     `DELETE FROM site_cube_test_results WHERE id = $1 RETURNING id`,
     [req.params.resultId]
@@ -613,14 +637,133 @@ router.get("/site-cube-tests/:resultId/pdf-data", async (req, res) => {
   res.json({ ...rows[0], cubes, is_site_cast: true });
 });
 
-// Correct a saved test's recorded date — administrator only. Exists purely
-// for after-the-fact data-entry corrections (a result entered days later
-// but back-dated to when the test actually happened, or a typo caught after
-// saving); it does not re-run any of the averaging logic above.
-// Correct a saved test's recorded date — administrator only. order_id is
-// backfilled on every row (legacy or pour-level, see the schema migration),
-// so this one WHERE works uniformly regardless of which shape the result is.
-router.patch("/cube-pours/:orderId/results/:resultId/date", requireRole("administrator"), async (req, res) => {
+// Round 130 — one pour's FULL combined report: both testing ages (when both
+// exist) merged into a single unified report (one spec header, one CUBE TEST
+// ANALYSIS table spanning both ages with a rowspan Average column, one
+// two-column TEST SUMMARY) instead of the old "combined PDF" (two separate
+// full reports concatenated, one page each — see generateCombinedCubeTestPdf
+// on the frontend, kept unchanged for its own different use: same-day
+// results from possibly different pours). Works whether this pour's results
+// are pour-level or legacy per-DN — both shapes backfill order_id (see the
+// schema migration), so this one WHERE covers either.
+router.get("/cube-pours/:orderId/combined-pdf-data", async (req, res) => {
+  const { rows: orderRows } = await query(
+    `SELECT co.id AS order_id, co.casting_location, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            MIN(pq.entered_at) AS cast_at
+     FROM customer_orders co
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN delivery_tickets dt ON dt.order_id = co.id
+     LEFT JOIN plant_qc pq ON pq.ticket_id = dt.id AND COALESCE(pq.number_of_cubes, 0) > 0
+     WHERE co.id = $1
+     GROUP BY co.id, co.casting_location, c.name, s.name, m.name`,
+    [req.params.orderId]
+  );
+  if (!orderRows.length) return res.status(404).json({ error: "Order not found." });
+
+  const { rows: results } = await query(
+    `SELECT ctr.id, ctr.testing_age_days, ctr.average_weight_kg, ctr.average_load_kn,
+            ctr.average_density_kgm3, ctr.average_strength_mpa, ctr.remarks, ctr.failure_type, ctr.tested_at,
+            u.name AS tested_by_name, md.design_ref_code, md.fck_28day_mpa
+     FROM cube_test_results ctr
+     JOIN users u ON u.id = ctr.tested_by
+     LEFT JOIN mix_designs md ON md.id = ctr.mix_design_id
+     WHERE ctr.order_id = $1
+     ORDER BY ctr.testing_age_days, ctr.tested_at DESC`,
+    [req.params.orderId]
+  );
+  if (!results.length) return res.status(404).json({ error: "No test results found for this pour." });
+  // A pre-round-122 legacy order can have more than one per-DN result at the
+  // same age (no unique constraint stops that — only pour-level results are
+  // constrained to one per age). tested_at DESC above puts the most recent
+  // one for each age first, so day7/day28 below pick that instead of an
+  // arbitrary row.
+
+  for (const r of results) {
+    const { rows: cubes } = await query(
+      `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+       FROM cube_test_cubes WHERE cube_test_result_id = $1 ORDER BY sort_order`,
+      [r.id]
+    );
+    r.cubes = cubes;
+  }
+  const day7 = results.find((r) => r.testing_age_days === 7) || null;
+  const day28 = results.find((r) => r.testing_age_days === 28) || null;
+  const designSource = day28 || day7;
+
+  res.json({
+    ...orderRows[0],
+    is_site_cast: false,
+    design_ref_code: designSource?.design_ref_code || null,
+    fck_28day_mpa: designSource?.fck_28day_mpa || null,
+    day7, day28,
+  });
+});
+
+// Round 130 — site-cast twin of the combined pour report above.
+router.get("/site-cube-casts/:castId/combined-pdf-data", async (req, res) => {
+  const { rows: castRows } = await query(
+    `SELECT scc.id AS site_cube_cast_id, scc.cast_date, scc.order_id,
+            co.casting_location, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name
+     FROM site_cube_casts scc
+     JOIN customer_orders co ON co.id = scc.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     JOIN mix_grades m ON m.id = co.mix_grade_id
+     WHERE scc.id = $1`,
+    [req.params.castId]
+  );
+  if (!castRows.length) return res.status(404).json({ error: "Site cast not found." });
+
+  const { rows: results } = await query(
+    `SELECT sctr.id, sctr.testing_age_days, sctr.average_weight_kg, sctr.average_load_kn,
+            sctr.average_density_kgm3, sctr.average_strength_mpa, sctr.remarks, sctr.failure_type, sctr.tested_at,
+            u.name AS tested_by_name, md.design_ref_code, md.fck_28day_mpa
+     FROM site_cube_test_results sctr
+     JOIN users u ON u.id = sctr.tested_by
+     LEFT JOIN mix_designs md ON md.id = sctr.mix_design_id
+     WHERE sctr.site_cube_cast_id = $1
+     ORDER BY sctr.testing_age_days, sctr.tested_at DESC`,
+    [req.params.castId]
+  );
+  if (!results.length) return res.status(404).json({ error: "No test results found for this cast." });
+
+  for (const r of results) {
+    const { rows: cubes } = await query(
+      `SELECT cube_label, weight_kg, testing_load_kn, density_kgm3, strength_mpa
+       FROM site_cube_test_cubes WHERE site_cube_test_result_id = $1 ORDER BY sort_order`,
+      [r.id]
+    );
+    r.cubes = cubes;
+  }
+  const day7 = results.find((r) => r.testing_age_days === 7) || null;
+  const day28 = results.find((r) => r.testing_age_days === 28) || null;
+  const designSource = day28 || day7;
+
+  res.json({
+    order_id: castRows[0].order_id,
+    casting_location: castRows[0].casting_location,
+    customer_name: castRows[0].customer_name,
+    site_name: castRows[0].site_name,
+    mix_grade_name: castRows[0].mix_grade_name,
+    cast_at: castRows[0].cast_date,
+    is_site_cast: true,
+    design_ref_code: designSource?.design_ref_code || null,
+    fck_28day_mpa: designSource?.fck_28day_mpa || null,
+    day7, day28,
+  });
+});
+
+// Correct a saved test's recorded date. Exists purely for after-the-fact
+// data-entry corrections (a result entered days later but back-dated to
+// when the test actually happened, or a typo caught after saving); it does
+// not re-run any of the averaging logic above. order_id is backfilled on
+// every row (legacy or pour-level, see the schema migration), so this one
+// WHERE works uniformly regardless of which shape the result is.
+// Round 129 — opened up to Lab Technician too, per explicit request; was
+// administrator-only since Round 124.
+router.patch("/cube-pours/:orderId/results/:resultId/date", requireRole("lab_technician", "administrator"), async (req, res) => {
   const { tested_at } = req.body;
   const parsed = tested_at ? new Date(tested_at) : null;
   if (!parsed || isNaN(parsed)) {

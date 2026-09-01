@@ -1054,6 +1054,31 @@ router.get("/my-dashboard", requireRole("sales_executive", "administrator", "man
   });
 });
 
+// Round 129 — Sales Executive's own view of today's orders for their
+// customers/sites, so they can check truck tracking themselves (via the
+// newly-shared GET /orders/:orderId/tracking, scoped the same way there)
+// instead of always having to ask Manager/Administrator. Same salesperson
+// resolution used everywhere else in this file: COALESCE(site's
+// assigned_sales_representative_id, order's own sales_representative_id).
+router.get("/my-orders-today", requireRole("sales_executive"), async (req, res) => {
+  const spId = await mySalespersonId(req.user.id);
+  if (!spId) return res.json([]);
+  const { rows } = await query(
+    `SELECT o.id, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+            o.order_quantity_m3, o.status, o.scheduled_batching_time
+     FROM customer_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN sites s ON s.id = o.site_id
+     JOIN mix_grades m ON m.id = o.mix_grade_id
+     WHERE o.order_date = CURRENT_DATE
+       AND COALESCE(s.assigned_sales_representative_id, o.sales_representative_id) = $1
+       AND o.status NOT IN ('cancelled', 'closed')
+     ORDER BY o.scheduled_batching_time`,
+    [spId]
+  );
+  res.json(rows);
+});
+
 // ===================== ADMIN: COMBINED PERFORMANCE DASHBOARD =====================
 
 router.get("/performance", requireRole("administrator"), async (req, res) => {

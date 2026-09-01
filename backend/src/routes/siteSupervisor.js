@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { query } from "../db.js";
+import { query, pool } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { confirmArrival, confirmUnloadingStart, confirmUnloadingComplete, confirmRejection } from "../lib/deliveryConfirmation.js";
 import { pushToRole } from "../lib/push.js";
@@ -217,6 +217,94 @@ router.post("/orders/:orderId/mark-work-completed", async (req, res) => {
   await pushToRole("manager", { title: "Work marked completed", body: label, url: "/manager" });
 
   res.json(rows[0]);
+});
+
+// Round 130 — Site Supervisor records cube samples taken while a truck is at
+// site, completely independent of the arrival/unloading-complete/reject
+// buttons above (explicit feedback: "record cube samples taken against
+// truck anytime when truck is at site and save it independently without
+// affecting other activity buttons"). Writes into the SAME site_cube_casts
+// table Lab Technician's own "+ Record a site cast" already uses — site cube
+// casting has always been modeled per-ORDER here, not per-ticket (see
+// labTechnician.js's cast-delete route comment: "a site cast has no delivery
+// ticket behind it"), so this resolves the ticket to its order and saves
+// there. Upserts today's own entry (by this supervisor, for this order)
+// rather than inserting a fresh row on every tap, so correcting the count
+// later in the day updates one figure instead of piling up duplicates for
+// Lab Technician to sort out — a Lab Technician's own entries (or an earlier
+// day's) are untouched either way, since this only ever matches on
+// (order_id, CURRENT_DATE, entered_by = this supervisor).
+router.post("/:ticketId/site-cubes", async (req, res) => {
+  const count = Number(req.body.number_of_cubes);
+  if (!count || count <= 0) {
+    return res.status(400).json({ error: "Number of cube samples is required." });
+  }
+  const { rows: ticketRows } = await query(
+    `SELECT dt.id, dt.order_id FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     WHERE dt.id = $1 AND co.assigned_site_supervisor_id = $2`,
+    [req.params.ticketId, req.user.id]
+  );
+  if (!ticketRows.length) return res.status(404).json({ error: "Delivery not found or not assigned to you." });
+  const orderId = ticketRows[0].order_id;
+
+  // A plain SELECT-then-INSERT/UPDATE here is racy: two near-simultaneous
+  // taps (a double-tap, or a retry after a slow response on weak site
+  // signal) could both see "nothing yet today" and both INSERT, leaving a
+  // duplicate row instead of the single upserted one this route promises.
+  // An advisory lock scoped to (this order, this supervisor) for the
+  // duration of the check-and-write serializes that narrow window without a
+  // schema change — a real UNIQUE constraint on (order_id, cast_date,
+  // entered_by) isn't safe here since Lab Technician's own
+  // POST /site-cube-casts intentionally allows more than one cast per order
+  // per day (genuinely separate castings), and would start rejecting those.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [orderId, req.user.id]);
+    const { rows: existing } = await client.query(
+      `SELECT id FROM site_cube_casts WHERE order_id = $1 AND cast_date = CURRENT_DATE AND entered_by = $2`,
+      [orderId, req.user.id]
+    );
+    const { rows } = existing.length
+      ? await client.query(
+          `UPDATE site_cube_casts SET number_of_cubes = $1, entered_at = now() WHERE id = $2 RETURNING id, entered_at, number_of_cubes`,
+          [count, existing[0].id]
+        )
+      : await client.query(
+          `INSERT INTO site_cube_casts (order_id, cast_date, number_of_cubes, entered_by)
+           VALUES ($1, CURRENT_DATE, $2, $3) RETURNING id, entered_at, number_of_cubes`,
+          [orderId, count, req.user.id]
+        );
+    await client.query("COMMIT");
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// So the recording card can show "already saved once today: N cubes, at
+// HH:MM" (see the mockup this was built from) before the supervisor even
+// taps Save — checked on load, same (order_id, CURRENT_DATE, entered_by)
+// match the POST above upserts against.
+router.get("/:ticketId/site-cubes/today", async (req, res) => {
+  const { rows: ticketRows } = await query(
+    `SELECT dt.order_id FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     WHERE dt.id = $1 AND co.assigned_site_supervisor_id = $2`,
+    [req.params.ticketId, req.user.id]
+  );
+  if (!ticketRows.length) return res.status(404).json({ error: "Delivery not found or not assigned to you." });
+  const { rows } = await query(
+    `SELECT number_of_cubes, entered_at FROM site_cube_casts
+     WHERE order_id = $1 AND cast_date = CURRENT_DATE AND entered_by = $2
+     ORDER BY entered_at DESC LIMIT 1`,
+    [ticketRows[0].order_id, req.user.id]
+  );
+  res.json(rows[0] || null);
 });
 
 export default router;

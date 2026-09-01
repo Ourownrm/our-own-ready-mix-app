@@ -352,8 +352,20 @@ router.get("/orders/:id", requireCustomerAuth, async (req, res) => {
   );
   const reviewedAt = bookingRows[0]?.created_at || order.created_at;
 
+  // Round 130 — the customer's "Delivery progress" card needs two distinct
+  // numbers, not one: "Delivered" (everything dispatched so far, including a
+  // truck still on site — same net-of-rejections definition orders.js and
+  // deliveryConfirmation.js already use elsewhere) and "Completed" (only the
+  // quantity from trucks whose unloading has actually finished — what
+  // delivered_qty_m3 always meant here, kept as-is for compatibility).
   const { rows: dq } = await query(
-    "SELECT COALESCE(SUM(loaded_quantity_m3), 0) AS delivered FROM delivery_tickets WHERE order_id = $1 AND status = 'completed'",
+    `SELECT
+       COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status != 'cancelled'), 0)
+         - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS dispatched,
+       COALESCE(SUM(dt.loaded_quantity_m3) FILTER (WHERE dt.status = 'completed'), 0) AS completed
+     FROM delivery_tickets dt
+     LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+     WHERE dt.order_id = $1`,
     [order.id]
   );
 
@@ -374,7 +386,8 @@ router.get("/orders/:id", requireCustomerAuth, async (req, res) => {
     site_address: order.site_address,
     mix_grade_name: order.mix_grade_name,
     order_quantity_m3: order.order_quantity_m3,
-    delivered_qty_m3: dq[0].delivered,
+    delivered_qty_m3: dq[0].completed,
+    dispatched_qty_m3: dq[0].dispatched,
     casting_location: order.casting_location,
     reviewed_at: reviewedAt,
     scheduled_at: order.created_at,

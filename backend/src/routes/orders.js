@@ -450,7 +450,32 @@ router.post("/:orderId/confirm-completion", requireRole("manager", "administrato
 // public token route uses, just behind normal staff auth instead of a token
 // — same data shape, so the frontend can reuse DeliveryTrackingView.jsx
 // as-is.
-router.get("/:orderId/tracking", requireRole("manager", "administrator"), async (req, res) => {
+//
+// Round 129 — Site Supervisor and Sales Executive can reach this too now,
+// but unlike Manager/Administrator (who can see every order), each is
+// scoped to orders they're actually connected to: a Site Supervisor to
+// orders assigned to them (assigned_site_supervisor_id — the same scoping
+// every other siteSupervisor.js route already uses), a Sales Executive to
+// orders whose resolved sales rep is them (COALESCE(site's
+// assigned_sales_representative_id, order's sales_representative_id) — the
+// same resolution pattern customerPortal.js's resolveOrderContacts and
+// reports.js's salesmanMonthly already use).
+router.get("/:orderId/tracking", requireRole("manager", "administrator", "site_supervisor", "sales_executive"), async (req, res) => {
+  if (req.user.role === "site_supervisor" || req.user.role === "sales_executive") {
+    const { rows } = await query(
+      `SELECT o.id
+       FROM customer_orders o
+       JOIN sites s ON s.id = o.site_id
+       LEFT JOIN salespersons sp ON sp.id = COALESCE(s.assigned_sales_representative_id, o.sales_representative_id)
+       WHERE o.id = $1
+         AND (
+           ($2 = 'site_supervisor' AND o.assigned_site_supervisor_id = $3)
+           OR ($2 = 'sales_executive' AND sp.user_id = $3)
+         )`,
+      [req.params.orderId, req.user.role, req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  }
   const payload = await getOrderTrackingPayload(req.params.orderId);
   if (!payload) return res.status(404).json({ error: "Order not found." });
   res.json(payload);
@@ -479,6 +504,47 @@ router.get("/completed-trips", requireRole("manager", "administrator"), async (r
      ORDER BY dt.created_at DESC`
   );
   res.json(rows);
+});
+
+// Round 130 — new Manager Dashboard report: the same trips as Completed
+// Trips above, but across a date range instead of just today, and with the
+// FULL round-trip timeline (batch through plant-in) rather than just the
+// four columns that table shows. Uses the same event types the rest of the
+// app already treats as canonical for each stage (tickets.js/reports.js/
+// orderTracking.js/maintenance.js all agree on these) — left_plant for
+// "Plant Out" specifically, not the earlier QC-release 'dispatched' event
+// Completed Trips happens to use for that column; and unloading_completed
+// for "Site Out", not the unconfirmed 'left_site' geofence hint (see the
+// round-98 postmortem comment on this same mistake in maintenance.js).
+router.get("/truck-timing-report", requireRole("manager", "administrator"), async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultFrom = new Date(Date.now() - 4 * 86400000).toISOString().slice(0, 10); // 5-day window ending today, by default
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : defaultFrom;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : today;
+
+  const { rows } = await query(
+    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date, t.truck_number, u.name AS driver_name,
+            c.name AS customer_name, s.name AS site_name, dt.loaded_quantity_m3,
+            dt.created_at AS batch_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'left_plant') AS plant_out_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'reached_site') AS site_in_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'unloading_started') AS unloading_start_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'unloading_completed') AS site_out_time,
+            MAX(te.event_time) FILTER (WHERE te.event_type = 'returned_to_plant') AS plant_in_time
+     FROM delivery_tickets dt
+     JOIN trucks t ON t.id = dt.truck_id
+     JOIN users u ON u.id = dt.driver_id
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN customers c ON c.id = co.customer_id
+     JOIN sites s ON s.id = co.site_id
+     LEFT JOIN trip_events te ON te.ticket_id = dt.id
+     WHERE dt.status IN ('completed', 'rejected') AND dt.ticket_date BETWEEN $1 AND $2
+     GROUP BY dt.id, t.truck_number, u.name, c.name, s.name, dt.loaded_quantity_m3, dt.created_at
+     ORDER BY dt.created_at DESC
+     LIMIT 500`,
+    [from, to]
+  );
+  res.json({ from, to, trips: rows });
 });
 
 // Latest known position for every truck currently on an active trip
