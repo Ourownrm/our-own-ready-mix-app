@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { generateTruckInspectionPdf } from "../lib/truckInspectionPdf.js";
 
 // Round 98 — items 10 (Maintenance module) & 11 (Best Driver of the Month),
 // built from the round-97 mockup the business approved. Reuses that
@@ -444,6 +445,75 @@ function BestDriverTab({ setError }) {
       )}
 
       <InspectionActionItemsPanel setError={setError} />
+      <PastInspectionsPanel setError={setError} />
+    </div>
+  );
+}
+
+// Round 133 — the weekly checklist itself had no way to be looked back at
+// or printed after saving (only the "+ New weekly inspection" form and the
+// leaderboard existed) — a Plant In-Charge who fills these out on paper
+// today needs a printable copy for their own records/signature, matching
+// the business's own TM_Check_list_for_Plant_Incharge.pdf template. Reuses
+// the existing GET /maintenance/inspections list (already returns each
+// row's full ratings + observations, so no separate detail fetch is
+// needed) and GET /maintenance/checklist-definition (already fetched by
+// InspectionForm above, for the section/item/scale structure the PDF
+// needs to make sense of a row's raw ratings object).
+function PastInspectionsPanel({ setError }) {
+  const [rows, setRows] = useState(null);
+  const [def, setDef] = useState(null);
+  const [printing, setPrinting] = useState(null);
+
+  useEffect(() => {
+    Promise.all([
+      apiRequest("/maintenance/inspections"),
+      apiRequest("/maintenance/checklist-definition"),
+    ]).then(([r, d]) => { setRows(r); setDef(d); }).catch((err) => setError(err.message));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function printRow(row) {
+    setPrinting(row.id);
+    try {
+      await generateTruckInspectionPdf(row, def);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPrinting(null);
+    }
+  }
+
+  if (rows === null) return null;
+
+  return (
+    <div className="card" style={{ marginTop: 18 }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Past weekly inspections</div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--slate)" }}>No weekly inspections logged yet.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Vehicle</th><th>Driver</th><th>Cleaner</th><th>Checklist score</th><th>Filled by</th><th></th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td>{fmtDate(r.inspection_date)}</td>
+                <td>{r.truck_number}</td>
+                <td>{r.driver_name || "—"}</td>
+                <td>{r.cleaner_name || "—"}</td>
+                <td>{r.checklist_score ?? "—"}</td>
+                <td>{r.filled_by_name}</td>
+                <td>
+                  <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} disabled={!def || printing === r.id} onClick={() => printRow(r)}>
+                    {printing === r.id ? "..." : "Print"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -683,31 +753,45 @@ function InspectionForm({ setError, onCancel, onDone }) {
         </div>
       </div>
 
-      {def.sections.map((sec) => (
+      {def.sections.map((sec) => {
+        // Round 133 — Safety & Documentation's items each carry their own
+        // scale (Available/Not Available, Working/Not Working, Yes/No —
+        // see inspectionChecklist.js) instead of every item in the section
+        // sharing the same Poor..Very Good columns, so the response options
+        // are rendered per-row rather than as shared table-header columns
+        // (a section can mix item.scale with the default def.rating_scale).
+        return (
         <div key={sec.key} style={{ marginBottom: 16 }}>
           <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6, color: "var(--charcoal)" }}>{sec.title}</div>
           <table>
             <thead>
               <tr>
                 <th>Inspection item</th>
-                {def.rating_scale.map((r) => <th key={r.value} style={{ textAlign: "center" }}>{r.label}</th>)}
+                <th>Response</th>
                 <th>Action required</th>
               </tr>
             </thead>
             <tbody>
-              {sec.items.map((item) => (
+              {sec.items.map((item) => {
+                const scale = item.scale || def.rating_scale;
+                return (
                 <tr key={item.key}>
                   <td>{item.label}</td>
-                  {def.rating_scale.map((r) => (
-                    <td key={r.value} style={{ textAlign: "center" }}>
-                      <input
-                        type="radio"
-                        name={item.key}
-                        checked={ratings[item.key] === r.value}
-                        onChange={() => setRating(item.key, r.value)}
-                      />
-                    </td>
-                  ))}
+                  <td>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      {scale.map((r) => (
+                        <label key={r.value} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12.5, cursor: "pointer" }}>
+                          <input
+                            type="radio"
+                            name={item.key}
+                            checked={ratings[item.key] === r.value}
+                            onChange={() => setRating(item.key, r.value)}
+                          />
+                          {r.label}
+                        </label>
+                      ))}
+                    </div>
+                  </td>
                   <td>
                     <input
                       type="text"
@@ -718,11 +802,13 @@ function InspectionForm({ setError, onCancel, onDone }) {
                     />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
-      ))}
+        );
+      })}
 
       <div className="field-input" style={{ marginBottom: 14 }}>
         <div style={{ color: "var(--slate)", fontSize: 13 }}>Observations / Corrective action required</div>

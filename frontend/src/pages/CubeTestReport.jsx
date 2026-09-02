@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { generateCubeTestPdf } from "../lib/cubeTestPdf.js";
+import { generateCubeTestPdf, generateCombinedPourCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { formatOrderNumber } from "../lib/orderNumber.js";
 
 function todayStr() {
@@ -72,19 +72,46 @@ export default function CubeTestReport() {
     } catch (err) { setError(err.message); }
   }
 
-  // Round 120, item 4d — groups the same flat rows by order_id for the
-  // "group by pour" view; each group also flags whether it already has both
-  // a 7-day and 28-day result (same-day-or-not doesn't matter here — this is
-  // the staff-facing report, not the customer-facing combine decision, which
-  // lives in CustomerPortal.jsx/cubeTestPdf.js's generateCombinedCubeTestPdf).
+  // Round 133 — this always generated a SINGLE-age PDF, even for a row
+  // sitting right next to its other-age sibling in the "group by pour"
+  // view: generateCubeTestPdf only knows about the one row it was given, so
+  // the resulting PDF showed the sibling age as "Not yet tested" even
+  // though it really was tested (same underlying issue Round 132 fixed for
+  // the customer portal — see CustomerPortal.jsx). Once a group has both a
+  // 7-day and 28-day result, this generates the true one-report combined
+  // PDF instead, via the same /combined-pdf-data endpoints and
+  // generateCombinedPourCubeTestPdf that LabTechnician.jsx's own per-order
+  // screen already uses.
+  async function viewCombinedPdf(group) {
+    try {
+      const path = group.source === "site"
+        ? `/lab-technician/site-cube-casts/${group.batchId}/combined-pdf-data`
+        : `/lab-technician/cube-pours/${group.batchId}/combined-pdf-data`;
+      const data = await apiRequest(path);
+      await generateCombinedPourCubeTestPdf(data);
+    } catch (err) { setError(err.message); }
+  }
+
+  // Round 120, item 4d — groups the same flat rows into one row per pour for
+  // the "group by pour" view. Round 133 fix: keyed by (source, batch_id),
+  // not just order_id — a plant-cast test and a site-cast test can share
+  // one order_id (the site cast belongs to the same order as the plant
+  // pour) but are two different pours, so grouping by order_id alone was
+  // merging them into one table. batch_id is order_id for a plant result
+  // and site_cube_cast_id for a site result (see the backend route's own
+  // SELECT), so it's already the right key either way.
   const grouped = useMemo(() => {
     if (!rows) return [];
-    const byOrder = new Map();
+    const byPour = new Map();
     for (const r of rows) {
-      if (!byOrder.has(r.order_id)) byOrder.set(r.order_id, []);
-      byOrder.get(r.order_id).push(r);
+      const key = `${r.source}-${r.batch_id}`;
+      if (!byPour.has(key)) byPour.set(key, { key, source: r.source, batchId: r.batch_id, results: [] });
+      byPour.get(key).results.push(r);
     }
-    return [...byOrder.entries()].map(([orderId, results]) => ({ orderId, results }));
+    return [...byPour.values()].map((g) => ({
+      ...g,
+      hasBoth: g.results.some((r) => r.testing_age_days === 7) && g.results.some((r) => r.testing_age_days === 28),
+    }));
   }, [rows]);
 
   async function exportExcel() {
@@ -214,19 +241,26 @@ export default function CubeTestReport() {
         {rows && groupByPour && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {grouped.map((g) => (
-              <div key={g.orderId} className="card">
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
-                  {formatOrderNumber(g.orderId)} — {g.results[0].customer_name} — {g.results[0].site_name}
+              <div key={g.key} className="card">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    {formatOrderNumber(g.results[0].order_id)} — {g.results[0].customer_name} — {g.results[0].site_name}
+                    <span className={`badge ${g.source === "site" ? "badge-warning" : "badge-neutral"}`} style={{ marginLeft: 8 }}>{g.source === "site" ? "Site cast" : "Plant cast"}</span>
+                  </div>
+                  {g.hasBoth && (
+                    <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewCombinedPdf(g)}>
+                      View combined PDF (both ages)
+                    </button>
+                  )}
                 </div>
                 <table style={{ fontSize: 12 }}>
                   <thead>
-                    <tr><th>Test Date</th><th>Source</th><th>Age</th><th>Avg Strength</th><th>Result</th><th></th></tr>
+                    <tr><th>Test Date</th><th>Age</th><th>Avg Strength</th><th>Result</th><th></th></tr>
                   </thead>
                   <tbody>
                     {g.results.map((r) => (
                       <tr key={`${r.source}-${r.id}`}>
                         <td>{fmtDate(r.tested_at)}</td>
-                        <td><span className={`badge ${r.source === "site" ? "badge-warning" : "badge-neutral"}`}>{r.source === "site" ? "Site" : "Plant"}</span></td>
                         <td>{r.testing_age_days}d</td>
                         <td>{Number(r.average_strength_mpa).toFixed(1)} N/mm²</td>
                         <td>
@@ -234,7 +268,7 @@ export default function CubeTestReport() {
                             ? <span style={{ color: "var(--slate)" }}>—</span>
                             : <span className={`badge ${r.meets_target ? "badge-success" : "badge-danger"}`}>{r.meets_target ? "Pass" : "Below target"}</span>}
                         </td>
-                        <td><button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r)}>PDF</button></td>
+                        <td><button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => viewPdf(r)}>Single-age PDF</button></td>
                       </tr>
                     ))}
                   </tbody>

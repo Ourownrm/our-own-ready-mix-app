@@ -6,7 +6,7 @@ import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, 
 import { CreateLeadForm } from "../lib/SalesPanels.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 
-const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive", "store"];
+const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive", "store", "loader_operator"];
 
 export default function Administrator() {
   const [view, setView] = useState(() => new URLSearchParams(window.location.search).get("view") || "users"); // users | customers | sites | trucks | rates

@@ -11,6 +11,10 @@ export const ROLE_HOME = {
   sales_executive: "/sales",
   store: "/store",
   lab_technician: "/lab-technician",
+  // Round 133 — no page of their own; FuelFilling.jsx's request form/history
+  // (already shared by driver/site_supervisor/plant_operator) is their whole
+  // job, so it's also their home.
+  loader_operator: "/fuel",
 };
 
 export const ROLE_LABEL = {
@@ -24,4 +28,5 @@ export const ROLE_LABEL = {
   sales_executive: "Sales Executive",
   store: "Store",
   lab_technician: "Lab Technician",
+  loader_operator: "Loader Operator",
 };

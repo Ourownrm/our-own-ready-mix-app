@@ -185,7 +185,7 @@ export default function App() {
             <ProtectedRoute roles={["manager", "administrator"]}><HomeScreenPhotos /></ProtectedRoute>
           } />
           <Route path="/fuel" element={
-            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator"]}><FuelFilling /></ProtectedRoute>
+            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator", "loader_operator"]}><FuelFilling /></ProtectedRoute>
           } />
           <Route path="/supply-approvals" element={
             <ProtectedRoute roles={["manager", "administrator"]}><SupplyApprovals /></ProtectedRoute>
