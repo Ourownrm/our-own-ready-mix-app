@@ -21,7 +21,7 @@ router.post("/users", requireRole("administrator"), async (req, res) => {
   if (!name || !phone || !password || !role) {
     return res.status(400).json({ error: "Name, phone, password, and role are all required." });
   }
-  const validRoles = ["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive", "store"];
+  const validRoles = ["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive", "store", "loader_operator"];
   if (!validRoles.includes(role)) {
     return res.status(400).json({ error: "That role isn't recognized." });
   }

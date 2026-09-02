@@ -1707,6 +1707,16 @@ router.get("/setup", async (req, res) => {
     // the books, not just future ones.
     await query(`ALTER TABLE mix_design_assignments ADD COLUMN IF NOT EXISTS effective_from DATE NOT NULL DEFAULT CURRENT_DATE;`);
 
+    // Round 133 — Loader Operator role: a dedicated login, scoped to just
+    // requesting fuel/lubricant for the loader and seeing their own request
+    // history (reuses the existing supply_requests table and
+    // FuelFilling.jsx screen — no new table). No column/table migration
+    // needed beyond the enum value itself.
+    await pool.query(`DO $$ BEGIN
+      ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'loader_operator';
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    log.push("Schema migration applied (loader_operator role).");
+
     // Seed/sample data (customer, site, pumps, a starter rate) has been
     // moved to run only on a genuinely fresh install, right after the tables
     // are first created — see above. It used to run unconditionally on every

@@ -5373,3 +5373,61 @@ Two items from a screenshot of the "Approved mix assignments" page showing a gen
 
 No schema changes this follow-up. Verified with `node --check` on `labTechnician.js` and a clean
 `npm run build`.
+
+## Round 133 (Ver. 9.55): checklist print report + Yes/No safety items, cube test report fixes, Loader Operator role
+
+1. **Printable vehicle weekly checklist report.** The Transit Mixer Weekly Inspection Checklist
+   (Maintenance module) had no way to look back at a past inspection, let alone print one — only
+   the "+ New weekly inspection" form existed. Added a "Past weekly inspections" list (Best Driver
+   of the Month tab) with a Print button per row, and a new `truckInspectionPdf.js` generator
+   matching the business's own `TM_Check_list_for_Plant_Incharge.pdf` template — same header,
+   Vehicle/Driver/Cleaner/Date row, five numbered sections, Observations box, and Plant
+   In-Charge/Driver signature lines. Reuses the existing `GET /maintenance/inspections` list (which
+   already returns each row's full `ratings` + `observations`) and `GET
+   /maintenance/checklist-definition` — no new backend route needed.
+2. **Safety & Documentation items are now Yes/No, not a 1-4 rating.** Business feedback: asking
+   whether a fire extinguisher is "Satisfactory" vs "Good" doesn't mean anything — it's either
+   there or it isn't. The 7 items in section 5 (Fire Extinguisher, Reverse Alarm, Lights &
+   Indicators, Horn, Reflective Tape, First Aid Kit, Vehicle Documents) now each get their own
+   two-option response worded to fit — Available/Not Available, Working/Not Working, or Yes/No
+   (`inspectionChecklist.js`). Deliberately reuses the same 1..4 value space the rating scale
+   already used (1 = negative, 4 = positive) so `scoreFromRatings` needed zero changes and a
+   binary answer blends into the same 0-100 checklist score exactly like Poor/Very Good would have
+   — per the business's confirmed choice, Yes/Available/Working = full marks. Both the fill-in
+   form (`Maintenance.jsx`) and the new printable report render each item's own response options
+   instead of a shared 4-column grid.
+3. **Cube test report — header and footer now repeat on every page, footer shortened.** A
+   multi-page cube test PDF (`cubeTestPdf.js`) previously drew its header once, on page 1 only,
+   and its footer once, wherever the content happened to end — so page 2+ of a long report had no
+   company name, report title, or customer/site/grade context, and a short report's footer could
+   land anywhere. Both the single-age and combined-pour renderers now redraw the header (company
+   name, report title, customer/site/grade spec grid) at the top of every page a page-break
+   produces, and the footer (form number, report date, rev) is now a fixed-position element drawn
+   on every page instead of flowing with the content. The navy footer bar itself is shorter
+   (7.5mm → 5mm) per feedback.
+4. **Cube Test Report (the staff reporting page) was generating the wrong PDF.** Reported as "the
+   28-day PDF says 7-day not tested, even though it was." Root cause: `CubeTestReport.jsx`'s
+   "Group by pour" view showed both ages together in one table, but its per-row "PDF" button
+   always called the single-age PDF generator/endpoint — which only knows about the one row it was
+   given, so it printed the *other* age as "Not yet tested" even when that age's result was
+   sitting right there in the same group (same underlying issue Round 132 fixed for the customer
+   portal). Fixed two things: the group-by-pour grouping now keys by `(source, batch_id)` instead
+   of `order_id` alone (a plant-cast and a site-cast test can share one order_id but are different
+   pours — they were being merged into one table), and once a group has both a 7-day and 28-day
+   result, a "View combined PDF (both ages)" button generates the true one-report combined PDF via
+   the same `/combined-pdf-data` endpoints and `generateCombinedPourCubeTestPdf` Lab Technician's
+   own per-order screen already uses. The per-row button is now labelled "Single-age PDF" to be
+   explicit about which kind it produces.
+5. **New role: Loader Operator**, for whoever operates the loader to log in and request fuel/oil
+   themselves rather than needing a driver or supervisor to do it for them. Added `loader_operator`
+   to the `user_role` enum (migration via `/setup`, same pattern as every other role addition) and
+   scoped it to exactly one screen: `FuelFilling.jsx`'s existing request form + "my requests"
+   history — the same screen driver/site_supervisor/plant_operator already use for their own
+   equipment (it already supports `equipment_type: 'loader'`). No new page, table, or endpoint —
+   just added to the existing role allow-lists (`supplyRequests.js`'s `REQUESTER_ROLES`, the
+   `/fuel` route, Administrator's user-creation role list) and `roleHome.js`/`ROLE_LABEL` so login,
+   the "back to my dashboard" link, and the Users & Roles admin panel all pick it up automatically.
+
+Verified with `node --check` on every touched backend file, a clean `npm run build`, and a
+generated-PDF smoke test (12-cube-per-age dataset, confirmed 2 pages, header/spec grid/footer all
+repeat correctly on page 2).

@@ -7,7 +7,11 @@ import { pushToRole, pushToUser } from "../lib/push.js";
 const router = Router();
 router.use(requireAuth);
 
-const REQUESTER_ROLES = ["driver", "site_supervisor", "plant_operator", "manager", "administrator"];
+// Round 133 — loader_operator added: a dedicated role for whoever operates
+// the loader, scoped to exactly this — requesting fuel/lubricant for their
+// equipment (equipment_type: 'loader', already supported below) and seeing
+// their own request history via GET /mine.
+const REQUESTER_ROLES = ["driver", "site_supervisor", "plant_operator", "manager", "administrator", "loader_operator"];
 
 // A driver or machine operator requests fuel or a lubricant. Odometer/hour
 // meter reading is required — this is the field the old self-logged flow

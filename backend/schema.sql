@@ -4,7 +4,15 @@
 CREATE TYPE user_role AS ENUM (
   'administrator', 'manager', 'plant_operator', 'qc_engineer',
   'driver', 'site_supervisor', 'accountant', 'sales_executive', 'store',
-  'lab_technician'
+  'lab_technician',
+  -- Round 133 — a dedicated login for whoever operates the loader, scoped
+  -- to exactly one job: requesting fuel/lubricant for their equipment and
+  -- seeing their own request history (reuses FuelFilling.jsx's existing
+  -- RequestFlow — the same screen driver/site_supervisor/plant_operator
+  -- already use to do the same thing for their own equipment). No new
+  -- table needed — supply_requests.equipment_type already has a 'loader'
+  -- option (see EQUIPMENT_TYPES in fuel.js/supplyRequests.js).
+  'loader_operator'
 );
 
 CREATE TYPE order_status AS ENUM (
