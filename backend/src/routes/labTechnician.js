@@ -136,6 +136,74 @@ router.get("/cube-pours", async (req, res) => {
   res.json(rows);
 });
 
+// Round 134, item 7 — every 7-day/28-day test that's overdue or due today,
+// across BOTH plant pours and site-cast cubes, so Lab Technician sees what
+// actually needs testing right now before clicking into either tab. Reuses
+// the exact same due-date math as /cube-pours above (poured_at + 7/28,
+// compared to CURRENT_DATE in SQL — never JS Date(), matching the
+// established "never compute due/overdue in JS" pattern) plus the same
+// math for site casts (cast_date + 7/28), which didn't have overdue/
+// due-today status computed anywhere before this. Closed pours are
+// excluded (deliberately not being tested); done ages are excluded
+// (nothing to chase).
+router.get("/due-testing", async (req, res) => {
+  const { rows } = await query(
+    `WITH pour_batches AS (
+       SELECT co.id AS order_id, m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name,
+              MIN(pq.entered_at) AS poured_at
+       FROM plant_qc pq
+       JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN customers c ON c.id = co.customer_id
+       JOIN sites s ON s.id = co.site_id
+       JOIN mix_grades m ON m.id = co.mix_grade_id
+       WHERE COALESCE(pq.number_of_cubes, 0) > 0
+       GROUP BY co.id, m.name, c.name, s.name
+     ),
+     legacy_results AS (
+       SELECT DISTINCT ON (dt.order_id, ctr.testing_age_days)
+              dt.order_id, ctr.testing_age_days
+       FROM cube_test_results ctr
+       JOIN plant_qc pq ON pq.id = ctr.plant_qc_id
+       JOIN delivery_tickets dt ON dt.id = pq.ticket_id
+       ORDER BY dt.order_id, ctr.testing_age_days, ctr.tested_at DESC
+     ),
+     plant_due AS (
+       SELECT 'plant' AS source, pb.order_id AS ref_id, pb.customer_name, pb.site_name, pb.mix_grade_name,
+              ages.age AS testing_age_days, (pb.poured_at::date + ages.age) AS due_date,
+              CASE WHEN CURRENT_DATE > (pb.poured_at::date + ages.age) THEN 'overdue' ELSE 'due_today' END AS status
+       FROM pour_batches pb
+       CROSS JOIN (VALUES (7), (28)) AS ages(age)
+       LEFT JOIN cube_test_results pr ON pr.order_id = pb.order_id AND pr.testing_age_days = ages.age AND pr.plant_qc_id IS NULL
+       LEFT JOIN legacy_results leg ON leg.order_id = pb.order_id AND leg.testing_age_days = ages.age
+       LEFT JOIN cube_pour_status cps ON cps.order_id = pb.order_id
+       WHERE pr.id IS NULL AND leg.order_id IS NULL AND cps.order_id IS NULL
+         AND CURRENT_DATE >= (pb.poured_at::date + ages.age)
+     ),
+     site_due AS (
+       SELECT 'site' AS source, scc.id AS ref_id, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
+              ages.age AS testing_age_days, (scc.cast_date + ages.age) AS due_date,
+              CASE WHEN CURRENT_DATE > (scc.cast_date + ages.age) THEN 'overdue' ELSE 'due_today' END AS status
+       FROM site_cube_casts scc
+       JOIN customer_orders co ON co.id = scc.order_id
+       JOIN customers c ON c.id = co.customer_id
+       JOIN sites s ON s.id = co.site_id
+       JOIN mix_grades m ON m.id = co.mix_grade_id
+       CROSS JOIN (VALUES (7), (28)) AS ages(age)
+       LEFT JOIN site_cube_test_results r ON r.site_cube_cast_id = scc.id AND r.testing_age_days = ages.age
+       WHERE r.id IS NULL AND CURRENT_DATE >= (scc.cast_date + ages.age)
+     )
+     SELECT * FROM (
+       SELECT * FROM plant_due
+       UNION ALL
+       SELECT * FROM site_due
+     ) combined
+     ORDER BY (status = 'overdue') DESC, due_date ASC
+     LIMIT 200`
+  );
+  res.json(rows);
+});
+
 // One pour's detail: every DN that had cubes cast for it (the reference list
 // shown before entering a shared result — see the mockup's "Cube samples for
 // this pour"), the approved designs for its grade, and every result on file

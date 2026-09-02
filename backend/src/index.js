@@ -27,6 +27,7 @@ import complianceRoutes from "./routes/compliance.js";
 import notificationsRoutes from "./routes/notifications.js";
 import trackingRoutes from "./routes/tracking.js";
 import maintenanceRoutes from "./routes/maintenance.js";
+import fuelAnalysisRoutes from "./routes/fuelAnalysis.js";
 import bookingLinksRoutes from "./routes/bookingLinks.js";
 import customerBookingRoutes from "./routes/customerBooking.js";
 import customerAccessRoutes from "./routes/customerAccess.js";
@@ -35,6 +36,7 @@ import publicInquiryRoutes from "./routes/publicInquiry.js";
 import siteContentRoutes from "./routes/siteContent.js";
 import technicalWritingsRoutes from "./routes/technicalWritings.js";
 import homeScreenPhotosRoutes from "./routes/homeScreenPhotos.js";
+import loaderOperatorRoutes from "./routes/loaderOperator.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -98,6 +100,8 @@ app.use("/api/sales", salesRoutes);
 app.use("/api/compliance", complianceRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
+app.use("/api/fuel-analysis", fuelAnalysisRoutes);
+app.use("/api/loader-operator", loaderOperatorRoutes);
 app.use("/api/booking-links", bookingLinksRoutes);
 // Manager/Admin-only, staff auth as usual — generates/lists/revokes the
 // customer portal access codes (routes/customerAccess.js).

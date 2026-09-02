@@ -1451,17 +1451,24 @@ CREATE TABLE home_screen_photos (
 CREATE INDEX idx_home_screen_photos_order ON home_screen_photos(display_order, id);
 
 -- ===================== BREAKDOWN REPORTING =====================
--- Covers trucks (mixers), pumps, and the batching plant itself — equipment_type
--- says which. truck_id/pump_id are set only for their matching equipment_type;
--- equipment_label is a free-text name for the plant (or any non-listed asset).
+-- Covers trucks (mixers), pumps, the batching plant itself, and (round 134)
+-- other tracked equipment (loaders, pickup vans, generators — the same
+-- `equipment` table fuel_logs already references) — equipment_type says
+-- which. truck_id/pump_id/equipment_id are set only for their matching
+-- equipment_type; equipment_label is a free-text name for the plant only
+-- (the one bucket with no backing table row).
 
-CREATE TYPE breakdown_equipment_type AS ENUM ('truck', 'pump', 'plant');
+CREATE TYPE breakdown_equipment_type AS ENUM ('truck', 'pump', 'plant', 'equipment');
 
 CREATE TABLE breakdown_reports (
   id SERIAL PRIMARY KEY,
   equipment_type breakdown_equipment_type NOT NULL DEFAULT 'truck',
   truck_id INTEGER REFERENCES trucks(id),
   pump_id INTEGER REFERENCES pumps(id),
+  -- Round 134 — loader (and other `equipment` table rows) breakdown
+  -- reporting, added for the new Loader Operator role. Mirrors fuel_logs'
+  -- own truck_id/pump_id/equipment_id pattern.
+  equipment_id INTEGER REFERENCES equipment(id),
   equipment_label VARCHAR(100),
   reported_by INTEGER REFERENCES users(id) NOT NULL,
   driver_id INTEGER REFERENCES users(id),
@@ -1518,7 +1525,12 @@ CREATE TYPE external_repair_status AS ENUM ('requested', 'approved', 'rejected',
 
 CREATE TABLE external_repairs (
   id SERIAL PRIMARY KEY,
-  truck_id INTEGER NOT NULL REFERENCES trucks(id),
+  -- Round 134: NOT NULL relaxed and equipment_id added so a Loader Operator
+  -- can request an outside repair for a loader too, not just a truck.
+  -- Exactly one of truck_id/equipment_id is set, enforced in the API (same
+  -- house style as fuel_logs' own truck_id/pump_id/equipment_id split).
+  truck_id INTEGER REFERENCES trucks(id),
+  equipment_id INTEGER REFERENCES equipment(id),
   requested_by INTEGER NOT NULL REFERENCES users(id),
   requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   issue_description TEXT NOT NULL,
@@ -1549,6 +1561,11 @@ CREATE TABLE truck_inspections (
   cleaner_name VARCHAR(100),
   inspection_date DATE NOT NULL DEFAULT CURRENT_DATE,
   ratings JSONB NOT NULL,
+  -- Round 134, item 3 — recorded alongside the checklist itself so the
+  -- printed report and the truck's own usage-based maintenance intervals
+  -- (maintenance_action_points.interval_hours) can both reference it.
+  odometer_reading NUMERIC(10,2),
+  hour_meter_reading NUMERIC(10,2),
   observations TEXT,
   filled_by INTEGER NOT NULL REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()

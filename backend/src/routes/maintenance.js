@@ -14,10 +14,11 @@ const STAFF_ROLES = ["manager", "administrator"];
 // uniformly to every active truck (no per-vehicle overrides in this first
 // version). Each point trips on whichever of interval_days /
 // interval_hours comes first; at least one of the two is required.
-// Deliberately Manager-only (not Administrator) per round 101 — this used to
-// live under /api/administrator, moved wholesale rather than shared, per
-// business request.
-router.get("/action-points", requireRole("manager"), async (req, res) => {
+// Round 134: was deliberately Manager-only (not Administrator) per round
+// 101; reopened per business request so Administrator can see/manage it too
+// (the panel is now also wired into Administrator's Masters menu) — now
+// matches every other route in this file (STAFF_ROLES).
+router.get("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
   const { rows } = await query(
     `SELECT id, name, interval_days, interval_hours, is_active, created_at
      FROM maintenance_action_points ORDER BY name`
@@ -25,7 +26,7 @@ router.get("/action-points", requireRole("manager"), async (req, res) => {
   res.json(rows);
 });
 
-router.post("/action-points", requireRole("manager"), async (req, res) => {
+router.post("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
   const { name, interval_days, interval_hours } = req.body;
   if (!name || (!interval_days && !interval_hours)) {
     return res.status(400).json({ error: "Name and at least one of interval days / interval hours are required." });
@@ -38,7 +39,7 @@ router.post("/action-points", requireRole("manager"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.patch("/action-points/:id", requireRole("manager"), async (req, res) => {
+router.patch("/action-points/:id", requireRole(...STAFF_ROLES), async (req, res) => {
   const { name, interval_days, interval_hours, is_active } = req.body;
   const { rows } = await query(
     `UPDATE maintenance_action_points SET
@@ -189,11 +190,15 @@ router.get("/vehicle/:truckId/history", requireRole(...STAFF_ROLES), async (req,
 });
 
 // ===== External workshop repair flow (sub-requirement 2) =====
+// Round 134: truck_id is no longer guaranteed (a Loader Operator's request
+// carries equipment_id instead), so both joins are LEFT now — exactly one
+// of truck_number/equipment_name comes back non-null per row.
 router.get("/external-repairs", requireRole(...STAFF_ROLES), async (req, res) => {
   const { rows } = await query(
-    `SELECT er.*, t.truck_number, ru.name AS requested_by_name, au.name AS approved_by_name
+    `SELECT er.*, t.truck_number, eq.name AS equipment_name, ru.name AS requested_by_name, au.name AS approved_by_name
      FROM external_repairs er
-     JOIN trucks t ON t.id = er.truck_id
+     LEFT JOIN trucks t ON t.id = er.truck_id
+     LEFT JOIN equipment eq ON eq.id = er.equipment_id
      JOIN users ru ON ru.id = er.requested_by
      LEFT JOIN users au ON au.id = er.approved_by
      ORDER BY er.requested_at DESC LIMIT 100`
@@ -252,7 +257,7 @@ router.get("/checklist-definition", requireRole(...STAFF_ROLES), async (req, res
 });
 
 router.post("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
-  const { truck_id, driver_id, cleaner_name, inspection_date, ratings, observations, action_items } = req.body;
+  const { truck_id, driver_id, cleaner_name, inspection_date, odometer_reading, hour_meter_reading, ratings, observations, action_items } = req.body;
   if (!truck_id || !ratings) {
     return res.status(400).json({ error: "Truck and the completed checklist are required." });
   }
@@ -261,9 +266,9 @@ router.post("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
     return res.status(400).json({ error: `${missing.length} checklist item(s) not yet scored.` });
   }
   const { rows } = await query(
-    `INSERT INTO truck_inspections (truck_id, driver_id, cleaner_name, inspection_date, ratings, observations, filled_by)
-     VALUES ($1,$2,$3,COALESCE($4, CURRENT_DATE),$5,$6,$7) RETURNING *`,
-    [truck_id, driver_id || null, cleaner_name || null, inspection_date || null, JSON.stringify(ratings), observations || null, req.user.id]
+    `INSERT INTO truck_inspections (truck_id, driver_id, cleaner_name, inspection_date, odometer_reading, hour_meter_reading, ratings, observations, filled_by)
+     VALUES ($1,$2,$3,COALESCE($4, CURRENT_DATE),$5,$6,$7,$8,$9) RETURNING *`,
+    [truck_id, driver_id || null, cleaner_name || null, inspection_date || null, odometer_reading || null, hour_meter_reading || null, JSON.stringify(ratings), observations || null, req.user.id]
   );
 
   // Round 101, item 2: an "Action required" remark against any checklist
@@ -325,7 +330,7 @@ router.get("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
   if (req.query.truck_id) { params.push(req.query.truck_id); where = `WHERE ti.truck_id = $${params.length}`; }
   const { rows } = await query(
     `SELECT ti.id, ti.truck_id, t.truck_number, ti.driver_id, d.name AS driver_name, ti.cleaner_name,
-            ti.inspection_date, ti.ratings, ti.observations, u.name AS filled_by_name
+            ti.inspection_date, ti.odometer_reading, ti.hour_meter_reading, ti.ratings, ti.observations, u.name AS filled_by_name
      FROM truck_inspections ti
      JOIN trucks t ON t.id = ti.truck_id
      LEFT JOIN users d ON d.id = ti.driver_id

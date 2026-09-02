@@ -57,11 +57,12 @@ router.get("/", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT b.id, b.equipment_type, b.breakdown_time, b.location, b.latitude, b.longitude,
             b.issue_type, b.remarks, b.resolved, b.repaired_at,
-            t.truck_number, p.pump_code, b.equipment_label,
+            t.truck_number, p.pump_code, eq.name AS equipment_name, b.equipment_label,
             reporter.name AS reported_by_name, repairer.name AS repaired_by_name
      FROM breakdown_reports b
      LEFT JOIN trucks t ON t.id = b.truck_id
      LEFT JOIN pumps p ON p.id = b.pump_id
+     LEFT JOIN equipment eq ON eq.id = b.equipment_id
      LEFT JOIN users reporter ON reporter.id = COALESCE(b.reported_by, b.driver_id)
      LEFT JOIN users repairer ON repairer.id = b.repaired_by
      ORDER BY b.resolved ASC, b.breakdown_time DESC

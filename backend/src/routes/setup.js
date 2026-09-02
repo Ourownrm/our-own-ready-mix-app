@@ -1717,6 +1717,30 @@ router.get("/setup", async (req, res) => {
     EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
     log.push("Schema migration applied (loader_operator role).");
 
+    // Round 134, items 1-2 — Loader Operator can now report a breakdown and
+    // request an outside repair for their loader, not just fuel. Reuses the
+    // existing breakdown_reports/external_repairs tables via a new
+    // 'equipment' bucket (breakdown_reports) and a new nullable
+    // equipment_id column (both tables) — mirrors fuel_logs' own
+    // truck_id/pump_id/equipment_id split. truck_id's NOT NULL is relaxed
+    // on external_repairs since a loader repair request has no truck at
+    // all; which of truck_id/equipment_id is set is enforced in the API,
+    // not a DB constraint (same house style as fuel_logs).
+    await pool.query(`DO $$ BEGIN
+      ALTER TYPE breakdown_equipment_type ADD VALUE IF NOT EXISTS 'equipment';
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await query(`ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS equipment_id INTEGER REFERENCES equipment(id);`);
+    await query(`ALTER TABLE external_repairs ADD COLUMN IF NOT EXISTS equipment_id INTEGER REFERENCES equipment(id);`);
+    await query(`ALTER TABLE external_repairs ALTER COLUMN truck_id DROP NOT NULL;`);
+    log.push("Schema migration applied (breakdown_reports/external_repairs now also cover loader/equipment, not just trucks — Loader Operator can report breakdowns and request outside repairs).");
+
+    // Round 134, item 3 — Odometer and Hour Meter reading fields on the
+    // weekly Truck Inspection Checklist, alongside the existing per-item
+    // ratings.
+    await query(`ALTER TABLE truck_inspections ADD COLUMN IF NOT EXISTS odometer_reading NUMERIC(10,2);`);
+    await query(`ALTER TABLE truck_inspections ADD COLUMN IF NOT EXISTS hour_meter_reading NUMERIC(10,2);`);
+    log.push("Schema migration applied (truck_inspections.odometer_reading / hour_meter_reading).");
+
     // Seed/sample data (customer, site, pumps, a starter rate) has been
     // moved to run only on a genuinely fresh install, right after the tables
     // are first created — see above. It used to run unconditionally on every

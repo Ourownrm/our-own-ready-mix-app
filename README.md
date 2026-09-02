@@ -5431,3 +5431,76 @@ No schema changes this follow-up. Verified with `node --check` on `labTechnician
 Verified with `node --check` on every touched backend file, a clean `npm run build`, and a
 generated-PDF smoke test (12-cube-per-age dataset, confirmed 2 pages, header/spec grid/footer all
 repeat correctly on page 2).
+
+## Round 134 (Ver. 9.56): Loader Operator breakdown/repair, inspection checklist odometer + one-page fix, Maintenance Action Points visibility, Lab Technician due-testing panel, 360° fuel analysis
+
+1. **Loader Operator can now report a breakdown and request outside repair.** Previously scoped to
+   fuel/oil requests only (Round 133). `breakdown_reports` and `external_repairs` both gain a
+   nullable `equipment_id INTEGER REFERENCES equipment(id)` column (migration via `/setup`) —
+   `external_repairs.truck_id` is now nullable too, since a loader repair has no truck. A new sibling
+   router, `loaderOperator.js` (`requireRole("loader_operator")`), adds `POST /breakdown` and `POST
+   /external-repair` writing into the same two tables Manager already reviews, so `Breakdowns.jsx`
+   and `Maintenance.jsx`'s External Repair Kanban work for loader entries with only a display-layer
+   change (`LEFT JOIN equipment` + `truck_number || equipment_name` fallback) — no new review
+   workflow needed. Kept as a separate router rather than loosening `driver.js`'s router-wide
+   `requireRole("driver")`, which would have exposed unrelated trip/ticket routes to the new role.
+2. **Loader Operator's fuel request screen now only shows Loader**, not every equipment type. The
+   other equipment tabs (Truck, Pump, Plant, Generator, Compressor, ...) were all visible and
+   selectable even though a Loader Operator has exactly one thing to request fuel for —
+   `FuelFilling.jsx` now filters the equipment-type tab list down to Loader for this role and hides
+   the tab picker entirely when there's only one option.
+3. **Inspection checklist can now record Odometer and Hour Meter.** `truck_inspections` gains
+   `odometer_reading` / `hour_meter_reading` columns (both `NUMERIC(10,2)`, migration via `/setup`).
+   The vehicle info row in both the fill-in form (`Maintenance.jsx`) and the printed PDF
+   (`truckInspectionPdf.js`) now has two extra fields alongside Vehicle No./Driver/Cleaner.
+4. **Inspection checklist PDF now fits one page (A4), matching the business's own paper template.**
+   Fetched and rendered the originally-uploaded `TM_Check_list_for_Plant_Incharge.pdf` to confirm it
+   is genuinely one page with ~4.1mm data rows, then tightened `truckInspectionPdf.js`'s row/section
+   heights to match (section bars 4.6mm, grid rows 4.15mm, observations box and signature block
+   gaps trimmed). Confirmed via a Node smoke test (`getNumberOfPages() === 1`) with the new odometer
+   fields, full checklist, observations, and signatures all present.
+5. **Inspection checklist PDF formatting fixed — inconsistent line weights, missing lines.**
+   Root-caused via a 400dpi render of the actual PDF: `drawCheckbox()` set a darker/thicker stroke
+   for its own checkbox square and never restored the previous style, so whatever border was drawn
+   immediately after a checkbox — most visibly the rating-grid column dividers — silently inherited
+   the wrong weight/color. Fixed with a `setBorderStyle(doc)` helper that every checkbox call now
+   restores before returning, so every draw call is self-contained regardless of order. Re-verified
+   with a second 400dpi crop showing uniform border weight throughout.
+6. **Maintenance Action Points is now visible from the Administrator page.** The panel
+   (`MaintenanceActionPointsPanel`) existed and worked on the Manager Dashboard, but was never wired
+   into `Administrator.jsx` at all — a plain omission, not a bug in the panel. Added it to the
+   Masters menu and its render block; also reopened the backing `/action-points` routes from
+   Manager-only (a deliberate Round 101 restriction) to both Manager and Administrator, matching
+   every other route in `maintenance.js`.
+7. **Lab Technician now sees due/overdue cube testing first at login**, instead of it being buried
+   in the Active tab sorted by pour date. New `GET /lab-technician/due-testing` endpoint unions
+   plant-pour and site-cast cubes not yet tested at their 7-day or 28-day mark (excluding already-
+   resulted or closed-out pours), computing status (`overdue` / `due today`) the same way for both
+   sources — site casts previously had no due-status computation anywhere in the app. A new
+   `DueTestingPanel` renders above the tab bar on every Lab Technician login, overdue count
+   highlighted, each row jumping straight into the right pour/cast on tap.
+8. **New: 360° Fuel Analysis**, a real backend + fleet-overview/drill-down page (built and verified
+   against live-shaped data, not sample numbers) analyzing fuel consumption against the factors the
+   business asked for: trips, distance, quantity carried, pump vs. manual discharge, waiting/
+   unloading/travel time, and driver. Confirmed `fuel_logs` (the older self-logged fuel table) has
+   no frontend caller anywhere in the app — the live fuel-fill data is `supply_requests`, which is
+   what the new `GET /fuel-analysis/fleet` and `GET /fuel-analysis/truck/:id` endpoints (Manager/
+   Administrator only) are built against. Fleet view ranks every truck by L/100km against the fleet
+   average, flagging outliers by color; tapping a truck drills into its real fill-to-fill consumption
+   (via a `LAG` window function on `supply_requests.odometer_reading`), the trip-level rows behind
+   its activity, and a per-driver breakdown. New page `FuelAnalysis.jsx`, linked from the Reports
+   menu on the Manager, Administrator, and Director's Dashboard pages as "360° Fuel Analysis". Both
+   the fleet list and the per-truck drill-down deliberately exclude a range's very first fill from
+   the L/100km numerator (there's no prior odometer reading to pair it with a real distance) so the
+   two views never disagree about the same truck's rate — an inconsistency (21.6 vs 17.3 L/100km)
+   caught and fixed during verification, below.
+
+Verified with `node --check` on every touched/new backend file, a clean `npm run build`, and a local
+Postgres instance (schema loaded end-to-end from a clean `schema.sql`, confirming every migration
+this round applies without error) seeded with realistic data to run the new Lab Technician and Fuel
+Analysis SQL against directly — this caught a real Postgres `UNION ALL ... ORDER BY` restriction in
+the due-testing query (fixed by wrapping the union in a subquery) and a real fleet-vs-drill-down rate
+mismatch in the fuel analysis feature (fixed by excluding each range's first, unpaired fill from the
+consumption numerator in both places). The fuel analysis backend was also exercised end-to-end
+through the real Express app (auth middleware included, not just SQL in isolation), and the new page
+was rendered and screenshotted against that live data to check for layout issues before delivery.
