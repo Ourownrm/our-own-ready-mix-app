@@ -10,68 +10,139 @@ const STAFF_ROLES = ["manager", "administrator"];
 
 // ===== Maintenance action points (round 98, item 10; moved here from
 // Administrator round 101) =====
-// A checklist of scheduled maintenance items, defined by Manager — applies
-// uniformly to every active truck (no per-vehicle overrides in this first
-// version). Each point trips on whichever of interval_days /
-// interval_hours comes first; at least one of the two is required.
-// Round 134: was deliberately Manager-only (not Administrator) per round
-// 101; reopened per business request so Administrator can see/manage it too
-// (the panel is now also wired into Administrator's Masters menu) — now
-// matches every other route in this file (STAFF_ROLES).
+// A checklist of scheduled maintenance items, defined by Manager. Each
+// point trips on whichever of interval_days / interval_hours /
+// interval_qty_m3 (Round 136) comes first; at least one of the three is
+// required. Round 134: was deliberately Manager-only (not Administrator)
+// per round 101; reopened per business request so Administrator can see/
+// manage it too (the panel is now also wired into Administrator's Masters
+// menu) — now matches every other route in this file (STAFF_ROLES).
+//
+// Round 136 — per-vehicle/equipment scoping (maintenance_action_point_scope,
+// see schema.sql's own comment). No scope rows for a point still means
+// "every active truck", exactly matching every action point's only possible
+// behavior before this round, so nothing already defined silently narrows.
+// truck_ids/equipment_ids are the FULL desired selection on every
+// POST/PATCH (matching the frontend's MultiPicker, which always hands back
+// the complete selected-ids array, not a diff) — saveScope() below replaces
+// whatever scope rows existed, rather than merging.
+async function saveScope(actionPointId, truckIds, equipmentIds) {
+  await query(`DELETE FROM maintenance_action_point_scope WHERE action_point_id = $1`, [actionPointId]);
+  const trucks = Array.isArray(truckIds) ? truckIds : [];
+  const equipment = Array.isArray(equipmentIds) ? equipmentIds : [];
+  for (const truckId of trucks) {
+    await query(
+      `INSERT INTO maintenance_action_point_scope (action_point_id, truck_id) VALUES ($1,$2)`,
+      [actionPointId, truckId]
+    );
+  }
+  for (const equipmentId of equipment) {
+    await query(
+      `INSERT INTO maintenance_action_point_scope (action_point_id, equipment_id) VALUES ($1,$2)`,
+      [actionPointId, equipmentId]
+    );
+  }
+}
+
 router.get("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
   const { rows } = await query(
-    `SELECT id, name, interval_days, interval_hours, is_active, created_at
-     FROM maintenance_action_points ORDER BY name`
+    `SELECT ap.id, ap.name, ap.interval_days, ap.interval_hours, ap.interval_qty_m3, ap.is_active, ap.created_at,
+            COALESCE(array_agg(sc.truck_id) FILTER (WHERE sc.truck_id IS NOT NULL), '{}') AS truck_ids,
+            COALESCE(array_agg(sc.equipment_id) FILTER (WHERE sc.equipment_id IS NOT NULL), '{}') AS equipment_ids
+     FROM maintenance_action_points ap
+     LEFT JOIN maintenance_action_point_scope sc ON sc.action_point_id = ap.id
+     GROUP BY ap.id
+     ORDER BY ap.name`
   );
   res.json(rows);
 });
 
 router.post("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
-  const { name, interval_days, interval_hours } = req.body;
-  if (!name || (!interval_days && !interval_hours)) {
-    return res.status(400).json({ error: "Name and at least one of interval days / interval hours are required." });
+  const { name, interval_days, interval_hours, interval_qty_m3, truck_ids, equipment_ids } = req.body;
+  if (!name || (!interval_days && !interval_hours && !interval_qty_m3)) {
+    return res.status(400).json({ error: "Name and at least one of interval days / interval hours / interval quantity (m3) are required." });
   }
   const { rows } = await query(
-    `INSERT INTO maintenance_action_points (name, interval_days, interval_hours)
-     VALUES ($1,$2,$3) RETURNING *`,
-    [name, interval_days || null, interval_hours || null]
+    `INSERT INTO maintenance_action_points (name, interval_days, interval_hours, interval_qty_m3)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [name, interval_days || null, interval_hours || null, interval_qty_m3 || null]
   );
+  await saveScope(rows[0].id, truck_ids, equipment_ids);
   res.status(201).json(rows[0]);
 });
 
 router.patch("/action-points/:id", requireRole(...STAFF_ROLES), async (req, res) => {
-  const { name, interval_days, interval_hours, is_active } = req.body;
+  const { name, interval_days, interval_hours, interval_qty_m3, is_active, truck_ids, equipment_ids } = req.body;
+  // Round 135 bug fix: this used `?? null` (only null/undefined become
+  // null), unlike POST's `|| null` below — so editing an item that has only
+  // ONE of interval_days/interval_hours set (the normal case; POST only
+  // requires "at least one") sent the other field back as "" from the edit
+  // form's pre-filled state (MasterDataPanels.jsx's startEdit uses
+  // `p.interval_days || ""`), and "" hit Postgres as `invalid input syntax
+  // for type integer: ""`, surfacing as a generic error on every such edit.
+  // Matched to POST's `|| null` handling, plus POST's own "at least one
+  // interval" validation, which PATCH never had at all (the frontend's edit
+  // form always sends both interval fields alongside name/is_active, so this
+  // is safe — nothing PATCHes a partial body here). Round 136: extended to
+  // the new interval_qty_m3 field, same pattern.
+  if (!interval_days && !interval_hours && !interval_qty_m3) {
+    return res.status(400).json({ error: "At least one of interval days / interval hours / interval quantity (m3) is required." });
+  }
   const { rows } = await query(
     `UPDATE maintenance_action_points SET
        name = COALESCE($1, name),
        interval_days = $2,
        interval_hours = $3,
-       is_active = COALESCE($4, is_active)
-     WHERE id = $5 RETURNING *`,
-    [name || null, interval_days ?? null, interval_hours ?? null, is_active, req.params.id]
+       interval_qty_m3 = $4,
+       is_active = COALESCE($5, is_active)
+     WHERE id = $6 RETURNING *`,
+    [name || null, interval_days || null, interval_hours || null, interval_qty_m3 || null, is_active, req.params.id]
   );
   if (!rows[0]) return res.status(404).json({ error: "Action point not found." });
+  // truck_ids/equipment_ids are optional on PATCH only so a caller that
+  // genuinely isn't touching scope (none exists yet, but kept safe for
+  // future partial updates) doesn't accidentally wipe it; the frontend's
+  // own edit form always sends both arrays (possibly empty), same as POST.
+  if (truck_ids !== undefined || equipment_ids !== undefined) {
+    await saveScope(req.params.id, truck_ids, equipment_ids);
+  }
   res.json(rows[0]);
 });
 
 // ===================== MAINTENANCE MODULE (round 98, item 10) =====================
 
-// Due list — every active truck x active action point (minus trucks
-// currently away at an external workshop, which get one "in_workshop" row
-// instead), classified overdue / due_soon / upcoming / never against
-// whichever of days-elapsed or hours-of-operation trips first. Hours read
-// off the truck's most recent fuel_logs.hour_meter_reading (already
-// captured today by the fuel module — no new data entry needed).
+// Due list — every active truck x active action point that this point's
+// scope actually covers (minus trucks currently away at an external
+// workshop, which get one "in_workshop" row instead), classified overdue /
+// due_soon / upcoming / never against whichever of days-elapsed /
+// hours-of-operation / quantity-carried trips first. Hours read off the
+// truck's most recent fuel_logs.hour_meter_reading (already captured today
+// by the fuel module — no new data entry needed).
+//
+// Round 136 — two changes: (1) an action point with rows in
+// maintenance_action_point_scope only cross-joins the trucks actually in
+// its scope (no rows there still means every active truck, so nothing
+// defined before this round changes); (2) interval_qty_m3 (m3 carried by
+// THIS truck since its last log for THIS action point) is computed live
+// off delivery_tickets — same "never compute due/overdue in JS, and never
+// snapshot what can drift, recompute live in SQL" pattern used everywhere
+// else in this codebase (e.g. the cube-test due-date math), rather than a
+// stored "quantity at last service" column that could fall out of sync.
+// Equipment scoping is stored (see maintenance_action_point_scope's own
+// comment) but this due list still only evaluates trucks — equipment has
+// no hours/quantity usage tracking of its own yet, so there's nothing to
+// classify it against.
 router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
   const [dueRows, inWorkshop, turnaround] = await Promise.all([
     query(`
       SELECT
         t.id AS truck_id, t.truck_number,
         ap.id AS action_point_id, ap.name AS action_name,
-        ap.interval_days, ap.interval_hours,
+        ap.interval_days, ap.interval_hours, ap.interval_qty_m3,
         ml.done_at AS last_done_at,
         ml.hours_at_service AS last_hours,
         fh.current_hours,
+        qm.qty_since_service,
         CASE WHEN ap.interval_days IS NOT NULL AND ml.done_at IS NOT NULL
              THEN (ml.done_at + (ap.interval_days || ' days')::interval)::date
              ELSE NULL END AS due_date,
@@ -80,7 +151,10 @@ router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
              ELSE NULL END AS days_remaining,
         CASE WHEN ap.interval_hours IS NOT NULL AND ml.hours_at_service IS NOT NULL AND fh.current_hours IS NOT NULL
              THEN (ml.hours_at_service + ap.interval_hours) - fh.current_hours
-             ELSE NULL END AS hours_remaining
+             ELSE NULL END AS hours_remaining,
+        CASE WHEN ap.interval_qty_m3 IS NOT NULL AND ml.done_at IS NOT NULL
+             THEN ap.interval_qty_m3 - qm.qty_since_service
+             ELSE NULL END AS qty_remaining_m3
       FROM trucks t
       CROSS JOIN maintenance_action_points ap
       LEFT JOIN LATERAL (
@@ -93,8 +167,18 @@ router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
         WHERE truck_id = t.id AND hour_meter_reading IS NOT NULL
         ORDER BY logged_at DESC LIMIT 1
       ) fh ON true
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) AS qty_since_service
+        FROM delivery_tickets dt
+        WHERE dt.truck_id = t.id AND dt.status NOT IN ('cancelled', 'rejected')
+          AND dt.ticket_date > COALESCE(ml.done_at, '1900-01-01'::date)
+      ) qm ON true
       WHERE t.is_active AND ap.is_active
         AND NOT EXISTS (SELECT 1 FROM external_repairs er WHERE er.truck_id = t.id AND er.status = 'sent_out')
+        AND (
+          NOT EXISTS (SELECT 1 FROM maintenance_action_point_scope sc WHERE sc.action_point_id = ap.id)
+          OR EXISTS (SELECT 1 FROM maintenance_action_point_scope sc WHERE sc.action_point_id = ap.id AND sc.truck_id = t.id)
+        )
       ORDER BY t.truck_number, ap.name
     `),
     query(`
@@ -111,9 +195,16 @@ router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
 
   function classify(row) {
     if (!row.last_done_at) return "never";
-    const overdue = (row.days_remaining != null && row.days_remaining < 0) || (row.hours_remaining != null && row.hours_remaining < 0);
+    const overdue = (row.days_remaining != null && row.days_remaining < 0)
+      || (row.hours_remaining != null && row.hours_remaining < 0)
+      || (row.qty_remaining_m3 != null && row.qty_remaining_m3 < 0);
     if (overdue) return "overdue";
-    const dueSoon = (row.days_remaining != null && row.days_remaining <= 7) || (row.hours_remaining != null && row.hours_remaining <= 20);
+    // Flat "due soon" buffers, same style as the existing 7-days/20-hours
+    // thresholds (not proportional to the interval) — 50 m3 is roughly a
+    // week of one truck's typical output, the same rough grain as 7 days.
+    const dueSoon = (row.days_remaining != null && row.days_remaining <= 7)
+      || (row.hours_remaining != null && row.hours_remaining <= 20)
+      || (row.qty_remaining_m3 != null && row.qty_remaining_m3 <= 50);
     if (dueSoon) return "due_soon";
     return "upcoming";
   }
@@ -247,6 +338,115 @@ router.patch("/external-repairs/:id/returned", requireRole(...STAFF_ROLES), asyn
     [req.params.id]
   );
   if (!rows[0]) return res.status(400).json({ error: "This repair isn't currently sent out." });
+  res.json(rows[0]);
+});
+
+// ===== Repair Action Points (Round 136) =====
+// Scheduled repairs against a specific vehicle or equipment, added as and
+// when a need comes up — NOT the same as breakdown_reports (unplanned,
+// reported on the spot by a driver/operator) or external_repairs' own
+// approve/sent-out/returned workflow above. A repair point flagged Internal
+// just needs a completion entry, like a maintenance action point; one
+// flagged External can optionally be sent into that existing external
+// workflow once it's due (see /send-external below), which links the two
+// records via external_repair_id rather than duplicating that workflow's
+// own states here.
+router.get("/repair-action-points", requireRole(...STAFF_ROLES), async (req, res) => {
+  const { rows } = await query(
+    `SELECT rap.*, t.truck_number, eq.name AS equipment_name,
+            cu.name AS created_by_name, ou.name AS completed_by_name,
+            er.status AS external_repair_status, er.workshop_name AS external_workshop_name
+     FROM repair_action_points rap
+     LEFT JOIN trucks t ON t.id = rap.truck_id
+     LEFT JOIN equipment eq ON eq.id = rap.equipment_id
+     LEFT JOIN users cu ON cu.id = rap.created_by
+     LEFT JOIN users ou ON ou.id = rap.completed_by
+     LEFT JOIN external_repairs er ON er.id = rap.external_repair_id
+     ORDER BY (rap.status IN ('completed', 'cancelled')), rap.scheduled_date NULLS LAST, rap.created_at DESC
+     LIMIT 300`
+  );
+  res.json(rows);
+});
+
+router.post("/repair-action-points", requireRole(...STAFF_ROLES), async (req, res) => {
+  const { truck_id, equipment_id, description, repair_type, scheduled_date, notes } = req.body;
+  if (!description || !repair_type) {
+    return res.status(400).json({ error: "Description and type (Internal/External) are required." });
+  }
+  if (!["internal", "external"].includes(repair_type)) {
+    return res.status(400).json({ error: "Type must be Internal or External." });
+  }
+  if ((!truck_id && !equipment_id) || (truck_id && equipment_id)) {
+    return res.status(400).json({ error: "Pick exactly one of vehicle or equipment." });
+  }
+  const { rows } = await query(
+    `INSERT INTO repair_action_points (truck_id, equipment_id, description, repair_type, scheduled_date, notes, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [truck_id || null, equipment_id || null, description, repair_type, scheduled_date || null, notes || null, req.user.id]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/repair-action-points/:id", requireRole(...STAFF_ROLES), async (req, res) => {
+  const { description, repair_type, scheduled_date, status, notes } = req.body;
+  if (repair_type && !["internal", "external"].includes(repair_type)) {
+    return res.status(400).json({ error: "Type must be Internal or External." });
+  }
+  if (status && !["pending", "scheduled", "in_progress", "completed", "cancelled"].includes(status)) {
+    return res.status(400).json({ error: "Invalid status." });
+  }
+  const { rows } = await query(
+    `UPDATE repair_action_points SET
+       description = COALESCE($1, description),
+       repair_type = COALESCE($2, repair_type),
+       -- Round 136 note: this intentionally can't clear a scheduled_date
+       -- back to NULL once set (COALESCE keeps the old value when $3 is
+       -- null) — no UI flow needs that yet; every caller either omits this
+       -- field or sends a real replacement date.
+       scheduled_date = COALESCE($3, scheduled_date),
+       status = COALESCE($4, status),
+       notes = COALESCE($5, notes),
+       completed_by = CASE WHEN $4 = 'completed' AND status != 'completed' THEN $6
+                            WHEN $4 IS NOT NULL AND $4 != 'completed' THEN NULL
+                            ELSE completed_by END,
+       completed_at = CASE WHEN $4 = 'completed' AND status != 'completed' THEN now()
+                            WHEN $4 IS NOT NULL AND $4 != 'completed' THEN NULL
+                            ELSE completed_at END
+     WHERE id = $7 RETURNING *`,
+    [description || null, repair_type || null, scheduled_date || null, status || null, notes || null, req.user.id, req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Repair action point not found." });
+  res.json(rows[0]);
+});
+
+router.delete("/repair-action-points/:id", requireRole(...STAFF_ROLES), async (req, res) => {
+  const { rowCount } = await query(`DELETE FROM repair_action_points WHERE id = $1`, [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "Repair action point not found." });
+  res.status(204).end();
+});
+
+// Optional convenience for an External-flagged point: starts the existing
+// external_repairs approve/sent-out/returned workflow (same table
+// Maintenance's own External Repair Kanban already reviews) instead of the
+// requester having to separately raise a fresh external-repair request.
+// Not required — an External point can still be tracked to completion here
+// on its own if the workshop is being arranged outside the app.
+router.post("/repair-action-points/:id/send-external", requireRole(...STAFF_ROLES), async (req, res) => {
+  const { rows: pointRows } = await query(`SELECT * FROM repair_action_points WHERE id = $1`, [req.params.id]);
+  const point = pointRows[0];
+  if (!point) return res.status(404).json({ error: "Repair action point not found." });
+  if (point.repair_type !== "external") return res.status(400).json({ error: "Only an External-type repair point can be sent to the external workshop workflow." });
+  if (point.external_repair_id) return res.status(400).json({ error: "This repair point is already linked to an external repair request." });
+
+  const { rows: erRows } = await query(
+    `INSERT INTO external_repairs (truck_id, equipment_id, requested_by, issue_description)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [point.truck_id, point.equipment_id, req.user.id, point.description]
+  );
+  const { rows } = await query(
+    `UPDATE repair_action_points SET status = 'in_progress', external_repair_id = $1 WHERE id = $2 RETURNING *`,
+    [erRows[0].id, req.params.id]
+  );
   res.json(rows[0]);
 });
 

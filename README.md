@@ -5504,3 +5504,116 @@ mismatch in the fuel analysis feature (fixed by excluding each range's first, un
 consumption numerator in both places). The fuel analysis backend was also exercised end-to-end
 through the real Express app (auth middleware included, not just SQL in isolation), and the new page
 was rendered and screenshotted against that live data to check for layout issues before delivery.
+
+## Round 135 (Ver. 9.57): Maintenance Action Points edit-error fix; mockups for Lab Technician, Maintenance/Repair, and Fuel Analysis redesigns
+
+1. **Fixed: editing a Maintenance Action Point that has only one interval set threw a generic error.**
+   `PATCH /action-points/:id` read `interval_days ?? null` / `interval_hours ?? null` — nullish
+   coalescing, which only substitutes `null` for actual `null`/`undefined`. The edit form
+   (`MasterDataPanels.jsx`) pre-fills a blank interval as `""` (via `p.interval_days || ""`), and an
+   empty string isn't null/undefined, so it passed straight through to Postgres as
+   `invalid input syntax for type integer: ""` on every edit of a days-only or hours-only point —
+   which is most of them, since `POST` only ever required "at least one" of the two. Matched PATCH to
+   POST's existing `interval_days || null` / `interval_hours || null` pattern (empty string is also
+   falsy, so it correctly becomes `null`), and added PATCH's own "at least one interval required"
+   validation, which it never had at all. The frontend's edit form always sends a complete body
+   (name, both interval fields, is_active), so the new validation can't break any partial-update
+   caller — there isn't one.
+
+2. **Mockups delivered for three requested redesigns — design only, no app code changed.** Per an
+   explicit choice on scope (asked directly rather than guessed, since two of these read as much like
+   bug reports as design requests): all three below are static mockups on one Claude Design canvas,
+   not live features. Six artboards across three pages, published as a separate design canvas
+   Artifact (link shared with this round) rather than folded into the app zip/version cycle:
+   - **Lab Technician dashboard.** Today's due/overdue list (a growing wall of one-line rows above the
+     tab bar) redesigned as a single KPI card — count, overdue/due-today badges, tap to open — matching
+     the app's existing `.portal-strip` row pattern rather than inventing new visual language. Opens a
+     new "Samples Due for Testing" page showing plant pours and site casts together as status-coded
+     cards.
+   - **Maintenance Action Points + new Repair Action Points.** A third interval type, Qty (m³),
+     alongside the existing Days/Hours, plus a grouped vehicle/equipment picker (modeled on the
+     existing `MultiPicker` component) so a point can target specific trucks/equipment instead of
+     always applying fleet-wide. A new, separate **Repair Action Points** screen for scheduled
+     Internal/External repairs against a specific vehicle or equipment — distinct from the existing
+     reactive Breakdown Reports and from the External Repair send-out workflow, with an on-canvas note
+     spelling out how the three relate (an External-flagged repair point is what would start an
+     External Repair request once due).
+   - **360° Fuel Analysis, corrected.** Addresses three real issues found while investigating: (a) the
+     "with pump" split was reading `delivery_tickets.pump_id`, a field the live ticket-creation flow
+     never populates — every truck showed as 100% "without pump" — the fix reads `customer_orders.pump_id`
+     instead, the same fallback already used elsewhere in the codebase; (b) added L/m³ (litres against
+     concrete actually carried) alongside the existing L/100km; (c) reconfirmed the fill-to-fill
+     odometer basis is correct and mocked up a fleet ranking table plus a per-truck drilldown (fill
+     interval table, trip list, by-driver breakdown). The driver table intentionally shows only
+     operational detail — trips, km, pump usage, timing — never litres or L/m³ per driver, since
+     `supply_requests` (the real fuel-fill table) has no `driver_id` column; fuel can only be
+     attributed per truck, not per driver, and the mockup says so rather than inventing a number.
+     This item was mocked up rather than fixed live, by explicit choice.
+
+Verified with `node --check` on the touched backend file (`maintenance.js`) and a clean `npm run
+build`. No schema or other backend/frontend changes this round beyond the one PATCH fix and the
+version bump — the three mockups above are design-canvas artboards only, not application code, and
+are not covered by this build/verify pass.
+
+## Round 136 (Ver. 9.58): Round 135's three mockups shipped as working code
+
+All three Round 135 mockups (Lab Technician dashboard, Maintenance Action Points + new Repair Action
+Points, 360° Fuel Analysis corrections) are now real, live features — not design artboards. Every
+schema change below is additive and migrated both in `setup.js` (`/setup?key=...`, idempotent, for
+already-deployed databases) and baked directly into `schema.sql` (fresh installs), per this project's
+standing convention.
+
+1. **Lab Technician: due-testing KPI card + Samples Due page.** `GET /lab-technician/due-testing`
+   rewritten to return one row per sample (a plant pour or a site cast) carrying both the 7-day and
+   28-day status/due-date side by side, instead of the old one-row-per-age shape. The old growing
+   in-page due list is now a single `.se-strip` KPI card (overdue/due-today counts) on the Lab
+   Technician home screen, tapping through to a new `/lab-technician/due-today` page — a card grid of
+   every sample currently due or overdue. Rebuilding this surfaced seven things the old due list
+   carried that a first-pass redesign would have dropped, all deliberately preserved:
+   - number of cubes (`total_cubes`, now on every card)
+   - both the 7-day and 28-day due dates side by side (the query's whole reshape)
+   - the poured/cast date (`sample_date`, shown on every card)
+   - "Close — not testing" directly on each due-today card (reuses the existing
+     `POST /cube-pours/:orderId/close` endpoint, plant pours only)
+   - date-change and delete for Lab Technician — untouched, since `PourDetail`/`SiteCastDetail` (where
+     these already live) were left completely alone; "Open pour"/"Open cast" on each card navigates
+     straight into those same screens via new `?focusOrder=`/`?focusCast=` query params
+   - share-with-customer visibility toggle — same reasoning, untouched
+   - the Round 133 combined 7d/28d PDF report and its formatting — `CubeTestReport.jsx` and
+     `cubeTestPdf.js` were not touched at all
+2. **Maintenance Action Points: qty-m³ interval + per-vehicle/equipment assignment.** A third interval
+   type (`interval_qty_m3`) alongside the existing days/hours — due list now also trips when a truck
+   has carried more than the set m³ since its last service, computed live via a `LATERAL JOIN` summing
+   `delivery_tickets` since the last log date (deliberately not snapshotted, so it can't drift from the
+   ticket data). New `maintenance_action_point_scope` junction table lets a point target specific
+   trucks/equipment instead of always applying fleet-wide (zero scope rows = applies to every active
+   truck, preserving existing points' behavior exactly). A new grouped `VehicleEquipmentPicker` handles
+   the trucks/equipment selection in the admin panel; scope is shown on the due-list table via chips
+   ("All active trucks (14)" or up to 3 names + overflow). Note: equipment *can* be scoped to a point,
+   but the live due-list still only evaluates trucks this round — equipment has no hours/quantity usage
+   tracking of its own yet, a pre-existing gap, stated in both `schema.sql` and `maintenance.js`.
+3. **New: Repair Action Points.** A separate tab on the Maintenance page for scheduled Internal/External
+   repairs against a specific vehicle or equipment — distinct from the preventive Maintenance module
+   above and from the reactive External Repair kanban nested inside it. New `repair_action_points`
+   table with its own add/status-advance/delete lifecycle; an External-type point can optionally be
+   sent into the existing External Repair approve → sent-out → returned workflow
+   (`POST /repair-action-points/:id/send-external`), linking the two records rather than duplicating
+   that workflow.
+4. **360° Fuel Analysis corrections.** (a) Fixed the "with pump" detection bug found during the Round
+   135 investigation: `delivery_tickets.pump_id` is often never populated by the live ticket-creation
+   flow, so every truck was reading as ~100% "without pump." All three affected queries (fleet summary,
+   truck drill-down trip list, per-driver breakdown) now fall back to `customer_orders.pump_id`, the
+   same fallback already used in `administrator.js`'s own delivery-ticket listing — verified against a
+   seeded local database that a ticket with a null `pump_id` but a pumped order now correctly counts as
+   "with pump." (b) Added L/m³ (litres against concrete actually carried) alongside the existing
+   L/100km, both on the fleet table (with a fleet-average KPI) and the truck drill-down — distance-
+   independent, so unlike L/100km it doesn't need paired odometer readings and uses every litre in
+   range. (c) Reconfirmed the fill-to-fill odometer basis was already correct from Round 134 — no
+   change needed there.
+
+Verified with `node --check` on every touched backend file (`labTechnician.js`, `setup.js`,
+`maintenance.js`, `fuelAnalysis.js`), a clean `npm run build`, and `schema.sql` loading end-to-end with
+zero errors on a fresh local Postgres database. The Lab Technician due-testing query, the Maintenance
+qty-m³/scoping logic, the Repair Action Points lifecycle, and the fuel-analysis pump-detection fix were
+each additionally verified with seeded data against a real (disposable) local Postgres instance before
+being considered done, not just syntax-checked.

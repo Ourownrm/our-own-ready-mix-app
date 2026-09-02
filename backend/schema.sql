@@ -1491,18 +1491,40 @@ CREATE TABLE breakdown_reports (
 
 -- ===================== MAINTENANCE MODULE (round 98, item 10) =====================
 -- Preventive/scheduled maintenance, complementary to the purely reactive
--- breakdown_reports above. Action points apply uniformly to every active
--- truck (no per-vehicle overrides in this first version) and trip on
--- whichever of interval_days / interval_hours comes first — hours read off
--- the truck's most recent fuel_logs.hour_meter_reading.
+-- breakdown_reports above. Action points trip on whichever of
+-- interval_days / interval_hours / interval_qty_m3 (Round 136) comes first
+-- — hours read off the truck's most recent fuel_logs.hour_meter_reading,
+-- quantity summed live off delivery_tickets since the last log. By default
+-- an action point applies to every active truck, same as before Round 136;
+-- maintenance_action_point_scope lets it be narrowed to specific
+-- vehicles/equipment instead — no row there for a given action point still
+-- means "every active truck" (see the table's own comment).
 
 CREATE TABLE maintenance_action_points (
   id SERIAL PRIMARY KEY,
   name VARCHAR(150) NOT NULL,
   interval_days INTEGER,
   interval_hours INTEGER,
+  interval_qty_m3 NUMERIC(10,2),
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Round 136 — per-vehicle/equipment scoping for an action point, opt-in: no
+-- row for a given action_point_id means it still applies to every active
+-- truck (the only behavior that existed before this table). truck_id/
+-- equipment_id follow the same "exactly one set, enforced in the API not a
+-- DB constraint" house style as external_repairs/fuel_logs. The live due
+-- list (GET /maintenance/dashboard) currently evaluates trucks only —
+-- equipment scoping is captured here for when equipment gets its own
+-- usage-basis (hours/quantity) tracking, but isn't in that due list yet.
+CREATE TABLE maintenance_action_point_scope (
+  id SERIAL PRIMARY KEY,
+  action_point_id INTEGER NOT NULL REFERENCES maintenance_action_points(id) ON DELETE CASCADE,
+  truck_id INTEGER REFERENCES trucks(id),
+  equipment_id INTEGER REFERENCES equipment(id),
+  UNIQUE (action_point_id, truck_id),
+  UNIQUE (action_point_id, equipment_id)
 );
 
 CREATE TABLE maintenance_logs (
@@ -1545,6 +1567,31 @@ CREATE TABLE external_repairs (
 );
 CREATE INDEX idx_external_repairs_status ON external_repairs(status);
 CREATE INDEX idx_external_repairs_truck ON external_repairs(truck_id);
+
+-- Round 136, item 2 — Repair Action Points: a scheduled repair against a
+-- specific vehicle or equipment, flagged Internal or External, added as and
+-- when a need comes up. Deliberately a new, separate table — NOT an
+-- extension of breakdown_reports (unplanned, reported on the spot by a
+-- driver/operator) or of external_repairs' own send-out workflow above.
+-- external_repair_id is set once an External-flagged point actually starts
+-- that workflow (once it's due), linking the two records rather than
+-- duplicating external_repairs' own approve/sent-out/returned states here.
+CREATE TABLE repair_action_points (
+  id SERIAL PRIMARY KEY,
+  truck_id INTEGER REFERENCES trucks(id),
+  equipment_id INTEGER REFERENCES equipment(id),
+  description VARCHAR(300) NOT NULL,
+  repair_type VARCHAR(10) NOT NULL CHECK (repair_type IN ('internal','external')),
+  scheduled_date DATE,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','scheduled','in_progress','completed','cancelled')),
+  external_repair_id INTEGER REFERENCES external_repairs(id),
+  notes TEXT,
+  created_by INTEGER REFERENCES users(id) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_by INTEGER REFERENCES users(id),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_repair_action_points_status ON repair_action_points(status);
 
 -- ===================== DRIVER EVALUATION (round 98, item 11) =====================
 -- The digitized "Transit Mixer Weekly Inspection Checklist" — filled by

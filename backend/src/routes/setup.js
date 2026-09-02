@@ -1741,6 +1741,57 @@ router.get("/setup", async (req, res) => {
     await query(`ALTER TABLE truck_inspections ADD COLUMN IF NOT EXISTS hour_meter_reading NUMERIC(10,2);`);
     log.push("Schema migration applied (truck_inspections.odometer_reading / hour_meter_reading).");
 
+    // Round 136, item 1 — Maintenance Action Points: a third interval type
+    // (quantity in m3 carried since last service, alongside the existing
+    // days/hours) and per-vehicle/equipment scoping instead of always
+    // applying to every active truck. No row in the new scope table for a
+    // given action point means "applies to every active truck" — the exact
+    // behavior every action point already on file had before this column
+    // existed, so nothing already defined silently stops applying.
+    // truck_id/equipment_id here follow the same "exactly one set,
+    // enforced in the API not a DB constraint" house style as
+    // external_repairs (Round 134) and fuel_logs before it.
+    await query(`ALTER TABLE maintenance_action_points ADD COLUMN IF NOT EXISTS interval_qty_m3 NUMERIC(10,2);`);
+    await query(`
+      CREATE TABLE IF NOT EXISTS maintenance_action_point_scope (
+        id SERIAL PRIMARY KEY,
+        action_point_id INTEGER NOT NULL REFERENCES maintenance_action_points(id) ON DELETE CASCADE,
+        truck_id INTEGER REFERENCES trucks(id),
+        equipment_id INTEGER REFERENCES equipment(id),
+        UNIQUE (action_point_id, truck_id),
+        UNIQUE (action_point_id, equipment_id)
+      );
+    `);
+    log.push("Schema migration applied (maintenance_action_points.interval_qty_m3, maintenance_action_point_scope).");
+
+    // Round 136, item 2 — Repair Action Points: a scheduled repair against a
+    // specific vehicle or equipment, flagged Internal or External, added as
+    // and when a need comes up. Deliberately a new, separate table — NOT an
+    // extension of breakdown_reports (unplanned, reported on the spot by a
+    // driver/operator) or external_repairs' own send-out workflow.
+    // external_repair_id is set once an External-flagged point actually
+    // starts that workflow (once it's due), linking the two records rather
+    // than duplicating external_repairs' own approve/sent-out/returned
+    // states here.
+    await query(`
+      CREATE TABLE IF NOT EXISTS repair_action_points (
+        id SERIAL PRIMARY KEY,
+        truck_id INTEGER REFERENCES trucks(id),
+        equipment_id INTEGER REFERENCES equipment(id),
+        description VARCHAR(300) NOT NULL,
+        repair_type VARCHAR(10) NOT NULL CHECK (repair_type IN ('internal','external')),
+        scheduled_date DATE,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','scheduled','in_progress','completed','cancelled')),
+        external_repair_id INTEGER REFERENCES external_repairs(id),
+        notes TEXT,
+        created_by INTEGER REFERENCES users(id) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        completed_by INTEGER REFERENCES users(id),
+        completed_at TIMESTAMPTZ
+      );
+    `);
+    log.push("Schema migration applied (repair_action_points).");
+
     // Seed/sample data (customer, site, pumps, a starter rate) has been
     // moved to run only on a genuinely fresh install, right after the tables
     // are first created — see above. It used to run unconditionally on every

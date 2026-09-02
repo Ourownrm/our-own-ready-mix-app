@@ -144,13 +144,28 @@ router.get("/cube-pours", async (req, res) => {
 // established "never compute due/overdue in JS" pattern) plus the same
 // math for site casts (cast_date + 7/28), which didn't have overdue/
 // due-today status computed anywhere before this. Closed pours are
-// excluded (deliberately not being tested); done ages are excluded
-// (nothing to chase).
+// excluded (deliberately not being tested).
+//
+// Round 135 — reshaped from one row per (pour, age) to one row per SAMPLE
+// (pour or cast), carrying BOTH ages' status/due-date side by side, plus
+// sample_date and total_cubes. Explicit feedback on the first redesign of
+// this panel: the per-age list dropped the sample count, both due dates
+// together, and the poured/cast date that the old per-pour cards (see
+// AgeBadge usage in CubeTestingTab) always showed — this restores all of
+// that on the due-list itself instead of only inside the per-pour card, so
+// a "due today" view built from this doesn't lose anything the old inline
+// panel's row-click-through used to reach. `can_close` distinguishes plant
+// pours (soft-closeable via cube_pour_status, see /cube-pours/:id/close
+// above) from site casts (no close concept — delete only, see
+// DELETE /site-cube-casts/:id) so a caller knows whether to offer a
+// "Close — not testing" action for a given row. `row_status` is the worse
+// of the two ages' status, purely so a caller can badge/sort/count the
+// sample as one unit without re-deriving that from status_7day/28day itself.
 router.get("/due-testing", async (req, res) => {
   const { rows } = await query(
     `WITH pour_batches AS (
        SELECT co.id AS order_id, m.name AS mix_grade_name, c.name AS customer_name, s.name AS site_name,
-              MIN(pq.entered_at) AS poured_at
+              MIN(pq.entered_at) AS poured_at, COALESCE(SUM(pq.number_of_cubes), 0) AS total_cubes
        FROM plant_qc pq
        JOIN delivery_tickets dt ON dt.id = pq.ticket_id
        JOIN customer_orders co ON co.id = dt.order_id
@@ -170,35 +185,59 @@ router.get("/due-testing", async (req, res) => {
      ),
      plant_due AS (
        SELECT 'plant' AS source, pb.order_id AS ref_id, pb.customer_name, pb.site_name, pb.mix_grade_name,
-              ages.age AS testing_age_days, (pb.poured_at::date + ages.age) AS due_date,
-              CASE WHEN CURRENT_DATE > (pb.poured_at::date + ages.age) THEN 'overdue' ELSE 'due_today' END AS status
+              pb.poured_at::date AS sample_date, pb.total_cubes, true AS can_close,
+              CASE WHEN pr7.id IS NOT NULL OR leg7.testing_age_days IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (pb.poured_at::date + 7) THEN 'overdue'
+                   WHEN CURRENT_DATE = (pb.poured_at::date + 7) THEN 'due_today'
+                   ELSE 'upcoming' END AS status_7day,
+              (pb.poured_at::date + 7) AS due_7day,
+              CASE WHEN pr28.id IS NOT NULL OR leg28.testing_age_days IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (pb.poured_at::date + 28) THEN 'overdue'
+                   WHEN CURRENT_DATE = (pb.poured_at::date + 28) THEN 'due_today'
+                   ELSE 'upcoming' END AS status_28day,
+              (pb.poured_at::date + 28) AS due_28day
        FROM pour_batches pb
-       CROSS JOIN (VALUES (7), (28)) AS ages(age)
-       LEFT JOIN cube_test_results pr ON pr.order_id = pb.order_id AND pr.testing_age_days = ages.age AND pr.plant_qc_id IS NULL
-       LEFT JOIN legacy_results leg ON leg.order_id = pb.order_id AND leg.testing_age_days = ages.age
+       LEFT JOIN cube_test_results pr7 ON pr7.order_id = pb.order_id AND pr7.testing_age_days = 7 AND pr7.plant_qc_id IS NULL
+       LEFT JOIN cube_test_results pr28 ON pr28.order_id = pb.order_id AND pr28.testing_age_days = 28 AND pr28.plant_qc_id IS NULL
+       LEFT JOIN legacy_results leg7 ON leg7.order_id = pb.order_id AND leg7.testing_age_days = 7
+       LEFT JOIN legacy_results leg28 ON leg28.order_id = pb.order_id AND leg28.testing_age_days = 28
        LEFT JOIN cube_pour_status cps ON cps.order_id = pb.order_id
-       WHERE pr.id IS NULL AND leg.order_id IS NULL AND cps.order_id IS NULL
-         AND CURRENT_DATE >= (pb.poured_at::date + ages.age)
+       WHERE cps.order_id IS NULL
      ),
      site_due AS (
        SELECT 'site' AS source, scc.id AS ref_id, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
-              ages.age AS testing_age_days, (scc.cast_date + ages.age) AS due_date,
-              CASE WHEN CURRENT_DATE > (scc.cast_date + ages.age) THEN 'overdue' ELSE 'due_today' END AS status
+              scc.cast_date AS sample_date, scc.number_of_cubes AS total_cubes, false AS can_close,
+              CASE WHEN r7.id IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (scc.cast_date + 7) THEN 'overdue'
+                   WHEN CURRENT_DATE = (scc.cast_date + 7) THEN 'due_today'
+                   ELSE 'upcoming' END AS status_7day,
+              (scc.cast_date + 7) AS due_7day,
+              CASE WHEN r28.id IS NOT NULL THEN 'done'
+                   WHEN CURRENT_DATE > (scc.cast_date + 28) THEN 'overdue'
+                   WHEN CURRENT_DATE = (scc.cast_date + 28) THEN 'due_today'
+                   ELSE 'upcoming' END AS status_28day,
+              (scc.cast_date + 28) AS due_28day
        FROM site_cube_casts scc
        JOIN customer_orders co ON co.id = scc.order_id
        JOIN customers c ON c.id = co.customer_id
        JOIN sites s ON s.id = co.site_id
        JOIN mix_grades m ON m.id = co.mix_grade_id
-       CROSS JOIN (VALUES (7), (28)) AS ages(age)
-       LEFT JOIN site_cube_test_results r ON r.site_cube_cast_id = scc.id AND r.testing_age_days = ages.age
-       WHERE r.id IS NULL AND CURRENT_DATE >= (scc.cast_date + ages.age)
-     )
-     SELECT * FROM (
+       LEFT JOIN site_cube_test_results r7 ON r7.site_cube_cast_id = scc.id AND r7.testing_age_days = 7
+       LEFT JOIN site_cube_test_results r28 ON r28.site_cube_cast_id = scc.id AND r28.testing_age_days = 28
+     ),
+     due_rows AS (
        SELECT * FROM plant_due
        UNION ALL
        SELECT * FROM site_due
-     ) combined
-     ORDER BY (status = 'overdue') DESC, due_date ASC
+     )
+     SELECT *, CASE WHEN status_7day = 'overdue' OR status_28day = 'overdue' THEN 'overdue' ELSE 'due_today' END AS row_status
+     FROM due_rows
+     WHERE status_7day IN ('overdue', 'due_today') OR status_28day IN ('overdue', 'due_today')
+     ORDER BY (status_7day = 'overdue' OR status_28day = 'overdue') DESC,
+              LEAST(
+                CASE WHEN status_7day IN ('overdue','due_today') THEN due_7day END,
+                CASE WHEN status_28day IN ('overdue','due_today') THEN due_28day END
+              ) ASC
      LIMIT 200`
   );
   res.json(rows);

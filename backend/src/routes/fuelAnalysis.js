@@ -78,8 +78,14 @@ router.get("/fleet", requireRole(...STAFF_ROLES), async (req, res) => {
            COUNT(*) AS trip_count,
            SUM(dt.loaded_quantity_m3) AS total_qty_m3,
            SUM(s.distance_from_plant_km) * 2 AS total_est_distance_km,
-           COUNT(*) FILTER (WHERE dt.pump_id IS NOT NULL) AS with_pump_trips,
-           COUNT(*) FILTER (WHERE dt.pump_id IS NULL) AS without_pump_trips,
+           -- Round 136 fix: dt.pump_id alone under-counts "with pump" trips.
+           -- Pump is chosen at order-creation time (customer_orders.pump_id)
+           -- and only copied onto the ticket for some flows, so a ticket
+           -- with no pump_id of its own can still belong to an order that
+           -- specified one — same gap already fixed in administrator.js's
+           -- delivery-ticket listing (see its "Pump No." join comment).
+           COUNT(*) FILTER (WHERE COALESCE(dt.pump_id, co.pump_id) IS NOT NULL) AS with_pump_trips,
+           COUNT(*) FILTER (WHERE COALESCE(dt.pump_id, co.pump_id) IS NULL) AS without_pump_trips,
            ROUND(AVG(EXTRACT(EPOCH FROM (us.event_time - rs.event_time)) / 60)::numeric, 1) AS avg_waiting_minutes,
            ROUND(AVG(EXTRACT(EPOCH FROM (uc.event_time - us.event_time)) / 60)::numeric, 1) AS avg_unloading_minutes,
            ROUND(AVG(EXTRACT(EPOCH FROM (rs.event_time - lp.event_time)) / 60)::numeric, 1) AS avg_travel_minutes
@@ -101,7 +107,13 @@ router.get("/fleet", requireRole(...STAFF_ROLES), async (req, res) => {
          COALESCE(ts.trip_count, 0) AS trip_count, COALESCE(ts.total_qty_m3, 0) AS total_qty_m3,
          ts.total_est_distance_km, COALESCE(ts.with_pump_trips, 0) AS with_pump_trips, COALESCE(ts.without_pump_trips, 0) AS without_pump_trips,
          ts.avg_waiting_minutes, ts.avg_unloading_minutes, ts.avg_travel_minutes,
-         CASE WHEN f.max_odo > f.min_odo THEN ROUND((f.billable_litres / (f.max_odo - f.min_odo)) * 100, 2) END AS litres_per_100km
+         CASE WHEN f.max_odo > f.min_odo THEN ROUND((f.billable_litres / (f.max_odo - f.min_odo)) * 100, 2) END AS litres_per_100km,
+         -- Round 136 addition: litres per m³ of concrete carried in the same
+         -- range — a distance-independent efficiency figure (unlike
+         -- L/100km, it doesn't need paired odometer readings, so it uses
+         -- every litre fuelled rather than only billable_litres).
+         CASE WHEN COALESCE(f.total_litres, 0) > 0 AND COALESCE(ts.total_qty_m3, 0) > 0
+              THEN ROUND((f.total_litres / ts.total_qty_m3)::numeric, 2) END AS litres_per_m3
        FROM trucks t
        LEFT JOIN fuel f ON f.truck_id = t.id
        LEFT JOIN trip_stats ts ON ts.truck_id = t.id
@@ -116,8 +128,18 @@ router.get("/fleet", requireRole(...STAFF_ROLES), async (req, res) => {
     const fleetAvgRate = withRate.length
       ? Math.round((withRate.reduce((sum, r) => sum + Number(r.litres_per_100km), 0) / withRate.length) * 100) / 100
       : null;
+    const withM3Rate = rows.filter((r) => r.litres_per_m3 != null);
+    const fleetAvgM3Rate = withM3Rate.length
+      ? Math.round((withM3Rate.reduce((sum, r) => sum + Number(r.litres_per_m3), 0) / withM3Rate.length) * 100) / 100
+      : null;
 
-    res.json({ from_date: fromDate, to_date: toDate, fleet_avg_litres_per_100km: fleetAvgRate, trucks: rows });
+    res.json({
+      from_date: fromDate,
+      to_date: toDate,
+      fleet_avg_litres_per_100km: fleetAvgRate,
+      fleet_avg_litres_per_m3: fleetAvgM3Rate,
+      trucks: rows,
+    });
   } catch (err) {
     console.error("GET /fuel-analysis/fleet failed:", err);
     res.status(500).json({ error: "Failed to load fleet fuel summary." });
@@ -160,7 +182,10 @@ router.get("/truck/:id", requireRole(...STAFF_ROLES), async (req, res) => {
       query(
         `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date, dt.loaded_quantity_m3,
            u.name AS driver_name,
-           CASE WHEN dt.pump_id IS NOT NULL THEN 'With pump' ELSE 'Without pump' END AS discharge_mode,
+           -- Round 136 fix: see the fleet query's own comment on this same
+           -- pump_id fallback — a ticket without its own pump_id can still
+           -- belong to an order that specified one.
+           CASE WHEN COALESCE(dt.pump_id, co.pump_id) IS NOT NULL THEN 'With pump' ELSE 'Without pump' END AS discharge_mode,
            s.distance_from_plant_km, (s.distance_from_plant_km * 2) AS round_trip_km,
            ROUND(EXTRACT(EPOCH FROM (rs.event_time - lp.event_time)) / 60) AS travel_minutes,
            ROUND(EXTRACT(EPOCH FROM (us.event_time - rs.event_time)) / 60) AS waiting_minutes,
@@ -181,12 +206,14 @@ router.get("/truck/:id", requireRole(...STAFF_ROLES), async (req, res) => {
       query(
         `SELECT dt.driver_id, u.name AS driver_name,
            COUNT(*) AS trip_count,
-           COUNT(*) FILTER (WHERE dt.pump_id IS NOT NULL) AS with_pump_trips,
-           COUNT(*) FILTER (WHERE dt.pump_id IS NULL) AS without_pump_trips,
+           -- Round 136 fix: same pump_id fallback as the trips/fleet queries above.
+           COUNT(*) FILTER (WHERE COALESCE(dt.pump_id, co.pump_id) IS NOT NULL) AS with_pump_trips,
+           COUNT(*) FILTER (WHERE COALESCE(dt.pump_id, co.pump_id) IS NULL) AS without_pump_trips,
            ROUND(AVG(EXTRACT(EPOCH FROM (rs.event_time - lp.event_time)) / 60)::numeric, 1) AS avg_travel_minutes,
            ROUND(AVG(EXTRACT(EPOCH FROM (us.event_time - rs.event_time)) / 60)::numeric, 1) AS avg_waiting_minutes,
            ROUND(AVG(EXTRACT(EPOCH FROM (uc.event_time - us.event_time)) / 60)::numeric, 1) AS avg_unloading_minutes
          FROM delivery_tickets dt
+         JOIN customer_orders co ON co.id = dt.order_id
          LEFT JOIN users u ON u.id = dt.driver_id
          LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'left_plant' ORDER BY event_time LIMIT 1) lp ON true
          LEFT JOIN LATERAL (SELECT event_time FROM trip_events WHERE ticket_id = dt.id AND event_type = 'reached_site' ORDER BY event_time LIMIT 1) rs ON true
