@@ -25,6 +25,7 @@ import DelayJustificationReport from "./pages/DelayJustificationReport.jsx";
 import Charts from "./pages/Charts.jsx";
 import CycleTimeReport from "./pages/CycleTimeReport.jsx";
 import TruckTimingReport from "./pages/TruckTimingReport.jsx";
+import FuelAnalysis from "./pages/FuelAnalysis.jsx";
 import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
@@ -165,6 +166,9 @@ export default function App() {
           } />
           <Route path="/truck-timing-report" element={
             <ProtectedRoute roles={["administrator", "manager"]}><TruckTimingReport /></ProtectedRoute>
+          } />
+          <Route path="/fuel-analysis" element={
+            <ProtectedRoute roles={["administrator", "manager"]}><FuelAnalysis /></ProtectedRoute>
           } />
           <Route path="/outstanding-collection-report" element={
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><OutstandingCollectionReport /></ProtectedRoute>

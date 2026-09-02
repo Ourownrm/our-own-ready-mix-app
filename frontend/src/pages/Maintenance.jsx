@@ -221,15 +221,16 @@ function ExternalRepairKanban({ setError, onChanged }) {
     <div style={{ marginBottom: 22 }}>
       <h2 style={{ fontSize: 15, margin: "0 0 4px" }}>External workshop repair flow</h2>
       <p style={{ fontSize: 12.5, color: "var(--slate)", margin: "0 0 14px", maxWidth: 700, lineHeight: 1.5 }}>
-        Driver requests, Manager approves, sent-out and returned timestamps logged. A truck sits in "Sent out" for as long
-        as it's away — that's exactly what excludes it from the due list and Plant Operator's ticket-creation truck list.
+        Driver (or, for a loader, Loader Operator) requests, Manager approves, sent-out and returned timestamps logged.
+        A truck sits in "Sent out" for as long as it's away — that's exactly what excludes it from the due list and
+        Plant Operator's ticket-creation truck list.
       </p>
       <div className="kanban">
         <div className="kanban-col">
           <div className="kanban-col-head">Requested <span className="kanban-count">{cols.requested.length}</span></div>
           {cols.requested.map((r) => (
             <div className="kanban-card" key={r.id}>
-              <div className="veh">{r.truck_number}</div>
+              <div className="veh">{r.truck_number || r.equipment_name}</div>
               <div className="meta">{r.issue_description}<br />Requested by {r.requested_by_name} · {fmtDate(r.requested_at)}</div>
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 <button style={{ fontSize: 11, padding: "3px 8px" }} disabled={busy === r.id} onClick={() => approve(r.id)}>Approve</button>
@@ -243,7 +244,7 @@ function ExternalRepairKanban({ setError, onChanged }) {
           <div className="kanban-col-head">Approved <span className="kanban-count">{cols.approved.length}</span></div>
           {cols.approved.map((r) => (
             <div className="kanban-card" key={r.id}>
-              <div className="veh">{r.truck_number}</div>
+              <div className="veh">{r.truck_number || r.equipment_name}</div>
               <div className="meta">{r.workshop_name || "Workshop not set yet"}<br />Approved by {r.approved_by_name} · {fmtDate(r.approved_at)}</div>
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 <button style={{ fontSize: 11, padding: "3px 8px" }} disabled={busy === r.id} onClick={() => sentOut(r.id, r.workshop_name)}>Mark sent out</button>
@@ -256,7 +257,7 @@ function ExternalRepairKanban({ setError, onChanged }) {
           <div className="kanban-col-head">Sent out <span className="kanban-count">{cols.sent_out.length}</span></div>
           {cols.sent_out.map((r) => (
             <div className="kanban-card" key={r.id}>
-              <div className="veh">{r.truck_number}</div>
+              <div className="veh">{r.truck_number || r.equipment_name}</div>
               <div className="meta">{r.workshop_name || "—"}<br />Sent {fmtDate(r.sent_out_at)}</div>
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 <button style={{ fontSize: 11, padding: "3px 8px" }} disabled={busy === r.id} onClick={() => returned(r.id)}>Mark returned</button>
@@ -269,7 +270,7 @@ function ExternalRepairKanban({ setError, onChanged }) {
           <div className="kanban-col-head">Returned <span className="kanban-count">{cols.returned.length}</span></div>
           {cols.returned.map((r) => (
             <div className="kanban-card" key={r.id}>
-              <div className="veh">{r.truck_number}</div>
+              <div className="veh">{r.truck_number || r.equipment_name}</div>
               <div className="meta">Sent {fmtDate(r.sent_out_at)} → Returned {fmtDate(r.returned_at)}</div>
             </div>
           ))}
@@ -676,6 +677,9 @@ function InspectionForm({ setError, onCancel, onDone }) {
   const [driverId, setDriverId] = useState("");
   const [cleanerName, setCleanerName] = useState("");
   const [inspectionDate, setInspectionDate] = useState("");
+  // Round 134, item 3
+  const [odometerReading, setOdometerReading] = useState("");
+  const [hourMeterReading, setHourMeterReading] = useState("");
   const [ratings, setRatings] = useState({});
   const [actionRequired, setActionRequired] = useState({}); // item_key -> remark text
   const [observations, setObservations] = useState("");
@@ -713,7 +717,11 @@ function InspectionForm({ setError, onCancel, onDone }) {
         .map(([item_key, remark]) => ({ item_key, item_label: itemLabels[item_key] || item_key, remark: remark.trim() }));
       await apiRequest("/maintenance/inspections", {
         method: "POST",
-        body: { truck_id: truckId, driver_id: driverId || undefined, cleaner_name: cleanerName || undefined, inspection_date: inspectionDate || undefined, ratings, observations, action_items },
+        body: {
+          truck_id: truckId, driver_id: driverId || undefined, cleaner_name: cleanerName || undefined,
+          inspection_date: inspectionDate || undefined, odometer_reading: odometerReading || undefined,
+          hour_meter_reading: hourMeterReading || undefined, ratings, observations, action_items,
+        },
       });
       onDone();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
@@ -750,6 +758,14 @@ function InspectionForm({ setError, onCancel, onDone }) {
         <div>
           <div style={{ color: "var(--slate)" }}>Date</div>
           <input type="date" value={inspectionDate} onChange={(e) => setInspectionDate(e.target.value)} />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Odometer reading</div>
+          <input type="number" value={odometerReading} onChange={(e) => setOdometerReading(e.target.value)} placeholder="45210" />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)" }}>Hour meter reading</div>
+          <input type="number" value={hourMeterReading} onChange={(e) => setHourMeterReading(e.target.value)} placeholder="1287" />
         </div>
       </div>
 

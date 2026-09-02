@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 
-const EQUIPMENT_LABEL = { truck: "Truck", pump: "Pump", plant: "Batching plant" };
+const EQUIPMENT_LABEL = { truck: "Truck", pump: "Pump", plant: "Batching plant", equipment: "Loader" };
 
 export default function Breakdowns() {
   const [rows, setRows] = useState([]);
@@ -71,7 +71,7 @@ export default function Breakdowns() {
                   <tr key={r.id}>
                     <td>
                       <span className="badge badge-danger">{EQUIPMENT_LABEL[r.equipment_type]}</span>{" "}
-                      {r.truck_number || r.pump_code || r.equipment_label}
+                      {r.truck_number || r.pump_code || r.equipment_name || r.equipment_label}
                     </td>
                     <td>{new Date(r.breakdown_time).toLocaleString()}</td>
                     <td>{r.reported_by_name || "–"}</td>
@@ -112,7 +112,7 @@ export default function Breakdowns() {
                   <tr key={r.id}>
                     <td>
                       <span className="badge badge-success">{EQUIPMENT_LABEL[r.equipment_type]}</span>{" "}
-                      {r.truck_number || r.pump_code || r.equipment_label}
+                      {r.truck_number || r.pump_code || r.equipment_name || r.equipment_label}
                     </td>
                     <td>{new Date(r.breakdown_time).toLocaleString()}</td>
                     <td>{r.repaired_at ? new Date(r.repaired_at).toLocaleString() : "–"}</td>

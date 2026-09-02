@@ -19,6 +19,14 @@ export default function FuelFilling() {
 }
 
 function RequestFlow() {
+  const { user } = useAuth();
+  // Round 134, item 2 — a Loader Operator only ever deals with loaders, so
+  // skip the "which vehicle/machine type" picker entirely for that role
+  // rather than showing trucks/pumps/pickup vans/generators that will never
+  // apply to them.
+  const isLoaderOperator = user?.role === "loader_operator";
+  const equipmentTabs = isLoaderOperator ? EQUIPMENT_TABS.filter((t) => t.type === "loader") : EQUIPMENT_TABS;
+
   const [trucks, setTrucks] = useState([]);
   const [pumps, setPumps] = useState([]);
   const [equipment, setEquipment] = useState([]);
@@ -27,7 +35,11 @@ function RequestFlow() {
   const [myRequests, setMyRequests] = useState([]);
 
   const [requestType, setRequestType] = useState("fuel");
-  const [equipmentType, setEquipmentType] = useState("truck");
+  const [equipmentType, setEquipmentType] = useState(isLoaderOperator ? "loader" : "truck");
+  // Round 134, items 1-2 — Loader Operator can also report a breakdown or
+  // request an outside repair for their loader, right from this same
+  // screen (their whole dashboard), not just fuel/lubricant.
+  const [loaderView, setLoaderView] = useState(null); // null | 'breakdown' | 'repair'
   const [unitId, setUnitId] = useState("");
   const [odometer, setOdometer] = useState("");
   const [hourMeter, setHourMeter] = useState("");
@@ -110,11 +122,38 @@ function RequestFlow() {
 
   const active = myRequests.filter((r) => r.status !== "issued");
   const recentIssued = myRequests.filter((r) => r.status === "issued");
+  const loaders = equipment.filter((e) => e.equipment_type === "loader");
+
+  if (isLoaderOperator && loaderView === "breakdown") {
+    return (
+      <LoaderBreakdownForm
+        loaders={loaders}
+        onCancel={() => setLoaderView(null)}
+        onDone={(msg) => { setLoaderView(null); setNotice(msg); }}
+      />
+    );
+  }
+  if (isLoaderOperator && loaderView === "repair") {
+    return (
+      <LoaderRepairForm
+        loaders={loaders}
+        onCancel={() => setLoaderView(null)}
+        onDone={(msg) => { setLoaderView(null); setNotice(msg); }}
+      />
+    );
+  }
 
   return (
     <>
       <TopBar title="Fuel and lubricants" />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+
+        {isLoaderOperator && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+            <button type="button" onClick={() => setLoaderView("breakdown")}>Report breakdown</button>
+            <button type="button" onClick={() => setLoaderView("repair")}>Request outside repair</button>
+          </div>
+        )}
 
         {active.length > 0 && (
           <div style={{ marginBottom: 16 }}>
@@ -131,28 +170,32 @@ function RequestFlow() {
             <button type="button" onClick={() => setRequestType("lubricant")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "lubricant" ? 600 : 400, background: requestType === "lubricant" ? "var(--concrete)" : "transparent" }}>Lubricant</button>
           </div>
 
-          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 6 }}>Vehicle or machine type</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-            {EQUIPMENT_TABS.map((t) => (
-              <button
-                key={t.type}
-                type="button"
-                onClick={() => switchType(t.type)}
-                style={{
-                  padding: "6px 12px", borderRadius: 999, fontSize: 12,
-                  border: equipmentType === t.type ? "1px solid var(--rebar)" : "1px solid var(--border, #ccc)",
-                  background: equipmentType === t.type ? "var(--concrete)" : "transparent",
-                  fontWeight: equipmentType === t.type ? 600 : 400,
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+          {equipmentTabs.length > 1 && (
+            <>
+              <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 6 }}>Vehicle or machine type</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                {equipmentTabs.map((t) => (
+                  <button
+                    key={t.type}
+                    type="button"
+                    onClick={() => switchType(t.type)}
+                    style={{
+                      padding: "6px 12px", borderRadius: 999, fontSize: 12,
+                      border: equipmentType === t.type ? "1px solid var(--rebar)" : "1px solid var(--border, #ccc)",
+                      background: equipmentType === t.type ? "var(--concrete)" : "transparent",
+                      fontWeight: equipmentType === t.type ? 600 : 400,
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
             <div>
-              <div style={{ color: "var(--slate)" }}>Which {EQUIPMENT_TABS.find((t) => t.type === equipmentType).label.toLowerCase()}</div>
+              <div style={{ color: "var(--slate)" }}>Which {equipmentTabs.find((t) => t.type === equipmentType)?.label.toLowerCase() || EQUIPMENT_TABS.find((t) => t.type === equipmentType).label.toLowerCase()}</div>
               <select value={unitId} onChange={(e) => setUnitId(e.target.value)} required>
                 <option value="">Select</option>
                 {unitOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -222,6 +265,129 @@ function unitLabel(r) {
 
 function refNumber(r) {
   return `${r.request_type === "fuel" ? "FR" : "LR"}-${r.id}`;
+}
+
+// Round 134, items 1-2 — Loader Operator equivalents of DriverDuty.jsx's
+// BreakdownForm/RequestRepairForm, adapted to pick a loader (equipment_id)
+// instead of a truck. Post to the new /loader-operator/* routes, which
+// write into the same breakdown_reports/external_repairs tables the truck
+// flow uses, so they show up on Manager's existing screens unchanged.
+function LoaderBreakdownForm({ loaders, onDone, onCancel }) {
+  const [issueTypes, setIssueTypes] = useState([]);
+  const [issueType, setIssueType] = useState("");
+  const [equipmentId, setEquipmentId] = useState(loaders.length === 1 ? loaders[0].id : "");
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest("/master/breakdown-issue-types").then(setIssueTypes).catch(() => {});
+  }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!equipmentId) return setError("Select which loader this is.");
+    if (!issueType) return setError("Select what happened.");
+    if (issueType === "other" && !remarks.trim()) return setError("Add a short description.");
+    setSaving(true); setError("");
+    try {
+      await apiRequest("/loader-operator/breakdown", { method: "POST", body: { equipment_id: equipmentId, issue_type: issueType, remarks } });
+      onDone("Breakdown reported. The manager has been notified.");
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <TopBar title="Loader Operator · Report breakdown" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 16 }}>Report breakdown</div>
+          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Which loader</div>
+              <select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)} required>
+                <option value="">Select a loader</option>
+                {loaders.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>What happened</div>
+              <select value={issueType} onChange={(e) => setIssueType(e.target.value)} required>
+                <option value="">Select an issue</option>
+                {issueTypes.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>
+                {issueType === "other" ? "Describe what happened" : "Additional details (optional)"}
+              </div>
+              <textarea rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} required={issueType === "other"} />
+            </div>
+            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="submit" disabled={saving}>{saving ? "Saving..." : "Submit"}</button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function LoaderRepairForm({ loaders, onDone, onCancel }) {
+  const [equipmentId, setEquipmentId] = useState(loaders.length === 1 ? loaders[0].id : "");
+  const [issueDescription, setIssueDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!equipmentId) return setError("Select which loader this is.");
+    if (!issueDescription.trim()) return setError("Describe the issue.");
+    setSaving(true); setError("");
+    try {
+      await apiRequest("/loader-operator/external-repair", { method: "POST", body: { equipment_id: equipmentId, issue_description: issueDescription } });
+      onDone("Repair request sent — waiting on Manager approval.");
+    } catch (err) {
+      setError(err.message || "Couldn't save this — try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <TopBar title="Loader Operator · Request outside repair" />
+      <div style={{ maxWidth: 320, margin: "0 auto", padding: "0 16px 32px" }}>
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 16 }}>Request outside repair</div>
+          <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Which loader</div>
+              <select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)} required>
+                <option value="">Select a loader</option>
+                {loaders.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ color: "var(--slate)" }}>Describe the issue</div>
+              <textarea rows={3} value={issueDescription} onChange={(e) => setIssueDescription(e.target.value)} required />
+            </div>
+            {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="submit" disabled={saving}>{saving ? "Sending..." : "Send request"}</button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </>
+  );
 }
 
 function RequestStatusCard({ request: r, onReload }) {

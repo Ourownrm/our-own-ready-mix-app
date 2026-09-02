@@ -69,6 +69,7 @@ export default function Reports() {
                 { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
+                { label: "360° Fuel Analysis", to: "/fuel-analysis" },
                 { label: "Outstanding Collection", to: "/outstanding-collection-report" },
                 { label: "Cube Test Report", to: "/lab-technician/cube-test-report" },
               ]}

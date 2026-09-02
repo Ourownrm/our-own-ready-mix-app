@@ -240,6 +240,7 @@ export default function ManagerDashboard() {
                 { label: "Charts", to: "/charts" },
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
                 { label: "Truck Timing Report", to: "/truck-timing-report" },
+                { label: "360° Fuel Analysis", to: "/fuel-analysis" },
                 { label: "Outstanding Collection", to: "/outstanding-collection-report" },
             ]}
           />

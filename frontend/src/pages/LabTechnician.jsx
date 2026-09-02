@@ -53,11 +53,32 @@ export default function LabTechnician() {
   const [tab, setTab] = useState("batches"); // batches | site-cast | mix-designs | assignments
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // Round 134, item 7 — clicking a row in the due-testing panel jumps to
+  // the right tab and opens that specific pour/cast, instead of just
+  // switching tabs and leaving the user to find it again in the list.
+  const [focusPlantOrderId, setFocusPlantOrderId] = useState(null);
+  const [focusSiteCastId, setFocusSiteCastId] = useState(null);
+
+  function jumpTo(row) {
+    if (row.source === "plant") {
+      setFocusPlantOrderId(row.ref_id);
+      setTab("batches");
+    } else {
+      setFocusSiteCastId(row.ref_id);
+      setTab("site-cast");
+    }
+  }
 
   return (
     <>
       <TopBar title="Lab Technician" />
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
+        {/* Round 134, item 7 — due-today/overdue tests, across both plant
+            pours and site-cast cubes, shown first thing on login — above
+            the tabs, not buried inside the Cube Testing tab's own Active
+            list (which sorts by pour date, not urgency). */}
+        <DueTestingPanel setError={setError} onJump={jumpTo} />
+
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <button className={`btn-tab ${tab === "batches" ? "active" : ""}`} onClick={() => setTab("batches")}>Cube Testing</button>
           {/* Round 120, items 4b/4e — cubes prepared at the customer's site,
@@ -75,12 +96,65 @@ export default function LabTechnician() {
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
 
-        {tab === "batches" && <CubeTestingTab setError={setError} setNotice={setNotice} />}
-        {tab === "site-cast" && <SiteCubeTestingTab setError={setError} setNotice={setNotice} />}
+        {tab === "batches" && <CubeTestingTab setError={setError} setNotice={setNotice} focusOrderId={focusPlantOrderId} />}
+        {tab === "site-cast" && <SiteCubeTestingTab setError={setError} setNotice={setNotice} focusCastId={focusSiteCastId} />}
         {tab === "mix-designs" && <MixDesignsTab setError={setError} setNotice={setNotice} />}
         {tab === "assignments" && <AssignmentsTab setError={setError} />}
       </div>
     </>
+  );
+}
+
+// Round 134, item 7 — see the file-level note above. Fetches
+// /lab-technician/due-testing (server-computed overdue/due-today across
+// plant pours + site-cast cubes, sorted overdue-first) and renders it as a
+// compact list; empty state is a quiet "nothing due" line, not hidden
+// entirely, so it's obvious the panel isn't just still loading.
+function DueTestingPanel({ setError, onJump }) {
+  const [rows, setRows] = useState(null);
+
+  useEffect(() => {
+    apiRequest("/lab-technician/due-testing").then(setRows).catch((err) => setError(err.message));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (rows === null) return null; // avoid a flash of "nothing due" before the first load resolves
+  if (rows.length === 0) {
+    return (
+      <div className="card" style={{ marginBottom: 16, fontSize: 12.5, color: "var(--slate)" }}>
+        Nothing due for testing right now.
+      </div>
+    );
+  }
+
+  const overdueCount = rows.filter((r) => r.status === "overdue").length;
+
+  return (
+    <div className="card" style={{ marginBottom: 16, borderColor: overdueCount ? "var(--alert-red)" : undefined }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+        Due for testing
+        {overdueCount > 0 && <span style={{ color: "var(--alert-red)", fontWeight: 400 }}> — {overdueCount} overdue</span>}
+      </div>
+      {rows.map((r) => (
+        <a
+          key={`${r.source}-${r.ref_id}-${r.testing_age_days}`}
+          href="#"
+          onClick={(e) => { e.preventDefault(); onJump(r); }}
+          style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center", textDecoration: "none", color: "inherit",
+            padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12.5,
+          }}
+        >
+          <span>
+            <span className={`badge ${r.status === "overdue" ? "badge-danger" : "badge-warning"}`} style={{ marginRight: 6 }}>
+              {r.testing_age_days}-day {r.status === "overdue" ? "overdue" : "due today"}
+            </span>
+            {r.customer_name} — {r.site_name} · {r.mix_grade_name}
+            <span style={{ color: "var(--slate)" }}> ({r.source === "plant" ? "plant pour" : "site cast"})</span>
+          </span>
+          <span style={{ color: "var(--slate)" }}>{fmtDate(r.due_date)}</span>
+        </a>
+      ))}
+    </div>
   );
 }
 
@@ -149,7 +223,7 @@ function AssignmentsTab({ setError }) {
 
 // ===== Cube Testing =====
 
-function CubeTestingTab({ setError, setNotice }) {
+function CubeTestingTab({ setError, setNotice, focusOrderId }) {
   const [viewBucket, setViewBucket] = useState("active"); // active | completed | closed
   const [pours, setPours] = useState([]);
   const [openOrderId, setOpenOrderId] = useState(null);
@@ -158,6 +232,12 @@ function CubeTestingTab({ setError, setNotice }) {
     try { setPours(await apiRequest(`/lab-technician/cube-pours?view=${viewBucket}`)); } catch (err) { setError(err.message); }
   }
   useEffect(() => { setOpenOrderId(null); load(); }, [viewBucket]);
+  // Round 134, item 7 — jumping here from the due-testing panel opens that
+  // specific pour directly, in the "active" bucket it's always in (a due,
+  // not-yet-tested pour is never completed/closed).
+  useEffect(() => {
+    if (focusOrderId != null) { setViewBucket("active"); setOpenOrderId(focusOrderId); }
+  }, [focusOrderId]);
 
   async function closePour(orderId) {
     const reason = window.prompt("Why is this pour not being tested? (optional — leave blank if you'd rather not say)");
@@ -680,7 +760,7 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
 // by QC Engineer casting cubes — this one needs an explicit "record a cast"
 // action since nothing else in the app would ever create it).
 
-function SiteCubeTestingTab({ setError, setNotice }) {
+function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
   const [casts, setCasts] = useState([]);
   const [openCastId, setOpenCastId] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -689,6 +769,10 @@ function SiteCubeTestingTab({ setError, setNotice }) {
     try { setCasts(await apiRequest("/lab-technician/site-cube-casts")); } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
+  // Round 134, item 7 — jumping here from the due-testing panel.
+  useEffect(() => {
+    if (focusCastId != null) setOpenCastId(focusCastId);
+  }, [focusCastId]);
 
   if (creating) {
     return (

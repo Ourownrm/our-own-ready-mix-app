@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel, PlantLocationsPanel, SiteGeofenceReportPanel, SiteContactsPanel, ProductionTargetPanel, MixDesignAssignmentsPanel, MixDesignsPanel, OrdersPanel as SharedOrdersPanel, TicketsPanel as SharedTicketsPanel } from "../lib/MasterDataPanels.jsx";
+import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel, PlantLocationsPanel, SiteGeofenceReportPanel, SiteContactsPanel, ProductionTargetPanel, MixDesignAssignmentsPanel, MixDesignsPanel, MaintenanceActionPointsPanel, OrdersPanel as SharedOrdersPanel, TicketsPanel as SharedTicketsPanel } from "../lib/MasterDataPanels.jsx";
 import { CreateLeadForm } from "../lib/SalesPanels.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 
@@ -39,6 +39,7 @@ export default function Administrator() {
             { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
+                { label: "360° Fuel Analysis", to: "/fuel-analysis" },
                 { label: "Outstanding Collection", to: "/outstanding-collection-report" },
           ]}
         />
@@ -56,6 +57,7 @@ export default function Administrator() {
             { label: "Production Target", onClick: () => setView("production-target") },
             { label: "Approved Mix Assignments", onClick: () => setView("mix-assignments") },
             { label: "Mix Designs (approve)", onClick: () => setView("mix-designs") },
+            { label: "Maintenance Action Points", onClick: () => setView("maintenance-action-points") },
           ]}
         />
         <GroupedMenu
@@ -101,6 +103,7 @@ export default function Administrator() {
       {view === "production-target" && <ProductionTargetPanel setError={setError} />}
       {view === "mix-assignments" && <MixDesignAssignmentsPanel setError={setError} />}
       {view === "mix-designs" && <MixDesignsPanel setError={setError} />}
+      {view === "maintenance-action-points" && <MaintenanceActionPointsPanel setError={setError} />}
       {view === "salespersons" && <SalespersonsPanel setError={setError} />}
       {view === "rates" && <RatesPanel setError={setError} />}
       {view === "orders" && <OrdersPanel setError={setError} />}
