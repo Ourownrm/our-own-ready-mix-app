@@ -22,7 +22,7 @@ function fmtDate(d) {
 }
 
 export default function Maintenance() {
-  const [tab, setTab] = useState("maintenance"); // 'maintenance' | 'driver' | 'site_efficiency'
+  const [tab, setTab] = useState("maintenance"); // 'maintenance' | 'repair_points' | 'driver' | 'site_efficiency'
   const [error, setError] = useState("");
 
   return (
@@ -38,6 +38,19 @@ export default function Maintenance() {
             onClick={() => setTab("maintenance")}
           >
             Maintenance module
+          </button>
+          {/* Round 136 — Repair Action Points: scheduled repairs against a
+              specific vehicle/equipment, distinct from the Maintenance
+              module's preventive schedule above and from the reactive
+              External Repair flow inside it. Its own tab rather than a
+              section of "Maintenance module" since it has its own
+              add/edit/status lifecycle. */}
+          <button
+            className={`btn-tab ${tab === "repair_points" ? "active" : ""}`}
+            style={{ borderRadius: "8px 8px 0 0", borderBottom: "none" }}
+            onClick={() => setTab("repair_points")}
+          >
+            Repair Action Points
           </button>
           <button
             className={`btn-tab ${tab === "driver" ? "active" : ""}`}
@@ -56,6 +69,7 @@ export default function Maintenance() {
         </div>
 
         {tab === "maintenance" && <MaintenanceTab setError={setError} />}
+        {tab === "repair_points" && <RepairActionPointsTab setError={setError} />}
         {tab === "driver" && <BestDriverTab setError={setError} />}
         {tab === "site_efficiency" && <SiteEfficiencyTab setError={setError} />}
       </div>
@@ -127,9 +141,16 @@ function MaintenanceTab({ setError }) {
                   <tr>
                     <td>{r.truck_number}</td>
                     <td>{r.action_name}</td>
-                    <td>{[r.interval_days ? `${r.interval_days} days` : null, r.interval_hours ? `${r.interval_hours} hrs` : null].filter(Boolean).join(" or ")}</td>
+                    <td>{[r.interval_days ? `${r.interval_days} days` : null, r.interval_hours ? `${r.interval_hours} hrs` : null, r.interval_qty_m3 ? `${r.interval_qty_m3} m³` : null].filter(Boolean).join(" or ")}</td>
                     <td>{fmtDate(r.last_done_at)}</td>
-                    <td>{r.due_date ? fmtDate(r.due_date) : "—"}</td>
+                    <td>
+                      {r.due_date ? fmtDate(r.due_date) : "—"}
+                      {r.qty_remaining_m3 != null && (
+                        <div style={{ fontSize: 11, color: "var(--slate)" }}>
+                          {r.qty_remaining_m3 >= 0 ? `${Number(r.qty_remaining_m3).toFixed(0)} m³ left` : `${Math.abs(Number(r.qty_remaining_m3)).toFixed(0)} m³ over`}
+                        </div>
+                      )}
+                    </td>
                     <td>
                       <span className={`badge ${badge.cls}`}>
                         {badge.label}
@@ -324,6 +345,208 @@ function VehicleHistory({ setError }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ===================== REPAIR ACTION POINTS TAB (Round 136) =====================
+// Scheduled repairs raised against a specific vehicle/equipment as a need
+// comes up (a driveshaft that needs replacing next month, a hydraulic hose
+// on a loader) — distinct from the Maintenance module's own preventive
+// due-list above and from the reactive External Repair kanban nested inside
+// it. Backed by /maintenance/repair-action-points (see maintenance.js).
+
+const REPAIR_STATUS_BADGE = {
+  pending: { cls: "badge-neutral", label: "Pending" },
+  scheduled: { cls: "badge-info", label: "Scheduled" },
+  in_progress: { cls: "badge-progress", label: "In progress" },
+  completed: { cls: "badge-success", label: "Completed" },
+  cancelled: { cls: "badge-danger", label: "Cancelled" },
+};
+
+const REPAIR_STATUS_OPTIONS = ["pending", "scheduled", "in_progress", "completed", "cancelled"];
+
+const EMPTY_REPAIR_FORM = { target_type: "truck", target_id: "", description: "", repair_type: "internal", scheduled_date: "", notes: "" };
+
+function RepairActionPointsTab({ setError }) {
+  const [points, setPoints] = useState([]);
+  const [trucks, setTrucks] = useState([]);
+  const [equipment, setEquipment] = useState([]);
+  const [form, setForm] = useState(EMPTY_REPAIR_FORM);
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(null);
+
+  async function load() {
+    try {
+      const [pts, tr, eq] = await Promise.all([
+        apiRequest("/maintenance/repair-action-points"),
+        apiRequest("/master/trucks"),
+        apiRequest("/master/equipment"),
+      ]);
+      setPoints(pts); setTrucks(tr); setEquipment(eq);
+    } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function addPoint(e) {
+    e.preventDefault();
+    if (!form.target_id) { setError("Pick a vehicle or piece of equipment."); return; }
+    if (!form.description.trim()) { setError("A description is required."); return; }
+    setSaving(true); setError("");
+    try {
+      await apiRequest("/maintenance/repair-action-points", {
+        method: "POST",
+        body: {
+          truck_id: form.target_type === "truck" ? form.target_id : null,
+          equipment_id: form.target_type === "equipment" ? form.target_id : null,
+          description: form.description.trim(),
+          repair_type: form.repair_type,
+          scheduled_date: form.scheduled_date || null,
+          notes: form.notes.trim() || null,
+        },
+      });
+      setForm(EMPTY_REPAIR_FORM);
+      load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  async function changeStatus(id, status) {
+    setBusy(id); setError("");
+    try { await apiRequest(`/maintenance/repair-action-points/${id}`, { method: "PATCH", body: { status } }); load(); }
+    catch (err) { setError(err.message); } finally { setBusy(null); }
+  }
+
+  async function sendExternal(id) {
+    setBusy(id); setError("");
+    try { await apiRequest(`/maintenance/repair-action-points/${id}/send-external`, { method: "POST" }); load(); }
+    catch (err) { setError(err.message); } finally { setBusy(null); }
+  }
+
+  async function removePoint(id) {
+    if (!window.confirm("Delete this repair action point? This can't be undone.")) return;
+    setBusy(id); setError("");
+    try { await apiRequest(`/maintenance/repair-action-points/${id}`, { method: "DELETE" }); load(); }
+    catch (err) { setError(err.message); } finally { setBusy(null); }
+  }
+
+  const targetOptions = form.target_type === "truck" ? trucks : equipment;
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 15, margin: "0 0 4px" }}>Repair Action Points</h2>
+      <p style={{ fontSize: 12.5, color: "var(--slate)", margin: "0 0 14px", maxWidth: 700, lineHeight: 1.5 }}>
+        Repairs raised against a specific vehicle or piece of equipment as a need comes up — track it to completion here,
+        or, for an External-type point, send it into the same approve → sent-out → returned workshop flow used above.
+      </p>
+
+      <form onSubmit={addPoint} className="card" style={{ marginBottom: 18 }}>
+        <div className="field-input" style={{ display: "grid", gridTemplateColumns: "auto 1.4fr 2fr auto auto auto", gap: 8, alignItems: "end" }}>
+          <div>
+            <div style={{ color: "var(--slate)", fontSize: 12 }}>For</div>
+            <select
+              value={form.target_type}
+              onChange={(e) => setForm({ ...form, target_type: e.target.value, target_id: "" })}
+            >
+              <option value="truck">Vehicle</option>
+              <option value="equipment">Equipment</option>
+            </select>
+          </div>
+          <div>
+            <div style={{ color: "var(--slate)", fontSize: 12 }}>{form.target_type === "truck" ? "Vehicle" : "Equipment"}</div>
+            <select value={form.target_id} onChange={(e) => setForm({ ...form, target_id: e.target.value })}>
+              <option value="">Select…</option>
+              {targetOptions.map((o) => (
+                <option key={o.id} value={o.id}>{form.target_type === "truck" ? o.truck_number : o.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={{ color: "var(--slate)", fontSize: 12 }}>Description</div>
+            <input
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              placeholder="e.g. Replace hydraulic hose, front boom"
+            />
+          </div>
+          <div>
+            <div style={{ color: "var(--slate)", fontSize: 12 }}>Type</div>
+            <select value={form.repair_type} onChange={(e) => setForm({ ...form, repair_type: e.target.value })}>
+              <option value="internal">Internal</option>
+              <option value="external">External</option>
+            </select>
+          </div>
+          <div>
+            <div style={{ color: "var(--slate)", fontSize: 12 }}>Scheduled for</div>
+            <input type="date" value={form.scheduled_date} onChange={(e) => setForm({ ...form, scheduled_date: e.target.value })} />
+          </div>
+          <button type="submit" disabled={saving}>{saving ? "Adding…" : "Add"}</button>
+        </div>
+        <div className="field-input" style={{ marginTop: 8 }}>
+          <input
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            placeholder="Notes (optional)"
+          />
+        </div>
+      </form>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr><th>Vehicle / Equipment</th><th>Description</th><th>Type</th><th>Scheduled</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {points.map((r) => {
+              const badge = REPAIR_STATUS_BADGE[r.status];
+              const isBusy = busy === r.id;
+              const canSendExternal = r.repair_type === "external" && !r.external_repair_id && r.status !== "completed" && r.status !== "cancelled";
+              return (
+                <tr key={r.id}>
+                  <td>{r.truck_number || r.equipment_name || "—"}</td>
+                  <td>
+                    {r.description}
+                    {r.notes && <div style={{ fontSize: 11, color: "var(--slate)" }}>{r.notes}</div>}
+                    {r.external_repair_id && (
+                      <div style={{ fontSize: 11, color: "var(--violet)" }}>
+                        External workshop: {r.external_workshop_name || r.external_repair_status}
+                      </div>
+                    )}
+                  </td>
+                  <td><span className={`badge ${r.repair_type === "external" ? "badge-violet" : "badge-neutral"}`}>{r.repair_type === "external" ? "External" : "Internal"}</span></td>
+                  <td>{fmtDate(r.scheduled_date)}</td>
+                  <td>
+                    <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                    {r.completed_by_name && r.status === "completed" && (
+                      <div style={{ fontSize: 11, color: "var(--slate)" }}>by {r.completed_by_name} · {fmtDate(r.completed_at)}</div>
+                    )}
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <select
+                        style={{ fontSize: 11, padding: "3px 6px" }}
+                        value={r.status}
+                        disabled={isBusy}
+                        onChange={(e) => changeStatus(r.id, e.target.value)}
+                      >
+                        {REPAIR_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{REPAIR_STATUS_BADGE[s].label}</option>)}
+                      </select>
+                      {canSendExternal && (
+                        <button style={{ fontSize: 11, padding: "3px 8px" }} disabled={isBusy} onClick={() => sendExternal(r.id)}>
+                          Send to workshop
+                        </button>
+                      )}
+                      <button style={{ fontSize: 11, padding: "3px 8px" }} disabled={isBusy} onClick={() => removePoint(r.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {points.length === 0 && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>No repair action points yet — add one above.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

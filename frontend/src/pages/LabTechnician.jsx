@@ -4,7 +4,7 @@
 // from. Single-file, internal-view-state dashboard, matching the pattern
 // used by every other role's own screen (QcEngineer.jsx, Accountant.jsx, etc).
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
@@ -53,31 +53,42 @@ export default function LabTechnician() {
   const [tab, setTab] = useState("batches"); // batches | site-cast | mix-designs | assignments
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  // Round 134, item 7 — clicking a row in the due-testing panel jumps to
-  // the right tab and opens that specific pour/cast, instead of just
-  // switching tabs and leaving the user to find it again in the list.
+  // Round 134, item 7 — jumping straight to a specific pour/cast (originally
+  // from the inline due-testing panel; Round 135 moved that panel to its own
+  // "Samples Due for Testing" page, so this is now driven off URL query
+  // params instead — see LabDueToday.jsx's "Enter results"/"Open" links,
+  // which navigate here as /lab-technician?focusOrder=<id> or ?focusCast=<id>.
   const [focusPlantOrderId, setFocusPlantOrderId] = useState(null);
   const [focusSiteCastId, setFocusSiteCastId] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  function jumpTo(row) {
-    if (row.source === "plant") {
-      setFocusPlantOrderId(row.ref_id);
+  useEffect(() => {
+    const focusOrder = searchParams.get("focusOrder");
+    const focusCast = searchParams.get("focusCast");
+    if (focusOrder) {
+      setFocusPlantOrderId(Number(focusOrder));
       setTab("batches");
-    } else {
-      setFocusSiteCastId(row.ref_id);
+    } else if (focusCast) {
+      setFocusSiteCastId(Number(focusCast));
       setTab("site-cast");
     }
-  }
+    if (focusOrder || focusCast) setSearchParams({}, { replace: true });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
       <TopBar title="Lab Technician" />
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
-        {/* Round 134, item 7 — due-today/overdue tests, across both plant
-            pours and site-cast cubes, shown first thing on login — above
-            the tabs, not buried inside the Cube Testing tab's own Active
-            list (which sorts by pour date, not urgency). */}
-        <DueTestingPanel setError={setError} onJump={jumpTo} />
+        {/* Round 134, item 7 / Round 135 redesign — a compact KPI card
+            (matching the app's own .se-strip pattern, e.g. SalesExecutive.jsx)
+            replacing the old inline list, which grew into a wall of one-line
+            rows above the tabs. Opens the full "Samples Due for Testing" page
+            (LabDueToday.jsx) — everything the old panel's rows linked to is
+            still reachable, plus what that page now shows that the panel
+            never did: sample/cube count, both 7-day and 28-day due dates
+            together, the poured/cast date, and a "Close — not testing"
+            action right on each card. */}
+        <DueTestingCard setError={setError} />
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <button className={`btn-tab ${tab === "batches" ? "active" : ""}`} onClick={() => setTab("batches")}>Cube Testing</button>
@@ -105,12 +116,17 @@ export default function LabTechnician() {
   );
 }
 
-// Round 134, item 7 — see the file-level note above. Fetches
-// /lab-technician/due-testing (server-computed overdue/due-today across
-// plant pours + site-cast cubes, sorted overdue-first) and renders it as a
-// compact list; empty state is a quiet "nothing due" line, not hidden
-// entirely, so it's obvious the panel isn't just still loading.
-function DueTestingPanel({ setError, onJump }) {
+// Round 134, item 7, redesigned Round 135 — a single KPI-style strip (same
+// visual pattern as the app's existing .se-strip "N overdue" cards, see
+// SalesExecutive.jsx) instead of the old inline list. Fetches the same
+// /lab-technician/due-testing endpoint (now one row per SAMPLE — pour or
+// cast — not per age, see the backend route's own comment) purely to get
+// counts; the full list lives on its own page (LabDueToday.jsx) so it can
+// show each sample's full detail without turning this dashboard's landing
+// view back into a wall of rows. Empty state collapses to a quiet single
+// line rather than the strip, so a clear inbox doesn't look broken.
+function DueTestingCard({ setError }) {
+  const navigate = useNavigate();
   const [rows, setRows] = useState(null);
 
   useEffect(() => {
@@ -126,35 +142,33 @@ function DueTestingPanel({ setError, onJump }) {
     );
   }
 
-  const overdueCount = rows.filter((r) => r.status === "overdue").length;
+  const overdueCount = rows.filter((r) => r.row_status === "overdue").length;
+  const dueTodayCount = rows.length - overdueCount;
 
   return (
-    <div className="card" style={{ marginBottom: 16, borderColor: overdueCount ? "var(--alert-red)" : undefined }}>
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
-        Due for testing
-        {overdueCount > 0 && <span style={{ color: "var(--alert-red)", fontWeight: 400 }}> — {overdueCount} overdue</span>}
+    <button
+      type="button"
+      className="se-strip"
+      style={{ borderColor: overdueCount ? "var(--alert-red)" : undefined, cursor: "pointer" }}
+      onClick={() => navigate("/lab-technician/due-today")}
+    >
+      <div className="se-strip-ic">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#B03A2E" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 2v6.5L4.5 17a2 2 0 0 0 1.8 3h11.4a2 2 0 0 0 1.8-3L15 8.5V2" />
+          <path d="M8 2h8" />
+          <path d="M9.5 14h5" />
+        </svg>
       </div>
-      {rows.map((r) => (
-        <a
-          key={`${r.source}-${r.ref_id}-${r.testing_age_days}`}
-          href="#"
-          onClick={(e) => { e.preventDefault(); onJump(r); }}
-          style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center", textDecoration: "none", color: "inherit",
-            padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12.5,
-          }}
-        >
-          <span>
-            <span className={`badge ${r.status === "overdue" ? "badge-danger" : "badge-warning"}`} style={{ marginRight: 6 }}>
-              {r.testing_age_days}-day {r.status === "overdue" ? "overdue" : "due today"}
-            </span>
-            {r.customer_name} — {r.site_name} · {r.mix_grade_name}
-            <span style={{ color: "var(--slate)" }}> ({r.source === "plant" ? "plant pour" : "site cast"})</span>
-          </span>
-          <span style={{ color: "var(--slate)" }}>{fmtDate(r.due_date)}</span>
-        </a>
-      ))}
-    </div>
+      <div style={{ flex: 1 }}>
+        <div className="se-strip-title">{rows.length} sample{rows.length === 1 ? "" : "s"} due for testing</div>
+        <div className="se-strip-sub">
+          {overdueCount > 0 && <span style={{ color: "var(--alert-red)" }}>{overdueCount} overdue</span>}
+          {overdueCount > 0 && dueTodayCount > 0 && " · "}
+          {dueTodayCount > 0 && <span>{dueTodayCount} due today</span>}
+          {" — Open →"}
+        </div>
+      </div>
+    </button>
   );
 }
 

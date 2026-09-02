@@ -2078,32 +2078,130 @@ export function ProductionTargetPanel({ setError }) {
 // Round 98, item 10 — Maintenance action points, Administrator-only (the
 // due list / logging / repair flow built from these lives at
 // Manager+Administrator's "Maintenance" screen — see pages/Maintenance.jsx).
+// Round 136 — grouped truck/equipment picker for scoping an action point.
+// Deliberately its own small component here rather than reusing Charts.jsx's
+// MultiPicker: that one is private to Charts.jsx (not exported) and only
+// ever renders one flat, single-category list — there's no grouped-header
+// variant to reuse. Empty selection on both lists means "every active
+// truck" (matches maintenance_action_point_scope's own "no rows = every
+// active truck" convention, so nothing already defined narrows silently).
+function VehicleEquipmentPicker({ trucks, equipment, truckIds, equipmentIds, onChange }) {
+  const [open, setOpen] = useState(false);
+  const allSelected = truckIds.length === 0 && equipmentIds.length === 0;
+  const totalSelected = truckIds.length + equipmentIds.length;
+
+  function toggleTruck(id) {
+    const set = new Set(truckIds);
+    set.has(id) ? set.delete(id) : set.add(id);
+    onChange([...set], equipmentIds);
+  }
+  function toggleEquipment(id) {
+    const set = new Set(equipmentIds);
+    set.has(id) ? set.delete(id) : set.add(id);
+    onChange(truckIds, [...set]);
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div style={{ color: "var(--slate)", marginBottom: 4, fontSize: 13 }}>Applies to</div>
+      <button type="button" onClick={() => setOpen(!open)} style={{ fontSize: 13, padding: "8px 10px", minWidth: 190, textAlign: "left" }}>
+        {allSelected ? "All active trucks" : `${totalSelected} selected`} {open ? "▴" : "▾"}
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", border: "1px solid var(--concrete)", borderRadius: 8, padding: 8, zIndex: 30, maxHeight: 280, overflowY: "auto", minWidth: 230, boxShadow: "0 4px 12px rgba(0,0,0,0.12)" }}>
+          <label style={{ display: "block", fontSize: 12.5, padding: "4px 0", cursor: "pointer", fontWeight: 600 }}>
+            <input type="checkbox" checked={allSelected} onChange={() => onChange([], [])} /> All active trucks
+          </label>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.4, margin: "8px 0 3px" }}>Trucks</div>
+          {trucks.map((t) => (
+            <label key={t.id} style={{ display: "block", fontSize: 12.5, padding: "3px 0", cursor: "pointer" }}>
+              <input type="checkbox" checked={truckIds.includes(t.id)} onChange={() => toggleTruck(t.id)} /> {t.truck_number}
+            </label>
+          ))}
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.4, margin: "8px 0 3px" }}>Loaders &amp; equipment</div>
+          {equipment.map((e) => (
+            <label key={e.id} style={{ display: "block", fontSize: 12.5, padding: "3px 0", cursor: "pointer" }}>
+              <input type="checkbox" checked={equipmentIds.includes(e.id)} onChange={() => toggleEquipment(e.id)} /> {e.name}
+            </label>
+          ))}
+          {trucks.length === 0 && equipment.length === 0 && <div style={{ fontSize: 11.5, color: "var(--slate)", padding: "4px 0" }}>No active trucks or equipment on file.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Renders the "Applies to" chips in the table — "All active trucks (N)" when
+// unscoped, else up to 3 name chips plus a "+N more" overflow chip.
+function ScopeChips({ point, trucksById, equipmentById, activeTruckCount }) {
+  const truckIds = point.truck_ids || [];
+  const equipmentIds = point.equipment_ids || [];
+  if (truckIds.length === 0 && equipmentIds.length === 0) {
+    return <span className="chip">All active trucks ({activeTruckCount})</span>;
+  }
+  const names = [
+    ...truckIds.map((id) => trucksById[id]?.truck_number).filter(Boolean),
+    ...equipmentIds.map((id) => equipmentById[id]?.name).filter(Boolean),
+  ];
+  const shown = names.slice(0, 3);
+  const overflow = names.length - shown.length;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxWidth: 220 }}>
+      {shown.map((n) => <span key={n} className="chip">{n}</span>)}
+      {overflow > 0 && <span className="chip">+{overflow} more</span>}
+    </div>
+  );
+}
+
+const EMPTY_ACTION_POINT_FORM = { name: "", interval_days: "", interval_hours: "", interval_qty_m3: "", truck_ids: [], equipment_ids: [] };
+
 export function MaintenanceActionPointsPanel({ setError }) {
   const [points, setPoints] = useState([]);
-  const [form, setForm] = useState({ name: "", interval_days: "", interval_hours: "" });
+  const [trucks, setTrucks] = useState([]);
+  const [equipment, setEquipment] = useState([]);
+  const [form, setForm] = useState(EMPTY_ACTION_POINT_FORM);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", interval_days: "", interval_hours: "", is_active: true });
+  const [editForm, setEditForm] = useState({ ...EMPTY_ACTION_POINT_FORM, is_active: true });
 
   async function load() {
-    try { setPoints(await apiRequest("/maintenance/action-points")); } catch (err) { setError(err.message); }
+    try {
+      const [pts, tr, eq] = await Promise.all([
+        apiRequest("/maintenance/action-points"),
+        apiRequest("/master/trucks"),
+        apiRequest("/master/equipment"),
+      ]);
+      setPoints(pts); setTrucks(tr); setEquipment(eq);
+    } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
 
+  const trucksById = Object.fromEntries(trucks.map((t) => [t.id, t]));
+  const equipmentById = Object.fromEntries(equipment.map((e) => [e.id, e]));
+  // GET /master/trucks already filters WHERE is_active — every row here is
+  // active, so this is simply the count.
+  const activeTruckCount = trucks.length;
+
   async function add(e) {
     e.preventDefault();
-    if (!form.interval_days && !form.interval_hours) return setError("Set at least one of interval days / interval hours.");
+    if (!form.interval_days && !form.interval_hours && !form.interval_qty_m3) {
+      return setError("Set at least one of interval days / interval hours / interval quantity (m³).");
+    }
     setSaving(true); setError("");
     try {
       await apiRequest("/maintenance/action-points", { method: "POST", body: form });
-      setForm({ name: "", interval_days: "", interval_hours: "" });
+      setForm(EMPTY_ACTION_POINT_FORM);
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
   function startEdit(p) {
     setEditing(p.id);
-    setEditForm({ name: p.name, interval_days: p.interval_days || "", interval_hours: p.interval_hours || "", is_active: p.is_active });
+    setEditForm({
+      name: p.name, interval_days: p.interval_days || "", interval_hours: p.interval_hours || "",
+      interval_qty_m3: p.interval_qty_m3 || "", is_active: p.is_active,
+      truck_ids: p.truck_ids || [], equipment_ids: p.equipment_ids || [],
+    });
   }
 
   async function saveEdit(id) {
@@ -2122,31 +2220,54 @@ export function MaintenanceActionPointsPanel({ setError }) {
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Action point name</div>
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Mixer arm replacement" required />
         </div>
+        <VehicleEquipmentPicker
+          trucks={trucks} equipment={equipment}
+          truckIds={form.truck_ids} equipmentIds={form.equipment_ids}
+          onChange={(truck_ids, equipment_ids) => setForm({ ...form, truck_ids, equipment_ids })}
+        />
         <div>
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Interval (days)</div>
-          <input type="number" value={form.interval_days} onChange={(e) => setForm({ ...form, interval_days: e.target.value })} style={{ width: 100 }} />
+          <input type="number" value={form.interval_days} onChange={(e) => setForm({ ...form, interval_days: e.target.value })} style={{ width: 90 }} />
         </div>
         <div>
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Interval (hours)</div>
-          <input type="number" value={form.interval_hours} onChange={(e) => setForm({ ...form, interval_hours: e.target.value })} style={{ width: 100 }} />
+          <input type="number" value={form.interval_hours} onChange={(e) => setForm({ ...form, interval_hours: e.target.value })} style={{ width: 90 }} />
+        </div>
+        <div>
+          <div style={{ color: "var(--slate)", marginBottom: 4 }}>Interval (Qty, m³)</div>
+          <input type="number" value={form.interval_qty_m3} onChange={(e) => setForm({ ...form, interval_qty_m3: e.target.value })} style={{ width: 100 }} />
         </div>
         <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add"}</button>
       </form>
       <p style={{ fontSize: 11.5, color: "var(--slate)", margin: "0 0 12px" }}>
-        Whichever interval trips first applies. An action point applies to every active truck (no per-vehicle overrides in this first version).
+        Whichever interval trips first applies. Choose exactly which vehicles/equipment an action point covers, or leave it
+        on every active truck. Qty (m³) tracks concrete carried by that truck since its last service — equipment doesn't
+        have its own usage tracking yet, so a qty or hours interval only ever evaluates against trucks.
       </p>
 
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
         <table>
-          <thead><tr><th>Name</th><th>Days</th><th>Hours</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Interval</th><th>Applies to</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {points.map((p) => (
               <tr key={p.id}>
                 {editing === p.id ? (
                   <>
-                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: 180 }} /></td>
-                    <td><input type="number" value={editForm.interval_days} onChange={(e) => setEditForm({ ...editForm, interval_days: e.target.value })} style={{ width: 70 }} /></td>
-                    <td><input type="number" value={editForm.interval_hours} onChange={(e) => setEditForm({ ...editForm, interval_hours: e.target.value })} style={{ width: 70 }} /></td>
+                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: 160 }} /></td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <input type="number" placeholder="days" value={editForm.interval_days} onChange={(e) => setEditForm({ ...editForm, interval_days: e.target.value })} style={{ width: 60 }} />
+                        <input type="number" placeholder="hrs" value={editForm.interval_hours} onChange={(e) => setEditForm({ ...editForm, interval_hours: e.target.value })} style={{ width: 55 }} />
+                        <input type="number" placeholder="m³" value={editForm.interval_qty_m3} onChange={(e) => setEditForm({ ...editForm, interval_qty_m3: e.target.value })} style={{ width: 60 }} />
+                      </div>
+                    </td>
+                    <td>
+                      <VehicleEquipmentPicker
+                        trucks={trucks} equipment={equipment}
+                        truckIds={editForm.truck_ids} equipmentIds={editForm.equipment_ids}
+                        onChange={(truck_ids, equipment_ids) => setEditForm({ ...editForm, truck_ids, equipment_ids })}
+                      />
+                    </td>
                     <td>
                       <select value={editForm.is_active} onChange={(e) => setEditForm({ ...editForm, is_active: e.target.value === "true" })}>
                         <option value="true">Active</option>
@@ -2161,8 +2282,11 @@ export function MaintenanceActionPointsPanel({ setError }) {
                 ) : (
                   <>
                     <td>{p.name}</td>
-                    <td>{p.interval_days || "—"}</td>
-                    <td>{p.interval_hours || "—"}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {[p.interval_days ? `${p.interval_days} days` : null, p.interval_hours ? `${p.interval_hours} hrs` : null, p.interval_qty_m3 ? `${p.interval_qty_m3} m³` : null]
+                        .filter(Boolean).map((s) => <div key={s}>{s}</div>)}
+                    </td>
+                    <td><ScopeChips point={p} trucksById={trucksById} equipmentById={equipmentById} activeTruckCount={activeTruckCount} /></td>
                     <td><span className={`badge ${p.is_active ? "badge-success" : "badge-neutral"}`}>{p.is_active ? "Active" : "Inactive"}</span></td>
                     <td><button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => startEdit(p)}>Edit</button></td>
                   </>

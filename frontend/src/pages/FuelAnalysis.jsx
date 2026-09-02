@@ -152,6 +152,12 @@ function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, onBack }) {
   const status = rateStatus(overallRate, fleetAvg);
   const withPumpTrips = data.trips.filter((t) => t.discharge_mode === "With pump");
   const pumpPct = data.trips.length ? Math.round((withPumpTrips.length / data.trips.length) * 100) : null;
+  // L/m³ — total litres fuelled over total concrete quantity carried in range.
+  // Distance-independent (unlike L/100km, no paired-odometer requirement),
+  // so it uses every litre and every trip in the window.
+  const totalLitresAll = data.fill_intervals.reduce((s, f) => s + Number(f.actual_quantity_issued), 0);
+  const totalQtyM3 = data.trips.reduce((s, t) => s + Number(t.loaded_quantity_m3 || 0), 0);
+  const litresPerM3 = totalQtyM3 > 0 ? totalLitresAll / totalQtyM3 : null;
 
   return (
     <div>
@@ -167,6 +173,10 @@ function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, onBack }) {
             <div className="kpi-label">L / 100km</div>
             <div className="kpi-value" style={{ color: STATUS_COLOR[status.key] }}>{overallRate != null ? overallRate.toFixed(1) : "—"}</div>
             <span className={`badge ${STATUS_BADGE[status.key]}`} style={{ marginTop: 2 }}>{status.label}</span>
+          </div>
+          <div>
+            <div className="kpi-label">L / m³</div>
+            <div className="kpi-value">{litresPerM3 != null ? litresPerM3.toFixed(2) : "—"}</div>
           </div>
           <div>
             <div className="kpi-label">Total litres</div>
@@ -286,6 +296,7 @@ export default function FuelAnalysis() {
 
   const trucks = fleet?.trucks || [];
   const fleetAvg = fleet?.fleet_avg_litres_per_100km != null ? Number(fleet.fleet_avg_litres_per_100km) : null;
+  const fleetAvgM3 = fleet?.fleet_avg_litres_per_m3 != null ? Number(fleet.fleet_avg_litres_per_m3) : null;
   const totalLitres = trucks.reduce((s, t) => s + Number(t.total_litres || 0), 0);
   const totalCost = trucks.reduce((s, t) => s + Number(t.total_cost || 0), 0);
   const totalTrips = trucks.reduce((s, t) => s + Number(t.trip_count || 0), 0);
@@ -323,6 +334,10 @@ export default function FuelAnalysis() {
                 <div className="kpi-value">{fleetAvg != null ? fleetAvg.toFixed(1) : "—"}</div>
               </div>
               <div className="kpi">
+                <div className="kpi-label">Fleet avg L/m³</div>
+                <div className="kpi-value">{fleetAvgM3 != null ? fleetAvgM3.toFixed(2) : "—"}</div>
+              </div>
+              <div className="kpi">
                 <div className="kpi-label">Total fuel</div>
                 <div className="kpi-value">{num(totalLitres)} L</div>
               </div>
@@ -354,7 +369,7 @@ export default function FuelAnalysis() {
                 <table style={{ fontSize: 12 }}>
                   <thead>
                     <tr>
-                      <th>Truck</th><th>L/100km</th><th>Litres</th><th>Cost</th><th>Fills</th>
+                      <th>Truck</th><th>L/100km</th><th>L/m³</th><th>Litres</th><th>Cost</th><th>Fills</th>
                       <th>Plant / Outside</th><th>Trips</th><th>Qty</th><th>With pump</th>
                     </tr>
                   </thead>
@@ -369,6 +384,7 @@ export default function FuelAnalysis() {
                               <span className={`badge ${STATUS_BADGE[status.key]}`}>{Number(t.litres_per_100km).toFixed(1)}</span>
                             ) : "—"}
                           </td>
+                          <td>{t.litres_per_m3 != null ? Number(t.litres_per_m3).toFixed(2) : "—"}</td>
                           <td>{num(t.total_litres)} L</td>
                           <td>₹{num(t.total_cost)}</td>
                           <td>{t.fill_count}</td>
@@ -379,7 +395,7 @@ export default function FuelAnalysis() {
                         </tr>
                       );
                     })}
-                    {sortedTable.length === 0 && <tr><td colSpan={9} style={{ color: "var(--slate)" }}>No trucks with fuel fills or trips in this date range.</td></tr>}
+                    {sortedTable.length === 0 && <tr><td colSpan={10} style={{ color: "var(--slate)" }}>No trucks with fuel fills or trips in this date range.</td></tr>}
                   </tbody>
                 </table>
               </div>

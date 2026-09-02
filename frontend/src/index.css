@@ -114,6 +114,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
    visually but be a confusing name at the call site. */
 .badge-violet { background: var(--violet-bg); color: var(--violet); }
 
+/* Round 136 — a plain informational tag (e.g. "which vehicles does this
+   action point apply to"), distinct from .badge's status/state meaning. */
+.chip { display: inline-block; background: var(--concrete); border-radius: 20px; padding: 2px 9px; font-size: 11px; color: var(--charcoal); font-weight: 600; }
+
 /* ===== Tables ===== */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--slate); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border-strong); font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }

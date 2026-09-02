@@ -13,6 +13,7 @@ import PlantOperator from "./pages/PlantOperator.jsx";
 import QcEngineer from "./pages/QcEngineer.jsx";
 import RawMaterialStockEntry from "./pages/RawMaterialStockEntry.jsx";
 import LabTechnician from "./pages/LabTechnician.jsx";
+import LabDueToday from "./pages/LabDueToday.jsx";
 import CubeTestReport from "./pages/CubeTestReport.jsx";
 import Accountant from "./pages/Accountant.jsx";
 import Administrator from "./pages/Administrator.jsx";
@@ -133,6 +134,12 @@ export default function App() {
           } />
           <Route path="/lab-technician/cube-test-report" element={
             <ProtectedRoute roles={["lab_technician", "administrator"]}><CubeTestReport /></ProtectedRoute>
+          } />
+          {/* Round 135 — "Samples Due for Testing", opened from the KPI
+              card on the Lab Technician dashboard. Same role guard as
+              /lab-technician itself (see the Round 125 comment above). */}
+          <Route path="/lab-technician/due-today" element={
+            <ProtectedRoute roles={["lab_technician", "administrator"]}><LabDueToday /></ProtectedRoute>
           } />
           <Route path="/accountant" element={
             <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>
