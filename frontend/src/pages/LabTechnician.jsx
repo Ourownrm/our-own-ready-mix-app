@@ -3,7 +3,7 @@
 // which is unchanged) and the mix design library both PDF reports are built
 // from. Single-file, internal-view-state dashboard, matching the pattern
 // used by every other role's own screen (QcEngineer.jsx, Accountant.jsx, etc).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
@@ -241,6 +241,9 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
   const [viewBucket, setViewBucket] = useState("active"); // active | completed | closed
   const [pours, setPours] = useState([]);
   const [openOrderId, setOpenOrderId] = useState(null);
+  const [highlightOrderId, setHighlightOrderId] = useState(null);
+  const cardRefs = useRef({});
+  const scrolledForRef = useRef(null);
 
   async function load() {
     try { setPours(await apiRequest(`/lab-technician/cube-pours?view=${viewBucket}`)); } catch (err) { setError(err.message); }
@@ -252,6 +255,21 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
   useEffect(() => {
     if (focusOrderId != null) { setViewBucket("active"); setOpenOrderId(focusOrderId); }
   }, [focusOrderId]);
+  // Round 137, item 3 — opening the right pour wasn't enough on its own:
+  // wherever that card happened to fall in the (potentially long) active
+  // list, the user still had to scroll and hunt for it. Now it's scrolled
+  // into view and briefly highlighted once its card actually exists in the
+  // DOM (has to wait for `pours` to load, not just for openOrderId to be set).
+  useEffect(() => {
+    if (focusOrderId == null || scrolledForRef.current === focusOrderId) return;
+    const el = cardRefs.current[focusOrderId];
+    if (!el || !pours.some((p) => p.order_id === focusOrderId)) return;
+    scrolledForRef.current = focusOrderId;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightOrderId(focusOrderId);
+    const t = setTimeout(() => setHighlightOrderId(null), 2500);
+    return () => clearTimeout(t);
+  }, [focusOrderId, pours]);
 
   async function closePour(orderId) {
     const reason = window.prompt("Why is this pour not being tested? (optional — leave blank if you'd rather not say)");
@@ -297,7 +315,17 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
         const strength7 = p.result_7day_strength ?? p.legacy_7day_strength;
         const strength28 = p.result_28day_strength ?? p.legacy_28day_strength;
         return (
-          <div key={p.order_id} className="card" style={{ marginBottom: 10 }}>
+          <div
+            key={p.order_id}
+            ref={(el) => { cardRefs.current[p.order_id] = el; }}
+            className="card"
+            style={{
+              marginBottom: 10,
+              transition: "background-color 0.4s ease, box-shadow 0.4s ease",
+              background: highlightOrderId === p.order_id ? "var(--amber-bg)" : undefined,
+              boxShadow: highlightOrderId === p.order_id ? "0 0 0 2px var(--amber)" : undefined,
+            }}
+          >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
                 <div style={{ fontWeight: 600 }}>
@@ -778,6 +806,9 @@ function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
   const [casts, setCasts] = useState([]);
   const [openCastId, setOpenCastId] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [highlightCastId, setHighlightCastId] = useState(null);
+  const cardRefs = useRef({});
+  const scrolledForRef = useRef(null);
 
   async function load() {
     try { setCasts(await apiRequest("/lab-technician/site-cube-casts")); } catch (err) { setError(err.message); }
@@ -787,6 +818,18 @@ function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
   useEffect(() => {
     if (focusCastId != null) setOpenCastId(focusCastId);
   }, [focusCastId]);
+  // Round 137, item 3 — same scroll-into-view + highlight fix as the plant
+  // pours list above (see CubeTestingTab's own comment on why).
+  useEffect(() => {
+    if (focusCastId == null || scrolledForRef.current === focusCastId) return;
+    const el = cardRefs.current[focusCastId];
+    if (!el || !casts.some((c) => c.cast_id === focusCastId)) return;
+    scrolledForRef.current = focusCastId;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightCastId(focusCastId);
+    const t = setTimeout(() => setHighlightCastId(null), 2500);
+    return () => clearTimeout(t);
+  }, [focusCastId, casts]);
 
   if (creating) {
     return (
@@ -802,7 +845,17 @@ function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
     <div>
       <button type="button" className="btn-primary" style={{ marginBottom: 12 }} onClick={() => setCreating(true)}>+ Record a site cast</button>
       {casts.map((b) => (
-        <div key={b.cast_id} className="card" style={{ marginBottom: 10 }}>
+        <div
+          key={b.cast_id}
+          ref={(el) => { cardRefs.current[b.cast_id] = el; }}
+          className="card"
+          style={{
+            marginBottom: 10,
+            transition: "background-color 0.4s ease, box-shadow 0.4s ease",
+            background: highlightCastId === b.cast_id ? "var(--amber-bg)" : undefined,
+            boxShadow: highlightCastId === b.cast_id ? "0 0 0 2px var(--amber)" : undefined,
+          }}
+        >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
               <div style={{ fontWeight: 600 }}>{formatOrderNumber(b.order_id)} · {b.mix_grade_name} · {b.number_of_cubes || "?"} cubes</div>

@@ -40,6 +40,11 @@ export default function StoreStock() {
   const [countedQty, setCountedQty] = useState("");
   const [adjustNote, setAdjustNote] = useState("");
 
+  // Round 137, item 1d — Manager/Administrator-maintained rupees/liter rate
+  // per item, separate from the physical-count "Adjust" action above.
+  const [settingRate, setSettingRate] = useState(null); // stock item whose rate is being set
+  const [rateValue, setRateValue] = useState("");
+
   const [history, setHistory] = useState(null); // { item, rows } | null
 
   async function load() {
@@ -105,6 +110,23 @@ export default function StoreStock() {
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
+  function openSetRate(item) {
+    setSettingRate(item); setRateValue(item.rate_per_liter ?? ""); setError(""); setNotice("");
+  }
+  async function submitRate(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/store-stock/items/${settingRate.id}/rate`, {
+        method: "PATCH",
+        body: { rate_per_liter: rateValue },
+      });
+      setNotice("Rate updated.");
+      setSettingRate(null);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
   async function openHistory(item) {
     setError("");
     try {
@@ -132,10 +154,14 @@ export default function StoreStock() {
                     {Number(it.current_qty).toFixed(1)} <span style={{ fontSize: 11, fontWeight: 400, color: "var(--slate)" }}>{it.unit}</span>
                   </div>
                   {low && <div style={{ fontSize: 10.5, color: "var(--alert-red)", fontWeight: 600, marginTop: 1 }}>Below reorder level ({it.reorder_level} {it.unit})</div>}
+                  <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 3 }}>
+                    Rate: {it.rate_per_liter != null ? `₹${Number(it.rate_per_liter).toFixed(2)}/${it.unit}` : "not set"}
+                  </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
                   <button type="button" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => openRequest(it)}>Request purchase</button>
                   {isManager && <button type="button" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => openAdjust(it)}>Adjust</button>}
+                  {isManager && <button type="button" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => openSetRate(it)}>Set rate</button>}
                 </div>
               </div>
               <button type="button" onClick={() => openHistory(it)} style={{ fontSize: 10.5, padding: "3px 0", marginTop: 6, background: "none", border: "none", color: "var(--rebar)", textAlign: "left" }}>
@@ -212,6 +238,19 @@ export default function StoreStock() {
             <label style={{ fontSize: 11.5, color: "var(--slate)" }}>Reason</label>
             <textarea required value={adjustNote} onChange={(e) => setAdjustNote(e.target.value)} rows={2} placeholder="e.g. physical count, evaporation, spillage, correction" style={{ width: "100%", marginBottom: 10, fontFamily: "inherit" }} />
             <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Save adjustment"}</button>
+          </form>
+        </Modal>
+      )}
+
+      {settingRate && (
+        <Modal onClose={() => setSettingRate(null)} title={`Set rate — ${settingRate.display_name}`}>
+          <form onSubmit={submitRate}>
+            <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>
+              Store's issue screens pre-fill their cost field from this rate — still editable there, so this is a default, not a locked price.
+            </div>
+            <label style={{ fontSize: 11.5, color: "var(--slate)" }}>Rate (₹ per {settingRate.unit})</label>
+            <input type="number" step="0.01" min="0" required value={rateValue} onChange={(e) => setRateValue(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+            <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Save rate"}</button>
           </form>
         </Modal>
       )}

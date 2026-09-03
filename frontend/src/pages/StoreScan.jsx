@@ -10,14 +10,34 @@ export default function StoreScan() {
   const [formError, setFormError] = useState(""); // issue-form validation, shown inline without hiding the form
   const [actualQty, setActualQty] = useState("");
   const [cost, setCost] = useState("");
+  const [costEdited, setCostEdited] = useState(false); // Round 137: once Store types their own cost, stop auto-recomputing it from the rate
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
 
   useEffect(() => {
     apiRequest(`/supply-requests/scan/${token}`)
-      .then((r) => { setRequest(r); setActualQty(r.approved_quantity); })
+      .then((r) => {
+        setRequest(r);
+        setActualQty(r.approved_quantity);
+        if (r.rate_per_liter != null) setCost((Number(r.rate_per_liter) * Number(r.approved_quantity)).toFixed(2));
+      })
       .catch((err) => setError(err.message));
   }, [token]);
+
+  // Round 137, item 1d — Store's cost field pre-fills from the standing
+  // rate (Manager-maintained, see StoreStock.jsx) × actual quantity, and
+  // keeps tracking the quantity typed in — right up until Store edits the
+  // cost themselves, since at that point they're overriding it on purpose.
+  function updateActualQty(v) {
+    setActualQty(v);
+    if (request?.rate_per_liter != null && !costEdited) {
+      setCost(v ? (Number(request.rate_per_liter) * Number(v)).toFixed(2) : "");
+    }
+  }
+  function updateCost(v) {
+    setCostEdited(true);
+    setCost(v);
+  }
 
   async function confirmIssue() {
     if (!actualQty) { setFormError("Enter the actual quantity issued."); return; }
@@ -75,14 +95,12 @@ export default function StoreScan() {
             <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>
               Actual quantity issued <span style={{ color: "var(--slate)" }}>(max {request.approved_quantity} — less is fine if stock is short)</span>
             </div>
-            <input type="number" max={request.approved_quantity} value={actualQty} onChange={(e) => setActualQty(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+            <input type="number" max={request.approved_quantity} value={actualQty} onChange={(e) => updateActualQty(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
-            {request.request_type === "fuel" && (
-              <>
-                <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>Cost (₹, optional)</div>
-                <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} style={{ width: "100%", marginBottom: 14 }} />
-              </>
-            )}
+            <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 4 }}>
+              Cost (₹, optional){request.rate_per_liter != null && ` — pre-filled at ₹${request.rate_per_liter}/L`}
+            </div>
+            <input type="number" value={cost} onChange={(e) => updateCost(e.target.value)} style={{ width: "100%", marginBottom: 14 }} />
 
             {formError && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 10 }}>{formError}</div>}
 

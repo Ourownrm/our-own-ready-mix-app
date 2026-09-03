@@ -13,17 +13,25 @@ export default function Reports() {
   const [data, setData] = useState(null);
   const [onDutySales, setOnDutySales] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [maintenanceKpis, setMaintenanceKpis] = useState(null);
   const [error, setError] = useState("");
   const { user } = useAuth();
 
   async function load() {
     try {
-      const [d, s] = await Promise.all([
+      const [d, s, m] = await Promise.all([
         apiRequest("/reports/director-dashboard"),
         apiRequest("/sales/on-duty"),
+        // Round 137, item 4 — Maintenance Action Points existed on the
+        // Administrator page (Masters → Maintenance Action Points) but had
+        // no presence at all on this Director's Dashboard, so an
+        // overdue/due-soon count was invisible unless someone happened to
+        // go looking for it.
+        apiRequest("/maintenance/dashboard"),
       ]);
       setData(d);
       setOnDutySales(s);
+      setMaintenanceKpis(m.kpis);
     } catch (err) {
       setError(err.message);
     }
@@ -136,6 +144,12 @@ export default function Reports() {
               <Kpi label="Collected yesterday" value={inr(data.collected_yesterday)} />
               <Kpi label="Collected this month" value={inr(data.collected_month)} />
               <Kpi label="Total outstanding" value={inr(data.total_outstanding)} danger={Number(data.total_outstanding) > 0} to="/outstanding-collection-report" />
+              {maintenanceKpis && (
+                <>
+                  <Kpi label="Maintenance overdue" value={maintenanceKpis.overdue} danger={maintenanceKpis.overdue > 0} to="/maintenance" />
+                  <Kpi label="Maintenance due this week" value={maintenanceKpis.due_soon} to="/maintenance" />
+                </>
+              )}
             </div>
 
             {/* 3. Running orders */}

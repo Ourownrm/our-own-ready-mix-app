@@ -55,13 +55,18 @@ const STATUS_BADGE = {
   neutral: "badge-neutral",
 };
 
-function FleetBarChart({ trucks, fleetAvg, onPick }) {
-  const withRate = trucks.filter((t) => t.litres_per_100km != null);
+// Round 137, item 1a — L/m³ is now the main ranking metric (was L/100km):
+// distance-independent, so it isolates genuine fuel-efficiency differences
+// between trucks rather than mixing in how far each truck's routes happened
+// to be this range. Kept generic on a `metricKey`/`unit` pair so the same
+// component still works if a metric is ever swapped again.
+function FleetBarChart({ trucks, fleetAvg, onPick, metricKey = "litres_per_m3", unit = "L/m³", digits = 2 }) {
+  const withRate = trucks.filter((t) => t[metricKey] != null);
   if (withRate.length === 0) {
-    return <div style={{ fontSize: 13, color: "var(--slate)" }}>No trucks have both fuel fills and an odometer reading in this range yet.</div>;
+    return <div style={{ fontSize: 13, color: "var(--slate)" }}>No trucks have both fuel fills and delivered quantity in this range yet.</div>;
   }
-  const sorted = [...withRate].sort((a, b) => b.litres_per_100km - a.litres_per_100km);
-  const max = Math.max(...sorted.map((t) => Number(t.litres_per_100km)), fleetAvg || 0) * 1.08;
+  const sorted = [...withRate].sort((a, b) => b[metricKey] - a[metricKey]);
+  const max = Math.max(...sorted.map((t) => Number(t[metricKey])), fleetAvg || 0) * 1.08;
   const w = 700, barH = 26, gap = 9, leftPad = 118, rightPad = 78, chartW = w - leftPad - rightPad;
   const h = sorted.length * (barH + gap) + gap;
   const avgX = fleetAvg != null ? leftPad + (fleetAvg / max) * chartW : null;
@@ -76,7 +81,7 @@ function FleetBarChart({ trucks, fleetAvg, onPick }) {
       )}
       {sorted.map((t, i) => {
         const y = gap + i * (barH + gap);
-        const rate = Number(t.litres_per_100km);
+        const rate = Number(t[metricKey]);
         const barW = Math.max((rate / max) * chartW, 2);
         const status = rateStatus(rate, fleetAvg);
         return (
@@ -84,7 +89,7 @@ function FleetBarChart({ trucks, fleetAvg, onPick }) {
             <text x={leftPad - 8} y={y + barH / 2 + 4} textAnchor="end" fontSize="11" fill="var(--charcoal)" fontWeight="600">{t.truck_number}</text>
             <rect x={leftPad} y={y} width={chartW} height={barH} rx="4" fill="var(--concrete)" />
             <rect x={leftPad} y={y} width={barW} height={barH} rx="4" fill={STATUS_COLOR[status.key]} />
-            <text x={leftPad + barW + 6} y={y + barH / 2 + 4} fontSize="11" fill="var(--charcoal)" fontWeight="600">{rate.toFixed(1)} L/100km</text>
+            <text x={leftPad + barW + 6} y={y + barH / 2 + 4} fontSize="11" fill="var(--charcoal)" fontWeight="600">{rate.toFixed(digits)} {unit}</text>
           </g>
         );
       })}
@@ -123,7 +128,7 @@ function IntervalTrend({ intervals }) {
   );
 }
 
-function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, onBack }) {
+function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, fleetAvgM3, onBack }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -149,15 +154,19 @@ function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, onBack }) {
         return totalKm > 0 ? (totalL / totalKm) * 100 : null;
       })()
     : null;
-  const status = rateStatus(overallRate, fleetAvg);
   const withPumpTrips = data.trips.filter((t) => t.discharge_mode === "With pump");
   const pumpPct = data.trips.length ? Math.round((withPumpTrips.length / data.trips.length) * 100) : null;
-  // L/m³ — total litres fuelled over total concrete quantity carried in range.
+  // Round 137, item 1a/1b — L/m³ and cost/m³ are now the lead figures: total
+  // litres fuelled / total cost, both over total concrete carried in range.
   // Distance-independent (unlike L/100km, no paired-odometer requirement),
-  // so it uses every litre and every trip in the window.
+  // so both use every litre/rupee and every trip in the window.
   const totalLitresAll = data.fill_intervals.reduce((s, f) => s + Number(f.actual_quantity_issued), 0);
+  const totalCostAll = data.fill_intervals.reduce((s, f) => s + Number(f.fuel_cost || 0), 0);
   const totalQtyM3 = data.trips.reduce((s, t) => s + Number(t.loaded_quantity_m3 || 0), 0);
   const litresPerM3 = totalQtyM3 > 0 ? totalLitresAll / totalQtyM3 : null;
+  const costPerM3 = totalQtyM3 > 0 ? totalCostAll / totalQtyM3 : null;
+  const m3Status = rateStatus(litresPerM3, fleetAvgM3);
+  const status = rateStatus(overallRate, fleetAvg); // L/100km — now the secondary/supporting figure
 
   return (
     <div>
@@ -170,21 +179,25 @@ function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, onBack }) {
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 20, flexWrap: "wrap" }}>
           <div>
-            <div className="kpi-label">L / 100km</div>
-            <div className="kpi-value" style={{ color: STATUS_COLOR[status.key] }}>{overallRate != null ? overallRate.toFixed(1) : "—"}</div>
-            <span className={`badge ${STATUS_BADGE[status.key]}`} style={{ marginTop: 2 }}>{status.label}</span>
+            <div className="kpi-label">L / m³ (main)</div>
+            <div className="kpi-value" style={{ color: STATUS_COLOR[m3Status.key] }}>{litresPerM3 != null ? litresPerM3.toFixed(2) : "—"}</div>
+            <span className={`badge ${STATUS_BADGE[m3Status.key]}`} style={{ marginTop: 2 }}>{m3Status.label}</span>
           </div>
           <div>
-            <div className="kpi-label">L / m³</div>
-            <div className="kpi-value">{litresPerM3 != null ? litresPerM3.toFixed(2) : "—"}</div>
+            <div className="kpi-label">Cost / m³</div>
+            <div className="kpi-value">{costPerM3 != null ? `₹${costPerM3.toFixed(0)}` : "—"}</div>
+          </div>
+          <div>
+            <div className="kpi-label">L / 100km</div>
+            <div className="kpi-value" style={{ fontSize: 16 }}>{overallRate != null ? overallRate.toFixed(1) : "—"}</div>
           </div>
           <div>
             <div className="kpi-label">Total litres</div>
-            <div className="kpi-value">{num(data.fill_intervals.reduce((s, f) => s + Number(f.actual_quantity_issued), 0))}</div>
+            <div className="kpi-value">{num(totalLitresAll)}</div>
           </div>
           <div>
             <div className="kpi-label">Total cost</div>
-            <div className="kpi-value">₹{num(data.fill_intervals.reduce((s, f) => s + Number(f.fuel_cost || 0), 0))}</div>
+            <div className="kpi-value">₹{num(totalCostAll)}</div>
           </div>
           <div>
             <div className="kpi-label">Trips</div>
@@ -193,9 +206,10 @@ function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, onBack }) {
         </div>
       </div>
 
-      {fleetAvg != null && overallRate != null && (
+      {fleetAvgM3 != null && litresPerM3 != null && (
         <div className="open-q" style={{ marginBottom: 16 }}>
-          This truck runs at <b>{overallRate.toFixed(1)} L/100km</b> against a fleet average of <b>{fleetAvg.toFixed(1)} L/100km</b> ({overallRate > fleetAvg ? "+" : ""}{(((overallRate - fleetAvg) / fleetAvg) * 100).toFixed(0)}%).
+          This truck runs at <b>{litresPerM3.toFixed(2)} L/m³</b> against a fleet average of <b>{fleetAvgM3.toFixed(2)} L/m³</b> ({litresPerM3 > fleetAvgM3 ? "+" : ""}{(((litresPerM3 - fleetAvgM3) / fleetAvgM3) * 100).toFixed(0)}%){costPerM3 != null ? <> at <b>₹{costPerM3.toFixed(0)}/m³</b></> : ""}.
+          {fleetAvg != null && overallRate != null && <> On a distance basis it's running <b>{overallRate.toFixed(1)} L/100km</b> against a fleet average of <b>{fleetAvg.toFixed(1)} L/100km</b>.</>}
           {pumpPct != null && <> Used a pump on <b>{pumpPct}%</b> of its trips in this range — pump discharge is faster and typically burns less fuel per trip than manual/chute discharge.</>}
         </div>
       )}
@@ -297,10 +311,12 @@ export default function FuelAnalysis() {
   const trucks = fleet?.trucks || [];
   const fleetAvg = fleet?.fleet_avg_litres_per_100km != null ? Number(fleet.fleet_avg_litres_per_100km) : null;
   const fleetAvgM3 = fleet?.fleet_avg_litres_per_m3 != null ? Number(fleet.fleet_avg_litres_per_m3) : null;
+  const fleetAvgCostM3 = fleet?.fleet_avg_cost_per_m3 != null ? Number(fleet.fleet_avg_cost_per_m3) : null;
   const totalLitres = trucks.reduce((s, t) => s + Number(t.total_litres || 0), 0);
   const totalCost = trucks.reduce((s, t) => s + Number(t.total_cost || 0), 0);
   const totalTrips = trucks.reduce((s, t) => s + Number(t.trip_count || 0), 0);
-  const sortedTable = [...trucks].sort((a, b) => (b.litres_per_100km ?? -1) - (a.litres_per_100km ?? -1));
+  // Round 137, item 1a — ranked by L/m³ now, not L/100km.
+  const sortedTable = [...trucks].sort((a, b) => (b.litres_per_m3 ?? -1) - (a.litres_per_m3 ?? -1));
 
   return (
     <>
@@ -329,13 +345,17 @@ export default function FuelAnalysis() {
         {fleet && !selectedTruck && (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 16 }}>
-              <div className="kpi">
-                <div className="kpi-label">Fleet avg L/100km</div>
-                <div className="kpi-value">{fleetAvg != null ? fleetAvg.toFixed(1) : "—"}</div>
+              <div className="kpi" style={{ borderColor: "var(--rebar)" }}>
+                <div className="kpi-label">Fleet avg L/m³ (main)</div>
+                <div className="kpi-value">{fleetAvgM3 != null ? fleetAvgM3.toFixed(2) : "—"}</div>
               </div>
               <div className="kpi">
-                <div className="kpi-label">Fleet avg L/m³</div>
-                <div className="kpi-value">{fleetAvgM3 != null ? fleetAvgM3.toFixed(2) : "—"}</div>
+                <div className="kpi-label">Fleet avg cost/m³</div>
+                <div className="kpi-value">{fleetAvgCostM3 != null ? `₹${fleetAvgCostM3.toFixed(0)}` : "—"}</div>
+              </div>
+              <div className="kpi">
+                <div className="kpi-label">Fleet avg L/100km</div>
+                <div className="kpi-value" style={{ fontSize: 16 }}>{fleetAvg != null ? fleetAvg.toFixed(1) : "—"}</div>
               </div>
               <div className="kpi">
                 <div className="kpi-label">Total fuel</div>
@@ -352,8 +372,8 @@ export default function FuelAnalysis() {
             </div>
 
             <div className="card" style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Fleet ranked by fuel consumption (highest first)</div>
-              <FleetBarChart trucks={trucks} fleetAvg={fleetAvg} onPick={(t) => setSelectedTruck(t.truck_id)} />
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Fleet ranked by L/m³ (highest first)</div>
+              <FleetBarChart trucks={trucks} fleetAvg={fleetAvgM3} onPick={(t) => setSelectedTruck(t.truck_id)} />
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10, fontSize: 11, color: "var(--slate)" }}>
                 <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--alert-red)", marginRight: 5 }} />High consumption</span>
                 <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--amber)", marginRight: 5 }} />Above average</span>
@@ -369,22 +389,23 @@ export default function FuelAnalysis() {
                 <table style={{ fontSize: 12 }}>
                   <thead>
                     <tr>
-                      <th>Truck</th><th>L/100km</th><th>L/m³</th><th>Litres</th><th>Cost</th><th>Fills</th>
+                      <th>Truck</th><th>L/m³</th><th>Cost/m³</th><th>L/100km</th><th>Litres</th><th>Cost</th><th>Fills</th>
                       <th>Plant / Outside</th><th>Trips</th><th>Qty</th><th>With pump</th>
                     </tr>
                   </thead>
                   <tbody>
                     {sortedTable.map((t) => {
-                      const status = rateStatus(t.litres_per_100km != null ? Number(t.litres_per_100km) : null, fleetAvg);
+                      const status = rateStatus(t.litres_per_m3 != null ? Number(t.litres_per_m3) : null, fleetAvgM3);
                       return (
                         <tr key={t.truck_id} style={{ cursor: "pointer" }} onClick={() => setSelectedTruck(t.truck_id)}>
                           <td>{t.truck_number}</td>
                           <td>
-                            {t.litres_per_100km != null ? (
-                              <span className={`badge ${STATUS_BADGE[status.key]}`}>{Number(t.litres_per_100km).toFixed(1)}</span>
+                            {t.litres_per_m3 != null ? (
+                              <span className={`badge ${STATUS_BADGE[status.key]}`}>{Number(t.litres_per_m3).toFixed(2)}</span>
                             ) : "—"}
                           </td>
-                          <td>{t.litres_per_m3 != null ? Number(t.litres_per_m3).toFixed(2) : "—"}</td>
+                          <td>{t.cost_per_m3 != null ? `₹${Number(t.cost_per_m3).toFixed(0)}` : "—"}</td>
+                          <td>{t.litres_per_100km != null ? Number(t.litres_per_100km).toFixed(1) : "—"}</td>
                           <td>{num(t.total_litres)} L</td>
                           <td>₹{num(t.total_cost)}</td>
                           <td>{t.fill_count}</td>
@@ -395,7 +416,7 @@ export default function FuelAnalysis() {
                         </tr>
                       );
                     })}
-                    {sortedTable.length === 0 && <tr><td colSpan={10} style={{ color: "var(--slate)" }}>No trucks with fuel fills or trips in this date range.</td></tr>}
+                    {sortedTable.length === 0 && <tr><td colSpan={11} style={{ color: "var(--slate)" }}>No trucks with fuel fills or trips in this date range.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -405,7 +426,7 @@ export default function FuelAnalysis() {
         )}
 
         {selectedTruck && (
-          <TruckDrilldown truckId={selectedTruck} fromDate={fromDate} toDate={toDate} fleetAvg={fleetAvg} onBack={() => setSelectedTruck(null)} />
+          <TruckDrilldown truckId={selectedTruck} fromDate={fromDate} toDate={toDate} fleetAvg={fleetAvg} fleetAvgM3={fleetAvgM3} onBack={() => setSelectedTruck(null)} />
         )}
       </div>
     </>

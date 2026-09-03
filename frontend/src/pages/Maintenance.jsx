@@ -558,6 +558,7 @@ const COMPONENT_COLORS = {
   on_time: "var(--violet)",
   quality: "var(--signal-green)",
   volume: "var(--amber)",
+  fuel: "var(--info)",
 };
 
 function BestDriverTab({ setError }) {
@@ -581,8 +582,8 @@ function BestDriverTab({ setError }) {
             {new Date(data.year, data.month - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" })} — Best Driver of the Month
           </h2>
           <p style={{ fontSize: 12.5, color: "var(--slate)", margin: "0 0 14px", maxWidth: 640, lineHeight: 1.5 }}>
-            Composite of the weekly Transit Mixer inspection checklist, transit efficiency, load-quality, and completed-trip volume.
-            No minimum trip count — every driver is eligible regardless of volume.
+            Composite of the weekly Transit Mixer inspection checklist, transit efficiency, load-quality, completed-trip volume,
+            and fuel economy. No minimum trip count — every driver is eligible regardless of volume.
           </p>
         </div>
         <button className="btn-primary" onClick={() => setShowForm(true)}>+ New weekly inspection</button>
@@ -609,11 +610,14 @@ function BestDriverTab({ setError }) {
       )}
 
       <div className="open-q" style={{ marginBottom: 18 }}>
-        <b>Weighting (confirmed round 99):</b> Checklist {Math.round(w.checklist * 100)}% ·
-        Transit efficiency {Math.round(w.on_time * 100)}% · Quality {Math.round(w.quality * 100)}% · Volume {Math.round(w.volume * 100)}%.
+        <b>Weighting (confirmed round 99, fuel added round 137):</b> Checklist {Math.round(w.checklist * 100)}% ·
+        Transit efficiency {Math.round(w.on_time * 100)}% · Quality {Math.round(w.quality * 100)}% · Volume {Math.round(w.volume * 100)}% ·
+        Fuel economy {Math.round(w.fuel * 100)}%.
         Transit efficiency scores only the two legs that are actually on the driver — plant-out → site-in, and site-out → plant-in —
         compared against other drivers who visited the <i>same site</i> that month. Time spent waiting/pouring at site is excluded, since
         that depends on site conditions, not the driver. See the <b>Site Efficiency</b> tab for the per-site breakdown behind this score.
+        Fuel economy compares each driver's fuel use per m³ delivered (the truck(s) they drove that month, weighted by trip volume)
+        against the fleet average — see the <b>360° Fuel Analysis</b> report for the underlying figures.
       </div>
 
       {data.ranked.length > 0 && (
@@ -624,11 +628,12 @@ function BestDriverTab({ setError }) {
             <span className="legend-item"><span className="legend-swatch" style={{ background: COMPONENT_COLORS.on_time }}></span>Transit efficiency ({Math.round(w.on_time * 100)}%)</span>
             <span className="legend-item"><span className="legend-swatch" style={{ background: COMPONENT_COLORS.quality }}></span>Quality ({Math.round(w.quality * 100)}%)</span>
             <span className="legend-item"><span className="legend-swatch" style={{ background: COMPONENT_COLORS.volume }}></span>Volume ({Math.round(w.volume * 100)}%)</span>
+            <span className="legend-item"><span className="legend-swatch" style={{ background: COMPONENT_COLORS.fuel }}></span>Fuel economy ({Math.round(w.fuel * 100)}%)</span>
           </div>
           <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 18 }}>
             <table>
               <thead>
-                <tr><th></th><th>Driver</th><th>Composite</th><th style={{ width: 200 }}>Breakdown</th><th>Checklist</th><th>Transit eff.</th><th>Quality</th><th>Volume</th></tr>
+                <tr><th></th><th>Driver</th><th>Composite</th><th style={{ width: 200 }}>Breakdown</th><th>Checklist</th><th>Transit eff.</th><th>Quality</th><th>Volume</th><th>Fuel</th></tr>
               </thead>
               <tbody>
                 {data.ranked.map((d, i) => (
@@ -642,12 +647,14 @@ function BestDriverTab({ setError }) {
                         {d.on_time_score != null && <div className="stack-seg" style={{ background: COMPONENT_COLORS.on_time, width: `${w.on_time * 100}%` }}></div>}
                         <div className="stack-seg" style={{ background: COMPONENT_COLORS.quality, width: `${w.quality * 100}%` }}></div>
                         <div className="stack-seg" style={{ background: COMPONENT_COLORS.volume, width: `${w.volume * 100}%` }}></div>
+                        {d.fuel_score != null && <div className="stack-seg" style={{ background: COMPONENT_COLORS.fuel, width: `${w.fuel * 100}%` }}></div>}
                       </div>
                     </td>
                     <td>{d.checklist_score}</td>
                     <td>{d.on_time_score ?? "—"}</td>
                     <td>{d.quality_score}</td>
                     <td>{d.volume_score}</td>
+                    <td title={d.fuel_litres_per_m3 != null ? `${d.fuel_litres_per_m3} L/m³` : undefined}>{d.fuel_score ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1303,7 +1303,7 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={savingStation}>{savingStation ? "Saving..." : "Add fuel station"}</button></div>
       </form>
 
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Equipment (pickup vans, loaders, generators)</div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Equipment (pickup vans, loaders, generators, batching plant)</div>
       <div className="card" style={{ marginBottom: 12 }}>
         <table>
           <thead><tr><th>Type</th><th>Name</th><th>Status</th><th></th></tr></thead>
@@ -1334,6 +1334,7 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
             <option value="pickup_van">Pickup van</option>
             <option value="loader">Loader</option>
             <option value="generator">Generator</option>
+            <option value="batching_plant">Batching plant</option>
           </select>
         </div>
         <div><div style={{ color: "var(--slate)" }}>Name</div><input value={equipForm.name} onChange={(e) => setEquipForm({ ...equipForm, name: e.target.value })} placeholder="e.g. Loader-1" required /></div>
