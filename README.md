@@ -5617,3 +5617,64 @@ zero errors on a fresh local Postgres database. The Lab Technician due-testing q
 qty-m³/scoping logic, the Repair Action Points lifecycle, and the fuel-analysis pump-detection fix were
 each additionally verified with seeded data against a real (disposable) local Postgres instance before
 being considered done, not just syntax-checked.
+
+## Round 137 (Ver. 9.59): Fuel Analysis KPI reorder + cost/m³, rate master, Best Driver fuel weighting, Lab Technician jump-to-pour, Admin dashboard maintenance KPIs, Batching Plant equipment
+
+1. **360° Fuel Analysis: L/m³ as the main KPI, cost/m³ as the second.** Both the fleet summary and every
+   truck drill-down were reordered so L/m³ (the distance-independent metric added Round 136) leads, with
+   the new cost/m³ (`total_cost / total_qty_m3`, added to both the fleet query and `fleetAvgCostM3`) right
+   behind it. L/100km is kept as a smaller, secondary figure since it still needs paired odometer readings
+   and drops the first fill of any date range, unlike L/m³ and cost/m³ which count every litre/rupee.
+   `FleetBarChart` was made metric-agnostic (`metricKey`/`unit`/`digits` props) so the same component now
+   ranks trucks by L/m³ instead of duplicating it for a second chart. The "All trucks" table columns and
+   the truck drill-down's `rateStatus` badge are both now keyed on L/m³ rather than L/100km.
+2. **Manager: stock-adjust access for fuel/lubricants — already live.** Checked this against the actual
+   code (`storeStock.js`'s `/items/:id/adjust` route, `StoreStock.jsx`'s Manager-visible Adjust button,
+   `App.jsx`'s route roles) rather than re-implementing it: Managers have had full Store Stock access,
+   including adjustments, since Round 131. No code change was needed here — flagging it in case it simply
+   hasn't been noticed yet.
+3. **Manager: add/edit ₹/liter rate for fuel and lubricants.** New `store_stock_items.rate_per_liter`
+   column — a Manager-maintained standing rate, deliberately kept separate from
+   `store_stock_purchases.unit_cost` (what was actually paid on one purchase, captured at receive time).
+   New `PATCH /store-stock/items/:id/rate` route (Manager/Administrator only); `StoreStock.jsx` shows the
+   current rate on every item card with a "Set rate" button and modal. The rate is a pre-fill convenience,
+   not an enforced price: `StoreScan.jsx`'s issue-time cost field now pre-fills from `rate × approved_qty`
+   when a rate exists, but stays editable, and is now shown for lubricant requests too (previously
+   fuel-only), since the rate master explicitly covers both.
+4. **Best Driver: Fuel Consumption added at 15% weight, others reweighted.** New weights: Checklist 50%
+   (was 40%), Transit efficiency 10% (was 15%), Quality 15% (was 20%), Volume 10% (was 25%), Fuel economy
+   15% (new). Honest limitation, stated in code: `supply_requests` has no `driver_id` (and `requested_by`
+   isn't driver-exclusive — site supervisors, plant operators, managers and admins can all request fuel
+   for a truck), so there's no literal per-driver fuel record. The new `computeDriverFuelRows()` instead
+   attributes each truck's own monthly L/m³ (same basis as the 360° Fuel Analysis fleet metric) to a
+   driver via a quantity-weighted average across the truck(s) that driver actually drove trips on that
+   month — a stated proxy, not per-driver metering. Scored with the same "50 = fleet average, ±100 per
+   100% better/worse, clamped 0–100" formula already used for transit efficiency, and reweighted the same
+   way when a driver has no fuel data for the month (omitted from `components`, `usedWeight` divides only
+   by what's present). `Maintenance.jsx`'s Best Driver tab now shows a Fuel legend swatch, a fuel segment
+   in the stack-bar breakdown, and a Fuel column on the leaderboard.
+5. **Lab Technician: due-card navigation now jumps to the target pour/cast.** Clicking a due-today card
+   previously landed on the Cube Testing / Site Cube Testing tab with no indication of where the matching
+   pour or cast was in the list — it had to be found by scrolling. `LabTechnician.jsx` now scrolls the
+   matching card into view and applies a 2.5s highlight (amber background + ring) once it's actually
+   loaded in the list, for both plant pours (`CubeTestingTab`, keyed on `focusOrderId`) and site casts
+   (`SiteCubeTestingTab`, keyed on `focusCastId`).
+6. **Admin dashboard now surfaces Maintenance Action Points.** The Administrator's Reports/Dashboard view
+   had no maintenance visibility at all — Maintenance Action Points existed only as a Masters submenu item
+   deep in Administrator.jsx, with no KPI anywhere on the dashboard itself. `Reports.jsx` (the Director's
+   Dashboard) now also loads `GET /maintenance/dashboard` and adds "Maintenance overdue" (red when > 0)
+   and "Maintenance due this week" KPI cards, both linking through to `/maintenance`. Scoped to the
+   dashboard specifically, per the request's wording — `ManagerDashboard.jsx` already links to Maintenance
+   Action Points as a tab and was left alone.
+7. **Batching Plant added to the maintenance equipment list.** `fuel_equipment_type` enum gains
+   `'batching_plant'` (migrated via the established `ADD VALUE IF NOT EXISTS` pattern, wrapped for
+   idempotency). `MasterDataPanels.jsx`'s equipment type select gained the matching option. Note:
+   `FuelFilling.jsx`'s fuel-request tabs are a static list, not enum-derived, so this doesn't add an
+   unwanted fuel-request tab for batching plants — it only makes them selectable as maintenance equipment.
+
+Verified with `node --check` on every touched backend file (`maintenance.js`, `setup.js`,
+`storeStock.js`, `supplyRequests.js`, `fuelAnalysis.js`) and a clean `npm run build`. `schema.sql` loads
+end-to-end with zero errors on a fresh local Postgres database. `computeDriverFuelRows()`'s SQL was
+additionally verified against seeded data on a real (disposable) local Postgres instance — including a
+multi-truck driver, to confirm the quantity-weighted average across trucks — before being considered
+done, not just syntax-checked.

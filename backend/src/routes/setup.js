@@ -1792,6 +1792,24 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (repair_action_points).");
 
+    // Round 137, item 5 — the Batching Plant itself can now be added as an
+    // equipment master row (Administrator → Masters → Fuel Stations and
+    // Equipment's), so it can be scoped on a Maintenance Action Point or
+    // targeted by a Repair Action Point like any other piece of equipment.
+    await pool.query(`DO $$ BEGIN
+      ALTER TYPE fuel_equipment_type ADD VALUE IF NOT EXISTS 'batching_plant';
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    log.push("Schema migration applied (fuel_equipment_type gains 'batching_plant').");
+
+    // Round 137, item 1d — a standing rupees/liter rate per stock item
+    // (fuel, and each lubricant type), Manager/Administrator-maintained.
+    // Distinct from store_stock_purchases.unit_cost (what was actually paid
+    // for one purchase, captured at receive time) — this is the rate Store
+    // sees pre-filled when issuing fuel/lubricant, so a cost doesn't have to
+    // be guessed or looked up by hand at every single/frequent issue.
+    await query(`ALTER TABLE store_stock_items ADD COLUMN IF NOT EXISTS rate_per_liter NUMERIC(10,2);`);
+    log.push("Schema migration applied (store_stock_items.rate_per_liter).");
+
     // Seed/sample data (customer, site, pumps, a starter rate) has been
     // moved to run only on a genuinely fresh install, right after the tables
     // are first created — see above. It used to run unconditionally on every

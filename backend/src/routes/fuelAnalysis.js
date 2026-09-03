@@ -113,7 +113,12 @@ router.get("/fleet", requireRole(...STAFF_ROLES), async (req, res) => {
          -- L/100km, it doesn't need paired odometer readings, so it uses
          -- every litre fuelled rather than only billable_litres).
          CASE WHEN COALESCE(f.total_litres, 0) > 0 AND COALESCE(ts.total_qty_m3, 0) > 0
-              THEN ROUND((f.total_litres / ts.total_qty_m3)::numeric, 2) END AS litres_per_m3
+              THEN ROUND((f.total_litres / ts.total_qty_m3)::numeric, 2) END AS litres_per_m3,
+         -- Round 137, item 1b — cost per m³, alongside litres per m³. Same
+         -- basis (total fuel cost recorded in range / total m³ carried in
+         -- range) — not distance-based, so no paired-odometer requirement.
+         CASE WHEN COALESCE(f.total_cost, 0) > 0 AND COALESCE(ts.total_qty_m3, 0) > 0
+              THEN ROUND((f.total_cost / ts.total_qty_m3)::numeric, 2) END AS cost_per_m3
        FROM trucks t
        LEFT JOIN fuel f ON f.truck_id = t.id
        LEFT JOIN trip_stats ts ON ts.truck_id = t.id
@@ -132,12 +137,17 @@ router.get("/fleet", requireRole(...STAFF_ROLES), async (req, res) => {
     const fleetAvgM3Rate = withM3Rate.length
       ? Math.round((withM3Rate.reduce((sum, r) => sum + Number(r.litres_per_m3), 0) / withM3Rate.length) * 100) / 100
       : null;
+    const withCostM3 = rows.filter((r) => r.cost_per_m3 != null);
+    const fleetAvgCostM3 = withCostM3.length
+      ? Math.round((withCostM3.reduce((sum, r) => sum + Number(r.cost_per_m3), 0) / withCostM3.length) * 100) / 100
+      : null;
 
     res.json({
       from_date: fromDate,
       to_date: toDate,
       fleet_avg_litres_per_100km: fleetAvgRate,
       fleet_avg_litres_per_m3: fleetAvgM3Rate,
+      fleet_avg_cost_per_m3: fleetAvgCostM3,
       trucks: rows,
     });
   } catch (err) {

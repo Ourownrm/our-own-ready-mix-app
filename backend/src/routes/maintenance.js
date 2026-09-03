@@ -542,14 +542,76 @@ router.get("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
   res.json(rows.map((r) => ({ ...r, checklist_score: scoreFromRatings(r.ratings) })));
 });
 
-// Best Driver of the Month — composite of four candidate signals confirmed
+// Best Driver of the Month — composite of five candidate signals confirmed
 // with the business: the weekly checklist above, transit efficiency,
-// load-quality (inverse rejection rate), and completed-trip volume.
+// load-quality (inverse rejection rate), completed-trip volume, and (round
+// 137) least fuel consumption per m³ carried.
 //
-// Weights confirmed by the business (round 99): Checklist 40%, Transit
-// efficiency (labelled "on_time" in the API/DB for continuity with round 98)
-// 15%, Quality 20%, Volume 25%. Easy to retune here if that changes again.
-const WEIGHTS = { checklist: 0.40, on_time: 0.15, quality: 0.20, volume: 0.25 };
+// Weights confirmed by the business — round 99: Checklist 40%, Transit
+// efficiency 15%, Quality 20%, Volume 25%. Round 137: Checklist 50%, Transit
+// efficiency 10%, Quality 15%, Volume 10%, Fuel 15% (labelled "fuel" in the
+// API/DB). Easy to retune here if that changes again.
+const WEIGHTS = { checklist: 0.50, on_time: 0.10, quality: 0.15, volume: 0.10, fuel: 0.15 };
+
+// Round 137 — least fuel consumption per m³, per driver. Honest limitation,
+// stated plainly rather than papered over: supply_requests (the real
+// fuel-fill data — see fuelAnalysis.js's own note on this) has no driver_id
+// at all, and requested_by isn't a reliable stand-in either — a plant
+// operator or site supervisor can request fuel for a truck on a driver's
+// behalf (see supplyRequests.js's REQUESTER_ROLES). So a driver's fuel score
+// is NOT "fuel this driver personally caused to be burned" — it's each
+// truck's own L/m³ this month (same basis as the 360° Fuel Analysis page),
+// attributed to a driver as the quantity-weighted average of the truck(s)
+// they actually drove trips on that month. A driver who mostly drove one
+// efficient truck scores well; one who split time across a thirsty truck
+// scores worse for it — a reasonable, stated proxy for "the fuel efficiency
+// of what this driver drove," not a claim about their own driving style.
+async function computeDriverFuelRows(year, month, driverIds) {
+  const { rows } = await query(
+    `WITH truck_fuel AS (
+       SELECT sr.truck_id, SUM(sr.actual_quantity_issued) AS total_litres
+       FROM supply_requests sr
+       WHERE sr.request_type = 'fuel' AND sr.equipment_type = 'truck' AND sr.status = 'issued'
+         AND sr.truck_id IS NOT NULL
+         AND EXTRACT(YEAR FROM sr.issued_at) = $1 AND EXTRACT(MONTH FROM sr.issued_at) = $2
+       GROUP BY sr.truck_id
+     ),
+     truck_qty AS (
+       SELECT dt.truck_id, SUM(dt.loaded_quantity_m3) AS total_qty_m3
+       FROM delivery_tickets dt
+       WHERE dt.truck_id IS NOT NULL AND dt.status IN ('completed', 'returned')
+         AND EXTRACT(YEAR FROM dt.ticket_date) = $1 AND EXTRACT(MONTH FROM dt.ticket_date) = $2
+       GROUP BY dt.truck_id
+     ),
+     truck_rate AS (
+       SELECT tq.truck_id,
+         CASE WHEN COALESCE(tf.total_litres, 0) > 0 AND tq.total_qty_m3 > 0
+              THEN tf.total_litres / tq.total_qty_m3 END AS litres_per_m3
+       FROM truck_qty tq
+       LEFT JOIN truck_fuel tf ON tf.truck_id = tq.truck_id
+     )
+     SELECT dt.driver_id, dt.truck_id, SUM(dt.loaded_quantity_m3) AS driver_truck_qty_m3, tr.litres_per_m3
+     FROM delivery_tickets dt
+     JOIN truck_rate tr ON tr.truck_id = dt.truck_id
+     WHERE dt.driver_id = ANY($3) AND dt.status IN ('completed', 'returned')
+       AND EXTRACT(YEAR FROM dt.ticket_date) = $1 AND EXTRACT(MONTH FROM dt.ticket_date) = $2
+       AND tr.litres_per_m3 IS NOT NULL
+     GROUP BY dt.driver_id, dt.truck_id, tr.litres_per_m3`,
+    [year, month, driverIds]
+  );
+
+  // Quantity-weighted average across the truck(s) each driver drove.
+  const byDriver = {};
+  for (const r of rows) (byDriver[r.driver_id] ||= []).push(r);
+  const out = {};
+  for (const [driverId, driverRows] of Object.entries(byDriver)) {
+    const totalQty = driverRows.reduce((s, r) => s + Number(r.driver_truck_qty_m3), 0);
+    if (totalQty <= 0) continue;
+    const weighted = driverRows.reduce((s, r) => s + Number(r.driver_truck_qty_m3) * Number(r.litres_per_m3), 0);
+    out[driverId] = weighted / totalQty;
+  }
+  return out;
+}
 
 // Round 99 — "on-time" redefined as transit efficiency, not total time at
 // site. Business feedback: how long a truck sits at site depends on site
@@ -622,7 +684,7 @@ router.get("/best-driver", requireRole(...STAFF_ROLES), async (req, res) => {
   if (!drivers.length) return res.json({ year, month, weights: WEIGHTS, ranked: [], unranked: [] });
   const driverIds = drivers.map((d) => d.id);
 
-  const [tripsRes, transitRows, inspectionsRes] = await Promise.all([
+  const [tripsRes, transitRows, inspectionsRes, fuelByDriver] = await Promise.all([
     query(
       `SELECT dt.driver_id, COUNT(*) AS trip_count,
               COALESCE(SUM(dt.loaded_quantity_m3), 0) AS loaded_total,
@@ -640,7 +702,17 @@ router.get("/best-driver", requireRole(...STAFF_ROLES), async (req, res) => {
        WHERE driver_id = ANY($1) AND EXTRACT(YEAR FROM inspection_date) = $2 AND EXTRACT(MONTH FROM inspection_date) = $3`,
       [driverIds, year, month]
     ),
+    computeDriverFuelRows(year, month, driverIds),
   ]);
+
+  // Fuel — lower L/m³ is better, scored the same "50 = fleet average" way
+  // transit efficiency is scored above, just against the fleet as a whole
+  // rather than per-site (fuel efficiency isn't route-dependent the way
+  // transit time is).
+  const fuelDriverIds = Object.keys(fuelByDriver);
+  const fleetAvgFuel = fuelDriverIds.length
+    ? fuelDriverIds.reduce((s, id) => s + fuelByDriver[id], 0) / fuelDriverIds.length
+    : null;
 
   // Transit efficiency ("on_time") — each driver is compared only against
   // other drivers who made trips to the SAME site this month (site distance
@@ -705,10 +777,20 @@ router.get("/best-driver", requireRole(...STAFF_ROLES), async (req, res) => {
     // A driver with no comparable transit data this month (no complete
     // plant-out/site-in/site-out/plant-in timeline, or every site they
     // visited was visited by no one else) has no on-time signal — excluded
+    // A driver with no attributable fuel figure this month (didn't drive any
+    // truck with a computable L/m³ — e.g. that truck had no fuel fills
+    // logged in range) has no fuel signal — excluded from that component,
+    // same reweighting treatment as on_time above.
+    const driverFuelLm3 = fuelByDriver[d.id];
+    const fuelScore = driverFuelLm3 != null && fleetAvgFuel != null
+      ? Math.round(Math.max(0, Math.min(100, 50 + (fleetAvgFuel / driverFuelLm3 - 1) * 100)) * 10) / 10
+      : null;
+
     // from that one component rather than guessed, and the composite
-    // reweights across the remaining three so a data gap doesn't zero them out.
+    // reweights across the remaining components so a data gap doesn't zero them out.
     const components = { checklist: checklistScore, quality: qualityScore, volume: volumeScore };
     if (onTimeScore != null) components.on_time = onTimeScore;
+    if (fuelScore != null) components.fuel = fuelScore;
     const usedWeight = Object.keys(components).reduce((s, k) => s + WEIGHTS[k], 0);
     const composite = Math.round((Object.entries(components).reduce((s, [k, v]) => s + v * WEIGHTS[k], 0) / usedWeight) * 10) / 10;
 
@@ -716,6 +798,7 @@ router.get("/best-driver", requireRole(...STAFF_ROLES), async (req, res) => {
       driver_id: d.id, driver_name: d.name, trip_count: tripCount,
       composite_score: composite,
       checklist_score: checklistScore, on_time_score: onTimeScore, quality_score: qualityScore, volume_score: volumeScore,
+      fuel_score: fuelScore, fuel_litres_per_m3: driverFuelLm3 != null ? Math.round(driverFuelLm3 * 100) / 100 : null,
     });
   }
   ranked.sort((a, b) => b.composite_score - a.composite_score);

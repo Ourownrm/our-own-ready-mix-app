@@ -70,7 +70,8 @@ router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
             fs.name AS fuel_station_name, fs.is_plant AS station_is_plant,
             afs.name AS approved_station_name, afs.is_plant AS approved_station_is_plant,
             lt.name AS lubricant_type_name,
-            t.truck_number, p.pump_code, e.name AS equipment_name
+            t.truck_number, p.pump_code, e.name AS equipment_name,
+            ssi.rate_per_liter
      FROM supply_requests sr
      JOIN users u ON u.id = sr.requested_by
      LEFT JOIN fuel_stations fs ON fs.id = sr.fuel_station_id
@@ -79,6 +80,12 @@ router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
      LEFT JOIN trucks t ON t.id = sr.truck_id
      LEFT JOIN pumps p ON p.id = sr.pump_id
      LEFT JOIN equipment e ON e.id = sr.equipment_id
+     -- Round 137, item 1d — the standing rate this item's issue screen
+     -- should pre-fill cost from (see storeStock.js's own comment on the
+     -- rate PATCH route for why this is separate from purchase unit_cost).
+     LEFT JOIN store_stock_items ssi ON
+       (sr.request_type = 'fuel' AND ssi.item_type = 'fuel')
+       OR (sr.request_type = 'lubricant' AND ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = sr.lubricant_type_id)
      WHERE sr.requested_by = $1
        AND (sr.status != 'issued' OR sr.issued_at > now() - INTERVAL '1 day')
      ORDER BY sr.requested_at DESC`,
@@ -152,7 +159,8 @@ router.get("/scan/:token", requireRole("store", "administrator"), async (req, re
     `SELECT sr.*, u.name AS requested_by_name,
             fs.name AS approved_station_name, fs.is_plant AS approved_station_is_plant,
             lt.name AS lubricant_type_name,
-            t.truck_number, p.pump_code, e.name AS equipment_name
+            t.truck_number, p.pump_code, e.name AS equipment_name,
+            ssi.rate_per_liter
      FROM supply_requests sr
      JOIN users u ON u.id = sr.requested_by
      LEFT JOIN fuel_stations fs ON fs.id = sr.approved_station_id
@@ -160,6 +168,10 @@ router.get("/scan/:token", requireRole("store", "administrator"), async (req, re
      LEFT JOIN trucks t ON t.id = sr.truck_id
      LEFT JOIN pumps p ON p.id = sr.pump_id
      LEFT JOIN equipment e ON e.id = sr.equipment_id
+     -- Round 137, item 1d — pre-fills Store's cost field on the issue form.
+     LEFT JOIN store_stock_items ssi ON
+       (sr.request_type = 'fuel' AND ssi.item_type = 'fuel')
+       OR (sr.request_type = 'lubricant' AND ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = sr.lubricant_type_id)
      WHERE sr.qr_token = $1`,
     [req.params.token]
   );

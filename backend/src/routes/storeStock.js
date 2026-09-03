@@ -79,6 +79,26 @@ router.post("/items/:id/adjust", requireRole("manager", "administrator"), async 
   res.json(rows[0]);
 });
 
+// Round 137, item 1d — Manager/Administrator sets (and can change) the
+// standing rupees/liter rate for an item. Deliberately separate from the
+// physical /adjust action above — a rate correction isn't a quantity
+// change and shouldn't write a store_stock_transactions row. Store's issue
+// screens (StoreScan.jsx, FuelFilling.jsx's external-fill confirmation)
+// read this to pre-fill the cost field — still freely editable there, so
+// this rate is a convenience default, not an enforced price.
+router.patch("/items/:id/rate", requireRole("manager", "administrator"), async (req, res) => {
+  const { rate_per_liter } = req.body;
+  if (rate_per_liter === undefined || rate_per_liter === null || rate_per_liter === "" || Number(rate_per_liter) < 0) {
+    return res.status(400).json({ error: "Enter a valid rate (₹ per liter)." });
+  }
+  const { rows } = await query(
+    "UPDATE store_stock_items SET rate_per_liter = $1 WHERE id = $2 RETURNING *",
+    [rate_per_liter, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Stock item not found." });
+  res.json(rows[0]);
+});
+
 router.get("/items/:id/transactions", requireRole("store", "manager", "administrator", "accountant"), async (req, res) => {
   const { rows } = await query(
     `SELECT sst.*, u.name AS created_by_name

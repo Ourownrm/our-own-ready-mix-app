@@ -180,7 +180,12 @@ CREATE TABLE fuel_stations (
 -- Lightweight equipment — pickup vans, loaders, generators — anything that
 -- doesn't need its own specialized table the way trucks/pumps do, but still
 -- needs to be selectable when logging fuel.
-CREATE TYPE fuel_equipment_type AS ENUM ('truck', 'pump', 'pickup_van', 'loader', 'generator');
+-- Round 137: 'batching_plant' added so the plant itself can be tracked as a
+-- maintenance/equipment master row. It never requests fuel/lubricant like
+-- the others, so it's simply never offered as a tab on the fuel request
+-- screen — see FuelFilling.jsx's own static EQUIPMENT_TABS list, which
+-- lists tabs explicitly rather than deriving them from this enum.
+CREATE TYPE fuel_equipment_type AS ENUM ('truck', 'pump', 'pickup_van', 'loader', 'generator', 'batching_plant');
 
 CREATE TABLE equipment (
   id SERIAL PRIMARY KEY,
@@ -1376,6 +1381,12 @@ CREATE TABLE store_stock_items (
   unit VARCHAR(10) NOT NULL DEFAULT 'L',
   current_qty NUMERIC(10,2) NOT NULL DEFAULT 0,
   reorder_level NUMERIC(10,2),
+  -- Round 137, item 1d — standing rupees/liter rate, Manager/Administrator-
+  -- maintained. Distinct from store_stock_purchases.unit_cost (what was
+  -- actually paid for one purchase, at receive time) — this is the rate
+  -- Store's issue screens pre-fill from, so cost doesn't need to be
+  -- guessed/looked-up by hand on every issue.
+  rate_per_liter NUMERIC(10,2),
   is_active BOOLEAN DEFAULT TRUE
 );
 -- At most one fuel stock item; at most one row per lubricant type.
