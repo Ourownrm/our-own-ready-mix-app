@@ -5758,3 +5758,34 @@ migration/rename were each additionally verified against seeded data on a real (
 Postgres instance — including confirming the migration is idempotent on a second run, and that a
 fresh install ends up with the same final lubricant list as an existing database that already had
 the old names.
+
+## Round 138, follow-up (Ver. 9.62): live clock moved out of the header, into a footer strip
+
+Round 138 put the new live clock in `TopBar.jsx`'s right-hand button row, alongside
+Refresh/notifications/back-link/orders-link/sign-out. On narrow (mobile) screens that row was
+already tight, and the clock text pushed it into a visible misalignment/wrap — reported by the
+business with a screenshot from a phone.
+
+Rather than trying to shrink or reflow an already-crowded header row further, the clock was moved
+out of the header entirely, to a slim strip fixed to the bottom of the viewport:
+
+- `TopBar.jsx`'s header `<div className="topbar">` no longer renders the clock `<span>` at all —
+  the button row goes back to exactly what it was before Round 138 (Refresh, notifications,
+  back-link, orders-link, sign-out), so the misalignment is gone regardless of screen width.
+- The same `useClock()` hook (unchanged) now feeds a new sibling element, `.app-footer-clock`,
+  rendered right after the topbar `<div>` — `TopBar.jsx`'s return changed from a single `<div>` to
+  a fragment so both can render. Since `TopBar` is already mounted once on every signed-in screen
+  (`index.css`'s own comment calls it "shared across every signed-in screen"), this needed no
+  changes to any of the ~46 pages that render `<TopBar>` — the footer just appears everywhere the
+  clock used to.
+- `.app-footer-clock` (`index.css`) is `position: fixed; bottom: 0`, full width, small dark strip
+  matching the header's own colors, centered text, `pointer-events: none` (it's read-only display —
+  this guarantees it can never sit in the way of a tap on whatever a page shows near the bottom of
+  the screen). `#root` picked up a matching `padding-bottom: 30px` so the fixed strip never visually
+  overlaps the last bit of any page's content.
+- The customer-facing portal (`CustomerPortal.jsx` and friends) doesn't use `TopBar` at all — it has
+  its own, separate staff-free layout — so the footer clock only appears on staff/internal screens,
+  same scope the header clock had.
+
+Verified with a clean `npm run build`. No backend/database changes in this follow-up — version bump
+only (9.61 → 9.62).
