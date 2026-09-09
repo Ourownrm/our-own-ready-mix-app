@@ -59,47 +59,55 @@ export function TopBar({ title }) {
   }
 
   return (
-    <div className="topbar">
-      <div className="topbar-title">
-        Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span> <span>&middot; {title}{user?.name ? ` · ${user.name}` : ""}</span>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <span
-          title="Current date and time on this device"
-          style={{ color: "#D7DBDF", fontSize: 12, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}
-        >
-          {now.toLocaleString([], { day: "2-digit", month: "short", year: "numeric" })}
-          {" · "}
-          {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-        </span>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title="Refresh this page and check for the latest version"
-          style={{ background: "transparent", border: "1px solid #D7DBDF", color: "#D7DBDF", fontSize: 12, padding: "4px 10px", borderRadius: 999 }}
-        >
-          {refreshing ? "Refreshing..." : "↻ Refresh"}
-        </button>
-        {notifStatus === "default" && (
+    <>
+      <div className="topbar">
+        <div className="topbar-title">
+          Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span> <span>&middot; {title}{user?.name ? ` · ${user.name}` : ""}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button
-            onClick={handleEnableNotifications}
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Refresh this page and check for the latest version"
             style={{ background: "transparent", border: "1px solid #D7DBDF", color: "#D7DBDF", fontSize: 12, padding: "4px 10px", borderRadius: 999 }}
           >
-            🔔 Enable notifications
+            {refreshing ? "Refreshing..." : "↻ Refresh"}
           </button>
-        )}
-        {!onOwnDashboard && myHome && (
-          <Link to={myHome} style={{ color: "#D7DBDF", fontSize: 12, textDecoration: "none" }}>
-            &larr; Back to my dashboard
-          </Link>
-        )}
-        {pathname !== "/orders" && (
-          <Link to="/orders" style={{ color: "#D7DBDF", fontSize: 12, textDecoration: "none" }}>
-            Today &amp; tomorrow's orders
-          </Link>
-        )}
-        <button className="topbar-signout" onClick={logout}>Sign out</button>
+          {notifStatus === "default" && (
+            <button
+              onClick={handleEnableNotifications}
+              style={{ background: "transparent", border: "1px solid #D7DBDF", color: "#D7DBDF", fontSize: 12, padding: "4px 10px", borderRadius: 999 }}
+            >
+              🔔 Enable notifications
+            </button>
+          )}
+          {!onOwnDashboard && myHome && (
+            <Link to={myHome} style={{ color: "#D7DBDF", fontSize: 12, textDecoration: "none" }}>
+              &larr; Back to my dashboard
+            </Link>
+          )}
+          {pathname !== "/orders" && (
+            <Link to="/orders" style={{ color: "#D7DBDF", fontSize: 12, textDecoration: "none" }}>
+              Today &amp; tomorrow's orders
+            </Link>
+          )}
+          <button className="topbar-signout" onClick={logout}>Sign out</button>
+        </div>
       </div>
-    </div>
+      {/* Round 138 follow-up — the clock originally lived in the topbar's
+          right-hand button row, but on narrow/mobile screens that row was
+          already tight (refresh, notifications, back-link, orders-link,
+          sign-out) and the extra text pushed it into a misaligned wrap.
+          Moved to a slim fixed bar pinned to the bottom of the viewport
+          instead: it renders once per page (TopBar is mounted on every
+          signed-in screen) and, being position:fixed with pointer-events
+          disabled, it can never crowd or overlap anything else in the
+          header or page content below it. */}
+      <div className="app-footer-clock" title="Current date and time on this device">
+        {now.toLocaleString([], { day: "2-digit", month: "short", year: "numeric" })}
+        {" · "}
+        {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+      </div>
+    </>
   );
 }

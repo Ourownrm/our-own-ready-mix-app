@@ -37,6 +37,30 @@ body {
 #root {
   border-top: 4px solid var(--rebar);
   min-height: 100vh;
+  /* Reserve room for .app-footer-clock (fixed to the viewport bottom on
+     every screen) so it never sits over the last bit of a page's content. */
+  padding-bottom: 30px;
+}
+
+/* Round 138 follow-up — live clock, relocated out of the top bar (see
+   TopBar.jsx) to a slim strip fixed to the bottom of the viewport. Kept
+   deliberately non-interactive (pointer-events: none) since it's a
+   read-only display and must never sit in the way of a tap on whatever
+   the page shows near the bottom of the screen. */
+.app-footer-clock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  background: var(--charcoal);
+  color: #B8BFC7;
+  font-size: 11px;
+  padding: 6px 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
 }
 
 h1, h2, h3 { color: var(--charcoal); margin: 0; }
