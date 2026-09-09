@@ -700,6 +700,20 @@ router.patch("/lubricant-types/:id/status", requireRole("administrator"), async 
   res.json({ ok: true });
 });
 
+// Round 138, item 3 — renaming a lubricant type never had a route (only
+// add and activate/deactivate did), which is exactly what blocked "Hydraulic
+// Fluid" -> "Hydraulic Oil 68" / "Gear Oil" -> "Gear Oil 140" from being done
+// through the app at all. Deliberately just a name change, not a merge —
+// existing supply_requests/store_stock_items rows keep pointing at the same
+// lubricant_type_id, so history and the current stock balance are untouched.
+router.patch("/lubricant-types/:id", requireRole("administrator"), async (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: "Lubricant name is required." });
+  const { rows } = await query("UPDATE lubricant_types SET name = $1 WHERE id = $2 RETURNING *", [name.trim(), req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: "Lubricant type not found." });
+  res.json(rows[0]);
+});
+
 // ===== Master data: Visit outcome reasons (why a visit-generated
 // opportunity didn't convert — "Lost to competitor", "Project cancelled",
 // etc.) — same admin-manageable-list pattern as lubricant types, so this
@@ -729,17 +743,21 @@ router.patch("/visit-outcome-reasons/:id/status", requireRole("administrator"), 
   res.json({ ok: true });
 });
 
-// ===== Master data: Equipment (pickup vans, loaders, generators) =====
+// ===== Master data: Equipment (pickup vans, loaders, generators, batching plants) =====
 
 router.get("/equipment", requireRole("administrator"), async (req, res) => {
   const { rows } = await query("SELECT * FROM equipment ORDER BY equipment_type, name");
   res.json(rows);
 });
 
+// Allow-list intentionally excludes 'truck'/'pump' — those are managed via their own
+// dedicated master-data panels (Fleet, Fuel Stations), not this generic Equipment list.
+const EQUIPMENT_TYPES = ["pickup_van", "loader", "generator", "batching_plant"];
+
 router.post("/equipment", requireRole("administrator"), async (req, res) => {
   const { equipment_type, name } = req.body;
-  if (!equipment_type || !["pickup_van", "loader", "generator"].includes(equipment_type)) {
-    return res.status(400).json({ error: "Equipment type must be pickup van, loader, or generator." });
+  if (!equipment_type || !EQUIPMENT_TYPES.includes(equipment_type)) {
+    return res.status(400).json({ error: "Equipment type must be pickup van, loader, generator, or batching plant." });
   }
   if (!name) return res.status(400).json({ error: "Name is required." });
   const { rows } = await query(

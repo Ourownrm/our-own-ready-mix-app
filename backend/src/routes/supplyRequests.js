@@ -272,12 +272,12 @@ function buildReportFilters(q) {
 }
 
 const REPORT_COLUMNS = `
-  sr.id, sr.request_type, sr.status, sr.requested_at, sr.approved_at, sr.issued_at,
+  sr.id, 'request' AS source, sr.request_type, sr.status, sr.requested_at, sr.approved_at, sr.issued_at,
   sr.odometer_reading, sr.hour_meter_reading,
   sr.requested_quantity, sr.approved_quantity, sr.actual_quantity_issued, sr.fuel_cost,
   sr.rejected_reason,
   u.name AS requested_by_name, ub.name AS approved_by_name, ui.name AS issued_by_name,
-  fs.name AS station_name, lt.name AS lubricant_type_name,
+  fs.name AS station_name, lt.name AS lubricant_type_name, NULL::varchar(150) AS supplier_name,
   t.truck_number, p.pump_code, e.name AS equipment_name
 `;
 const REPORT_FROM = `
@@ -292,9 +292,91 @@ const REPORT_FROM = `
   LEFT JOIN equipment e ON e.id = sr.equipment_id
 `;
 
+// "Stock request" — item 1 of the round asking for Store's own stock
+// purchase/restock requests (store_stock_purchases: request -> approve ->
+// receive) to be selectable in this same report, alongside the existing
+// Fuel/Lubricant issue rows above. Deliberately kept as a SEPARATE query
+// branch rather than a SQL UNION with the requests query above: the two
+// tables' columns don't line up 1:1 (a purchase has a supplier, not a
+// vehicle; a "received" quantity/date, not an "issued" one), and keeping
+// them separate means this addition can't change the existing, already-
+// relied-on default report output for anyone who doesn't touch the new
+// filter. Selected only when request_type=stock; normalized onto the same
+// output column names as REPORT_COLUMNS above (received_at AS issued_at,
+// etc.) so the frontend can render both shapes with minimal branching.
+function buildStockReportFilters(q) {
+  const clauses = [];
+  const params = [];
+  function add(clause, value) {
+    params.push(value);
+    clauses.push(clause.replace("?", `$${params.length}`));
+  }
+  if (q.from_date) add("sp.requested_at >= ?::date", q.from_date);
+  if (q.to_date) add("sp.requested_at < ?::date + INTERVAL '1 day'", q.to_date);
+  // The purchase workflow's terminal status is 'received', not 'issued' —
+  // the frontend sends 'received' directly when this branch is selected.
+  if (q.status) add("sp.status = ?::store_purchase_status", q.status);
+  return { where: clauses.length ? clauses.join(" AND ") : "true", params };
+}
+
+const STOCK_REPORT_COLUMNS = `
+  sp.id, 'stock' AS source, ssi.item_type::varchar AS request_type, sp.status::varchar,
+  sp.requested_at, sp.approved_at, sp.received_at AS issued_at,
+  NULL::numeric AS odometer_reading, NULL::numeric AS hour_meter_reading,
+  sp.requested_qty AS requested_quantity, sp.approved_qty AS approved_quantity,
+  sp.received_qty AS actual_quantity_issued, sp.total_cost AS fuel_cost,
+  sp.rejected_reason,
+  ru.name AS requested_by_name, au.name AS approved_by_name, rb.name AS issued_by_name,
+  NULL::varchar AS station_name,
+  CASE WHEN ssi.item_type = 'fuel' THEN 'Diesel (Plant Store)' ELSE lt.name END AS lubricant_type_name,
+  sp.supplier_name,
+  NULL::varchar AS truck_number, NULL::varchar AS pump_code, NULL::varchar AS equipment_name
+`;
+const STOCK_REPORT_FROM = `
+  FROM store_stock_purchases sp
+  JOIN store_stock_items ssi ON ssi.id = sp.stock_item_id
+  JOIN users ru ON ru.id = sp.requested_by
+  LEFT JOIN users au ON au.id = sp.approved_by
+  LEFT JOIN users rb ON rb.id = sp.received_by
+  LEFT JOIN lubricant_types lt ON lt.id = ssi.lubricant_type_id
+`;
+
 router.get("/report", requireRole("manager", "administrator", "accountant", "store"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(req.query.page_size) || 100));
+
+  if (req.query.request_type === "stock") {
+    const { where, params } = buildStockReportFilters(req.query);
+    const [rowsResult, totalsResult] = await Promise.all([
+      query(
+        `SELECT ${STOCK_REPORT_COLUMNS} ${STOCK_REPORT_FROM}
+         WHERE ${where}
+         ORDER BY sp.requested_at DESC
+         LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+        params
+      ),
+      query(
+        `SELECT COUNT(*) AS request_count,
+                COALESCE(SUM(sp.received_qty) FILTER (WHERE ssi.item_type = 'fuel'), 0) AS total_fuel_litres,
+                COALESCE(SUM(sp.received_qty) FILTER (WHERE ssi.item_type = 'lubricant'), 0) AS total_lubricant_qty,
+                COALESCE(SUM(sp.total_cost), 0) AS total_cost
+         ${STOCK_REPORT_FROM}
+         WHERE ${where}`,
+        params
+      ),
+    ]);
+    return res.json({
+      rows: rowsResult.rows,
+      page, page_size: pageSize,
+      totals: {
+        request_count: Number(totalsResult.rows[0].request_count),
+        total_fuel_litres: totalsResult.rows[0].total_fuel_litres,
+        total_lubricant_qty: totalsResult.rows[0].total_lubricant_qty,
+        total_cost: totalsResult.rows[0].total_cost,
+      },
+    });
+  }
+
   const { where, params } = buildReportFilters(req.query);
 
   const [rowsResult, totalsResult] = await Promise.all([
@@ -329,6 +411,18 @@ router.get("/report", requireRole("manager", "administrator", "accountant", "sto
 });
 
 router.get("/report/export", requireRole("manager", "administrator", "accountant", "store"), async (req, res) => {
+  if (req.query.request_type === "stock") {
+    const { where, params } = buildStockReportFilters(req.query);
+    const { rows } = await query(
+      `SELECT ${STOCK_REPORT_COLUMNS} ${STOCK_REPORT_FROM}
+       WHERE ${where}
+       ORDER BY sp.requested_at DESC
+       LIMIT 5000`,
+      params
+    );
+    return res.json(rows);
+  }
+
   const { where, params } = buildReportFilters(req.query);
   const { rows } = await query(
     `SELECT ${REPORT_COLUMNS} ${REPORT_FROM}

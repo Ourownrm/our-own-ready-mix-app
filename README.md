@@ -5678,3 +5678,83 @@ end-to-end with zero errors on a fresh local Postgres database. `computeDriverFu
 additionally verified against seeded data on a real (disposable) local Postgres instance — including a
 multi-truck driver, to confirm the quantity-weighted average across trucks — before being considered
 done, not just syntax-checked.
+
+## Round 137, follow-up (Ver. 9.60): fixed "Equipment type must be pickup van, loader, or generator" blocking Batching plant
+
+Reported by the user via screenshot immediately after Round 137 shipped: adding a Batching plant
+from Administrator → Masters → Fuel Stations and Equipment's showed the dropdown option correctly,
+but submitting it failed with a red banner reading "Equipment type must be pickup van, loader, or
+generator."
+
+**Root cause**: item 7 of Round 137 added `'batching_plant'` to the `fuel_equipment_type` Postgres
+enum (which the `equipment` table's `equipment_type` column uses) and to the frontend's type
+`<select>`, but missed a second, independent guard — `administrator.js`'s `POST /equipment` route
+had its own hardcoded JS allow-list (`["pickup_van", "loader", "generator"]`), left over from
+before this round, that rejected anything else before the value ever reached Postgres. The enum
+and the select were both already correct; only this one route-level check was stale.
+
+**Fix**: that allow-list is now a named `EQUIPMENT_TYPES` constant including `'batching_plant'`,
+and the error message updated to match. Confirmed the two other places a similar
+`["pickup_van", "loader", "generator"]` list exists — `fuel.js` (writes to the legacy `fuel_logs`
+table, confirmed in Round 134 to have no live frontend caller) and `supplyRequests.js` (the live
+fuel/lubricant request flow) — are both correctly left as-is: `FuelFilling.jsx`'s request-type tabs
+are a static list that deliberately doesn't offer batching plants (stated in Round 137 above), so
+no live path ever submits a request with `equipment_type: 'batching_plant'` through either route.
+
+No schema change. Verified with `node --check` on `administrator.js`, and directly against a fresh
+local Postgres database — loaded `schema.sql`, then inserted an `equipment` row with
+`equipment_type = 'batching_plant'` to confirm the enum accepts it end-to-end now that the route
+no longer blocks it first.
+
+## Round 138 (Ver. 9.61): Stock request filter on the Fuel Report, a live clock in the header, "Fuel & Lubricant Filling" rename, new lubricant types
+
+1. **Fuel & Lubricant Report: Store's own stock purchase requests are now a filterable "Type".**
+   The report (`GET /supply-requests/report`, `/report/export`) previously only covered
+   `supply_requests` — fuel/lubricant issued to a vehicle or machine. It had no visibility at all
+   into Store's own restocking (`store_stock_purchases`: request → approve → receive). The Type
+   filter now has a third option, "Stock request", which queries `store_stock_purchases` instead —
+   a separate, normalized query branch (`STOCK_REPORT_COLUMNS`/`STOCK_REPORT_FROM` in
+   `supplyRequests.js`), deliberately kept apart from a SQL `UNION` with the existing query so nobody
+   who doesn't touch the new filter ever sees a change to the report's existing default output
+   (a real concern here, since Accountant relies on this report's totals). Stock rows show the
+   supplier instead of a vehicle, the restocked item (fuel shows as "Diesel (Plant Store)") instead
+   of a fuel station, and "Received"/"Received by" instead of "Issued"/"Issued by" — `FuelReport.jsx`
+   relabels the table headers and PDF/Excel export columns based on which Type is selected, and the
+   Status filter switches from Pending/Approved/**Issued**/Rejected to
+   Pending/Approved/**Received**/Rejected to match the purchase workflow's own status enum
+   (`store_purchase_status`). Verified against seeded data on a real local Postgres instance —
+   both branches return correct, correctly-shaped rows, and the existing (unfiltered) report totals
+   query is untouched.
+2. **A live date/time clock in the header**, ticking every second, visible on every screen —
+   `TopBar.jsx` gained a small `useClock()` hook and a clock span next to the existing
+   Refresh/notifications controls, formatted from the browser's own locale and timezone (same
+   approach the app already uses elsewhere, e.g. `FuelFilling.jsx`'s "Issued today" timestamps).
+3. **"Fuel Filling" renamed to "Fuel & Lubricant Filling"** everywhere it appears as a button/menu
+   label — `ManagerDashboard.jsx`, `SiteSupervisor.jsx`, and the Driver's own `report_fuel` i18n
+   key (`i18n.js`, English; Malayalam and Hindi also updated, best-effort — worth a native-speaker
+   check since this is real production copy read by field staff).
+4. **New lubricant types + two renames**, per the business's updated list:
+   - Added "DEF (AdBlue)" and "Petrol".
+   - "Hydraulic Fluid" → "Hydraulic Oil 68", "Gear Oil" → "Gear Oil 140".
+   - Renaming a lubricant type had no route at all before this — only add and
+     activate/deactivate did — which is exactly what made the two renames above impossible to do
+     through the app. New `PATCH /administrator/lubricant-types/:id` (Administrator only, matching
+     the existing add/status routes) and a "Rename" button (prompt-based, matching this panel's
+     existing plain-confirm style) in `MasterDataPanels.jsx`'s Lubricant types table.
+   - The rename is a genuine rename, not a deactivate-old/add-new — existing `supply_requests` and
+     `store_stock_items` rows keep pointing at the same `lubricant_type_id`, so request history and
+     the current stock balance carry over untouched.
+   - Migrated via `setup.js`, case-insensitive and idempotent (matches the original seed's
+     lowercase 'Gear oil'/'Hydraulic fluid' or any hand-typed variant already live, and is a no-op
+     once already renamed) — **visit `/setup?key=...` once after deploying**. Deliberately placed
+     before the existing store_stock_items self-healing seed block (not chronologically at the end
+     of the file) so a single `/setup` visit provisions the two new types *and* their matching
+     stock items together, rather than the items only catching up on a second visit.
+
+Verified with `node --check` on every touched backend file (`supplyRequests.js`, `administrator.js`,
+`setup.js`), a clean `npm run build`, and `schema.sql` loading end-to-end with zero errors on a fresh
+local Postgres database. The new Stock-request report query and the lubricant type
+migration/rename were each additionally verified against seeded data on a real (disposable) local
+Postgres instance — including confirming the migration is idempotent on a second run, and that a
+fresh install ends up with the same final lubricant list as an existing database that already had
+the old names.

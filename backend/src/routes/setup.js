@@ -698,6 +698,35 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (fuel module rebuilt — Store role, supply_requests, lubricant_types).");
 
+    // Round 138, item 3 — business asked to rename two existing lubricant
+    // types and add two more. Renaming (rather than deactivating the old
+    // name and adding a new row) keeps every existing supply_requests /
+    // store_stock_items row pointing at the same lubricant_type_id, so
+    // history and the current stock balance carry over untouched. Matched
+    // case-insensitively so this catches the original seed's lowercase
+    // names above ('Gear oil', 'Hydraulic fluid') or any hand-typed variant
+    // already in a live database, and is a no-op once already renamed —
+    // safe to re-run on every /setup visit like the rest of this file.
+    // Placed here (before the store_stock_items self-healing seed further
+    // below, which creates a matching stock item for every lubricant type
+    // on file) so a single /setup visit provisions the two new types
+    // (DEF (AdBlue), Petrol) AND their stock items together, not just the
+    // types with the items following on some later visit.
+    await pool.query(`
+      UPDATE lubricant_types SET name = 'Hydraulic Oil 68'
+      WHERE lower(name) = lower('Hydraulic Fluid') AND lower(name) != lower('Hydraulic Oil 68')
+    `);
+    await pool.query(`
+      UPDATE lubricant_types SET name = 'Gear Oil 140'
+      WHERE lower(name) = lower('Gear Oil') AND lower(name) != lower('Gear Oil 140')
+    `);
+    await pool.query(`
+      INSERT INTO lubricant_types (name)
+      SELECT v.name FROM (VALUES ('Hydraulic Oil 68'), ('Gear Oil 140'), ('DEF (AdBlue)'), ('Petrol')) AS v(name)
+      WHERE NOT EXISTS (SELECT 1 FROM lubricant_types lt WHERE lower(lt.name) = lower(v.name))
+    `);
+    log.push("Schema migration applied (lubricant types: 'Hydraulic Fluid' renamed to 'Hydraulic Oil 68', 'Gear Oil' renamed to 'Gear Oil 140', added 'DEF (AdBlue)' and 'Petrol').");
+
     // Reworked visit module — structured tap-answer questions instead of a
     // single free-text summary, explicit new/existing project choice, and
     // generated follow-ups with due dates.
