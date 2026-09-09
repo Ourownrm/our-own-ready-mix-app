@@ -1241,6 +1241,17 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
     } catch (err) { setError(err.message); }
   }
 
+  async function renameLubricant(l) {
+    const name = window.prompt("Rename lubricant", l.name);
+    if (name == null) return; // cancelled
+    if (!name.trim() || name.trim() === l.name) return;
+    setError("");
+    try {
+      await apiRequest(`/administrator/lubricant-types/${l.id}`, { method: "PATCH", body: { name: name.trim() } });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
   async function toggleActive(kind, id, is_active) {
     setError("");
     try {
@@ -1350,7 +1361,10 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
               <tr key={l.id}>
                 <td>{l.name}</td>
                 <td>{l.is_active ? "Active" : "Inactive"}</td>
-                <td>
+                <td style={{ display: "flex", gap: 6 }}>
+                  <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => renameLubricant(l)}>
+                    Rename
+                  </button>
                   <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleLubricant(l.id, !l.is_active)}>
                     {l.is_active ? "Deactivate" : "Reactivate"}
                   </button>

@@ -5,12 +5,28 @@ import { ROLE_HOME } from "./roleHome.js";
 import { pushSupported, pushStatus, enablePush } from "./push.js";
 import { APP_VERSION } from "./version.js";
 
+// Round 138, item 2 — a live clock in the header so anyone using the app
+// can see the current date/time at a glance, without switching away to
+// check their phone. Ticks every second; formatted with the browser's own
+// locale/timezone (same approach already used elsewhere in the app, e.g.
+// FuelFilling.jsx's "Issued today" timestamps), so it always matches
+// whatever time the device itself is showing.
+function useClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
 export function TopBar({ title }) {
   const { user, logout } = useAuth();
   const { pathname } = useLocation();
   const myHome = user ? ROLE_HOME[user.role] : null;
   const onOwnDashboard = myHome && pathname === myHome;
   const [notifStatus, setNotifStatus] = useState(null);
+  const now = useClock();
 
   useEffect(() => {
     if (pushSupported()) pushStatus().then(setNotifStatus);
@@ -48,6 +64,14 @@ export function TopBar({ title }) {
         Our Own Ready Mix <span style={{ opacity: 0.6, fontSize: "0.85em" }}>Ver. {APP_VERSION}</span> <span>&middot; {title}{user?.name ? ` · ${user.name}` : ""}</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span
+          title="Current date and time on this device"
+          style={{ color: "#D7DBDF", fontSize: 12, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}
+        >
+          {now.toLocaleString([], { day: "2-digit", month: "short", year: "numeric" })}
+          {" · "}
+          {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+        </span>
         <button
           onClick={handleRefresh}
           disabled={refreshing}

@@ -331,7 +331,7 @@ export default function SiteSupervisor() {
           </div>
         )}
 
-        <Link to="/fuel"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Fuel filling</button></Link>
+        <Link to="/fuel"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Fuel & Lubricant Filling</button></Link>
         <Link to="/delay-justification-report"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Delay report</button></Link>
 
         {!selected ? (

@@ -279,7 +279,7 @@ export default function ManagerDashboard() {
             ]}
           />
           <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
-          <Link to="/fuel"><button type="button">Fuel filling</button></Link>
+          <Link to="/fuel"><button type="button">Fuel & Lubricant Filling</button></Link>
           <Link to="/store-stock"><button type="button">Store stock</button></Link>
         </div>
 
