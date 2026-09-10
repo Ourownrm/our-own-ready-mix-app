@@ -5789,3 +5789,28 @@ out of the header entirely, to a slim strip fixed to the bottom of the viewport:
 
 Verified with a clean `npm run build`. No backend/database changes in this follow-up — version bump
 only (9.61 → 9.62).
+
+## Round 138, follow-up 2 (Ver. 9.63): fixed Manager access to Store Stock
+
+Reported by the user: a Manager account couldn't open Store Stock at all, though the same page
+worked fine as Administrator.
+
+**Root cause**: `storeStock.js`'s `REQUESTER_ROLES` constant (`["store", "administrator"]`,
+guarding `POST /purchases`, `GET /purchases/mine`, and `POST /purchases/:id/receive`) never
+included `"manager"` — a gap from when this "request → approve → receive" purchase layer was
+first built in Round 131, item 5. `StoreStock.jsx`'s `load()` fetches `/store-stock/items` and
+`/store-stock/purchases/mine` together in one `Promise.all` on every page mount, so a Manager hit a
+403 on the `/purchases/mine` call and the whole page fell straight to its generic error banner —
+even though Manager already had full access to every *other* action on the same page (Adjust, Set
+rate, and the approve/reject/pending/delete side of purchases, all already correctly
+Manager-permissioned). Administrator was unaffected (already in the list), which is exactly why it
+"worked through admin" but not for an actual Manager account.
+
+**Fix**: added `"manager"` to `REQUESTER_ROLES`. Manager can now also send a purchase request and
+confirm receipt itself, same as Store — consistent with Manager already being the one who
+approves/rejects those same requests. The frontend needed no change: `StoreStock.jsx`'s "Request
+purchase" button was already unconditional (not gated to any role), it was only ever the backend
+403 blocking it.
+
+No schema/database changes. Verified with `node --check` on `storeStock.js` and a clean
+`npm run build`.

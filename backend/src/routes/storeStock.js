@@ -114,7 +114,18 @@ router.get("/items/:id/transactions", requireRole("store", "manager", "administr
 
 // ===================== Purchases (request -> approve -> receive) =====================
 
-const REQUESTER_ROLES = ["store", "administrator"];
+// Round 138, follow-up 2 — this list was missing "manager", which broke the
+// whole Store Stock page for that role: StoreStock.jsx's load() fetches
+// /purchases/mine unconditionally alongside /items (Promise.all), so a
+// manager hit a 403 here on every page load and never even got past the
+// generic error banner, even though Manager already has full access to
+// every other action on this page (adjust, set rate, approve/reject/pending,
+// delete) further up and below this list. Administrator was unaffected
+// (already included here), which is why the page worked fine "through
+// admin" but not for an actual Manager account. Manager can now also
+// request and receive a purchase itself, same as Store — consistent with
+// Manager already being the one who approves/rejects/adjusts stock.
+const REQUESTER_ROLES = ["store", "manager", "administrator"];
 
 router.post("/purchases", requireRole(...REQUESTER_ROLES), async (req, res) => {
   const { stock_item_id, requested_qty, supplier_name, notes } = req.body;
