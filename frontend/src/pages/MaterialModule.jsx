@@ -20,7 +20,7 @@
 //   Plant Operator— Consumption + Production entry, Stock (qty only).
 // No Manager access yet (an easy later addition — see the notes doc's own
 // "open items" list) — flagged to the user at delivery time.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
@@ -53,12 +53,23 @@ function thisMonthStr() {
 
 const SCOPE_LABEL = { delivered: "Delivered", ex_factory: "Ex-factory" };
 const FREIGHT_BASIS_LABEL = { per_purchase_unit: "Per purchase unit", per_trip: "Per trip", per_kg: "Per kg" };
-const ORDER_STATUS_LABEL = { pending_approval: "Pending approval", approved: "Approved", rejected: "Rejected" };
-const ORDER_STATUS_COLOR = { pending_approval: "var(--amber)", approved: "var(--signal-green)", rejected: "var(--alert-red)" };
+const ORDER_STATUS_LABEL = { pending_approval: "Pending approval", approved: "Approved", rejected: "Rejected", closed: "Closed" };
+const ORDER_STATUS_COLOR = { pending_approval: "var(--amber)", approved: "var(--signal-green)", rejected: "var(--alert-red)", closed: "var(--slate)" };
 
+// Closing only counts a backdrop click that also STARTED on the backdrop —
+// item 3's fix. Without this, selecting/copying text inside the modal (e.g.
+// dragging from an input out past the panel edge before releasing) made the
+// click event's target resolve to the backdrop, closing the modal mid-select.
+// Tracking mousedown separately means a drag that started inside the panel
+// never counts as a backdrop click, no matter where the mouse is released.
 function Modal({ title, onClose, children, wide }) {
+  const mouseDownOnBackdrop = useRef(false);
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }} onClick={onClose}>
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === e.currentTarget) onClose(); }}
+    >
       <div style={{ background: "#fff", borderRadius: "14px 14px 0 0", padding: 18, width: "100%", maxWidth: wide ? 620 : 460, maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 14, fontWeight: 700 }}>{title}</div>
@@ -85,26 +96,31 @@ const inputStyle = { width: "100%" };
 // Administrator-only (Store/Plant Operator still read materials & suppliers
 // live inside their own tabs — e.g. the Orders form's dropdowns — via the
 // same GET endpoints, without needing this browsing/editing tab).
+// Round 140, item 5: Stock is the landing tab everywhere it's shown — matches
+// the mockup's own nav order (Stock, Receive/Orders/Receipts, Monthly stock,
+// Reports, Cost dashboard | Materials, Suppliers masters last, after a visual
+// divider) instead of opening on the Materials master.
 const TABS_BY_ROLE = {
   administrator: [
-    { key: "materials", label: "Materials" },
-    { key: "suppliers", label: "Suppliers" },
+    { key: "stock", label: "Stock" },
     { key: "orders", label: "Orders" },
     { key: "receipts", label: "Receipts" },
     { key: "consumption", label: "Consumption" },
-    { key: "stock", label: "Stock" },
     { key: "physical-stock", label: "Physical Stock" },
     { key: "reports", label: "Reports" },
+    { key: "cost-dashboard", label: "Cost Dashboard" },
+    { key: "materials", label: "Materials" },
+    { key: "suppliers", label: "Suppliers" },
   ],
   store: [
+    { key: "stock", label: "Stock" },
     { key: "orders", label: "Orders" },
     { key: "receipts", label: "Receipts" },
-    { key: "stock", label: "Stock" },
     { key: "physical-stock", label: "Physical Stock" },
   ],
   plant_operator: [
-    { key: "consumption", label: "Consumption" },
     { key: "stock", label: "Stock" },
+    { key: "consumption", label: "Consumption" },
   ],
 };
 
@@ -147,6 +163,7 @@ export default function MaterialModule() {
         {tab === "stock" && <StockTab role={user.role} />}
         {tab === "physical-stock" && <PhysicalStockTab role={user.role} />}
         {tab === "reports" && <ReportsTab />}
+        {tab === "cost-dashboard" && <CostDashboardTab />}
       </div>
     </>
   );
@@ -162,12 +179,56 @@ function MaterialsTab() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({});
 
+  // Round 140, item 4 — purchase units per material.
+  const [expandedUnits, setExpandedUnits] = useState(null); // material id whose units are shown
+  const [units, setUnits] = useState([]);
+  const [addingUnit, setAddingUnit] = useState(false);
+  const [unitForm, setUnitForm] = useState({ unit_name: "", kg_per_unit: "", is_default: false });
+
   async function load() {
     try {
       setMaterials(await apiRequest("/material-module/materials"));
     } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
+
+  async function loadUnits(materialId) {
+    try { setUnits(await apiRequest(`/material-module/materials/${materialId}/units`)); }
+    catch (err) { setError(err.message); }
+  }
+  function toggleUnits(m) {
+    if (expandedUnits === m.id) { setExpandedUnits(null); return; }
+    setExpandedUnits(m.id);
+    setAddingUnit(false);
+    loadUnits(m.id);
+  }
+  async function submitUnit(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/material-module/materials/${expandedUnits}/units`, { method: "POST", body: unitForm });
+      setNotice("Purchase unit added.");
+      setAddingUnit(false);
+      setUnitForm({ unit_name: "", kg_per_unit: "", is_default: false });
+      await loadUnits(expandedUnits);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+  async function makeUnitDefault(u) {
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/material-module/materials/${expandedUnits}/units/${u.id}`, { method: "PATCH", body: { is_default: true } });
+      await loadUnits(expandedUnits);
+      await load();
+    } catch (err) { setError(err.message); }
+  }
+  async function deleteUnit(u) {
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/material-module/materials/${expandedUnits}/units/${u.id}`, { method: "DELETE" });
+      await loadUnits(expandedUnits);
+    } catch (err) { setError(err.message); }
+  }
 
   function openNew() {
     setForm({ name: "", category: "", sub_category: "", purchase_unit: "", kg_per_purchase_unit: "", tolerance_pct: "", reorder_level_kg: "", opening_stock_kg: "0", opening_stock_rate_per_kg: "" });
@@ -246,6 +307,41 @@ function MaterialsTab() {
                   <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => toggleActive(m)}>{m.is_active ? "Deactivate" : "Reactivate"}</button>
                 </div>
               </div>
+              <button type="button" onClick={() => toggleUnits(m)} style={{ fontSize: 10.5, padding: "3px 0", marginTop: 8, background: "none", border: "none", color: "var(--rebar)", textAlign: "left" }}>
+                {expandedUnits === m.id ? "Hide purchase units ↑" : "Purchase units →"}
+              </button>
+              {expandedUnits === m.id && (
+                <div style={{ marginTop: 10, borderTop: "1px solid var(--border, #DEDAD1)", paddingTop: 10 }}>
+                  <div style={{ fontSize: 10.5, color: "var(--slate)", marginBottom: 6 }}>
+                    Several named units can be on file for one material (e.g. CFT, Brass, MT) — mark one Default, which is the unit orders/receipts use.
+                  </div>
+                  {units.map((u) => (
+                    <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, padding: "4px 0" }}>
+                      <span>{u.unit_name} = {fmtNum(u.kg_per_unit, 4)} kg{u.is_default && <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 9.5, padding: "1px 6px" }}>Default</span>}</span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {!u.is_default && <button type="button" style={{ fontSize: 10, padding: "2px 7px" }} onClick={() => makeUnitDefault(u)}>Make default</button>}
+                        {!u.is_default && <button type="button" style={{ fontSize: 10, padding: "2px 7px" }} onClick={() => deleteUnit(u)}>Delete</button>}
+                      </div>
+                    </div>
+                  ))}
+                  {!addingUnit ? (
+                    <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 4 }} onClick={() => { setAddingUnit(true); setUnitForm({ unit_name: "", kg_per_unit: "", is_default: false }); }}>+ Add purchase unit</button>
+                  ) : (
+                    <form onSubmit={submitUnit} style={{ marginTop: 6, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
+                      <Field label="Unit name (e.g. CFT, Brass, MT)"><input required value={unitForm.unit_name} onChange={(e) => setUnitForm({ ...unitForm, unit_name: e.target.value })} style={inputStyle} /></Field>
+                      <Field label="Kg per this unit"><input required type="number" step="0.0001" min="0" value={unitForm.kg_per_unit} onChange={(e) => setUnitForm({ ...unitForm, kg_per_unit: e.target.value })} style={inputStyle} /></Field>
+                      <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                        <input type="checkbox" checked={unitForm.is_default} onChange={(e) => setUnitForm({ ...unitForm, is_default: e.target.checked })} />
+                        Make this the default (used by orders/receipts)
+                      </label>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="submit" disabled={saving} style={{ flex: 1 }}>{saving ? "Saving..." : "Save unit"}</button>
+                        <button type="button" onClick={() => setAddingUnit(false)} style={{ flex: 1 }}>Cancel</button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -297,6 +393,10 @@ function SuppliersTab() {
   const [addingRate, setAddingRate] = useState(false);
   const [rateForm, setRateForm] = useState({ material_id: "", scope: "delivered", rate: "" });
 
+  // Round 140, item 2 — effective-dated rate history.
+  const [showingHistory, setShowingHistory] = useState(false);
+  const [rateHistory, setRateHistory] = useState([]);
+
   const [addingLink, setAddingLink] = useState(false);
   const [linkForm, setLinkForm] = useState({ material_id: "", transporter_id: "", new_transporter_name: "", new_transporter_phone: "", freight_rate: "", freight_basis: "per_purchase_unit", is_default: false });
 
@@ -325,8 +425,17 @@ function SuppliersTab() {
   function toggleExpand(s) {
     if (expanded === s.id) { setExpanded(null); return; }
     setExpanded(s.id);
-    setAddingRate(false); setAddingLink(false);
+    setAddingRate(false); setAddingLink(false); setShowingHistory(false);
     loadSupplierDetail(s.id);
+  }
+
+  async function toggleHistory() {
+    if (showingHistory) { setShowingHistory(false); return; }
+    setError("");
+    try {
+      setRateHistory(await apiRequest(`/material-module/suppliers/${expanded}/rates/history`));
+      setShowingHistory(true);
+    } catch (err) { setError(err.message); }
   }
 
   function openNewSupplier() {
@@ -426,16 +535,33 @@ function SuppliersTab() {
 
           {expanded === s.id && (
             <div style={{ marginTop: 10, borderTop: "1px solid var(--border, #DEDAD1)", paddingTop: 10 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>Material rates</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700 }}>Material rates <span style={{ fontWeight: 400, color: "var(--slate)" }}>(current)</span></div>
+                <button type="button" style={{ fontSize: 10, padding: "2px 8px" }} onClick={toggleHistory}>{showingHistory ? "Hide history" : "Rate history →"}</button>
+              </div>
               {rates.length === 0 && <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 6 }}>No rates on file yet.</div>}
               {rates.map((r) => (
                 <div key={r.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, padding: "4px 0" }}>
-                  <span>{r.material_name} · {SCOPE_LABEL[r.scope]}</span>
+                  <span>{r.material_name} · {SCOPE_LABEL[r.scope]} <span style={{ color: "var(--slate)", fontSize: 10.5 }}>since {fmtDate(r.valid_from)}</span></span>
                   <span style={{ fontWeight: 600 }}>{fmtMoney(r.rate)} / {r.purchase_unit}</span>
                 </div>
               ))}
+
+              {showingHistory && (
+                <div style={{ marginTop: 6, marginBottom: 8, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Rate history — every rate this supplier has quoted</div>
+                  {rateHistory.length === 0 && <div style={{ fontSize: 11, color: "var(--slate)" }}>No history yet.</div>}
+                  {rateHistory.map((r) => (
+                    <div key={r.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0", opacity: r.valid_to ? 0.7 : 1 }}>
+                      <span>{r.material_name} · {SCOPE_LABEL[r.scope]} · {fmtDate(r.valid_from)}{r.valid_to ? ` – ${fmtDate(r.valid_to)}` : " – current"}</span>
+                      <span style={{ fontWeight: 600 }}>{fmtMoney(r.rate)} / {r.purchase_unit}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {!addingRate ? (
-                <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 4 }} onClick={() => { setAddingRate(true); setRateForm({ material_id: "", scope: "delivered", rate: "" }); }}>+ Add / update rate</button>
+                <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 4 }} onClick={() => { setAddingRate(true); setRateForm({ material_id: "", scope: "delivered", rate: "", valid_from: todayStr() }); }}>+ Add / update rate</button>
               ) : (
                 <form onSubmit={submitRate} style={{ marginTop: 6, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
                   <Field label="Material">
@@ -451,6 +577,8 @@ function SuppliersTab() {
                     </select>
                   </Field>
                   <Field label="Rate (₹ per purchase unit)"><input required type="number" step="0.01" min="0" value={rateForm.rate} onChange={(e) => setRateForm({ ...rateForm, rate: e.target.value })} style={inputStyle} /></Field>
+                  <Field label="Effective from"><input type="date" value={rateForm.valid_from || todayStr()} onChange={(e) => setRateForm({ ...rateForm, valid_from: e.target.value })} style={inputStyle} /></Field>
+                  <div style={{ fontSize: 10.5, color: "var(--slate)", marginBottom: 8 }}>Saving closes the current rate the day before this date and starts the new one — nothing is overwritten, so it stays in Rate history.</div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <button type="submit" disabled={saving} style={{ flex: 1 }}>{saving ? "Saving..." : "Save rate"}</button>
                     <button type="button" onClick={() => setAddingRate(false)} style={{ flex: 1 }}>Cancel</button>
@@ -554,6 +682,12 @@ function OrdersTab({ role }) {
   const [rejecting, setRejecting] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
 
+  // Round 140, item 7 — close / revise an approved order.
+  const [closing, setClosing] = useState(null);
+  const [closeReason, setCloseReason] = useState("");
+  const [revising, setRevising] = useState(null);
+  const [reviseForm, setReviseForm] = useState({});
+
   async function load() {
     try {
       const [mine, m, s] = await Promise.all([
@@ -634,6 +768,34 @@ function OrdersTab({ role }) {
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
+  function openClose(o) { setClosing(o); setCloseReason(""); setError(""); }
+  async function submitClose(e) {
+    e.preventDefault();
+    setSaving(true); setError("");
+    try {
+      await apiRequest(`/material-module/orders/${closing.id}/close`, { method: "POST", body: { reason: closeReason || null } });
+      setNotice("Order closed.");
+      setClosing(null);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  function openRevise(o) {
+    setRevising(o);
+    setReviseForm({ ordered_qty: o.ordered_qty, rate: o.rate, freight_rate: o.freight_rate ?? "", freight_basis: o.freight_basis || "per_purchase_unit", tax_pct: o.tax_pct ?? "0", gst_treatment: o.gst_treatment });
+    setError(""); setNotice("");
+  }
+  async function submitRevise(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/material-module/orders/${revising.id}`, { method: "PATCH", body: reviseForm });
+      setNotice("Order revised.");
+      setRevising(null);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
@@ -661,6 +823,12 @@ function OrdersTab({ role }) {
       {orders.map((o) => (
         <div key={o.id} className="card" style={{ marginBottom: 8 }}>
           <OrderSummary o={o} />
+          {isAdmin && o.status === "approved" && (
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openRevise(o)}>Revise</button>
+              <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openClose(o)}>Close order</button>
+            </div>
+          )}
         </div>
       ))}
       {orders.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No orders yet.</div>}
@@ -732,6 +900,50 @@ function OrdersTab({ role }) {
           </form>
         </Modal>
       )}
+
+      {closing && (
+        <Modal title={`Close order — ${closing.material_name}`} onClose={() => setClosing(null)}>
+          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
+            Stops this order from accepting any more receipts (outstanding {fmtNum(Number(closing.ordered_qty) - Number(closing.received_qty))} {closing.purchase_unit} is abandoned) — use this when the rate or supply conditions changed and a new order was placed instead. This can't be undone.
+          </div>
+          <form onSubmit={submitClose}>
+            <Field label="Reason (optional)"><textarea rows={2} value={closeReason} onChange={(e) => setCloseReason(e.target.value)} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
+            <button type="submit" disabled={saving} className="btn-danger" style={{ width: "100%" }}>{saving ? "Closing..." : "Close order"}</button>
+          </form>
+        </Modal>
+      )}
+
+      {revising && (
+        <Modal title={`Revise order — ${revising.material_name}`} onClose={() => setRevising(null)} wide>
+          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
+            Receipts already recorded against this order keep the rate they were taken at — only receipts from now on use the revised rate.
+          </div>
+          <form onSubmit={submitRevise}>
+            <Field label="Ordered quantity"><input required type="number" step="0.01" min="0" value={reviseForm.ordered_qty} onChange={(e) => setReviseForm({ ...reviseForm, ordered_qty: e.target.value })} style={inputStyle} /></Field>
+            <Field label="Rate (₹ per purchase unit)"><input required type="number" step="0.01" min="0" value={reviseForm.rate} onChange={(e) => setReviseForm({ ...reviseForm, rate: e.target.value })} style={inputStyle} /></Field>
+            {revising.scope === "ex_factory" && (
+              <>
+                <Field label="Freight rate (₹)"><input type="number" step="0.01" min="0" value={reviseForm.freight_rate} onChange={(e) => setReviseForm({ ...reviseForm, freight_rate: e.target.value })} style={inputStyle} /></Field>
+                <Field label="Freight basis">
+                  <select value={reviseForm.freight_basis} onChange={(e) => setReviseForm({ ...reviseForm, freight_basis: e.target.value })} style={inputStyle}>
+                    <option value="per_purchase_unit">Per purchase unit</option>
+                    <option value="per_trip">Per trip</option>
+                    <option value="per_kg">Per kg</option>
+                  </select>
+                </Field>
+              </>
+            )}
+            <Field label="Tax %"><input type="number" step="0.01" min="0" value={reviseForm.tax_pct} onChange={(e) => setReviseForm({ ...reviseForm, tax_pct: e.target.value })} style={inputStyle} /></Field>
+            <Field label="GST treatment">
+              <select value={reviseForm.gst_treatment} onChange={(e) => setReviseForm({ ...reviseForm, gst_treatment: e.target.value })} style={inputStyle}>
+                <option value="excluded">Excluded (claimable — not added to landed cost)</option>
+                <option value="included">Included (not claimable — added to landed cost)</option>
+              </select>
+            </Field>
+            <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Save revision"}</button>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -757,6 +969,8 @@ function OrderSummary({ o }) {
         {o.approved_by_name ? ` · ${o.status === "rejected" ? "Rejected" : "Approved"} by ${o.approved_by_name} · ${fmtDateTime(o.approved_at)}` : ""}
       </div>
       {o.status === "rejected" && o.rejected_reason && <div style={{ fontSize: 11.5, color: "var(--alert-red)", marginTop: 3 }}>Reason: {o.rejected_reason}</div>}
+      {o.status === "closed" && <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 3 }}>Closed{o.closed_reason ? ` — ${o.closed_reason}` : ""}</div>}
+      {o.revised_at && <div style={{ fontSize: 10.5, color: "var(--slate)", marginTop: 2 }}>Last revised {fmtDateTime(o.revised_at)}</div>}
       {o.notes && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 3, fontStyle: "italic" }}>{o.notes}</div>}
     </>
   );
@@ -774,7 +988,16 @@ function blankReceiptForm() {
   return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "" };
 }
 
-function ReceiptsTab() {
+function receiptEditForm(r) {
+  return {
+    supplier_qty: r.supplier_qty, weighbridge_weight_kg: r.weighbridge_weight_kg ?? "",
+    accepted_qty: r.accepted_qty, vehicle_number: r.vehicle_number || "", challan_number: r.challan_number || "",
+    debit_note_amount: r.debit_note_amount ?? "", notes: r.notes || "",
+  };
+}
+
+function ReceiptsTab({ role }) {
+  const isAdmin = role === "administrator";
   const [receivable, setReceivable] = useState([]);
   const [history, setHistory] = useState([]);
   const [error, setError] = useState("");
@@ -784,6 +1007,11 @@ function ReceiptsTab() {
 
   const [receiving, setReceiving] = useState(null); // order being received against
   const [form, setForm] = useState(blankReceiptForm());
+
+  // Round 140, item 6 — Admin edit/delete a wrong receipt entry.
+  const [editingReceipt, setEditingReceipt] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [deletingReceipt, setDeletingReceipt] = useState(null);
 
   async function load() {
     try {
@@ -810,6 +1038,31 @@ function ReceiptsTab() {
       setNotice(`Receipt recorded — landed rate ${fmtMoney(result.landed_rate_per_kg)}/kg.`);
       if (result.tolerance_exceeded) setWarning("Short/excess quantity is beyond this material's tolerance — worth a second look.");
       setReceiving(null);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  function openEditReceipt(r) {
+    setEditingReceipt(r);
+    setEditForm(receiptEditForm(r));
+    setError(""); setNotice("");
+  }
+  async function submitEditReceipt(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/material-module/receipts/${editingReceipt.id}`, { method: "PATCH", body: editForm });
+      setNotice("Receipt updated.");
+      setEditingReceipt(null);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+  async function confirmDeleteReceipt() {
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/material-module/receipts/${deletingReceipt.id}`, { method: "DELETE" });
+      setNotice("Receipt deleted.");
+      setDeletingReceipt(null);
       await load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
@@ -859,6 +1112,12 @@ function ReceiptsTab() {
           {r.weighbridge_weight_kg != null && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>Weighbridge: {fmtNum(r.weighbridge_weight_kg)} kg</div>}
           {r.debit_note_amount != null && <div style={{ fontSize: 11, color: "var(--alert-red)", marginTop: 2 }}>Debit note: {fmtMoney(r.debit_note_amount)}</div>}
           <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>Received by {r.received_by_name}</div>
+          {isAdmin && (
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openEditReceipt(r)}>Edit</button>
+              <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => setDeletingReceipt(r)}>Delete</button>
+            </div>
+          )}
         </div>
       ))}
 
@@ -883,6 +1142,41 @@ function ReceiptsTab() {
             <Field label="Notes (optional)"><textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
             <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Confirm receipt"}</button>
           </form>
+        </Modal>
+      )}
+
+      {editingReceipt && (
+        <Modal title={`Edit receipt — ${editingReceipt.material_name}`} onClose={() => setEditingReceipt(null)} wide>
+          <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 10 }}>Correcting a wrong entry — short/excess and landed rate are recalculated from these values.</div>
+          <form onSubmit={submitEditReceipt}>
+            <Field label={`Supplier's invoice/DC quantity (${editingReceipt.purchase_unit})`}>
+              <input required type="number" step="0.01" min="0" value={editForm.supplier_qty} onChange={(e) => setEditForm({ ...editForm, supplier_qty: e.target.value })} style={inputStyle} />
+            </Field>
+            <Field label="Weighbridge weight (kg)">
+              <input type="number" step="0.01" min="0" value={editForm.weighbridge_weight_kg} onChange={(e) => setEditForm({ ...editForm, weighbridge_weight_kg: e.target.value })} style={inputStyle} />
+            </Field>
+            <Field label={`Accepted quantity (${editingReceipt.purchase_unit})`}>
+              <input required type="number" step="0.01" min="0" value={editForm.accepted_qty} onChange={(e) => setEditForm({ ...editForm, accepted_qty: e.target.value })} style={inputStyle} />
+            </Field>
+            <Field label="Vehicle number"><input value={editForm.vehicle_number} onChange={(e) => setEditForm({ ...editForm, vehicle_number: e.target.value })} style={inputStyle} /></Field>
+            <Field label="Challan number"><input value={editForm.challan_number} onChange={(e) => setEditForm({ ...editForm, challan_number: e.target.value })} style={inputStyle} /></Field>
+            <Field label="Debit note amount (optional, ₹)"><input type="number" step="0.01" min="0" value={editForm.debit_note_amount} onChange={(e) => setEditForm({ ...editForm, debit_note_amount: e.target.value })} style={inputStyle} /></Field>
+            <Field label="Notes (optional)"><textarea rows={2} value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
+            <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Save changes"}</button>
+          </form>
+        </Modal>
+      )}
+
+      {deletingReceipt && (
+        <Modal title="Delete receipt?" onClose={() => setDeletingReceipt(null)}>
+          <div style={{ fontSize: 12.5, marginBottom: 14 }}>
+            Delete the receipt of {fmtNum(deletingReceipt.accepted_qty)} {deletingReceipt.purchase_unit} of {deletingReceipt.material_name}
+            {" "}from {deletingReceipt.supplier_name} received {fmtDateTime(deletingReceipt.received_at)}? Stock and rates will recompute immediately — this can't be undone.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" onClick={() => setDeletingReceipt(null)} style={{ flex: 1 }}>Cancel</button>
+            <button type="button" className="btn-danger" disabled={saving} onClick={confirmDeleteReceipt} style={{ flex: 1 }}>{saving ? "Deleting..." : "Delete receipt"}</button>
+          </div>
         </Modal>
       )}
     </div>
@@ -993,16 +1287,21 @@ function ConsumptionTab() {
 
 function StockTab({ role }) {
   const showValuation = role !== "store";
+  const isAdmin = role === "administrator";
   const [month, setMonth] = useState(thisMonthStr());
   const [materials, setMaterials] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Round 140, item 8 extra — pending-approval banner + 4 KPI cards, admin only.
+  const [summary, setSummary] = useState(null);
 
   async function load() {
     setLoading(true); setError("");
     try {
       const data = await apiRequest(`/material-module/stock?month=${month}`);
       setMaterials(data.materials);
+      if (isAdmin) setSummary(await apiRequest("/material-module/reports/stock-summary"));
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1010,6 +1309,23 @@ function StockTab({ role }) {
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+
+      {isAdmin && summary && summary.pending_approval_count > 0 && (
+        <div className="card" style={{ marginBottom: 12, background: "var(--amber-bg)", display: "flex", justifyContent: "space-between", alignItems: "center", padding: 10 }}>
+          <div style={{ fontSize: 12.5 }}>
+            <b>{summary.pending_approval_count}</b> order{summary.pending_approval_count === 1 ? "" : "s"} waiting for your approval
+          </div>
+        </div>
+      )}
+      {isAdmin && summary && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+          <KpiCard label="Stock value" value={fmtMoney(summary.stock_value)} />
+          <KpiCard label="Balance on open orders" value={fmtMoney(summary.open_order_balance_value)} />
+          <KpiCard label="This month's purchases" value={fmtMoney(summary.month_purchase_value)} />
+          <KpiCard label="Debit notes due" value={fmtMoney(summary.debit_notes_due)} />
+        </div>
+      )}
+
       <Field label="Rate as of month (for valuation)"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
 
       {loading ? (
@@ -1523,6 +1839,134 @@ function CostPerM3Report() {
               </tbody>
             </table>
             {data.grade_split_challan_basis.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", padding: 8 }}>No challan volume in this range.</div>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ===================== Cost Dashboard tab (Administrator, item 8) =====================
+// 5 KPI cards, a 6-month cost/m³ trend, a per-material cost/m³ breakdown, and
+// a grouped material -> supplier weighted-rate table with short-supply% —
+// matching the mockup's Dashboard.dc.html. Single-series chart, one hue
+// (var(--rebar), the app's own accent) with direct value labels — no legend
+// needed for one series (dataviz skill's form/color rules).
+
+function KpiCard({ label, value, sub, tone }) {
+  return (
+    <div className="card" style={{ padding: 12, background: tone === "dark" ? "var(--charcoal)" : undefined, color: tone === "dark" ? "#fff" : undefined }}>
+      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.4, color: tone === "dark" ? "#B8BFC7" : "var(--slate)", fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 19, fontWeight: 700, marginTop: 3 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10.5, color: tone === "dark" ? "#C9CDD2" : "var(--slate)", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function TrendChart({ trend }) {
+  const values = trend.map((t) => t.cost_per_m3).filter((v) => v != null);
+  const max = values.length ? Math.max(...values) : 0;
+  const [hover, setHover] = useState(null);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 120, padding: "0 2px" }}>
+        {trend.map((t, i) => {
+          const h = max > 0 && t.cost_per_m3 != null ? Math.max(4, (t.cost_per_m3 / max) * 100) : 0;
+          const label = new Date(`${t.month}-01T00:00:00Z`).toLocaleDateString([], { month: "short" });
+          return (
+            <div key={t.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", position: "relative" }}
+              onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover((h2) => (h2 === i ? null : h2))}>
+              {hover === i && t.cost_per_m3 != null && (
+                <div style={{ position: "absolute", bottom: h + 8, background: "var(--charcoal)", color: "#fff", fontSize: 10.5, padding: "3px 7px", borderRadius: 5, whiteSpace: "nowrap", zIndex: 1 }}>
+                  {fmtMoney(t.cost_per_m3)}/m³
+                </div>
+              )}
+              <div style={{ width: "100%", maxWidth: 28, height: `${h}%`, minHeight: t.cost_per_m3 != null ? 4 : 0, background: "var(--rebar)", borderRadius: "4px 4px 0 0", opacity: t.cost_per_m3 == null ? 0.15 : 1 }} />
+              <div style={{ fontSize: 10, color: "var(--slate)", marginTop: 4 }}>{label}</div>
+            </div>
+          );
+        })}
+      </div>
+      {values.length === 0 && <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 8 }}>No consumption/production data in the last 6 months yet.</div>}
+    </div>
+  );
+}
+
+function CostDashboardTab() {
+  const [month, setMonth] = useState(thisMonthStr());
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true); setError("");
+    try { setData(await apiRequest(`/material-module/reports/cost-dashboard?month=${month}`)); }
+    catch (err) { setError(err.message); } finally { setLoading(false); }
+  }
+  useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const maxMaterialCost = data ? Math.max(1, ...data.per_material.map((m) => m.cost || 0)) : 1;
+
+  return (
+    <div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+      <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
+
+      {loading && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading...</div>}
+      {!loading && data && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+            <KpiCard label="Cost / m³ this month" value={data.kpis.cost_per_m3 != null ? `${fmtMoney(data.kpis.cost_per_m3)}` : "–"} sub={`on ${fmtNum(data.kpis.month_m3)} m³ produced`} tone="dark" />
+            <KpiCard label="Stock value" value={fmtMoney(data.kpis.stock_value)} sub="as of today" />
+            <KpiCard label="This month's purchases" value={fmtMoney(data.kpis.month_purchase_value)} />
+            <KpiCard label="Debit notes due" value={fmtMoney(data.kpis.debit_notes_due)} sub="this month" />
+          </div>
+          {data.kpis.over_tolerance_count > 0 && (
+            <div className="card" style={{ marginBottom: 16, background: "var(--alert-red-bg)", padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--alert-red)" }}>{data.kpis.over_tolerance_count} receipt{data.kpis.over_tolerance_count === 1 ? "" : "s"} beyond tolerance this month</div>
+              <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>See Reports → Weighbridge comparison for details.</div>
+            </div>
+          )}
+
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Cost / m³ — last 6 months</div>
+            <TrendChart trend={data.trend} />
+          </div>
+
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Cost / m³ by material — this month</div>
+            <div style={{ fontSize: 10.5, color: "var(--slate)", marginBottom: 10 }}>Divides by the operator's own production figure ({fmtNum(data.kpis.month_m3)} m³) — the grade split isn't tracked here, see Reports → Cost per m³ for the challan-basis grade breakdown.</div>
+            {data.per_material.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>No consumption entered this month yet.</div>}
+            {data.per_material.map((m) => (
+              <div key={m.material_id} style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 3 }}>
+                  <span>{m.name}</span>
+                  <span style={{ fontWeight: 600 }}>{m.cost_per_m3 != null ? `${fmtMoney(m.cost_per_m3)}/m³` : "–"}</span>
+                </div>
+                <div style={{ height: 6, borderRadius: 3, background: "var(--surface-2, #F0EEE7)" }}>
+                  <div style={{ height: 6, borderRadius: 3, background: "var(--rebar)", width: `${Math.max(2, ((m.cost || 0) / maxMaterialCost) * 100)}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="card" style={{ overflowX: "auto" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Material → supplier weighted rate — this month</div>
+            {data.grouped_supplier_table.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>No receipts this month yet.</div>}
+            {data.grouped_supplier_table.map((g) => (
+              <div key={g.material_id} style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 700, padding: "4px 0", borderBottom: "1px solid var(--border, #DEDAD1)" }}>
+                  <span>{g.name}</span>
+                  <span>{fmtMoney(g.blended_rate_per_kg)}/kg blended · {fmtNum(g.total_qty_kg)} kg</span>
+                </div>
+                {g.suppliers.map((s) => (
+                  <div key={s.supplier_id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, padding: "4px 0 4px 12px", color: "var(--slate)" }}>
+                    <span>{s.name}{s.short_supply_pct != null && s.short_supply_pct > 0 && <span style={{ color: "var(--alert-red)" }}> · short {fmtNum(s.short_supply_pct, 1)}%</span>}</span>
+                    <span>{fmtMoney(s.rate_per_kg)}/kg · {fmtNum(s.qty_kg)} kg</span>
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
         </>
       )}
