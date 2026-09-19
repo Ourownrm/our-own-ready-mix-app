@@ -54,6 +54,7 @@ import TechnicalAssistance from "./pages/TechnicalAssistance.jsx";
 import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 import MaterialModule from "./pages/MaterialModule.jsx";
+import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -214,6 +215,12 @@ export default function App() {
           {/* Round 139 — Raw Material Module (purchase -> approve -> receive
               -> consume -> physical count -> reports). No Manager access yet
               — see the module's own header comment; cheap to add later. */}
+          {/* Round 141 — Cube Strength QC dashboard. Administrator only, on
+              both sides: this guard and the backend router's own
+              requireRole("administrator"). */}
+          <Route path="/cube-qc-dashboard" element={
+            <ProtectedRoute roles={["administrator"]}><CubeQcDashboard /></ProtectedRoute>
+          } />
           <Route path="/material-module" element={
             <ProtectedRoute roles={["store", "administrator", "plant_operator"]}><MaterialModule /></ProtectedRoute>
           } />

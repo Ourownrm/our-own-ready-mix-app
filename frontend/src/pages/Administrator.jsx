@@ -41,6 +41,8 @@ export default function Administrator() {
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
                 { label: "360° Fuel Analysis", to: "/fuel-analysis" },
                 { label: "Outstanding Collection", to: "/outstanding-collection-report" },
+                // Round 141 — Administrator-only cube-strength QC analysis.
+                { label: "Cube Strength QC", to: "/cube-qc-dashboard" },
           ]}
         />
         <GroupedMenu
