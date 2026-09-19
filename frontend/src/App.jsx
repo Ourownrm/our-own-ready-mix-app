@@ -53,6 +53,7 @@ import RmcVsSitemix from "./pages/RmcVsSitemix.jsx";
 import TechnicalAssistance from "./pages/TechnicalAssistance.jsx";
 import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
+import MaterialModule from "./pages/MaterialModule.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -209,6 +210,12 @@ export default function App() {
           } />
           <Route path="/store-stock" element={
             <ProtectedRoute roles={["store", "manager", "administrator"]}><StoreStock /></ProtectedRoute>
+          } />
+          {/* Round 139 — Raw Material Module (purchase -> approve -> receive
+              -> consume -> physical count -> reports). No Manager access yet
+              — see the module's own header comment; cheap to add later. */}
+          <Route path="/material-module" element={
+            <ProtectedRoute roles={["store", "administrator", "plant_operator"]}><MaterialModule /></ProtectedRoute>
           } />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>

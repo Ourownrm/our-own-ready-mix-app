@@ -183,6 +183,8 @@ export default function PlantOperator() {
         </div>
 
         <Link to="/delay-justification-report"><button style={{ width: "100%", marginTop: 16 }}>Delay report</button></Link>
+        {/* Round 139 — daily raw-material consumption & production entry. */}
+        <Link to="/material-module"><button style={{ width: "100%", marginTop: 10 }}>Material consumption</button></Link>
         <button style={{ width: "100%", marginTop: 16 }} className="btn-danger" onClick={() => { setError(""); setNotice(""); setShowBreakdown(true); }}>
           Report pump / plant breakdown
         </button>

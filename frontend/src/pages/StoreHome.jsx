@@ -47,6 +47,8 @@ export default function StoreHome() {
           </>
         )}
         <Link to="/store-stock"><button type="button" style={{ width: "100%", marginTop: 20 }}>Stock &amp; purchases</button></Link>
+        {/* Round 139 — raw material purchase/receive/stock workflow, separate from the Stock & purchases (store-stock) consumables above. */}
+        <Link to="/material-module"><button type="button" style={{ width: "100%", marginTop: 10 }}>Material Module</button></Link>
         <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 10 }}>Fuel and lubricant report</button></Link>
       </div>
     </>

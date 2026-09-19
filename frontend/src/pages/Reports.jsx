@@ -56,6 +56,7 @@ export default function Reports() {
             <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
             <Link to="/lab-technician"><button type="button">View Lab Technician</button></Link>
             <Link to="/administrator"><button type="button">Users and roles</button></Link>
+            <Link to="/material-module"><button type="button">Material Module</button></Link>
             <Link to="/notifications">
               <button type="button" style={{ position: "relative" }}>
                 Notifications
@@ -80,6 +81,7 @@ export default function Reports() {
                 { label: "360° Fuel Analysis", to: "/fuel-analysis" },
                 { label: "Outstanding Collection", to: "/outstanding-collection-report" },
                 { label: "Cube Test Report", to: "/lab-technician/cube-test-report" },
+                { label: "Material Module Reports", to: "/material-module?tab=reports" },
               ]}
             />
             <GroupedMenu
