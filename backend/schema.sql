@@ -1791,7 +1791,11 @@ CREATE TABLE audit_log (
 
 CREATE TYPE rm_supply_scope AS ENUM ('delivered', 'ex_factory');
 CREATE TYPE rm_freight_basis AS ENUM ('per_purchase_unit', 'per_trip', 'per_kg');
-CREATE TYPE rm_order_status AS ENUM ('pending_approval', 'approved', 'rejected');
+-- 'closed' added round 140, item 7 — a terminal state Administrator sets by
+-- hand when an order should stop accepting receipts (rate/supply conditions
+-- changed, a replacement order was placed) even though it's not fully
+-- received. Distinct from 'rejected' (never approved in the first place).
+CREATE TYPE rm_order_status AS ENUM ('pending_approval', 'approved', 'rejected', 'closed');
 -- 'excluded' = GST input credit is claimable, so tax is NOT added to stock
 -- cost (the module's default — see the notes doc); 'included' = tax is added
 -- to landed cost because credit isn't claimable for this particular order.
@@ -1817,6 +1821,26 @@ CREATE TABLE rm_materials (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Round 140, item 4 — several named purchase units per material, each with
+-- its own kg conversion (e.g. a cement bag AND a bulk MT rate on the same
+-- material), one marked default. rm_materials.purchase_unit/
+-- kg_per_purchase_unit stay the live source of truth everything else
+-- (orders/receipts/consumption) reads — resolved live at receipt time per
+-- the mockup's own "changing a conversion affects future receipts only"
+-- rule — marking a unit default here writes through to those two columns,
+-- so nothing downstream needs to change. This table is purely the
+-- management/reference layer the user asked to be able to see and edit.
+CREATE TABLE rm_material_units (
+  id SERIAL PRIMARY KEY,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  unit_name VARCHAR(20) NOT NULL,
+  kg_per_unit NUMERIC(12,4) NOT NULL,
+  is_default BOOLEAN NOT NULL DEFAULT false,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (material_id, unit_name)
+);
+
 CREATE TABLE rm_suppliers (
   id SERIAL PRIMARY KEY,
   name VARCHAR(150) NOT NULL,
@@ -1829,19 +1853,31 @@ CREATE TABLE rm_suppliers (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- A supplier may quote a material at BOTH scopes — one rate per scope, per
--- the confirmed requirement ("a supplier may quote both scopes").
+-- A supplier may quote a material at BOTH scopes — one CURRENT rate per
+-- scope, per the confirmed requirement ("a supplier may quote both scopes").
+-- Round 140, item 2 — rates are now effective-dated: valid_from/valid_to
+-- track when each rate applied, so setting a new rate closes the old row
+-- instead of overwriting it, and a "Rate history" view has real history to
+-- show. valid_to IS NULL means "still the current rate". Orders/receipts are
+-- unaffected either way — an order snapshots the rate onto rm_orders.rate at
+-- the moment it's placed (unchanged from round 139), never reads this table
+-- live again after that.
 CREATE TABLE rm_supplier_rates (
   id SERIAL PRIMARY KEY,
   supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
   material_id INTEGER NOT NULL REFERENCES rm_materials(id),
   scope rm_supply_scope NOT NULL,
   rate NUMERIC(12,2) NOT NULL,          -- per purchase unit
+  valid_from DATE NOT NULL DEFAULT CURRENT_DATE,
+  valid_to DATE,                        -- NULL = still current
   is_active BOOLEAN NOT NULL DEFAULT true,
   updated_by INTEGER REFERENCES users(id),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (supplier_id, material_id, scope)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Only one CURRENT (valid_to IS NULL) rate per supplier+material+scope —
+-- replaces the old 3-column UNIQUE constraint now that history rows share
+-- the same combination.
+CREATE UNIQUE INDEX idx_rm_supplier_rates_current ON rm_supplier_rates(supplier_id, material_id, scope) WHERE valid_to IS NULL;
 
 -- Freestanding transporter list, reusable across suppliers/materials.
 CREATE TABLE rm_transporters (
@@ -1887,7 +1923,18 @@ CREATE TABLE rm_orders (
   approved_by INTEGER REFERENCES users(id),
   approved_at TIMESTAMPTZ,
   rejected_reason TEXT,
-  notes TEXT
+  notes TEXT,
+  -- Round 140, item 7 — order close (terminal, by hand) and revise (rate/
+  -- freight/tax/qty changed after approval, before it's closed/rejected).
+  -- Revising never touches receipts already recorded against this order —
+  -- each receipt's landed_rate_per_kg was already computed and stored at
+  -- receipt time (round 139's existing immutability rule) — only receipts
+  -- taken AFTER the revision see the new rate.
+  closed_by INTEGER REFERENCES users(id),
+  closed_at TIMESTAMPTZ,
+  closed_reason TEXT,
+  revised_by INTEGER REFERENCES users(id),
+  revised_at TIMESTAMPTZ
 );
 
 -- Store confirms what actually arrived against an approved order. The

@@ -1866,13 +1866,19 @@ router.get("/setup", async (req, res) => {
           CREATE TYPE rm_freight_basis AS ENUM ('per_purchase_unit', 'per_trip', 'per_kg');
         END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rm_order_status') THEN
-          CREATE TYPE rm_order_status AS ENUM ('pending_approval', 'approved', 'rejected');
+          CREATE TYPE rm_order_status AS ENUM ('pending_approval', 'approved', 'rejected', 'closed');
         END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rm_gst_treatment') THEN
           CREATE TYPE rm_gst_treatment AS ENUM ('excluded', 'included');
         END IF;
       END $$;
     `);
+    // Round 140, item 7 — 'closed' added to an enum that may already exist
+    // from round 139 (the DO block above only creates it if missing, so a
+    // pre-existing enum never picks up the new value on its own). ADD VALUE
+    // IF NOT EXISTS is a plain top-level statement — can't go inside a DO
+    // block's exception-catching the way the other guards do.
+    await pool.query(`ALTER TYPE rm_order_status ADD VALUE IF NOT EXISTS 'closed';`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS rm_materials (
         id SERIAL PRIMARY KEY,
@@ -1900,16 +1906,27 @@ router.get("/setup", async (req, res) => {
         created_by INTEGER REFERENCES users(id),
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS rm_material_units (
+        id SERIAL PRIMARY KEY,
+        material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+        unit_name VARCHAR(20) NOT NULL,
+        kg_per_unit NUMERIC(12,4) NOT NULL,
+        is_default BOOLEAN NOT NULL DEFAULT false,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (material_id, unit_name)
+      );
       CREATE TABLE IF NOT EXISTS rm_supplier_rates (
         id SERIAL PRIMARY KEY,
         supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
         material_id INTEGER NOT NULL REFERENCES rm_materials(id),
         scope rm_supply_scope NOT NULL,
         rate NUMERIC(12,2) NOT NULL,
+        valid_from DATE NOT NULL DEFAULT CURRENT_DATE,
+        valid_to DATE,
         is_active BOOLEAN NOT NULL DEFAULT true,
         updated_by INTEGER REFERENCES users(id),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        UNIQUE (supplier_id, material_id, scope)
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
       CREATE TABLE IF NOT EXISTS rm_transporters (
         id SERIAL PRIMARY KEY,
@@ -1947,7 +1964,12 @@ router.get("/setup", async (req, res) => {
         approved_by INTEGER REFERENCES users(id),
         approved_at TIMESTAMPTZ,
         rejected_reason TEXT,
-        notes TEXT
+        notes TEXT,
+        closed_by INTEGER REFERENCES users(id),
+        closed_at TIMESTAMPTZ,
+        closed_reason TEXT,
+        revised_by INTEGER REFERENCES users(id),
+        revised_at TIMESTAMPTZ
       );
       CREATE TABLE IF NOT EXISTS rm_receipts (
         id SERIAL PRIMARY KEY,
@@ -1996,7 +2018,35 @@ router.get("/setup", async (req, res) => {
         UNIQUE (material_id, stock_month)
       );
     `);
-    log.push("Schema migration applied (Material Module — rm_materials, rm_suppliers, rm_supplier_rates, rm_transporters, rm_supplier_transporters, rm_orders, rm_receipts, rm_daily_consumption, rm_daily_production, rm_monthly_physical_stock).");
+    log.push("Schema migration applied (Material Module — rm_materials, rm_material_units, rm_suppliers, rm_supplier_rates, rm_transporters, rm_supplier_transporters, rm_orders, rm_receipts, rm_daily_consumption, rm_daily_production, rm_monthly_physical_stock).");
+
+    // Round 140 additive columns/indexes for databases that already had these
+    // tables from round 139 (CREATE TABLE IF NOT EXISTS above is a no-op on
+    // those, so the new columns/index need their own ADD-if-missing step).
+    await pool.query(`
+      ALTER TABLE rm_supplier_rates ADD COLUMN IF NOT EXISTS valid_from DATE NOT NULL DEFAULT CURRENT_DATE;
+      ALTER TABLE rm_supplier_rates ADD COLUMN IF NOT EXISTS valid_to DATE;
+      ALTER TABLE rm_supplier_rates DROP CONSTRAINT IF EXISTS rm_supplier_rates_supplier_id_material_id_scope_key;
+      ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS closed_by INTEGER REFERENCES users(id);
+      ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+      ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS closed_reason TEXT;
+      ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS revised_by INTEGER REFERENCES users(id);
+      ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS revised_at TIMESTAMPTZ;
+    `);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rm_supplier_rates_current ON rm_supplier_rates(supplier_id, material_id, scope) WHERE valid_to IS NULL;`);
+    // Backfill: a material created before round 140 has no rm_material_units
+    // row at all (that table didn't exist yet), so its Units panel would
+    // otherwise show empty even though it has a perfectly good purchase unit
+    // on rm_materials itself — seed one default unit per such material from
+    // its own purchase_unit/kg_per_purchase_unit, same as POST /materials
+    // now does for a brand-new one.
+    const { rowCount: unitsBackfilled } = await pool.query(`
+      INSERT INTO rm_material_units (material_id, unit_name, kg_per_unit, is_default)
+      SELECT m.id, m.purchase_unit, m.kg_per_purchase_unit, true
+      FROM rm_materials m
+      WHERE NOT EXISTS (SELECT 1 FROM rm_material_units u WHERE u.material_id = m.id)
+    `);
+    log.push(`Schema migration applied (Round 140 — rm_material_units; rm_supplier_rates effective dating; rm_orders close/revise columns). Backfilled ${unitsBackfilled} pre-existing material(s) into rm_material_units.`);
 
     res.send(
       `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +

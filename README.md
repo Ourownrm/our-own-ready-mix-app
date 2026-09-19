@@ -5902,3 +5902,90 @@ the tolerance-exceeded flag), the weighted-average carry-forward across three mo
 month with no receipts (confirming the forward-fill and the opening-rate fallback), the monthly
 physical-stock diff/cost calculation, Store's server-side valuation-hiding on every endpoint that
 returns cost data, role-based 403s on admin-only actions, and all 9 reports.
+
+## Round 140 (Ver. 9.65): 8 fixes/features from live testing of the Material Module — bug fixes, multi-unit conversion, rate history, receipt edit/delete, order close/revise, Cost Dashboard
+
+Direct response to a punch list of 8 items from live testing of round 139's Material Module.
+**Visit `/setup?key=...` once after deploying this round** — several items need the additive schema
+migration below.
+
+**1. Fixed "SOMETHING WENT WRONG" editing a material.** `PATCH /materials/:id` forwarded a blank
+optional numeric field (tolerance %, reorder level, opening rate) straight to Postgres as an empty
+string, which crashes with `invalid input syntax for type numeric: ""` — the exact same bug class
+documented elsewhere in this app's own history (round 135, a different route). Blank now normalizes
+to `NULL` for the nullable fields, and returns a clear 400 (not a DB crash) if a *required* numeric
+field — kg per purchase unit, opening stock — is left blank on an edit.
+
+**2. Supplier rates are now effective-dated.** `rm_supplier_rates` gained `valid_from`/`valid_to`;
+setting a new rate closes the current row (`valid_to` = the day before the new one starts) and
+inserts a fresh row rather than overwriting in place, so a real "Rate history" view (new
+`GET /suppliers/:id/rates/history`, a "Rate history →" button in the Suppliers tab) has something to
+show. Re-saving the identical rate is a no-op, not a spurious history row. Orders still snapshot the
+rate onto `rm_orders.rate` at order time — unchanged from round 139, and reconfirmed against the
+mockup's own text ("changing a rate here does not change orders already placed").
+
+**3. Fixed the modal closing mid-copy.** `Modal`'s backdrop closed on any click whose `target`
+resolved to the backdrop — which included a text-selection drag that started inside an input and was
+released past the panel edge (a normal way to select-and-copy). Now tracks `mousedown` separately and
+only closes when *both* the mousedown and the click landed on the backdrop itself.
+
+**4. Multiple purchase units per material, each with its own kg conversion.** New table
+`rm_material_units` (material, unit name, kg/unit, one `is_default`) plus a "Purchase units" panel on
+each material in the Materials tab. `rm_materials.purchase_unit`/`kg_per_purchase_unit` stay the
+single live conversion everything else (orders/receipts/consumption/stock) reads — marking a unit
+default here writes straight through to those two columns, so nothing downstream changed. A material
+created before this round gets its existing unit backfilled into this table automatically by
+`/setup` (confirmed via a real upgrade-path test — see Verification).
+
+**5. Stock is now the landing tab**, for Administrator and Store — matches the mockup's own nav order
+(Stock, Orders, Receipts, Consumption, Physical Stock, Reports, Cost Dashboard, then Materials/
+Suppliers masters last, after a divider). Previously opened on the Materials master.
+
+**6. Admin can now edit or delete a wrong receipt entry** — `PATCH`/`DELETE /receipts/:id`
+(Administrator only). Editing recomputes `short_qty` and `landed_rate_per_kg` with the same formula
+POST uses, preserving the *original* receipt's kg-per-unit conversion (not today's material default)
+— the same "past receipts keep the value used at the time" rule receipts already followed. Book stock
+and the weighted-average rate are both computed live from `rm_receipts` on every read (round 139's
+architecture), so no separate stock/rate repair is needed after an edit or delete.
+
+**7. Order close and revise.** `rm_order_status` gains `'closed'` (additive `ALTER TYPE ... ADD VALUE
+IF NOT EXISTS`, since a database that already has this enum from round 139 needs it added, not
+recreated). Administrator can now `POST /orders/:id/close` (terminal, any outstanding quantity is
+abandoned — for when the rate or supply conditions changed and a replacement order was placed) or
+`PATCH /orders/:id` to revise rate/freight/tax/quantity on an approved, not-yet-closed order. Revising
+never touches receipts already recorded against the order — each one's landed rate was already
+computed and stored at receipt time; only receipts taken after the revision see the new rate.
+
+**8. Cost Dashboard** (new tab, Administrator only) — matches the mockup's `Dashboard.dc.html`: 4 KPI
+cards (cost/m³ this month, stock value, this month's purchases, debit notes due — plus an
+over-tolerance-receipts callout when relevant), a 6-month cost/m³ trend (single-series bar chart,
+the app's own accent color, per `dataviz` skill guidance for a one-series chart), a per-material
+cost/m³ breakdown for the current month, and a grouped material → supplier weighted-rate table with
+short-supply% per supplier. All reuse round 139's existing `monthlyWeightedAvgRates`/
+`effectiveAvgForMonth` and the operator's-own-production-m³ cost basis — never the challan-derived
+figure, the same "Volume basis" decision every other report already follows.
+
+**8, extra — checked the mockup for anything else missed** (per the user's own instruction).
+Besides the Cost Dashboard, two more gaps surfaced: the admin Stock tab lacked the mockup's
+pending-approval banner + 4 summary KPI cards, and the Orders screen is a simpler single-material
+form versus the mockup's multi-line PO-style form (multiple materials per order, PO numbering,
+draft/send-for-approval states). The user chose to include the **Stock tab KPI banner** in this round
+(new `GET /reports/stock-summary`: stock value, balance on open orders, this month's purchases,
+debit notes due, pending-approval count) and to leave the **multi-line PO order form** for a future
+round — it's a materially larger schema/UI change than the rest of this list.
+
+**Verification**: `node --check` on every edited backend file, a clean `npm run build`, `schema.sql`
+loading end-to-end with zero errors on a fresh database, **and a dedicated upgrade-path test**: a
+second disposable database was built to the exact round-139 shape (old 3-column unique constraint on
+`rm_supplier_rates`, no `rm_material_units` table, no `rm_orders` close/revise columns) with real
+seeded rows, then `/setup` was run against it and the additive migration was confirmed to apply
+cleanly — new columns/table/index created, the old unique constraint replaced by the new partial
+one, **existing rows preserved**, and the `rm_material_units` backfill populated the pre-existing
+material with its current unit. Re-running `/setup` a second time confirmed every migration step,
+including the backfill, is a true no-op on a second run. All 8 items were then exercised through the
+real running Express app with seeded data end to end — including the negative cases (a non-admin
+blocked with 403 from editing a receipt or reading the Cost Dashboard, a blank required field
+returning a clean 400 instead of a crash on both the material-edit and order-revise routes, deleting
+a unit's current default rejected, closing an already-closed order rejected, revising a closed order
+rejected, and re-saving an identical supplier rate producing no duplicate history row) — every check
+passed.
