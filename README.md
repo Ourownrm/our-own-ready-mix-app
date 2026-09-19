@@ -5989,3 +5989,78 @@ returning a clean 400 instead of a crash on both the material-edit and order-rev
 a unit's current default rejected, closing an already-closed order rejected, revising a closed order
 rejected, and re-saving an identical supplier rate producing no duplicate history row) — every check
 passed.
+
+---
+
+## Round 141 (Ver. 9.66): Cube Strength QC dashboard — Administrator only
+
+The cube-strength analysis designed as a mockup on 14 Sept ("OORM Cube Strength QC") is now real,
+live code. **No schema change at all this round** — not one column, table or enum. Every figure is
+derived from data the Lab Technician module already records, so there is nothing to migrate and
+`/setup` does not need to be visited for this round.
+
+**New backend route file `backend/src/routes/qcDashboard.js`**, mounted at `/api/qc-dashboard`, with
+`requireRole("administrator")` applied at the **router** level. It deliberately does not live in
+`labTechnician.js`: that router opens itself to lab_technician/qc_engineer/manager/administrator in
+one `router.use(...)`, so hanging an admin-only dashboard off it would have meant a per-route
+override that is easy to lose in a later edit. `App.jsx`'s route guard for the page is the same
+single role — both surfaces set together, per this project's own recurring warning that a frontend
+guard and a backend guard can silently disagree.
+
+Two endpoints: `GET /filters` (only grades/customers/designs/technicians that actually appear in
+cube results, so no dead options) and `GET /summary` (from_date, to_date, mix_grade_id, customer_id,
+mix_design_id, tested_by, source). **Both cube tracks are covered** — plant-cast
+(`cube_test_results`) and site-cast (`site_cube_test_results`) are unioned in one base CTE using the
+same shape `labTechnician.js`'s own `/cube-test-report` uses (identical aliases in both halves, so
+one WHERE text and one params array serves both). `source` is the one filter applied after the
+union, since it is the only one that differs between the halves.
+
+**New page `frontend/src/pages/CubeQcDashboard.jsx`** at `/cube-qc-dashboard`, linked from the
+Administrator dashboard's Reports menu as "Cube Strength QC". Panels, in order: six KPI tiles; the
+28-day control chart per grade (f'ck, target mean, mean-of-4 limit, ±2σ band, trailing mean-of-4
+line, individual failures in red); 7-day → 28-day early warning (scatter plus a projected at-risk
+table); margin over f'ck by grade; mix design performance; within-batch consistency, failure mode
+and density check; customer & site roll-up; lab workload; and samples per week against the IS 456
+minimum.
+
+**Standards, and where each threshold comes from** — every one is named on the page itself rather
+than being a hidden constant:
+* IS 456:2000 Cl 16.1 acceptance — individual >= f'ck − 4, and the mean of any 4 consecutive results
+  >= f'ck + 0.825σ or f'ck + 4, whichever is greater. "Consecutive" is evaluated in **cast order**,
+  not entry order.
+* IS 456 Cl 16.3 — σ is called *established* only at >= 30 results; below that the page says
+  "provisional" and the acceptance limit uses the assumed σ (the linked design's own
+  `std_deviation_mpa`, or IS 10262's 3.5/4.0/5.0 by grade when no design is linked).
+* IS 516 — a cube more than 15% from its batch average makes the test questionable. Computed only
+  over cubes **actually crushed**: a cube row exists for every sample taken, and an untested one has
+  null load/strength (the same trap Round 131 fixed in the PDF), so including them would invent a
+  deviation that never happened.
+* IS 456 Cl 15.2.2 sampling frequency — the required sample count is computed **per day** from that
+  day's poured volume and summed into the week, not computed once on the week's total, which would
+  understate it.
+* Where a result has no mix design linked, the grade number itself is used as f'ck (M25 → 25).
+
+The 7d→28d projection uses **each grade's own historical ratio**, from paired results where both
+ages exist for the same batch; a grade with fewer than 3 pairs shows no projection at all rather
+than borrowing another grade's ratio. Per-grade statistics are computed once, in one place on the
+frontend, from the same rows the control chart plots — so the KPI tiles, the acceptance summary and
+the chart can never disagree with each other.
+
+**Verification**: `node --check` on both touched backend files, a clean `npm run build`, and the
+whole round exercised against a throwaway Postgres: `schema.sql` loaded end-to-end, then 45 pours
+seeded across three grades and both cube tracks (including rogue cubes outside IS 516's 15%, density
+outliers, untested cube slots, missing failure types, and site casts). Through the real running
+Express app: a lab_technician got **403** and an unauthenticated request **401** on the dashboard
+(the admin-only guard actually holds), every filter was confirmed to filter (source=site returned
+only site rows; grade filter only that grade), and the lab-workload counters were confirmed to
+*move* by adding one 40-day-old untested pour (overdue 7-day, overdue 28-day and never-tested each
+went 0 → 1 — a counter that can only ever return 0 proves nothing). The IS 456 arithmetic was then
+recomputed independently from the API payload and matched the page exactly (1 individual result
+below f'ck − 4, 1 four-result group below the 29.0 limit). Finally the real page was rendered in a
+headless browser against that live data and screenshotted — which is how a label collision on the
+chart's axis unit was found and fixed before delivery.
+
+**Note on the GitHub upload limit**: `frontend/src` is 93 files (safe to drag as one batch), but the
+whole `frontend` folder is now 106 — above GitHub's 100-file cap for a single drag-and-drop. Upload
+`frontend/src` on its own, or split the batch, and re-read the warning in PROJECT_INSTRUCTIONS.md
+about a split upload silently nesting as `frontend/src/src/...`.
