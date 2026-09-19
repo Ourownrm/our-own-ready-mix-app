@@ -2048,6 +2048,56 @@ router.get("/setup", async (req, res) => {
     `);
     log.push(`Schema migration applied (Round 140 — rm_material_units; rm_supplier_rates effective dating; rm_orders close/revise columns). Backfilled ${unitsBackfilled} pre-existing material(s) into rm_material_units.`);
 
+    // Round 142 — the Daily Consumption "mix design vs actual" report needs
+    // to know which mix-design ingredient each raw material IS. The design
+    // table has fixed component columns (cement_kgm3, fly_ash_kgm3, ...)
+    // while rm_materials are whatever the business named them, so the link
+    // has to be stated once by Administrator rather than guessed from the
+    // material's name — a plant that calls a material "OPC 53 (Malabar)"
+    // must not silently stop being cement because the string changed.
+    // Nullable on purpose: a material with no component (admixture, water)
+    // simply has no theoretical figure and the report says so.
+    await pool.query(`
+      ALTER TABLE rm_materials ADD COLUMN IF NOT EXISTS mix_component VARCHAR(20);
+    `);
+    // Best-effort first guess ONLY for materials nobody has classified yet,
+    // and only on unambiguous name matches. Administrator can change any of
+    // them afterwards; a material already classified is never overwritten.
+    const { rowCount: componentsGuessed } = await pool.query(`
+      UPDATE rm_materials SET mix_component = CASE
+        WHEN name ILIKE '%cement%' OR name ILIKE 'opc%' OR name ILIKE 'ppc%' THEN 'cement'
+        WHEN name ILIKE '%fly ash%' OR name ILIKE '%flyash%' THEN 'fly_ash'
+        WHEN name ILIKE '%m-sand%' OR name ILIKE '%m sand%' OR name ILIKE '%msand%'
+          OR name ILIKE '%fine agg%' OR name ILIKE '%river sand%' THEN 'fine_agg'
+        WHEN name ILIKE '%20mm%' OR name ILIKE '%20 mm%' THEN 'coarse_20mm'
+        WHEN name ILIKE '%12mm%' OR name ILIKE '%12 mm%' OR name ILIKE '%12.5%' THEN 'coarse_12_5mm'
+        WHEN name ILIKE '%admixture%' OR name ILIKE '%plasticiz%' OR name ILIKE '%plasticis%'
+          OR name ILIKE '%retarder%' OR name ILIKE 'pce%' THEN 'admixture'
+      END
+      WHERE mix_component IS NULL
+        AND (name ILIKE '%cement%' OR name ILIKE 'opc%' OR name ILIKE 'ppc%'
+             OR name ILIKE '%fly ash%' OR name ILIKE '%flyash%'
+             OR name ILIKE '%m-sand%' OR name ILIKE '%m sand%' OR name ILIKE '%msand%'
+             OR name ILIKE '%fine agg%' OR name ILIKE '%river sand%'
+             OR name ILIKE '%20mm%' OR name ILIKE '%20 mm%'
+             OR name ILIKE '%12mm%' OR name ILIKE '%12 mm%' OR name ILIKE '%12.5%'
+             OR name ILIKE '%admixture%' OR name ILIKE '%plasticiz%' OR name ILIKE '%plasticis%'
+             OR name ILIKE '%retarder%' OR name ILIKE 'pce%')
+    `);
+    // Round 143 — pinned screens for the icon-view Administrator dashboard.
+    // Additive and empty by default: a user with no row simply gets the
+    // dashboard's own default pins until they change them.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_dashboard_pins (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        screen_keys TEXT[] NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    log.push("Schema migration applied (Round 143 — user_dashboard_pins for the icon-view dashboard).");
+
+    log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
+
     res.send(
       `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
       `Setup complete.\n\n${log.join("\n")}\n\n` +

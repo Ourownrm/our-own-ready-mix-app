@@ -39,6 +39,8 @@ import homeScreenPhotosRoutes from "./routes/homeScreenPhotos.js";
 import loaderOperatorRoutes from "./routes/loaderOperator.js";
 import materialModuleRoutes from "./routes/materialModule.js";
 import qcDashboardRoutes from "./routes/qcDashboard.js";
+// Round 143 — the Administrator dashboard's icon view (KPIs, badges, pins).
+import adminDashboardRoutes from "./routes/adminDashboard.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -116,6 +118,7 @@ app.use("/api/material-module", materialModuleRoutes);
 // Round 141 — Cube Strength QC dashboard. Administrator-only at the router
 // level (see routes/qcDashboard.js); read-only, adds no tables.
 app.use("/api/qc-dashboard", qcDashboardRoutes);
+app.use("/api/admin-dashboard", adminDashboardRoutes);
 app.use("/api/booking-links", bookingLinksRoutes);
 // Manager/Admin-only, staff auth as usual — generates/lists/revokes the
 // customer portal access codes (routes/customerAccess.js).

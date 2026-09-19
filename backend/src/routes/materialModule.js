@@ -30,6 +30,12 @@ const ORDER_ROLES = ["administrator", "store"];
 const CONSUMPTION_ROLES = ["administrator", "plant_operator"];
 const STOCK_READ_ROLES = ["administrator", "store", "plant_operator"];
 
+// Round 142 — the mix-design ingredients a material may be mapped to. Kept
+// as a plain allow-list rather than a DB enum so adding one later is a code
+// change only; MIX_COMPONENT_COLUMN (further down) maps each to where the
+// per-m3 figure actually lives on a mix design.
+const MIX_COMPONENTS = new Set(["cement", "fly_ash", "fine_agg", "coarse_20mm", "coarse_12_5mm", "admixture"]);
+
 function isStore(req) {
   return req.user.role === "store";
 }
@@ -47,16 +53,17 @@ router.get("/materials", requireRole(...MATERIALS_READ_ROLES), async (req, res) 
 });
 
 router.post("/materials", requireRole(...ADMIN), async (req, res) => {
-  const { name, category, sub_category, purchase_unit, kg_per_purchase_unit, tolerance_pct, reorder_level_kg, opening_stock_kg, opening_stock_rate_per_kg } = req.body;
+  const { name, category, sub_category, mix_component, purchase_unit, kg_per_purchase_unit, tolerance_pct, reorder_level_kg, opening_stock_kg, opening_stock_rate_per_kg } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "Material name is required." });
   if (!purchase_unit || !purchase_unit.trim()) return res.status(400).json({ error: "Purchase unit is required (e.g. CFT, Bag, MT)." });
   if (!kg_per_purchase_unit || Number(kg_per_purchase_unit) <= 0) return res.status(400).json({ error: "Enter the conversion to kg per purchase unit." });
 
   const { rows } = await query(
     `INSERT INTO rm_materials
-       (name, category, sub_category, purchase_unit, kg_per_purchase_unit, tolerance_pct, reorder_level_kg, opening_stock_kg, opening_stock_rate_per_kg, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [name.trim(), category || null, sub_category || null, purchase_unit.trim(), kg_per_purchase_unit,
+       (name, category, sub_category, mix_component, purchase_unit, kg_per_purchase_unit, tolerance_pct, reorder_level_kg, opening_stock_kg, opening_stock_rate_per_kg, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [name.trim(), category || null, sub_category || null, MIX_COMPONENTS.has(mix_component) ? mix_component : null,
+      purchase_unit.trim(), kg_per_purchase_unit,
       tolerance_pct || null, reorder_level_kg || null, opening_stock_kg || 0, opening_stock_rate_per_kg || null, req.user.id]
   );
   // Seed the material's first purchase unit from what was just entered, so
@@ -156,12 +163,17 @@ const MATERIAL_NULLABLE_NUMERIC_FIELDS = new Set(["tolerance_pct", "reorder_leve
 const MATERIAL_REQUIRED_NUMERIC_FIELDS = new Set(["kg_per_purchase_unit", "opening_stock_kg"]);
 
 router.patch("/materials/:id", requireRole(...ADMIN), async (req, res) => {
-  const fields = ["name", "category", "sub_category", "purchase_unit", "kg_per_purchase_unit", "tolerance_pct", "reorder_level_kg", "opening_stock_kg", "opening_stock_rate_per_kg", "is_active"];
+  const fields = ["name", "category", "sub_category", "mix_component", "purchase_unit", "kg_per_purchase_unit", "tolerance_pct", "reorder_level_kg", "opening_stock_kg", "opening_stock_rate_per_kg", "is_active"];
   const sets = [];
   const params = [];
   for (const f of fields) {
     if (req.body[f] === undefined) continue;
     let value = req.body[f];
+    // Only the five design columns plus admixture are real components; the
+    // blank option (and anything unrecognised) is stored as NULL rather than
+    // an empty string, so the report's own "is this mapped?" test has one
+    // answer, not two.
+    if (f === "mix_component") value = MIX_COMPONENTS.has(value) ? value : null;
     if (typeof value === "string" && value.trim() === "") {
       if (MATERIAL_REQUIRED_NUMERIC_FIELDS.has(f)) {
         return res.status(400).json({ error: `${f === "kg_per_purchase_unit" ? "Kg per purchase unit" : "Opening stock"} can't be left blank.` });
@@ -769,7 +781,8 @@ async function bookStockRows() {
     SELECT m.*,
            COALESCE(recv.total_kg, 0) AS received_kg,
            COALESCE(cons.total_kg, 0) AS consumed_kg,
-           COALESCE(monthcons.month_kg, 0) AS month_consumed_kg
+           COALESCE(monthcons.month_kg, 0) AS month_consumed_kg,
+           COALESCE(monthrecv.month_kg, 0) AS month_received_kg
     FROM rm_materials m
     LEFT JOIN LATERAL (
       SELECT SUM(r.accepted_qty_kg) AS total_kg
@@ -784,6 +797,14 @@ async function bookStockRows() {
       FROM rm_daily_consumption c
       WHERE c.material_id = m.id AND date_trunc('month', c.consumption_date) = date_trunc('month', CURRENT_DATE)
     ) monthcons ON true
+    -- Round 142 — this month's receipts, so the Stock tab can show the
+    -- mockup's Opening / Received / Consumed / Book stock line for the month
+    -- rather than only the running balance.
+    LEFT JOIN LATERAL (
+      SELECT SUM(r.accepted_qty_kg) AS month_kg
+      FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id
+      WHERE o.material_id = m.id AND date_trunc('month', r.received_at) = date_trunc('month', CURRENT_DATE)
+    ) monthrecv ON true
     WHERE m.is_active
     ORDER BY m.category, m.name
   `);
@@ -806,6 +827,12 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), async (req, res) => {
       book_stock_purchase_units: bookStockKg / Number(m.kg_per_purchase_unit),
       low_stock: m.reorder_level_kg != null && bookStockKg <= Number(m.reorder_level_kg),
       stock_days_remaining: avgDailyThisMonth > 0 ? bookStockKg / avgDailyThisMonth : null,
+      // Round 142 — the month's own movement, for the mockup's Stock table.
+      // Opening is derived backwards from the current balance rather than
+      // stored, so it can never disagree with book stock.
+      month_received_kg: Number(m.month_received_kg),
+      month_consumed_kg: Number(m.month_consumed_kg),
+      month_opening_kg: bookStockKg - Number(m.month_received_kg) + Number(m.month_consumed_kg),
     };
     if (req.user.role !== "store") {
       const rateMap = await monthlyWeightedAvgRates(m.id);
@@ -815,7 +842,26 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), async (req, res) => {
     }
     results.push(row);
   }
-  res.json({ as_of_month: asOfMonth, materials: results });
+  // Open orders, for the mockup's right-hand panel: what is still on its way
+  // per material, so Store can see at a glance that a low material already
+  // has cover coming (or does not).
+  const { rows: openOrders } = await query(
+    `SELECT o.id, o.ordered_qty, m.id AS material_id, m.name AS material_name, m.purchase_unit,
+            (o.ordered_qty * m.kg_per_purchase_unit) AS ordered_qty_kg,
+            s.name AS supplier_name, o.scope::text AS scope,
+            COALESCE(SUM(r.accepted_qty_kg), 0) AS received_kg,
+            COALESCE(SUM(r.accepted_qty), 0) AS received_qty
+     FROM rm_orders o
+     JOIN rm_materials m ON m.id = o.material_id
+     JOIN rm_suppliers s ON s.id = o.supplier_id
+     LEFT JOIN rm_receipts r ON r.order_id = o.id
+     WHERE o.status = 'approved'
+     GROUP BY o.id, o.ordered_qty, m.id, m.name, m.purchase_unit, m.kg_per_purchase_unit, s.name, o.scope
+     HAVING COALESCE(SUM(r.accepted_qty), 0) < o.ordered_qty
+     ORDER BY o.id DESC
+     LIMIT 12`
+  );
+  res.json({ as_of_month: asOfMonth, materials: results, open_orders: openOrders });
 });
 
 // ===================== Monthly physical stock =====================
@@ -883,24 +929,38 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), async (req, res)
 
     const row = {
       material_id: m.id, name: m.name, category: m.category, purchase_unit: m.purchase_unit,
+      // Round 142 — the count sheet lets Store enter the figure in the unit
+      // it was actually counted in (CFT of a pile, barrels), so the page
+      // needs the conversion; kg stays the only thing stored.
+      kg_per_purchase_unit: Number(m.kg_per_purchase_unit),
       opening_kg: openingKg, purchase_kg: purchaseKg, plant_consumption_kg: plantConsumptionKg,
       book_stock_kg: bookStockKg,
       physical_stock_kg: count ? Number(count.physical_stock_kg) : null,
       stock_taken_by_name: null,
+      notes: count ? count.notes : null,
       taken_at: count ? count.taken_at : null,
     };
+    // Round 142 — the rate is resolved for EVERY material, not only the
+    // counted ones. The report's "cost as per plant consumption" card needs
+    // the whole month's material cost, and before this it silently summed
+    // only the materials that happened to have been counted, which made the
+    // cost-of-difference percentage beside it meaningless.
+    let rate = null;
+    if (req.user.role !== "store") {
+      const rateMap = await monthlyWeightedAvgRates(m.id);
+      rate = effectiveAvgForMonth(rateMap, month, m.opening_stock_rate_per_kg);
+      row.rate_per_kg = rate;
+      row.cost_plant_consumption = rate != null ? rate * plantConsumptionKg : null;
+    }
     if (count) {
       const actualConsumptionKg = openingKg + purchaseKg - Number(count.physical_stock_kg);
       const diffKg = plantConsumptionKg - actualConsumptionKg;
       row.actual_consumption_kg = actualConsumptionKg;
       row.diff_kg = diffKg;
       row.diff_pct = plantConsumptionKg !== 0 ? (diffKg / plantConsumptionKg) * 100 : null;
-      if (req.user.role !== "store") {
-        const rateMap = await monthlyWeightedAvgRates(m.id);
-        const rate = effectiveAvgForMonth(rateMap, month, m.opening_stock_rate_per_kg);
-        row.rate_per_kg = rate;
-        row.cost_actual_consumption = rate != null ? rate * actualConsumptionKg : null;
-        row.cost_of_diff = rate != null ? rate * diffKg : null;
+      if (rate != null) {
+        row.cost_actual_consumption = rate * actualConsumptionKg;
+        row.cost_of_diff = rate * diffKg;
       }
     }
     results.push(row);
@@ -916,7 +976,18 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), async (req, res)
     for (const r of results) if (nameByMaterial.has(r.material_id)) r.stock_taken_by_name = nameByMaterial.get(r.material_id);
   }
 
-  res.json({ month, materials: results });
+  // The month's production, so the report can show cost per m³ beside the
+  // month's total material cost. The Plant Operator's own figure is the
+  // basis here, same as everywhere else cost/m³ is computed — never the
+  // challan total (see this file's header note on the two volume bases).
+  const { rows: prodRows } = await query(
+    `SELECT COALESCE(SUM(concrete_produced_m3), 0) AS m3 FROM rm_daily_production
+     WHERE production_date >= $1::date AND production_date < $1::date + INTERVAL '1 month'`,
+    [monthStart]
+  );
+  const productionM3 = Number(prodRows[0].m3);
+
+  res.json({ month, production_m3: productionM3, materials: results });
 });
 
 // ===================== Reports (Administrator only) =====================
@@ -1002,6 +1073,139 @@ router.get("/reports/daily-consumption", requireRole(...ADMIN), async (req, res)
     operator_production_m3: operatorM3,
     challan_production_m3: challanM3,
     challan_by_grade: challanByGrade,
+  });
+});
+
+// Round 142 — Daily consumption: mix design vs actual.
+//
+// Theoretical = for each grade poured that day, that grade's own effective
+// mix design quantity per m3 x the m3 of that grade on the delivery
+// challans, summed per material. The GRADE SPLIT can only come from the
+// challans (the operator enters one total m3, not a split by grade) — this
+// is the volume-basis decision the user settled explicitly: theoretical is
+// challan-derived, cost/m3 is operator-derived, and both volumes are shown
+// so the gap is visible rather than hidden.
+//
+// Which design applies to a grade on a given day: each order already carries
+// resolved_mix_design_id (written when the order was placed, from the
+// customer's assignment or the grade's standard design), so the report uses
+// the order's own design rather than re-resolving it now and risking a
+// different answer than the one the plant actually batched to.
+const MIX_COMPONENT_COLUMN = {
+  cement: "cement_kgm3",
+  fly_ash: "fly_ash_kgm3",
+  fine_agg: "fine_agg_kgm3",
+  coarse_20mm: "coarse_20mm_kgm3",
+  coarse_12_5mm: "coarse_12_5mm_kgm3",
+  // Admixture isn't a column on mix_designs — a design can carry several
+  // (superplasticizer + retarder) in mix_design_admixtures. The volumes query
+  // below sums that child table per design into the same shape, so the
+  // report treats it like any other component. Deliberately left NULL (not
+  // 0) when a design has no admixture rows at all: "no figure" is honest,
+  // whereas 0 would make the actual dosage look like a 100% overrun.
+  admixture: "admix_kgm3",
+};
+
+router.get("/reports/mix-vs-actual", requireRole(...ADMIN), async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+
+  // m3 per grade per design from the day's challans.
+  const { rows: volumes } = await query(
+    `SELECT g.id AS mix_grade_id, g.name AS grade,
+            COALESCE(md.id, std.id) AS mix_design_id,
+            COALESCE(md.design_ref_code, std.design_ref_code) AS design_ref_code,
+            SUM(dt.loaded_quantity_m3) AS m3,
+            COALESCE(md.cement_kgm3, std.cement_kgm3) AS cement_kgm3,
+            COALESCE(md.fly_ash_kgm3, std.fly_ash_kgm3) AS fly_ash_kgm3,
+            COALESCE(md.fine_agg_kgm3, std.fine_agg_kgm3) AS fine_agg_kgm3,
+            COALESCE(md.coarse_20mm_kgm3, std.coarse_20mm_kgm3) AS coarse_20mm_kgm3,
+            COALESCE(md.coarse_12_5mm_kgm3, std.coarse_12_5mm_kgm3) AS coarse_12_5mm_kgm3,
+            adm.qty AS admix_kgm3
+     FROM delivery_tickets dt
+     JOIN customer_orders co ON co.id = dt.order_id
+     JOIN mix_grades g ON g.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = co.resolved_mix_design_id
+     LEFT JOIN LATERAL (
+       SELECT d.* FROM mix_designs d
+       WHERE d.mix_grade_id = co.mix_grade_id AND d.is_standard_for_grade AND d.status = 'approved'
+       LIMIT 1
+     ) std ON true
+     LEFT JOIN LATERAL (
+       SELECT SUM(a.qty_kgm3) AS qty FROM mix_design_admixtures a
+       WHERE a.mix_design_id = COALESCE(md.id, std.id)
+     ) adm ON true
+     WHERE dt.ticket_date = $1
+       AND dt.loaded_quantity_m3 IS NOT NULL
+       AND dt.status NOT IN ('cancelled', 'rejected', 'returned')
+     GROUP BY g.id, g.name, md.id, std.id, md.design_ref_code, std.design_ref_code,
+              md.cement_kgm3, std.cement_kgm3, md.fly_ash_kgm3, std.fly_ash_kgm3,
+              md.fine_agg_kgm3, std.fine_agg_kgm3, md.coarse_20mm_kgm3, std.coarse_20mm_kgm3,
+              md.coarse_12_5mm_kgm3, std.coarse_12_5mm_kgm3, adm.qty
+     ORDER BY g.name`,
+    [date]
+  );
+
+  const { rows: materials } = await query(
+    `SELECT m.id AS material_id, m.name, m.category, m.mix_component,
+            c.automatic_qty_kg, c.manual_qty_kg,
+            COALESCE(c.automatic_qty_kg, 0) + COALESCE(c.manual_qty_kg, 0) AS actual_kg,
+            c.id AS consumption_id
+     FROM rm_materials m
+     LEFT JOIN rm_daily_consumption c ON c.material_id = m.id AND c.consumption_date = $1
+     WHERE m.is_active
+     ORDER BY m.category, m.name`,
+    [date]
+  );
+
+  const { rows: production } = await query(
+    `SELECT concrete_produced_m3 FROM rm_daily_production WHERE production_date = $1`, [date]
+  );
+
+  const challanM3 = volumes.reduce((sum, v) => sum + Number(v.m3 || 0), 0);
+  const gradesMissingDesign = volumes.filter((v) => !v.mix_design_id).map((v) => v.grade);
+
+  const rows = materials.map((m) => {
+    const col = MIX_COMPONENT_COLUMN[m.mix_component];
+    let theoretical = null;
+    const perGrade = [];
+    if (col) {
+      theoretical = 0;
+      for (const v of volumes) {
+        const perM3 = v[col] == null ? null : Number(v[col]);
+        const m3 = Number(v.m3 || 0);
+        const qty = perM3 == null ? null : perM3 * m3;
+        perGrade.push({ grade: v.grade, m3, per_m3: perM3, qty_kg: qty, design_ref_code: v.design_ref_code });
+        if (qty != null) theoretical += qty;
+      }
+      // Every grade poured that day lacking a design makes the total a
+      // partial figure — say so rather than quietly under-reporting.
+      if (perGrade.every((g) => g.qty_kg == null)) theoretical = null;
+    }
+    const actual = m.consumption_id == null ? null : Number(m.actual_kg);
+    return {
+      material_id: m.material_id, name: m.name, category: m.category,
+      mix_component: m.mix_component,
+      automatic_qty_kg: m.automatic_qty_kg, manual_qty_kg: m.manual_qty_kg,
+      actual_kg: actual,
+      theoretical_kg: theoretical,
+      per_grade: perGrade,
+      diff_kg: theoretical != null && actual != null ? actual - theoretical : null,
+      // `theoretical &&` alone would let a null actual through as NaN — the
+      // consumption simply not being entered yet is a normal state, not zero.
+      diff_pct: theoretical && actual != null ? ((actual - theoretical) / theoretical) * 100 : null,
+    };
+  });
+
+  res.json({
+    date,
+    challan_production_m3: challanM3,
+    operator_production_m3: production[0] ? Number(production[0].concrete_produced_m3) : null,
+    grades: volumes.map((v) => ({
+      grade: v.grade, m3: Number(v.m3 || 0), design_ref_code: v.design_ref_code, has_design: !!v.mix_design_id,
+    })),
+    grades_missing_design: gradesMissingDesign,
+    materials: rows,
+    unmapped_materials: rows.filter((r) => !r.mix_component).map((r) => r.name),
   });
 });
 

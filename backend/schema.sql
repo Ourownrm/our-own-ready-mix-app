@@ -1816,9 +1816,28 @@ CREATE TABLE rm_materials (
   -- no receipts yet simply has no valuation until its first receipt.
   opening_stock_kg NUMERIC(14,2) NOT NULL DEFAULT 0,
   opening_stock_rate_per_kg NUMERIC(12,4),
+  -- Round 142 — which mix-design ingredient this material is, for the
+  -- "mix design vs actual" consumption report: cement | fly_ash | fine_agg |
+  -- coarse_20mm | coarse_12_5mm | admixture (that last one summed from the
+  -- design's mix_design_admixtures rows, since it has no column of its own).
+  -- NULL for anything the design sheet has no figure for (water, curing
+  -- compound, ...), which simply gets no theoretical quantity in the report.
+  mix_component VARCHAR(20),
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_by INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Round 143 — which screens a person has pinned to the top of the icon-view
+-- dashboard, in the order they should appear. One row per user and never
+-- shared: what the Administrator pins changes nobody else's dashboard. The
+-- keys themselves are defined on the frontend (lib/adminScreens.js) — a key
+-- that no longer exists there is simply skipped when the grid renders, so
+-- removing a screen never leaves a broken tile behind.
+CREATE TABLE user_dashboard_pins (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  screen_keys TEXT[] NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Round 140, item 4 — several named purchase units per material, each with

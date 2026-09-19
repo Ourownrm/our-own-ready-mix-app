@@ -6064,3 +6064,140 @@ chart's axis unit was found and fixed before delivery.
 whole `frontend` folder is now 106 — above GitHub's 100-file cap for a single drag-and-drop. Upload
 `frontend/src` on its own, or split the batch, and re-read the warning in PROJECT_INSTRUCTIONS.md
 about a split upload silently nesting as `frontend/src/src/...`.
+
+## Round 142 (Ver. 9.67): Material Module brought to the mockup — Stock, Monthly physical stock, the missing Mix vs actual report, and the Monthly physical stock report
+
+Direct response to "Material module is not matching with the mock-up UI". Four screens rebuilt
+against the approved mockup artboards (`Main.dc.html` / `AdminStock.dc.html`, `StockCount.dc.html`,
+`Reports.dc.html`, `StockReport.dc.html`), plus the schema and endpoints the mockup's figures need.
+**Visit `/setup?key=...` once after deploying** — there is a new column this round.
+
+1. **Stock tab** now carries the mockup's whole layout instead of four columns: a KPI strip (open
+   orders, below-reorder-level, and for Administrator the stock value / open-order balance /
+   month's purchases / debit notes due), the month's **Opening / Received / Consumed** movement
+   beside book stock, reorder level, "stock lasts", avg rate, value, a status badge (OK / Near
+   reorder / Low · reorder) and a total stock value row — plus an **Open orders panel** with fill
+   bars per PO and a red note naming any low material with nothing on order. `GET /stock` gained
+   `month_opening_kg` / `month_received_kg` / `month_consumed_kg` per material and an `open_orders`
+   array. Store still sees no rate, value or total: the hiding is server-side, not just left out
+   of the page.
+2. **Monthly physical stock** is now one count sheet for every material — the mockup's table, with
+   the figure entered **in the unit it was actually counted in** (CFT of a pile, barrels, MT) and
+   converted to kg on save, and actual consumption plus the difference recomputing live as you
+   type. A "Stock taking" panel carries who is recording it and the remarks; a "Past months" panel
+   switches month. The old version was a card per material with a modal per count.
+3. **Daily consumption — mix vs actual** (new report, Administrator only) — the one the mockup had
+   and round 139 never built. New `GET /reports/mix-vs-actual` and a new
+   `rm_materials.mix_component` column mapping each user-named material to a mix-design ingredient
+   (cement / fly ash / fine agg / 20mm / 12.5mm / **admixture**, the last summed from the design's
+   own `mix_design_admixtures` rows since it has no column of its own). Theoretical quantity =
+   each grade's approved design per m³ × that grade's m³ **from the day's delivery challans**,
+   resolved from `customer_orders.resolved_mix_design_id` and falling back to the grade's standard
+   approved design. Cancelled/rejected/returned tickets are excluded. A grade with **no** approved
+   design contributes nothing and is named on the page rather than quietly lowering the total, and
+   materials not mapped to an ingredient are listed with a pointer to the Materials master.
+   `/setup` makes a conservative first guess by name and never overwrites a material already
+   classified; the Materials master has a selector for correcting it.
+4. **Monthly physical stock report** to the mockup exactly: adds Avg rate and Cost — actual
+   consumption to the columns, a total row, and the four summary cards (cost as per plant
+   consumption, cost as per actual consumption, cost of difference, biggest gap). Cost per m³
+   divides by the **plant operator's** production for the month, never the challan total.
+
+**Three real bugs found and fixed while testing this round, all pre-existing**: (a) the report's
+"cost as per plant consumption" summed only the materials that happened to have been counted, which
+made the cost-of-difference percentage beside it meaningless — the rate is now resolved for every
+material; (b) `todayStr()`/`thisMonthStr()` built their value from `toISOString()`, which converts
+to UTC first, so in IST every date before 05:30 and the 1st of any month came back as the previous
+day/month — the "Past months" list literally skipped August. Both now read the local calendar
+fields, and month arithmetic is done on the `YYYY-MM` string; (c) `fmtMoney` printed a negative as
+`₹-36,580` instead of `-₹36,580`.
+
+The module's page is also **wider than the app's usual 620px column (now 1180px max)** — at 620 the
+value and status columns fell off the right edge of the mockup's tables. `max-width` only caps, so
+phones are unchanged.
+
+**Verification**: `node --check`, clean `npm run build`, `schema.sql` loaded on a throwaway Postgres
+seeded with three grades, four challans (one cancelled), seven materials, two part-received orders
+and a day of consumption. Through the real running app: every mix-vs-actual figure recomputed
+independently by hand and matched exactly (cement 290×62 + 320×88 + 360×34 = 58,380 against 59,120
+actual = +1.27%); the cancelled ticket confirmed excluded; a fourth grade with no approved design
+added mid-test and confirmed to be flagged rather than silently counted; `mix_component` confirmed
+to accept a valid value, null out a blank **and an unrecognised one**, and survive an unrelated
+PATCH; Store confirmed to receive **no** rate or cost key on either stock endpoint, and 403 on both
+admin reports. The four screens were then rendered headless and screenshotted against the mockup,
+which is how the August-skipping month list and the cost-as-per-plant-consumption bug were caught;
+a count of 9,141 CFT was typed into the real page and confirmed stored as 388,492.50 kg.
+
+**Still not started**: Super Admin per-user access control (functions list and mockup next), and
+the weighbridge sync agent.
+
+## Round 143 (Ver. 9.68): Administrator dashboard rebuilt as an icon view — KPIs, pinned row, 8 modules, drill-down with Back
+
+The approved "Admin Dashboard — Icon View" mockup built as real code, replacing five `GroupedMenu`
+dropdowns plus a "Users and roles" tab. **Visit `/setup?key=...` once after deploying** — one new
+table this round.
+
+**The shape**, exactly as approved: a four-tile KPI strip (Today's Order, Today's Production,
+Monthly Achieved, Outstanding Collection), a pinned row, then eight coloured module tiles. Five
+modules open a sub-grid (Production 10, Fuel & Lubricants 3, Plant & Equipment's 6, Quality Control
+5, Sales and Collection 15); Directors Dashboard, Raw Material Module and Users & Roles open their
+screen directly. On Today's Order the **m³ is the headline and the order count the small line** —
+volume is what the plant is measured on. A red badge is what is waiting inside: a module's badge is
+the total of its children's, so one glance says which module needs you.
+
+**Three levels, all in the URL** (`/administrator`, `?module=production`, `?view=customers`), not
+in local state, so refresh, bookmarking and the browser's own back button all behave. Back is a
+labelled button beside a `Dashboard › Module › Screen` breadcrumb, and it returns to **the module
+you came from**, not blindly home — correcting three tickets in a row lands you back in Production
+each time.
+
+**New `frontend/src/lib/adminScreens.js` is the single screen registry** — every label, icon,
+colour and destination for all 42 screens in one list, with ~35 inline stroke glyphs. Nothing in
+the page hard-codes a screen. This matters beyond tidiness: it is the same list the Super Admin
+per-user permission work will switch tiles on and off from, and three screens (Cube Test Report,
+the Manager dashboard, the Lab Technician screen) had been reachable by route for months while
+missing from the old menu, each found only by eye. They are on the grid now, as **Cube Test
+Report**, **Plant Manager** and **Laboratory**; none needed a guard change, since `App.jsx` already
+allowed an Administrator into all three.
+
+**New `backend/src/routes/adminDashboard.js`** at `/api/admin-dashboard`, `requireRole
+("administrator")` at the **router** level (same reasoning as round 141's qcDashboard.js — a
+per-route override is what a later edit silently drops). `GET /summary` returns the four KPIs and
+every badge count in ONE call; the counts already existed but were scattered across five routers,
+which would have meant five round trips before the home screen could paint. The outstanding figure
+reuses `reports.js`'s own two-legged CTE verbatim, so the tile and the Outstanding Collection
+report can never disagree. `GET`/`PUT /pins` store each person's pinned screens in the new
+`user_dashboard_pins` table — per user, never shared.
+
+**`ROLE_HOME.administrator` changed from `/reports` to `/administrator`.** Signing in now lands on
+the grid, which is the whole point of it; the Reports page it used to land on is the "Directors
+Dashboard" tile. This also removed the oddity the first screenshot caught — the dashboard showing
+TopBar's own "Back to my dashboard" link pointing at a different page.
+
+**Pinning is a checklist, not drag-and-drop**, deliberately: this app is used on a phone in the
+plant as much as at a desk, and dragging a 58px tile with gloves on is not a thing anyone should
+have to do. Pins save in registry order rather than click order, so the strip reads the same every
+time.
+
+**Verification**: `node --check`, clean `npm run build`, `schema.sql` on a throwaway Postgres seeded
+so that **every KPI and badge could be checked against a hand-computed answer, including what must
+be excluded** — a cancelled order (999 m³) and yesterday's order left out of Today's Order, a
+cancelled challan left out of the challan figure, an approved material order and an approved mix
+design left out of their pending counts, a resolved breakdown left out of the open count, an
+assigned lead left out of the unassigned count. All twelve figures matched exactly. Through the
+real running app: manager **403**, unauthenticated **401**; the pins endpoint exercised with a
+duplicate (collapsed), a junk key, nine keys and a non-list (all clean 400s) and **confirmed the
+stored value was unchanged after each rejection**. A separate round-142-shaped database was built
+without the new table, run through `/setup`, and confirmed to migrate cleanly with existing rows
+kept — then a second `/setup` run confirmed a true no-op, and a wrong key a 403. The page was then
+driven headless end to end: module → screen → Back → Back, with the URL checked at each step and
+the browser's own back button after it, then the pin picker opened, a screen ticked, saved and
+confirmed to persist. Two real defects were caught this way and fixed before delivery: the
+role-home page above, and module tiles falling to two across on a 390px phone (now three).
+
+**Frontend file count**: `frontend/src` is 94 files, the whole `frontend` folder 107 — still above
+GitHub's 100-file single-drag cap (pre-existing). Upload `frontend/src` alone, and mind
+PROJECT_INSTRUCTIONS.md's warning about a split upload nesting as `frontend/src/src/...`.
+
+**Next**: the Super Admin per-user access control, whose functions list and mockup are already
+approved (`claude/super-admin-functions-list.md`).
