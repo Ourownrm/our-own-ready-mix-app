@@ -1763,3 +1763,200 @@ CREATE TABLE audit_log (
 
 -- Soft-delete pattern used everywhere instead of DELETE, to satisfy "no record shall be permanently deleted"
 -- (is_active / is_deleted columns already present on master tables above)
+
+-- ===================== MATERIAL MODULE (Round 139) =====================
+-- Store's raw-material purchase → receive → consume → physical-count workflow
+-- (cement, aggregates, admixtures, etc.), materialModule.js. Deliberately a
+-- SEPARATE system from the pre-existing raw_material_stock table above (a
+-- simple 9-bin manual snapshot Lab Technician updates, shown read-only on
+-- Manager/Administrator dashboards since round ~118) — that table is
+-- untouched and keeps working exactly as it did; every table below is
+-- prefixed rm_ so the two can never collide. Also separate from
+-- store_stock_items/store_stock_purchases (fuel & lubricant) above, which
+-- this module does not touch.
+--
+-- Confirmed decisions this schema encodes (see claude/raw-material-module-
+-- notes.md for the full history — several of these reversed an earlier
+-- round's decision):
+--   * Store prepares an order, Administrator approves it before anything can
+--     be received against it (rm_orders.status).
+--   * Weighted average rate is a CALENDAR-MONTH average (computed in code
+--     from rm_receipts, not stored per-month here) — resets on the 1st, and
+--     a month with no receipts keeps last month's closing average.
+--   * Stock valuation (rate, value) is never returned to a Store session —
+--     enforced server-side in materialModule.js, not just hidden in the UI.
+--   * accepted_qty on a receipt defaults to the weighbridge weight (manual
+--     entry until the weighbridge sync is live) but is editable — Store can
+--     override if the weighbridge figure is wrong or unavailable.
+
+CREATE TYPE rm_supply_scope AS ENUM ('delivered', 'ex_factory');
+CREATE TYPE rm_freight_basis AS ENUM ('per_purchase_unit', 'per_trip', 'per_kg');
+CREATE TYPE rm_order_status AS ENUM ('pending_approval', 'approved', 'rejected');
+-- 'excluded' = GST input credit is claimable, so tax is NOT added to stock
+-- cost (the module's default — see the notes doc); 'included' = tax is added
+-- to landed cost because credit isn't claimable for this particular order.
+CREATE TYPE rm_gst_treatment AS ENUM ('excluded', 'included');
+
+CREATE TABLE rm_materials (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(150) NOT NULL UNIQUE,
+  category VARCHAR(80),
+  sub_category VARCHAR(80),
+  purchase_unit VARCHAR(20) NOT NULL,            -- e.g. CFT, Barrel, Bag, MT, kg
+  kg_per_purchase_unit NUMERIC(12,4) NOT NULL,   -- consumption/stock is always tracked in kg
+  tolerance_pct NUMERIC(5,2),                     -- optional: flag a receipt whose weighbridge weight deviates from the supplier qty by more than this
+  reorder_level_kg NUMERIC(12,2),
+  -- One-time starting balance for a material new to this module — after that,
+  -- book stock is purely purchases minus consumption (see the stock query in
+  -- materialModule.js). Rate is optional; a material with no opening rate and
+  -- no receipts yet simply has no valuation until its first receipt.
+  opening_stock_kg NUMERIC(14,2) NOT NULL DEFAULT 0,
+  opening_stock_rate_per_kg NUMERIC(12,4),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE rm_suppliers (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(150) NOT NULL,
+  contact_person VARCHAR(120),
+  phone VARCHAR(30),
+  address TEXT,
+  gstin VARCHAR(20),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A supplier may quote a material at BOTH scopes — one rate per scope, per
+-- the confirmed requirement ("a supplier may quote both scopes").
+CREATE TABLE rm_supplier_rates (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  scope rm_supply_scope NOT NULL,
+  rate NUMERIC(12,2) NOT NULL,          -- per purchase unit
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  updated_by INTEGER REFERENCES users(id),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (supplier_id, material_id, scope)
+);
+
+-- Freestanding transporter list, reusable across suppliers/materials.
+CREATE TABLE rm_transporters (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(150) NOT NULL,
+  phone VARCHAR(30),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One material bought ex-factory from a given supplier may have SEVERAL
+-- transporters on file, each with their own rate/basis — one marked default,
+-- the rest selectable per order and per receipt (the receipt's own
+-- transporter can differ from what the order assumed, if the actual pickup
+-- used someone else).
+CREATE TABLE rm_supplier_transporters (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  transporter_id INTEGER NOT NULL REFERENCES rm_transporters(id),
+  freight_rate NUMERIC(12,2) NOT NULL,
+  freight_basis rm_freight_basis NOT NULL DEFAULT 'per_purchase_unit',
+  is_default BOOLEAN NOT NULL DEFAULT false,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  UNIQUE (supplier_id, material_id, transporter_id)
+);
+
+CREATE TABLE rm_orders (
+  id SERIAL PRIMARY KEY,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  scope rm_supply_scope NOT NULL,
+  transporter_id INTEGER REFERENCES rm_transporters(id),   -- set when scope = ex_factory
+  ordered_qty NUMERIC(12,2) NOT NULL,                       -- purchase unit
+  rate NUMERIC(12,2) NOT NULL,                              -- per purchase unit — pre-filled from rm_supplier_rates, editable
+  freight_rate NUMERIC(12,2),
+  freight_basis rm_freight_basis,
+  tax_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+  gst_treatment rm_gst_treatment NOT NULL DEFAULT 'excluded',
+  status rm_order_status NOT NULL DEFAULT 'pending_approval',
+  requested_by INTEGER NOT NULL REFERENCES users(id),
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TIMESTAMPTZ,
+  rejected_reason TEXT,
+  notes TEXT
+);
+
+-- Store confirms what actually arrived against an approved order. The
+-- weighbridge weight is a manual entry for now (see claude/weighbridge-
+-- integration-notes.md — the real sync is a later phase); accepted_qty
+-- defaults to it but is editable. landed_rate_per_kg is the fully-loaded
+-- delivered-to-plant cost per kg — (rate*qty + freight + tax-if-not-
+-- claimable) / accepted_qty_kg — computed once at receipt time and stored,
+-- so a later rate/freight master change never silently alters history.
+CREATE TABLE rm_receipts (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER NOT NULL REFERENCES rm_orders(id),
+  supplier_qty NUMERIC(12,2) NOT NULL,           -- from the supplier's invoice/DC, purchase unit
+  weighbridge_weight_kg NUMERIC(12,2),
+  accepted_qty NUMERIC(12,2) NOT NULL,           -- purchase unit
+  accepted_qty_kg NUMERIC(14,2) NOT NULL,        -- accepted_qty × the material's kg_per_purchase_unit at receipt time
+  transporter_id INTEGER REFERENCES rm_transporters(id),  -- actual transporter — may differ from the order's
+  freight_rate NUMERIC(12,2),
+  freight_basis rm_freight_basis,
+  vehicle_number VARCHAR(20),
+  challan_number VARCHAR(60),
+  short_qty NUMERIC(12,2),                       -- supplier_qty − accepted_qty (purchase unit), when short
+  debit_note_amount NUMERIC(12,2),
+  landed_rate_per_kg NUMERIC(14,4),
+  received_by INTEGER NOT NULL REFERENCES users(id),
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notes TEXT
+);
+
+-- Once per day, no shift (confirmed) — Automatic (batching-software reading)
+-- and Manual (operator's own count) are two independent figures kept side by
+-- side for comparison, never summed. Stock deduction uses Automatic when
+-- present, falling back to Manual — see computeMaterialStock() in
+-- materialModule.js.
+CREATE TABLE rm_daily_consumption (
+  id SERIAL PRIMARY KEY,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  consumption_date DATE NOT NULL,
+  automatic_qty_kg NUMERIC(12,2),
+  manual_qty_kg NUMERIC(12,2),
+  recorded_by INTEGER NOT NULL REFERENCES users(id),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (material_id, consumption_date)
+);
+
+-- The plant operator's own daily production figure — this, NOT delivery
+-- challans, is what material cost per m³ divides by (challans can miss
+-- rejected loads or contain duplicates; see the notes doc's "Volume basis"
+-- decision). Delivery-challan volumes are still used, separately, for the
+-- grade-wise SPLIT in the daily consumption report.
+CREATE TABLE rm_daily_production (
+  id SERIAL PRIMARY KEY,
+  production_date DATE NOT NULL UNIQUE,
+  concrete_produced_m3 NUMERIC(10,2) NOT NULL,
+  recorded_by INTEGER NOT NULL REFERENCES users(id),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- "Stock taken by" — a physical count Administrator reconciles book stock
+-- against, once a month per material. actual_consumption/diff are computed
+-- at report time (opening + purchase − physical), not stored, so a later
+-- correction to a receipt or consumption row is always reflected.
+CREATE TABLE rm_monthly_physical_stock (
+  id SERIAL PRIMARY KEY,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  stock_month DATE NOT NULL,        -- always the 1st of the month
+  physical_stock_kg NUMERIC(14,2) NOT NULL,
+  stock_taken_by INTEGER NOT NULL REFERENCES users(id),
+  taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notes TEXT,
+  UNIQUE (material_id, stock_month)
+);

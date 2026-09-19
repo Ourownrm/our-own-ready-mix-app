@@ -1850,6 +1850,154 @@ router.get("/setup", async (req, res) => {
     // (Administrator/Manager/Accountant → Rate history → "Review sample
     // rates") for finding and removing rates that came from this.
 
+    // Round 139 — Material Module: Store's raw-material purchase → receive →
+    // consume → physical-count workflow. Deliberately separate from the
+    // pre-existing raw_material_stock table (Lab Technician's simple 9-bin
+    // manual snapshot, untouched here) — every new table is prefixed rm_ so
+    // the two can never collide. Full design rationale is on each table in
+    // schema.sql's own "MATERIAL MODULE" section; this block just creates
+    // the same tables additively for a database that predates this round.
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rm_supply_scope') THEN
+          CREATE TYPE rm_supply_scope AS ENUM ('delivered', 'ex_factory');
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rm_freight_basis') THEN
+          CREATE TYPE rm_freight_basis AS ENUM ('per_purchase_unit', 'per_trip', 'per_kg');
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rm_order_status') THEN
+          CREATE TYPE rm_order_status AS ENUM ('pending_approval', 'approved', 'rejected');
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rm_gst_treatment') THEN
+          CREATE TYPE rm_gst_treatment AS ENUM ('excluded', 'included');
+        END IF;
+      END $$;
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS rm_materials (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(150) NOT NULL UNIQUE,
+        category VARCHAR(80),
+        sub_category VARCHAR(80),
+        purchase_unit VARCHAR(20) NOT NULL,
+        kg_per_purchase_unit NUMERIC(12,4) NOT NULL,
+        tolerance_pct NUMERIC(5,2),
+        reorder_level_kg NUMERIC(12,2),
+        opening_stock_kg NUMERIC(14,2) NOT NULL DEFAULT 0,
+        opening_stock_rate_per_kg NUMERIC(12,4),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS rm_suppliers (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(150) NOT NULL,
+        contact_person VARCHAR(120),
+        phone VARCHAR(30),
+        address TEXT,
+        gstin VARCHAR(20),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS rm_supplier_rates (
+        id SERIAL PRIMARY KEY,
+        supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+        material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+        scope rm_supply_scope NOT NULL,
+        rate NUMERIC(12,2) NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        updated_by INTEGER REFERENCES users(id),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (supplier_id, material_id, scope)
+      );
+      CREATE TABLE IF NOT EXISTS rm_transporters (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(150) NOT NULL,
+        phone VARCHAR(30),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS rm_supplier_transporters (
+        id SERIAL PRIMARY KEY,
+        supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+        material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+        transporter_id INTEGER NOT NULL REFERENCES rm_transporters(id),
+        freight_rate NUMERIC(12,2) NOT NULL,
+        freight_basis rm_freight_basis NOT NULL DEFAULT 'per_purchase_unit',
+        is_default BOOLEAN NOT NULL DEFAULT false,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        UNIQUE (supplier_id, material_id, transporter_id)
+      );
+      CREATE TABLE IF NOT EXISTS rm_orders (
+        id SERIAL PRIMARY KEY,
+        material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+        supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+        scope rm_supply_scope NOT NULL,
+        transporter_id INTEGER REFERENCES rm_transporters(id),
+        ordered_qty NUMERIC(12,2) NOT NULL,
+        rate NUMERIC(12,2) NOT NULL,
+        freight_rate NUMERIC(12,2),
+        freight_basis rm_freight_basis,
+        tax_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+        gst_treatment rm_gst_treatment NOT NULL DEFAULT 'excluded',
+        status rm_order_status NOT NULL DEFAULT 'pending_approval',
+        requested_by INTEGER NOT NULL REFERENCES users(id),
+        requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        approved_by INTEGER REFERENCES users(id),
+        approved_at TIMESTAMPTZ,
+        rejected_reason TEXT,
+        notes TEXT
+      );
+      CREATE TABLE IF NOT EXISTS rm_receipts (
+        id SERIAL PRIMARY KEY,
+        order_id INTEGER NOT NULL REFERENCES rm_orders(id),
+        supplier_qty NUMERIC(12,2) NOT NULL,
+        weighbridge_weight_kg NUMERIC(12,2),
+        accepted_qty NUMERIC(12,2) NOT NULL,
+        accepted_qty_kg NUMERIC(14,2) NOT NULL,
+        transporter_id INTEGER REFERENCES rm_transporters(id),
+        freight_rate NUMERIC(12,2),
+        freight_basis rm_freight_basis,
+        vehicle_number VARCHAR(20),
+        challan_number VARCHAR(60),
+        short_qty NUMERIC(12,2),
+        debit_note_amount NUMERIC(12,2),
+        landed_rate_per_kg NUMERIC(14,4),
+        received_by INTEGER NOT NULL REFERENCES users(id),
+        received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        notes TEXT
+      );
+      CREATE TABLE IF NOT EXISTS rm_daily_consumption (
+        id SERIAL PRIMARY KEY,
+        material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+        consumption_date DATE NOT NULL,
+        automatic_qty_kg NUMERIC(12,2),
+        manual_qty_kg NUMERIC(12,2),
+        recorded_by INTEGER NOT NULL REFERENCES users(id),
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (material_id, consumption_date)
+      );
+      CREATE TABLE IF NOT EXISTS rm_daily_production (
+        id SERIAL PRIMARY KEY,
+        production_date DATE NOT NULL UNIQUE,
+        concrete_produced_m3 NUMERIC(10,2) NOT NULL,
+        recorded_by INTEGER NOT NULL REFERENCES users(id),
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS rm_monthly_physical_stock (
+        id SERIAL PRIMARY KEY,
+        material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+        stock_month DATE NOT NULL,
+        physical_stock_kg NUMERIC(14,2) NOT NULL,
+        stock_taken_by INTEGER NOT NULL REFERENCES users(id),
+        taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        notes TEXT,
+        UNIQUE (material_id, stock_month)
+      );
+    `);
+    log.push("Schema migration applied (Material Module — rm_materials, rm_suppliers, rm_supplier_rates, rm_transporters, rm_supplier_transporters, rm_orders, rm_receipts, rm_daily_consumption, rm_daily_production, rm_monthly_physical_stock).");
+
     res.send(
       `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px;">` +
       `Setup complete.\n\n${log.join("\n")}\n\n` +

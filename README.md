@@ -5814,3 +5814,91 @@ purchase" button was already unconditional (not gated to any role), it was only 
 
 No schema/database changes. Verified with `node --check` on `storeStock.js` and a clean
 `npm run build`.
+
+## Round 139 (Ver. 9.64): new Material Module — purchase → approve → receive → consume → physical count → reports
+
+Built off a set of planning docs written in a separate session (`claude/raw-material-module-notes.md`
+and four related notes docs) whose own text confirms the build order: "Material module first, cube
+QC dashboard next, then Super Admin, then the weighbridge sync." This round is the Material Module
+only — **the QC dashboard, Super Admin, and the real weighbridge sync remain explicitly future
+phases**, not started here. The weighbridge comparison report exists this round with **manual entry**
+of the weighbridge weight (no hardware sync yet, per the notes doc's own phasing).
+
+**New schema** (`backend/schema.sql`, all additive via `/setup` — **visit `/setup?key=...` once
+after deploying this round**): ten new tables, all prefixed `rm_` — `rm_materials`, `rm_suppliers`,
+`rm_supplier_rates`, `rm_transporters`, `rm_supplier_transporters`, `rm_orders`, `rm_receipts`,
+`rm_daily_consumption`, `rm_daily_production`, `rm_monthly_physical_stock` — plus four new enums
+(`rm_supply_scope`, `rm_freight_basis`, `rm_order_status`, `rm_gst_treatment`).
+
+**A naming collision was deliberately avoided.** This app already has an unrelated, pre-existing
+`raw_material_stock` table/feature — the Lab Technician's simple 9-bin manual stock snapshot
+(`masterData.js`'s `GET /raw-material-stock`, `labTechnician.js`'s `PUT /raw-material-stock`,
+frontend `RawMaterialStockEntry.jsx`) — which the planning notes never mentioned and which this
+round leaves **completely untouched**. To guarantee the two can never be confused, at the code level
+and not just by convention: every new table is `rm_*` (never `raw_material_*`), the new router
+mounts at `/api/material-module` (never `/api/raw-material...`), and the new frontend file is
+`MaterialModule.jsx` (never `RawMaterial*.jsx`). Whether the old 9-bin tracker should eventually be
+retired or merged into this new module is an open question, left to the user's judgment — not
+decided here.
+
+**Backend**: new `backend/src/routes/materialModule.js`, mounted at `/api/material-module` in
+`index.js`. Role scope — **no Manager access yet** (an easy later addition, one line per route
+group; flagged here since every other module in this app is Manager-inclusive):
+- **Administrator** — materials/suppliers/transporters masters, order approval, full valuation
+  (rates, landed cost, stock value — hidden from Store everywhere it appears), all 9 reports.
+- **Store** — creates orders, receives against approved orders, sees stock quantity (no valuation),
+  enters the monthly physical count.
+- **Plant Operator** — daily material consumption + daily concrete production entry, sees stock
+  quantity (no valuation).
+
+Key business logic, each independently verified against real seeded data on a disposable local
+Postgres instance through the actual running Express app (not just hand-checked SQL — see
+Verification below):
+- **Weighted average rate is a calendar-month average**, computed live from `rm_receipts` every
+  time (never stored) — a month with no receipts keeps the closing average of the most recent prior
+  month with receipts, walking backward; a material with no receipts yet at all falls back to its
+  own `opening_stock_rate_per_kg`.
+- **Landed rate is computed once, at receipt time, and stored** — a later change to a supplier's
+  rate or freight master never silently rewrites the cost of a past receipt.
+  `(accepted_qty × order rate + freight total + tax if not claimable) / accepted_qty_kg`. Freight
+  total depends on `freight_basis` (per purchase unit / per trip / per kg); tax is only added to
+  landed cost when `gst_treatment = 'included'` (not claimable) — **excluded is the default**, and
+  every tax rate and unit conversion (kg per purchase unit) is a real value the Administrator enters
+  per material/order, never a hardcoded placeholder.
+- **Accepted quantity at receipt defaults to the weighbridge weight** (converted to purchase units)
+  when Store leaves it blank, but Store can always override it directly — the weighbridge figure is
+  a manual entry for now, not yet a live sync.
+- **Short/excess supply is flagged (`tolerance_exceeded`) against each material's own tolerance %**,
+  comparing the supplier's invoiced quantity against the accepted quantity.
+- **Two volume bases are kept deliberately separate, everywhere they appear** (Daily Consumption
+  report, Cost per m³ report): grade-wise m³ split always comes from delivery challans (the only
+  place grade-wise volume is recorded); overall cost/m³ always divides by the Plant Operator's own
+  daily production figure (challans can miss rejected loads or contain duplicates). Every response
+  labels which basis a figure uses — the two are never silently mixed into one number.
+- Materials/orders/receipts follow this app's existing request→approve→receive convention (same
+  shape as `supply_requests`/`store_stock_purchases`) — an order can't be received against until
+  Administrator approves it; receiving supports multiple partial receipts against one order.
+
+**Frontend**: one new file, `frontend/src/pages/MaterialModule.jsx` — tab-based (Materials,
+Suppliers, Orders, Receipts, Consumption, Stock, Physical Stock, Reports; tab list varies by role),
+**deliberately built as a single file rather than the ~8 separate pages the planning notes assumed**.
+The frontend folder was already at 108 files (excluding `node_modules`/`dist`) before this round —
+over this project's own ~95-file guidance from a past round where crossing it caused a real GitHub
+upload-split problem — so this round adds exactly one file (109 total) instead of eight. That
+pre-existing 108-file count is worth the user's attention on its own, independent of this round's
+small addition, next time a batch of new pages is planned. New route `/material-module`
+(`store`/`administrator`/`plant_operator`), linked from `StoreHome.jsx` ("Material Module"),
+`PlantOperator.jsx` ("Material consumption"), and `Reports.jsx` (a direct "Material Module" button
+plus a "Material Module Reports" entry in the existing Reports menu, deep-linking to
+`?tab=reports`).
+
+Verified with `node --check` on every backend file, a clean `npm run build`, and `schema.sql`
+loading end-to-end with zero errors on a fresh local Postgres database. Beyond that, the module was
+exercised **through the real running Express app** (not just SQL) with seeded data: full
+order → approve → receive cycles for both `delivered` and `ex_factory` scope (confirming the
+freight-basis math and the tax-included landed rate formula against hand-computed expected values —
+exact match), a weighbridge-short receipt (confirming both the auto-derived accepted quantity and
+the tolerance-exceeded flag), the weighted-average carry-forward across three months including one
+month with no receipts (confirming the forward-fill and the opening-rate fallback), the monthly
+physical-stock diff/cost calculation, Store's server-side valuation-hiding on every endpoint that
+returns cost data, role-based 403s on admin-only actions, and all 9 reports.

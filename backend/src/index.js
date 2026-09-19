@@ -37,6 +37,7 @@ import siteContentRoutes from "./routes/siteContent.js";
 import technicalWritingsRoutes from "./routes/technicalWritings.js";
 import homeScreenPhotosRoutes from "./routes/homeScreenPhotos.js";
 import loaderOperatorRoutes from "./routes/loaderOperator.js";
+import materialModuleRoutes from "./routes/materialModule.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -102,6 +103,15 @@ app.use("/api/notifications", notificationsRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
 app.use("/api/fuel-analysis", fuelAnalysisRoutes);
 app.use("/api/loader-operator", loaderOperatorRoutes);
+// Round 139 — Raw Material Module (purchase -> approve -> receive -> consume
+// -> physical count -> reports). Deliberately named /api/material-module
+// (not /api/raw-material...) and the schema uses rm_* table prefixes, both
+// specifically to avoid any confusion with the pre-existing, unrelated
+// raw_material_stock table/feature (Lab Technician's simple 9-bin manual
+// snapshot — masterData.js GET /raw-material-stock, labTechnician.js PUT
+// /raw-material-stock, frontend RawMaterialStockEntry.jsx), which this
+// module leaves completely untouched. See routes/materialModule.js header.
+app.use("/api/material-module", materialModuleRoutes);
 app.use("/api/booking-links", bookingLinksRoutes);
 // Manager/Admin-only, staff auth as usual — generates/lists/revokes the
 // customer portal access codes (routes/customerAccess.js).
