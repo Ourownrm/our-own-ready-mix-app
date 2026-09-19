@@ -1,7 +1,12 @@
 // Where each role lands after signing in — shared by Login (initial redirect)
 // and TopBar (the "back to my dashboard" link from shared screens like Orders).
 export const ROLE_HOME = {
-  administrator: "/reports",
+  // Round 143 — was "/reports". The Administrator's home is now the icon-view
+  // dashboard, which is the point of it: signing in lands on the grid, and
+  // the Reports page it used to land on is the "Directors Dashboard" tile on
+  // that grid. This also stops the dashboard itself showing TopBar's own
+  // "Back to my dashboard" link, which pointed at a different page.
+  administrator: "/administrator",
   manager: "/manager",
   plant_operator: "/plant-operator",
   qc_engineer: "/qc",

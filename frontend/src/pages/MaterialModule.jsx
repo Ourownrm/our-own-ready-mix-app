@@ -42,14 +42,66 @@ function fmtNum(n, decimals = 2) {
 }
 function fmtMoney(n) {
   if (n === null || n === undefined || n === "") return "–";
-  return `₹${Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+  // Sign before the symbol ("-₹36,580", not "₹-36,580") — a cost of
+  // difference is negative often enough here that the sign has to read
+  // as part of the amount.
+  const v = Number(n);
+  return `${v < 0 ? "-" : ""}₹${Math.abs(v).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 }
+// Round 142 — the mockup's stock/count tables read in MT for bulk materials
+// and kg for the small ones (2,224 kg of admixture next to 62.0 MT of
+// cement). Everything is still STORED and computed in kg; this is purely how
+// a figure is printed, and the unit is always printed with it so a number can
+// never be read as the wrong one.
+const MT_THRESHOLD_KG = 10000;
+function fmtMass(kg) {
+  if (kg === null || kg === undefined || kg === "") return "–";
+  const n = Number(kg);
+  if (Math.abs(n) >= MT_THRESHOLD_KG) return `${fmtNum(n / 1000, 1)} MT`;
+  return `${fmtNum(n, 0)} kg`;
+}
+// Responsive stand-in for the mockup's fixed 4/5-column KPI strip — the real
+// app is used on phones in the plant as much as on a desk.
+const kpiGridStyle = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginBottom: 14 };
+
+// Deliberately NOT toISOString().slice(...) — that converts to UTC first, so
+// in IST (+5:30) every date before 05:30, and the 1st of any month, comes back
+// as the PREVIOUS day/month. These build the string from the local calendar
+// fields instead, which is what "today" and "this month" mean to a plant.
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function thisMonthStr() {
-  return new Date().toISOString().slice(0, 7);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+// Month arithmetic on the YYYY-MM string itself, for the same reason.
+function addMonths(ym, delta) {
+  const [y, m] = ym.split("-").map(Number);
+  const total = y * 12 + (m - 1) + delta;
+  return `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, "0")}`;
+}
+function monthLabel(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" });
+}
+
+// Round 142 — which mix-design ingredient a material is, so the "mix vs
+// actual" report can compare it against the design. Values must match
+// backend materialModule.js's MIX_COMPONENT_COLUMN exactly; "" means the
+// design sheet has no figure for it (water, curing compound) and the report
+// simply leaves that material out of the comparison.
+const MIX_COMPONENT_OPTIONS = [
+  { value: "", label: "Not a mix-design ingredient" },
+  { value: "cement", label: "Cement" },
+  { value: "fly_ash", label: "Fly ash" },
+  { value: "fine_agg", label: "Fine aggregate (sand)" },
+  { value: "coarse_20mm", label: "Coarse aggregate 20 mm" },
+  { value: "coarse_12_5mm", label: "Coarse aggregate 12.5 mm" },
+  { value: "admixture", label: "Admixture" },
+];
+const MIX_COMPONENT_LABEL = Object.fromEntries(MIX_COMPONENT_OPTIONS.map((o) => [o.value, o.label]));
 
 const SCOPE_LABEL = { delivered: "Delivered", ex_factory: "Ex-factory" };
 const FREIGHT_BASIS_LABEL = { per_purchase_unit: "Per purchase unit", per_trip: "Per trip", per_kg: "Per kg" };
@@ -140,7 +192,13 @@ export default function MaterialModule() {
   return (
     <>
       <TopBar title="Material Module" />
-      <div style={{ maxWidth: 620, margin: "0 auto", padding: "0 16px 32px" }}>
+      {/* Round 142 — wider than the app's usual 620px column. Every other
+          page here is a phone-first form; this module's Stock, Monthly
+          physical stock and report screens are wide tables the mockup lays
+          out across a desk-width screen, and at 620px the value and status
+          columns fell off the right edge. max-width only caps, so phones are
+          unchanged. */}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 16px 32px" }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
           {tabs.map((t) => (
             <button
@@ -160,7 +218,7 @@ export default function MaterialModule() {
         {tab === "orders" && <OrdersTab role={user.role} />}
         {tab === "receipts" && <ReceiptsTab role={user.role} />}
         {tab === "consumption" && <ConsumptionTab />}
-        {tab === "stock" && <StockTab role={user.role} />}
+        {tab === "stock" && <StockTab role={user.role} onGoTab={changeTab} />}
         {tab === "physical-stock" && <PhysicalStockTab role={user.role} />}
         {tab === "reports" && <ReportsTab />}
         {tab === "cost-dashboard" && <CostDashboardTab />}
@@ -231,13 +289,14 @@ function MaterialsTab() {
   }
 
   function openNew() {
-    setForm({ name: "", category: "", sub_category: "", purchase_unit: "", kg_per_purchase_unit: "", tolerance_pct: "", reorder_level_kg: "", opening_stock_kg: "0", opening_stock_rate_per_kg: "" });
+    setForm({ name: "", category: "", sub_category: "", mix_component: "", purchase_unit: "", kg_per_purchase_unit: "", tolerance_pct: "", reorder_level_kg: "", opening_stock_kg: "0", opening_stock_rate_per_kg: "" });
     setEditing({});
     setError(""); setNotice("");
   }
   function openEdit(m) {
     setForm({
       name: m.name, category: m.category || "", sub_category: m.sub_category || "",
+      mix_component: m.mix_component || "",
       purchase_unit: m.purchase_unit, kg_per_purchase_unit: m.kg_per_purchase_unit,
       tolerance_pct: m.tolerance_pct ?? "", reorder_level_kg: m.reorder_level_kg ?? "",
       opening_stock_kg: m.opening_stock_kg ?? "0", opening_stock_rate_per_kg: m.opening_stock_rate_per_kg ?? "",
@@ -295,6 +354,7 @@ function MaterialsTab() {
                   <div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.name}{!m.is_active && <span className="badge badge-neutral" style={{ marginLeft: 6 }}>Inactive</span>}</div>
                   <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 3 }}>
                     {m.sub_category ? `${m.sub_category} · ` : ""}{m.purchase_unit} = {fmtNum(m.kg_per_purchase_unit, 4)} kg
+                    {m.mix_component ? ` · ${MIX_COMPONENT_LABEL[m.mix_component] || m.mix_component}` : ""}
                     {m.reorder_level_kg != null ? ` · Reorder ≤ ${fmtNum(m.reorder_level_kg)} kg` : ""}
                   </div>
                   <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
@@ -354,6 +414,11 @@ function MaterialsTab() {
             <Field label="Name"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={inputStyle} /></Field>
             <Field label="Category"><input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} style={inputStyle} placeholder="e.g. Cement, Aggregate, Admixture" /></Field>
             <Field label="Sub-category (optional)"><input value={form.sub_category} onChange={(e) => setForm({ ...form, sub_category: e.target.value })} style={inputStyle} /></Field>
+            <Field label="Mix design ingredient (for the mix vs actual report)">
+              <select value={form.mix_component} onChange={(e) => setForm({ ...form, mix_component: e.target.value })} style={inputStyle}>
+                {MIX_COMPONENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </Field>
             <Field label="Purchase unit"><input required value={form.purchase_unit} onChange={(e) => setForm({ ...form, purchase_unit: e.target.value })} style={inputStyle} placeholder="e.g. Bag, MT, CFT" /></Field>
             <Field label="Kg per purchase unit"><input required type="number" step="0.0001" min="0" value={form.kg_per_purchase_unit} onChange={(e) => setForm({ ...form, kg_per_purchase_unit: e.target.value })} style={inputStyle} /></Field>
             <Field label="Tolerance % (optional, for short-supply flagging)"><input type="number" step="0.1" min="0" value={form.tolerance_pct} onChange={(e) => setForm({ ...form, tolerance_pct: e.target.value })} style={inputStyle} /></Field>
@@ -1285,15 +1350,31 @@ function ConsumptionTab() {
 
 // ===================== Stock tab (live book stock; Store sees qty only) =====================
 
-function StockTab({ role }) {
+function stockStatus(m) {
+  if (m.low_stock) return { label: "Low · reorder", cls: "badge-danger" };
+  // "Near reorder" is the mockup's amber middle state — within a quarter
+  // above the reorder level, i.e. one more day of pouring away from it.
+  if (m.reorder_level_kg != null && m.book_stock_kg <= Number(m.reorder_level_kg) * 1.25) {
+    return { label: "Near reorder", cls: "badge-warning" };
+  }
+  return { label: "OK", cls: "badge-success" };
+}
+
+// Round 142 — rebuilt to the mockup (project/Main.dc.html + AdminStock.dc.html):
+// the month's Opening / Received / Consumed movement beside book stock, the
+// reorder level and status badge, an Open orders panel with fill bars, and —
+// Administrator only — the average rate, stock value and total. The round 139
+// version showed only book stock / days remaining / rate / value.
+function StockTab({ role, onGoTab }) {
   const showValuation = role !== "store";
   const isAdmin = role === "administrator";
   const [month, setMonth] = useState(thisMonthStr());
   const [materials, setMaterials] = useState([]);
+  const [openOrders, setOpenOrders] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Round 140, item 8 extra — pending-approval banner + 4 KPI cards, admin only.
+  // Round 140, item 8 extra — pending-approval banner + valuation KPI cards, admin only.
   const [summary, setSummary] = useState(null);
 
   async function load() {
@@ -1301,62 +1382,145 @@ function StockTab({ role }) {
     try {
       const data = await apiRequest(`/material-module/stock?month=${month}`);
       setMaterials(data.materials);
+      setOpenOrders(data.open_orders || []);
       if (isAdmin) setSummary(await apiRequest("/material-module/reports/stock-summary"));
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lowMaterials = materials.filter((m) => m.low_stock);
+  const totalValue = showValuation ? materials.reduce((sum, m) => sum + (m.stock_value || 0), 0) : null;
+  // Sorted copy — never sort the state array in place, which would reorder
+  // the table under the user as a side effect of computing a KPI.
+  const shortest = [...materials]
+    .filter((m) => m.stock_days_remaining != null)
+    .sort((a, b) => a.stock_days_remaining - b.stock_days_remaining)[0];
+  // Low materials with nothing on order — the mockup's red note in the Open
+  // orders panel. Matched on material_id, not name, so renaming a material
+  // can never make its order silently stop counting.
+  const uncovered = lowMaterials.filter((m) => !openOrders.some((o) => o.material_id === m.material_id));
 
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
 
       {isAdmin && summary && summary.pending_approval_count > 0 && (
-        <div className="card" style={{ marginBottom: 12, background: "var(--amber-bg)", display: "flex", justifyContent: "space-between", alignItems: "center", padding: 10 }}>
+        <div className="card" style={{ marginBottom: 12, background: "#FBF6F0", border: "1px solid #EAD9C6", display: "flex", justifyContent: "space-between", alignItems: "center", padding: 10, gap: 10 }}>
           <div style={{ fontSize: 12.5 }}>
             <b>{summary.pending_approval_count}</b> order{summary.pending_approval_count === 1 ? "" : "s"} waiting for your approval
           </div>
-        </div>
-      )}
-      {isAdmin && summary && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
-          <KpiCard label="Stock value" value={fmtMoney(summary.stock_value)} />
-          <KpiCard label="Balance on open orders" value={fmtMoney(summary.open_order_balance_value)} />
-          <KpiCard label="This month's purchases" value={fmtMoney(summary.month_purchase_value)} />
-          <KpiCard label="Debit notes due" value={fmtMoney(summary.debit_notes_due)} />
+          <button type="button" onClick={() => onGoTab("orders")} style={{ fontSize: 11, padding: "4px 9px", whiteSpace: "nowrap" }}>Review</button>
         </div>
       )}
 
-      <Field label="Rate as of month (for valuation)"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
+      <div style={kpiGridStyle}>
+        <KpiCard label="Open orders" value={openOrders.length} sub={uncovered.length > 0 ? `${uncovered.map((m) => m.name).join(", ")} have none` : "every low material has cover"} />
+        <KpiCard
+          label="Below reorder level"
+          value={lowMaterials.length}
+          tone={lowMaterials.length > 0 ? "danger" : undefined}
+          sub={shortest ? `${shortest.name} · lasts ${fmtNum(shortest.stock_days_remaining, 1)} days` : "no consumption recorded yet"}
+        />
+        {isAdmin && summary && <KpiCard label="Stock value (book)" value={fmtMoney(summary.stock_value)} tone="dark" sub={`at ${month} average rates`} />}
+        {isAdmin && summary && <KpiCard label="Balance on open orders" value={fmtMoney(summary.open_order_balance_value)} />}
+        {isAdmin && summary && <KpiCard label="This month's purchases" value={fmtMoney(summary.month_purchase_value)} sub="landed, excl. GST" />}
+        {isAdmin && summary && <KpiCard label="Debit notes due" value={fmtMoney(summary.debit_notes_due)} tone={Number(summary.debit_notes_due) > 0 ? "danger" : undefined} />}
+      </div>
+
+      {showValuation && <Field label="Rate as of month (for valuation)"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>}
 
       {loading ? (
         <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading...</div>
       ) : (
-        <div className="card" style={{ overflowX: "auto" }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Material</th><th>Book stock</th><th>Days remaining</th>
-                {showValuation && <th>Rate/kg</th>}
-                {showValuation && <th>Value</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {materials.map((m) => (
-                <tr key={m.material_id}>
-                  <td>
-                    {m.name}
-                    {m.low_stock && <span className="badge badge-danger" style={{ marginLeft: 6, fontSize: 9.5, padding: "1px 6px" }}>Low</span>}
-                  </td>
-                  <td>{fmtNum(m.book_stock_kg)} kg <span style={{ color: "var(--slate)" }}>({fmtNum(m.book_stock_purchase_units)} {m.purchase_unit})</span></td>
-                  <td>{m.stock_days_remaining != null ? fmtNum(m.stock_days_remaining, 1) : "–"}</td>
-                  {showValuation && <td>{m.rate_per_kg != null ? fmtMoney(m.rate_per_kg) : "–"}</td>}
-                  {showValuation && <td>{m.stock_value != null ? fmtMoney(m.stock_value) : "–"}</td>}
+        <>
+          <div className="card" style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Material</th>
+                  <th style={{ textAlign: "right" }}>Opening</th>
+                  <th style={{ textAlign: "right" }}>Received</th>
+                  <th style={{ textAlign: "right" }}>Consumed</th>
+                  <th style={{ textAlign: "right" }}>Book stock</th>
+                  <th style={{ textAlign: "right" }}>Reorder level</th>
+                  <th style={{ textAlign: "right" }}>Stock lasts</th>
+                  {showValuation && <th style={{ textAlign: "right" }}>Avg rate/kg</th>}
+                  {showValuation && <th style={{ textAlign: "right" }}>Value</th>}
+                  <th>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {materials.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", padding: 8 }}>No active materials yet.</div>}
-        </div>
+              </thead>
+              <tbody>
+                {materials.map((m) => {
+                  const st = stockStatus(m);
+                  return (
+                    <tr key={m.material_id}>
+                      <td>
+                        <b>{m.name}</b>
+                        <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
+                          {[m.category, m.sub_category].filter(Boolean).join(" · ") || "–"}
+                        </div>
+                      </td>
+                      <td style={{ textAlign: "right" }}>{fmtMass(m.month_opening_kg)}</td>
+                      <td style={{ textAlign: "right" }}>{fmtMass(m.month_received_kg)}</td>
+                      <td style={{ textAlign: "right" }}>{fmtMass(m.month_consumed_kg)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <b>{fmtMass(m.book_stock_kg)}</b>
+                        <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(m.book_stock_purchase_units)} {m.purchase_unit}</div>
+                      </td>
+                      <td style={{ textAlign: "right" }}>{m.reorder_level_kg != null ? fmtMass(m.reorder_level_kg) : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{m.stock_days_remaining != null ? `${fmtNum(m.stock_days_remaining, 1)} days` : "–"}</td>
+                      {showValuation && <td style={{ textAlign: "right" }}>{m.rate_per_kg != null ? fmtMoney(m.rate_per_kg) : "–"}</td>}
+                      {showValuation && <td style={{ textAlign: "right" }}>{m.stock_value != null ? fmtMoney(m.stock_value) : "–"}</td>}
+                      <td><span className={`badge ${st.cls}`} style={{ fontSize: 9.5, padding: "1px 6px", whiteSpace: "nowrap" }}>{st.label}</span></td>
+                    </tr>
+                  );
+                })}
+                {showValuation && materials.length > 0 && (
+                  <tr>
+                    <td colSpan={8} style={{ fontWeight: 700 }}>Total stock value</td>
+                    <td style={{ textAlign: "right", fontWeight: 700 }}>{fmtMoney(totalValue)}</td>
+                    <td />
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {materials.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", padding: 8 }}>No active materials yet.</div>}
+          </div>
+
+          <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.55, margin: "8px 2px 14px" }}>
+            Opening / Received / Consumed are this calendar month's movement; book stock is the running balance
+            (opening + received − consumed) across all time. <b style={{ color: "var(--charcoal)" }}>Stock lasts</b> = book stock ÷
+            average daily consumption so far this month.
+            {showValuation && " The average rate covers this month's receipts only and starts again on the 1st; stock carried in from last month is valued at last month's closing average until the first receipt. Rates exclude GST."}
+          </div>
+
+          <div className="card">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700 }}>Open orders</div>
+              <button type="button" onClick={() => onGoTab("orders")} style={{ fontSize: 11, padding: "3px 8px" }}>View all</button>
+            </div>
+            {openOrders.length === 0 && <div style={{ fontSize: 12, color: "var(--slate)" }}>No approved order is still outstanding.</div>}
+            {openOrders.map((o) => {
+              const pct = Number(o.ordered_qty) > 0 ? Math.min(100, (Number(o.received_qty) / Number(o.ordered_qty)) * 100) : 0;
+              return (
+                <div key={o.id} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, gap: 8 }}>
+                    <b>PO-{String(o.id).padStart(4, "0")} · {o.material_name}</b>
+                    <span style={{ color: "var(--slate)", whiteSpace: "nowrap" }}>{fmtNum(o.received_qty)} / {fmtNum(o.ordered_qty)} {o.purchase_unit}</span>
+                  </div>
+                  <div className="meter-track" style={{ margin: "4px 0" }}><div className="meter-fill" style={{ width: `${pct}%`, background: "var(--rebar)" }} /></div>
+                  <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{o.supplier_name} · {SCOPE_LABEL[o.scope] || o.scope}</div>
+                </div>
+              );
+            })}
+            {uncovered.length > 0 && (
+              <div style={{ background: "#F8E9E7", borderRadius: 8, padding: "8px 10px", fontSize: 11.5, color: "var(--alert-red)", lineHeight: 1.5 }}>
+                <b>No open order for {uncovered.map((m) => m.name).join(", ")}.</b>{" "}
+                {uncovered[0].stock_days_remaining != null && `Stock lasts about ${fmtNum(uncovered[0].stock_days_remaining, 1)} days.`}
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -1368,7 +1532,13 @@ function StockTab({ role }) {
 // Actual Consumption | Cost of Difference (the last three, valuation-based,
 // are Administrator-only, same as the Stock tab above).
 
+// Round 142 — rebuilt to the mockup (project/StockCount.dc.html): one count
+// sheet with every material on it, the figure entered in the unit it was
+// actually counted in, actual consumption and difference computed live as you
+// type, and a side panel carrying who took the stock, when, and the remarks.
+// The round 139 version was a card per material with a modal per count.
 function PhysicalStockTab({ role }) {
+  const { user } = useAuth();
   const showValuation = role !== "store";
   const canEnter = role === "store" || role === "administrator";
   const [month, setMonth] = useState(thisMonthStr());
@@ -1378,87 +1548,187 @@ function PhysicalStockTab({ role }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const [counting, setCounting] = useState(null);
-  const [countQty, setCountQty] = useState("");
-  const [countNotes, setCountNotes] = useState("");
+  // Draft entries, keyed by material id: { value, unit } where unit is either
+  // the material's purchase unit or "kg". Only materials the user actually
+  // typed into are saved — an untouched row is never posted, so opening this
+  // page and leaving can't overwrite last week's count with a blank.
+  const [draft, setDraft] = useState({});
+  const [remarks, setRemarks] = useState("");
 
   async function load() {
     setLoading(true); setError("");
     try {
       const data = await apiRequest(`/material-module/physical-stock?month=${month}`);
       setMaterials(data.materials);
+      setDraft({});
+      setRemarks(data.materials.find((m) => m.notes)?.notes || "");
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function openCount(m) {
-    setCounting(m);
-    setCountQty(m.physical_stock_kg ?? "");
-    setCountNotes("");
-    setError(""); setNotice("");
+  function setEntry(m, patch) {
+    setDraft((d) => ({ ...d, [m.material_id]: { unit: m.purchase_unit, value: "", ...(d[m.material_id] || {}), ...patch } }));
   }
 
-  async function submitCount(e) {
-    e.preventDefault();
+  // kg is the only thing stored; this is the single place the counted unit is
+  // converted, so the table's live "actual consumption" and what gets saved
+  // can never be computed two different ways.
+  function draftKg(m) {
+    const entry = draft[m.material_id];
+    if (!entry || entry.value === "" || entry.value == null) return null;
+    const n = Number(entry.value);
+    if (!Number.isFinite(n)) return null;
+    return entry.unit === "kg" ? n : n * Number(m.kg_per_purchase_unit);
+  }
+  function effectiveKg(m) {
+    const d = draftKg(m);
+    return d != null ? d : m.physical_stock_kg;
+  }
+
+  async function saveAll() {
+    const entries = materials.filter((m) => draftKg(m) != null);
+    if (!entries.length) { setError("Enter at least one physical stock figure first."); return; }
     setSaving(true); setError(""); setNotice("");
     try {
-      await apiRequest("/material-module/physical-stock", { method: "POST", body: { material_id: counting.material_id, stock_month: month, physical_stock_kg: countQty, notes: countNotes || null } });
-      setNotice("Count saved.");
-      setCounting(null);
+      for (const m of entries) {
+        await apiRequest("/material-module/physical-stock", {
+          method: "POST",
+          body: { material_id: m.material_id, stock_month: month, physical_stock_kg: draftKg(m), notes: remarks || null },
+        });
+      }
+      setNotice(`Saved ${entries.length} count${entries.length === 1 ? "" : "s"}.`);
       await load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
+
+  const counted = materials.filter((m) => m.physical_stock_kg != null);
+  const takenBy = counted.find((m) => m.stock_taken_by_name);
+  // Previous five months, for the panel's month switcher.
+  const pastMonths = [1, 2, 3, 4, 5].map((back) => addMonths(month, -back));
 
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
+
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>Monthly physical stock</div>
+        <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
+          Enter what is physically in the silos, stockpiles and store.
+          {counted.length > 0 && takenBy && ` Stock taken by ${takenBy.stock_taken_by_name} on ${fmtDateTime(takenBy.taken_at)}.`}
+        </div>
+      </div>
+
       <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
 
       {loading ? (
         <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading...</div>
       ) : (
-        materials.map((m) => (
-          <div key={m.material_id} className="card" style={{ marginBottom: 8 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.name}</div>
-              {canEnter && <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openCount(m)}>{m.physical_stock_kg != null ? "Update count" : "Enter count"}</button>}
+        <>
+          <div className="card" style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Raw material</th>
+                  <th style={{ textAlign: "right" }}>Opening</th>
+                  <th style={{ textAlign: "right" }}>Purchase</th>
+                  <th style={{ textAlign: "right" }}>Plant consumption</th>
+                  <th style={{ textAlign: "right" }}>Book stock</th>
+                  <th style={{ textAlign: "right" }}>Stock taken in</th>
+                  <th style={{ textAlign: "right" }}>Physical stock</th>
+                  <th style={{ textAlign: "right" }}>Actual consumption</th>
+                  <th style={{ textAlign: "right" }}>Difference</th>
+                </tr>
+              </thead>
+              <tbody>
+                {materials.map((m) => {
+                  const physKg = effectiveKg(m);
+                  const actual = physKg != null ? Number(m.opening_kg) + Number(m.purchase_kg) - physKg : null;
+                  const diff = actual != null ? Number(m.plant_consumption_kg) - actual : null;
+                  const diffPct = diff != null && Number(m.plant_consumption_kg) !== 0 ? (diff / Number(m.plant_consumption_kg)) * 100 : null;
+                  const entry = draft[m.material_id] || {};
+                  return (
+                    <tr key={m.material_id}>
+                      <td><b>{m.name}</b>{m.physical_stock_kg != null && draftKg(m) == null && <div style={{ fontSize: 10, color: "var(--signal-green)" }}>saved</div>}</td>
+                      <td style={{ textAlign: "right" }}>{fmtMass(m.opening_kg)}</td>
+                      <td style={{ textAlign: "right" }}>{fmtMass(m.purchase_kg)}</td>
+                      <td style={{ textAlign: "right" }}>{fmtMass(m.plant_consumption_kg)}</td>
+                      <td style={{ textAlign: "right" }}>{fmtMass(m.book_stock_kg)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {canEnter ? (
+                          <select
+                            value={entry.unit || m.purchase_unit}
+                            onChange={(e) => setEntry(m, { unit: e.target.value })}
+                            style={{ fontSize: 11, padding: "3px 4px" }}
+                            aria-label={`${m.name} counted in`}
+                          >
+                            <option value={m.purchase_unit}>{m.purchase_unit}</option>
+                            <option value="kg">kg</option>
+                          </select>
+                        ) : <span style={{ color: "var(--slate)" }}>kg</span>}
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        {canEnter ? (
+                          <>
+                            <input
+                              type="number" step="0.01" min="0"
+                              value={entry.value !== undefined ? entry.value : (m.physical_stock_kg != null ? (m.physical_stock_kg / Number(m.kg_per_purchase_unit)).toFixed(2) : "")}
+                              onChange={(e) => setEntry(m, { value: e.target.value })}
+                              style={{ width: 92, textAlign: "right", fontSize: 12 }}
+                              aria-label={`${m.name} physical stock`}
+                            />
+                            {physKg != null && <div style={{ fontSize: 10, color: "var(--slate)" }}>{fmtMass(physKg)}</div>}
+                          </>
+                        ) : (physKg != null ? fmtMass(physKg) : "–")}
+                      </td>
+                      <td style={{ textAlign: "right" }}>{actual != null ? <b>{fmtMass(actual)}</b> : "–"}</td>
+                      <td style={{ textAlign: "right", color: diff != null && diff < 0 ? "var(--alert-red)" : undefined, fontWeight: diff != null && diff < 0 ? 600 : 400 }}>
+                        {diff != null ? `${fmtNum(diff, 0)} kg${diffPct != null ? ` · ${fmtNum(diffPct, 2)}%` : ""}` : "–"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {materials.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", padding: 8 }}>No active materials yet.</div>}
+            <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.6, padding: "10px 2px 2px" }}>
+              <b style={{ color: "var(--charcoal)" }}>Book stock</b> = opening + purchase − plant consumption.{" "}
+              <b style={{ color: "var(--charcoal)" }}>Actual consumption</b> = opening + purchase − physical stock.{" "}
+              <b style={{ color: "var(--charcoal)" }}>Difference</b> = plant consumption − actual consumption; a minus means more was used than the plant reported.
+              A count entered in the purchase unit is converted to kg using the material master.
+              {!showValuation && " The cost columns are on the Administrator's version of this page."}
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 4 }}>
-              Opening {fmtNum(m.opening_kg)} · Purchase {fmtNum(m.purchase_kg)} · Plant consumption {fmtNum(m.plant_consumption_kg)} · Book stock {fmtNum(m.book_stock_kg)} kg
-            </div>
-            {m.physical_stock_kg != null ? (
-              <>
-                <div style={{ fontSize: 11.5, marginTop: 2 }}>
-                  Physical stock {fmtNum(m.physical_stock_kg)} kg · Actual consumption {fmtNum(m.actual_consumption_kg)} kg
-                </div>
-                <div style={{ fontSize: 11.5, marginTop: 2, color: Math.abs(m.diff_pct || 0) > 2 ? "var(--alert-red)" : "var(--slate)" }}>
-                  Diff {fmtNum(m.diff_kg)} kg ({fmtNum(m.diff_pct, 1)}%) — {m.diff_kg < 0 ? "more actually used than plant reported" : "less actually used than plant reported"}
-                </div>
-                {showValuation && m.rate_per_kg != null && (
-                  <div style={{ fontSize: 11.5, marginTop: 2 }}>
-                    Cost of actual consumption {fmtMoney(m.cost_actual_consumption)} · Cost of difference {fmtMoney(m.cost_of_diff)}
-                  </div>
-                )}
-                <div style={{ fontSize: 10.5, color: "var(--slate)", marginTop: 3 }}>Counted by {m.stock_taken_by_name || "–"} · {fmtDateTime(m.taken_at)}</div>
-              </>
-            ) : (
-              <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>Not counted yet this month.</div>
-            )}
           </div>
-        ))
-      )}
-      {!loading && materials.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No active materials yet.</div>}
 
-      {counting && (
-        <Modal title={`Physical count — ${counting.name}`} onClose={() => setCounting(null)}>
-          <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 10 }}>Book stock: {fmtNum(counting.book_stock_kg)} kg</div>
-          <form onSubmit={submitCount}>
-            <Field label="Counted quantity (kg)"><input required type="number" step="0.01" min="0" value={countQty} onChange={(e) => setCountQty(e.target.value)} style={inputStyle} /></Field>
-            <Field label="Notes (optional)"><textarea rows={2} value={countNotes} onChange={(e) => setCountNotes(e.target.value)} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
-            <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Save count"}</button>
-          </form>
-        </Modal>
+          {canEnter && (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Stock taking</div>
+              <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8, lineHeight: 1.5 }}>
+                Stock taken by <b style={{ color: "var(--charcoal)" }}>{user?.name || "you"}</b> — recorded automatically with the date and time each figure is saved.
+              </div>
+              <Field label="Remarks (saved against every figure in this save)">
+                <input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="e.g. rain on 29–30, sand piles wet" style={inputStyle} />
+              </Field>
+              <button type="button" onClick={saveAll} disabled={saving} style={{ width: "100%" }}>
+                {saving ? "Saving..." : "Save counts"}
+              </button>
+            </div>
+          )}
+
+          <div className="card" style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Past months</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {pastMonths.map((pm) => (
+                <button key={pm} type="button" onClick={() => setMonth(pm)} style={{ fontSize: 11, padding: "4px 9px" }}>
+                  {monthLabel(pm)}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 10.5, color: "var(--slate)", marginTop: 8 }}>
+              {counted.length} of {materials.length} material{materials.length === 1 ? "" : "s"} counted for this month.
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -1470,6 +1740,7 @@ const REPORT_LIST = [
   { key: "open-orders", label: "Open orders" },
   { key: "weighbridge", label: "Weighbridge comparison" },
   { key: "daily-consumption", label: "Daily consumption" },
+  { key: "mix-vs-actual", label: "Mix vs actual" },
   { key: "monthly-consumption", label: "Monthly consumption" },
   { key: "monthly-physical-stock", label: "Monthly physical stock" },
   { key: "rate-history", label: "Weighted avg rate history" },
@@ -1498,6 +1769,7 @@ function ReportsTab() {
       {report === "open-orders" && <OpenOrdersReport />}
       {report === "weighbridge" && <WeighbridgeComparisonReport />}
       {report === "daily-consumption" && <DailyConsumptionReport />}
+      {report === "mix-vs-actual" && <MixVsActualReport />}
       {report === "monthly-consumption" && <MonthlyConsumptionReport />}
       {report === "monthly-physical-stock" && <MonthlyPhysicalStockReport />}
       {report === "rate-history" && <RateHistoryReport />}
@@ -1641,6 +1913,128 @@ function DailyConsumptionReport() {
   );
 }
 
+// Round 142 — the mockup's "Daily consumption — mix vs actual" report
+// (project/Reports.dc.html), which round 139 left out entirely. Theoretical
+// quantities come from each grade's approved mix design × that grade's m³ on
+// the day's delivery challans (the only place the grade split is recorded);
+// cost per m³ elsewhere uses the Plant Operator's own production figure
+// instead, and both volumes are shown here so the two are never confused.
+const MIX_TOLERANCE_PCT = 1;
+
+function MixVsActualReport() {
+  const [date, setDate] = useState(todayStr());
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true); setError("");
+    try { setData(await apiRequest(`/material-module/reports/mix-vs-actual?date=${date}`)); }
+    catch (err) { setError(err.message); } finally { setLoading(false); }
+  }
+  useEffect(() => { load(); }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const compared = data ? data.materials.filter((m) => m.diff_pct != null) : [];
+  const withinTolerance = compared.filter((m) => Math.abs(m.diff_pct) <= MIX_TOLERANCE_PCT);
+  const worst = compared.length
+    ? compared.reduce((a, b) => (Math.abs(b.diff_pct) > Math.abs(a.diff_pct) ? b : a))
+    : null;
+
+  return (
+    <div>
+      <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      {loading && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading...</div>}
+      {!loading && data && (
+        <>
+          <div style={kpiGridStyle}>
+            <KpiCard
+              label="Concrete produced"
+              tone="dark"
+              value={data.operator_production_m3 != null ? `${fmtNum(data.operator_production_m3)} m³` : "not entered"}
+              sub={`plant operator · challans ${fmtNum(data.challan_production_m3)} m³`}
+            />
+            <KpiCard
+              label="Grades poured"
+              value={data.grades.length ? data.grades.map((g) => `${g.grade} ${fmtNum(g.m3)}`).join(" · ") : "none"}
+              sub="m³ from delivery challans"
+            />
+            <KpiCard
+              label={`Within ±${MIX_TOLERANCE_PCT}%`}
+              value={compared.length ? `${withinTolerance.length} of ${compared.length}` : "–"}
+              sub="materials comparable today"
+            />
+            <KpiCard
+              label="Needs a look"
+              tone={worst && Math.abs(worst.diff_pct) > MIX_TOLERANCE_PCT ? "warn" : undefined}
+              value={worst && Math.abs(worst.diff_pct) > MIX_TOLERANCE_PCT ? worst.name : "nothing"}
+              sub={worst && Math.abs(worst.diff_pct) > MIX_TOLERANCE_PCT ? `${worst.diff_pct > 0 ? "+" : ""}${fmtNum(worst.diff_pct, 2)}% against mix design` : "every comparable material is within tolerance"}
+            />
+          </div>
+
+          {data.grades_missing_design.length > 0 && (
+            <div className="card" style={{ background: "var(--amber-bg)", fontSize: 11.5, padding: 10, marginBottom: 10, lineHeight: 1.5 }}>
+              No approved mix design for {data.grades_missing_design.join(", ")} — those grades contribute nothing to the mix design total below, so it is a partial figure for the day.
+            </div>
+          )}
+          {data.unmapped_materials.length > 0 && (
+            <div className="card" style={{ background: "var(--amber-bg)", fontSize: 11.5, padding: 10, marginBottom: 10, lineHeight: 1.5 }}>
+              Not linked to a mix design ingredient: {data.unmapped_materials.join(", ")}. Set each one's mix component in the Materials master to bring it into this comparison.
+            </div>
+          )}
+
+          <div className="card" style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Material</th>
+                  {data.grades.map((g) => <th key={g.grade} style={{ textAlign: "right" }}>{g.grade} · {fmtNum(g.m3)} m³</th>)}
+                  <th style={{ textAlign: "right" }}>Mix design total</th>
+                  <th style={{ textAlign: "right" }}>Actual used</th>
+                  <th style={{ textAlign: "right" }}>Difference</th>
+                  <th style={{ textAlign: "right" }}>%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.materials.map((m) => {
+                  const over = m.diff_pct != null && Math.abs(m.diff_pct) > MIX_TOLERANCE_PCT;
+                  const perM3 = m.per_grade.filter((g) => g.per_m3 != null).map((g) => fmtNum(g.per_m3, 2)).join(" / ");
+                  return (
+                    <tr key={m.material_id} style={over ? { background: "#FFFCF5" } : undefined}>
+                      <td>
+                        <b>{m.name}</b>
+                        <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{perM3 ? `${perM3} kg per m³` : "no mix design figure"}</div>
+                      </td>
+                      {data.grades.map((g) => {
+                        const cell = m.per_grade.find((p) => p.grade === g.grade);
+                        return <td key={g.grade} style={{ textAlign: "right" }}>{cell && cell.qty_kg != null ? fmtNum(cell.qty_kg, 0) : "–"}</td>;
+                      })}
+                      <td style={{ textAlign: "right" }}>{m.theoretical_kg != null ? <b>{fmtNum(m.theoretical_kg, 0)}</b> : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{m.actual_kg != null ? <b>{fmtNum(m.actual_kg, 0)}</b> : "–"}</td>
+                      <td style={{ textAlign: "right", color: over ? "var(--alert-red)" : undefined, fontWeight: over ? 600 : 400 }}>
+                        {m.diff_kg != null ? `${m.diff_kg > 0 ? "+" : ""}${fmtNum(m.diff_kg, 0)}` : "–"}
+                      </td>
+                      <td style={{ textAlign: "right", color: over ? "var(--alert-red)" : undefined, fontWeight: over ? 600 : 400 }}>
+                        {m.diff_pct != null ? `${m.diff_pct > 0 ? "+" : ""}${fmtNum(m.diff_pct, 2)}%` : "–"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.55, padding: "10px 2px 2px" }}>
+              Mix design total = each grade's approved design quantity per m³ × m³ of that grade, taken from the delivery challans (the only
+              place the grade split is recorded). Cost per m³ uses the plant operator's own production figure instead, which leaves out
+              rejected or duplicated loads — {data.operator_production_m3 != null ? `${fmtNum(data.operator_production_m3)} m³` : "not entered"} against {fmtNum(data.challan_production_m3)} m³ on the challans.
+              All figures in kg. Admixture is the total of the design's own admixture rows.
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function MonthlyConsumptionReport() {
   const [month, setMonth] = useState(thisMonthStr());
   const [rows, setRows] = useState([]);
@@ -1667,37 +2061,112 @@ function MonthlyConsumptionReport() {
   );
 }
 
+// Round 142 — rebuilt to the mockup (project/StockReport.dc.html): adds the
+// average rate and cost-of-actual-consumption columns, a total row, and the
+// four summary cards. Cost per m³ uses the Plant Operator's production for
+// the month, never the challan total.
 function MonthlyPhysicalStockReport() {
   const [month, setMonth] = useState(thisMonthStr());
   const [rows, setRows] = useState([]);
+  const [productionM3, setProductionM3] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true); setError("");
-    try { setRows((await apiRequest(`/material-module/reports/monthly-physical-stock?month=${month}`)).materials); }
-    catch (err) { setError(err.message); } finally { setLoading(false); }
+    try {
+      const data = await apiRequest(`/material-module/reports/monthly-physical-stock?month=${month}`);
+      setRows(data.materials);
+      setProductionM3(data.production_m3);
+    } catch (err) { setError(err.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Every total is summed only over rows that actually have the figure, so a
+  // material nobody has counted yet lowers no total silently — the count of
+  // counted materials is printed beside them.
+  const valued = rows.filter((r) => r.rate_per_kg != null);
+  const costPlant = valued.reduce((s, r) => s + Number(r.cost_plant_consumption || 0), 0);
+  const costActualRows = valued.filter((r) => r.cost_actual_consumption != null);
+  const costActual = costActualRows.reduce((s, r) => s + Number(r.cost_actual_consumption), 0);
+  const costDiff = costActualRows.reduce((s, r) => s + Number(r.cost_of_diff || 0), 0);
+  const biggest = rows
+    .filter((r) => r.diff_kg != null)
+    .reduce((a, b) => (a == null || Math.abs(b.diff_kg) > Math.abs(a.diff_kg) ? b : a), null);
+  const perM3 = (total) => (productionM3 ? `${fmtMoney(total / productionM3)} per m³` : "no production recorded");
 
   return (
     <div>
       <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
       <ReportShell error={error} loading={loading} empty={!loading && rows.length === 0}>
         <table>
-          <thead><tr><th>Material</th><th>Opening</th><th>Purchase</th><th>Plant cons.</th><th>Book stock</th><th>Physical</th><th>Actual cons.</th><th>Diff kg</th><th>Diff %</th><th>Cost of diff</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Raw material</th>
+              <th style={{ textAlign: "right" }}>Opening stock</th>
+              <th style={{ textAlign: "right" }}>Purchase</th>
+              <th style={{ textAlign: "right" }}>Plant consumption</th>
+              <th style={{ textAlign: "right" }}>Book stock</th>
+              <th style={{ textAlign: "right" }}>Physical stock</th>
+              <th style={{ textAlign: "right" }}>Actual consumption</th>
+              <th style={{ textAlign: "right" }}>Diff (kg)</th>
+              <th style={{ textAlign: "right" }}>Diff %</th>
+              <th style={{ textAlign: "right" }}>Avg rate</th>
+              <th style={{ textAlign: "right" }}>Cost — actual consumption</th>
+              <th style={{ textAlign: "right" }}>Cost of difference</th>
+            </tr>
+          </thead>
           <tbody>
-            {rows.map((m) => (
-              <tr key={m.material_id}>
-                <td>{m.name}</td><td>{fmtNum(m.opening_kg)}</td><td>{fmtNum(m.purchase_kg)}</td><td>{fmtNum(m.plant_consumption_kg)}</td>
-                <td>{fmtNum(m.book_stock_kg)}</td><td>{m.physical_stock_kg != null ? fmtNum(m.physical_stock_kg) : "–"}</td>
-                <td>{m.actual_consumption_kg != null ? fmtNum(m.actual_consumption_kg) : "–"}</td>
-                <td>{m.diff_kg != null ? fmtNum(m.diff_kg) : "–"}</td><td>{m.diff_pct != null ? fmtNum(m.diff_pct, 1) : "–"}</td>
-                <td>{m.cost_of_diff != null ? fmtMoney(m.cost_of_diff) : "–"}</td>
+            {rows.map((m) => {
+              const neg = m.diff_kg != null && m.diff_kg < 0;
+              const negStyle = { textAlign: "right", color: neg ? "var(--alert-red)" : undefined, fontWeight: neg ? 600 : 400 };
+              return (
+                <tr key={m.material_id}>
+                  <td><b>{m.name}</b></td>
+                  <td style={{ textAlign: "right" }}>{fmtMass(m.opening_kg)}</td>
+                  <td style={{ textAlign: "right" }}>{fmtMass(m.purchase_kg)}</td>
+                  <td style={{ textAlign: "right" }}>{fmtMass(m.plant_consumption_kg)}</td>
+                  <td style={{ textAlign: "right" }}>{fmtMass(m.book_stock_kg)}</td>
+                  <td style={{ textAlign: "right" }}>{m.physical_stock_kg != null ? fmtMass(m.physical_stock_kg) : "–"}</td>
+                  <td style={{ textAlign: "right" }}>{m.actual_consumption_kg != null ? fmtMass(m.actual_consumption_kg) : "–"}</td>
+                  <td style={negStyle}>{m.diff_kg != null ? fmtNum(m.diff_kg, 0) : "–"}</td>
+                  <td style={negStyle}>{m.diff_pct != null ? `${fmtNum(m.diff_pct, 2)}%` : "–"}</td>
+                  <td style={{ textAlign: "right" }}>{m.rate_per_kg != null ? `${fmtMoney(m.rate_per_kg)}/kg` : "–"}</td>
+                  <td style={{ textAlign: "right" }}>{m.cost_actual_consumption != null ? fmtMoney(m.cost_actual_consumption) : "–"}</td>
+                  <td style={negStyle}>{m.cost_of_diff != null ? fmtMoney(m.cost_of_diff) : "–"}</td>
+                </tr>
+              );
+            })}
+            {costActualRows.length > 0 && (
+              <tr>
+                <td colSpan={10} style={{ fontWeight: 700 }}>Total ({costActualRows.length} counted &amp; valued)</td>
+                <td style={{ textAlign: "right", fontWeight: 700 }}>{fmtMoney(costActual)}</td>
+                <td style={{ textAlign: "right", fontWeight: 700, color: costDiff < 0 ? "var(--alert-red)" : undefined }}>{fmtMoney(costDiff)}</td>
               </tr>
-            ))}
+            )}
           </tbody>
         </table>
+
+        <div style={{ ...kpiGridStyle, marginTop: 14, marginBottom: 8 }}>
+          <KpiCard label="Cost as per plant consumption" value={fmtMoney(costPlant)} sub={perM3(costPlant)} />
+          <KpiCard label="Cost as per actual consumption" value={costActualRows.length ? fmtMoney(costActual) : "–"} sub={costActualRows.length ? perM3(costActual) : "nothing counted yet"} />
+          <KpiCard
+            label="Cost of difference"
+            tone={costDiff < 0 ? "danger" : undefined}
+            value={costActualRows.length ? fmtMoney(costDiff) : "–"}
+            sub={costActualRows.length && costPlant ? `${fmtNum(Math.abs((costDiff / costPlant) * 100), 2)}% of the month's material cost` : "–"}
+          />
+          <KpiCard
+            label="Biggest gap"
+            value={biggest ? biggest.name : "–"}
+            sub={biggest ? `${fmtNum(biggest.diff_kg, 0)} kg${biggest.diff_pct != null ? ` · ${fmtNum(biggest.diff_pct, 2)}%` : ""}` : "nothing counted yet"}
+          />
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.6 }}>
+          Actual consumption = opening + purchase − physical stock. Difference = plant consumption − actual consumption, so a minus means the
+          plant actually used more than it reported (or material was lost). Values use each material's weighted average rate for the month.
+          Cost per m³ divides by the plant operator's production for the month{productionM3 ? ` (${fmtNum(productionM3)} m³)` : ""}, not by the delivery challans.
+        </div>
       </ReportShell>
     </div>
   );
@@ -1853,12 +2322,22 @@ function CostPerM3Report() {
 // (var(--rebar), the app's own accent) with direct value labels — no legend
 // needed for one series (dataviz skill's form/color rules).
 
+// Round 142 — tones extended past the original "dark" so the KPI row can
+// carry the mockup's red/amber alert cards (below reorder level, cost of
+// difference) instead of every tile looking the same.
+const KPI_TONES = {
+  dark: { background: "var(--charcoal)", color: "#fff", label: "#B8BFC7", sub: "#C9CDD2" },
+  danger: { background: "#F8E9E7", color: "var(--alert-red)", label: "var(--alert-red)", sub: "var(--alert-red)", border: "1px solid #E9C6C1" },
+  warn: { background: "#F5EDDD", color: "#8A5E0F", label: "#8A5E0F", sub: "#8A5E0F", border: "1px solid #E7D8AE" },
+};
+
 function KpiCard({ label, value, sub, tone }) {
+  const t = KPI_TONES[tone] || {};
   return (
-    <div className="card" style={{ padding: 12, background: tone === "dark" ? "var(--charcoal)" : undefined, color: tone === "dark" ? "#fff" : undefined }}>
-      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.4, color: tone === "dark" ? "#B8BFC7" : "var(--slate)", fontWeight: 700 }}>{label}</div>
+    <div className="card" style={{ padding: 12, background: t.background, color: t.color, border: t.border }}>
+      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.4, color: t.label || "var(--slate)", fontWeight: 700 }}>{label}</div>
       <div style={{ fontSize: 19, fontWeight: 700, marginTop: 3 }}>{value}</div>
-      {sub && <div style={{ fontSize: 10.5, color: tone === "dark" ? "#C9CDD2" : "var(--slate)", marginTop: 2 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 10.5, color: t.sub || "var(--slate)", marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }
