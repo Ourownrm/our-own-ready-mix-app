@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 148, Ver. 9.73)
+# OORM App — Current State (as of App 149, Ver. 9.74)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -30,6 +30,69 @@ delivering a round with a schema change, the user needs to visit that URL once; 
 causes exactly the kind of generic "Something went wrong" error a missing column produces (the
 app's error handler is deliberately plain-language, so it never surfaces the real Postgres error
 to the user — see `index.js`'s final `app.use((err, req, res, next) => ...)`).
+
+## Round 149 (Ver. 9.74): Delivery Challan wired in as a switchable plugin
+
+**Visit `/setup?key=...` once** (nine new tables) **and set two new backend env vars**:
+`SOLITAIRE_JWT_SECRET` and `FRONTEND_ORIGIN` (the frontend's own URL). Both are in `render.yaml`.
+
+The Solitaire / "RMC Delivery Challan" module, built in an earlier session and never wired in, is
+now live. Its twelve files existed **only as project docs** — they were pulled from there into the
+app this round; `backend/schema-solitaire-additions.sql` was never delivered at all, so the eight
+`solitaire_*` tables were reconstructed from the SQL in `routes/solitaire.js`.
+
+**A plugin is NOT a permission, and this distinction is the point.** Permissions answer "what may
+this PERSON do with a module that exists"; a plugin answers "does this module exist for anyone at
+all". New `app_plugins` table + `backend/src/lib/plugins.js` (`requirePluginEnabled(key)`, 5s cache
+cleared on toggle). **Build future optional modules against this, not against a permission key** —
+otherwise switching one off means revoking from every role one at a time, and a role added later
+silently gets it back.
+
+**Off means off.** The guard mounts above EVERYTHING in both routers, including Solitaire's own
+`/login`, so a browser holding a live session cookie is cut mid-shift. It answers **404, not 403**,
+deliberately: 403 invites someone to ask for access to a module the business switched off. Nothing
+is deleted — accounts, devices, masters and dockets all survive and return intact.
+
+**Administrator has no route in, three independent ways**: the access API is
+`requireRole("super_admin")` (was `"administrator"` in the original draft); the catalogue's new
+`admin.plugins` is **locked**, the one class Administrator's computed set cannot reach; and there is
+no Solitaire tile in `adminScreens.js`. The only entrance is an icon on the Plant Operator screen,
+shown only when the plugin is on AND that person is granted — both from one call, so they cannot
+disagree.
+
+**Four integration bugs, none visible by reading the module's own code — worth remembering as a
+class**, since any future self-contained module handed over this way will have the same shape:
+
+- `lib/solitaireAuth.js` **threw at import time** on a missing secret, which took the WHOLE backend
+  down over an optional plugin. Now scoped: 503 from the module, rest of the app fine.
+- `solitaireApi.js` used a bare relative `/api/solitaire` — resolves against the STATIC SITE, not
+  the backend. Now off `VITE_API_URL`.
+- Session cookie was `SameSite=Lax`; frontend and backend are separate Render services, so every
+  call is cross-site and a browser **will not send a Lax cookie cross-site**. Login 200s, next
+  request has no session. Now `None` + Secure.
+- Which removes CSRF protection, so credentialed CORS is allowed from **`FRONTEND_ORIGIN` only**,
+  scoped to `/api/solitaire` and mounted ABOVE the app-wide `cors()` so it owns the preflight.
+  `/api/solitaire-access` stays on the ordinary policy — bearer token, no cookies, and it is what
+  the icon depends on.
+
+**Still open**: (a) the real print pipeline — the user's decision is to write into their Excel
+workbook on **Google Drive** and print its sheet so Excel's own formulas produce the output; that
+needs a server-side spreadsheet engine (LibreOffice headless → Docker on Render) and is its own
+round once the workbook is placed. Until then dockets print through the interim jsPDF generator and
+are flagged `is_placeholder_pdf`. (b) The two panel images were never delivered — see
+`frontend/public/solitaire/README.txt`; screens work without them.
+
+**Verification**: Administrator refused 403 on all four ways in with the switch confirmed unmoved in
+the database; full life cycle proven (grant → icon endpoint true → real module sign-in setting both
+cookies → `/me`, `/customers`, `/devices` 200); the switch then flipped off **with that session
+open** — every module route including `/login` 404, icon endpoint 404, granting 404, while the
+dashboard and Plant Operator endpoints stayed 200; switched back on, the same cookies worked and
+accounts plus the registered device were intact. Revoke confirmed not to disturb another session;
+duplicate username refused, re-granting your own username allowed (the password-reset path). A
+**second backend started with no `SOLITAIRE_JWT_SECRET`** served login, dashboard and Super Admin
+API normally while only the module reported the missing variable. Headless at 390px: icon present
+for Plant Operator, absent across the Administrator side, gone when switched off; Plugins tab
+rendering with zero overflow and no console errors.
 
 ## Round 148 (Ver. 9.73): Super Admin made usable — and two Round 146 bugs it exposed
 

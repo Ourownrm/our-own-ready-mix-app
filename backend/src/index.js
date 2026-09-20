@@ -1,6 +1,7 @@
 import express from "express";
 import "express-async-errors";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 
 import authRoutes from "./routes/auth.js";
@@ -43,6 +44,8 @@ import qcDashboardRoutes from "./routes/qcDashboard.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 // Round 146 — Super Admin per-user access control.
 import superAdminRoutes from "./routes/superAdmin.js";
+import solitaireRoutes from "./routes/solitaire.js";
+import solitaireAccessRoutes from "./routes/solitaireAccess.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -68,6 +71,40 @@ const app = express();
 // production. "1" trusts exactly one hop (Render's own proxy), matching how
 // Render's edge is documented to forward traffic.
 app.set("trust proxy", 1);
+// Round 149 — credentialed CORS for the Solitaire plugin ONLY, mounted above
+// the app-wide cors() so it also owns the preflight for these paths (the
+// default cors() answers OPTIONS and ends the request, so a later, more
+// specific handler would never see it).
+//
+// Why this module needs its own policy: Solitaire authenticates with cookies,
+// and a browser only sends cookies cross-site when the server both sets
+// SameSite=None (see lib/solitaireAuth.js) and answers with
+// Access-Control-Allow-Credentials. That combination cannot be used with
+// Access-Control-Allow-Origin: *, which is what the app-wide cors() sends.
+//
+// And it must NOT be a wildcard reflection, because dropping SameSite is
+// dropping this app's only CSRF protection for that module: with any origin
+// reflected, any website a signed-in operator visited could make requests to
+// Solitaire with their cookies attached. FRONTEND_ORIGIN is therefore an
+// allowlist — set it to the frontend's own URL (comma-separate more than one).
+// Unset, no origin is allowed credentials, which is correct for a
+// single-origin deployment and fails closed for any other.
+//
+// /api/solitaire-access is deliberately NOT here: it authenticates with the
+// main app's bearer token like every other route, uses no cookies, and so
+// stays on the ordinary app-wide policy. That matters — it is the endpoint
+// the Plant Operator icon depends on.
+const SOLITAIRE_ORIGINS = (process.env.FRONTEND_ORIGIN || "")
+  .split(",").map((o) => o.trim()).filter(Boolean);
+app.use("/api/solitaire", cors({
+  origin(origin, cb) {
+    // No Origin header = a same-origin or non-browser request; nothing to allow.
+    if (!origin) return cb(null, true);
+    cb(null, SOLITAIRE_ORIGINS.includes(origin));
+  },
+  credentials: true,
+}));
+
 app.use(cors());
 // Round 119, post-ship — Technical Writings uploads a PDF as base64 inside a
 // JSON body (see routes/technicalWritings.js's header comment for why: no
@@ -81,6 +118,11 @@ app.use(cors());
 // filename, etc.) is even added — 10mb would silently 413 files the
 // route's own size check was written to accept.
 app.use(express.json({ limit: "12mb" }));
+// Round 149 — Solitaire keeps its session and device lock in cookies rather
+// than a bearer token, deliberately: it is a separate trust boundary from the
+// main app and must never be reachable with a main-app JWT. Nothing else in
+// this app reads cookies, so this is here purely for that module.
+app.use(cookieParser());
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
@@ -122,6 +164,12 @@ app.use("/api/material-module", materialModuleRoutes);
 app.use("/api/qc-dashboard", qcDashboardRoutes);
 app.use("/api/admin-dashboard", adminDashboardRoutes);
 app.use("/api/super-admin", superAdminRoutes);
+// The delivery-challan plugin. Both routers gate themselves on the plugin
+// being enabled (lib/plugins.js), so mounting them here does not by itself
+// expose anything — a Super Admin switching the plugin off makes every route
+// below answer 404 without a redeploy.
+app.use("/api/solitaire", solitaireRoutes);
+app.use("/api/solitaire-access", solitaireAccessRoutes);
 app.use("/api/booking-links", bookingLinksRoutes);
 // Manager/Admin-only, staff auth as usual — generates/lists/revokes the
 // customer portal access codes (routes/customerAccess.js).

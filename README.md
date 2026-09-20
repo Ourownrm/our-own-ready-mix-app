@@ -6483,3 +6483,82 @@ no rate field and no inactive rows**, exactly as a Super Admin received both. Fi
 driven headless as both roles: the Super Admin landing on `/super-admin`, reaching `/administrator`
 with its module tiles, and showing all four new controls; the Administrator still bounced off
 `/super-admin`; zero horizontal overflow at 390px and 1280px; no console errors.
+
+## Round 149 (Ver. 9.74): the Delivery Challan module wired in as a switchable plugin
+
+**Visit `/setup?key=...` once after deploying** — nine new tables. **And set two new environment
+variables on the backend** (both in `render.yaml`): `SOLITAIRE_JWT_SECRET`, and `FRONTEND_ORIGIN`
+set to the frontend's own URL.
+
+The Solitaire / "RMC Delivery Challan" module was built in an earlier session as a self-contained
+package and never wired into the app — its twelve files lived only as project docs. This round
+brings them in and makes the module a *plugin*: something a Super Admin can switch off at any time,
+that an Administrator has no route into at all, and whose only entrance is an icon on the Plant
+Operator screen.
+
+**The plugin registry is a new idea in this app, and deliberately not part of the permission
+catalogue.** Permissions answer "what may this PERSON do with a module that exists"; a plugin
+answers "does this module exist for anyone at all". Conflating them would have made "switch off
+Delivery Challan" mean revoking a permission from every role one at a time, with a role added later
+quietly getting it back. New `app_plugins` table, new `backend/src/lib/plugins.js` with a
+`requirePluginEnabled(key)` middleware and a 5-second cache dropped the moment the switch moves.
+
+**Off means off, not hidden.** The guard is mounted above *everything* in both routers, including
+the module's own login, so a browser still holding a valid Solitaire session cookie is cut off
+mid-shift, and a bookmarked URL gets nowhere. It answers **404**, not 403 — 403 says "this exists
+and you may not have it", which invites someone to go asking for access to a module the business has
+switched off. Nothing is deleted: accounts, devices, master data and printed dockets all survive
+being switched off and come back untouched.
+
+**Administrator has no route in, by three independent means.** The access API moved from
+`requireRole("administrator")` to `requireRole("super_admin")`; the catalogue gained a **locked**
+function `admin.plugins`, and locked is the one class Administrator's computed "everything except
+the locked ones" set does not reach; and no Solitaire tile exists in `adminScreens.js`.
+
+**Four integration bugs that would each have bitten in production**, none of them visible by reading
+the module's own code:
+
+- `lib/solitaireAuth.js` **threw at import time** when `SOLITAIRE_JWT_SECRET` was unset. Importing
+  that file is what mounting the module does, so one missing variable took the *whole backend* down
+  — orders, dockets, reports — over an optional plugin. The safety is kept exactly (nothing is ever
+  signed with an undefined secret) but scoped: the module answers 503 saying which variable is
+  missing, and the rest of the app runs.
+- `solitaireApi.js` used a bare relative `/api/solitaire`, which resolves against the **static
+  site**, not the backend. Now derived from the same `VITE_API_URL` as everything else.
+- The session cookie was `SameSite=Lax`. The frontend and backend are separate Render services, so
+  every call is cross-site and a browser will not *send* a Lax cookie cross-site. The symptom is
+  nasty precisely because it isn't an error: login returns 200 and the next request arrives with no
+  session. Now `SameSite=None` + Secure.
+- Which drops the module's only CSRF protection, so credentialed CORS is allowed **from
+  `FRONTEND_ORIGIN` only**, scoped to `/api/solitaire` and mounted above the app-wide `cors()` so it
+  owns the preflight too. `/api/solitaire-access` is deliberately left on the ordinary policy — it
+  uses the main app's bearer token and no cookies, and it is what the Plant Operator icon depends on.
+
+**Still outstanding, unchanged by this round.** The real print pipeline is not built: the user's
+decision is to write into their own Excel workbook on Google Drive and print its sheet, so Excel's
+own formulas produce the output. That needs a spreadsheet engine server-side and is its own round,
+once the workbook is in place. Until then every docket prints through the interim jsPDF generator
+and is flagged `is_placeholder_pdf`, so they are one query to find later. Separately, the two panel
+images (`public/solitaire/login-bg.jpg`, `screen-reference.png`) were never delivered with the
+module's code — see `public/solitaire/README.txt`. The screens work without them; the data-entry
+panel's `<img>` now hides itself on error rather than showing a broken-image icon, and the container
+carries its own aspect ratio so every positioned control still lands correctly.
+
+**Verification**: `node --check` across the backend, clean `npm run build`, guard checker still
+green on 49 routes. Live, against a throwaway Postgres: an Administrator refused **403** on all four
+ways in (list, grant, read the plugin switch, flip it), with the switch confirmed unmoved in the
+database afterwards; a Super Admin **200** on both. Then the full life cycle — grant, the icon
+endpoint flipping to `has_access: true`, a real sign-in to the module setting both cookies, and
+`/me`, `/customers` and `/devices` all **200**. The switch was then flipped off **with that session
+still open**: every module route including `/login` went **404** for the already-signed-in browser,
+the icon endpoint 404'd, granting stopped too — while `/api/admin-dashboard/summary` and the Plant
+Operator's own endpoints stayed **200**. Switched back on, the same cookies worked again and both
+accounts and the registered device were still there. Revoking one person was confirmed not to
+disturb another's session; a duplicate Solitaire username was refused in plain language while
+re-granting somebody their own username was confirmed to work, since that is the password-reset
+path. A **second backend was started with no `SOLITAIRE_JWT_SECRET`** and confirmed to serve login,
+the dashboard and the Super Admin API normally while the module alone reported the missing variable.
+Finally the pages were driven headless at 390px: the icon present on the Plant Operator screen and
+absent everywhere on the Administrator side, gone again once the plugin was switched off, and the
+Plugins tab rendering the switch and the access list with zero horizontal overflow and no console
+errors.

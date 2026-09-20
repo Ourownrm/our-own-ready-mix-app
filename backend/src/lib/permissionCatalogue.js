@@ -313,6 +313,16 @@ export const CATALOGUE = [
     { administrator: VCE, manager: VCE }),
   f("admin.setup", "admin", "Database setup & transactional reset", ["view", "edit", "delete"],
     {}, { locked: true }),
+
+  // Round 149 — turning a whole optional module on or off, and deciding who
+  // gets into it. LOCKED, which here carries the user's explicit instruction
+  // that an Administrator must have no access to the Delivery Challan module
+  // at all: locked means the function can never be granted to anyone by any
+  // route, and Administrator's computed set is "everything EXCEPT the locked
+  // ones" (see lib/permissions.js), so this is the one class of function the
+  // permanent-full-access decision does not reach.
+  f("admin.plugins", "admin", "Plugins — enable/disable a module and grant access to it", ["view", "edit"],
+    {}, { locked: true }),
 ];
 
 // Every role the app has, plus the new one. Administrator and super_admin are

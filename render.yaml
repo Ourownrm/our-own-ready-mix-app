@@ -18,6 +18,21 @@ services:
       # worth doing for the stronger boundary.
       - key: CUSTOMER_JWT_SECRET
         generateValue: true
+      # Round 149 — the Delivery Challan (Solitaire) plugin. Its own session
+      # secret, deliberately separate from JWT_SECRET: a main-app token must
+      # never verify as a module session, or the other way round. Unlike
+      # CUSTOMER_JWT_SECRET above there is NO fallback — an unset secret
+      # leaves the module answering 503 with that reason, while the rest of
+      # the app runs normally.
+      - key: SOLITAIRE_JWT_SECRET
+        generateValue: true
+      # The module authenticates with cookies, which a browser only sends
+      # cross-site when the server allows credentialed CORS from a named
+      # origin. Set this to the FRONTEND's own URL. Leaving it unset does not
+      # break the app — only the Delivery Challan screens, which will look
+      # like "logs in, then immediately signed out".
+      - key: FRONTEND_ORIGIN
+        value: https://oorm-frontend.onrender.com
       - key: DATABASE_URL
         fromDatabase:
           name: oorm-db

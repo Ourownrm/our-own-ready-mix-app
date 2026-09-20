@@ -2205,6 +2205,177 @@ router.get("/setup", async (req, res) => {
         : `Round 148 — master-data view defaults already correct, nothing to repair.`
     );
 
+    // Round 149 — the Solitaire ("RMC Delivery Challan") plugin and the plugin
+    // registry it switches off from. Purely additive: new tables only, nothing
+    // existing is altered. Safe to re-run — every statement is IF NOT EXISTS
+    // and the seeds are ON CONFLICT DO NOTHING.
+    await pool.query(`
+-- ============================================================================
+-- PLUGINS (Round 149) — the on/off switch for optional modules.
+--
+-- A plugin is a whole module that can be turned off by a Super Admin without a
+-- deploy. This is NOT the permission system: permissions decide what a PERSON
+-- may do, a plugin decides whether the module exists for anyone at all. Off
+-- means the API refuses every one of its routes and the icon disappears —
+-- hiding the icon alone would be theatre.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS app_plugins (
+  key         VARCHAR(40) PRIMARY KEY,
+  label       VARCHAR(80) NOT NULL,
+  is_enabled  BOOLEAN NOT NULL DEFAULT true,
+  updated_by  INTEGER REFERENCES users(id),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================================
+-- SOLITAIRE MODULE (Round 149) — "RMC Delivery Challan" / Batching Docket.
+--
+-- Deliberately self-contained: its own accounts, its own device lock, its own
+-- customers/sites/trucks/mix designs. It shares NOTHING with the main app's
+-- users/customers/sites/trucks/mix_designs tables. The single link to the main
+-- app is solitaire_accounts.granted_to_user_id, which is how a Super Admin
+-- grants somebody access — see routes/solitaireAccess.js.
+--
+-- Every table is prefixed solitaire_ so the boundary is visible in the schema
+-- itself, and so a future decision to drop the module is one DROP list.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS solitaire_accounts (
+  id                 SERIAL PRIMARY KEY,
+  username           VARCHAR(60) UNIQUE NOT NULL,
+  password_hash      TEXT NOT NULL,
+  role               VARCHAR(10) NOT NULL CHECK (role IN ('operator', 'qc', 'admin')),
+  display_name       VARCHAR(120) NOT NULL,
+  is_active          BOOLEAN NOT NULL DEFAULT true,
+  -- UNIQUE because routes/solitaireAccess.js grants with
+  -- ON CONFLICT (granted_to_user_id), so one staff member has at most one
+  -- Solitaire account and re-granting updates it in place.
+  granted_to_user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  granted_by         INTEGER REFERENCES users(id),
+  granted_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_by         INTEGER REFERENCES users(id),
+  revoked_at         TIMESTAMPTZ
+);
+
+-- The device lock is company-wide, not per account: a browser is authorised or
+-- it is not, whoever signs in from it.
+CREATE TABLE IF NOT EXISTS solitaire_devices (
+  id            SERIAL PRIMARY KEY,
+  device_token  TEXT UNIQUE NOT NULL,
+  label         VARCHAR(120),
+  registered_by INTEGER REFERENCES solitaire_accounts(id),
+  registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at  TIMESTAMPTZ,
+  revoked_at    TIMESTAMPTZ,
+  revoked_by    INTEGER REFERENCES solitaire_accounts(id)
+);
+
+CREATE TABLE IF NOT EXISTS solitaire_settings (
+  key        VARCHAR(40) PRIMARY KEY,
+  value      TEXT,
+  updated_by INTEGER REFERENCES solitaire_accounts(id),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS solitaire_customers (
+  id        SERIAL PRIMARY KEY,
+  code      VARCHAR(40) NOT NULL,
+  name      VARCHAR(160) NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT true
+);
+
+CREATE TABLE IF NOT EXISTS solitaire_sites (
+  id          SERIAL PRIMARY KEY,
+  customer_id INTEGER NOT NULL REFERENCES solitaire_customers(id) ON DELETE CASCADE,
+  name        VARCHAR(160) NOT NULL,
+  is_active   BOOLEAN NOT NULL DEFAULT true
+);
+
+CREATE TABLE IF NOT EXISTS solitaire_trucks (
+  id                  SERIAL PRIMARY KEY,
+  registration_number VARCHAR(40) NOT NULL,
+  truck_code          VARCHAR(40) NOT NULL,
+  driver_name         VARCHAR(120),
+  is_active           BOOLEAN NOT NULL DEFAULT true
+);
+
+-- Per-m3 ingredient quantities, matching the docket's own field names rather
+-- than the main app's mix_designs columns — the two are not the same recipe
+-- list and must not be conflated.
+CREATE TABLE IF NOT EXISTS solitaire_mix_designs (
+  id            SERIAL PRIMARY KEY,
+  code          VARCHAR(40) NOT NULL,
+  name          VARCHAR(120),
+  msand_kgm3    NUMERIC(10,2) NOT NULL DEFAULT 0,
+  agg_12mm_kgm3 NUMERIC(10,2) NOT NULL DEFAULT 0,
+  agg_20mm_kgm3 NUMERIC(10,2) NOT NULL DEFAULT 0,
+  cem1_kgm3     NUMERIC(10,2) NOT NULL DEFAULT 0,
+  cem2_kgm3     NUMERIC(10,2) NOT NULL DEFAULT 0,
+  cem3_kgm3     NUMERIC(10,2) NOT NULL DEFAULT 0,
+  admix1_kgm3   NUMERIC(10,3) NOT NULL DEFAULT 0,
+  admix2_kgm3   NUMERIC(10,3) NOT NULL DEFAULT 0,
+  water_kgm3    NUMERIC(10,2) NOT NULL DEFAULT 0,
+  is_active     BOOLEAN NOT NULL DEFAULT true
+);
+
+-- batch_number is TEXT, not an integer: the next number is derived with
+-- MAX(batch_number::int) over rows matching '^[0-9]+$', which keeps the door
+-- open for a prefixed series later without a migration.
+--
+-- pdf_data holds the printed docket itself. is_placeholder_pdf marks every
+-- docket printed through the interim jsPDF generator, so that once the real
+-- Excel pipeline exists it is one query to find everything that predates it.
+CREATE TABLE IF NOT EXISTS solitaire_dockets (
+  id                 SERIAL PRIMARY KEY,
+  batch_number       VARCHAR(40),
+  order_date_time    TIMESTAMPTZ,
+  order_qty_m3       NUMERIC(10,2),
+  with_this_load_m3  NUMERIC(10,2),
+  customer_id        INTEGER NOT NULL REFERENCES solitaire_customers(id),
+  site_id            INTEGER NOT NULL REFERENCES solitaire_sites(id),
+  mix_design_id      INTEGER NOT NULL REFERENCES solitaire_mix_designs(id),
+  truck_id           INTEGER NOT NULL REFERENCES solitaire_trucks(id),
+  driver_name        VARCHAR(120),
+  production_qty_m3  NUMERIC(10,2) NOT NULL,
+  mixer_capacity_m3  NUMERIC(10,2),
+  moisture_pct       NUMERIC(6,2),
+  sheet_number       INTEGER,
+  pdf_filename       TEXT,
+  pdf_data           BYTEA,
+  is_placeholder_pdf BOOLEAN NOT NULL DEFAULT true,
+  printed_by         INTEGER REFERENCES solitaire_accounts(id),
+  printed_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_solitaire_dockets_printed ON solitaire_dockets(printed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_solitaire_dockets_batch ON solitaire_dockets(batch_number);
+`);
+
+    // The plugin row. Created ENABLED so the module works the moment access is
+    // granted — but note that enabling it shows the Plant Operator icon to
+    // nobody until a Super Admin grants somebody an account, so this is not a
+    // surprise exposure. ON CONFLICT DO NOTHING means a later /setup never
+    // re-enables a plugin a Super Admin has deliberately switched off.
+    const pluginSeed = await pool.query(
+      `INSERT INTO app_plugins (key, label, is_enabled) VALUES ('solitaire', 'Delivery Challan (Solitaire)', true)
+       ON CONFLICT (key) DO NOTHING RETURNING key`
+    );
+
+    // Solitaire's own settings, same deal — the folder path and printer are
+    // the Admin-only values from the module's Settings screen.
+    await pool.query(
+      `INSERT INTO solitaire_settings (key, value) VALUES
+         ('max_devices', '2'),
+         ('save_folder_path', ''),
+         ('default_printer', '')
+       ON CONFLICT (key) DO NOTHING`
+    );
+
+    log.push(
+      `Schema migration applied (Round 149 — Solitaire delivery-challan plugin: 8 solitaire_* tables + app_plugins). ` +
+      (pluginSeed.rows.length
+        ? `Plugin registered and ENABLED; grant somebody access from the Super Admin screen to make its icon appear.`
+        : `Plugin already registered — its on/off state was left exactly as the Super Admin set it.`)
+    );
+
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 
     res.send(

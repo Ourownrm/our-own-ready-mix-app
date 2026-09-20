@@ -16,6 +16,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { query } from "../db.js";
+import { pluginStates, clearPluginCache } from "../lib/plugins.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { CATALOGUE, CATALOGUE_BY_KEY, GROUPS, ROLES, ACTIONS, PERMISSION_BY_SCREEN, isLocked } from "../lib/permissionCatalogue.js";
 import { effectivePermissions, clearPermissionCache } from "../lib/permissions.js";
@@ -313,6 +314,39 @@ router.patch("/users/:id/status", async (req, res) => {
   await query(`UPDATE users SET is_active = $1 WHERE id = $2`, [isActive, userId]);
   clearPermissionCache(userId);
   res.json({ ok: true });
+});
+
+// ===== Plugins (Round 149) =====
+// A plugin is a whole optional module, not a permission. Switching one off
+// here takes it away from everybody at once: its API answers 404 and its icon
+// disappears. This lives behind the Super Admin router, whose guard is
+// requireRole("super_admin"), and the matching catalogue function
+// (admin.plugins) is LOCKED — so an Administrator cannot reach it by any
+// route, which is the point of the Delivery Challan module being off-limits
+// to Administrators.
+
+router.get("/plugins", async (req, res) => {
+  const { rows } = await query(
+    `SELECT p.key, p.label, p.is_enabled, p.updated_at, u.name AS updated_by_name
+     FROM app_plugins p LEFT JOIN users u ON u.id = p.updated_by
+     ORDER BY p.label`
+  );
+  res.json(rows);
+});
+
+router.patch("/plugins/:key", async (req, res) => {
+  const isEnabled = !!(req.body || {}).is_enabled;
+  const { rows } = await query(
+    `UPDATE app_plugins SET is_enabled = $1, updated_by = $2, updated_at = now()
+      WHERE key = $3 RETURNING key, label, is_enabled`,
+    [isEnabled, req.user.id, req.params.key]
+  );
+  if (!rows.length) return res.status(404).json({ error: "No such plugin." });
+  // Drop the cache immediately rather than waiting out its 5 seconds — a
+  // Super Admin who flips the switch and refreshes should see the effect, not
+  // wonder whether it saved.
+  clearPluginCache();
+  res.json(rows[0]);
 });
 
 // ===== Change log =====
