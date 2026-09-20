@@ -1,0 +1,124 @@
+/* Solitaire — styling ported from the approved 06_mockup_v7.html, 1:1 on
+   the locked screens (login, data-entry). Only change from the mockup: the
+   two embedded base64 images (login background, reference screenshot) are
+   now real files under /solitaire/ instead of inline data: URIs — see
+   SolitaireLogin.jsx and SolitaireApp.jsx for how they're referenced. */
+
+.solitaire-root{ font-family:Tahoma,"Segoe UI",Arial,sans-serif; font-size:12px; color:#000; }
+.solitaire-root *{ box-sizing:border-box; }
+
+/* ============================= LOGIN SCREEN (locked design — do not redesign) ============================= */
+.sol-login-screen{
+  min-height:100vh; display:flex; align-items:center; justify-content:center;
+  position:relative; overflow:hidden;
+  background:#0b5c40 url('/solitaire/login-bg.jpg') center/cover no-repeat;
+}
+.sol-login-screen::before{
+  content:""; position:absolute; inset:0; background:rgba(0,0,0,.18); pointer-events:none;
+}
+.sol-login-card{
+  width:280px; background:rgba(253,253,251,.97); border-radius:12px;
+  box-shadow:0 20px 50px rgba(0,0,0,.5), 0 0 0 1px rgba(0,0,0,.08);
+  padding:22px 22px 20px 22px; position:relative; z-index:1;
+}
+.sol-login-field{ margin-bottom:12px; }
+.sol-login-field label{ display:block; font-size:11px; font-weight:700; color:#333; margin-bottom:4px; }
+.sol-login-field input{
+  width:100%; padding:8px 9px; border:1px solid #cfcfcf; border-radius:6px; font-size:13px; background:#fff;
+}
+.sol-login-field input:focus{ outline:2px solid #0e7a52; border-color:#0e7a52; }
+.sol-login-btn{
+  width:100%; padding:9px; border:none; border-radius:6px; margin-top:4px;
+  background:linear-gradient(180deg,#12915f,#0b6e4a); color:#fff; font-weight:700; font-size:13px;
+  cursor:pointer; box-shadow:0 6px 16px rgba(11,110,74,.35);
+}
+.sol-login-btn:hover{ filter:brightness(1.06); }
+.sol-login-btn:disabled{ opacity:.6; cursor:default; }
+.sol-login-error{ color:#b3261e; font-size:11.5px; text-align:center; margin-top:9px; font-weight:700; }
+
+/* ============================= APP SHELL ============================= */
+.sol-app-shell{
+  max-width:1366px; margin:16px auto; background:#ECECEC; border:1px solid #444; box-shadow:0 8px 30px rgba(0,0,0,.4);
+}
+.sol-icon-btn{
+  border:1px solid #8a8a8a; background:linear-gradient(#fdfdfd,#e2e2e2); border-radius:4px;
+  cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0;
+}
+.sol-icon-btn.primary{ background:#1f4a86; color:#fff; border-color:#123061; }
+.sol-icon-btn:hover{ filter:brightness(1.05); }
+.sol-logout-link{ color:#8a2020; cursor:pointer; text-decoration:underline; }
+.sol-screen{ padding:10px; }
+
+/* ================= ENTRY SCREEN — real reference screenshot as background + live overlay fields (locked design) ================= */
+.sol-entry-bg{
+  position:relative; width:100%; max-width:1366px; margin:0 auto;
+  aspect-ratio: 1366 / 721; background:#fff; border:1px solid #444; overflow:hidden;
+}
+.sol-entry-bg img{ position:absolute; inset:0; width:100%; height:100%; display:block; user-select:none; }
+
+.sol-topbar-ov{
+  position:absolute; right:0.6%; top:2.9%; height:4.2%; z-index:20;
+  display:flex; align-items:center; gap:.5vw; font-family:Tahoma,Arial,sans-serif;
+}
+.sol-topbar-ov .who{ font-size:.85vw; color:#222; white-space:nowrap; }
+.sol-topbar-ov .who b{ color:#0b5c40; }
+.sol-topbar-ov .sol-icon-btn{ width:1.9vw; height:1.9vw; min-width:22px; min-height:22px; font-size:1vw; }
+
+.sol-ov{ position:absolute; font-family:Tahoma,Arial,sans-serif; font-size:1.05vw; line-height:1.1; padding:0 .3vw; margin:0; }
+.sol-ov-select{ background:#80ff80; border:1px solid #4f8a2f; appearance:none; -webkit-appearance:none; cursor:pointer; }
+.sol-ov-input{ background:#ffffff; border:1px solid #8a8a8a; text-align:right; }
+.sol-ov-input.ro{ background:#eef1e8; color:#333; }
+.sol-ov-input.left{ text-align:left; }
+.sol-ov.error{ outline:2px solid #c00000; outline-offset:-1px; }
+
+.sol-menu-hotspot{ position:absolute; background:transparent; border:none; cursor:pointer; padding:0; }
+.sol-menu-hotspot:hover{ background:rgba(31,74,134,.15); }
+
+.sol-menu-dropdown{
+  position:absolute; z-index:40; background:#fff; border:1px solid #888; box-shadow:0 8px 20px rgba(0,0,0,.3);
+  min-width:220px; font-size:12.5px;
+}
+.sol-menu-dropdown a{
+  display:flex; justify-content:space-between; align-items:center; gap:8px;
+  padding:9px 12px; color:#222; text-decoration:none; border-bottom:1px solid #eee; cursor:pointer;
+}
+.sol-menu-dropdown a:last-child{ border-bottom:none; }
+.sol-menu-dropdown a:hover{ background:#eef4ff; }
+.sol-menu-dropdown a.disabled{ color:#aaa; cursor:not-allowed; pointer-events:none; }
+.sol-menu-dropdown a .badge{ font-size:9.5px; background:#eee; color:#777; border-radius:8px; padding:1px 6px; }
+
+.sol-error-msg{ color:#c00000; font-size:11px; margin-top:8px; font-weight:700; }
+
+/* ============================= MODALS ============================= */
+.sol-overlay{ position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:100; }
+.sol-popup{ background:#ECECEC; border:1px solid #555; width:380px; box-shadow:0 10px 40px rgba(0,0,0,.4); max-height:88vh; overflow:auto; }
+.sol-popup.wide{ width:640px; }
+.sol-popup .sol-popup-title{ background:#1f4a86; color:#fff; padding:8px 12px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; }
+.sol-popup .sol-popup-body{ padding:14px; display:flex; flex-direction:column; gap:10px; }
+.sol-popup .sol-popup-body label{ display:block; font-size:11.5px; font-weight:700; margin-bottom:3px; }
+.sol-popup .sol-popup-body input, .sol-popup .sol-popup-body select{ width:100%; padding:5px 6px; border:1px solid #8a8a8a; font-size:12px; }
+.sol-popup .sol-popup-actions{ padding:10px 14px; display:flex; justify-content:flex-end; gap:8px; border-top:1px solid #ccc; }
+.sol-popup .sol-popup-actions button{ padding:7px 14px; border:1px solid #8a8a8a; border-radius:3px; cursor:pointer; background:#fff; }
+.sol-popup .sol-popup-actions button.primary{ background:#1f4a86; color:#fff; border:none; }
+.sol-popup .sol-popup-actions button.danger{ background:#b3261e; color:#fff; border:none; }
+
+.sol-confirm-lines{ font-size:12.5px; line-height:1.85; background:#fff; border:1px solid #ccc; padding:10px 12px; }
+.sol-confirm-lines .l{ display:flex; }
+.sol-confirm-lines .l .k{ width:110px; font-weight:700; color:#333; flex:0 0 auto; }
+
+.sol-mtable{ width:100%; border-collapse:collapse; font-size:11.5px; }
+.sol-mtable th, .sol-mtable td{ border:1px solid #ccc; padding:5px 6px; }
+.sol-mtable th{ background:#eee; text-align:left; }
+.sol-mtable input{ width:100%; border:1px solid #ccc; padding:3px 4px; font-size:11.5px; }
+.sol-mtable .rm{ color:#b3261e; cursor:pointer; font-weight:700; text-align:center; }
+.sol-mtable-add{ margin-top:8px; border:1px solid #8a8a8a; background:#fff; padding:5px 10px; border-radius:3px; cursor:pointer; font-size:11.5px; }
+
+.sol-save-banner{
+  position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:200;
+  background:#e9f7ec; border:1px solid #2e7d32; color:#204d25; padding:10px 16px; font-size:12.5px;
+  border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,.25); max-width:640px;
+}
+.sol-search-table{ width:100%; border-collapse:collapse; font-size:11.5px; }
+.sol-search-table th, .sol-search-table td{ border:1px solid #ccc; padding:5px 8px; text-align:left; }
+.sol-search-table th{ background:#eee; }
+.sol-placeholder-badge{ font-size:9px; background:#fff3cd; color:#7a5b00; border-radius:8px; padding:1px 6px; margin-left:6px; }

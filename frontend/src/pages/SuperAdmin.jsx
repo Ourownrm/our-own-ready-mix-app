@@ -53,7 +53,7 @@ export default function SuperAdmin() {
         </div>
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
-          {[["people", "People"], ["roles", "Role defaults"], ["log", "Change log"]].map(([k, l]) => (
+          {[["people", "People"], ["roles", "Role defaults"], ["plugins", "Plugins"], ["log", "Change log"]].map(([k, l]) => (
             <button key={k} type="button" className={`btn-tab${tab === k ? " active" : ""}`}
                     onClick={() => { setTab(k); setError(""); setNotice(""); }}
                     style={{ fontSize: 12, padding: "6px 12px", borderRadius: 999 }}>{l}</button>
@@ -66,6 +66,8 @@ export default function SuperAdmin() {
           <PeopleTab catalogue={catalogue} me={user} setError={setError} setNotice={setNotice} />
         ) : tab === "roles" ? (
           <RolesTab catalogue={catalogue} setError={setError} setNotice={setNotice} />
+        ) : tab === "plugins" ? (
+          <PluginsTab setError={setError} setNotice={setNotice} />
         ) : (
           <ChangeLogTab />
         )}
@@ -385,6 +387,174 @@ function AddPerson({ onCreate, busy }) {
         <button type="button" onClick={() => setOpen(false)} disabled={busy} style={{ fontSize: 11.5 }}>Cancel</button>
       </div>
     </form>
+  );
+}
+
+// ===================== Plugins (Round 149) =====================
+// A plugin is a whole optional module — the first is the Delivery Challan
+// (Solitaire) batching-docket screen. This tab does two separate things for
+// it, and the distinction matters:
+//
+//   The switch decides whether the module EXISTS. Off means every one of its
+//   API routes answers 404 for everybody, including its own login, and the
+//   Plant Operator icon disappears. Nothing is deleted — accounts, devices,
+//   master data and printed dockets all survive being switched off and come
+//   back untouched.
+//
+//   The access list decides WHO may use it while it is on. Each person gets
+//   their own Solitaire username, password and module role, separate from
+//   their main app login by design: the module is a different trust boundary.
+//
+// Both live here rather than on the Administrator screen because the user's
+// instruction was that an Administrator has no access to this module at all.
+// The catalogue function behind it (admin.plugins) is locked, so there is no
+// permission an Administrator could be granted that would reach this.
+function PluginsTab({ setError, setNotice }) {
+  const [plugins, setPlugins] = useState([]);
+  const [people, setPeople] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [granting, setGranting] = useState(null); // user id being granted
+  const [form, setForm] = useState({ username: "", password: "", role: "operator" });
+
+  const solitaire = plugins.find((p) => p.key === "solitaire");
+
+  async function load() {
+    try { setPlugins(await apiRequest("/super-admin/plugins")); }
+    catch (e) { setError(e.message); }
+  }
+  async function loadPeople() {
+    // 404 here is not an error to shout about — it is what a disabled plugin
+    // answers, and the list is genuinely unavailable then.
+    try { setPeople(await apiRequest("/solitaire-access")); }
+    catch { setPeople(null); }
+  }
+  useEffect(() => { load().then(loadPeople); }, []);
+
+  async function toggle(key, on) {
+    if (!on && !window.confirm(
+      "Switch the Delivery Challan module off?\n\n" +
+      "It disappears from the Plant Operator screen and every one of its screens stops " +
+      "working, including for anyone signed into it right now. Nothing is deleted — " +
+      "switching it back on restores it exactly as it was."
+    )) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const r = await apiRequest(`/super-admin/plugins/${key}`, { method: "PATCH", body: { is_enabled: on } });
+      setNotice(`${r.label} is now ${r.is_enabled ? "ON" : "OFF"}.`);
+      await load(); await loadPeople();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function grant(userId) {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/solitaire-access/${userId}/grant`, { method: "POST", body: form });
+      setNotice("Access granted. Give them that username and password — the module has its own login.");
+      setGranting(null); setForm({ username: "", password: "", role: "operator" });
+      loadPeople();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function revoke(u) {
+    if (!window.confirm(`Revoke ${u.name}'s Delivery Challan access?`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/solitaire-access/${u.id}/revoke`, { method: "POST" });
+      setNotice(`${u.name} can no longer open the module.`);
+      loadPeople();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div className="card">
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Modules</div>
+        {!plugins.length && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No plugins registered. Run /setup once.</div>}
+        {plugins.map((p) => (
+          <div key={p.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+                {p.label}{" "}
+                <span className={`badge ${p.is_enabled ? "badge-success" : "badge-neutral"}`} style={{ fontSize: 10 }}>
+                  {p.is_enabled ? "On" : "Off"}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>
+                {p.updated_by_name ? `Last changed by ${p.updated_by_name}` : "Never changed"}
+              </div>
+            </div>
+            <button type="button" disabled={busy} onClick={() => toggle(p.key, !p.is_enabled)} style={{ fontSize: 11.5 }}>
+              {p.is_enabled ? "Switch off" : "Switch on"}
+            </button>
+          </div>
+        ))}
+        <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.5, marginTop: 4 }}>
+          Switching a module off takes it away from everyone at once and nothing is deleted. An Administrator
+          cannot see or change any of this.
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Who can open the Delivery Challan module</div>
+        {!solitaire?.is_enabled ? (
+          <div style={{ fontSize: 12.5, color: "var(--slate)" }}>
+            The module is switched off, so there is nobody to list. Switch it on to manage access.
+          </div>
+        ) : !people ? (
+          <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading…</div>
+        ) : (
+          <>
+            <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.5, marginBottom: 8 }}>
+              The module has its own login — the username and password you set here are NOT their main app
+              ones. Its icon appears only on the Plant Operator screen, only for the people listed as having
+              access. Re-granting somebody who already has access is also how you reset their password.
+            </div>
+            {people.map((u) => (
+              <div key={u.id} style={{ borderTop: "1px solid var(--concrete)", padding: "7px 0" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <div>
+                    <span style={{ fontSize: 12.5, fontWeight: 600 }}>{u.name}</span>
+                    <span style={{ fontSize: 10.5, color: "var(--slate)" }}> · {String(u.role).replace("_", " ")}</span>
+                    {u.solitaire_username && u.solitaire_is_active && (
+                      <div style={{ fontSize: 10.5, color: "var(--signal-green)" }}>
+                        Has access as “{u.solitaire_username}” ({u.solitaire_role})
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button type="button" disabled={busy} style={{ fontSize: 11 }}
+                            onClick={() => { setGranting(granting === u.id ? null : u.id); setForm({ username: u.solitaire_username || "", password: "", role: u.solitaire_role || "operator" }); }}>
+                      {u.solitaire_is_active ? "Change" : "Grant access"}
+                    </button>
+                    {u.solitaire_is_active && (
+                      <button type="button" disabled={busy} style={{ fontSize: 11 }} onClick={() => revoke(u)}>Revoke</button>
+                    )}
+                  </div>
+                </div>
+                {granting === u.id && (
+                  <form style={{ display: "grid", gap: 6, marginTop: 7, maxWidth: 320 }}
+                        onSubmit={(e) => { e.preventDefault(); grant(u.id); }}>
+                    <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })}
+                           placeholder="Solitaire username" required style={{ fontSize: 12 }} />
+                    <input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
+                           placeholder="Password for the module" required style={{ fontSize: 12 }} />
+                    <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} style={{ fontSize: 12 }}>
+                      <option value="operator">Operator — data entry and printing</option>
+                      <option value="qc">QC — also edits mix designs</option>
+                      <option value="admin">Admin — also devices and settings</option>
+                    </select>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button type="submit" disabled={busy} style={{ fontSize: 11.5 }}>Save</button>
+                      <button type="button" disabled={busy} style={{ fontSize: 11.5 }} onClick={() => setGranting(null)}>Cancel</button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

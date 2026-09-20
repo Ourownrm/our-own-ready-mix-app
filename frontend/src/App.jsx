@@ -45,6 +45,8 @@ import NotificationsPage from "./pages/NotificationsPage.jsx";
 import SalesForecast from "./pages/SalesForecast.jsx";
 import TripTimeCrossCheckPage from "./pages/TripTimeCrossCheckPage.jsx";
 import CustomerTracking from "./pages/CustomerTracking.jsx";
+import SolitaireLogin from "./pages/Solitaire/SolitaireLogin.jsx";
+import SolitaireApp from "./pages/Solitaire/SolitaireApp.jsx";
 import Maintenance from "./pages/Maintenance.jsx";
 import CustomerBooking from "./pages/CustomerBooking.jsx";
 import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
@@ -93,6 +95,17 @@ export default function App() {
 
           {/* Public, no login — reached only via a shared per-order link. */}
           <Route path="/track/:token" element={<CustomerTracking />} />
+          {/* Round 149 — the Delivery Challan (Solitaire) plugin. NOT wrapped in
+              ProtectedRoute on purpose: the module has its own login, session and
+              device lock (backend lib/solitaireAuth.js), a separate trust boundary
+              from the main app's. These two routes are the only way in, and they
+              are reachable only from the Plant Operator screen's icon. The pages
+              themselves call the module's API, which answers 404 while the plugin
+              is switched off — so a bookmarked URL lands on the login screen and
+              gets refused there, rather than this route pretending the module is
+              gone when only the icon is. */}
+          <Route path="/solitaire/login" element={<SolitaireLogin />} />
+          <Route path="/solitaire/app" element={<SolitaireApp />} />
           {/* Public, no login — reached only via a shared per-customer+site booking link. */}
           <Route path="/book/:token" element={<CustomerBookingForm />} />
           {/* Public, no login — a potential customer's "get in touch" form (round 119). */}
