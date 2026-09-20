@@ -6201,3 +6201,88 @@ PROJECT_INSTRUCTIONS.md's warning about a split upload nesting as `frontend/src/
 
 **Next**: the Super Admin per-user access control, whose functions list and mockup are already
 approved (`claude/super-admin-functions-list.md`).
+
+## Round 144 (Ver. 9.69): dashboard KPIs corrected to match the Reports page, and two sub-grid reorderings
+
+Six items from testing round 143 live. **No schema change — `/setup` does NOT need visiting.**
+
+**Items 2–5, one root cause.** Round 143's new dashboard computed its own version of the four
+headline figures instead of reusing the Reports page's, and every one of them disagreed. The fix is
+not four patched queries — it is **one definition**, in a new `backend/src/lib/dashboardKpis.js`
+that both `/api/reports/director-dashboard` and `/api/admin-dashboard/summary` now import. Two
+hand-written copies of "today's production" will always drift; there is now one copy, and a wrong
+definition is wrong in one place.
+
+What was actually wrong, each worth remembering:
+
+- **Today's Order** used a plain `status <> 'cancelled'`, silently undoing Round 129's rule that a
+  cancelled or closed order which *had already received supply* is real demand and still counts,
+  while one that never shipped does not.
+- **Today's Production** read `rm_daily_production` — the Plant Operator's own daily entry. That is
+  the correct basis for the Material Module's cost per m³ and **only** there; the number the plant
+  reports as production is the delivery-challan quantity. Live, the operator table is often empty,
+  which is why the tile read 0 m³ (item 3). It now shows the challan quantity as the headline, net
+  of what site QC rejected, with the challan count and any rejected volume as the supporting line.
+- **Monthly Achieved** had the same wrong source, so it was wrong the same way.
+- **Outstanding Collection** used the Outstanding Collection *report's* per-customer arithmetic
+  (which counts only customers in debit) rather than the Reports page KPI's total of all invoices
+  plus opening balances minus all payments. Those two numbers differ whenever a customer is in
+  credit. **Both are long-standing and this round did not reconcile them** — the KPI now matches
+  the Reports page, because that is what it is compared against, and the difference is written
+  down in `dashboardKpis.js` so the next person meets it as a documented choice rather than a
+  surprise.
+
+**Item 1 — the landing page.** `ROLE_HOME.administrator` was already changed from `/reports` to
+`/administrator` in round 143 and is correct in the code; this round verified it end to end through
+a real sign-in (lands on `/administrator`) and through visiting `/` (redirects there too). If the
+old Reports page still appears after deploying, it is the **installed PWA serving a cached
+bundle**, not the routing — a hard reload, or closing and reopening the installed app, picks up the
+new service worker.
+
+**Items 6 and 7** — `Plant Manager` is now the first tile in Production and `Laboratory` the first
+in Quality Control. Both are one-line moves in `frontend/src/lib/adminScreens.js`, which is the
+point of having a registry.
+
+**Verification**: `node --check`, clean build, and — the test that matters for this round — both
+endpoints called against the same seeded database and **compared field by field**, with site-QC
+rejections seeded so the "net of rejected" rule was actually exercised rather than multiplying by
+zero: challans 62 + 88 + 34 = 184, rejections 4.0 + 2.5 = 6.5, both pages returning 177.5. All four
+figures now match exactly. The reordering was confirmed by reading the rendered tile order out of
+the live page, and the landing page by an actual login.
+
+## Round 145 (Ver. 9.70): Cube QC dashboard made mobile-friendly, and the header thinned out into the footer
+
+Two items from live use. **No schema change — `/setup` does NOT need visiting.**
+
+**1. The Cube Strength QC dashboard on a phone.** Every panel row was a fixed column count —
+`repeat(6, 1fr)` for the KPI strip, `1.3fr 1fr` and `1fr 1fr` for the paired panels, `repeat(3, 1fr)`
+for the third row — so at 390px each panel was squeezed to a sliver rather than stacking. All five
+are now `repeat(auto-fit, minmax(…, 1fr))`, which stacks on a phone and, because `auto-fit`
+collapses empty tracks, leaves the desktop layout **exactly as it was** (confirmed by screenshot,
+not by reasoning). Two tables were also missing the `overflow-x` wrapper the others had — "Margin
+over f'ck by grade" has nine columns and was the worst of them — so both now scroll inside their
+card instead of pushing the page sideways. The control chart and scatter were already responsive
+(`viewBox` + `width: 100%`) and were left alone. Verified: **zero horizontal page overflow at
+390px**, measured rather than eyeballed.
+
+**2. The header.** It carried the app name, version, page title, user name, a refresh button, a
+notifications button, a back link, an orders link and sign out — nine things on one line, wrapping
+to three cramped rows on a phone before any content appeared. Split by what each thing is for:
+
+- **Header** keeps *where you are and where you can go* — app name, page title, and the two
+  navigation links. Nothing else.
+- **Footer** (the fixed bar that already held the clock) gains *who you are and what the app is* —
+  name, role, version, sign out, refresh and notifications, beside the date and time.
+
+The footer was `pointer-events: none` when it was only a clock; that is now lifted for the bar and
+kept on the clock itself, which sits between the two button groups and must never take a tap meant
+for one of them. Below 560px the two icon buttons drop their words and the role hides, but the
+buttons *grow* to 40px minimum — losing the labels would otherwise have left a 24px target, which
+is not something a gloved hand hits. `#root`'s bottom padding rose from 30px to 76px so the taller
+bar can never sit over the last of a page's content (measured: 61px on a phone, 35px on a desktop).
+
+**Verification**: clean build, then both screens rendered at 390px and 1280px through the real
+running app with seeded cube results — horizontal overflow measured as zero at phone width, footer
+height measured against the reserved space at both widths, desktop panel layout compared against
+the previous screenshot to confirm the `auto-fit` change did not alter it, and no console errors at
+either size.

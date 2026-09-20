@@ -22,6 +22,9 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+// The four headline figures have ONE definition, shared with the Reports
+// page's Director's Dashboard — see the header note in that file.
+import { dashboardKpis } from "../lib/dashboardKpis.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -32,63 +35,16 @@ router.use(requireRole("administrator"));
 const PIN_KEY_RE = /^[a-z0-9][a-z0-9-]{0,49}$/;
 const MAX_PINS = 8;
 
-// The outstanding-collection balance, same two-legged shape reports.js's own
-// /outstanding-collection uses (invoices net of payments, UNION opening
-// balances net of payments). Kept identical on purpose: the KPI tile and that
-// report must never show two different numbers for the same day.
-const OUTSTANDING_CTE = `
-  WITH inv AS (
-    SELECT i.customer_id, i.total_amount - COALESCE(p.paid, 0) AS outstanding,
-           (CURRENT_DATE - i.created_at::date) AS age_days
-    FROM invoices i
-    LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
-      ON p.invoice_id = i.id
-    UNION ALL
-    SELECT ob.customer_id, ob.amount - COALESCE(p.paid, 0) AS outstanding,
-           (CURRENT_DATE - ob.as_of_date) AS age_days
-    FROM customer_opening_balances ob
-    LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p
-      ON p.opening_balance_id = ob.id
-  )`;
-
 router.get("/summary", async (req, res) => {
   const [
-    ordersToday, productionToday, challanToday, monthProduction, monthTarget, outstanding,
+    kpis,
+    monthTarget,
     materialOrders, mixDesigns, breakdowns, bookings, leads, compliance,
   ] = await Promise.all([
-    query(
-      `SELECT COUNT(*)::int AS orders, COALESCE(SUM(order_quantity_m3), 0) AS m3
-       FROM customer_orders
-       WHERE order_date = CURRENT_DATE AND status <> 'cancelled'`
-    ),
-    // The Plant Operator's own figure is the production number everywhere in
-    // this app — it excludes rejected and duplicated loads, which the challan
-    // total does not. The challan figure is shown beside it, never instead of
-    // it (the same rule the Material Module's cost/m3 follows).
-    query(
-      `SELECT COALESCE(SUM(concrete_produced_m3), 0) AS m3
-       FROM rm_daily_production WHERE production_date = CURRENT_DATE`
-    ),
-    query(
-      `SELECT COUNT(*)::int AS tickets, COALESCE(SUM(loaded_quantity_m3), 0) AS m3
-       FROM delivery_tickets
-       WHERE ticket_date = CURRENT_DATE AND status NOT IN ('cancelled', 'rejected', 'returned')`
-    ),
-    query(
-      `SELECT COALESCE(SUM(concrete_produced_m3), 0) AS m3
-       FROM rm_daily_production
-       WHERE production_date >= date_trunc('month', CURRENT_DATE)
-         AND production_date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'`
-    ),
+    dashboardKpis(),
     query(
       `SELECT target_m3 FROM monthly_production_targets
        WHERE year = EXTRACT(YEAR FROM CURRENT_DATE)::int AND month = EXTRACT(MONTH FROM CURRENT_DATE)::int`
-    ),
-    query(
-      `${OUTSTANDING_CTE}
-       SELECT COALESCE(SUM(outstanding), 0) AS total,
-              COUNT(*) FILTER (WHERE outstanding > 0.01 AND age_days > 30)::int AS overdue_30_plus
-       FROM inv WHERE outstanding > 0.01`
     ),
     query(`SELECT COUNT(*)::int AS n FROM rm_orders WHERE status = 'pending_approval'`),
     query(`SELECT COUNT(*)::int AS n FROM mix_designs WHERE status = 'draft'`),
@@ -101,25 +57,43 @@ router.get("/summary", async (req, res) => {
     ),
   ]);
 
-  const achieved = Number(monthProduction.rows[0].m3);
   const target = monthTarget.rows[0] ? Number(monthTarget.rows[0].target_m3) : null;
+
+  // How many invoices are more than 30 days overdue. This is the only figure
+  // here that uses the Outstanding Collection *report's* per-invoice
+  // arithmetic rather than the KPI total's, because "how many are late" is a
+  // per-invoice question. It is a count, never a rupee figure, so it cannot be
+  // mistaken for the total beside it.
+  const overdue = await query(
+    `WITH inv AS (
+       SELECT i.customer_id, i.total_amount - COALESCE(p.paid, 0) AS outstanding,
+              (CURRENT_DATE - i.created_at::date) AS age_days
+       FROM invoices i
+       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
+         ON p.invoice_id = i.id
+     )
+     SELECT COUNT(*)::int AS n FROM inv WHERE outstanding > 0.01 AND age_days > 30`
+  );
 
   res.json({
     kpis: {
-      // m3 leads, the order count is the supporting line — volume is what the
-      // plant is measured on, not how many orders it arrived in.
-      orders_today_m3: Number(ordersToday.rows[0].m3),
-      orders_today_count: ordersToday.rows[0].orders,
-      production_today_m3: Number(productionToday.rows[0].m3),
-      challan_today_m3: Number(challanToday.rows[0].m3),
-      challan_today_tickets: challanToday.rows[0].tickets,
-      month_production_m3: achieved,
+      // Today's Order — m3 leads, the order count is the supporting line.
+      orders_today_m3: kpis.order_qty_today,
+      orders_today_count: kpis.order_count_today,
+      // Today's Production — the delivery-challan quantity net of site
+      // rejections, exactly as the Reports page reports it. NOT the Plant
+      // Operator's own daily entry, which is the right basis only for the
+      // Material Module's cost per m3 and is often not filled in at all.
+      production_today_m3: kpis.supplied_qty_today,
+      challan_today_tickets: kpis.ticket_count_today,
+      rejected_today_m3: kpis.rejected_qty_today,
+      month_production_m3: kpis.monthly_production_qty,
       month_target_m3: target,
       // Null, not 0, when no target is set for the month: "no target" and
       // "0% of target" are different states and the tile says which.
-      month_target_pct: target ? (achieved / target) * 100 : null,
-      outstanding_total: Number(outstanding.rows[0].total),
-      outstanding_overdue_30_plus: outstanding.rows[0].overdue_30_plus,
+      month_target_pct: target ? (kpis.monthly_production_qty / target) * 100 : null,
+      outstanding_total: kpis.total_outstanding,
+      outstanding_overdue_30_plus: overdue.rows[0].n,
     },
     badges: {
       "material-module": materialOrders.rows[0].n,
@@ -128,7 +102,7 @@ router.get("/summary", async (req, res) => {
       "booking-links": bookings.rows[0].n,
       "assign-lead": leads.rows[0].n,
       "statutory-compliance": compliance.rows[0].n,
-      "outstanding-collection": outstanding.rows[0].overdue_30_plus,
+      "outstanding-collection": overdue.rows[0].n,
     },
   });
 });
