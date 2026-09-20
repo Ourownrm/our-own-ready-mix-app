@@ -41,6 +41,8 @@ import materialModuleRoutes from "./routes/materialModule.js";
 import qcDashboardRoutes from "./routes/qcDashboard.js";
 // Round 143 — the Administrator dashboard's icon view (KPIs, badges, pins).
 import adminDashboardRoutes from "./routes/adminDashboard.js";
+// Round 146 — Super Admin per-user access control.
+import superAdminRoutes from "./routes/superAdmin.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
   checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
@@ -119,6 +121,7 @@ app.use("/api/material-module", materialModuleRoutes);
 // level (see routes/qcDashboard.js); read-only, adds no tables.
 app.use("/api/qc-dashboard", qcDashboardRoutes);
 app.use("/api/admin-dashboard", adminDashboardRoutes);
+app.use("/api/super-admin", superAdminRoutes);
 app.use("/api/booking-links", bookingLinksRoutes);
 // Manager/Admin-only, staff auth as usual — generates/lists/revokes the
 // customer portal access codes (routes/customerAccess.js).

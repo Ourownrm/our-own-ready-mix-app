@@ -12,7 +12,12 @@ CREATE TYPE user_role AS ENUM (
   -- already use to do the same thing for their own equipment). No new
   -- table needed — supply_requests.equipment_type already has a 'loader'
   -- option (see EQUIPMENT_TYPES in fuel.js/supplyRequests.js).
-  'loader_operator'
+  'loader_operator',
+  -- Round 146 — the twelfth role, above administrator: the only one that can
+  -- open the access-control page, reset a password, or reach /setup. See
+  -- claude/super-admin-functions-list.md for why it is a role rather than a
+  -- flag on an existing account.
+  'super_admin'
 );
 
 CREATE TYPE order_status AS ENUM (
@@ -692,6 +697,57 @@ CREATE TABLE role_permissions (
   can_edit BOOLEAN DEFAULT FALSE,
   UNIQUE(role, module)
 );
+
+-- ===================== PER-USER ACCESS CONTROL (Round 146) =====================
+-- The Super Admin permission system. NOTE the table above, `role_permissions`,
+-- is a much older and much coarser design (role x module, view/edit only) that
+-- nothing has ever read or written; it is deliberately left alone rather than
+-- half-reused, because it has no per-user layer and no create/delete.
+--
+-- The catalogue of functions itself lives in code
+-- (backend/src/lib/permissionCatalogue.js), not in a table: it changes only
+-- when the app gains a screen, and keeping it in code means a key can never
+-- exist in the database that the app does not understand. These tables hold
+-- only the grants.
+
+-- What every person on a role gets before any individual override.
+CREATE TABLE role_default_permissions (
+  role user_role NOT NULL,
+  permission_key VARCHAR(80) NOT NULL,
+  action VARCHAR(10) NOT NULL CHECK (action IN ('view', 'create', 'edit', 'delete')),
+  PRIMARY KEY (role, permission_key, action)
+);
+
+-- One person differing from their role. ONLY differences are stored, so a
+-- later change to a role default flows through to everyone not overridden.
+-- granted = true adds the permission, false takes it away.
+CREATE TABLE user_permission_overrides (
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+  permission_key VARCHAR(80) NOT NULL,
+  action VARCHAR(10) NOT NULL CHECK (action IN ('view', 'create', 'edit', 'delete')),
+  granted BOOLEAN NOT NULL,
+  set_by INTEGER REFERENCES users(id),
+  set_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, permission_key, action)
+);
+
+-- Every change, who made it and what it was before. Append-only: nothing in
+-- the app updates or deletes a row here.
+CREATE TABLE permission_change_log (
+  id SERIAL PRIMARY KEY,
+  changed_by INTEGER REFERENCES users(id) NOT NULL,
+  -- Exactly one of these two is set: a change to one person, or to a role's
+  -- defaults (which affects everyone on it).
+  target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  target_role user_role,
+  permission_key VARCHAR(80) NOT NULL,
+  action VARCHAR(10) NOT NULL,
+  granted BOOLEAN NOT NULL,
+  previous_state VARCHAR(20) NOT NULL,  -- 'granted' | 'revoked' | 'role default'
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_permission_change_log_at ON permission_change_log(changed_at DESC);
+CREATE INDEX idx_permission_change_log_user ON permission_change_log(target_user_id);
 
 -- ===================== ORDERS (SRS 5A) =====================
 

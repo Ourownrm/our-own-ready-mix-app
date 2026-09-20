@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { CATALOGUE as PERM_CATALOGUE, ROLES as PERM_ROLES } from "../lib/permissionCatalogue.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -2096,6 +2097,74 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (Round 143 — user_dashboard_pins for the icon-view dashboard).");
 
+    // Round 146 — the Super Admin permission system.
+    // The enum value first: ADD VALUE cannot run inside a transaction block in
+    // older Postgres and cannot be repeated, hence IF NOT EXISTS.
+    await pool.query(`ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'super_admin'`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS role_default_permissions (
+        role user_role NOT NULL,
+        permission_key VARCHAR(80) NOT NULL,
+        action VARCHAR(10) NOT NULL CHECK (action IN ('view', 'create', 'edit', 'delete')),
+        PRIMARY KEY (role, permission_key, action)
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_permission_overrides (
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+        permission_key VARCHAR(80) NOT NULL,
+        action VARCHAR(10) NOT NULL CHECK (action IN ('view', 'create', 'edit', 'delete')),
+        granted BOOLEAN NOT NULL,
+        set_by INTEGER REFERENCES users(id),
+        set_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, permission_key, action)
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS permission_change_log (
+        id SERIAL PRIMARY KEY,
+        changed_by INTEGER REFERENCES users(id) NOT NULL,
+        target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        target_role user_role,
+        permission_key VARCHAR(80) NOT NULL,
+        action VARCHAR(10) NOT NULL,
+        granted BOOLEAN NOT NULL,
+        previous_state VARCHAR(20) NOT NULL,
+        changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_permission_change_log_at ON permission_change_log(changed_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_permission_change_log_user ON permission_change_log(target_user_id)`);
+
+    // Seed each role's defaults from the catalogue — ONLY where that role has
+    // no rows at all. A role somebody has already tuned is never overwritten
+    // by a later /setup run, which is what makes this safe to visit again.
+    const seeded = [];
+    for (const role of PERM_ROLES) {
+      if (role === "super_admin" || role === "administrator") continue; // computed, never seeded
+      const { rows: existing } = await pool.query(
+        `SELECT 1 FROM role_default_permissions WHERE role = $1 LIMIT 1`, [role]
+      );
+      if (existing.length) continue;
+      const values = [];
+      for (const c of PERM_CATALOGUE) {
+        if (c.locked) continue;
+        for (const a of (c.roles[role] || [])) values.push([role, c.key, a]);
+      }
+      if (!values.length) continue;
+      await pool.query(
+        `INSERT INTO role_default_permissions (role, permission_key, action)
+         SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+         ON CONFLICT DO NOTHING`,
+        [values.map((v) => v[0]), values.map((v) => v[1]), values.map((v) => v[2])]
+      );
+      seeded.push(`${role}:${values.length}`);
+    }
+    log.push(
+      `Schema migration applied (Round 146 — super_admin role + permission tables). ` +
+      (seeded.length ? `Seeded role defaults for ${seeded.join(", ")}.` : "Role defaults already present, left untouched.")
+    );
+
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 
     res.send(
@@ -2299,6 +2368,142 @@ router.get("/setup/push-diagnostics", async (req, res) => {
       : "  None yet.") +
     `</pre>`
   );
+});
+
+// Round 147 — creates the FIRST Super Admin, without needing a database client.
+//
+// Why this exists at all: an Administrator deliberately cannot mint a Super
+// Admin (see the ROLES list in Administrator.jsx), so the very first one has to
+// come from outside the app's own permission system. The documented way was a
+// manual `UPDATE users SET role='super_admin' …` in psql, which means installing
+// a Postgres client just to run one statement — Render's lower plans have no
+// in-browser shell. This does the same statement from a URL you already know how
+// to use.
+//
+// What stops it being a back door:
+//   1. It needs SETUP_SECRET, same as every other endpoint in this file.
+//   2. It refuses once an ACTIVE Super Admin exists. After the first one, the
+//      route is permanently inert and every later change goes through the
+//      Super Admin screen, which writes to permission_change_log. There is no
+//      override parameter — reopening it would mean clearing the role in the
+//      database, which is exactly the situation this route exists to avoid
+//      needing, so if you are ever there you can promote from psql anyway.
+//   3. It only promotes an EXISTING, active account. It never creates a user
+//      and never touches a password, so it cannot be used to plant a login.
+//
+// Visiting it without &phone= lists the accounts you could promote, so you can
+// see the exact phone number as stored rather than guessing at spacing or a
+// country-code prefix.
+router.get("/setup/promote-super-admin", async (req, res) => {
+  if (!process.env.SETUP_SECRET || req.query.key !== process.env.SETUP_SECRET) {
+    return res.status(403).send("Not authorized.");
+  }
+
+  const page = (body, colour = "#111") =>
+    `<pre style="font-family: sans-serif; font-size: 15px; padding: 20px; white-space: pre-wrap; color: ${colour};">${body}</pre>`;
+
+  try {
+    // Guard 1 — has the Round 146 migration run? If not, the UPDATE below would
+    // fail with a raw "invalid input value for enum user_role" that reads like a
+    // bug rather than a missing step, so say the actual next action instead.
+    const { rows: enumRows } = await pool.query(
+      `SELECT 1 FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+       WHERE t.typname = 'user_role' AND e.enumlabel = 'super_admin'`
+    );
+    if (!enumRows.length) {
+      return res.status(400).send(page(
+        `The 'super_admin' role does not exist in the database yet.\n\n` +
+        `Visit /setup?key=… once first — that is what adds it — then come back here.`,
+        "#c0392b"
+      ));
+    }
+
+    // Guard 2 — one-shot. Inactive Super Admins do not count, so a deactivated
+    // first Super Admin doesn't lock you out of ever making another.
+    const { rows: existing } = await pool.query(
+      `SELECT id, name, phone FROM users WHERE role = 'super_admin' AND is_active ORDER BY id`
+    );
+    if (existing.length) {
+      return res.status(409).send(page(
+        `A Super Admin already exists, so this one-time route is closed:\n\n` +
+        existing.map((u) => `  #${u.id}  ${u.name}  (${u.phone})`).join("\n") +
+        `\n\nSign in as that person and use the Super Admin screen to promote anyone else —\n` +
+        `every change there is recorded in the change log, which this route is not.`,
+        "#b9770e"
+      ));
+    }
+
+    const phone = String(req.query.phone || "").trim();
+
+    // No phone given — show what's available rather than making them guess.
+    if (!phone) {
+      const { rows: candidates } = await pool.query(
+        `SELECT id, name, phone, role FROM users WHERE is_active ORDER BY role, name`
+      );
+      return res.send(page(
+        `No Super Admin exists yet. Pick the account to promote and add its phone\n` +
+        `number to this URL, exactly as shown below:\n\n` +
+        `   …/setup/promote-super-admin?key=…&phone=XXXXXXXXXX\n\n` +
+        `Active accounts:\n\n` +
+        (candidates.length
+          ? candidates.map((u) => `  #${String(u.id).padEnd(4)} ${String(u.phone).padEnd(16)} ${String(u.role).padEnd(16)} ${u.name}`).join("\n")
+          : `  (none — create a user from the Administrator screen first)`)
+      ));
+    }
+
+    // Look before writing. Matching on phone because that is what people sign
+    // in with. `users.phone` carries a UNIQUE constraint, so the multi-match
+    // branch below should never fire — it stays as cheap defence, because
+    // resolving to one id and updating by id costs nothing, while an
+    // `UPDATE … WHERE phone = $1` that promoted two rows would need each
+    // account's previous role guessed at to undo.
+    const { rows: matches } = await pool.query(
+      `SELECT id, name, phone, role FROM users WHERE phone = $1 AND is_active ORDER BY id`,
+      [phone]
+    );
+
+    if (!matches.length) {
+      return res.status(404).send(page(
+        `No active user with phone "${phone}".\n\n` +
+        `Load this URL without the &phone= part to see the list of accounts\n` +
+        `with their phone numbers exactly as stored.`,
+        "#c0392b"
+      ));
+    }
+    if (matches.length > 1) {
+      // Two accounts share a phone number — promoting both is not what anyone
+      // meant, and nothing has been written yet, so stop here.
+      return res.status(409).send(page(
+        `${matches.length} active accounts share the phone "${phone}" — nothing was changed.\n\n` +
+        matches.map((m) => `  #${m.id}  ${m.name}  (${m.role})`).join("\n") +
+        `\n\nDeactivate the duplicate from the Administrator screen, then try again.`,
+        "#c0392b"
+      ));
+    }
+
+    const { rows: promoted } = await pool.query(
+      `UPDATE users SET role = 'super_admin' WHERE id = $1 RETURNING id, name, phone, role`,
+      [matches[0].id]
+    );
+    const u = promoted[0];
+    res.send(page(
+      `Done.\n\n` +
+      `  #${u.id}  ${u.name}  (${u.phone})  →  ${u.role}\n\n` +
+      `Sign out of the app completely, then sign in again with that phone number.\n` +
+      `You should land on the Super Admin screen rather than the Administrator dashboard.\n` +
+      `If you land on the old page, tap Refresh in the app footer — that asks the\n` +
+      `service worker for the newest build before reloading.\n\n` +
+      `Do this next: from the Super Admin screen, make a SECOND Super Admin.\n` +
+      `Nobody can change their own role or their own access, and the system refuses to\n` +
+      `leave zero active Super Admins — so with only one account, losing it means coming\n` +
+      `back to a database prompt. Two accounts can rescue each other.\n\n` +
+      `This route is now closed and will refuse any further use.`
+    ));
+  } catch (err) {
+    console.error(err);
+    res.status(500).send(page(`Something went wrong:\n${err.message}`, "#c0392b"));
+  }
 });
 
 export default router;

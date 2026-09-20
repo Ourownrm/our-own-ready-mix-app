@@ -6286,3 +6286,125 @@ running app with seeded cube results — horizontal overflow measured as zero at
 height measured against the reserved space at both widths, desktop panel layout compared against
 the previous screenshot to confirm the `auto-fit` change did not alter it, and no console errors at
 either size.
+
+## Round 146 (Ver. 9.71): Super Admin — per-user access control
+
+The approved design in `claude/super-admin-functions-list.md` built as real code. **Visit
+`/setup?key=...` once after deploying** — a new role, three new tables, and the role defaults are
+seeded there.
+
+**`super_admin` is a new, twelfth role**, above Administrator, and the only one that can open
+`/super-admin`. Create the first one directly in the database (an Administrator deliberately cannot
+mint one — `ROLES` on the Users screen does not list it); after that a Super Admin can promote
+others from the page.
+
+**The catalogue — 108 functions, 257 permissions — lives in code**, in
+`backend/src/lib/permissionCatalogue.js`, not in a table. A key that no longer exists in the app
+therefore cannot exist in the database; the tables hold only grants. Each entry carries which of
+View / Create / Edit / Delete apply, the role defaults transcribed from that route's own
+`requireRole(...)` so nobody's access changes on day one, and — where there is one — the matching
+dashboard screen key, which is what lets a tile disappear without a second list to keep in step.
+All 42 dashboard screens map to a permission; that was checked, not assumed.
+
+**Two layers**: role defaults, then per-user overrides, and **only the overrides are stored**, so
+changing a role default later flows through to everyone on that role except those deliberately
+overridden — the page says who that is when you make such a change.
+
+**The safety rules are in the API, not just the page**: you cannot edit your own access or
+deactivate your own account; the system refuses a change that would leave zero active Super Admins;
+the three locked functions (access control, password reset, `/setup`) can never be granted to
+anyone; and **View is the gate** — Create/Edit/Delete cannot be granted without it, and revoking
+View cascades the rest off rather than leaving orphans. Administrator's set is **computed, not
+stored** (the user's decision of 19 Sep), so it cannot be trimmed by editing a table either.
+
+**Permissions are not in the login token.** The token carries the role and lives 30 days, so a
+change today would not bite for a month. The set is resolved per request, cached in memory for five
+seconds, and the cache is dropped the instant anyone saves — measured: a revoke takes effect within
+six seconds, not at next sign-in.
+
+**The one property that makes this safe to roll out gradually**: `requirePermission` is added
+**alongside** the existing `requireRole` guards, never in place of them. A request must satisfy
+both. Granting somebody a permission therefore cannot let them past a role guard that has not been
+converted yet — this system can only tighten access, never loosen it, while conversion proceeds.
+
+**Converted this round: the whole Material Module** — all 49 routes. That is the tranche where a
+real non-Administrator role (Store) does real work, so revoking something has a visible effect
+today rather than being theory. The remaining ~220 routes keep their role guards and are unaffected;
+they follow group by group.
+
+**The Super Admin page** has three tabs: People (a person's matrix with the role default beside it
+and a dot on anything changed), Role defaults (a whole role at once), and an append-only Change log
+recording who changed what, for whom, and what it was before.
+
+**Honest limitation, worth stating**: hiding a dashboard tile is implemented and correct, but has
+no visible effect yet. The icon dashboard is Administrator-only, and Administrator has everything
+by design — so there is currently nobody who sees that grid *and* can have a tile taken away. It
+becomes live the moment another role gets the grid, or if the Administrator decision is revisited.
+The API enforcement above is what does the real work today.
+
+**Verification**: `node --check`, clean build, schema on a throwaway Postgres, `/setup` run and
+confirmed to seed 10 roles' defaults (manager 119 permissions, store 17, and so on) **without
+touching a role that already has rows**. Through the real running app: administrator and store both
+**403** on every Super Admin route, unauthenticated **401**; `/auth/me` returning 257 permissions
+for a Super Admin, 251 for an Administrator (the six locked ones withheld) and 17 for Store — each
+count checked against the catalogue. Every safety rule was exercised and returned a clean 400 with
+a plain-language reason: editing yourself, editing an Administrator, granting a locked function,
+granting Edit without View, editing a computed role's defaults, changing your own role. Revoking
+View was confirmed to cascade (3 actions) and a role-default change confirmed to reach everyone
+except an overridden user. The zero-Super-Admins guard was checked directly against the database,
+since the self-protection rules make it otherwise unreachable. Finally the live proof: Store
+listing material orders **200 → revoke → 403 → restore → 200**, with an unrelated permission
+(`material.stock`) confirmed unaffected throughout, and all nine Material Module endpoints
+confirmed still **200** for an Administrator. The page itself was driven headless — sign-in landing
+on `/super-admin`, the matrix opened for a real user, all three tabs rendered, and an Administrator
+typing the URL bounced back to their own dashboard.
+
+## Round 147 (Ver. 9.72): Making the first Super Admin without a database client
+
+Round 146 shipped the Super Admin role but left one manual step: an Administrator deliberately
+cannot mint a Super Admin, so the very first one had to be created with a hand-written
+`UPDATE users SET role = 'super_admin' …` in psql. That is a small statement with a large
+prerequisite — Render's lower Postgres plans have no in-browser shell, so it meant installing a
+Postgres client (and, on Windows, working around the fact that the copied `PGPASSWORD=… psql …`
+line is bash syntax PowerShell does not understand) purely to run one line.
+
+**`GET /setup/promote-super-admin?key=<SETUP_SECRET>&phone=<phone>`** does that one line from a URL,
+in the same browser where `/setup` is already run.
+
+Visited **without** `&phone=`, it lists every active account with its id, phone, role and name — so
+the phone number is copied from the database rather than guessed at, which is where a stray space or
+country-code prefix would otherwise turn into a silent "0 rows updated".
+
+What keeps it from being a back door, in the order the request meets them:
+
+- It needs `SETUP_SECRET`, like every other endpoint in this file.
+- It checks `pg_enum` for the `super_admin` label before anything else. On a database where Round
+  146's migration has not run, the promotion would otherwise fail with a raw
+  `invalid input value for enum user_role`, which reads like a bug rather than a missing step; the
+  guard says "visit /setup first" instead.
+- **It refuses once an active Super Admin exists**, naming who that is. After the first one the
+  route is permanently inert, and every later role change goes through the Super Admin screen, which
+  writes to `permission_change_log` — this route does not, which is precisely why it gets exactly one
+  use. There is no override parameter.
+- It only promotes an **existing, active** account. It never creates a user and never touches a
+  password, so it cannot be used to plant a login.
+- It resolves the phone to a single row and updates **by id**. `users.phone` is UNIQUE so the
+  multi-match branch should never fire, but an `UPDATE … WHERE phone = $1` that promoted two rows
+  would need each account's previous role guessed at to undo, and reading first costs nothing.
+
+The success page tells you what to do next rather than just reporting success: sign out fully and
+back in, expect to land on `/super-admin`, use the footer Refresh if the service worker serves the
+old bundle — and **make a second Super Admin immediately**. Nobody can change their own role or
+their own access, and the system refuses to leave zero active Super Admins, so a single Super Admin
+account is a single point of failure that puts you back at a database prompt. Two can rescue each
+other.
+
+**Verification**: `node --check`, clean `npm run build`. Against a throwaway Postgres with the real
+server running, every branch was exercised: wrong key **403**; no `&phone=` listing the seeded
+account **200**; unknown phone **404**; the promotion itself **200** with the database's own
+`RETURNING` row in the response; an immediate repeat **409** naming the existing Super Admin. The
+pre-migration guard was proved on a *second* database built with a `user_role` enum that has no
+`super_admin` label — **400** with the "visit /setup first" message, no write attempted. Then the
+part that actually matters: the promoted account was signed in through the real login endpoint and
+`/auth/me` returned `role: super_admin` with all 108 catalogue functions including the three locked
+ones, and `/api/super-admin/catalogue` and `/users` both answered **200** for it.
