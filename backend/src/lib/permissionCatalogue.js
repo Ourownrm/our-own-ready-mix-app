@@ -110,16 +110,34 @@ export const CATALOGUE = [
     { administrator: V, lab_technician: VCE }),
 
   // ---------- Material Module ----------
+  // Round 148 — the six `store` / `plant_operator` VIEW defaults below were
+  // missing in Round 146 and are a correction, not a widening.
+  //
+  // Round 146's rule was that each default is transcribed from that route's
+  // own requireRole. For these master-data reads that transcription was
+  // wrong: the routes have always allowed Store (MATERIALS_READ_ROLES /
+  // ORDER_ROLES) and Plant Operator, but the catalogue granted only
+  // Administrator — so the moment requirePermission was added alongside
+  // requireRole, Store lost the Materials, Suppliers, Rates and Transporters
+  // lists it needs to raise an order at all, and Plant Operator lost the
+  // Materials list behind consumption entry. Both got a bare 403.
+  //
+  // This is the two-guards-disagreeing bug this project keeps hitting, in a
+  // new place. `scripts/check-guards.mjs` now cross-checks every route's
+  // requireRole against its requirePermission default and fails on a
+  // mismatch — run it when converting the next group of routes.
+  //
+  // Granting view here can never exceed the role guard, since both must pass.
   f("material.materials", "material", "Materials master", VCED,
-    { administrator: VCED }),
+    { administrator: VCED, store: V, plant_operator: V }),
   f("material.units", "material", "Purchase units per material", VCED,
-    { administrator: VCED }),
+    { administrator: VCED, store: V, plant_operator: V }),
   f("material.suppliers", "material", "Suppliers master", VCED,
-    { administrator: VCED }),
+    { administrator: VCED, store: V }),
   f("material.supplier-rates", "material", "Supplier rates", VCE,
-    { administrator: VCE }),
+    { administrator: VCE, store: V }),
   f("material.transporters", "material", "Transporters & freight rates", VCE,
-    { administrator: VCE }),
+    { administrator: VCE, store: V }),
   f("material.orders", "material", "Material orders", VCED,
     { administrator: VCED, store: VC }),
   f("material.order-approve", "material", "Approve / reject a material order", E,
@@ -133,7 +151,7 @@ export const CATALOGUE = [
   f("material.stock-valuation", "material", "Stock — rates and value", V,
     { administrator: V }),
   f("material.physical-stock", "material", "Monthly physical stock count", VCE,
-    { administrator: VCE, store: VCE }),
+    { administrator: VCE, store: VCE, plant_operator: V }),
   f("material.reports", "material", "Material reports", V,
     { administrator: V }),
   f("material.cost-dashboard", "material", "Material cost dashboard", V,

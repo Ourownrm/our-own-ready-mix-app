@@ -52,14 +52,39 @@ router.post("/users", requireRole("administrator"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
+// Round 148 — an Administrator must not be able to take over a Super Admin
+// account. Until this round, "Reset password" and "Disable" on the Users &
+// Roles screen worked on ANY row, Super Admins included: any Administrator
+// could have set a new password on the Super Admin account and signed in as
+// it, which makes the separation between the two roles decorative. Since the
+// Administrator login is often shared between several people, that is the
+// whole point of having a Super Admin at all.
+//
+// A Super Admin is exempt because requireRole lets it through every guard
+// (middleware/auth.js), and it manages these accounts from its own screen
+// where the rules about not editing yourself and not leaving zero Super
+// Admins are enforced.
+async function blockIfSuperAdminTarget(req, res) {
+  if (req.user.role === "super_admin") return false;
+  const { rows } = await query("SELECT role::text AS role FROM users WHERE id = $1", [req.params.id]);
+  if (!rows[0]) { res.status(404).json({ error: "No such user." }); return true; }
+  if (rows[0].role === "super_admin") {
+    res.status(403).json({ error: "That's a Super Admin account. Only a Super Admin can change it." });
+    return true;
+  }
+  return false;
+}
+
 // Toggle active/disabled — soft only, never a hard delete (SRS §16)
 router.patch("/users/:id/status", requireRole("administrator"), async (req, res) => {
+  if (await blockIfSuperAdminTarget(req, res)) return;
   const { is_active } = req.body;
   await query("UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
 });
 
 router.post("/users/:id/reset-password", requireRole("administrator"), async (req, res) => {
+  if (await blockIfSuperAdminTarget(req, res)) return;
   const { new_password } = req.body;
   if (!new_password || new_password.length < 6) {
     return res.status(400).json({ error: "New password must be at least 6 characters." });

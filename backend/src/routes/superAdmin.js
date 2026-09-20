@@ -285,7 +285,14 @@ router.post("/users/:id/role", async (req, res) => {
 router.post("/users", async (req, res) => {
   const { name, phone, password, role } = req.body || {};
   if (!name || !phone || !password) return res.status(400).json({ error: "Name, phone and a password are all needed." });
+  if (String(password).length < 6) return res.status(400).json({ error: "The password must be at least 6 characters." });
   if (!ROLES.includes(role)) return res.status(400).json({ error: "No such role." });
+  // Round 148 — phone is UNIQUE and is the login, so without this the insert
+  // fails with a raw constraint error the page can only show as "something
+  // went wrong". The Administrator screen has always checked this; this
+  // endpoint was written later and did not.
+  const { rows: clash } = await query("SELECT id FROM users WHERE phone = $1", [phone]);
+  if (clash.length) return res.status(400).json({ error: "Somebody already signs in with that phone number." });
   const { rows } = await query(
     `INSERT INTO users (name, phone, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, role::text AS role`,
     [name, phone, await bcrypt.hash(password, 10), role]

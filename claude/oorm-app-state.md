@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 147, Ver. 9.72)
+# OORM App — Current State (as of App 148, Ver. 9.73)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -30,6 +30,61 @@ delivering a round with a schema change, the user needs to visit that URL once; 
 causes exactly the kind of generic "Something went wrong" error a missing column produces (the
 app's error handler is deliberately plain-language, so it never surfaces the real Postgres error
 to the user — see `index.js`'s final `app.use((err, req, res, next) => ...)`).
+
+## Round 148 (Ver. 9.73): Super Admin made usable — and two Round 146 bugs it exposed
+
+**Visit `/setup?key=...` once after deploying** — no schema change, but a data repair runs there.
+
+Round 147's route worked, and the first real promotion showed Round 146 had shipped a role nobody
+could live with. **`super_admin` is the TOP role — an Administrator plus the access-control screen —
+not a sideways one.** That rule now lives in exactly two mirrored places: `requireRole` in
+`middleware/auth.js` lets a Super Admin through any check, and `ProtectedRoute` does the same on the
+frontend. `isAdminLevel()` (new `frontend/src/lib/roles.js`, plus an export from the backend
+middleware) is how everything else asks "is this an Administrator?" — it replaced every bare
+`role === "administrator"` compare in nine frontend files and three backend routers, and four SQL
+predicates that passed the role string into the query now pass a boolean. **Do not re-introduce a
+bare string compare**; that is what caused this.
+
+Deliberately NOT done: rewriting `req.user.role` to `"administrator"` for a Super Admin. It would
+have made every existing check pass for free, at the price of a future `role === "super_admin"`
+silently being false.
+
+**The People tab can now manage accounts.** Round 146 built `POST /users`, `POST /users/:id/role`
+and `PATCH /users/:id/status` and never called them from the page — which meant a system with
+exactly one Super Admin had no way back, since nobody can change their own role and the API refuses
+to leave zero Super Admins. Add person / role selector / Disable-Enable sign-in, plus a link across
+to the Administrator dashboard.
+
+**An Administrator can no longer take over a Super Admin account** — `reset-password` and `status`
+in `administrator.js` refuse when the target is a Super Admin, and the buttons say so rather than
+failing after the click. This matters because the Administrator login is shared.
+
+**The Round 146 regression this round found by accident — worth remembering.** `requirePermission`
+was added to 49 Material Module routes with defaults "transcribed from that route's own
+`requireRole`", and **ten were not**. Store lost every master-data read needed to raise a purchase
+order (Materials, Units, Suppliers, Supplier rates, Transporters); Plant Operator lost Materials,
+Units and physical-stock view. Both guards were individually correct and simply disagreed — this
+project's oldest bug pattern in a new place.
+
+A catalogue correction alone does not reach a live system: the seeding loop only runs for a role
+with **no** rows (which is what stops a later `/setup` trampling tuned access). So `setup.js` carries
+a named, additive **`REPAIR_148`** list inserting exactly those eight rows with `ON CONFLICT DO
+NOTHING`. Use that pattern for any future default correction.
+
+**`backend/scripts/check-guards.mjs` is the guard against a repeat** — it cross-checks every route's
+`requireRole` against its `requirePermission` default and exits non-zero on a mismatch. **Run it
+when converting the next group of the ~220 remaining routes.**
+
+**Verification**: guard checker green on 49 routes, then deliberately broken to prove it fails.
+Live: a promoted account confirmed 200 on seven Administrator-side APIs it would have been 403 on
+before, `/api/super-admin/*` still 403 for a plain Administrator; the whole recovery path run end to
+end (create, duplicate-phone and short-password refusals, sign in, own-role refusal, demote the
+shared account, confirm it is an ordinary Administrator again); both takeover attempts refused with
+the original password still working, while the same two actions on a Store account still succeeded;
+the repair migration run on an already-seeded database restoring 8 rows, a no-op on re-run, Store
+back to 200 on all four screens **and still getting no rate field and no inactive rows** where a
+Super Admin got both. Page driven headless as both roles, zero horizontal overflow at 390px and
+1280px, no console errors.
 
 ## Round 147 (Ver. 9.72): making the first Super Admin without a database client
 

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { query } from "../db.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 
 const router = Router();
@@ -38,7 +38,7 @@ async function mySalespersonId(userId) {
 // for admin/manager; a Sales Executive always sees their own regardless of
 // what's passed.
 function targetUserId(req) {
-  if (["administrator", "manager"].includes(req.user.role) && req.query.as_user) {
+  if ((isAdminLevel(req.user.role) || req.user.role === "manager") && req.query.as_user) {
     return Number(req.query.as_user);
   }
   return req.user.id;
@@ -736,7 +736,7 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
 // manager, accountant) sees their own — sorted so overdue is unmissable at
 // the top, matching the actual daily-use pattern this exists for.
 router.get("/followups", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
-  const viewingAs = ["administrator", "manager"].includes(req.user.role) && req.query.as_user;
+  const viewingAs = (isAdminLevel(req.user.role) || req.user.role === "manager") && req.query.as_user;
   const role = viewingAs ? "sales_executive" : req.user.role;
   const userFilter = viewingAs ? Number(req.query.as_user) : (req.user.role === "sales_executive" ? req.user.id : null);
   const { rows } = await query(

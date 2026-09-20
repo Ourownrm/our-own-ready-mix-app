@@ -6408,3 +6408,78 @@ pre-migration guard was proved on a *second* database built with a `user_role` e
 part that actually matters: the promoted account was signed in through the real login endpoint and
 `/auth/me` returned `role: super_admin` with all 108 catalogue functions including the three locked
 ones, and `/api/super-admin/catalogue` and `/users` both answered **200** for it.
+
+## Round 148 (Ver. 9.73): Super Admin made usable — and two Round 146 bugs it exposed
+
+**Visit `/setup?key=...` once after deploying** — no schema change, but a data repair runs there.
+
+Round 147's route worked, and the first real promotion immediately showed that Round 146 had shipped
+a role nobody could actually live with. Three separate faults, found by using it rather than by
+reading it.
+
+**1. Promoting an account LOCKED IT OUT of the app.** Every Administrator screen is guarded
+`roles={["administrator"]}` / `requireRole("administrator")`, and `super_admin` is not that string.
+So the account with the most access could reach exactly one page. Since the Administrator login is
+often shared, promoting it took the whole team out of the dashboard at once.
+
+Fixed by stating the rule once, in two places that now mirror each other: `requireRole` in
+`middleware/auth.js` lets a `super_admin` through any check, and `ProtectedRoute` does the same on
+the frontend. Alongside them, `isAdminLevel()` — new `frontend/src/lib/roles.js`, and an export from
+the backend middleware — is how the rest of the code asks "is this an Administrator?", replacing
+every bare `role === "administrator"` compare across nine frontend files and three backend routers.
+Four SQL predicates that passed the role string into the query (`WHERE is_active OR $1 =
+'administrator'`) now pass a boolean instead.
+
+This deliberately does **not** rewrite `req.user.role` to `"administrator"` behind the scenes.
+Masking it would have made every existing check pass for free, at the price of a future
+`role === "super_admin"` silently being false — a worse trap than the edits it saved.
+
+**2. The Super Admin screen had no way to create an account or change a role.** Round 146 built
+`POST /users`, `POST /users/:id/role` and `PATCH /users/:id/status` and then never called them from
+the page. That is not a cosmetic gap: nobody can change their own role or their own access, and the
+API refuses to leave zero active Super Admins, so a system with exactly one Super Admin had no route
+back — you could not make a second one, and you could not hand the role back to the shared account.
+The People tab now has **+ Add person**, a **role selector** and **Disable/Enable sign-in** on the
+selected person, plus a link across to the Administrator dashboard. The create endpoint also gained
+the duplicate-phone and minimum-length checks the Administrator screen has always had.
+
+**3. An Administrator could take over a Super Admin account.** "Reset password" and "Disable" on
+Users & Roles worked on any row, Super Admins included — so anyone holding the shared Administrator
+login could set a new password on the Super Admin account and sign in as it. Both routes now refuse
+when the target is a Super Admin, and the buttons are replaced with "Managed from the Super Admin
+screen" rather than left to fail after the click.
+
+**And the one this round did not go looking for.** Verification of the role change turned up a
+**live Round 146 regression**: `requirePermission` was added to 49 Material Module routes with
+defaults meant to be transcribed from each route's own `requireRole`, and ten of them were not.
+Store lost the Materials, Purchase units, Suppliers, Supplier rates and Transporters lists — every
+master-data read needed to raise a purchase order — and Plant Operator lost Materials, Units and the
+physical-stock view. Both guards were individually correct; they simply disagreed, which is this
+project's oldest bug pattern in a new place.
+
+The catalogue is corrected, but a correction alone does not reach a live system: the seeding loop
+only runs for a role with **no** rows, which is what stops a later `/setup` trampling tuned access.
+So `setup.js` carries a named, additive `REPAIR_148` list that inserts exactly those eight rows with
+`ON CONFLICT DO NOTHING`. Nothing is removed, per-user overrides still win, and since both guards
+must pass a row here can never grant more than the role guard already allows.
+
+To stop it happening in the remaining ~220 routes, **`backend/scripts/check-guards.mjs`** now
+cross-checks every route's `requireRole` against its `requirePermission` default and exits non-zero
+on a mismatch. Run it when converting the next group.
+
+**Verification**: `node --check` across the backend, clean `npm run build`, and the guard checker
+green on all 49 routes — then deliberately broken by removing one default to confirm it actually
+fails (it found 4). Live, against a throwaway Postgres: an Administrator promoted through Round
+147's route, confirmed **200 on seven Administrator-side APIs it would have been 403 on before**,
+while `/api/super-admin/*` stayed 403 for a plain Administrator. The whole recovery path was then
+run end to end — create a personal Super Admin, refuse a duplicate phone and a short password, sign
+in as it, be refused when changing your own role, demote the shared account, and confirm it is an
+ordinary Administrator again (dashboard 200, super-admin 403). Both takeover attempts were refused
+with the Super Admin's original password still working afterwards, while the same two actions on an
+ordinary Store account still succeeded — a guard that refuses everything proves nothing. The repair
+migration was run against an already-seeded database, restoring 8 rows and reporting nothing to
+repair on a second run, with Store confirmed back to 200 on all four screens **and still receiving
+no rate field and no inactive rows**, exactly as a Super Admin received both. Finally the page was
+driven headless as both roles: the Super Admin landing on `/super-admin`, reaching `/administrator`
+with its module tiles, and showing all four new controls; the Administrator still bounced off
+`/super-admin`; zero horizontal overflow at 390px and 1280px; no console errors.

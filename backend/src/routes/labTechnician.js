@@ -10,7 +10,7 @@
 // reasoning.
 import { Router } from "express";
 import { query } from "../db.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { resolveCubeTestDnSummary } from "../lib/cubeTestDns.js";
 
 const router = Router();
@@ -1236,7 +1236,7 @@ router.post("/mix-designs/:id/approve", requireRole("lab_technician", "qc_engine
   if (!rows.length) return res.status(404).json({ error: "Mix design not found." });
   const design = rows[0];
   if (design.status === "approved") return res.status(400).json({ error: "Already approved." });
-  if (design.created_by === req.user.id && req.user.role !== "administrator") {
+  if (design.created_by === req.user.id && !isAdminLevel(req.user.role)) {
     return res.status(400).json({ error: "The design's own creator can't approve it — a second person needs to sign off." });
   }
   await query(

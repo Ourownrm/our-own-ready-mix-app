@@ -2165,6 +2165,46 @@ router.get("/setup", async (req, res) => {
       (seeded.length ? `Seeded role defaults for ${seeded.join(", ")}.` : "Role defaults already present, left untouched.")
     );
 
+    // Round 148 — repair the six view defaults Round 146 got wrong.
+    //
+    // The seeding loop above only runs for a role with NO rows, which is what
+    // stops a later /setup trampling access somebody has tuned. That is right,
+    // but it means a CORRECTION to the catalogue never reaches an installation
+    // that has already been seeded — and Round 146 seeded Store and Plant
+    // Operator without the master-data reads their own routes allow, so both
+    // roles currently get a 403 on screens they are supposed to use (Materials,
+    // Suppliers, Rates, Transporters; see permissionCatalogue.js).
+    //
+    // So these specific rows are inserted by name, additively, with ON CONFLICT
+    // DO NOTHING. Nothing is removed and nothing else is touched. If somebody
+    // has deliberately revoked one of these from a person, that lives in
+    // user_permission_overrides and still wins — this only fixes the role's
+    // baseline. And since requireRole and requirePermission must BOTH pass, a
+    // row here can never grant access the role guard doesn't already allow.
+    const REPAIR_148 = [
+      ["store", "material.materials", "view"],
+      ["store", "material.units", "view"],
+      ["store", "material.suppliers", "view"],
+      ["store", "material.supplier-rates", "view"],
+      ["store", "material.transporters", "view"],
+      ["plant_operator", "material.materials", "view"],
+      ["plant_operator", "material.units", "view"],
+      ["plant_operator", "material.physical-stock", "view"],
+    ];
+    const repaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING
+       RETURNING role::text, permission_key`,
+      [REPAIR_148.map((r) => r[0]), REPAIR_148.map((r) => r[1]), REPAIR_148.map((r) => r[2])]
+    );
+    log.push(
+      repaired.rows.length
+        ? `Schema migration applied (Round 148 — restored ${repaired.rows.length} master-data view default(s) Round 146 missed: ` +
+          `${repaired.rows.map((r) => `${r.role}/${r.permission_key}`).join(", ")}).`
+        : `Round 148 — master-data view defaults already correct, nothing to repair.`
+    );
+
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 
     res.send(

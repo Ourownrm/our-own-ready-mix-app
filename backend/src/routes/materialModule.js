@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { query } from "../db.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 // Round 146 — every route below now carries BOTH its original requireRole and
 // a requirePermission. A request must satisfy both, so granting somebody a
 // permission can never let them past a role guard: this can only tighten
@@ -49,8 +49,8 @@ function isStore(req) {
 
 router.get("/materials", requireRole(...MATERIALS_READ_ROLES), requirePermission("material.materials", "view"), async (req, res) => {
   const { rows } = await query(
-    `SELECT * FROM rm_materials WHERE is_active OR $1 = 'administrator' ORDER BY category, name`,
-    [req.user.role]
+    `SELECT * FROM rm_materials WHERE is_active OR $1 ORDER BY category, name`,
+    [isAdminLevel(req.user.role)]
   );
   // Store never sees valuation — enforced here, not just left out of the UI.
   const sanitized = isStore(req) ? rows.map(({ opening_stock_rate_per_kg, ...rest }) => rest) : rows;
@@ -91,8 +91,8 @@ router.post("/materials", requireRole(...ADMIN), requirePermission("material.mat
 // columns; this table is the reference/management layer on top.
 router.get("/materials/:id/units", requireRole(...MATERIALS_READ_ROLES), requirePermission("material.units", "view"), async (req, res) => {
   const { rows } = await query(
-    `SELECT * FROM rm_material_units WHERE material_id = $1 AND (is_active OR $2 = 'administrator') ORDER BY is_default DESC, unit_name`,
-    [req.params.id, req.user.role]
+    `SELECT * FROM rm_material_units WHERE material_id = $1 AND (is_active OR $2) ORDER BY is_default DESC, unit_name`,
+    [req.params.id, isAdminLevel(req.user.role)]
   );
   res.json(rows);
 });
@@ -198,7 +198,7 @@ router.patch("/materials/:id", requireRole(...ADMIN), requirePermission("materia
 // ===================== Suppliers, rates & transporters master =====================
 
 router.get("/suppliers", requireRole(...ORDER_ROLES), requirePermission("material.suppliers", "view"), async (req, res) => {
-  const { rows } = await query(`SELECT * FROM rm_suppliers WHERE is_active OR $1 = 'administrator' ORDER BY name`, [req.user.role]);
+  const { rows } = await query(`SELECT * FROM rm_suppliers WHERE is_active OR $1 ORDER BY name`, [isAdminLevel(req.user.role)]);
   res.json(rows);
 });
 
@@ -299,7 +299,7 @@ router.post("/suppliers/:supplierId/rates", requireRole(...ADMIN), requirePermis
 });
 
 router.get("/transporters", requireRole(...ORDER_ROLES), requirePermission("material.transporters", "view"), async (req, res) => {
-  const { rows } = await query(`SELECT * FROM rm_transporters WHERE is_active OR $1 = 'administrator' ORDER BY name`, [req.user.role]);
+  const { rows } = await query(`SELECT * FROM rm_transporters WHERE is_active OR $1 ORDER BY name`, [isAdminLevel(req.user.role)]);
   res.json(rows);
 });
 
@@ -415,7 +415,7 @@ const ORDER_LIST_FROM = `
 router.get("/orders/mine", requireRole(...ORDER_ROLES), requirePermission("material.orders", "view"), async (req, res) => {
   const params = [req.user.id];
   let where = "o.requested_by = $1";
-  if (req.user.role === "administrator") { where = "true"; params.length = 0; }
+  if (isAdminLevel(req.user.role)) { where = "true"; params.length = 0; }
   const { rows } = await query(
     `SELECT ${ORDER_LIST_COLUMNS} ${ORDER_LIST_FROM} WHERE ${where} ORDER BY o.requested_at DESC LIMIT 200`,
     params
