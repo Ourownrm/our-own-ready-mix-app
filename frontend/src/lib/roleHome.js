@@ -7,6 +7,8 @@ export const ROLE_HOME = {
   // that grid. This also stops the dashboard itself showing TopBar's own
   // "Back to my dashboard" link, which pointed at a different page.
   administrator: "/administrator",
+  // Round 146 — a Super Admin's job is access control, so that is their home.
+  super_admin: "/super-admin",
   manager: "/manager",
   plant_operator: "/plant-operator",
   qc_engineer: "/qc",
@@ -24,6 +26,7 @@ export const ROLE_HOME = {
 
 export const ROLE_LABEL = {
   administrator: "Administrator",
+  super_admin: "Super Admin",
   manager: "Manager",
   plant_operator: "Plant Operator",
   qc_engineer: "QC Engineer",

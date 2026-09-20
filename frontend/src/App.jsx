@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/AuthContext.jsx";
+// Round 146 — the signed-in person's effective permissions, fetched once.
+import { PermissionProvider } from "./lib/PermissionContext.jsx";
 import { CustomerLanguageProvider } from "./lib/customerI18n.jsx";
 import { ROLE_HOME } from "./lib/roleHome.js";
 import { getCustomerSession } from "./lib/customerPortalApi.js";
@@ -55,6 +57,7 @@ import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 import MaterialModule from "./pages/MaterialModule.jsx";
 import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
+import SuperAdmin from "./pages/SuperAdmin.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -75,6 +78,7 @@ function RootRedirect() {
 export default function App() {
   return (
     <AuthProvider>
+      <PermissionProvider>
       {/* Round 119, post-ship again — round 6, item 3: was scoped to just
           CustomerPortal.jsx (the logged-in /portal screens); moved up here so
           the language choice (and useCustomerLanguage()/PublicLanguageSwitcher)
@@ -218,6 +222,10 @@ export default function App() {
           {/* Round 141 — Cube Strength QC dashboard. Administrator only, on
               both sides: this guard and the backend router's own
               requireRole("administrator"). */}
+          {/* Round 146 — access control, the one page only a Super Admin can open. */}
+          <Route path="/super-admin" element={
+            <ProtectedRoute roles={["super_admin"]}><SuperAdmin /></ProtectedRoute>
+          } />
           <Route path="/cube-qc-dashboard" element={
             <ProtectedRoute roles={["administrator"]}><CubeQcDashboard /></ProtectedRoute>
           } />
@@ -254,6 +262,7 @@ export default function App() {
         </Routes>
       </BrowserRouter>
       </CustomerLanguageProvider>
+      </PermissionProvider>
     </AuthProvider>
   );
 }

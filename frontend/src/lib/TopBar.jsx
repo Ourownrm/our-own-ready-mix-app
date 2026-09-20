@@ -19,7 +19,7 @@ function useClock() {
 }
 
 const ROLE_LABELS = {
-  administrator: "Administrator", manager: "Manager", plant_operator: "Plant Operator",
+  super_admin: "Super Admin", administrator: "Administrator", manager: "Manager", plant_operator: "Plant Operator",
   qc_engineer: "QC Engineer", driver: "Driver", site_supervisor: "Site Supervisor",
   accountant: "Accountant", sales_executive: "Sales Executive", store: "Store",
   lab_technician: "Lab Technician", loader_operator: "Loader Operator",

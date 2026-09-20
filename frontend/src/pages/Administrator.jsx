@@ -29,7 +29,13 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel, PlantLocationsPanel, SiteGeofenceReportPanel, SiteContactsPanel, ProductionTargetPanel, MixDesignAssignmentsPanel, MixDesignsPanel, MaintenanceActionPointsPanel, OrdersPanel as SharedOrdersPanel, TicketsPanel as SharedTicketsPanel } from "../lib/MasterDataPanels.jsx";
 import { CreateLeadForm } from "../lib/SalesPanels.jsx";
 import { ADMIN_MODULES, ALL_SCREENS, SCREEN_BY_KEY, GLYPHS, DEFAULT_PINS, moduleByKey, moduleBadge } from "../lib/adminScreens.js";
+// Round 146 — a tile the person has no View permission for is not rendered.
+// The backend refuses the route as well; this only decides what is worth
+// showing (see lib/PermissionContext.jsx).
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
+// super_admin is deliberately NOT here: an Administrator must not be able
+// to mint one. Only a Super Admin can, from the access-control page.
 const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive", "store", "loader_operator"];
 const MAX_PINS = 8;
 
@@ -174,6 +180,7 @@ function BackBar({ trail, onBack }) {
 
 export default function Administrator() {
   const navigate = useNavigate();
+  const { canScreen, ready: permsReady } = usePermissions();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = searchParams.get("view");
   const moduleKey = searchParams.get("module");
@@ -203,7 +210,23 @@ export default function Administrator() {
   function goHome() { setSearchParams({}, { replace: false }); }
 
   const badges = summary ? summary.badges : null;
-  const activeModule = moduleKey ? moduleByKey(moduleKey) : null;
+
+  // Round 146 — hide what they cannot open. A module with no visible children
+  // disappears too; a module that opens its own screen directly is judged on
+  // that screen. Until the permission fetch lands, `permsReady` is false and
+  // nothing is filtered, so tiles never flash away after paint.
+  const visibleModules = ADMIN_MODULES
+    .map((m) => (m.screens.length
+      ? { ...m, screens: m.screens.filter((sc) => !permsReady || canScreen(sc.key)) }
+      : m))
+    .filter((m) => (m.screens.length
+      ? m.screens.length > 0
+      : !permsReady || canScreen(m.key)));
+
+  const rawActiveModule = moduleKey ? moduleByKey(moduleKey) : null;
+  const activeModule = rawActiveModule
+    ? (visibleModules.find((m) => m.key === rawActiveModule.key) || null)
+    : null;
   // A panel's Back goes to the module it was opened from, not blindly home —
   // an Administrator correcting three tickets in a row should land back in
   // Production each time.
@@ -211,7 +234,7 @@ export default function Administrator() {
   const viewModule = viewScreen ? moduleByKey(viewScreen.moduleKey) : null;
 
   // Keys a screen key can be pinned under, for the picker.
-  const pinnedScreens = pins.map((k) => SCREEN_BY_KEY[k]).filter(Boolean);
+  const pinnedScreens = pins.map((k) => SCREEN_BY_KEY[k]).filter(Boolean).filter((sc) => !permsReady || canScreen(sc.key));
 
   return (
     <>
@@ -312,7 +335,7 @@ export default function Administrator() {
             {/* 112px, not 118: at a 390px phone that is the difference between
                 three module tiles across and two, which halves the scroll. */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: "22px 8px", alignItems: "start" }}>
-              {ADMIN_MODULES.map((m) => (
+              {visibleModules.map((m) => (
                 <ModuleTile key={m.key} module={m} badge={moduleBadge(m, badges)} onOpen={() => openModule(m)} />
               ))}
             </div>
@@ -322,6 +345,7 @@ export default function Administrator() {
         {editingPins && (
           <PinPicker
             pins={pins}
+            modules={visibleModules}
             onClose={() => setEditingPins(false)}
             onSaved={(keys) => { setPins(keys.length ? keys : DEFAULT_PINS); setEditingPins(false); }}
             setError={setError}
@@ -337,7 +361,7 @@ export default function Administrator() {
 // the plant as much as at a desk, and dragging a 58px tile with gloves on is
 // not a thing anyone should have to do. Order follows the registry.
 
-function PinPicker({ pins, onClose, onSaved, setError }) {
+function PinPicker({ pins, modules, onClose, onSaved, setError }) {
   const [selected, setSelected] = useState(pins);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
@@ -377,7 +401,7 @@ function PinPicker({ pins, onClose, onSaved, setError }) {
         </div>
         {notice && <div style={{ fontSize: 12, color: "var(--amber)", marginBottom: 8 }}>{notice}</div>}
 
-        {ADMIN_MODULES.map((m) => {
+        {modules.map((m) => {
           const rows = m.screens.length ? m.screens : [{ key: m.key, label: m.label }];
           return (
             <div key={m.key} style={{ marginBottom: 12 }}>
