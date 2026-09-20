@@ -3,6 +3,7 @@ import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import { generateMixDesignPdf } from "./mixDesignPdf.js";
 import { formatOrderNumber } from "./orderNumber.js";
+import { isAdminLevel } from "./roles.js";
 
 export function List({ rows, columns }) {
   return (
@@ -2519,7 +2520,7 @@ export function MixDesignsPanel({ setError }) {
               // since a small team's only Administrator account is often
               // the same one drafting designs, with no separate qualifying
               // approver at all.
-              const isOwnDraft = d.status === "draft" && user && String(d.created_by) === String(user.id) && user.role !== "administrator";
+              const isOwnDraft = d.status === "draft" && user && String(d.created_by) === String(user.id) && !isAdminLevel(user.role);
               return (
                 <tr key={d.id}>
                   <td>{d.design_ref_code}{d.mix_description ? <div style={{ fontSize: 11, color: "var(--slate)" }}>{d.mix_description}</div> : null}</td>
@@ -2548,7 +2549,7 @@ export function MixDesignsPanel({ setError }) {
                       </button>
                     )}
                     <button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
-                    {user?.role === "administrator" && (
+                    {isAdminLevel(user?.role) && (
                       <button
                         style={{ fontSize: 12, padding: "4px 10px", color: "var(--alert-red)" }}
                         disabled={busyId === d.id}

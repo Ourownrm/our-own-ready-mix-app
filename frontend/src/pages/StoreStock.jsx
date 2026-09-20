@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { isAdminLevel } from "../lib/roles.js";
 
 function fmtDateTime(ts) {
   return new Date(ts).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -19,7 +20,7 @@ const STATUS_COLOR = { pending: "var(--amber, #9C6B12)", approved: "var(--info)"
 
 export default function StoreStock() {
   const { user } = useAuth();
-  const isManager = user?.role === "manager" || user?.role === "administrator";
+  const isManager = user?.role === "manager" || isAdminLevel(user?.role);
 
   const [items, setItems] = useState([]);
   const [mine, setMine] = useState([]);

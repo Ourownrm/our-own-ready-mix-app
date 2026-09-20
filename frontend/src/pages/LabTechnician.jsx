@@ -11,6 +11,7 @@ import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
 import { generateCubeTestPdf, generateCombinedPourCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { isAdminLevel } from "../lib/roles.js";
 
 // IS 516 doesn't mandate a fixed vocabulary for failure mode, but these are
 // the patterns a lab technician actually sees in practice — kept as
@@ -425,7 +426,7 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
   // Round 129 — date-change and delete on a recorded result used to be
   // administrator-only (Round 124/125); opened up to Lab Technician too,
   // since they're the ones who entered the result in the first place.
-  const canManageResults = user?.role === "administrator" || user?.role === "lab_technician";
+  const canManageResults = isAdminLevel(user?.role) || user?.role === "lab_technician";
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
@@ -944,7 +945,7 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
   // Round 129 — delete on a recorded site-cast result opened up to Lab
   // Technician too, matching the plant-side change above (no date-change
   // route exists for site-cast results, so there's nothing to mirror there).
-  const canManageResults = user?.role === "administrator" || user?.role === "lab_technician";
+  const canManageResults = isAdminLevel(user?.role) || user?.role === "lab_technician";
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
@@ -1280,7 +1281,7 @@ function MixDesignsTab({ setError, setNotice }) {
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             {d.status === "draft" && (
               <>
-                <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} disabled={me && d.created_by_name === me.name && user?.role !== "administrator"} onClick={() => approve(d.id)}>
+                <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} disabled={me && d.created_by_name === me.name && !isAdminLevel(user?.role)} onClick={() => approve(d.id)}>
                   Approve
                 </button>
                 <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => startEdit(d.id)}>Edit</button>

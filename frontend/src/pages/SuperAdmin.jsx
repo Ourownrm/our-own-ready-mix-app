@@ -12,6 +12,7 @@
 // without View. The page states the reason rather than just disabling a box,
 // because a greyed tick with no explanation is how people end up asking.
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
@@ -41,6 +42,15 @@ export default function SuperAdmin() {
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
+
+        {/* Round 148 — a Super Admin now has every Administrator screen too
+            (see lib/roles.js), and ROLE_HOME sends them here, so this is the
+            way across. Without it the top role could only ever see this one
+            page, which is exactly the trap Round 147's first promotion fell
+            into. */}
+        <div style={{ marginBottom: 12 }}>
+          <Link to="/administrator" style={{ fontSize: 12, fontWeight: 600 }}>Administrator dashboard &rarr;</Link>
+        </div>
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
           {[["people", "People"], ["roles", "Role defaults"], ["log", "Change log"]].map(([k, l]) => (
@@ -200,6 +210,41 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
 
+  // Round 148 — Round 146 shipped POST /users, POST /users/:id/role and
+  // PATCH /users/:id/status but no way to reach them, so the only Super Admin
+  // in a live system had no way to create a second one or hand the role back.
+  // That is the whole recovery path, so it belongs on the page, not in curl.
+  async function createPerson(form) {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const created = await apiRequest("/super-admin/users", { method: "POST", body: form });
+      setNotice(`Created ${created.name} as ${ROLE_LABEL[created.role] || created.role}.`);
+      await loadUsers();
+      return true;
+    } catch (e) { setError(e.message); return false; } finally { setBusy(false); }
+  }
+
+  async function changeRole(role) {
+    if (!window.confirm(`Change ${detail.user.name} to ${ROLE_LABEL[role] || role}?`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/super-admin/users/${selected}/role`, { method: "POST", body: { role } });
+      setNotice(`${detail.user.name} is now ${ROLE_LABEL[role] || role}.`);
+      setDetail(await apiRequest(`/super-admin/users/${selected}/permissions`));
+      loadUsers();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function setActive(isActive) {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/super-admin/users/${selected}/status`, { method: "PATCH", body: { is_active: isActive } });
+      setNotice(`${detail.user.name} ${isActive ? "can sign in again" : "can no longer sign in"}.`);
+      setDetail(await apiRequest(`/super-admin/users/${selected}/permissions`));
+      loadUsers();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
   async function resetToDefault() {
     if (!window.confirm(`Put ${detail.user.name} back on the ${ROLE_LABEL[detail.user.role]} defaults? Every change made for them is removed.`)) return;
     setBusy(true);
@@ -228,6 +273,8 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
             </div>
           </button>
         ))}
+        <AddPerson onCreate={createPerson} busy={busy} />
+
         <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.5, marginTop: 8 }}>
           Every role starts from a saved default set. Anything changed for one person is marked “changed”, and an
           individual change always wins over a later change to their role.
@@ -254,11 +301,28 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
                       : "Anything switched off disappears from their menus and is refused by the server."}
                 </div>
               </div>
-              {!detail.computed && !detail.user.is_self && (
-                <button type="button" onClick={resetToDefault} disabled={busy} style={{ fontSize: 11.5 }}>
-                  Reset to {ROLE_LABEL[detail.user.role]} default
-                </button>
-              )}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                {!detail.computed && !detail.user.is_self && (
+                  <button type="button" onClick={resetToDefault} disabled={busy} style={{ fontSize: 11.5 }}>
+                    Reset to {ROLE_LABEL[detail.user.role]} default
+                  </button>
+                )}
+                {!detail.user.is_self && (
+                  <>
+                    <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
+                      Role
+                      <select value={detail.user.role} disabled={busy}
+                              onChange={(e) => e.target.value !== detail.user.role && changeRole(e.target.value)}
+                              style={{ fontSize: 11.5, padding: "3px 6px" }}>
+                        {Object.keys(ROLE_LABEL).map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                      </select>
+                    </label>
+                    <button type="button" onClick={() => setActive(!detail.user.is_active)} disabled={busy} style={{ fontSize: 11.5 }}>
+                      {detail.user.is_active ? "Disable sign-in" : "Enable sign-in"}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             <Matrix
@@ -273,6 +337,54 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
         )}
       </div>
     </div>
+  );
+}
+
+// Round 148 — creating an account from here, which is the only way to make a
+// SECOND Super Admin. It matters more than it looks: nobody can change their
+// own role or their own access, and the API refuses to leave zero active Super
+// Admins, so a system with exactly one Super Admin has no way back if that
+// account is lost. This form is what turns that from a database problem into a
+// two-minute one.
+function AddPerson({ onCreate, busy }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", phone: "", password: "", role: "administrator" });
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} style={{ fontSize: 11.5, width: "100%", marginTop: 4 }}>
+        + Add person
+      </button>
+    );
+  }
+
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  return (
+    <form
+      style={{ marginTop: 8, padding: 10, border: "1px solid var(--concrete)", borderRadius: 8, display: "grid", gap: 6 }}
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const ok = await onCreate(form);
+        if (ok) { setForm({ name: "", phone: "", password: "", role: "administrator" }); setOpen(false); }
+      }}
+    >
+      <input value={form.name} onChange={set("name")} placeholder="Name" required style={{ fontSize: 12 }} />
+      <input value={form.phone} onChange={set("phone")} placeholder="Phone (this is their login)" required style={{ fontSize: 12 }} />
+      <input value={form.password} onChange={set("password")} placeholder="Password" type="text" required minLength={6} style={{ fontSize: 12 }} />
+      <select value={form.role} onChange={set("role")} style={{ fontSize: 12 }}>
+        {Object.keys(ROLE_LABEL).map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+      </select>
+      <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.45 }}>
+        The phone number is the login and cannot be changed afterwards — there is no rename anywhere in the app, so a
+        different number means a different account. The password is shown as you type it, on purpose: you have to be
+        able to pass it on.
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button type="submit" disabled={busy} style={{ fontSize: 11.5 }}>Create</button>
+        <button type="button" onClick={() => setOpen(false)} disabled={busy} style={{ fontSize: 11.5 }}>Cancel</button>
+      </div>
+    </form>
   );
 }
 

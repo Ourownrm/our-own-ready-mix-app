@@ -8,6 +8,7 @@ import ProductionChart from "../lib/ProductionChart.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
+import { isAdminLevel } from "../lib/roles.js";
 
 export default function Reports() {
   const [data, setData] = useState(null);
@@ -51,7 +52,7 @@ export default function Reports() {
     <>
       <TopBar title="Reports & Director's Dashboard" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
-        {user?.role === "administrator" && (
+        {isAdminLevel(user?.role) && (
           <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
             <Link to="/lab-technician"><button type="button">View Lab Technician</button></Link>

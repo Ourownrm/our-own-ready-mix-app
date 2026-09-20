@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { isAdminLevel } from "../lib/roles.js";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -40,7 +41,7 @@ export default function LeadsBrowser() {
     return (
       <LeadDetailAdmin
         leadId={selectedId}
-        canMarkWon={user?.role === "administrator"}
+        canMarkWon={isAdminLevel(user?.role)}
         onBack={() => { setSelectedId(null); load(); }}
       />
     );

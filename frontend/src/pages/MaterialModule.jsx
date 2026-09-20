@@ -25,6 +25,7 @@ import { useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { isAdminLevel } from "../lib/roles.js";
 
 // ===================== Shared helpers =====================
 
@@ -730,7 +731,7 @@ function blankOrderForm() {
 }
 
 function OrdersTab({ role }) {
-  const isAdmin = role === "administrator";
+  const isAdmin = isAdminLevel(role);
   const [orders, setOrders] = useState([]);
   const [pending, setPending] = useState([]);
   const [materials, setMaterials] = useState([]);
@@ -1062,7 +1063,7 @@ function receiptEditForm(r) {
 }
 
 function ReceiptsTab({ role }) {
-  const isAdmin = role === "administrator";
+  const isAdmin = isAdminLevel(role);
   const [receivable, setReceivable] = useState([]);
   const [history, setHistory] = useState([]);
   const [error, setError] = useState("");
@@ -1367,7 +1368,7 @@ function stockStatus(m) {
 // version showed only book stock / days remaining / rate / value.
 function StockTab({ role, onGoTab }) {
   const showValuation = role !== "store";
-  const isAdmin = role === "administrator";
+  const isAdmin = isAdminLevel(role);
   const [month, setMonth] = useState(thisMonthStr());
   const [materials, setMaterials] = useState([]);
   const [openOrders, setOpenOrders] = useState([]);
@@ -1540,7 +1541,7 @@ function StockTab({ role, onGoTab }) {
 function PhysicalStockTab({ role }) {
   const { user } = useAuth();
   const showValuation = role !== "store";
-  const canEnter = role === "store" || role === "administrator";
+  const canEnter = role === "store" || isAdminLevel(role);
   const [month, setMonth] = useState(thisMonthStr());
   const [materials, setMaterials] = useState([]);
   const [error, setError] = useState("");

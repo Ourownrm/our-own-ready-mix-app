@@ -4,13 +4,14 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { isAdminLevel } from "../lib/roles.js";
 
 export default function OrdersSchedule() {
   const [orders, setOrders] = useState([]);
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
   const { user } = useAuth();
-  const canClose = user?.role === "manager" || user?.role === "administrator";
+  const canClose = user?.role === "manager" || isAdminLevel(user?.role);
 
   async function load() {
     try {

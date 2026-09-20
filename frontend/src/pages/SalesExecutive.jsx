@@ -8,6 +8,7 @@ import { useAuth } from "../lib/AuthContext.jsx";
 import ShareableVisitReport from "../lib/ShareableVisitReport.jsx";
 import VisitCadenceStrip from "../lib/VisitCadenceStrip.jsx";
 import { TruckTrackingPanel } from "../lib/DeliveryTrackingView.jsx";
+import { isAdminLevel } from "../lib/roles.js";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -56,7 +57,7 @@ function AtSitePrompt({ atSite, setAtSite, coords, setCoords }) {
 
 export default function SalesExecutive() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "administrator";
+  const isAdmin = isAdminLevel(user?.role);
   const [executives, setExecutives] = useState([]);
   const [viewAsUser, setViewAsUser] = useState("");
   const [view, setView] = useState("home");

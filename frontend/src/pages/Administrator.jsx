@@ -493,8 +493,18 @@ function UsersPanel({ setError }) {
               <td>{u.role.replace("_", " ")}</td>
               <td><span className={`badge ${u.is_active ? "badge-success" : "badge-neutral"}`}>{u.is_active ? "Active" : "Disabled"}</span></td>
               <td style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => toggleStatus(u)}>{u.is_active ? "Disable" : "Enable"}</button>
-                <button onClick={() => resetPassword(u)}>Reset password</button>
+                {/* Round 148 — a Super Admin account is not an Administrator's
+                    to take over. The server refuses both of these for such a
+                    target; saying so here is friendlier than a 403 after the
+                    click, and than a password prompt that then fails. */}
+                {u.role === "super_admin" ? (
+                  <span style={{ fontSize: 11.5, color: "var(--slate)" }}>Managed from the Super Admin screen</span>
+                ) : (
+                  <>
+                    <button onClick={() => toggleStatus(u)}>{u.is_active ? "Disable" : "Enable"}</button>
+                    <button onClick={() => resetPassword(u)}>Reset password</button>
+                  </>
+                )}
               </td>
             </tr>
           ))}
