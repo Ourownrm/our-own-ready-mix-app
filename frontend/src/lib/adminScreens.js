@@ -76,6 +76,11 @@ export const ADMIN_MODULES = [
     colour: "#C75B12",
     tint: "#FBEDE3",
     screens: [
+      // The Manager dashboard, reachable by an Administrator all along
+      // (App.jsx guards it manager+administrator) but never linked from here.
+      // Labelled by what it shows, not whose screen it is. First in the
+      // module at the user's request — it is the overview the rest explain.
+      { key: "plant-manager", label: "Plant Manager", icon: "gauge", to: "/manager" },
       { key: "production-target", label: "Production Target", icon: "target", view: "production-target" },
       { key: "correct-order", label: "Correct Order", icon: "edit", view: "orders" },
       { key: "correct-tickets", label: "Correct Tickets", icon: "receipt", view: "tickets" },
@@ -85,10 +90,6 @@ export const ADMIN_MODULES = [
       { key: "charts", label: "Charts", icon: "trend", to: "/charts" },
       { key: "delay-justification", label: "Delay Justification Report", icon: "hourglass", to: "/delay-justification-report" },
       { key: "time-cross-check", label: "Time Cross Check", icon: "clock", to: "/trip-time-crosscheck" },
-      // Round 143 — the Manager dashboard, reachable by an Administrator all
-      // along (App.jsx guards it manager+administrator) but never linked from
-      // here. Labelled by what it shows, not whose screen it is.
-      { key: "plant-manager", label: "Plant Manager", icon: "gauge", to: "/manager" },
     ],
   },
   {
@@ -125,11 +126,13 @@ export const ADMIN_MODULES = [
     colour: "#7A4BA8",
     tint: "#F0E9F7",
     screens: [
+      // The Lab Technician screen, first at the user's request — the lab is
+      // where the day's work is, the rest of this module is reference.
+      { key: "laboratory", label: "Laboratory", icon: "microscope", to: "/lab-technician" },
       { key: "mix-assignments", label: "Approved Mix Designs", icon: "layers", view: "mix-assignments" },
       { key: "mix-designs-approve", label: "Mix Designs (Approve)", icon: "flask", view: "mix-designs" },
       { key: "cube-test-report", label: "Cube Test Report", icon: "doc", to: "/lab-technician/cube-test-report" },
       { key: "cube-strength-analysis", label: "Cube Strength Analysis", icon: "chart", to: "/cube-qc-dashboard" },
-      { key: "laboratory", label: "Laboratory", icon: "microscope", to: "/lab-technician" },
     ],
   },
   {

@@ -254,7 +254,7 @@ function RatioScatter({ results, grades, atRisk }) {
 function HBar({ label, value, total, color, suffix }) {
   const pct = total ? (value / total) * 100 : 0;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "132px 1fr 52px", alignItems: "center", gap: 10, fontSize: 12.5, padding: "3px 0" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(74px, 132px) 1fr 46px", alignItems: "center", gap: 10, fontSize: 12.5, padding: "3px 0" }}>
       <span>{label}</span>
       <div className="meter-track"><div className="meter-fill" style={{ width: `${pct}%`, background: color }} /></div>
       <span style={{ textAlign: "right", color: "var(--slate)" }}>{value}{suffix || ""}</span>
@@ -386,7 +386,7 @@ export default function CubeQcDashboard() {
 
         {data && kpis && (
           <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 10, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(148px, 1fr))", gap: 10, marginBottom: 14 }}>
               <Kpi label="28-day meeting f'ck" value={kpis.passPct == null ? "—" : num(kpis.passPct)} unit="%"
                    tone={kpis.passPct != null && kpis.passPct < 100 ? "warn" : undefined}
                    foot={`${kpis.n28 - kpis.pass} below f'ck of ${kpis.n28} tests`} />
@@ -437,7 +437,7 @@ export default function CubeQcDashboard() {
               )}
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 14 }}>
               <div className="card">
                 <h2 style={{ fontSize: 16 }}>Early warning from 7-day results</h2>
                 <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "2px 0 8px" }}>
@@ -481,12 +481,13 @@ export default function CubeQcDashboard() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 14 }}>
               <div className="card">
                 <h2 style={{ fontSize: 16 }}>Margin over f'ck by grade</h2>
                 <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "2px 0 8px" }}>
                   Are we over-designing, or running too close?
                 </div>
+                <div style={{ overflowX: "auto" }}>
                 <table>
                   <thead><tr><th>Grade</th><th style={{ textAlign: "right" }}>n</th><th style={{ textAlign: "right" }}>Mean</th><th style={{ textAlign: "right" }}>Min–max</th><th style={{ textAlign: "right" }}>f'ck</th><th style={{ textAlign: "right" }}>Target</th><th style={{ textAlign: "right" }}>σ</th><th style={{ textAlign: "right" }}>CoV</th><th>vs target</th></tr></thead>
                   <tbody>
@@ -511,6 +512,7 @@ export default function CubeQcDashboard() {
                     ))}
                   </tbody>
                 </table>
+                </div>
                 <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 8, lineHeight: 1.5 }}>
                   Target mean = f'ck + 1.65σ (IS 10262), using the linked design's own σ where there is one.
                   A mean well above target with a small σ means the mix can be leaned; a mean near target with a large σ means fix consistency first, not cement.
@@ -553,7 +555,7 @@ export default function CubeQcDashboard() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(236px, 1fr))", gap: 14, marginBottom: 14 }}>
               <div className="card">
                 <h2 style={{ fontSize: 16 }}>Within-batch consistency</h2>
                 <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "2px 0 8px" }}>
@@ -607,7 +609,7 @@ export default function CubeQcDashboard() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 14 }}>
               <div className="card">
                 <h2 style={{ fontSize: 16 }}>By customer &amp; site</h2>
                 <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "2px 0 8px" }}>Where is the exposure — thinnest margins first</div>
@@ -665,6 +667,7 @@ export default function CubeQcDashboard() {
               <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "2px 0 8px" }}>
                 Is sampling keeping up with production? Required count is computed per day from that day's poured volume (Cl 15.2.2) and summed into the week — a good pass rate built on too few samples is not evidence of control.
               </div>
+              <div style={{ overflowX: "auto" }}>
               <table>
                 <thead><tr><th>Week beginning</th><th style={{ textAlign: "right" }}>Volume poured</th><th style={{ textAlign: "right" }}>Plant samples</th><th style={{ textAlign: "right" }}>Site samples</th><th style={{ textAlign: "right" }}>Required</th><th>Status</th></tr></thead>
                 <tbody>
@@ -685,6 +688,7 @@ export default function CubeQcDashboard() {
                   {!data.weekly.length && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>No samples in this period.</td></tr>}
                 </tbody>
               </table>
+              </div>
             </div>
 
             <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 12, lineHeight: 1.6 }}>

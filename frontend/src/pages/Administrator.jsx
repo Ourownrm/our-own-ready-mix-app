@@ -95,7 +95,9 @@ function KpiRow({ kpis }) {
       <KpiTile
         label="Today's Production"
         value={kpis ? fmtM3(k.production_today_m3) : "…"}
-        sub={kpis ? `${k.challan_today_tickets} challan${k.challan_today_tickets === 1 ? "" : "s"} · ${fmtM3(k.challan_today_m3)}` : ""}
+        sub={kpis
+          ? `${k.challan_today_tickets} challan${k.challan_today_tickets === 1 ? "" : "s"}${k.rejected_today_m3 ? ` · ${fmtM3(k.rejected_today_m3)} rejected` : ""}`
+          : ""}
         colour="var(--rebar)"
       />
       <KpiTile

@@ -37,17 +37,20 @@ body {
 #root {
   border-top: 4px solid var(--rebar);
   min-height: 100vh;
-  /* Reserve room for .app-footer-clock (fixed to the viewport bottom on
-     every screen) so it never sits over the last bit of a page's content. */
-  padding-bottom: 30px;
+  /* Reserve room for .app-footer (fixed to the viewport bottom on every
+     screen) so it never sits over the last bit of a page's content. Round 145
+     made that bar interactive and gave it three groups, which wrap to two
+     lines on a narrow phone — hence the larger reserve. */
+  padding-bottom: 76px;
 }
 
-/* Round 138 follow-up — live clock, relocated out of the top bar (see
-   TopBar.jsx) to a slim strip fixed to the bottom of the viewport. Kept
-   deliberately non-interactive (pointer-events: none) since it's a
-   read-only display and must never sit in the way of a tap on whatever
-   the page shows near the bottom of the screen. */
-.app-footer-clock {
+/* ===== Footer bar (fixed to the viewport bottom on every signed-in screen)
+   Round 138 put the live clock here, out of a top bar that was already tight.
+   Round 145 moved the rest of the header's non-navigation items down to join
+   it — version, name and role, sign out, refresh, notifications — because the
+   header was wrapping to three rows on a phone before any content showed.
+   It is no longer pointer-events: none, since it now holds real buttons. */
+.app-footer {
   position: fixed;
   left: 0;
   right: 0;
@@ -56,11 +59,49 @@ body {
   background: var(--charcoal);
   color: #B8BFC7;
   font-size: 11px;
-  padding: 6px 14px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  flex-wrap: wrap;
   box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.15);
+}
+.app-footer-who { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.app-footer-name { color: #fff; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-footer-role { white-space: nowrap; }
+.app-footer-ver { opacity: 0.6; white-space: nowrap; }
+.app-footer-clock {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* The clock is the one thing here that must never be tapped by accident —
+     it is a read-only display sitting between two groups of real buttons. */
   pointer-events: none;
+}
+.app-footer-actions { display: flex; align-items: center; gap: 6px; }
+.app-footer-btn {
+  background: none;
+  border: 1px solid #454B52;
+  color: #D7DBDF;
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.app-footer-btn:hover { background: #2C3138; }
+.app-footer-btn:disabled { opacity: 0.6; }
+
+/* On a phone the two icon buttons lose their words and the clock drops its
+   seconds' worth of width, so all three groups still fit on one line. Sign
+   out keeps its label — it is the one action you must not have to guess at. */
+@media (max-width: 560px) {
+  .app-footer { font-size: 10.5px; padding: 5px 10px 6px; gap: 5px 10px; }
+  .app-footer-btn-label { display: none; }
+  .app-footer-role { display: none; }
+  /* Losing their words would leave the icon buttons about 24px wide, which is
+     not a target anyone hits wearing gloves. Keep them finger-sized. */
+  .app-footer-btn { padding: 7px 12px; min-width: 40px; font-size: 12px; }
 }
 
 h1, h2, h3 { color: var(--charcoal); margin: 0; }
@@ -72,16 +113,29 @@ h1, h2, h3 { color: var(--charcoal); margin: 0; }
   align-items: center;
   background: var(--charcoal);
   color: #fff;
-  padding: 14px 20px;
+  padding: 12px 18px;
   margin-bottom: 20px;
+  gap: 10px 16px;
+  flex-wrap: wrap;
 }
-.topbar-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
-.topbar-title span { color: #B8BFC7; font-weight: 400; }
+.topbar-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; min-width: 0; }
+.topbar-page { color: #B8BFC7; font-weight: 400; }
+.topbar-nav { display: flex; align-items: center; gap: 14px; }
+.topbar-link { color: #D7DBDF; font-size: 12px; text-decoration: none; white-space: nowrap; }
+.topbar-link:hover { color: #fff; }
+/* Kept for any screen still rendering its own sign-out button; the shared
+   header's moved to the footer (see .app-footer-btn). */
 .topbar-signout {
   background: none; border: 1px solid #454B52; color: #D7DBDF;
   padding: 6px 12px; font-size: 12px; border-radius: 6px;
 }
 .topbar-signout:hover { background: #2C3138; }
+
+@media (max-width: 560px) {
+  .topbar { padding: 10px 14px; }
+  .topbar-title { font-size: 14px; }
+  .topbar-link { font-size: 11.5px; }
+}
 
 /* ===== Buttons ===== */
 button {
