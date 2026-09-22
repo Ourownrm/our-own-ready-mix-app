@@ -15,9 +15,27 @@ import "./solitaire.css";
 
 // Percentage coordinates lifted verbatim from 04_field_coordinates.json —
 // detected programmatically from the reference screenshot, not eyeballed.
+// Round 152 (revised) — every coordinate below was MEASURED from
+// public/solitaire/screen-reference.png (1366x721) rather than estimated: the
+// green dropdowns and white fields were detected in the image and converted to
+// percentages, and they matched the original values to within ~1%, which
+// confirmed the original overlay was calibrated against this exact screenshot.
+// If the panel image is ever replaced, re-measure rather than nudging by eye.
+//
+// The menu bar is now fully mapped — all eight words, not just two.
+const MENU_BAR = [
+  { key: "master",  label: "Master",           left: 0.366,  width: 3.001 },
+  { key: "plant",   label: "Plant setup",      left: 4.026,  width: 4.612 },
+  { key: "start",   label: "Start Production", left: 9.370,  width: 6.589 },
+  { key: "alarm",   label: "Alarm View",       left: 16.691, width: 4.612 },
+  { key: "divert",  label: "Divert Concrete",  left: 22.108, width: 6.296 },
+  { key: "options", label: "Options",          left: 29.136, width: 3.367 },
+  { key: "help",    label: "Help",             left: 33.236, width: 2.123 },
+  { key: "quit",    label: "Quit",             left: 36.091, width: 1.977 },
+];
+const MENU_TOP = 3.19, MENU_H = 2.63;
+
 const COORDS = {
-  menuMaster: { left: 0.293, top: 3.051, width: 3.367, height: 2.774 },
-  menuOptions: { left: 30.381, top: 3.051, width: 3.880, height: 2.774 },
   customer: { left: 16.545, top: 60.472, width: 27.086, height: 3.606 },
   batchNumber: { left: 53.587, top: 61.165, width: 5.051, height: 2.635 },
   elapsedBatch: { left: 72.987, top: 61.165, width: 3.514, height: 2.635 },
@@ -46,6 +64,11 @@ export default function SolitaireApp() {
 
   const [customers, setCustomers] = useState([]);
   const [trucks, setTrucks] = useState([]);
+  // Round 152 — drivers are main-app user accounts now, not a column on the truck.
+  const [drivers, setDrivers] = useState([]);
+  // If the panel image cannot load, fall back to visible controls rather than
+  // leaving the menus as invisible rectangles — the Round 149 failure mode.
+  const [imgFailed, setImgFailed] = useState(false);
   const [mixDesigns, setMixDesigns] = useState([]);
 
   const [customerId, setCustomerId] = useState("");
@@ -82,6 +105,7 @@ export default function SolitaireApp() {
   function reloadMasters() {
     solitaireApi.customers().then(setCustomers).catch((e) => setLoadError(e.message));
     solitaireApi.trucks().then(setTrucks).catch((e) => setLoadError(e.message));
+    solitaireApi.drivers().then(setDrivers).catch(() => setDrivers([]));
     solitaireApi.mixDesigns().then(setMixDesigns).catch((e) => setLoadError(e.message));
   }
 
@@ -102,10 +126,12 @@ export default function SolitaireApp() {
     navigate("/solitaire/login", { replace: true });
   }
 
+  // Round 152 — picking a truck no longer decides the driver. The workbook
+  // derives one from the other by lookup (one fixed driver per vehicle), but
+  // the main app knows drivers change trip to trip, so the driver is chosen
+  // separately and the docket records who actually drove.
   function onTruckChange(reg) {
     setTruckReg(reg);
-    const t = trucks.find((x) => x.registration_number === reg);
-    setDriverName(t?.driver_name || "");
   }
 
   const canEditMasters = MASTERS_ROLES.includes(account?.role);
@@ -172,42 +198,36 @@ export default function SolitaireApp() {
     <div className="solitaire-root">
       <div className="sol-app-shell">
         <div className="sol-screen">
-          {/* Round 151 — a REAL toolbar, in normal document flow.
-              Until now Master and Options were transparent hotspots positioned
-              over the MCI370 panel photograph. That artwork was never delivered
-              with this module's code, so on a live install the two menus were
-              invisible rectangles in an empty white area — and with them went
-              Device Management, Settings and every master-data screen. The
-              module looked broken and was, in the only sense that matters:
-              unreachable.
-              Navigation must not depend on a picture loading. These are
-              ordinary buttons; the panel below is decoration, present or not. */}
-          <div className="sol-toolbar">
-            <button type="button" className={`sol-tb-btn${openMenu === "master" ? " open" : ""}`}
-                    onClick={() => setOpenMenu(openMenu === "master" ? null : "master")}>
-              Master <span className="caret">&#9662;</span>
-            </button>
-            <button type="button" className={`sol-tb-btn${openMenu === "options" ? " open" : ""}`}
-                    onClick={() => setOpenMenu(openMenu === "options" ? null : "options")}>
-              Options <span className="caret">&#9662;</span>
-            </button>
-            <span className="sol-tb-gap" />
-            <button type="button" className="sol-tb-btn" onClick={() => setOverlay("order")}>&#65291; New Order</button>
-            <button type="button" className="sol-tb-btn" onClick={() => { setOverlay("search"); runSearch(""); }}>&#128269; Search / Reprint</button>
-            <button type="button" className="sol-tb-btn primary" onClick={startPrintFlow}>&#128424; Print Docket</button>
-          </div>
+          {/* Round 152 (revised) — back to the real panel photograph, at the
+              user's request, now that the image actually exists. The picture
+              is `public/solitaire/screen-reference.png`, shipped in the repo,
+              so the Round 149 failure — an overlay calibrated against an image
+              nobody had — cannot repeat.
+
+              What IS kept from that lesson: if the image fails to load for any
+              reason, `imgFailed` swaps in a visible toolbar, so the module
+              stays usable instead of becoming a white page with invisible
+              menus. The hotspots also highlight on hover and carry tooltips,
+              so the menu bar behaves like a menu bar rather than a secret. */}
+          {imgFailed && (
+            <div className="sol-toolbar">
+              <span className="sol-tb-warn">Panel image missing — plain controls shown</span>
+              <button type="button" className={`sol-tb-btn${openMenu === "master" ? " open" : ""}`}
+                      onClick={() => setOpenMenu(openMenu === "master" ? null : "master")}>Master</button>
+              <button type="button" className={`sol-tb-btn${openMenu === "options" ? " open" : ""}`}
+                      onClick={() => setOpenMenu(openMenu === "options" ? null : "options")}>Options</button>
+              <span className="sol-tb-gap" />
+              <button type="button" className="sol-tb-btn" onClick={() => setOverlay("order")}>New Order</button>
+              <button type="button" className="sol-tb-btn" onClick={() => { setOverlay("search"); runSearch(""); }}>Search / Reprint</button>
+              <button type="button" className="sol-tb-btn primary" onClick={startPrintFlow}>Print Docket</button>
+            </div>
+          )}
 
           <div className="sol-entry-bg">
-            {/* Round 149 — the panel artwork (public/solitaire/screen-reference.png)
-                was never delivered with this module's code. The container carries
-                its own aspect-ratio, so every percentage-positioned control below
-                still lands correctly without it; this just replaces the browser's
-                broken-image icon with a plain panel until the file is dropped in.
-                See public/solitaire/README.txt. */}
             <img
               src="/solitaire/screen-reference.png"
               alt="Schwing Stetter MCI370 Control System"
-              onError={(e) => { e.currentTarget.style.display = "none"; }}
+              onError={() => setImgFailed(true)}
             />
 
             <div className="sol-topbar-ov">
@@ -220,10 +240,28 @@ export default function SolitaireApp() {
               <button className="sol-icon-btn primary" title="Print Docket" onClick={startPrintFlow}>🖨</button>
             </div>
 
-            {openMenu === "master" && (
-              <div className="sol-menu-dropdown sol-menu-anchored" style={{ left: "8px", top: "8px" }}>
-                <a onClick={() => { setOpenMenu(null); setMasterKind("customer"); setOverlay("master"); }}>Customer &amp; Site Master</a>
-                <a onClick={() => { setOpenMenu(null); setMasterKind("truck"); setOverlay("master"); }}>Truck &amp; Driver Master</a>
+            {/* All eight menu words are clickable. Master and Options open the
+                real menus; the other six are plant-control functions that live
+                on the MCI370 itself and have no equivalent here, so they say so
+                rather than doing nothing when clicked. */}
+            {MENU_BAR.map((m) => (
+              <button
+                key={m.key}
+                type="button"
+                className={`sol-menu-hotspot${openMenu === m.key ? " active" : ""}`}
+                style={{ left: `${m.left}%`, top: `${MENU_TOP}%`, width: `${m.width}%`, height: `${MENU_H}%` }}
+                title={m.key === "master" || m.key === "options" ? m.label : `${m.label} — on the plant's own MCI370, not in this module`}
+                onClick={() => {
+                  if (m.key === "master" || m.key === "options") setOpenMenu(openMenu === m.key ? null : m.key);
+                  else { setOpenMenu(null); toast(`${m.label} runs on the plant's own MCI370 — this screen only raises and prints dockets.`); }
+                }}
+              />
+            ))}
+
+{openMenu === "master" && (
+              <div className="sol-menu-dropdown" style={{ left: `${MENU_BAR[0].left}%`, top: "5.9%" }}>
+                <a className="disabled" title="Maintained in the main app">Customer &amp; Site &mdash; in the main app</a>
+                <a className="disabled" title="Maintained in the main app">Truck &amp; Driver &mdash; in the main app</a>
                 <a
                   className={!canEditMixDesign ? "disabled" : ""}
                   onClick={() => { if (canEditMixDesign) { setOpenMenu(null); setMasterKind("mix"); setOverlay("master"); } }}
@@ -233,7 +271,7 @@ export default function SolitaireApp() {
               </div>
             )}
             {openMenu === "options" && (
-              <div className="sol-menu-dropdown sol-menu-anchored" style={{ left: "120px", top: "8px" }}>
+              <div className="sol-menu-dropdown" style={{ left: `${MENU_BAR[5].left}%`, top: "5.9%" }}>
                 <a
                   className={!canSeeSettings ? "disabled" : ""}
                   onClick={() => {
@@ -274,9 +312,11 @@ export default function SolitaireApp() {
 
             <input className="sol-ov sol-ov-input ro left" style={pct(COORDS.recipeName)} value={mixDesign?.name || ""} readOnly />
             <input className="sol-ov sol-ov-input" style={pct(COORDS.mixerCap)} type="number" step="0.1" value={mixerCap} onChange={(e) => setMixerCap(e.target.value)} />
+            {/* Round 152 — drivers are main-app accounts; the truck no longer
+                decides who is driving. */}
             <select className="sol-ov sol-ov-select" style={pct(COORDS.driverName)} value={driverName} onChange={(e) => setDriverName(e.target.value)}>
               <option value="">-- select --</option>
-              {[...new Set(trucks.map((t) => t.driver_name))].map((d) => <option key={d} value={d}>{d}</option>)}
+              {drivers.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
             </select>
 
             <select className={`sol-ov sol-ov-select${fieldErrors.site ? " error" : ""}`} style={pct(COORDS.site)} value={siteId} onChange={(e) => setSiteId(e.target.value)}>
@@ -284,10 +324,7 @@ export default function SolitaireApp() {
               {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <input className="sol-ov sol-ov-input" style={pct(COORDS.moisture)} type="number" step="0.1" value={moisture} onChange={(e) => setMoisture(e.target.value)} />
-            <select className="sol-ov sol-ov-select" style={pct(COORDS.truckId)} value={truck?.truck_code || ""} disabled>
-              <option value="">-- select --</option>
-              {truck && <option value={truck.truck_code}>{truck.truck_code}</option>}
-            </select>
+            <input className="sol-ov sol-ov-input ro left" style={pct(COORDS.truckId)} value={truck?.truck_code || ""} readOnly />
           </div>
           {validationMsg && <div className="sol-error-msg">{validationMsg}</div>}
         </div>
@@ -551,6 +588,62 @@ function MasterEditor({ kind, customers, trucks, mixDesigns, onClose, onChanged 
             </table>
           )}
           <button className="sol-mtable-add" onClick={addRow}>＋ Add row</button>
+          {/* Round 152 — bulk upload, read from the workbook's own Mix Design
+              sheet. Parsed HERE in the browser (SheetJS is already bundled),
+              so a 400KB .xlsm never crosses the wire and the server needs no
+              spreadsheet library. Mapped by COLUMN LETTER, not by header text:
+              the sheet's R3 header reads "20MM%" but the column is actually
+              the first M Sand's moisture — confirmed against the Load sheet's
+              own VLOOKUP column indexes — so trusting the headers would have
+              silently loaded moisture into the wrong ingredient. */}
+          {kind === "mix" && (
+            <label className="sol-mtable-add" style={{ marginLeft: 6, display: "inline-block", cursor: "pointer" }}>
+              ⬆ Bulk upload from workbook
+              <input
+                type="file" accept=".xlsx,.xlsm,.xls" style={{ display: "none" }}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  try {
+                    const XLSX = await import("xlsx");
+                    const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+                    const ws = wb.Sheets["Mix Design"];
+                    if (!ws) { window.alert('That workbook has no sheet called "Mix Design".'); return; }
+                    const COLS = {
+                      code: "B", name: "X",
+                      msand_kgm3: "C", msand2_kgm3: "D", agg_12mm_kgm3: "E", agg_20mm_kgm3: "F",
+                      cem1_kgm3: "H", cem2_kgm3: "I", cem3_kgm3: "J",
+                      admix1_kgm3: "K", admix2_kgm3: "L", water_kgm3: "M",
+                      absorb_msand_pct: "N", absorb_msand2_pct: "O", absorb_12mm_pct: "P", absorb_20mm_pct: "Q",
+                      moisture_msand_pct: "R", moisture_msand2_pct: "S", moisture_12mm_pct: "T", moisture_20mm_pct: "U",
+                      water_var_min_pct: "V", water_var_max_pct: "W",
+                    };
+                    const range = XLSX.utils.decode_range(ws["!ref"]);
+                    const rows = [];
+                    for (let r = 4; r <= range.e.r + 1; r++) {
+                      const rec = {};
+                      for (const [k, col] of Object.entries(COLS)) rec[k] = ws[`${col}${r}`]?.v ?? null;
+                      if (rec.code !== null && String(rec.code).trim() !== "") rows.push(rec);
+                    }
+                    if (!rows.length) { window.alert("No recipes found on that sheet."); return; }
+                    if (!window.confirm(
+                      `Found ${rows.length} recipe(s) on the Mix Design sheet.\n\n` +
+                      `First: ${String(rows[0].code)}\nLast:  ${String(rows[rows.length - 1].code)}\n\n` +
+                      `Recipes already here with the same code are updated. Nothing is deleted.`
+                    )) return;
+                    const out = await solitaireApi.bulkMixDesigns(rows);
+                    window.alert(
+                      `${out.created} added, ${out.updated} updated.` +
+                      (out.duplicates_in_file ? `\n${out.duplicates_in_file} duplicate code(s) in the file — the last one won.` : "") +
+                      (out.skipped?.length ? `\n${out.skipped.length} row(s) skipped.` : "")
+                    );
+                    onChanged();
+                  } catch (err) { window.alert(`Couldn't read that workbook: ${err.message}`); }
+                }}
+              />
+            </label>
+          )}
         </div>
         <div className="sol-popup-actions"><button onClick={onClose}>Close</button></div>
       </div>
