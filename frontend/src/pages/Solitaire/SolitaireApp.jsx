@@ -399,6 +399,29 @@ export default function SolitaireApp() {
                 >
                   ＋ Authorize this browser
                 </button>
+                {/* Round 150 — authorizing a DIFFERENT machine. The button
+                    above only ever registers the browser it is clicked in,
+                    which is why a new terminal could never join: it cannot
+                    sign in to reach this screen in the first place. A code
+                    carried to that machine breaks the circle. */}
+                <button
+                  className="sol-mtable-add"
+                  onClick={async () => {
+                    const label = window.prompt("Which machine is this code for? (e.g. \"Lab PC\"):", "");
+                    if (label === null) return;
+                    try {
+                      const r = await solitaireApi.createPairingCode(label);
+                      window.alert(
+                        "Device code:  " + r.code + "\n\n" +
+                        "Type this on the new machine's Solitaire login screen, along with a username and password.\n\n" +
+                        "It works once and expires in " + r.expires_in_minutes + " minutes. Generating a code cancels any earlier unused one."
+                      );
+                      solitaireApi.devices().then(setDevices);
+                    } catch (err) { toast(`✕ ${err.message}`); }
+                  }}
+                >
+                  ＋ Get a code for another machine
+                </button>
               </div>
             </div>
             <div className="sol-popup-actions">
