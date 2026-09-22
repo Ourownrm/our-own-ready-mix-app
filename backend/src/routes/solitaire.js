@@ -18,6 +18,7 @@
 // call from solitaireDocketPdf.js to that new endpoint.
 import { Router } from "express";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { query } from "../db.js";
 import {
   signSolitaireSession, generateDeviceToken, cookieOptions, requireSolitaireConfigured,
@@ -48,6 +49,9 @@ const MIX_DESIGN_ROLES = ["qc", "admin"]; // exclusive, per §3/§5
  * ===================================================================== */
 router.post("/login", async (req, res) => {
   const { username, password } = req.body || {};
+  // Round 150 — optional; only consulted when this browser is not already
+  // authorized. Normal day-to-day logins never send it.
+  const pairingCode = String((req.body || {}).device_code || "").trim().toUpperCase();
   if (!username || !password) return res.status(400).json({ error: "Username and password are required." });
 
   const { rows } = await query(
@@ -80,8 +84,7 @@ router.post("/login", async (req, res) => {
     // registered devices, the very first Admin login is let through and
     // immediately registers this browser — otherwise nobody could ever
     // reach the Device Management screen that's supposed to be how devices
-    // get authorized in the first place. Every other case (any role, once
-    // at least one device exists) is blocked exactly per spec.
+    // get authorized in the first place.
     if (noDevicesRegisteredYet && account.role === "admin") {
       const newToken = generateDeviceToken();
       await query(
@@ -89,9 +92,70 @@ router.post("/login", async (req, res) => {
         [newToken, "Bootstrap device (auto-registered on first Admin login)", account.id]
       );
       res.cookie(DEVICE_COOKIE, newToken, cookieOptions(DEVICE_MAX_AGE_MS));
+
+    } else if (pairingCode) {
+      // Round 150 — the pairing code, which is the ONLY way a brand-new
+      // machine can join once a first device exists.
+      //
+      // Before this, it could not: POST /devices registers the browser making
+      // the call and requires a signed-in session, but signing in requires an
+      // already-authorized browser. The bootstrap above only fires at zero
+      // devices, so raising max_devices created slots nothing could ever fill
+      // and the module supported exactly one browser. That defect shipped in
+      // Round 149 because the verification only ever drove one browser.
+      //
+      // Redeemed here, at login, rather than on a separate endpoint: this is
+      // the one moment a brand-new browser is talking to us and has no session
+      // to authenticate with, so it is the only place the exchange can happen.
+      // The account's own username and password are still checked above, so a
+      // code alone gets nobody in — it authorizes the BROWSER, not the person.
+      // The limit is checked BEFORE the code is claimed. Claiming first would
+      // burn somebody's one-shot code on a refusal they had no way to foresee,
+      // leaving them to walk back and ask for another.
+      const { rows: capRow } = await query(`SELECT value FROM solitaire_settings WHERE key = 'max_devices'`);
+      const maxDevices = Number(capRow[0]?.value || 3);
+      if (activeCount[0].n >= maxDevices) {
+        return res.status(403).json({
+          error: `All ${maxDevices} device slots are in use. An Administrator must revoke one before this browser can be authorized.`,
+          code: "DEVICE_LIMIT_REACHED",
+        });
+      }
+
+      // Claimed with a single conditional UPDATE rather than SELECT-then-UPDATE.
+      // Two machines typing the same code at the same moment would both pass a
+      // SELECT and both get authorized, spending two slots on one code — the
+      // classic check-then-act race. Postgres serialises this UPDATE, so
+      // exactly one of them gets a row back and the other is told the code is
+      // already used, which is the truth.
+      const { rows: codeRows } = await query(
+        `UPDATE solitaire_pairing_codes SET used_at = now()
+          WHERE code = $1 AND used_at IS NULL AND expires_at > now()
+          RETURNING id, label`,
+        [pairingCode]
+      );
+      if (!codeRows.length) {
+        return res.status(403).json({
+          error: "That device code is wrong, already used, or has expired. Ask an Administrator for a new one.",
+          code: "PAIRING_CODE_INVALID",
+        });
+      }
+
+      const newToken = generateDeviceToken();
+      const { rows: created } = await query(
+        `INSERT INTO solitaire_devices (device_token, label, registered_by) VALUES ($1, $2, $3) RETURNING id`,
+        [newToken, codeRows[0].label || "Authorized by device code", account.id]
+      );
+      // used_at was already set by the claim above; this records WHICH device
+      // the code created, for the audit trail.
+      await query(
+        `UPDATE solitaire_pairing_codes SET used_device_id = $1 WHERE id = $2`,
+        [created[0].id, codeRows[0].id]
+      );
+      res.cookie(DEVICE_COOKIE, newToken, cookieOptions(DEVICE_MAX_AGE_MS));
+
     } else {
       return res.status(403).json({
-        error: "This browser/device is not authorized to open Solitaire. Contact your Administrator.",
+        error: "This browser/device is not authorized to open Solitaire. Enter a device code from your Administrator, or ask them to authorize this machine.",
         code: "DEVICE_NOT_AUTHORIZED",
       });
     }
@@ -120,7 +184,7 @@ router.get("/devices", requireSolitaireAuth, requireSolitaireRole("admin"), asyn
     `SELECT d.id, d.label, d.registered_at, d.last_used_at, d.revoked_at,
             a.display_name AS registered_by_name
      FROM solitaire_devices d
-     JOIN solitaire_accounts a ON a.id = d.registered_by
+     LEFT JOIN solitaire_accounts a ON a.id = d.registered_by
      ORDER BY d.registered_at DESC`
   );
   res.json(rows);
@@ -162,6 +226,55 @@ router.post("/devices", requireSolitaireAuth, requireSolitaireRole("admin"), asy
   );
   res.cookie(DEVICE_COOKIE, token, cookieOptions(DEVICE_MAX_AGE_MS));
   res.status(201).json(rows[0]);
+});
+
+// Round 150 — mint a one-time device code, from an already-authorized browser.
+//
+// Deliberately NOT tied to the browser that creates it: the whole point is to
+// authorize a DIFFERENT machine. The Admin reads the code off this screen and
+// types it on the new terminal.
+//
+// Short alphabet and short life, because it gets read aloud or written on a
+// scrap of paper: no 0/O/1/I/5/S to misread, 8 characters, 15 minutes. Single
+// use, enforced when it is redeemed in /login.
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRTUVWXY2346789";
+const CODE_TTL_MINUTES = 15;
+
+function makeCode() {
+  let out = "";
+  const bytes = crypto.randomBytes(8);
+  for (let i = 0; i < 8; i++) out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  return out;
+}
+
+router.post("/devices/pairing-code", requireSolitaireAuth, requireSolitaireRole("admin"), async (req, res) => {
+  const { label } = req.body || {};
+
+  // Refuse up front when there is no slot, rather than letting somebody carry
+  // a code across the plant only to be told at the far end.
+  const { rows: capRow } = await query(`SELECT value FROM solitaire_settings WHERE key = 'max_devices'`);
+  const maxDevices = Number(capRow[0]?.value || 3);
+  const { rows: activeCount } = await query(`SELECT COUNT(*)::int AS n FROM solitaire_devices WHERE revoked_at IS NULL`);
+  if (activeCount[0].n >= maxDevices) {
+    return res.status(400).json({
+      error: `All ${maxDevices} device slots are in use. Revoke one first, or raise the limit in Settings.`,
+    });
+  }
+
+  // Any earlier unused codes are retired, so exactly one is live at a time and
+  // an old scrap of paper can never authorize a machine months later.
+  await query(
+    `UPDATE solitaire_pairing_codes SET used_at = now() WHERE used_at IS NULL AND expires_at > now()`
+  );
+
+  const code = makeCode();
+  const { rows } = await query(
+    `INSERT INTO solitaire_pairing_codes (code, label, created_by, expires_at)
+     VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)
+     RETURNING code, expires_at`,
+    [code, label || null, req.solitaireAccount.id, String(CODE_TTL_MINUTES)]
+  );
+  res.status(201).json({ ...rows[0], expires_in_minutes: CODE_TTL_MINUTES });
 });
 
 router.delete("/devices/:id", requireSolitaireAuth, requireSolitaireRole("admin"), async (req, res) => {

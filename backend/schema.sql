@@ -2220,3 +2220,29 @@ CREATE TABLE IF NOT EXISTS solitaire_dockets (
 );
 CREATE INDEX IF NOT EXISTS idx_solitaire_dockets_printed ON solitaire_dockets(printed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_solitaire_dockets_batch ON solitaire_dockets(batch_number);
+
+-- ============================================================================
+-- SOLITAIRE DEVICE PAIRING CODES (Round 150)
+--
+-- Fixes a real defect found after Round 149 shipped. A brand-new machine could
+-- never authorise itself: POST /devices registers the browser MAKING the call
+-- and needs a signed-in session, but signing in needs an already-authorised
+-- browser. Only the zero-devices bootstrap worked, so the module supported
+-- exactly ONE browser however high max_devices was set.
+--
+-- A pairing code breaks that circle. An Admin on an authorised browser mints a
+-- short code; the new machine types it once at login and registers itself.
+-- Single use, short-lived, and still subject to max_devices.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS solitaire_pairing_codes (
+  id             SERIAL PRIMARY KEY,
+  code           VARCHAR(12) UNIQUE NOT NULL,
+  label          VARCHAR(120),
+  created_by     INTEGER REFERENCES solitaire_accounts(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ NOT NULL,
+  used_at        TIMESTAMPTZ,
+  used_device_id INTEGER REFERENCES solitaire_devices(id)
+);
+CREATE INDEX IF NOT EXISTS idx_solitaire_pairing_open
+  ON solitaire_pairing_codes(code) WHERE used_at IS NULL;

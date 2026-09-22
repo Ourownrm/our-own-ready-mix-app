@@ -6562,3 +6562,56 @@ Finally the pages were driven headless at 390px: the icon present on the Plant O
 absent everywhere on the Administrator side, gone again once the plugin was switched off, and the
 Plugins tab rendering the switch and the access list with zero horizontal overflow and no console
 errors.
+
+## Round 150 (Ver. 9.75): device pairing codes — and a CORS bug Round 149 hid
+
+**Visit `/setup?key=...` once after deploying** — one new table, and the device limit raised 2 → 3.
+
+**The defect this fixes was real and shipped.** Round 149's device lock had no way to authorise a
+second machine. `POST /devices` registers the browser *making* the call and needs a signed-in
+session, but signing in needs an already-authorised browser — and the bootstrap only fires when zero
+devices exist. So raising `max_devices` created slots nothing could ever fill, and the module
+supported exactly **one** browser. The only workaround was to revoke every device and let the
+bootstrap fire again, which *moved* the authorisation rather than adding one. Round 149's
+verification never caught it because it only ever drove a single browser.
+
+**A pairing code breaks the circle.** An Admin on an authorised browser mints a short one-time code
+(8 characters, 15 minutes, new `solitaire_pairing_codes`); the new machine types it once at login
+and registers itself. Redemption happens *at login* rather than on a separate endpoint, because that
+is the one moment a brand-new browser is talking to the server with no session to authenticate
+with. The username and password are still checked first — a code authorises the **browser**, never
+the person, and a valid code with a wrong password gets nowhere and stays unspent.
+
+Two correctness details worth keeping: the code is claimed with a single conditional
+`UPDATE … WHERE used_at IS NULL … RETURNING` rather than select-then-update, so two machines typing
+it simultaneously cannot both be authorised; and the device limit is checked **before** the claim,
+so hitting the cap doesn't silently burn somebody's one-shot code. Minting is also refused up front
+when no slot is free, rather than letting someone carry a code across the plant to be told at the
+far end. `max_devices` now defaults to **3** — plant, lab, office.
+
+**The bug found while verifying, which matters more than the feature.** Driving the module through
+a real cross-origin browser for the first time showed the login failing with a CORS error, while
+`curl` saw nothing wrong. Round 149 mounted a credentialed CORS handler on `/api/solitaire` and then
+`app.use(cors())` after it, assuming first-wins. It isn't: **both run on a real request, and the
+second overwrote `Access-Control-Allow-Origin` with `*`** — which, paired with
+`Allow-Credentials: true`, every browser refuses. The preflight looked perfect the whole time,
+because the scoped handler answers `OPTIONS` and ends the request before the app-wide one is
+reached. So the module's login would have failed on the live deploy, and only a browser could have
+shown it. The app-wide policy now explicitly **skips** the Solitaire paths rather than running after
+them; `/api/solitaire-access` deliberately stays on the ordinary wildcard policy, since it uses the
+main app's bearer token, no cookies, and is what the Plant Operator icon calls.
+
+**Verification**: two genuinely separate browser contexts, which is what was missing last time.
+Browser A bootstrapped on zero devices; browser B was refused (`DEVICE_NOT_AUTHORIZED`) — the exact
+Round 149 dead end — then paired with a code and worked, **with A still working**, which the old
+revoke-everything workaround destroyed. The same code reused → refused; a wrong code → refused; an
+expired code → refused, re-run after freeing a slot because the first attempt hit the cap check and
+never reached the code path (a test that cannot reach what it tests proves nothing). A valid code
+with a wrong password was refused and the code confirmed still unspent in the database. Three
+devices registered to the cap, minting a fourth code refused up front, a revoke freeing a slot and a
+replacement machine joining. The race was exercised for real — **three simultaneous redemptions of
+one code, exactly one device created**. On CORS: the real request confirmed to return the specific
+origin rather than `*`, a disallowed origin to receive no grant at all, and both
+`/api/solitaire-access` and the rest of the app to be untouched. Finally the whole flow through the
+actual UI: refusal → the device-code field appearing with its explanation → entering the code →
+landing signed in on the docket screen, with no console errors.

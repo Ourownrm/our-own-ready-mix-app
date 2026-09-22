@@ -2376,6 +2376,61 @@ CREATE INDEX IF NOT EXISTS idx_solitaire_dockets_batch ON solitaire_dockets(batc
         : `Plugin already registered — its on/off state was left exactly as the Super Admin set it.`)
     );
 
+    // NOTE ON ORDER: this block MUST stay below the Round 149 one. schema.sql
+    // is only loaded on a brand-new install (see the top of this route), so on
+    // an existing database these migration blocks are the only thing that
+    // creates these tables — and solitaire_pairing_codes has a foreign key to
+    // solitaire_devices. Written above Round 149 first time round, it passed
+    // every fresh-database test (schema.sql had already made both tables) and
+    // would have failed on the live database on the first visit. Same trap as
+    // Round 143's KPIs: agreeing with yourself is not verification.
+    // Round 150 — device pairing codes, and the device limit raised to 3.
+    await pool.query(`
+-- ============================================================================
+-- SOLITAIRE DEVICE PAIRING CODES (Round 150)
+--
+-- Fixes a real defect found after Round 149 shipped. A brand-new machine could
+-- never authorise itself: POST /devices registers the browser MAKING the call
+-- and needs a signed-in session, but signing in needs an already-authorised
+-- browser. Only the zero-devices bootstrap worked, so the module supported
+-- exactly ONE browser however high max_devices was set.
+--
+-- A pairing code breaks that circle. An Admin on an authorised browser mints a
+-- short code; the new machine types it once at login and registers itself.
+-- Single use, short-lived, and still subject to max_devices.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS solitaire_pairing_codes (
+  id             SERIAL PRIMARY KEY,
+  code           VARCHAR(12) UNIQUE NOT NULL,
+  label          VARCHAR(120),
+  created_by     INTEGER REFERENCES solitaire_accounts(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ NOT NULL,
+  used_at        TIMESTAMPTZ,
+  used_device_id INTEGER REFERENCES solitaire_devices(id)
+);
+CREATE INDEX IF NOT EXISTS idx_solitaire_pairing_open
+  ON solitaire_pairing_codes(code) WHERE used_at IS NULL;
+`);
+
+    // max_devices 2 -> 3 (plant, lab, office). Only bumps an install still
+    // sitting on the old default: a number the user has deliberately chosen is
+    // left alone, same principle as never re-enabling a disabled plugin.
+    const bumped = await pool.query(
+      `UPDATE solitaire_settings SET value = '3', updated_at = now()
+        WHERE key = 'max_devices' AND value = '2' RETURNING value`
+    );
+    await pool.query(
+      `INSERT INTO solitaire_settings (key, value) VALUES ('max_devices', '3') ON CONFLICT (key) DO NOTHING`
+    );
+    log.push(
+      `Schema migration applied (Round 150 — device pairing codes). ` +
+      (bumped.rows.length
+        ? `Device limit raised 2 -> 3.`
+        : `Device limit left as configured.`)
+    );
+
+
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 
     res.send(

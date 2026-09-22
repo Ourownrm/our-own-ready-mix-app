@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 149, Ver. 9.74)
+# OORM App — Current State (as of App 150, Ver. 9.75)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -30,6 +30,50 @@ delivering a round with a schema change, the user needs to visit that URL once; 
 causes exactly the kind of generic "Something went wrong" error a missing column produces (the
 app's error handler is deliberately plain-language, so it never surfaces the real Postgres error
 to the user — see `index.js`'s final `app.use((err, req, res, next) => ...)`).
+
+## Round 150 (Ver. 9.75): device pairing codes, and a CORS bug Round 149 hid
+
+**Visit `/setup?key=...` once** — one new table (`solitaire_pairing_codes`), device limit 2 → 3.
+
+**The defect fixed.** Round 149's device lock could never authorise a SECOND machine: `POST /devices`
+registers the browser *making* the call and needs a session, which needs an already-authorised
+browser, and the bootstrap only fires at zero devices. Raising `max_devices` made slots nothing could
+fill. Round 149's verification missed it because **it only ever drove one browser**.
+
+**The fix**: an Admin on an authorised browser mints a one-time code (8 chars, 15 min); the new
+machine types it at login. Redeemed AT LOGIN deliberately — that is the only moment a brand-new
+browser talks to the server with no session. Password is still checked first: a code authorises the
+**browser**, not the person, and a valid code + wrong password is refused and stays unspent.
+
+Two details not to undo: the claim is a single conditional `UPDATE … WHERE used_at IS NULL …
+RETURNING` (select-then-update would let two machines share one code); and the cap is checked
+**before** the claim, so hitting it doesn't burn a one-shot code.
+
+**The bigger find — a live Round 149 bug only a browser could show.** `curl` was happy throughout.
+Round 149 mounted credentialed CORS on `/api/solitaire` then `app.use(cors())` after it, assuming
+first-wins. **Both run, and the second overwrote `Access-Control-Allow-Origin` with `*`** — invalid
+with `Allow-Credentials: true`, so browsers refuse it. The preflight looked perfect because the
+scoped handler answers OPTIONS and ends the request first. **The module's login would have failed on
+the live deploy.** The app-wide policy now explicitly SKIPS the Solitaire paths rather than running
+after them. `/api/solitaire-access` stays on the wildcard policy on purpose — bearer token, no
+cookies, and it is what the Plant Operator icon calls.
+
+**Lesson worth carrying**: cross-origin + cookies cannot be verified with curl. Drive a real browser.
+
+**Verification**: two separate browser contexts. A bootstrapped; B refused (the Round 149 dead end),
+then paired and worked **with A still working**. Reused code refused; wrong code refused; expired
+code refused — re-run after freeing a slot, because the first attempt hit the cap check and never
+reached the code path. Valid code + wrong password refused, code confirmed unspent in the database.
+Cap of 3 reached, 4th code refused up front, revoke freed a slot, replacement joined. **Three
+simultaneous redemptions of one code → exactly one device created.** CORS checked on the real
+request, a disallowed origin, `/api/solitaire-access` and the rest of the app. Whole flow driven
+through the actual UI, no console errors.
+
+**Workbook received**: the licence-free `BPR107a.xlsm` is in the app tree at
+`assets/BPR107a-unlocked.xlsm` — `Workbook_Open` (hard-drive serial + `C:\Apple\license.key`) gone,
+everything else verified intact: 13 sheets, all 13 `printerSettings` parts, 3 images,
+`Module37.PrintOrderandAsPDF` and the `AF4` save-folder read. See
+`claude/solitaire-print-agent-notes.md` for the Round 151 design.
 
 ## Round 149 (Ver. 9.74): Delivery Challan wired in as a switchable plugin
 

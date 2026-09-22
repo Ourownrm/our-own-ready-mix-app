@@ -96,16 +96,36 @@ app.set("trust proxy", 1);
 // the Plant Operator icon depends on.
 const SOLITAIRE_ORIGINS = (process.env.FRONTEND_ORIGIN || "")
   .split(",").map((o) => o.trim()).filter(Boolean);
-app.use("/api/solitaire", cors({
+const solitaireCors = cors({
   origin(origin, cb) {
     // No Origin header = a same-origin or non-browser request; nothing to allow.
     if (!origin) return cb(null, true);
     cb(null, SOLITAIRE_ORIGINS.includes(origin));
   },
   credentials: true,
-}));
+});
+app.use("/api/solitaire", solitaireCors);
 
-app.use(cors());
+// Round 150 — the app-wide policy must SKIP the Solitaire paths, not merely run
+// after them.
+//
+// Round 149 mounted the scoped handler above and then `app.use(cors())` below,
+// assuming first-wins. It isn't: both run on a real request, and the second
+// overwrites Access-Control-Allow-Origin with `*`. Paired with
+// Allow-Credentials: true that is an invalid combination which every browser
+// refuses, so the module's login failed from the browser — while the preflight
+// looked perfect, because the scoped handler answers OPTIONS and ends the
+// request before the app-wide one is reached. curl saw nothing wrong; only a
+// real cross-origin browser did.
+//
+// `/api/solitaire-access` is deliberately NOT skipped: it uses the main app's
+// bearer token, no cookies, and belongs on the ordinary wildcard policy — it is
+// what the Plant Operator icon calls.
+const globalCors = cors();
+app.use((req, res, next) => {
+  if (req.path === "/api/solitaire" || req.path.startsWith("/api/solitaire/")) return next();
+  return globalCors(req, res, next);
+});
 // Round 119, post-ship — Technical Writings uploads a PDF as base64 inside a
 // JSON body (see routes/technicalWritings.js's header comment for why: no
 // multipart middleware exists anywhere in this app, and base64-over-JSON
