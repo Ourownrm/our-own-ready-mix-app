@@ -54,6 +54,8 @@ export const solitaireApi = {
   logout: () => request("/logout", { method: "POST" }),
   me: () => request("/me"),
 
+  drivers: () => request("/drivers"),
+  bulkMixDesigns: (rows) => request("/mix-designs/bulk", { method: "POST", body: JSON.stringify({ rows }) }),
   devices: () => request("/devices"),
   registerDevice: (label) => request("/devices", { method: "POST", body: JSON.stringify({ label }) }),
   createPairingCode: (label) => request("/devices/pairing-code", { method: "POST", body: JSON.stringify({ label }) }),
