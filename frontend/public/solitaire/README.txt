@@ -1,16 +1,19 @@
-Round 149 — TWO IMAGE FILES ARE STILL MISSING FROM THIS FOLDER.
+Panel artwork for the Delivery Challan (Solitaire) module.
 
-The Solitaire (Delivery Challan) screens were built as an overlay on
-photographs of the real Schwing Stetter MCI370 control panel. The code
-references these two files by exact name:
+  screen-reference.png  (1366x721)  — the MCI370 control panel, supplied by the
+                                      user on 22 Sep 2026. The data-entry screen
+                                      overlays live fields on this image.
 
-  login-bg.jpg          — the login screen background (pages/Solitaire/solitaire.css)
-  screen-reference.png  — the data-entry panel  (pages/Solitaire/SolitaireApp.jsx)
+The overlay coordinates in pages/Solitaire/SolitaireApp.jsx were MEASURED from
+this exact file: the green dropdowns and white fields were detected in the
+image and converted to percentages. If you replace this image, re-measure them
+rather than nudging by eye — and keep the 1366x721 aspect ratio, since
+.sol-entry-bg sets it explicitly.
 
-They were never delivered with the module's code, and cannot be recreated
-from it. Until you drop them in here, both screens render with the plain
-fallback background in solitaire.css instead of the panel artwork — every
-control still works, it just doesn't look like the MCI370 yet.
+login-bg.jpg is optional. Without it the login screen falls back to the solid
+green in solitaire.css, which is why that screen looks plain.
 
-Drop the two files in with exactly those names and redeploy. No code change
-is needed.
+If screen-reference.png ever fails to load, the module shows a plain visible
+toolbar instead (see `imgFailed` in SolitaireApp.jsx) so the menus stay
+reachable. Round 149 shipped without that fallback AND without the image, and
+the module was unusable as a result.
