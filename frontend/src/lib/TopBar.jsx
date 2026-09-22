@@ -4,6 +4,7 @@ import { useAuth } from "./AuthContext.jsx";
 import { ROLE_HOME } from "./roleHome.js";
 import { pushSupported, pushStatus, enablePush } from "./push.js";
 import { APP_VERSION } from "./version.js";
+import SolitaireButton, { SOLITAIRE_ROLES } from "./SolitaireButton.jsx";
 
 // Round 138, item 2 — a live clock so anyone using the app can see the current
 // date/time at a glance without switching away to check their phone. Ticks
@@ -90,6 +91,12 @@ export function TopBar({ title }) {
           {pathname !== "/orders" && (
             <Link to="/orders" className="topbar-link">Today &amp; tomorrow's orders</Link>
           )}
+          {/* Round 151, item 7 — the Delivery Challan entry moved from a tile on
+              the Plant Operator screen into the header, so it is reachable from
+              wherever somebody is. It renders nothing unless the plugin is on
+              AND this person has been granted an account, so listing the roles
+              here only decides who it is OFFERED to. */}
+          {user?.role && SOLITAIRE_ROLES.includes(user.role) && <SolitaireButton />}
         </div>
       </div>
 

@@ -1,29 +1,41 @@
-// Round 149 — the Delivery Challan (Solitaire) icon.
+// The Delivery Challan (Solitaire) entry point.
 //
-// Rendered on the Plant Operator screen and nowhere else, by the user's
-// explicit instruction. It renders NOTHING unless BOTH of these hold:
+// Round 151 — two changes from Round 149, both from live use:
 //
-//   1. The plugin is switched on. A Super Admin can turn the whole module off
-//      at any time (Super Admin screen → Plugins), and the icon has to vanish
-//      when they do.
-//   2. This person has been granted a Solitaire account by a Super Admin.
+//   1. It lives in the HEADER now (see TopBar.jsx), not as a tile on the Plant
+//      Operator screen, so it is reachable from wherever somebody happens to
+//      be rather than only from one dashboard. The `variant` prop keeps the
+//      original tile available in case it is wanted somewhere again.
+//   2. Plant Operator, Lab Technician and Administrator all get it. QC needs
+//      it to reach the Mix Design Master from the lab, and the Administrator
+//      decision was revisited. Note what did NOT change: enabling or disabling
+//      the module and granting somebody access remain Super Admin only, behind
+//      the locked `admin.plugins` function. Being able to OPEN a module and
+//      being able to hand it out are different powers.
 //
-// Both facts come from ONE call — GET /api/solitaire-access/me. That endpoint
-// sits behind the plugin gate on the server (routes/solitaireAccess.js), so a
-// disabled plugin answers 404 and the `catch` below hides the icon. Asking a
-// separate "is the plugin on?" endpoint would have meant two calls that can
-// disagree with each other, and a window where the icon shows for a module
-// that is already gone.
+// It renders NOTHING unless BOTH hold:
+//   - the plugin is switched on, and
+//   - this person has been granted a Solitaire account by a Super Admin.
 //
-// The icon disappearing is presentation, not security. The gate is on the
-// server: while the plugin is off every route in the module answers 404,
-// including its login, so a bookmarked URL or a browser still holding a
-// Solitaire session cookie gets nowhere either.
+// Both come from ONE call, GET /api/solitaire-access/me, which sits behind the
+// plugin gate on the server. A disabled plugin answers 404 and the catch below
+// hides it. Asking a separate "is the plugin on?" endpoint would mean two
+// calls that can disagree, and a window where this shows for a module that is
+// already gone.
+//
+// Hiding it is presentation, not security. The gate is on the server: while
+// the plugin is off every route in the module answers 404, including its own
+// login, so a bookmarked URL gets nowhere either.
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "./api.js";
 
-export default function SolitaireButton() {
+// The roles that see it at all. A person outside this list who somehow held a
+// Solitaire account still would not see the link — which is deliberate: this
+// is the main app's opinion about who should be walking into the module.
+export const SOLITAIRE_ROLES = ["plant_operator", "lab_technician", "administrator", "super_admin"];
+
+export default function SolitaireButton({ variant = "header" }) {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
@@ -31,32 +43,41 @@ export default function SolitaireButton() {
     apiRequest("/solitaire-access/me")
       .then((d) => { if (alive) setShow(!!d.has_access); })
       // 404 (plugin off), 503 (enabled but unconfigured), or any network
-      // failure all mean the same thing to this component: show nothing.
+      // failure all mean the same thing here: show nothing.
       .catch(() => { if (alive) setShow(false); });
     return () => { alive = false; };
   }, []);
 
   if (!show) return null;
 
+  const icon = (
+    <svg width={variant === "tile" ? 26 : 16} height={variant === "tile" ? 26 : 16} viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="3" width="13" height="17" rx="2" />
+      <path d="M7.5 8h6M7.5 11.5h6M7.5 15h3.5" />
+      <path d="M17 7l3 2v9a2 2 0 0 1-2 2h-1" />
+    </svg>
+  );
+
+  if (variant === "tile") {
+    return (
+      <Link to="/solitaire/login" title="Delivery Challan — opens the batching docket screen, which has its own separate login"
+            style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                     gap: 6, padding: "14px 10px", marginBottom: 12, borderRadius: 12,
+                     background: "#0B6E4A", color: "#fff", textDecoration: "none",
+                     boxShadow: "0 1px 3px rgba(0,0,0,0.18)" }}>
+        {icon}
+        <span style={{ fontSize: 13.5, fontWeight: 700 }}>Delivery Challan</span>
+        <span style={{ fontSize: 10.5, opacity: 0.85 }}>Separate login</span>
+      </Link>
+    );
+  }
+
   return (
-    <Link
-      to="/solitaire/login"
-      title="Delivery Challan — opens the batching docket screen, which has its own separate login"
-      style={{
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-        gap: 6, padding: "14px 10px", marginBottom: 12, borderRadius: 12,
-        background: "#0B6E4A", color: "#fff", textDecoration: "none",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.18)",
-      }}
-    >
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="4" y="3" width="13" height="17" rx="2" />
-        <path d="M7.5 8h6M7.5 11.5h6M7.5 15h3.5" />
-        <path d="M17 7l3 2v9a2 2 0 0 1-2 2h-1" />
-      </svg>
-      <span style={{ fontSize: 13.5, fontWeight: 700 }}>Delivery Challan</span>
-      <span style={{ fontSize: 10.5, opacity: 0.85 }}>Separate login</span>
+    <Link to="/solitaire/login" className="topbar-link solitaire-link"
+          title="Delivery Challan — opens the batching docket screen, which has its own separate login">
+      {icon}
+      <span>Delivery Challan</span>
     </Link>
   );
 }

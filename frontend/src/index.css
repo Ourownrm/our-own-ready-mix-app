@@ -216,6 +216,24 @@ tr:last-child td { border-bottom: none; }
   color: var(--charcoal);
   font-family: inherit;
 }
+/* Round 151, item 5 — radios and checkboxes must escape the field styling.
+   `.field-input input` sets width:100% with padding and a border, which is
+   right for text and number fields and badly wrong for a radio: each one
+   stretched across its whole label as a large bordered box, with the "7-day" /
+   "28-day" text landing on top of it. That is the overlap reported on the cube
+   test screen, and it would have affected every radio and checkbox inside a
+   .field-input form. Fixed here rather than on the one screen, since the cause
+   is the shared rule. */
+.field-input input[type="radio"],
+.field-input input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
 .field-input input:focus,
 .field-input select:focus,
 .field-input textarea:focus {
@@ -397,3 +415,11 @@ a { color: var(--rebar); }
 @media (max-width: 480px) {
   .se-tiles { grid-template-columns: 1fr 1fr; }
 }
+
+/* Round 151 — the Delivery Challan link in the header. Given an icon and a
+   slightly stronger weight so it reads as a way OUT of the main app into a
+   separate module with its own login, rather than as another page link. */
+.topbar-link.solitaire-link{
+  display:inline-flex; align-items:center; gap:5px; font-weight:600;
+}
+.topbar-link.solitaire-link svg{ flex:0 0 auto; }
