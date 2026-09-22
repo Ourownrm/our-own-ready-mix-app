@@ -43,12 +43,20 @@ async function request(path, options = {}) {
 }
 
 export const solitaireApi = {
-  login: (username, password) => request("/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  // Round 150 — deviceCode is optional and only sent when this browser has
+  // been refused as unauthorized and the operator has typed one in. A normal
+  // login omits it entirely.
+  login: (username, password, deviceCode) =>
+    request("/login", {
+      method: "POST",
+      body: JSON.stringify(deviceCode ? { username, password, device_code: deviceCode } : { username, password }),
+    }),
   logout: () => request("/logout", { method: "POST" }),
   me: () => request("/me"),
 
   devices: () => request("/devices"),
   registerDevice: (label) => request("/devices", { method: "POST", body: JSON.stringify({ label }) }),
+  createPairingCode: (label) => request("/devices/pairing-code", { method: "POST", body: JSON.stringify({ label }) }),
   revokeDevice: (id) => request(`/devices/${id}`, { method: "DELETE" }),
 
   getSettings: () => request("/settings"),
