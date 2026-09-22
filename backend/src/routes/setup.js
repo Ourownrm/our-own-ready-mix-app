@@ -2431,6 +2431,97 @@ CREATE INDEX IF NOT EXISTS idx_solitaire_pairing_open
     );
 
 
+    // Round 152 — the delivery-challan module shares the main app's master
+    // data, and its mix designs widen to match the workbook. Purely additive
+    // columns plus one guarded re-pointing of foreign keys; safe to re-run.
+    await pool.query(`-- ============================================================================
+-- ROUND 152 — the Delivery Challan module stops keeping its own copies of the
+-- customer, site, truck and driver lists and reads the main app's instead.
+--
+-- Round 139's design deliberately shared nothing with the main app, which was
+-- right when this was a standalone package. As a plugin inside the app it only
+-- means entering every customer and site twice and watching the two drift.
+--
+-- Two optional columns on the MAIN tables carry the fields the MCI370 screen
+-- shows and the main app never had: a customer code, and a short truck id.
+-- Both are nullable and unique-when-set, so nothing existing is disturbed.
+-- ============================================================================
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS code VARCHAR(40);
+ALTER TABLE trucks    ADD COLUMN IF NOT EXISTS truck_code VARCHAR(40);
+
+-- UNIQUE via an index rather than a constraint so IF NOT EXISTS works, and
+-- partial so the many rows with no code yet do not collide with each other.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_code
+  ON customers(code) WHERE code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trucks_truck_code
+  ON trucks(truck_code) WHERE truck_code IS NOT NULL;
+
+-- A docket now records who drove, from the main app's own driver accounts.
+-- The workbook derives the driver from the truck by lookup, one fixed driver
+-- per vehicle; the main app knows drivers change trip to trip, so this is
+-- stored per docket and the workbook's lookup is fed from it.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS driver_user_id INTEGER REFERENCES users(id);
+
+-- Re-point the docket's customer / site / truck at the main app's tables.
+--
+-- Guarded on the table being EMPTY. No docket has ever been printed (the
+-- module's menus were unreachable until Round 151), so this is free today and
+-- would be a data migration in a month. If rows ever do exist, this block
+-- simply does nothing rather than breaking referential integrity — the /setup
+-- output says so, and a real migration would be written then.
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM solitaire_dockets) = 0
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'solitaire_dockets_customer_main_fkey') THEN
+
+    ALTER TABLE solitaire_dockets DROP CONSTRAINT IF EXISTS solitaire_dockets_customer_id_fkey;
+    ALTER TABLE solitaire_dockets DROP CONSTRAINT IF EXISTS solitaire_dockets_site_id_fkey;
+    ALTER TABLE solitaire_dockets DROP CONSTRAINT IF EXISTS solitaire_dockets_truck_id_fkey;
+
+    ALTER TABLE solitaire_dockets
+      ADD CONSTRAINT solitaire_dockets_customer_main_fkey FOREIGN KEY (customer_id) REFERENCES customers(id),
+      ADD CONSTRAINT solitaire_dockets_site_main_fkey     FOREIGN KEY (site_id)     REFERENCES sites(id),
+      ADD CONSTRAINT solitaire_dockets_truck_main_fkey    FOREIGN KEY (truck_id)    REFERENCES trucks(id);
+  END IF;
+END $$;
+
+-- ============================================================================
+-- ROUND 152 — mix designs widened to match the workbook's own Mix Design sheet.
+--
+-- The module stored the ten quantity fields only. The sheet also carries four
+-- absorption percentages, four moisture percentages and the water variance
+-- band — so QC editing here was editing a subset while the workbook printed
+-- stale values for the rest. Bulk upload would have silently dropped them too.
+-- Column names mirror the sheet's own headers rather than inventing new ones.
+-- ============================================================================
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS msand2_kgm3   NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS absorb_msand_pct   NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS absorb_msand2_pct  NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS absorb_12mm_pct    NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS absorb_20mm_pct    NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS moisture_msand_pct  NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS moisture_msand2_pct NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS moisture_12mm_pct   NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS moisture_20mm_pct   NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS water_var_min_pct NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS water_var_max_pct NUMERIC(6,2) NOT NULL DEFAULT 0;
+
+-- The recipe code is what the workbook looks up on, so a bulk upload must be
+-- able to update a recipe in place rather than duplicating it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_solitaire_mix_designs_code ON solitaire_mix_designs(code);
+`);
+
+    const { rows: docketCount } = await pool.query(`SELECT count(*)::int AS n FROM solitaire_dockets`);
+    const { rows: repointed } = await pool.query(
+      `SELECT 1 FROM pg_constraint WHERE conname = 'solitaire_dockets_customer_main_fkey'`
+    );
+    log.push(
+      `Schema migration applied (Round 152 — shared master data + wider mix designs). ` +
+      (repointed.length
+        ? `Dockets now reference the main app's customers, sites and trucks.`
+        : `Dockets still reference the module's own tables — ${docketCount[0].n} docket(s) already exist, so the re-point was skipped and needs a data migration.`)
+    );
+
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 
     res.send(

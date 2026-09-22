@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 151, Ver. 9.76)
+# OORM App — Current State (as of App 152, Ver. 9.78)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -30,6 +30,65 @@ delivering a round with a schema change, the user needs to visit that URL once; 
 causes exactly the kind of generic "Something went wrong" error a missing column produces (the
 app's error handler is deliberately plain-language, so it never surfaces the real Postgres error
 to the user — see `index.js`'s final `app.use((err, req, res, next) => ...)`).
+
+## Round 152 (Ver. 9.78): real MCI370 panel image, shared masters, bulk mix upload
+
+**Visit `/setup?key=...` once** — new `customers.code` and `trucks.truck_code`, wider mix designs,
+docket FKs re-pointed.
+
+**The screen overlays the REAL panel photograph**, which now ships at
+`frontend/public/solitaire/screen-reference.png` (1366x721, supplied by the user 22 Sep). A CSS
+reconstruction was built this round and then reverted at the user's request — a photo of the real
+thing beats a rebuild.
+
+**`COORDS` is verified, not guessed.** Every box was detected in the image programmatically and
+converted to percentages; the values matched the pre-existing ones to ~1%, proving the original
+overlay had been calibrated against this exact screenshot. Round 149's failure was ONLY the missing
+image. **If the image is ever replaced, re-measure — do not nudge by eye**, and keep 1366x721
+(`.sol-entry-bg` sets that aspect ratio).
+
+**All eight menu words are hotspots**, with tooltips and hover highlight. Master/Options open menus;
+the six plant-control words explain they belong to the plant's MCI370.
+
+**The safety net that must stay**: `imgFailed` → a visible `.sol-toolbar`. If the image fails to
+load the module degrades to usable, not to a white page with invisible menus. Never remove this.
+
+**Known and deliberate**: the weigher panels, mixing timers and alarm grid in the photo are PLC
+telemetry. There is no PLC feed — they are backdrop only. Do not overlay fake numbers on them.
+
+**Masters come from the MAIN app** — `customers`, `sites`, `trucks`, and drivers from `users`. The
+module's own write endpoints for those are **removed and must not be re-added**: a Solitaire session
+is a separate trust boundary and must not rename a customer the business invoices against.
+`solitaire_customers` / `_sites` / `_trucks` still exist but are dead.
+
+**Driver is no longer derived from the truck.** The workbook looks one up from the other; the app
+records who actually drove (`solitaire_dockets.driver_user_id`).
+
+**Docket FK re-point was guarded on the table being EMPTY.** It was free because nothing had ever
+printed. If dockets ever exist the block no-ops and `/setup` says so — a real data migration would
+be needed then.
+
+**Mix designs widened to 24 columns** (absorption ×4, moisture ×4, water variance min/max) and
+bulk-uploadable from the workbook itself, **parsed in the browser** (SheetJS already bundled) so no
+server-side spreadsheet dependency. Upsert on `code`; a code absent from the upload is left alone.
+
+**The mapping trap, worth keeping**: mapped by COLUMN LETTER, not header text. The sheet's `R3`
+header reads "20MM%" but the column is the first M Sand's **moisture** — confirmed against the
+`Load` sheet's VLOOKUP column indexes (`W47`→col 13=N, `W48`→col 17=R). Header-driven mapping would
+have loaded moisture into the wrong ingredient silently. Also found: `M 25 (KSEB)` appears **twice**
+in the user's sheet.
+
+**Verification**: FKs confirmed pointing at `customers`/`sites`/`trucks`/`users`; second `/setup` a
+no-op. The **real workbook** uploaded live — 44 created from 45 rows, the duplicate collapsed,
+re-upload 0 created / 44 updated with 44 still in the table; one recipe compared field by field
+against the sheet, exact match. Module confirmed reading the main app's masters. Screen rendered
+headless at 1366px and 390px **with no image on disk**: 6 group boxes, 5 green selects, 44 recipes
+and 4 customers in the dropdowns, zero overflow, no console errors. First render had the Consignment
+fields in the wrong rows vs the reference; corrected to three explicit columns and re-checked.
+
+**Still open → Round 153**: punch-list items 1 (today's delivery notes on the Plant Operator screen,
+MAIN APP notes, new permission), 3 (distance since last fill on the Manager fuel card), 4 (fuel
+analysis for pumps and other equipment). Then the print agent (`claude/solitaire-print-agent-notes.md`).
 
 ## Round 151 (Ver. 9.76): Delivery Challan made usable, plus four fixes
 

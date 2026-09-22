@@ -44,6 +44,21 @@ router.use(requireSolitaireConfigured);
 const MASTERS_ROLES = ["operator", "qc", "admin"]; // Customer & Site, Truck & Driver — QC's scope was widened to include these this round (was Mix-Design-only in the original mockup guess)
 const MIX_DESIGN_ROLES = ["qc", "admin"]; // exclusive, per §3/§5
 
+// Round 152 — the mix-design columns, in ONE place, because three things now
+// write them: create, update and the bulk upload. They mirror the workbook's
+// own Mix Design sheet rather than inventing names, so a column there maps to
+// a column here without a translation table to keep in step.
+const MIX_FIELDS = [
+  "code", "name",
+  "msand_kgm3", "msand2_kgm3", "agg_12mm_kgm3", "agg_20mm_kgm3",
+  "cem1_kgm3", "cem2_kgm3", "cem3_kgm3", "admix1_kgm3", "admix2_kgm3", "water_kgm3",
+  "absorb_msand_pct", "absorb_msand2_pct", "absorb_12mm_pct", "absorb_20mm_pct",
+  "moisture_msand_pct", "moisture_msand2_pct", "moisture_12mm_pct", "moisture_20mm_pct",
+  "water_var_min_pct", "water_var_max_pct",
+];
+// Everything except the two text columns is a number defaulting to 0.
+const MIX_NUMERIC = MIX_FIELDS.filter((f) => f !== "code" && f !== "name");
+
 /* =========================================================================
  * LOGIN  (public — this endpoint IS the login, so it runs before requireSolitaireAuth)
  * ===================================================================== */
@@ -312,95 +327,63 @@ router.patch("/settings", requireSolitaireAuth, requireSolitaireRole("admin"), a
 /* =========================================================================
  * MASTER DATA
  * ===================================================================== */
+// Round 152 — customers and sites now come from the MAIN app's tables, not
+// the module's own copies.
+//
+// Round 139 deliberately shared nothing, which was right for a standalone
+// package. As a plugin it only meant entering every customer and site twice
+// and watching the two lists drift. These are READ-ONLY here on purpose: the
+// module has its own login, separate from the main app's, so a Solitaire
+// account must not be able to create or rename a customer the whole business
+// invoices against. That is done in the main app, by people whose permissions
+// the main app checks.
+//
+// `code` is the Round 152 column on customers — the MCI370 screen's "Customer
+// Code". It is optional, so fall back to the id so the dropdown always has
+// something to show rather than a blank.
 router.get("/customers", requireSolitaireAuth, async (req, res) => {
-  const { rows } = await query(`SELECT * FROM solitaire_customers WHERE is_active ORDER BY name`);
+  const { rows } = await query(
+    `SELECT id, COALESCE(code, 'C' || id::text) AS code, name FROM customers WHERE is_active ORDER BY name`
+  );
   const { rows: sites } = await query(
-    `SELECT s.* FROM solitaire_sites s JOIN solitaire_customers c ON c.id = s.customer_id
-     WHERE s.is_active AND c.is_active ORDER BY s.name`
+    `SELECT s.id, s.customer_id, s.name FROM sites s JOIN customers c ON c.id = s.customer_id
+     WHERE c.is_active ORDER BY s.name`
   );
   const byCustomer = {};
   sites.forEach((s) => { (byCustomer[s.customer_id] ||= []).push(s); });
   res.json(rows.map((c) => ({ ...c, sites: byCustomer[c.id] || [] })));
 });
 
-router.post("/customers", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  const { code, name } = req.body || {};
-  if (!code || !name) return res.status(400).json({ error: "Code and name are required." });
-  const { rows } = await query(`INSERT INTO solitaire_customers (code, name) VALUES ($1, $2) RETURNING *`, [code.trim(), name.trim()]);
-  res.status(201).json(rows[0]);
-});
-
-router.patch("/customers/:id", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  const { code, name, is_active } = req.body || {};
-  const { rows } = await query(
-    `UPDATE solitaire_customers SET code = COALESCE($1, code), name = COALESCE($2, name), is_active = COALESCE($3, is_active)
-     WHERE id = $4 RETURNING *`,
-    [code, name, is_active, req.params.id]
-  );
-  if (!rows.length) return res.status(404).json({ error: "Not found." });
-  res.json(rows[0]);
-});
-
-router.delete("/customers/:id", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  await query(`UPDATE solitaire_customers SET is_active = false WHERE id = $1`, [req.params.id]);
-  res.json({ ok: true });
-});
-
-router.post("/customers/:id/sites", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  const { name } = req.body || {};
-  if (!name) return res.status(400).json({ error: "Site name is required." });
-  const { rows } = await query(`INSERT INTO solitaire_sites (customer_id, name) VALUES ($1, $2) RETURNING *`, [req.params.id, name.trim()]);
-  res.status(201).json(rows[0]);
-});
-
-router.patch("/sites/:id", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  const { name, is_active } = req.body || {};
-  const { rows } = await query(
-    `UPDATE solitaire_sites SET name = COALESCE($1, name), is_active = COALESCE($2, is_active) WHERE id = $3 RETURNING *`,
-    [name, is_active, req.params.id]
-  );
-  if (!rows.length) return res.status(404).json({ error: "Not found." });
-  res.json(rows[0]);
-});
-
-router.delete("/sites/:id", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  await query(`UPDATE solitaire_sites SET is_active = false WHERE id = $1`, [req.params.id]);
-  res.json({ ok: true });
-});
-
 router.get("/trucks", requireSolitaireAuth, async (req, res) => {
-  const { rows } = await query(`SELECT * FROM solitaire_trucks WHERE is_active ORDER BY registration_number`);
+  const { rows } = await query(
+    `SELECT id, truck_number AS registration_number, truck_code, capacity_m3
+       FROM trucks WHERE is_active ORDER BY truck_number`
+  );
   res.json(rows);
 });
 
-router.post("/trucks", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  const { registration_number, truck_code, driver_name } = req.body || {};
-  if (!registration_number || !truck_code || !driver_name) {
-    return res.status(400).json({ error: "Registration number, Truck ID, and Driver name are all required." });
-  }
+// Drivers are real main-app user accounts. The workbook derives the driver
+// from the truck by lookup — one fixed driver per vehicle — but drivers change
+// from trip to trip, so the docket records who actually drove and the
+// workbook's lookup is fed from that rather than the other way round.
+router.get("/drivers", requireSolitaireAuth, async (req, res) => {
   const { rows } = await query(
-    `INSERT INTO solitaire_trucks (registration_number, truck_code, driver_name) VALUES ($1, $2, $3) RETURNING *`,
-    [registration_number.trim(), truck_code.trim(), driver_name.trim()]
+    `SELECT id, name FROM users WHERE role = 'driver' AND is_active ORDER BY name`
   );
-  res.status(201).json(rows[0]);
+  res.json(rows);
 });
 
-router.patch("/trucks/:id", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  const { registration_number, truck_code, driver_name, is_active } = req.body || {};
-  const { rows } = await query(
-    `UPDATE solitaire_trucks SET registration_number = COALESCE($1, registration_number),
-     truck_code = COALESCE($2, truck_code), driver_name = COALESCE($3, driver_name), is_active = COALESCE($4, is_active)
-     WHERE id = $5 RETURNING *`,
-    [registration_number, truck_code, driver_name, is_active, req.params.id]
-  );
-  if (!rows.length) return res.status(404).json({ error: "Not found." });
-  res.json(rows[0]);
-});
-
-router.delete("/trucks/:id", requireSolitaireAuth, requireSolitaireRole(...MASTERS_ROLES), async (req, res) => {
-  await query(`UPDATE solitaire_trucks SET is_active = false WHERE id = $1`, [req.params.id]);
-  res.json({ ok: true });
-});
+// Round 152 — the module's own customer / site / truck WRITE endpoints are
+// gone. They wrote to solitaire_customers, solitaire_sites and
+// solitaire_trucks, which nothing reads any more: the dropdowns above come
+// from the main app's tables. Those three tables are left in place rather than
+// dropped, so nothing is destroyed if this decision is ever revisited, but
+// they are dead.
+//
+// Deliberately NOT replaced with endpoints that write to the MAIN tables. A
+// Solitaire session is a separate trust boundary with its own login; it must
+// not be able to create or rename a customer the business invoices against.
+// That belongs in the main app, where the main app's permissions apply.
 
 router.get("/mix-designs", requireSolitaireAuth, async (req, res) => {
   const { rows } = await query(`SELECT * FROM solitaire_mix_designs WHERE is_active ORDER BY code`);
@@ -408,24 +391,23 @@ router.get("/mix-designs", requireSolitaireAuth, async (req, res) => {
 });
 
 router.post("/mix-designs", requireSolitaireAuth, requireSolitaireRole(...MIX_DESIGN_ROLES), async (req, res) => {
-  const {
-    code, name, msand_kgm3, agg_12mm_kgm3, agg_20mm_kgm3,
-    cem1_kgm3, cem2_kgm3, cem3_kgm3, admix1_kgm3, admix2_kgm3, water_kgm3,
-  } = req.body || {};
-  if (!code) return res.status(400).json({ error: "Recipe code is required." });
+  const body = req.body || {};
+  if (!body.code) return res.status(400).json({ error: "Recipe code is required." });
+  const values = MIX_FIELDS.map((f) =>
+    f === "code" ? String(body.code).trim()
+    : f === "name" ? (body.name || String(body.code).trim())
+    : Number(body[f]) || 0
+  );
+  const cols = MIX_FIELDS.join(", ");
+  const params = MIX_FIELDS.map((_, i) => `$${i + 1}`).join(",");
   const { rows } = await query(
-    `INSERT INTO solitaire_mix_designs
-     (code, name, msand_kgm3, agg_12mm_kgm3, agg_20mm_kgm3, cem1_kgm3, cem2_kgm3, cem3_kgm3, admix1_kgm3, admix2_kgm3, water_kgm3)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-    [code.trim(), name || code.trim(), msand_kgm3 || 0, agg_12mm_kgm3 || 0, agg_20mm_kgm3 || 0,
-     cem1_kgm3 || 0, cem2_kgm3 || 0, cem3_kgm3 || 0, admix1_kgm3 || 0, admix2_kgm3 || 0, water_kgm3 || 0]
+    `INSERT INTO solitaire_mix_designs (${cols}) VALUES (${params}) RETURNING *`, values
   );
   res.status(201).json(rows[0]);
 });
 
 router.patch("/mix-designs/:id", requireSolitaireAuth, requireSolitaireRole(...MIX_DESIGN_ROLES), async (req, res) => {
-  const fields = ["code", "name", "msand_kgm3", "agg_12mm_kgm3", "agg_20mm_kgm3", "cem1_kgm3",
-    "cem2_kgm3", "cem3_kgm3", "admix1_kgm3", "admix2_kgm3", "water_kgm3", "is_active"];
+  const fields = [...MIX_FIELDS, "is_active"];
   const sets = []; const vals = []; let i = 1;
   for (const f of fields) {
     if (req.body[f] !== undefined) { sets.push(`${f} = $${i++}`); vals.push(req.body[f]); }
@@ -440,6 +422,67 @@ router.patch("/mix-designs/:id", requireSolitaireAuth, requireSolitaireRole(...M
 router.delete("/mix-designs/:id", requireSolitaireAuth, requireSolitaireRole(...MIX_DESIGN_ROLES), async (req, res) => {
   await query(`UPDATE solitaire_mix_designs SET is_active = false WHERE id = $1`, [req.params.id]);
   res.json({ ok: true });
+});
+
+// Round 152 — bulk upload of mix designs.
+//
+// The rows arrive as JSON, already parsed. The workbook is read in the BROWSER
+// (the frontend has SheetJS bundled for the reports it already exports), which
+// keeps a 400KB .xlsm off the wire and out of this process, and means no
+// multipart handling or spreadsheet dependency on the server. The upload
+// screen shows what it found before anything is written, so a wrong sheet or a
+// shifted column is caught by eye rather than discovered in a printed docket.
+//
+// Upsert on `code`, because that is what the workbook looks recipes up by:
+// re-uploading the sheet after editing a recipe should update it, not create a
+// second one with the same name. A code present in the database but absent
+// from the upload is left alone — an upload is "here are these recipes", never
+// "these are the only recipes", so a partial sheet cannot silently retire the
+// rest.
+router.post("/mix-designs/bulk", requireSolitaireAuth, requireSolitaireRole(...MIX_DESIGN_ROLES), async (req, res) => {
+  const rows = Array.isArray((req.body || {}).rows) ? req.body.rows : null;
+  if (!rows || !rows.length) return res.status(400).json({ error: "No rows were supplied." });
+  if (rows.length > 500) return res.status(400).json({ error: "That is more than 500 recipes — split the upload." });
+
+  const cleaned = [];
+  const skipped = [];
+  for (const [i, r] of rows.entries()) {
+    const code = String(r.code ?? "").trim();
+    // A blank code is a blank sheet row, not an error worth stopping for —
+    // the Mix Design sheet has plenty of empty rows below the real ones.
+    if (!code) { continue; }
+    if (code.length > 40) { skipped.push({ row: i + 1, code, reason: "Recipe code is longer than 40 characters." }); continue; }
+    const rec = { code, name: String(r.name ?? code).trim().slice(0, 120) };
+    for (const f of MIX_NUMERIC) {
+      const n = Number(r[f]);
+      rec[f] = Number.isFinite(n) ? n : 0;
+    }
+    cleaned.push(rec);
+  }
+  if (!cleaned.length) return res.status(400).json({ error: "No rows had a recipe code." });
+
+  // Last one wins on a duplicated code within the same upload, rather than
+  // letting ON CONFLICT fire twice in one statement (which Postgres refuses).
+  const byCode = new Map();
+  for (const r of cleaned) byCode.set(r.code, r);
+  const unique = [...byCode.values()];
+  const duplicatesInFile = cleaned.length - unique.length;
+
+  const cols = MIX_FIELDS.join(", ");
+  const updates = MIX_FIELDS.filter((f) => f !== "code").map((f) => `${f} = EXCLUDED.${f}`).join(", ");
+  let created = 0, updated = 0;
+  for (const r of unique) {
+    const { rows: out } = await query(
+      `INSERT INTO solitaire_mix_designs (${cols})
+       VALUES (${MIX_FIELDS.map((_, i) => `$${i + 1}`).join(",")})
+       ON CONFLICT (code) DO UPDATE SET ${updates}, is_active = true
+       RETURNING (xmax = 0) AS inserted`,
+      MIX_FIELDS.map((f) => r[f])
+    );
+    if (out[0].inserted) created++; else updated++;
+  }
+
+  res.json({ created, updated, skipped, duplicates_in_file: duplicatesInFile, total_rows_seen: rows.length });
 });
 
 /* =========================================================================
@@ -484,7 +527,7 @@ router.post("/dockets/preview", requireSolitaireAuth, async (req, res) => {
 router.post("/dockets", requireSolitaireAuth, async (req, res) => {
   const {
     batch_number, order_date_time, order_qty_m3, with_this_load_m3,
-    customer_id, site_id, mix_design_id, truck_id, driver_name,
+    customer_id, site_id, mix_design_id, truck_id, driver_name, driver_user_id,
     production_qty_m3, mixer_capacity_m3, moisture_pct,
     pdf_base64, pdf_filename,
   } = req.body || {};
@@ -503,12 +546,12 @@ router.post("/dockets", requireSolitaireAuth, async (req, res) => {
   const { rows } = await query(
     `INSERT INTO solitaire_dockets
      (batch_number, order_date_time, order_qty_m3, with_this_load_m3, customer_id, site_id, mix_design_id,
-      truck_id, driver_name, production_qty_m3, mixer_capacity_m3, moisture_pct, sheet_number,
+      truck_id, driver_name, driver_user_id, production_qty_m3, mixer_capacity_m3, moisture_pct, sheet_number,
       pdf_filename, pdf_data, is_placeholder_pdf, printed_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,$16)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,true,$17)
      RETURNING id, batch_number, sheet_number, pdf_filename, printed_at`,
     [batch_number || null, order_date_time || null, order_qty_m3 || null, with_this_load_m3 || null,
-     customer_id, site_id, mix_design_id, truck_id, driver_name || null,
+     customer_id, site_id, mix_design_id, truck_id, driver_name || null, driver_user_id || null,
      production_qty_m3, mixer_capacity_m3 || null, moisture_pct || null, sheet_number,
      pdf_filename, Buffer.from(pdf_base64, "base64"), req.solitaireAccount.id]
   );
@@ -526,14 +569,14 @@ router.get("/dockets", requireSolitaireAuth, async (req, res) => {
   const q = (req.query.q || "").trim();
   const { rows } = await query(
     `SELECT d.id, d.batch_number, d.printed_at, d.production_qty_m3, d.sheet_number, d.is_placeholder_pdf,
-            c.name AS customer_name, s.name AS site_name, m.code AS recipe_code, t.registration_number AS truck_number
+            c.name AS customer_name, s.name AS site_name, m.code AS recipe_code, t.truck_number AS truck_number
      FROM solitaire_dockets d
-     JOIN solitaire_customers c ON c.id = d.customer_id
-     JOIN solitaire_sites s ON s.id = d.site_id
+     JOIN customers c ON c.id = d.customer_id
+     JOIN sites s ON s.id = d.site_id
      JOIN solitaire_mix_designs m ON m.id = d.mix_design_id
-     JOIN solitaire_trucks t ON t.id = d.truck_id
+     JOIN trucks t ON t.id = d.truck_id
      WHERE $1 = '' OR d.batch_number ILIKE '%'||$1||'%' OR c.name ILIKE '%'||$1||'%'
-        OR t.registration_number ILIKE '%'||$1||'%' OR s.name ILIKE '%'||$1||'%'
+        OR t.truck_number ILIKE '%'||$1||'%' OR s.name ILIKE '%'||$1||'%'
      ORDER BY d.printed_at DESC LIMIT 200`,
     [q]
   );

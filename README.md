@@ -6675,3 +6675,81 @@ console errors anywhere.
 with open/print, gated by a new permission), item 3 (distance since last fill on the Manager's fuel
 approval card) and item 4 (fuel consumption analysis for pumps and other equipment) — all three need
 real data work and follow in Round 152.
+
+## Round 152 (Ver. 9.78): the real MCI370 panel, shared master data, bulk mix-design upload
+
+**Visit `/setup?key=...` once after deploying** — new columns on `customers` and `trucks`, wider mix
+designs, and the docket's foreign keys re-pointed.
+
+**The screen uses the real panel photograph, which now ships with the app.** The user supplied the
+MCI370 screenshot and asked for the overlay approach rather than a CSS reconstruction — the right
+call, because a photograph of the real thing is a better likeness than any rebuild. It lives at
+`frontend/public/solitaire/screen-reference.png` (1366x721), in the repo, so the Round 149 failure
+— an overlay calibrated against an image nobody had — cannot repeat.
+
+I briefly rebuilt the panel in CSS during this round and then reverted it, keeping the measurement
+work: **every overlay coordinate was verified against the image itself** rather than trusted. The
+green dropdowns and white fields were detected programmatically and converted to percentages, and
+they matched the existing values to within ~1%, confirming the original overlay had been calibrated
+against this exact screenshot all along. Only the picture had been missing.
+
+**All eight menu words are live now**, not two: Master and Options open the real menus, and the six
+plant-control functions (Plant setup, Start Production, Alarm View, Divert Concrete, Help, Quit)
+say they run on the plant's own MCI370 rather than doing nothing when clicked. Every hotspot has a
+tooltip and highlights on hover, so the menu bar behaves like a menu bar.
+
+**And the Round 149 lesson is kept as a safety net rather than a design constraint**: if the image
+ever fails to load, `imgFailed` swaps in a plain visible toolbar. The module degrades to usable
+instead of to a white page with invisible menus.
+
+The weigher panels, mixing timers and alarm grid in the photograph are the real MCI370's live PLC
+telemetry. This app has no PLC connection, so those areas are backdrop only — the Consignment /
+Batch Details panel is the part with live fields over it.
+
+**Customers, sites, trucks and drivers now come from the main app.** Round 139 deliberately shared
+nothing, which was right for a standalone package; as a plugin it only meant entering every customer
+twice and watching the two lists drift. Two optional columns carry what the MCI370 screen shows and
+the main app never had — a customer `code` and a truck `truck_code` — both nullable and
+unique-when-set. The module's own write endpoints for those three tables are **removed**, and
+deliberately not replaced with endpoints that write to the main tables: a Solitaire session is a
+separate trust boundary with its own login, and it must not be able to rename a customer the
+business invoices against.
+
+Drivers are real main-app accounts, and **picking a truck no longer decides the driver**. The
+workbook derives one from the other by lookup, one fixed driver per vehicle; the main app knows
+drivers change trip to trip, so the docket records who actually drove.
+
+The docket's `customer_id`, `site_id` and `truck_id` foreign keys were re-pointed at the main tables,
+**guarded on the table being empty**. No docket has ever been printed, so this was free today and
+would have been a data migration in a month; if rows ever exist the block does nothing and `/setup`
+says so.
+
+**Mix designs widened and bulk-uploadable.** The module stored ten quantity fields; the workbook's
+sheet also carries four absorption percentages, four moisture percentages and the water variance
+band, so QC was editing a subset while the workbook printed stale values for the rest. Upload now
+accepts **the workbook itself** — parsed in the browser with the SheetJS already bundled, so a 400KB
+`.xlsm` never crosses the wire and the server needs no spreadsheet library. Upsert on recipe code,
+because that is what the workbook looks recipes up by; a code absent from the upload is left alone,
+since an upload is "here are these recipes", never "these are the only recipes".
+
+**Mapped by column letter, not by header text — and that turned out to matter.** The sheet's `R3`
+header reads "20MM%", but that column is actually the first M Sand's moisture, confirmed against the
+`Load` sheet's own VLOOKUP column indexes. Trusting the headers would have loaded moisture into the
+wrong ingredient, silently.
+
+**Verification**: the migration run on a throwaway Postgres, foreign keys confirmed re-pointed to
+`customers`, `sites`, `trucks` and `users`, and a second `/setup` confirmed a no-op. The **real
+workbook** was then uploaded through the live endpoint: **44 recipes created from 45 rows**, one
+duplicate code in the file correctly collapsed (`M 25 (KSEB)` appears twice), and a re-upload
+reporting **0 created / 44 updated** with the table still holding 44 — so re-uploading edits rather
+than duplicates. One recipe was compared field by field against the sheet and every value matched
+exactly. The module was confirmed reading the main app's seeded customers, sites, trucks and drivers,
+including the `COALESCE(code, 'C'||id)` fallback for customers with no code yet. The screen was then
+driven headless with the image in place: it loaded at its native 1366x721, all **eight** menu
+hotspots present, the fallback toolbar correctly hidden, five overlay dropdowns populated from the
+shared masters, and the Customer dropdown measured on screen at **16.59% / 60.44%** against
+**16.69% / 60.75%** measured in the image — about a pixel out. Master and Options both opened, an
+inactive menu word explained itself, and there were no console errors.
+
+**Still open**: item 1 (today's delivery notes on the Plant Operator screen), item 3 (distance since
+last fill) and item 4 (pump and equipment fuel analysis) — Round 153. Then the print agent.
