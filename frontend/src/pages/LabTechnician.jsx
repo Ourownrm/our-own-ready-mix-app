@@ -954,6 +954,34 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
   const [failureType, setFailureType] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState("");
+  // Round 151, item 6 — back-dating a site-cast result, the twin of what
+  // PourDetail has had since Round 124. Site cubes are routinely written up
+  // days after the test, so "tested on" needs to be correctable.
+  const [editingDateFor, setEditingDateFor] = useState(null);
+  const [dateDraft, setDateDraft] = useState("");
+  const [savingDate, setSavingDate] = useState(false);
+
+  function beginEditDate(r) {
+    setEditingDateFor(r.id);
+    // Built from LOCAL calendar fields, not toISOString(): in IST an evening
+    // timestamp is already the next day in UTC, so slicing the ISO string
+    // would pre-fill the wrong date and let somebody save it without noticing.
+    const d = new Date(r.tested_at);
+    setDateDraft(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+  }
+
+  async function saveDate(resultId) {
+    if (!dateDraft) return;
+    setSavingDate(true); setError("");
+    try {
+      await apiRequest(`/lab-technician/site-cube-tests/${resultId}/date`, {
+        method: "PATCH",
+        body: { tested_at: dateDraft },
+      });
+      setEditingDateFor(null);
+      await loadDetail();
+    } catch (err) { setError(err.message); } finally { setSavingDate(false); }
+  }
 
   function resetCubesFor(d) {
     const labels = (d.sample_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -1112,7 +1140,21 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
               </div>
               <div style={{ color: "var(--slate)", fontSize: 11, marginTop: 2 }}>
                 Tested on {fmtDate(r.tested_at)}{r.failure_type ? ` · Failure: ${r.failure_type}` : ""}
+                {canManageResults && editingDateFor !== r.id && (
+                  <button type="button" style={{ fontSize: 10.5, padding: "1px 7px", marginLeft: 6 }} onClick={() => beginEditDate(r)}>
+                    Change date
+                  </button>
+                )}
               </div>
+              {canManageResults && editingDateFor === r.id && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
+                  <input type="date" value={dateDraft} onChange={(e) => setDateDraft(e.target.value)} style={{ fontSize: 11 }} />
+                  <button type="button" style={{ fontSize: 10.5, padding: "2px 8px" }} disabled={savingDate} onClick={() => saveDate(r.id)}>
+                    {savingDate ? "Saving..." : "Save"}
+                  </button>
+                  <button type="button" style={{ fontSize: 10.5, padding: "2px 8px" }} onClick={() => setEditingDateFor(null)}>Cancel</button>
+                </div>
+              )}
               <div style={{ color: "var(--slate)", fontSize: 10.5, marginTop: 2 }}>
                 Wrong entry? Pick {r.testing_age_days}-day below — it's pre-filled with these figures, ready to correct.
               </div>

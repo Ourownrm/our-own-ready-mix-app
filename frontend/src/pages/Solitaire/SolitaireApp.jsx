@@ -172,6 +172,31 @@ export default function SolitaireApp() {
     <div className="solitaire-root">
       <div className="sol-app-shell">
         <div className="sol-screen">
+          {/* Round 151 — a REAL toolbar, in normal document flow.
+              Until now Master and Options were transparent hotspots positioned
+              over the MCI370 panel photograph. That artwork was never delivered
+              with this module's code, so on a live install the two menus were
+              invisible rectangles in an empty white area — and with them went
+              Device Management, Settings and every master-data screen. The
+              module looked broken and was, in the only sense that matters:
+              unreachable.
+              Navigation must not depend on a picture loading. These are
+              ordinary buttons; the panel below is decoration, present or not. */}
+          <div className="sol-toolbar">
+            <button type="button" className={`sol-tb-btn${openMenu === "master" ? " open" : ""}`}
+                    onClick={() => setOpenMenu(openMenu === "master" ? null : "master")}>
+              Master <span className="caret">&#9662;</span>
+            </button>
+            <button type="button" className={`sol-tb-btn${openMenu === "options" ? " open" : ""}`}
+                    onClick={() => setOpenMenu(openMenu === "options" ? null : "options")}>
+              Options <span className="caret">&#9662;</span>
+            </button>
+            <span className="sol-tb-gap" />
+            <button type="button" className="sol-tb-btn" onClick={() => setOverlay("order")}>&#65291; New Order</button>
+            <button type="button" className="sol-tb-btn" onClick={() => { setOverlay("search"); runSearch(""); }}>&#128269; Search / Reprint</button>
+            <button type="button" className="sol-tb-btn primary" onClick={startPrintFlow}>&#128424; Print Docket</button>
+          </div>
+
           <div className="sol-entry-bg">
             {/* Round 149 — the panel artwork (public/solitaire/screen-reference.png)
                 was never delivered with this module's code. The container carries
@@ -195,11 +220,8 @@ export default function SolitaireApp() {
               <button className="sol-icon-btn primary" title="Print Docket" onClick={startPrintFlow}>🖨</button>
             </div>
 
-            <button className="sol-menu-hotspot" style={pct(COORDS.menuMaster)} onClick={() => setOpenMenu(openMenu === "master" ? null : "master")} />
-            <button className="sol-menu-hotspot" style={pct(COORDS.menuOptions)} onClick={() => setOpenMenu(openMenu === "options" ? null : "options")} />
-
             {openMenu === "master" && (
-              <div className="sol-menu-dropdown" style={{ left: `${COORDS.menuMaster.left}%`, top: "5.9%" }}>
+              <div className="sol-menu-dropdown sol-menu-anchored" style={{ left: "8px", top: "8px" }}>
                 <a onClick={() => { setOpenMenu(null); setMasterKind("customer"); setOverlay("master"); }}>Customer &amp; Site Master</a>
                 <a onClick={() => { setOpenMenu(null); setMasterKind("truck"); setOverlay("master"); }}>Truck &amp; Driver Master</a>
                 <a
@@ -211,7 +233,7 @@ export default function SolitaireApp() {
               </div>
             )}
             {openMenu === "options" && (
-              <div className="sol-menu-dropdown" style={{ left: `${COORDS.menuOptions.left}%`, top: "5.9%" }}>
+              <div className="sol-menu-dropdown sol-menu-anchored" style={{ left: "120px", top: "8px" }}>
                 <a
                   className={!canSeeSettings ? "disabled" : ""}
                   onClick={() => {

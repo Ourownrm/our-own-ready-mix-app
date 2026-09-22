@@ -71,8 +71,29 @@
 .sol-ov-input.left{ text-align:left; }
 .sol-ov.error{ outline:2px solid #c00000; outline-offset:-1px; }
 
-.sol-menu-hotspot{ position:absolute; background:transparent; border:none; cursor:pointer; padding:0; }
-.sol-menu-hotspot:hover{ background:rgba(31,74,134,.15); }
+/* Round 151 — the visible toolbar that replaced the invisible hotspots.
+   Deliberately in normal flow above the panel, sized in px rather than vw, so
+   it is legible and hittable whether or not the MCI370 artwork is present and
+   at any window width. The old .sol-menu-hotspot rules are gone with the
+   elements they styled: navigation that is only findable because a photograph
+   loaded is not navigation. */
+.sol-toolbar{
+  max-width:1366px; margin:0 auto 6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+  padding:6px; background:#ECECEC; border:1px solid #444; border-bottom:none;
+  font-family:Tahoma,Arial,sans-serif;
+}
+.sol-tb-gap{ flex:1 1 auto; min-width:8px; }
+.sol-tb-btn{
+  border:1px solid #8a8a8a; background:linear-gradient(#fdfdfd,#e2e2e2); border-radius:4px;
+  padding:6px 11px; font-size:12.5px; font-family:inherit; cursor:pointer; white-space:nowrap;
+}
+.sol-tb-btn:hover{ filter:brightness(1.04); }
+.sol-tb-btn.open{ background:#1f4a86; color:#fff; border-color:#123061; }
+.sol-tb-btn.primary{ background:#1f4a86; color:#fff; border-color:#123061; font-weight:700; }
+.sol-tb-btn .caret{ font-size:10px; margin-left:3px; opacity:.8; }
+/* The dropdowns now anchor to the top-left of the panel, just under the
+   toolbar, instead of to coordinates on the background image. */
+.sol-menu-anchored{ position:absolute; }
 
 .sol-menu-dropdown{
   position:absolute; z-index:40; background:#fff; border:1px solid #888; box-shadow:0 8px 20px rgba(0,0,0,.3);

@@ -20,7 +20,11 @@ import { useCustomerLanguage, PublicLanguageSwitcher } from "../lib/customerI18n
 // combined client-side into one `notes` string sent to the backend — see
 // routes/publicInquiry.js and schema.sql's comment on leads.notes for why
 // there's no separate column for each.
-const GRADES = ["M15", "M20", "M25", "M30", "M35", "M40", "Not sure — see below"];
+// Round 151, item 2 — the full grade range the plant actually supplies.
+// Was M15–M40, which quietly told a customer wanting M10 or M50 that we do not
+// make it. "Not sure" stays last: a quote request is often the moment somebody
+// is asking precisely because they do not know the grade.
+const GRADES = ["M10", "M15", "M20", "M25", "M30", "M35", "M40", "M45", "M50", "M55", "Not sure — see below"];
 const emptyForm = {
   contact_name: "", contact_number: "", company_name: "", site_project: "",
   estimated_qty_m3: "", mix_grade_interest: "M25", mix_requirement: "", anything_else: "",

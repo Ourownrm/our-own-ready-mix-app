@@ -5,7 +5,6 @@ import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, failedCount, clearFailed, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
-import SolitaireButton from "../lib/SolitaireButton.jsx";
 
 function newIdempotencyKey() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -97,12 +96,6 @@ export default function PlantOperator() {
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
 
-        {/* Round 149 — the Delivery Challan (Solitaire) plugin. This is the
-            ONLY screen in the app that links to it, deliberately: the module
-            is for the plant terminal, and an Administrator has no route into
-            it at all. It renders nothing unless the plugin is enabled AND
-            this person has been granted an account — see SolitaireButton. */}
-        <SolitaireButton />
         {failed > 0 && (
           <div style={{ textAlign: "center", fontSize: 12, color: "var(--alert-red)", background: "var(--alert-red-bg, #FBEAEA)", border: "1px solid var(--alert-red)", borderRadius: 8, padding: 10, marginBottom: 12 }}>
             {failed} delivery note(s) couldn't be saved — this wasn't a signal problem, something about the entry itself needs fixing. Please re-enter manually.
