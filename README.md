@@ -6615,3 +6615,63 @@ origin rather than `*`, a disallowed origin to receive no grant at all, and both
 `/api/solitaire-access` and the rest of the app to be untouched. Finally the whole flow through the
 actual UI: refusal → the device-code field appearing with its explanation → entering the code →
 landing signed in on the docket screen, with no console errors.
+
+## Round 151 (Ver. 9.76): the Delivery Challan module made usable, plus four fixes
+
+**No schema change** — but one new endpoint, so the backend must redeploy. `/setup` is not needed.
+
+**The blocker, and it was mine.** Round 149 shipped the module with its two menus — Master and
+Options — as *transparent hotspots positioned over a photograph of the MCI370 panel*. That artwork
+was never delivered with the module's code. I noted the missing images and called them cosmetic
+("the screens work without them"). They were not cosmetic: on the live install those menus were
+invisible rectangles in an empty white area, and behind them sat **Device Management, Settings and
+every master-data screen**. The module looked broken and, in the only sense that matters, was.
+
+Fixed by giving the module a **real toolbar in normal document flow** — Master, Options, New Order,
+Search / Reprint, Print Docket — as ordinary labelled buttons, sized in pixels rather than viewport
+units so they stay legible and hittable at any width. The hotspots are gone. The panel image, when
+it eventually arrives, is now decoration: navigation never depends on a picture loading again.
+
+The green login screen is the same root cause — `login-bg.jpg` absent, so the CSS fallback colour
+shows. Both images still want dropping into `frontend/public/solitaire/`; nothing breaks without
+them any more.
+
+**Item 7 — the Delivery Challan entry moved into the header**, so it is reachable from wherever
+somebody is rather than from one dashboard. **Item 9 — Plant Operator, Lab Technician and
+Administrator now all see it**; QC needs it to reach the Mix Design Master from the lab, and the
+Administrator decision was revisited. What did *not* change: enabling or disabling the module and
+granting somebody access stay Super Admin only, behind the locked `admin.plugins` function. Being
+able to open a module and being able to hand it out are different powers.
+
+**Item 2 — the quote request offers M10 through M55.** It was M15–M40, which quietly told a
+customer wanting M10 or M50 that we don't make it. The Sales Executive lead-capture list was
+extended to match, so the two can't disagree.
+
+**Item 5 — the cube test 7-day / 28-day overlap.** Not a layout problem on that screen: the shared
+`.field-input input` rule sets `width: 100%` with padding and a border, which is right for a text
+field and badly wrong for a radio — each one stretched across its whole label as a large bordered
+box with the label text landing on top of it. Fixed at the rule, since it would have affected every
+radio and checkbox in every `.field-input` form in the app, not just this one.
+
+**Item 6 — site-cast results can have their date changed**, the exact twin of what plant pours have
+had since Round 124. Site cubes are routinely written up days after the test, so "tested on" needed
+to be correctable. New `PATCH /site-cube-tests/:resultId/date`, and the date draft is built from
+**local** calendar fields rather than `toISOString()` — in IST an evening timestamp is already
+tomorrow in UTC, so slicing the ISO string would pre-fill the wrong day and let somebody save it
+without noticing.
+
+**Verification**: driven headless with the panel image genuinely absent from disk, which is the
+real-world state — Master, Options and Print Docket all visible; the Options menu opening; Settings
+reaching Device Management with both "Authorize this browser" and "Get a code for another machine";
+the Master menu listing all three master-data screens. (My first check reported the pairing button
+missing — the check was looking for the wrong wording, not the button being absent.) The header link
+confirmed present in `.topbar` for both a Super Admin and a Lab Technician at 390px with zero
+horizontal overflow. The radio fix was measured against the shared rule rather than eyeballed: a
+radio renders at **13px** with no padding or border while a text input in the same form is still
+**271px** wide. `node --check` across the backend, clean build, guard checker green on 49 routes, no
+console errors anywhere.
+
+**Still open from this punch list**: item 1 (today's delivery notes on the Plant Operator screen,
+with open/print, gated by a new permission), item 3 (distance since last fill on the Manager's fuel
+approval card) and item 4 (fuel consumption analysis for pumps and other equipment) — all three need
+real data work and follow in Round 152.

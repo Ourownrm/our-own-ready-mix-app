@@ -711,6 +711,29 @@ router.delete("/site-cube-tests/:resultId", requireRole("lab_technician", "admin
   res.json({ ok: true });
 });
 
+// Round 151, item 6 — change the test date on a SITE-CAST result. The exact
+// twin of PATCH /cube-pours/:orderId/results/:resultId/date, which has existed
+// for plant pours since Round 124. The site-cast screen never got one, so a
+// result entered days after the test — the normal case for site cubes, where
+// the lab writes up a batch later — could not be back-dated to when the test
+// actually happened, and there was no way to correct a typo either.
+//
+// Like its plant-side twin this only moves the date. It does not re-run any of
+// the averaging or acceptance logic, because none of that depends on tested_at.
+router.patch("/site-cube-tests/:resultId/date", requireRole("lab_technician", "administrator"), async (req, res) => {
+  const { tested_at } = req.body;
+  const parsed = tested_at ? new Date(tested_at) : null;
+  if (!parsed || isNaN(parsed)) {
+    return res.status(400).json({ error: "A valid test date is required." });
+  }
+  const { rows } = await query(
+    `UPDATE site_cube_test_results SET tested_at = $1 WHERE id = $2 RETURNING id`,
+    [parsed.toISOString(), req.params.resultId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Test result not found." });
+  res.json({ ok: true });
+});
+
 // Flat JSON for the client-side PDF generator — same shape as the plant
 // cube-tests/:resultId/pdf-data below, minus the ticket_number a site-cast
 // batch doesn't have.

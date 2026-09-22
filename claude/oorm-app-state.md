@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 150, Ver. 9.75)
+# OORM App — Current State (as of App 151, Ver. 9.76)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -30,6 +30,49 @@ delivering a round with a schema change, the user needs to visit that URL once; 
 causes exactly the kind of generic "Something went wrong" error a missing column produces (the
 app's error handler is deliberately plain-language, so it never surfaces the real Postgres error
 to the user — see `index.js`'s final `app.use((err, req, res, next) => ...)`).
+
+## Round 151 (Ver. 9.76): Delivery Challan made usable, plus four fixes
+
+**No schema change** (one new endpoint, so redeploy the backend). `/setup` not needed.
+
+**The blocker — my miss from Round 149.** The module's Master and Options menus were **transparent
+hotspots positioned over the MCI370 panel photograph**, and that artwork was never delivered with
+the code. I called the missing images cosmetic. They were not: on the live install the menus were
+invisible rectangles in white space, and behind them sat **Device Management, Settings and every
+master-data screen**. Fixed with a **real toolbar in normal document flow** (px-sized, not vw). The
+hotspots are deleted. **Rule to keep: navigation must never depend on an image loading.** The two
+images still belong in `frontend/public/solitaire/` but nothing breaks without them now.
+
+**Items 7 + 9**: the Delivery Challan entry moved from a Plant Operator tile into the **header**
+(`TopBar.jsx`, gated by `SOLITAIRE_ROLES`), and Plant Operator / Lab Technician / **Administrator**
+all see it — the Round 149 "Administrator has no access" instruction was revisited by the user.
+**Unchanged and important**: enabling/disabling the plugin and granting access stay Super Admin
+only behind the locked `admin.plugins`. Opening a module ≠ handing it out.
+
+**Item 2**: quote request grades now M10–M55 (was M15–M40). Sales Executive lead-capture list
+extended to match so the two cannot drift.
+
+**Item 5 — worth remembering as a pattern.** The cube-test "7-day / 28-day overlap" was NOT that
+screen's layout: the shared `.field-input input` rule sets `width:100%` + padding + border, which
+stretched every RADIO across its label as a big box with the text on top. Fixed at the shared rule
+(`input[type=radio]`/`[type=checkbox]` → `width:auto`, no padding/border), because it affected every
+such form in the app.
+
+**Item 6**: site-cast results can have their test date changed — twin of the plant-pour endpoint
+from Round 124. New `PATCH /lab-technician/site-cube-tests/:resultId/date`. The date draft is built
+from **local calendar fields, not `toISOString()`** — the recurring IST/UTC trap.
+
+**Verification**: driven headless **with the panel image genuinely absent from disk** (the
+real-world state) — all toolbar buttons visible, Options → Settings → Device Management reachable
+with both "Authorize this browser" and "Get a code for another machine", Master menu listing all
+three master screens. Header link present in `.topbar` for Super Admin and Lab Technician at 390px,
+zero overflow. Radio fix **measured**: 13px radio, no padding/border, while a text input in the same
+form stays 271px.
+
+**Still open from the same punch list → Round 152**: (1) today's delivery notes on the Plant
+Operator screen with open/print, gated by a new permission — the user confirmed these are the MAIN
+APP's delivery notes, not Solitaire dockets; (3) distance travelled since last fill on the Manager's
+fuel approval card; (4) fuel consumption analysis for pumps and other equipment.
 
 ## Round 150 (Ver. 9.75): device pairing codes, and a CORS bug Round 149 hid
 
