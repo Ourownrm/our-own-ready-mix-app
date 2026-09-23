@@ -146,6 +146,13 @@ export default function SupplyApprovals() {
                   {r.odometer_reading ? `Odometer ${r.odometer_reading} km` : `Hour meter ${r.hour_meter_reading} hrs`}
                   {!isFuel && ` · ${r.lubricant_type_name}`}
                 </div>
+                {/* Round 153, item 3 — what this unit has run since its last
+                    fill, so the quantity can be judged instead of guessed at.
+                    Only for fuel, and only when there is a previous fill with
+                    a usable reading; a first-ever fill legitimately has
+                    nothing to compare against and says so rather than
+                    showing a misleading zero. */}
+                {isFuel && <SinceLastFill r={r} />}
 
                 <div style={{ display: "grid", gridTemplateColumns: isFuel ? "1fr 1fr" : "1fr", gap: 8, marginBottom: 10 }}>
                   {isFuel && (
@@ -213,4 +220,56 @@ export default function SupplyApprovals() {
 
 function unitLabel(r) {
   return r.truck_number || r.pump_code || r.equipment_name || "—";
+}
+
+// Round 153, item 3 — the one line that turns "approve 60 litres?" into a
+// question with an answer. The server (supplyRequests.js GET /pending) works
+// out the interval and the implied rate; this only decides how to say it.
+//
+// Units follow whichever meter the request carries, exactly as the reading
+// line above it does: km and L/100km for anything on an odometer, hours and
+// L/hr for anything on an hour meter.
+function SinceLastFill({ r }) {
+  const onOdometer = r.odometer_reading != null;
+  const distance = r.distance_since_last == null ? null : Number(r.distance_since_last);
+  const rate = r.implied_rate == null ? null : Number(r.implied_rate);
+
+  // No prior fill at all — say so plainly. This is the normal state for a new
+  // truck or the first fill after the app went live, and dressing it up as a
+  // zero would read as "hasn't moved", which is a very different claim.
+  if (!r.last_fill_at) {
+    return (
+      <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8, fontStyle: "italic" }}>
+        No earlier fill on record for this unit — nothing to compare against yet.
+      </div>
+    );
+  }
+
+  const when = new Date(r.last_fill_at).toLocaleDateString([], { day: "2-digit", month: "short" });
+  const lastQty = r.last_fill_quantity == null ? null : Number(r.last_fill_quantity);
+
+  return (
+    <div style={{ fontSize: 11, marginBottom: 8, padding: "6px 8px", borderRadius: 6, background: "rgba(0,0,0,0.04)" }}>
+      <div style={{ fontWeight: 600 }}>
+        {distance == null
+          ? "Meter reading hasn't advanced since the last fill"
+          : `${distance.toLocaleString()} ${onOdometer ? "km" : "hrs"} since last fill`}
+        {rate != null && (
+          <span style={{ fontWeight: 400 }}>
+            {" "}&middot; asking {onOdometer ? `${rate} L/100km` : `${rate} L/hr`}
+          </span>
+        )}
+      </div>
+      <div style={{ color: "var(--slate)" }}>
+        Last filled {when}
+        {lastQty != null ? ` — ${lastQty} L` : ""}
+        {r.last_fill_reading != null ? ` at ${Number(r.last_fill_reading).toLocaleString()} ${onOdometer ? "km" : "hrs"}` : ""}
+      </div>
+      {distance == null && (
+        <div style={{ color: "var(--alert-red)" }}>
+          Worth checking the reading before approving.
+        </div>
+      )}
+    </div>
+  );
 }

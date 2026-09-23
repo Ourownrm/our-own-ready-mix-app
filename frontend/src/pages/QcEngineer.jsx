@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import TodaysDeliveryNotes from "../lib/TodaysDeliveryNotes.jsx";
 
 export default function QcEngineer() {
   const [pendingQc, setPendingQc] = useState([]);
@@ -133,6 +134,10 @@ export default function QcEngineer() {
         {pendingQc.length === 0 && (
           <div style={{ fontSize: 13, color: "var(--slate)", marginTop: 12 }}>No tickets waiting on QC right now.</div>
         )}
+
+        {/* Round 153, item 1 — the paperwork behind a load QC is being asked
+            about, without going through an Administrator. */}
+        <TodaysDeliveryNotes />
       </div>
     </>
   );

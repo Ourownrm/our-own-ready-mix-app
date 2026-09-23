@@ -5,6 +5,7 @@ import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, failedCount, clearFailed, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import TodaysDeliveryNotes from "../lib/TodaysDeliveryNotes.jsx";
 
 function newIdempotencyKey() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -186,6 +187,10 @@ export default function PlantOperator() {
         <Link to="/delay-justification-report"><button style={{ width: "100%", marginTop: 16 }}>Delay report</button></Link>
         {/* Round 139 — daily raw-material consumption & production entry. */}
         <Link to="/material-module"><button style={{ width: "100%", marginTop: 10 }}>Material consumption</button></Link>
+        {/* Round 153, item 1 — the notes this screen raises, where the person
+            who raised them can open and reprint one. Renders nothing if the
+            Super Admin has revoked challan printing from this role. */}
+        <TodaysDeliveryNotes />
         <button style={{ width: "100%", marginTop: 16 }} className="btn-danger" onClick={() => { setError(""); setNotice(""); setShowBreakdown(true); }}>
           Report pump / plant breakdown
         </button>

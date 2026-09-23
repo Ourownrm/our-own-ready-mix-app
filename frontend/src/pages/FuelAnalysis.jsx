@@ -15,11 +15,20 @@ import { TopBar } from "../lib/TopBar.jsx";
 // supply_requests (request -> approve -> issue), not the older fuel_logs
 // table, which has no live caller anywhere in the app.
 
+// Round 153 fix — these two built the UTC calendar day, not the IST one, so
+// between midnight and 05:30 IST the date boxes opened on yesterday and the
+// page quietly excluded the current day. Everything they are compared against
+// on the server is an IST day (db.js pins the session to Asia/Kolkata), so
+// these have to be IST too. en-CA formats as yyyy-mm-dd, which is what a
+// <input type="date"> wants.
+function istDay(ms) {
+  return new Date(ms).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return istDay(Date.now());
 }
 function daysAgoStr(n) {
-  return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  return istDay(Date.now() - n * 86400000);
 }
 function fmtDateShort(d) {
   return d ? new Date(d).toLocaleDateString([], { day: "2-digit", month: "short" }) : "—";
@@ -286,6 +295,247 @@ function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, fleetAvgM3, onBac
   );
 }
 
+// ===== Round 153, punch-list item 4 — pumps and other equipment =====
+//
+// Everything above this line is about trucks, which run on an odometer and
+// are measured per kilometre and per m³ carried. A pump, a loader, a generator
+// runs on an hour meter, so the unit is litres per RUNNING HOUR. The litres
+// were already being captured at request time; nothing was ever shown back.
+//
+// Pumps additionally get litres per m³ pumped, because pump_logs records what
+// each pump actually pushed. The other machines have no output figure of their
+// own, and inventing one would be worse than leaving the column empty.
+
+// Keys are the raw enum values as the database stores them — pump_type for
+// pumps, fuel_equipment_type for everything else. Anything not listed falls
+// back to its own value with the underscores taken out, so a type added to
+// either enum later shows up readably instead of blank.
+const TYPE_LABEL = {
+  line_pump: "Line pump",
+  boom_pump: "Boom pump",
+  pickup_van: "Pickup van",
+  loader: "Loader",
+  generator: "Generator",
+  batching_plant: "Batching plant",
+};
+function typeLabel(t) {
+  return TYPE_LABEL[t] || (t ? t.replace(/_/g, " ") : "—");
+}
+
+function EquipmentDrilldown({ kind, unitId, fromDate, toDate, typeAvg, onBack }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setLoading(true); setError(""); setData(null);
+    const params = new URLSearchParams({ from_date: fromDate, to_date: toDate });
+    apiRequest(`/fuel-analysis/equipment/${kind}/${unitId}?${params.toString()}`)
+      .then(setData)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [kind, unitId, fromDate, toDate]);
+
+  if (loading) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading equipment detail...</div>;
+  if (error) return <div className="card" style={{ fontSize: 13, color: "var(--alert-red)" }}>{error}</div>;
+  if (!data) return null;
+
+  // Same honest basis as the truck drill-down: only fills that have an
+  // interval behind them count towards the overall rate.
+  const paired = data.fill_intervals.filter((f) => f.litres_per_hour != null);
+  const totalPairedL = paired.reduce((s, f) => s + Number(f.actual_quantity_issued), 0);
+  const totalHours = paired.reduce((s, f) => s + Number(f.interval_hours), 0);
+  const overallRate = totalHours > 0 ? totalPairedL / totalHours : null;
+  const totalLitresAll = data.fill_intervals.reduce((s, f) => s + Number(f.actual_quantity_issued), 0);
+  const totalCostAll = data.fill_intervals.reduce((s, f) => s + Number(f.fuel_cost || 0), 0);
+  const pumpedM3 = data.jobs.reduce((s, j) => s + Number(j.pumping_quantity_m3 || 0), 0);
+  const status = rateStatus(overallRate, typeAvg);
+
+  return (
+    <div>
+      <button onClick={onBack} style={{ fontSize: 12, marginBottom: 14 }}>← Back to equipment overview</button>
+
+      <div className="card" style={{ marginBottom: 16, display: "flex", flexWrap: "wrap", gap: 20, alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{data.unit.unit_name}</div>
+          <div style={{ fontSize: 12, color: "var(--slate)" }}>{typeLabel(data.unit.unit_subtype)}</div>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 20, flexWrap: "wrap" }}>
+          <div>
+            <div className="kpi-label">L / running hour</div>
+            <div className="kpi-value" style={{ color: STATUS_COLOR[status.key] }}>{overallRate != null ? overallRate.toFixed(2) : "—"}</div>
+            <span className={`badge ${STATUS_BADGE[status.key]}`} style={{ marginTop: 2 }}>{status.label}</span>
+          </div>
+          {kind === "pump" && (
+            <div>
+              <div className="kpi-label">L / m³ pumped</div>
+              <div className="kpi-value">{pumpedM3 > 0 ? (totalLitresAll / pumpedM3).toFixed(2) : "—"}</div>
+            </div>
+          )}
+          <div>
+            <div className="kpi-label">Total litres</div>
+            <div className="kpi-value">{num(totalLitresAll)}</div>
+          </div>
+          <div>
+            <div className="kpi-label">Total cost</div>
+            <div className="kpi-value">₹{num(totalCostAll)}</div>
+          </div>
+          <div>
+            <div className="kpi-label">{kind === "pump" ? "Pumping jobs" : "Fills"}</div>
+            <div className="kpi-value">{kind === "pump" ? data.jobs.length : data.fill_intervals.length}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Fill-to-fill consumption</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ fontSize: 12 }}>
+            <thead><tr><th>Date</th><th>Station</th><th>Litres</th><th>Cost</th><th>Hour meter</th><th>Hours since last fill</th><th>L/hr</th></tr></thead>
+            <tbody>
+              {data.fill_intervals.map((f) => (
+                <tr key={f.id}>
+                  <td>{fmtDateShort(f.issued_at)}</td>
+                  <td><span className={`badge ${f.is_plant ? "badge-info" : "badge-neutral"}`}>{f.is_plant ? "Plant" : "Outside pump"}</span> {f.station_name}</td>
+                  <td>{num(f.actual_quantity_issued)} L</td>
+                  <td>₹{num(f.fuel_cost)}</td>
+                  <td>{num(f.hour_meter_reading, 1)}</td>
+                  <td>{f.interval_hours != null ? `${num(f.interval_hours, 1)} hrs` : "—"}</td>
+                  <td>{f.litres_per_hour != null ? f.litres_per_hour : "—"}</td>
+                </tr>
+              ))}
+              {data.fill_intervals.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No fuel fills with an hour-meter reading in this range.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 8 }}>
+          L/hr is computed between consecutive fills from the hour-meter reading recorded at each one — the first fill in range has no earlier reading to measure against.
+        </div>
+      </div>
+
+      {kind === "pump" && (
+        <div className="card">
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Pumping jobs behind those hours</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ fontSize: 12 }}>
+              <thead><tr><th>Date</th><th>Ticket</th><th>Customer</th><th>Site</th><th>Qty pumped</th><th>Running</th><th>Waiting</th></tr></thead>
+              <tbody>
+                {data.jobs.map((j) => (
+                  <tr key={j.id}>
+                    <td>{fmtDateShort(j.start_time)}</td>
+                    <td>{j.ticket_number || "—"}</td>
+                    <td>{j.customer_name || "—"}</td>
+                    <td>{j.site_name || "—"}</td>
+                    <td>{num(j.pumping_quantity_m3, 1)} m³</td>
+                    <td>{fmtMin(j.running_minutes)}</td>
+                    <td>{fmtMin(j.waiting_time_minutes)}</td>
+                  </tr>
+                ))}
+                {data.jobs.length === 0 && <tr><td colSpan={7} style={{ color: "var(--slate)" }}>No pumping logged for this pump in this range.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EquipmentOverview({ data, onPick }) {
+  const units = data?.units || [];
+  const averages = data?.avg_litres_per_hour_by_type || {};
+  const totalLitres = units.reduce((s, u) => s + Number(u.total_litres || 0), 0);
+  const totalCost = units.reduce((s, u) => s + Number(u.total_cost || 0), 0);
+  const totalHours = units.reduce((s, u) => s + Number(u.hours_run || 0), 0);
+
+  // Grouped by type so a generator is never ranked against a boom pump. The
+  // per-type average the server computed is what each row is judged against.
+  const byType = {};
+  for (const u of units) (byType[u.unit_subtype] = byType[u.unit_subtype] || []).push(u);
+  const types = Object.keys(byType).sort();
+
+  return (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 16 }}>
+        <div className="kpi" style={{ borderColor: "var(--rebar)" }}>
+          <div className="kpi-label">Units with activity</div>
+          <div className="kpi-value">{units.length}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Total fuel</div>
+          <div className="kpi-value">{num(totalLitres)} L</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Total fuel cost</div>
+          <div className="kpi-value">₹{num(totalCost)}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Hours run in range</div>
+          <div className="kpi-value">{num(totalHours, 1)}</div>
+        </div>
+      </div>
+
+      {types.length === 0 && (
+        <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>
+          No pump or equipment fuel fills in this date range. Fills are recorded when Store issues an approved fuel request — a machine whose hour meter was never entered at request time can't appear here.
+        </div>
+      )}
+
+      {types.map((type) => {
+        const typeAvg = averages[type] != null ? Number(averages[type]) : null;
+        const rows = [...byType[type]].sort((a, b) => (b.litres_per_hour ?? -1) - (a.litres_per_hour ?? -1));
+        // L/m³ exists only for pumps (pump_logs is the only per-unit output
+        // record). Decided from `kind`, which the server sets, rather than by
+        // listing pump type names here — a third pump type added to the enum
+        // later would otherwise silently lose the column.
+        const isPump = rows[0]?.kind === "pump";
+        return (
+          <div className="card" key={type} style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{typeLabel(type)}{rows.length > 1 ? "s" : ""}</div>
+              <div style={{ fontSize: 11, color: "var(--slate)" }}>
+                {typeAvg != null ? <>Average for this type: <b>{typeAvg.toFixed(2)} L/hr</b></> : "Not enough paired readings for an average"}
+              </div>
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th>Unit</th><th>L/hr</th>{isPump ? <th>L/m³</th> : null}
+                    <th>Litres</th><th>Cost</th><th>Fills</th><th>Plant / Outside</th><th>Hours run</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((u) => {
+                    const status = rateStatus(u.litres_per_hour != null ? Number(u.litres_per_hour) : null, typeAvg);
+                    return (
+                      <tr key={`${u.kind}-${u.unit_id}`} style={{ cursor: "pointer" }} onClick={() => onPick(u)}>
+                        <td>{u.unit_name}</td>
+                        <td>
+                          {u.litres_per_hour != null
+                            ? <span className={`badge ${STATUS_BADGE[status.key]}`}>{Number(u.litres_per_hour).toFixed(2)}</span>
+                            : "—"}
+                        </td>
+                        {isPump ? <td>{u.litres_per_m3 != null ? Number(u.litres_per_m3).toFixed(2) : "—"}</td> : null}
+                        <td>{num(u.total_litres)} L</td>
+                        <td>₹{num(u.total_cost)}</td>
+                        <td>{u.fill_count}</td>
+                        <td>{u.plant_fill_count} / {u.outside_fill_count}</td>
+                        <td>{num(u.hours_run, 1)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 8 }}>Tap a unit to see its fill-to-fill history.</div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 export default function FuelAnalysis() {
   const [fromDate, setFromDate] = useState(daysAgoStr(30));
   const [toDate, setToDate] = useState(todayStr());
@@ -293,12 +543,22 @@ export default function FuelAnalysis() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedTruck, setSelectedTruck] = useState(null);
+  // Round 153, item 4 — "trucks" or "equipment". Both halves share the one
+  // date range above, so switching between them compares like with like
+  // without anyone having to re-enter the dates.
+  const [view, setView] = useState("trucks");
+  const [equipment, setEquipment] = useState(null);
+  const [selectedUnit, setSelectedUnit] = useState(null);
 
-  async function run() {
-    setLoading(true); setError(""); setSelectedTruck(null);
+  async function run(forView = view) {
+    setLoading(true); setError(""); setSelectedTruck(null); setSelectedUnit(null);
     try {
       const params = new URLSearchParams({ from_date: fromDate, to_date: toDate });
-      setFleet(await apiRequest(`/fuel-analysis/fleet?${params.toString()}`));
+      if (forView === "equipment") {
+        setEquipment(await apiRequest(`/fuel-analysis/equipment?${params.toString()}`));
+      } else {
+        setFleet(await apiRequest(`/fuel-analysis/fleet?${params.toString()}`));
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -306,7 +566,17 @@ export default function FuelAnalysis() {
     }
   }
 
-  useEffect(() => { run(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { run("trucks"); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // Switching tabs fetches that side once and then leaves it alone; the
+  // Filter button is what re-runs either of them against new dates.
+  function switchView(next) {
+    setView(next);
+    setSelectedTruck(null);
+    setSelectedUnit(null);
+    setError("");
+    if (next === "equipment" ? !equipment : !fleet) run(next);
+  }
 
   const trucks = fleet?.trucks || [];
   const fleetAvg = fleet?.fleet_avg_litres_per_100km != null ? Number(fleet.fleet_avg_litres_per_100km) : null;
@@ -323,7 +593,15 @@ export default function FuelAnalysis() {
       <TopBar title="360° Fuel Analysis" />
       <div style={{ maxWidth: 980, margin: "0 auto", padding: "0 16px 32px" }}>
         <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 16 }}>
-          Fuel consumption ranked across the fleet and broken down by the factors behind it — trips, distance, quantity carried, pump vs. manual discharge, site timing, and driver. Built from real fuel fills and delivery trips, not sample data.
+          {view === "trucks"
+            ? "Fuel consumption ranked across the fleet and broken down by the factors behind it — trips, distance, quantity carried, pump vs. manual discharge, site timing, and driver. Built from real fuel fills and delivery trips, not sample data."
+            : "Pumps, loaders, generators and vans — everything that runs on an hour meter rather than an odometer, so the figure is litres per running hour. Pumps also get litres per m³ pumped, from what each pump actually pushed."}
+        </div>
+
+        {/* Round 153, item 4 — the second half of the fuel picture. */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <button type="button" className={`btn-tab ${view === "trucks" ? "active" : ""}`} onClick={() => switchView("trucks")}>Trucks</button>
+          <button type="button" className={`btn-tab ${view === "equipment" ? "active" : ""}`} onClick={() => switchView("equipment")}>Pumps &amp; equipment</button>
         </div>
 
         <div className="card" style={{ display: "flex", alignItems: "flex-end", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
@@ -342,7 +620,24 @@ export default function FuelAnalysis() {
 
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
-        {fleet && !selectedTruck && (
+        {view === "equipment" && !selectedUnit && equipment && (
+          <EquipmentOverview data={equipment} onPick={(u) => setSelectedUnit({ kind: u.kind, id: u.unit_id, type: u.unit_subtype })} />
+        )}
+
+        {view === "equipment" && selectedUnit && (
+          <EquipmentDrilldown
+            kind={selectedUnit.kind}
+            unitId={selectedUnit.id}
+            fromDate={fromDate}
+            toDate={toDate}
+            typeAvg={equipment?.avg_litres_per_hour_by_type?.[selectedUnit.type] != null
+              ? Number(equipment.avg_litres_per_hour_by_type[selectedUnit.type])
+              : null}
+            onBack={() => setSelectedUnit(null)}
+          />
+        )}
+
+        {view === "trucks" && fleet && !selectedTruck && (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 16 }}>
               <div className="kpi" style={{ borderColor: "var(--rebar)" }}>
@@ -425,7 +720,7 @@ export default function FuelAnalysis() {
           </>
         )}
 
-        {selectedTruck && (
+        {view === "trucks" && selectedTruck && (
           <TruckDrilldown truckId={selectedTruck} fromDate={fromDate} toDate={toDate} fleetAvg={fleetAvg} fleetAvgM3={fleetAvgM3} onBack={() => setSelectedTruck(null)} />
         )}
       </div>

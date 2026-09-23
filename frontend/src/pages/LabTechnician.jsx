@@ -12,6 +12,7 @@ import { generateCubeTestPdf, generateCombinedPourCubeTestPdf } from "../lib/cub
 import { useAuth } from "../lib/AuthContext.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
 import { isAdminLevel } from "../lib/roles.js";
+import TodaysDeliveryNotes from "../lib/TodaysDeliveryNotes.jsx";
 
 // IS 516 doesn't mandate a fixed vocabulary for failure mode, but these are
 // the patterns a lab technician actually sees in practice — kept as
@@ -112,6 +113,12 @@ export default function LabTechnician() {
         {tab === "site-cast" && <SiteCubeTestingTab setError={setError} setNotice={setNotice} focusCastId={focusSiteCastId} />}
         {tab === "mix-designs" && <MixDesignsTab setError={setError} setNotice={setNotice} />}
         {tab === "assignments" && <AssignmentsTab setError={setError} />}
+
+        {/* Round 153, item 1 — the lab gets asked about a specific load hours
+            after it went out. Same list and same document the Plant Operator
+            and QC see; hidden entirely if Super Admin revokes challan
+            printing from this role. */}
+        <TodaysDeliveryNotes />
       </div>
     </>
   );
