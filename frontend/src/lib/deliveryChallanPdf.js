@@ -78,8 +78,21 @@ function fmtQty(v) {
   return Number(v).toFixed(2);
 }
 
-export async function generateDeliveryChallanPdf(ticketId) {
-  const data = await apiRequest(`/administrator/tickets/${ticketId}/challan`);
+// Round 153 — `source` picks which endpoint the data comes from. Both return
+// the identical payload (they share lib/challanData.js on the server), so the
+// printed document is the same either way; what differs is the guard in front
+// of it. "administrator" is the original, Administrator-only route, still used
+// by the Administrator ticket table. "delivery-notes" is the permission-gated
+// one the Plant Operator, the lab and QC reach today's notes through.
+//
+// The PDF layout below does not know or care which was used, and must not —
+// a challan that looked different depending on who printed it would be a
+// problem with a legal document, not a feature.
+export async function generateDeliveryChallanPdf(ticketId, source = "administrator") {
+  const endpoint = source === "delivery-notes"
+    ? `/delivery-notes/${ticketId}/challan`
+    : `/administrator/tickets/${ticketId}/challan`;
+  const data = await apiRequest(endpoint);
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 

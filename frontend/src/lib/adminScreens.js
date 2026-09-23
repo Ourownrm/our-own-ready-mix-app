@@ -169,6 +169,20 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 154 — the weighbridge feed. A module of its own rather than a
+    // sub-tile of the Raw Material Module, because the people who open it
+    // daily (Store, and the Plant Operator answering "what did that lorry
+    // weigh") are not the people doing purchase orders, and burying it one
+    // level down would cost them a tap every time.
+    key: "weighbridge-receipts",
+    label: "Weighbridge",
+    icon: "gauge",
+    colour: "#3F6B52",
+    tint: "#E6EFE9",
+    to: "/weighbridge",
+    screens: [],
+  },
+  {
     key: "users-roles",
     label: "Users & Roles",
     icon: "people",

@@ -58,6 +58,7 @@ import TechnicalAssistance from "./pages/TechnicalAssistance.jsx";
 import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 import MaterialModule from "./pages/MaterialModule.jsx";
+import Weighbridge from "./pages/Weighbridge.jsx";
 import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
 import SuperAdmin from "./pages/SuperAdmin.jsx";
 
@@ -244,6 +245,13 @@ export default function App() {
           } />
           <Route path="/material-module" element={
             <ProtectedRoute roles={["store", "administrator", "plant_operator"]}><MaterialModule /></ProtectedRoute>
+          } />
+          {/* Round 154 — the weighbridge. The role list here is the outer gate;
+              what each role can actually do on the page is decided by
+              material.weighbridge / material.weighbridge-mapping, which the
+              Super Admin's Access Control page controls. */}
+          <Route path="/weighbridge" element={
+            <ProtectedRoute roles={["store", "administrator", "manager", "plant_operator", "lab_technician"]}><Weighbridge /></ProtectedRoute>
           } />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>
