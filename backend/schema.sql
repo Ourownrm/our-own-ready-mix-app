@@ -2321,3 +2321,199 @@ ALTER TABLE solitaire_mix_designs ADD COLUMN IF NOT EXISTS water_var_max_pct NUM
 -- The recipe code is what the workbook looks up on, so a bulk upload must be
 -- able to update a recipe in place rather than duplicating it.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_solitaire_mix_designs_code ON solitaire_mix_designs(code);
+
+-- ============================================================================
+-- ROUND 154 — WEIGHBRIDGE INTEGRATION
+--
+-- One-way sync from the SchwingSmartWeigh weighbridge PC (MySQL 5.6,
+-- database `weighsoftdb`) into this app. Nothing here ever writes back to the
+-- weighbridge — the agent connects with a read-only MySQL account.
+--
+-- What the live dump (2,478 tickets, Dec 2023 → Sep 2026) established, and
+-- which this schema is shaped around:
+--
+--   * `transactiondet`, the weighbridge's 10-slot multi-material child table,
+--     has NEVER been used. Every ticket is single-material, held on the parent
+--     `transaction` row. So there is no child table here either. If the plant
+--     ever starts using it, that becomes a new table, not a reshape of this one.
+--
+--   * `transaction.firstTransactionMaterial` is MISNAMED — it holds the
+--     transaction PURPOSE ('Production Usage', 'Ready Mix Invoicing',
+--     'Internal', 'Scrap / Stock Transfer'), which is what decides whether a
+--     ticket is an inbound raw-material receipt or an outbound RMC load. Stored
+--     as `purpose` so the name means what the value is.
+--
+--   * `moisturepercentage` and `actualweight` are VARCHARs the operators type
+--     into ('N/A', 'NONE', '0.0', '35610+91', padded whitespace). They are NOT
+--     imported at all. `net_weight_kg` is the only weight figure we trust, and
+--     moisture deduction happens in this app, not on the weighbridge.
+--
+--   * `ConcreteVolume` has been used to store driver names. `Charges` usually
+--     holds the truck's cubic-feet capacity. `Remarks`/`concretegrade` are
+--     scratch. All three come across as opaque text for a human to read, and
+--     nothing computes on them.
+--
+--   * Vehicle, material and supplier are FREE TEXT on every ticket, not FKs,
+--     and the spellings vary per ticket — the same lorry appears as KL77D4231,
+--     KL77D 4231, KL 77 D 4231, KL77D-4231, kl77d4231, KL774231, KL77D423 and
+--     4231. Hence the alias tables below: normalise, look up, and send anything
+--     unrecognised to a review queue rather than guessing. A wrong guess here
+--     would credit stock to the wrong supplier, which is worse than a badge
+--     saying five tickets need a human.
+--
+--   * Some rows carry EmptyWeightDate = '0001-01-01', and a few have a Date
+--     far from their weighing dates (ticket 674 is dated 2026-06-30 with a load
+--     date of 2025-04-05). The agent prefers the weighing timestamps and drops
+--     the 0001 sentinel; this table permits NULL on all of them.
+--
+--   * Every row records username='admin', systemid='Rajesh-PC', plantName=
+--     'Plant 1'. There is no per-operator identity on the weighbridge, so a
+--     weighment can never be attributed to a person. Nothing here pretends
+--     otherwise.
+-- ============================================================================
+
+-- 'matched'      — material, supplier and vehicle all resolved to a record here.
+-- 'needs_review' — at least one did not; it is waiting on a human mapping.
+-- 'ignored'      — deliberately set aside (a test weighment, a duplicate,
+--                  an outbound load we do not track). Never deleted: the row
+--                  stays so a re-sync cannot silently resurrect it.
+CREATE TYPE wb_match_status AS ENUM ('matched', 'needs_review', 'ignored');
+
+CREATE TABLE weighbridge_tickets (
+  -- The weighbridge's own TicketNumber IS the primary key. It is monotonic and
+  -- unique on that machine, which is what makes the sync idempotent: the agent
+  -- can re-send a row any number of times and it upserts in place.
+  ticket_number      INTEGER PRIMARY KEY,
+
+  -- ---- raw values, stored verbatim and never edited -----------------------
+  -- These are the audit trail. If a mapping is later found to be wrong, the
+  -- original strings are still here to re-resolve from.
+  raw_vehicle        VARCHAR(60),
+  raw_material       VARCHAR(120),
+  raw_material_code  VARCHAR(120),
+  raw_supplier       VARCHAR(150),
+  purpose            VARCHAR(60),
+  challan_number     VARCHAR(60),
+  driver_name        VARCHAR(120),
+  site_name          VARCHAR(120),
+  shift              VARCHAR(20),
+  load_status        VARCHAR(20),
+  remarks            TEXT,
+  charges            VARCHAR(120),
+  concrete_grade     VARCHAR(60),
+
+  -- ---- weights (kg, integers, exactly as the indicator recorded them) ------
+  empty_weight_kg    INTEGER,
+  loaded_weight_kg   INTEGER,
+  net_weight_kg      INTEGER,
+
+  -- ---- when it happened ---------------------------------------------------
+  -- ticket_date is the weighbridge's own Date column, kept for reference.
+  -- weighed_at is what the app orders and reports on: the agent derives it from
+  -- the LOADED weighing timestamp, falling back to the empty one, falling back
+  -- to Date. Nullable because a handful of historical rows have none usable.
+  ticket_date        DATE,
+  empty_weighed_at   TIMESTAMPTZ,
+  loaded_weighed_at  TIMESTAMPTZ,
+  weighed_at         TIMESTAMPTZ,
+
+  -- ---- what we resolved it to ---------------------------------------------
+  material_id        INTEGER REFERENCES rm_materials(id),
+  supplier_id        INTEGER REFERENCES rm_suppliers(id),
+  truck_id           INTEGER REFERENCES trucks(id),
+  match_status       wb_match_status NOT NULL DEFAULT 'needs_review',
+  -- Which of the three failed to resolve, so the review screen can say so
+  -- without re-deriving it: e.g. '{material,vehicle}'.
+  unresolved         TEXT[] NOT NULL DEFAULT '{}',
+  review_note        TEXT,
+  reviewed_by        INTEGER REFERENCES users(id),
+  reviewed_at        TIMESTAMPTZ,
+
+  -- ---- sync bookkeeping ---------------------------------------------------
+  -- source_hash is a digest of the weighbridge row as sent. The agent re-sends
+  -- a trailing window on every poll; an unchanged hash means there is nothing
+  -- to do, so a late edit on the weighbridge is caught without the agent
+  -- needing an updated_at column that SmartWeigh does not have.
+  source_hash        CHAR(64) NOT NULL,
+  revision           INTEGER NOT NULL DEFAULT 1,
+  first_synced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_synced_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_wb_tickets_status  ON weighbridge_tickets(match_status);
+CREATE INDEX idx_wb_tickets_weighed ON weighbridge_tickets(weighed_at DESC);
+CREATE INDEX idx_wb_tickets_purpose ON weighbridge_tickets(purpose);
+
+-- ---------------------------------------------------------------------------
+-- Alias tables. `normalised` is the lookup key: the raw string uppercased with
+-- every non-alphanumeric character stripped. That alone collapses most of the
+-- mess for free — '20 MM'/'20MM', 'M SAND'/'MSAND', 'KL77D 4231'/'KL77D-4231'/
+-- 'kl77d4231' all normalise to one value — leaving only genuine typos and
+-- short forms for a human to map once.
+--
+-- A row with is_ignored = true is a deliberate "this spelling is not one of
+-- ours" (a test entry, a material we do not stock). It resolves cleanly to
+-- nothing rather than sitting in the review queue forever.
+-- ---------------------------------------------------------------------------
+CREATE TABLE weighbridge_material_aliases (
+  id          SERIAL PRIMARY KEY,
+  normalised  VARCHAR(120) NOT NULL UNIQUE,
+  raw_sample  VARCHAR(120) NOT NULL,      -- one real spelling, so the mapping screen shows what the operator actually typed
+  material_id INTEGER REFERENCES rm_materials(id),
+  is_ignored  BOOLEAN NOT NULL DEFAULT false,
+  mapped_by   INTEGER REFERENCES users(id),
+  mapped_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR material_id IS NOT NULL)
+);
+
+CREATE TABLE weighbridge_supplier_aliases (
+  id          SERIAL PRIMARY KEY,
+  normalised  VARCHAR(150) NOT NULL UNIQUE,
+  raw_sample  VARCHAR(150) NOT NULL,
+  supplier_id INTEGER REFERENCES rm_suppliers(id),
+  is_ignored  BOOLEAN NOT NULL DEFAULT false,
+  mapped_by   INTEGER REFERENCES users(id),
+  mapped_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR supplier_id IS NOT NULL)
+);
+
+-- Vehicles are the dirtiest of the three, and many of them are supplier lorries
+-- that are not in our trucks table at all — so is_ignored here is the common
+-- case, not the exception.
+CREATE TABLE weighbridge_vehicle_aliases (
+  id          SERIAL PRIMARY KEY,
+  normalised  VARCHAR(60) NOT NULL UNIQUE,
+  raw_sample  VARCHAR(60) NOT NULL,
+  truck_id    INTEGER REFERENCES trucks(id),
+  is_ignored  BOOLEAN NOT NULL DEFAULT false,
+  mapped_by   INTEGER REFERENCES users(id),
+  mapped_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR truck_id IS NOT NULL)
+);
+
+-- ---------------------------------------------------------------------------
+-- One row per sync call, so "is the weighbridge agent actually running?" is a
+-- question the app can answer instead of the plant finding out days later that
+-- it stopped. The receipts screen shows the newest row's age.
+-- ---------------------------------------------------------------------------
+CREATE TABLE weighbridge_sync_log (
+  id             SERIAL PRIMARY KEY,
+  received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  agent_version  VARCHAR(20),
+  rows_sent      INTEGER NOT NULL DEFAULT 0,
+  rows_inserted  INTEGER NOT NULL DEFAULT 0,
+  rows_updated   INTEGER NOT NULL DEFAULT 0,
+  rows_unchanged INTEGER NOT NULL DEFAULT 0,
+  rows_rejected  INTEGER NOT NULL DEFAULT 0,
+  highest_ticket INTEGER,
+  error          TEXT
+);
+
+CREATE INDEX idx_wb_sync_log_received ON weighbridge_sync_log(received_at DESC);
+
+-- A raw-material receipt can cite the weighbridge ticket it was weighed on.
+-- Nullable and unenforced in both directions on purpose: receipts recorded
+-- before the sync went live have no ticket, and a weighbridge ticket that
+-- never becomes a receipt (an outbound load, a re-weigh) is perfectly normal.
+ALTER TABLE rm_receipts ADD COLUMN weighbridge_ticket_id INTEGER REFERENCES weighbridge_tickets(ticket_number);
+CREATE INDEX idx_rm_receipts_wb_ticket ON rm_receipts(weighbridge_ticket_id);

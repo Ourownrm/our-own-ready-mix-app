@@ -1,0 +1,20 @@
+{
+  "_comment": "Copy this to config.json and fill it in. config.json is gitignored — it holds a password and an API key.",
+
+  "mysql": {
+    "host": "localhost",
+    "port": 3306,
+    "database": "weighsoftdb",
+    "user": "oorm_sync",
+    "password": "PUT-THE-READ-ONLY-PASSWORD-HERE"
+  },
+
+  "appUrl": "https://YOUR-BACKEND.onrender.com",
+  "apiKey": "PUT-THE-SAME-VALUE-AS-WEIGHBRIDGE_API_KEY-HERE",
+
+  "startDate": "2026-09-01",
+  "pollSeconds": 60,
+  "trailingDays": 30,
+  "batchSize": 500,
+  "table": "transaction"
+}

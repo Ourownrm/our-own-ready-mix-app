@@ -44,6 +44,7 @@ export const GROUPS = [
 // is listed anyway so the defaults grid can show it, locked.
 const V = ["view"];
 const VC = ["view", "create"];
+const VE = ["view", "edit"];
 const VCE = ["view", "create", "edit"];
 const VCED = ["view", "create", "edit", "delete"];
 const E = ["edit"];
@@ -60,8 +61,19 @@ export const CATALOGUE = [
     { administrator: E, manager: E }),
   f("orders.tickets", "orders", "Delivery tickets / challans", VCED,
     { administrator: VCED, manager: ["view", "edit", "delete"], plant_operator: VC, qc_engineer: V, accountant: V, driver: V, site_supervisor: V }, { screen: "correct-tickets" }),
+  // Round 153, item 1 — widened from Administrator-only. The Plant Operator
+  // raises every one of these notes, and the lab and QC get asked about a
+  // specific load hours later; all three had to go and find an Administrator
+  // to see the paperwork. Manager is included because the Manager already
+  // reached the same document through the Administrator ticket table.
+  //
+  // This is the key routes/deliveryNotes.js is gated on, and it is the switch
+  // the Super Admin's Access Control page flips to take this away from any one
+  // of these roles again. A database seeded before Round 153 does not pick up
+  // a changed default, so setup.js carries REPAIR_153 — same shape as
+  // REPAIR_148, and for the same reason.
   f("orders.challan-print", "orders", "Print / download challan", V,
-    { administrator: V }),
+    { administrator: V, manager: V, plant_operator: V, lab_technician: V, qc_engineer: V }),
   f("orders.live-tracking", "orders", "Live truck tracking", ["view", "edit"],
     { administrator: ["view", "edit"], manager: ["view", "edit"] }),
   f("orders.delay-reasons", "orders", "Delay reasons", VC,
@@ -158,6 +170,24 @@ export const CATALOGUE = [
     { administrator: V }),
   f("material.module", "material", "Raw Material Module (open it)", V,
     { administrator: V, store: V, plant_operator: V }, { screen: "material-module" }),
+  // Round 154 — the weighbridge sync. Two separate keys on purpose.
+  //
+  // "material.weighbridge" is the day-to-day screen: see what the weighbridge
+  // has weighed, and mark a ticket reviewed or ignored (that is the `edit`).
+  // Store lives on this screen, the Plant Operator and Manager watch it, and
+  // the lab gets it because they are the ones asked "what did that lorry
+  // actually weigh?" hours after the fact.
+  //
+  // "material.weighbridge-mapping" is the consequential one: mapping a raw
+  // weighbridge spelling to a real material, supplier or truck decides where
+  // stock gets credited from then on, for every past and future ticket
+  // carrying that spelling. So it defaults to Administrator alone — Store can
+  // flag a ticket for review, but not decide what it means.
+  f("material.weighbridge", "material", "Weighbridge receipts", VE,
+    { administrator: VE, manager: VE, store: VE, plant_operator: V, lab_technician: V },
+    { screen: "weighbridge-receipts" }),
+  f("material.weighbridge-mapping", "material", "Weighbridge name mapping", VCE,
+    { administrator: VCE }),
 
   // ---------- Store & supplies ----------
   f("store.items", "store", "Store stock items", VCE,

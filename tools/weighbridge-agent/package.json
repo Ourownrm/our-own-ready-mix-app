@@ -1,0 +1,18 @@
+{
+  "name": "oorm-weighbridge-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reads finished tickets from the SchwingSmartWeigh MySQL database and posts them to the OORM app. One-way, read-only.",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js",
+    "once": "node agent.js --once"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.0"
+  }
+}

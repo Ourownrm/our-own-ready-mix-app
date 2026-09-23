@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 152, Ver. 9.78)
+# OORM App — Current State (as of App 154, Ver. 9.80)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -30,6 +30,97 @@ delivering a round with a schema change, the user needs to visit that URL once; 
 causes exactly the kind of generic "Something went wrong" error a missing column produces (the
 app's error handler is deliberately plain-language, so it never surfaces the real Postgres error
 to the user — see `index.js`'s final `app.use((err, req, res, next) => ...)`).
+
+## Round 153 (Ver. 9.79): delivery notes for the plant, fuel since last fill, equipment analysis
+
+**Visit `/setup?key=...` once** — no schema change; REPAIR_153 grants four roles the existing
+`orders.challan-print` permission. Skipping it leaves a seeded installation refusing the new list
+to everyone but Administrator, because the seeding loop only runs for a role with no rows.
+
+Closes the last three open items from the punch list.
+
+**Item 1 — today's delivery notes.** New `backend/src/routes/deliveryNotes.js`: `GET /today`
+(today's non-cancelled tickets, IST via `CURRENT_DATE`, newest first) and `GET /:id/challan`.
+Both carry `requireRole` AND `requirePermission("orders.challan-print", "view")` — the second is
+the Super Admin's switch, so the list can be taken away from any one role with no deploy. The
+challan SQL moved out of `administrator.js` into `lib/challanData.js`, shared by both routes so
+the printed document cannot drift between them; `administrator.js` keeps its original URL.
+Frontend: `frontend/src/lib/TodaysDeliveryNotes.jsx`, one component mounted on PlantOperator,
+LabTechnician and QcEngineer — it renders nothing at all without the permission.
+`deliveryChallanPdf.js` takes a `source` argument ("administrator" | "delivery-notes") picking
+which endpoint to read from; the PDF itself is identical either way, deliberately.
+
+**Item 3 — distance since last fill.** `supplyRequests.js` `GET /pending` now carries
+`last_fill_at`, `last_fill_quantity`, `last_fill_reading`, `distance_since_last` and
+`implied_rate`, from a LATERAL join onto the previous issued fuel request for the same unit
+(matched with `IS NOT DISTINCT FROM` across truck/pump/equipment ids, so families never cross).
+Units follow the meter — km + L/100km, or hours + L/hr. Three cases return NULL rather than a
+misleading zero: no prior fill, a reading that went backwards, and lubricant requests. The card
+(`SinceLastFill` in SupplyApprovals.jsx) says which, and flags a backwards reading in red.
+
+**Item 4 — pumps and other equipment.** `fuelAnalysis.js` gained `GET /equipment` and
+`GET /equipment/:kind/:id` (kind is 'pump' or 'equipment' — id 3 is a different machine in each
+table, so both are always carried). Litres per running hour, plus litres per m³ pumped for pumps
+from `pump_logs`. Averages are per equipment TYPE, not one average across everything. Frontend:
+a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date range.
+
+**Two UTC date bugs fixed**: `fuelAnalysis.js`'s `dateRange()` and `FuelAnalysis.jsx`'s
+`todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
+yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
+Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 154 — Weighbridge integration (v9.80)
+
+The SchwingSmartWeigh weighbridge feeds the app one-way. Built against the real 2,478-ticket
+dump (Dec 2023 → Sep 2026) taken off the plant's MySQL 5.6 server, not the vendor's blank template.
+
+**What the live data settled.** `transactiondet` (the 10-slot multi-material child table) has never
+been used, so every ticket is single-material and we need no child table. `firstTransactionMaterial`
+is misnamed — it holds the transaction PURPOSE ('Production Usage' / 'Ready Mix Invoicing' /
+'Internal' / 'Scrap / Stock Transfer'), which is what separates an inbound receipt from an outbound
+load; imported as `purpose`. `moisturepercentage`, `actualweight` and `ConcreteVolume` are free text
+the operators type into ('N/A', 'NONE', '35610+91', driver names) and are NOT imported — `NetWeight`
+is the only weight we trust. Every row is username='admin', systemid='Rajesh-PC', so no weighment
+can ever be attributed to a person.
+
+**Name resolution.** Vehicle/material/supplier are free text, not FKs — the same lorry appears nine
+different ways. Two stages: normalise (uppercase, strip non-alphanumeric), then an alias table a
+human maintains. NO fuzzy matching, deliberately — '20MM' and '12MM' are two edits apart and a wrong
+auto-match misroutes stock for a month. Two masters normalising identically (the dump's two SREE
+MUTHAPPANs) = unresolved, not a coin toss. Material blocks a match; supplier blocks unless blank;
+vehicle never blocks (most lorries are suppliers' and will never be in `trucks`).
+
+**Tables.** `weighbridge_tickets` (PK = the weighbridge's own TicketNumber, raw values stored
+verbatim as the audit trail alongside our resolved ids), three alias tables, `weighbridge_sync_log`,
+and `rm_receipts.weighbridge_ticket_id` (shipped unused — Round 155 wires it up).
+
+**Sync.** `POST /api/weighbridge/sync`, API-key auth via `WEIGHBRIDGE_API_KEY`, declared above that
+router's own `requireAuth`. Unset key = endpoint closed, not open. Idempotent upsert on
+ticket_number; SmartWeigh has no `updated_at`, so the agent re-sends a trailing 30-day window and
+the server compares a SHA-256 — unchanged rows cost nothing. `match_status` is CASE-guarded so a
+human's 'ignored' survives any re-sync.
+
+**Agent.** `tools/weighbridge-agent/`, Node + mysql2, read-only MySQL account (NOT root). No offline
+queue on purpose: the weighbridge's own database IS the queue, so a failed post just leaves the
+cursor unadvanced. Columns discovered at runtime via SHOW COLUMNS. `startDate` = 2026-09-01 per the
+plant's decision — this month only, not the 2023-25 backlog.
+
+**Screens.** `/weighbridge`, two tabs (Receipts / Name mapping). Resolved name and raw spelling shown
+together. Header strip carries the agent's last check-in, because a stopped sync is otherwise
+invisible until stock comes up short. Keys: `material.weighbridge` (admin/manager/store view+edit,
+plant_operator/lab_technician view) and `material.weighbridge-mapping` (Administrator ALONE — a
+mapping decides where stock is credited for every past and future ticket with that spelling).
+REPAIR_154 in setup.js, same pattern as REPAIR_148/153.
+
+**SECURITY, outstanding at the plant.** The weighbridge MySQL root password is literally `root`, in
+plain text in `driver.xml`; the SmartWeigh app login is `admin`/`essae`. Anyone reaching that PC can
+rewrite every weighbridge ticket. Flagged to the user; the agent uses its own read-only account.
+
+**Recurring bug pattern #23 — caught again, in new code.** `ticket_date` was built by slicing a UTC
+ISO string, i.e. the UTC day; anything weighed before 05:30 IST filed under yesterday. Found live on
+ticket 2471. This is the same UTC-vs-IST class as rounds 153 and earlier. Also fixed: re-resolution
+after a mapping only swept `needs_review`, so a vehicle mapped after the fact never reached an
+already-matched ticket and the lorry stayed unattributed forever.
 
 ## Round 152 (Ver. 9.78): real MCI370 panel image, shared masters, bulk mix upload
 

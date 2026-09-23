@@ -6753,3 +6753,245 @@ inactive menu word explained itself, and there were no console errors.
 
 **Still open**: item 1 (today's delivery notes on the Plant Operator screen), item 3 (distance since
 last fill) and item 4 (pump and equipment fuel analysis) — Round 153. Then the print agent.
+
+---
+
+## Round 153 (Ver. 9.79): the last three punch-list items — delivery notes, fuel since last fill, equipment analysis
+
+**Visit `/setup?key=...` once after deploying.** There is no schema change this round; the migration
+grants four roles the existing `orders.challan-print` permission (REPAIR_153). Without that visit,
+an installation that has already been seeded will carry on refusing the new list to everyone except
+Administrator, because the seeding loop only ever runs for a role with no rows at all.
+
+### Item 1 — today's delivery notes, where the trucks are actually loaded
+
+The Plant Operator raises every delivery note and, until now, could not look at a single one
+afterwards; the lab and QC, who get asked about a specific load hours later, had to go and find an
+Administrator. The list now sits on all three screens, collapsed by default with the count in the
+header, and each row opens the same A4 Delivery Challan PDF the Administrator prints.
+
+Two routes, `GET /delivery-notes/today` and `GET /delivery-notes/:id/challan`, both carrying
+`requireRole` **and** `requirePermission("orders.challan-print", "view")`. That second guard is the
+user's requirement that this be subject to access control on the Super Admin page: untick View for
+Lab Technician and the list disappears from the lab's screen and the API answers 403, with no
+deploy. Verified live — revoking it mid-session produced 403 on both routes within the permission
+cache's 5 seconds, dropped the key from `/auth/me`, and left the Plant Operator untouched.
+
+**The challan SQL moved to `backend/src/lib/challanData.js`** rather than being copied into the new
+router. Two copies drift, and the copy that drifts is the one nobody is looking at. `administrator.js`
+keeps its own URL — the Administrator ticket table's print button already points at it — but no
+longer owns the query. Verified by diffing both endpoints' responses for the same ticket: identical.
+
+The list is today only (IST) and excludes cancelled tickets, which must never be reprinted and
+handed to a driver. The **document** endpoint is not date-scoped: reprinting an older note is a
+reasonable thing to need, and refusing it would send people back to asking an Administrator, which
+is the problem this round exists to fix.
+
+### Item 3 — what the machine has run since its last fill
+
+The Manager was approving fuel blind. Sixty litres is either normal or absurd depending on whether
+the truck has covered 200 km since it was last filled or 20, and nothing on the approval card said
+which. Each fuel card now carries the interval and the rate the request implies:
+
+> **120 km since last fill** · asking 50 L/100km
+> Last filled Sep 17 — 55 L at 41,600 km
+
+Units follow the meter: km and L/100km on an odometer, hours and L/hr on an hour meter. The previous
+fill is found by matching whichever of `truck_id` / `pump_id` / `equipment_id` is set — with
+`IS NOT DISTINCT FROM` on all three, so a pump request can never be paired against a truck's last
+fill. The rate uses the same fill-to-fill convention as the fuel analysis screen, so the two agree.
+
+Three cases are handled honestly rather than shown as a misleading zero, and all three were verified
+live: a first-ever fill says there is nothing to compare against; a reading that has gone backwards
+(meter replaced, or simply mistyped) says the reading hasn't advanced and adds *"Worth checking the
+reading before approving"* in red; and a lubricant request gets no comparison at all.
+
+### Item 4 — fuel analysis for pumps and everything else
+
+The analysis only ever answered for trucks, because it was built on distance. A pump, a loader, a
+generator runs on an hour meter — the litres were being captured at request time and then never
+looked at again. A **Pumps & equipment** tab now sits beside Trucks, sharing the same date range, and
+reports litres per running hour, plus litres per m³ pumped for pumps (the only non-truck unit with
+an output record of its own, in `pump_logs`).
+
+Units are grouped by type and each is judged against **its own type's average**, not one average
+across the lot: a generator and a boom pump have nothing in common, and a single average would flag
+every machine as an outlier. Tapping a unit opens its fill-to-fill history, and a pump also shows
+the pumping jobs behind those hours.
+
+Live figures, checked by hand against the seeded data: Line-1 at 1.12 L/hr (95 billable litres over
+85 hours) and 3.75 L/m³ (135 L over 36 m³); Boom-1 at 3.50; Loader-1 at 0.73. The overview and the
+drill-down showed the same 1.12 for Line-1 — the consistency that would have been easiest to get
+wrong. A loader and a pump sharing an id were verified not to cross over.
+
+### Two date bugs fixed on the way past
+
+`fuelAnalysis.js` and `FuelAnalysis.jsx` both built their default date range with
+`toISOString().slice(0, 10)`, which is the **UTC** calendar day. Between midnight and 05:30 IST that
+names yesterday, so opening the screen early in the morning silently dropped the current day's fills
+while the page still claimed to be showing today. Both now build the IST day, matching the database
+session, which `db.js` pins to Asia/Kolkata.
+
+### Verified
+
+Fresh database, migration run twice (second run correctly reported nothing to repair), then the
+pre-153 state simulated by deleting the four rows — the repair re-inserted exactly those four and
+named them. Every role on the list got 200 on both new routes and the four negative cases answered
+correctly: a driver 403, no token 401, a non-numeric id 400, a missing ticket 404. Headless browser
+checks confirmed the list renders on all three screens with today's two notes and neither the
+cancelled nor yesterday's, all four fuel-card states, and the equipment tab and drill-down. No
+console errors beyond the pre-existing 503 from the Solitaire plugin running without its secret in
+the test environment, which `SolitaireButton` already swallows by design.
+
+**Next**: the print agent (`claude/solitaire-print-agent-notes.md`) — the Windows agent on the plant
+PC driving real Excel, the configurable local save path, and the agent-status indicator.
+
+---
+
+## Round 154 — Weighbridge integration (v9.80)
+
+The SchwingSmartWeigh weighbridge now feeds the app. One-way, read-only, and built against the
+real 2,478-ticket dump taken off the plant's MySQL server on 23 September 2026 rather than against
+the vendor's blank install template.
+
+### What the live data changed about the plan
+
+Four findings in that dump reshaped the design, and each is worth knowing before touching this code:
+
+**The multi-material child table has never been used.** `transactiondet` — SmartWeigh's ten
+material/supplier/weight slots per ticket — is empty across the whole three-year history. Every
+ticket is single-material, held on the parent row. So there is no child table on our side either.
+
+**`firstTransactionMaterial` is misnamed.** It is not a material; it holds the transaction purpose
+('Production Usage', 'Ready Mix Invoicing', 'Internal', 'Scrap / Stock Transfer'), which is what
+decides whether a weighment is an inbound raw-material receipt or an outbound RMC load. It is
+imported as `purpose`, so the column name means what the value is.
+
+**Three columns that look like data are free text the operators type into.** `moisturepercentage`
+holds '0', 'N/A', 'NONE', 'NA', 'N|A' and has never once held a number, which means the formula
+SmartWeigh stores (`actualweight = NetWeight − NetWeight × moisture ÷ 100`) has never fired.
+`actualweight` itself contains 'N/A', '0.0', padded whitespace and, in one row, `35610+91`.
+`ConcreteVolume` has been used to store driver names. None of the three is imported. `NetWeight`
+is the only weight figure we trust, and moisture deduction happens in the Material Module against
+a figure the lab provides.
+
+**Vehicle, material and supplier are unnormalised strings, not foreign keys.** The same lorry
+appears as `KL77D4231`, `KL77D 4231`, `KL77 D4231`, `KL 77 D 4231`, `KL77D-4231`, `kl77d4231`,
+`KL774231`, `KL77D423` and plain `4231`. Materials have `20MM`/`20 MM` and `MSAND`/`M SAND`.
+Suppliers have `RANI` three ways, `DEVADARU`/`DEVADHARU`/`DEVADARU CRUSHER`, `DSP ` with a trailing
+space, and `SREE MUTHAPPAN` sitting at two different master ids.
+
+### Name resolution — two stages, deliberately unclever
+
+`backend/src/lib/weighbridgeNames.js`.
+
+1. **Normalise** — uppercase, strip everything that is not a letter or digit. This can only ever
+   merge strings that differ by case, spacing or punctuation, which cannot change what a person
+   meant, and it collapses most of the mess for free.
+2. **Look up an alias table a human maintains.** Whatever normalisation did not solve — a genuine
+   typo, a short form, a different trading name — gets mapped once by an Administrator and then
+   resolves forever, retroactively as well as going forward.
+
+There is **no fuzzy matching**, on purpose. `20MM` and `12MM` are two characters apart. A wrong
+automatic match credits stock to the wrong material or supplier and nobody finds out for a month;
+a ticket sitting in a review queue with a badge on it gets fixed the same day. Two active master
+records that normalise identically (the dump's two SREE MUTHAPPANs) are treated as unresolved, not
+as a coin toss.
+
+Which failures block a match and which do not:
+
+* An unresolved or blank **material** always blocks — there is nothing useful to do with a receipt
+  whose material is unknown.
+* An unresolved **supplier** blocks; a blank one does not, because internal movements genuinely
+  have none.
+* An unresolved **vehicle** never blocks. Most lorries on this weighbridge belong to suppliers and
+  will never be in our trucks table, so holding up a receipt for that would put the whole feed in
+  the queue permanently. It is recorded as unresolved so the mapping screen can still offer it.
+* A material a human mapped to "not ours" settles the ticket as `ignored` rather than `matched` —
+  otherwise it would sit in the Matched list with no material against it, reading as creditable
+  while being neither.
+
+### The sync
+
+`POST /api/weighbridge/sync`, authenticated by `WEIGHBRIDGE_API_KEY` rather than a session, and
+declared above that router's own `requireAuth` so it never sees the session middleware. An unset
+key closes the endpoint rather than opening it.
+
+TicketNumber is the weighbridge's primary key and ours, so the agent can re-send any row any
+number of times. SmartWeigh has no `updated_at` column, so the agent re-sends a trailing 30-day
+window on every poll and the server compares a SHA-256 of the row: unchanged rows are skipped by
+the upsert's `WHERE source_hash IS DISTINCT FROM`, so a wide re-check window is nearly free and a
+late correction on the weighbridge still reaches us.
+
+A human's decision always survives a re-sync — `match_status` is CASE-guarded so a ticket marked
+`ignored` stays ignored however many times its weighbridge row is re-sent or edited.
+
+### The agent
+
+`tools/weighbridge-agent/`. Node, `mysql2`, runs on the weighbridge PC. Its README carries the
+`GRANT SELECT` for a read-only account, the Task Scheduler setup and the troubleshooting list.
+
+**There is no offline queue, deliberately.** The weighbridge's own MySQL database *is* the queue —
+every ticket is still sitting there and can be re-read. A disk spool would be a second copy of the
+truth that can drift from the first. On a failed post the agent simply does not advance its cursor.
+The plant can be offline for a week and lose nothing.
+
+Column names are discovered at runtime via `SHOW COLUMNS` and matched case-insensitively, so a
+SmartWeigh upgrade that renames something reports it at startup instead of failing silently.
+
+Per the plant's decision, `startDate` defaults to **2026-09-01** — only this month, not the 2023–25
+backlog.
+
+### Screens
+
+New **Weighbridge** module on the dashboard, `/weighbridge`, two tabs:
+
+* **Receipts** — what has been weighed, with the resolved name and the raw weighbridge spelling
+  shown together (Store compares the latter against the paper slip). A header strip carries today's
+  count and tonnage, the review backlog, and **when the agent last checked in** — a stopped sync is
+  otherwise invisible until somebody notices stock is short.
+* **Name mapping** — Administrator only, with the unmapped spellings sorted by how many tickets
+  carry them.
+
+Two permission keys, split on purpose. `material.weighbridge` (view + edit) goes to Administrator,
+Manager, Store, and view-only to Plant Operator and Lab Technician. `material.weighbridge-mapping`
+goes to **Administrator alone**, because a mapping decides where stock is credited from then on for
+every past and future ticket carrying that spelling — Store can flag a ticket, not decide what it
+means. `REPAIR_154` in setup.js seeds the new keys into an already-live installation, same pattern
+as REPAIR_148 and REPAIR_153.
+
+### Two bugs found during verification, both fixed
+
+**The app's recurring UTC/IST bug, in new code.** `ticket_date` was derived by slicing the first ten
+characters off a UTC ISO string, which is the UTC day. A lorry weighed before 05:30 IST would have
+filed itself under yesterday. Caught live: ticket 2471, weighed 09:40 on 22 September, stored as the
+21st. Now `toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })`.
+
+**A mapping made after the fact never reached an already-matched ticket.** Re-resolution only swept
+`needs_review` rows, but a ticket with an unrecognised *vehicle* is `matched` (vehicles are
+non-blocking) with `truck_id` NULL. Mapping that vehicle later did nothing to it and the lorry stayed
+unattributed forever. The sweep now also covers matched tickets with a non-empty `unresolved`.
+
+`backend/scripts/check-guards.mjs` also caught a third before it shipped: the PATCH route allowed
+`plant_operator` and `lab_technician` through `requireRole` while the catalogue grants them no
+`edit`, which would have shown them a button that 403s. Fixed by narrowing the route, not widening
+the catalogue.
+
+### Verified live
+
+Against a throwaway Postgres, with deliberately dirty test data lifted from the real dump —
+including the duplicated SREE MUTHAPPAN, the `0001-01-01` sentinel, the `N/A` supplier, the
+`35610+91` actualweight, the mis-keyed 2026-06-30 date, and all seven spellings of KL77D4231.
+
+All seven spellings resolve to the one truck. The 401s hold with a wrong key and with no key. The
+hash comparison was proved by correcting one ticket's weight and re-syncing: exactly one row
+updated, six unchanged. A Store "Set aside" survived that update, note intact. Forcing `matched` by
+hand is refused. Revoking `material.weighbridge` from Store mid-session produced 403 on both routes
+within the 5-second permission cache, dropped the key from `/auth/me`, and left Plant Operator
+untouched. `REPAIR_154` was proved by deleting its six rows and re-running setup, which restored
+exactly those six by name. No new console errors beyond the pre-existing Solitaire 503.
+
+**Next**: link a weighbridge ticket to an `rm_receipts` row so a receipt's weight and vehicle fill
+themselves in (the `weighbridge_ticket_id` column ships in this round, unused), and Store's entry of
+the billed challan quantity to enable short-load flagging — the weighbridge carries a challan
+number but no challan quantity.

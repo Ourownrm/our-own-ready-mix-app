@@ -2522,6 +2522,204 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_solitaire_mix_designs_code ON solitaire_mi
         : `Dockets still reference the module's own tables — ${docketCount[0].n} docket(s) already exist, so the re-point was skipped and needs a data migration.`)
     );
 
+    // ========================================================================
+    // ROUND 154 — weighbridge integration tables.
+    //
+    // Additive only, and written so a re-run is a no-op: every table is
+    // IF NOT EXISTS, the enum is created inside a DO block that checks pg_type
+    // first (Postgres has no CREATE TYPE IF NOT EXISTS), and the rm_receipts
+    // column is ADD COLUMN IF NOT EXISTS. Nothing here drops, renames or
+    // rewrites an existing row.
+    //
+    // See schema.sql's Round 154 block for why the shape is what it is — in
+    // short: the weighbridge's multi-material child table has never been used,
+    // its moisture and "actual weight" columns are free text the operators type
+    // into, and vehicle/material/supplier are unnormalised strings that need a
+    // human-maintained alias layer rather than a fuzzy guess.
+    // ========================================================================
+    await pool.query(`
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'wb_match_status') THEN
+    CREATE TYPE wb_match_status AS ENUM ('matched', 'needs_review', 'ignored');
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS weighbridge_tickets (
+  ticket_number      INTEGER PRIMARY KEY,
+  raw_vehicle        VARCHAR(60),
+  raw_material       VARCHAR(120),
+  raw_material_code  VARCHAR(120),
+  raw_supplier       VARCHAR(150),
+  purpose            VARCHAR(60),
+  challan_number     VARCHAR(60),
+  driver_name        VARCHAR(120),
+  site_name          VARCHAR(120),
+  shift              VARCHAR(20),
+  load_status        VARCHAR(20),
+  remarks            TEXT,
+  charges            VARCHAR(120),
+  concrete_grade     VARCHAR(60),
+  empty_weight_kg    INTEGER,
+  loaded_weight_kg   INTEGER,
+  net_weight_kg      INTEGER,
+  ticket_date        DATE,
+  empty_weighed_at   TIMESTAMPTZ,
+  loaded_weighed_at  TIMESTAMPTZ,
+  weighed_at         TIMESTAMPTZ,
+  material_id        INTEGER REFERENCES rm_materials(id),
+  supplier_id        INTEGER REFERENCES rm_suppliers(id),
+  truck_id           INTEGER REFERENCES trucks(id),
+  match_status       wb_match_status NOT NULL DEFAULT 'needs_review',
+  unresolved         TEXT[] NOT NULL DEFAULT '{}',
+  review_note        TEXT,
+  reviewed_by        INTEGER REFERENCES users(id),
+  reviewed_at        TIMESTAMPTZ,
+  source_hash        CHAR(64) NOT NULL,
+  revision           INTEGER NOT NULL DEFAULT 1,
+  first_synced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_synced_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_wb_tickets_status  ON weighbridge_tickets(match_status);
+CREATE INDEX IF NOT EXISTS idx_wb_tickets_weighed ON weighbridge_tickets(weighed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wb_tickets_purpose ON weighbridge_tickets(purpose);
+
+CREATE TABLE IF NOT EXISTS weighbridge_material_aliases (
+  id          SERIAL PRIMARY KEY,
+  normalised  VARCHAR(120) NOT NULL UNIQUE,
+  raw_sample  VARCHAR(120) NOT NULL,
+  material_id INTEGER REFERENCES rm_materials(id),
+  is_ignored  BOOLEAN NOT NULL DEFAULT false,
+  mapped_by   INTEGER REFERENCES users(id),
+  mapped_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR material_id IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS weighbridge_supplier_aliases (
+  id          SERIAL PRIMARY KEY,
+  normalised  VARCHAR(150) NOT NULL UNIQUE,
+  raw_sample  VARCHAR(150) NOT NULL,
+  supplier_id INTEGER REFERENCES rm_suppliers(id),
+  is_ignored  BOOLEAN NOT NULL DEFAULT false,
+  mapped_by   INTEGER REFERENCES users(id),
+  mapped_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR supplier_id IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS weighbridge_vehicle_aliases (
+  id          SERIAL PRIMARY KEY,
+  normalised  VARCHAR(60) NOT NULL UNIQUE,
+  raw_sample  VARCHAR(60) NOT NULL,
+  truck_id    INTEGER REFERENCES trucks(id),
+  is_ignored  BOOLEAN NOT NULL DEFAULT false,
+  mapped_by   INTEGER REFERENCES users(id),
+  mapped_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR truck_id IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS weighbridge_sync_log (
+  id             SERIAL PRIMARY KEY,
+  received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  agent_version  VARCHAR(20),
+  rows_sent      INTEGER NOT NULL DEFAULT 0,
+  rows_inserted  INTEGER NOT NULL DEFAULT 0,
+  rows_updated   INTEGER NOT NULL DEFAULT 0,
+  rows_unchanged INTEGER NOT NULL DEFAULT 0,
+  rows_rejected  INTEGER NOT NULL DEFAULT 0,
+  highest_ticket INTEGER,
+  error          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_wb_sync_log_received ON weighbridge_sync_log(received_at DESC);
+
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS weighbridge_ticket_id INTEGER REFERENCES weighbridge_tickets(ticket_number);
+CREATE INDEX IF NOT EXISTS idx_rm_receipts_wb_ticket ON rm_receipts(weighbridge_ticket_id);
+`);
+
+    const { rows: wbCount } = await pool.query(`SELECT count(*)::int AS n FROM weighbridge_tickets`);
+    log.push(
+      `Schema migration applied (Round 154 — weighbridge integration). ` +
+      `weighbridge_tickets holds ${wbCount[0].n} ticket(s). ` +
+      (process.env.WEIGHBRIDGE_API_KEY
+        ? `WEIGHBRIDGE_API_KEY is set, so the sync agent can post to /api/weighbridge/sync.`
+        : `WEIGHBRIDGE_API_KEY is NOT set — /api/weighbridge/sync will reject every call until it is. ` +
+          `Set it in the backend environment and give the same value to the agent on the weighbridge PC.`)
+    );
+
+    // Round 154 — the two new weighbridge permission keys.
+    //
+    // Same mechanism and same reason as REPAIR_148 and REPAIR_153: the seeding
+    // loop only fires for a role that has NO rows at all, so a brand new
+    // catalogue KEY never reaches an installation that is already live. Without
+    // this, Store and the Manager would open the Weighbridge screen and get a
+    // bare 403 on a tile the dashboard was happy to show them.
+    //
+    // Administrator and Super Admin are deliberately absent: their sets are
+    // computed (ADMIN_HAS_EVERYTHING), not seeded, so inserting rows for them
+    // would be dead weight.
+    //
+    // Note what is NOT granted here. material.weighbridge-mapping goes to
+    // nobody but Administrator, because mapping a weighbridge spelling to a
+    // material or supplier decides where stock is credited from then on, for
+    // every past and future ticket carrying that spelling. Store can flag a
+    // ticket; Store cannot decide what it means.
+    const REPAIR_154 = [
+      ["manager",        "material.weighbridge", "view"],
+      ["manager",        "material.weighbridge", "edit"],
+      ["store",          "material.weighbridge", "view"],
+      ["store",          "material.weighbridge", "edit"],
+      ["plant_operator", "material.weighbridge", "view"],
+      ["lab_technician", "material.weighbridge", "view"],
+    ];
+    const wbRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING
+       RETURNING role::text, permission_key, action`,
+      [REPAIR_154.map((r) => r[0]), REPAIR_154.map((r) => r[1]), REPAIR_154.map((r) => r[2])]
+    );
+    log.push(
+      wbRepaired.rows.length
+        ? `Schema migration applied (Round 154 — weighbridge access granted to ` +
+          `${[...new Set(wbRepaired.rows.map((r) => r.role))].join(", ")}). ` +
+          `Super Admin can revoke any of it on the Access Control page.`
+        : `Round 154 — weighbridge access defaults already in place, nothing to repair.`
+    );
+
+    // Round 153, item 1 — let the Plant Operator, the lab, QC and the Manager
+    // open and print a Delivery Challan.
+    //
+    // Same mechanism and same reasoning as REPAIR_148 above: the catalogue's
+    // widened default for orders.challan-print only reaches a role that has
+    // never been seeded, so an installation that is already live would carry on
+    // 403-ing these four roles on the new list. Inserted by name, additively,
+    // ON CONFLICT DO NOTHING — nothing is revoked, a per-person override still
+    // wins, and requireRole still has to agree before any of it matters.
+    //
+    // Deliberately NOT a schema change: there is nothing to migrate, only four
+    // baseline rows. A Super Admin who does not want one of these roles to have
+    // it can untick it on the Access Control page straight afterwards.
+    const REPAIR_153 = [
+      ["manager", "orders.challan-print", "view"],
+      ["plant_operator", "orders.challan-print", "view"],
+      ["lab_technician", "orders.challan-print", "view"],
+      ["qc_engineer", "orders.challan-print", "view"],
+    ];
+    const challanRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING
+       RETURNING role::text, permission_key`,
+      [REPAIR_153.map((r) => r[0]), REPAIR_153.map((r) => r[1]), REPAIR_153.map((r) => r[2])]
+    );
+    log.push(
+      challanRepaired.rows.length
+        ? `Schema migration applied (Round 153 — challan printing granted to ${challanRepaired.rows.length} more role(s): ` +
+          `${challanRepaired.rows.map((r) => r.role).join(", ")}). Super Admin can revoke any of these on the Access Control page.`
+        : `Round 153 — challan printing defaults already in place, nothing to repair.`
+    );
+
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 
     res.send(

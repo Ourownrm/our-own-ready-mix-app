@@ -95,11 +95,58 @@ router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
 });
 
 // Manager's approval queue.
+//
+// Round 153, item 3 — each card now carries what this unit has run since its
+// LAST fill. Approving fuel without that number is approving blind: 60 litres
+// is either normal or absurd depending on whether the truck has covered 200 km
+// or 20 since it was last filled, and the Manager had no way to tell from this
+// screen.
+//
+// The previous fill comes from supply_requests itself (status 'issued'), which
+// is where this app actually records fills — fuel_logs has no caller anywhere
+// and is dead; see the note at the top of routes/fuelAnalysis.js.
+//
+// Matching the "same unit" has to respect which column holds it: a request is
+// for a truck OR a pump OR a piece of equipment, and the other two columns are
+// NULL. `IS NOT DISTINCT FROM` on all three is what makes NULL = NULL match
+// here, so a pump request is never paired with a truck's last fill.
+//
+// distance_since_last is in km for anything on an odometer and in hours for
+// anything on an hour meter — the frontend labels it from which reading the
+// request carries, exactly as it already labels the reading itself.
+//
+// implied_rate divides the quantity being REQUESTED by that distance. That is
+// the same fill-to-fill convention the fuel analysis uses (a fill's litres are
+// attributed to the interval that preceded it), so a Manager cross-checking
+// this card against the analysis screen sees numbers computed the same way.
+// It is NULL whenever there is no usable prior reading, no movement recorded,
+// or the reading has gone backwards (meter replaced, or simply mistyped) —
+// a wrong number here is worse than none, since the whole point is to catch
+// the wrong number.
 router.get("/pending", requireRole("manager", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT sr.*, u.name AS requested_by_name,
             fs.name AS fuel_station_name, lt.name AS lubricant_type_name,
-            t.truck_number, p.pump_code, e.name AS equipment_name
+            t.truck_number, p.pump_code, e.name AS equipment_name,
+            prev.issued_at            AS last_fill_at,
+            prev.actual_quantity_issued AS last_fill_quantity,
+            COALESCE(prev.odometer_reading, prev.hour_meter_reading) AS last_fill_reading,
+            CASE
+              WHEN sr.odometer_reading IS NOT NULL AND prev.odometer_reading IS NOT NULL
+                   AND sr.odometer_reading > prev.odometer_reading
+                THEN ROUND(sr.odometer_reading - prev.odometer_reading, 1)
+              WHEN sr.hour_meter_reading IS NOT NULL AND prev.hour_meter_reading IS NOT NULL
+                   AND sr.hour_meter_reading > prev.hour_meter_reading
+                THEN ROUND(sr.hour_meter_reading - prev.hour_meter_reading, 1)
+            END AS distance_since_last,
+            CASE
+              WHEN sr.odometer_reading IS NOT NULL AND prev.odometer_reading IS NOT NULL
+                   AND sr.odometer_reading > prev.odometer_reading
+                THEN ROUND((sr.requested_quantity / (sr.odometer_reading - prev.odometer_reading)) * 100, 2)
+              WHEN sr.hour_meter_reading IS NOT NULL AND prev.hour_meter_reading IS NOT NULL
+                   AND sr.hour_meter_reading > prev.hour_meter_reading
+                THEN ROUND(sr.requested_quantity / (sr.hour_meter_reading - prev.hour_meter_reading), 2)
+            END AS implied_rate
      FROM supply_requests sr
      JOIN users u ON u.id = sr.requested_by
      LEFT JOIN fuel_stations fs ON fs.id = sr.fuel_station_id
@@ -107,6 +154,18 @@ router.get("/pending", requireRole("manager", "administrator"), async (req, res)
      LEFT JOIN trucks t ON t.id = sr.truck_id
      LEFT JOIN pumps p ON p.id = sr.pump_id
      LEFT JOIN equipment e ON e.id = sr.equipment_id
+     LEFT JOIN LATERAL (
+       SELECT prv.issued_at, prv.actual_quantity_issued, prv.odometer_reading, prv.hour_meter_reading
+       FROM supply_requests prv
+       WHERE prv.request_type = 'fuel' AND prv.status = 'issued'
+         AND prv.id != sr.id
+         AND prv.truck_id     IS NOT DISTINCT FROM sr.truck_id
+         AND prv.pump_id      IS NOT DISTINCT FROM sr.pump_id
+         AND prv.equipment_id IS NOT DISTINCT FROM sr.equipment_id
+         AND prv.issued_at IS NOT NULL
+       ORDER BY prv.issued_at DESC
+       LIMIT 1
+     ) prev ON sr.request_type = 'fuel'
      WHERE sr.status = 'pending'
      ORDER BY sr.requested_at`
   );

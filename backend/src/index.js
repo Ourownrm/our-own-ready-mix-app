@@ -29,6 +29,8 @@ import notificationsRoutes from "./routes/notifications.js";
 import trackingRoutes from "./routes/tracking.js";
 import maintenanceRoutes from "./routes/maintenance.js";
 import fuelAnalysisRoutes from "./routes/fuelAnalysis.js";
+import deliveryNotesRoutes from "./routes/deliveryNotes.js";
+import weighbridgeRoutes from "./routes/weighbridge.js";
 import bookingLinksRoutes from "./routes/bookingLinks.js";
 import customerBookingRoutes from "./routes/customerBooking.js";
 import customerAccessRoutes from "./routes/customerAccess.js";
@@ -169,6 +171,13 @@ app.use("/api/compliance", complianceRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
 app.use("/api/fuel-analysis", fuelAnalysisRoutes);
+// Round 153, item 1 — today's delivery notes, for the Plant Operator, the lab
+// and QC. Gated by the orders.challan-print permission, not by role alone.
+app.use("/api/delivery-notes", deliveryNotesRoutes);
+// Round 154 — the weighbridge sync. NOTE: this router deliberately exposes ONE
+// route (POST /sync) that is authenticated by an API key rather than a session,
+// declared above its own requireAuth. See routes/weighbridge.js.
+app.use("/api/weighbridge", weighbridgeRoutes);
 app.use("/api/loader-operator", loaderOperatorRoutes);
 // Round 139 — Raw Material Module (purchase -> approve -> receive -> consume
 // -> physical count -> reports). Deliberately named /api/material-module
