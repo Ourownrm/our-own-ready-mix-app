@@ -13,7 +13,7 @@
 // "Today" is the IST calendar day. CURRENT_DATE is correct here and needs no
 // arithmetic, because db.js pins every connection to Asia/Kolkata before it is
 // ever handed out — which is exactly why this route does NOT compute a date in
-// JavaScript and pass it in. A `new Date().toISOString().slice(0,10)` would be
+// JavaScript and pass it in. A `istDay()` would be
 // the UTC day, and between midnight and 05:30 IST that is yesterday.
 //
 // ACCESS. Both guards, as every converted route does (see
@@ -37,6 +37,7 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 import { fetchChallanData } from "../lib/challanData.js";
+import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth);

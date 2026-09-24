@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { CHECKLIST_SECTIONS, CHECKLIST_ITEM_KEYS, RATING_SCALE, scoreFromRatings } from "../lib/inspectionChecklist.js";
+import { istDay } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -274,7 +275,7 @@ router.get("/vehicle/:truckId/history", requireRole(...STAFF_ROLES), async (req,
       date: r.sent_out_at,
       end_date: r.returned_at,
       title: `External repair — ${r.issue_description}`,
-      meta: [r.workshop_name, r.returned_at ? `Returned ${new Date(r.returned_at).toISOString().slice(0, 10)}` : "Still at workshop"].filter(Boolean).join(" · "),
+      meta: [r.workshop_name, r.returned_at ? `Returned ${istDay(r.returned_at)}` : "Still at workshop"].filter(Boolean).join(" · "),
     })),
   ].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
   res.json(merged);

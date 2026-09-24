@@ -4,6 +4,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 // Round 143 follow-up — the four headline figures have ONE definition now,
 // shared with the Administrator dashboard so the two pages cannot disagree.
 import { dashboardKpiRows } from "../lib/dashboardKpis.js";
+import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 const router = Router();
 // Each route below sets its own role list explicitly — no blanket
@@ -19,7 +20,7 @@ router.use(requireAuth);
 // own planned/actual pairing since what "planned" means differs by type,
 // but all come back in the same row shape.
 router.get("/delay-justification", requireRole("manager", "administrator", "site_supervisor", "plant_operator"), async (req, res) => {
-  const fromDate = req.query.from_date || new Date().toISOString().slice(0, 10);
+  const fromDate = req.query.from_date || istDay();
   const toDate = req.query.to_date || fromDate;
   const delayType = req.query.delay_type || "all";
   const minMinutes = Number(req.query.min_delay_minutes) || 0;
@@ -230,7 +231,7 @@ router.get("/trip-analysis/scatter", requireRole("manager", "administrator"), as
 // Complete. Each trip's own timestamps, not aggregated — the frontend draws
 // the actual timeline from these.
 router.get("/cycle-time", requireRole("manager", "administrator"), async (req, res) => {
-  const fromDate = req.query.from_date || new Date().toISOString().slice(0, 10);
+  const fromDate = req.query.from_date || istDay();
   const toDate = req.query.to_date || fromDate;
   const sortBy = req.query.sort_by === "truck" ? "t.truck_number" : "dt.ticket_number";
 

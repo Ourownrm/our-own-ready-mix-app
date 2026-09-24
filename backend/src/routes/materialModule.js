@@ -5,8 +5,9 @@ import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 // a requirePermission. A request must satisfy both, so granting somebody a
 // permission can never let them past a role guard: this can only tighten
 // access, never loosen it.
-import { requirePermission } from "../lib/permissions.js";
+import { requirePermission, can } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
+import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 // Round 139 — Material Module: Store's raw-material purchase -> receive ->
 // consume -> physical-count workflow (cement, aggregates, admixtures, etc.).
@@ -272,7 +273,7 @@ router.post("/suppliers/:supplierId/rates", requireRole(...ADMIN), requirePermis
   if (!["delivered", "ex_factory"].includes(scope)) return res.status(400).json({ error: "Scope must be delivered or ex_factory." });
   if (!rate || Number(rate) <= 0) return res.status(400).json({ error: "Enter a valid rate." });
 
-  const effectiveFrom = valid_from || new Date().toISOString().slice(0, 10);
+  const effectiveFrom = valid_from || istDay();
   const { rows } = await query(
     `UPDATE rm_supplier_rates SET valid_to = $1::date - INTERVAL '1 day'
      WHERE supplier_id = $2 AND material_id = $3 AND scope = $4 AND valid_to IS NULL
@@ -684,7 +685,7 @@ router.get("/receipts", requireRole(...ORDER_ROLES), requirePermission("material
 // for which one book-stock deduction actually uses.
 
 router.get("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "view"), async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || istDay();
   const { rows } = await query(
     `SELECT m.id AS material_id, m.name, m.purchase_unit, m.kg_per_purchase_unit,
             c.automatic_qty_kg, c.manual_qty_kg, c.recorded_at
@@ -722,7 +723,7 @@ router.post("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission
 });
 
 router.get("/production", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "view"), async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || istDay();
   const { rows } = await query(`SELECT * FROM rm_daily_production WHERE production_date = $1`, [date]);
   res.json(rows[0] || null);
 });
@@ -817,8 +818,19 @@ async function bookStockRows() {
 }
 
 router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("material.stock", "view"), async (req, res) => {
-  const asOfMonth = req.query.month || new Date().toISOString().slice(0, 7);
-  const daysElapsedThisMonth = new Date().getDate();
+  const asOfMonth = req.query.month || istMonth();
+  // Round 155 — was `new Date().getDate()`, the UTC day-of-month on a server
+  // that runs in UTC. At 03:00 IST on the 1st, UTC is still the 30th, so this
+  // returned 30: the new month's few hours of consumption were divided by 30
+  // instead of 1 and stock_days_remaining came out roughly thirty times too
+  // high, silencing the low-stock and reorder warnings on precisely the
+  // morning stock is thinnest.
+  //
+  // It also has to follow asOfMonth, not today: asking for a PAST month used
+  // to divide that month's consumption by today's day-of-month. For any month
+  // that has already ended the right denominator is its full length.
+  const daysElapsedThisMonth = daysElapsedIn(asOfMonth);
+  const maySeeValuation = await can(req.user, "material.stock-valuation", "view");
   const materials = await bookStockRows();
   const results = [];
   for (const m of materials) {
@@ -839,7 +851,19 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("materi
       month_consumed_kg: Number(m.month_consumed_kg),
       month_opening_kg: bookStockKg - Number(m.month_received_kg) + Number(m.month_consumed_kg),
     };
-    if (req.user.role !== "store") {
+    // Round 155 — this used to read `if (req.user.role !== "store")`, which
+    // excluded exactly one role by name and therefore handed rates and stock
+    // value to the PLANT OPERATOR, who is in STOCK_READ_ROLES. Purchase
+    // economics are a separate, deliberately narrower grant in the catalogue —
+    // `material.stock-valuation`, which defaults to Administrator alone — and
+    // the string compare meant revoking it on the Access Control page changed
+    // nothing here. check-guards.mjs cannot catch this: the route's own
+    // declared key/action pair is correct and the leak is inside the handler.
+    //
+    // Now it asks the permission system the question the catalogue already
+    // answers. Resolved once before the loop rather than per material, since
+    // it cannot change mid-request.
+    if (maySeeValuation) {
       const rateMap = await monthlyWeightedAvgRates(m.id);
       const rate = effectiveAvgForMonth(rateMap, asOfMonth, m.opening_stock_rate_per_kg);
       row.rate_per_kg = rate;
@@ -899,8 +923,9 @@ router.post("/physical-stock", requireRole(...ORDER_ROLES), requirePermission("m
 });
 
 router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermission("material.physical-stock", "view"), async (req, res) => {
-  const month = (req.query.month || new Date().toISOString().slice(0, 7)).slice(0, 7);
+  const month = (req.query.month || istMonth()).slice(0, 7);
   const monthStart = `${month}-01`;
+  const maySeeValuation = await can(req.user, "material.stock-valuation", "view");
 
   const { rows: materials } = await query(`SELECT * FROM rm_materials WHERE is_active ORDER BY category, name`);
   const results = [];
@@ -951,7 +976,10 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
     // only the materials that happened to have been counted, which made the
     // cost-of-difference percentage beside it meaningless.
     let rate = null;
-    if (req.user.role !== "store") {
+    // Same Round 155 change as in GET /stock above, and for the same reason:
+    // `role !== "store"` was leaking the month's material cost to the Plant
+    // Operator, who has no material.stock-valuation grant.
+    if (maySeeValuation) {
       const rateMap = await monthlyWeightedAvgRates(m.id);
       rate = effectiveAvgForMonth(rateMap, month, m.opening_stock_rate_per_kg);
       row.rate_per_kg = rate;
@@ -1046,7 +1074,7 @@ router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePerm
 // own production figure) — deliberately shows BOTH volumes rather than
 // applying one to the other (confirmed "Volume basis" decision).
 router.get("/reports/daily-consumption", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || istDay();
 
   const { rows: consumption } = await query(
     `SELECT m.id AS material_id, m.name, m.category, m.purchase_unit, m.kg_per_purchase_unit,
@@ -1112,7 +1140,7 @@ const MIX_COMPONENT_COLUMN = {
 };
 
 router.get("/reports/mix-vs-actual", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || istDay();
 
   // m3 per grade per design from the day's challans.
   const { rows: volumes } = await query(
@@ -1215,7 +1243,7 @@ router.get("/reports/mix-vs-actual", requireRole(...ADMIN), requirePermission("m
 });
 
 router.get("/reports/monthly-consumption-summary", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
-  const month = (req.query.month || new Date().toISOString().slice(0, 7)).slice(0, 7);
+  const month = (req.query.month || istMonth()).slice(0, 7);
   const { rows } = await query(
     `SELECT m.id AS material_id, m.name, m.category, m.purchase_unit, m.kg_per_purchase_unit,
             COALESCE(SUM(c.automatic_qty_kg), 0) AS automatic_total_kg,
@@ -1324,7 +1352,7 @@ router.get("/reports/cost-per-m3", requireRole(...ADMIN), requirePermission("mat
 
   let totalCost = 0;
   for (const row of dailyConsumption) {
-    const ym = row.consumption_date.toISOString().slice(0, 7);
+    const ym = istMonth(row.consumption_date);
     const material = materialById.get(row.material_id);
     const rate = effectiveAvgForMonth(rateMapByMaterial.get(row.material_id) || new Map(), ym, material?.opening_stock_rate_per_kg);
     if (rate != null) totalCost += Number(row.consumed_kg) * rate;
@@ -1371,7 +1399,7 @@ router.get("/reports/cost-per-m3", requireRole(...ADMIN), requirePermission("mat
 // the cost/m3 basis (never the challan-derived figure) — the same "Volume
 // basis" decision GET /reports/cost-per-m3 above already follows.
 router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("material.cost-dashboard", "view"), async (req, res) => {
-  const month = (req.query.month || new Date().toISOString().slice(0, 7)).slice(0, 7);
+  const month = (req.query.month || istMonth()).slice(0, 7);
   const monthStart = `${month}-01`;
 
   const { rows: materials } = await query(`SELECT id, name, opening_stock_rate_per_kg FROM rm_materials`);
@@ -1407,7 +1435,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
 
   // Stock value as of today (same computation as GET /stock).
   const stockRows = await bookStockRows();
-  const nowMonth = new Date().toISOString().slice(0, 7);
+  const nowMonth = istMonth();
   let stockValue = 0;
   for (const m of stockRows) {
     const bookStockKg = Number(m.opening_stock_kg) + Number(m.received_kg) - Number(m.consumed_kg);
@@ -1470,7 +1498,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
   for (let i = 5; i >= 0; i--) {
     const d = new Date(`${monthStart}T00:00:00Z`);
     d.setUTCMonth(d.getUTCMonth() - i);
-    const ym = d.toISOString().slice(0, 7);
+    const ym = istMonth(d);
     const { rows: prod } = await query(`SELECT COALESCE(SUM(concrete_produced_m3), 0) AS m3 FROM rm_daily_production WHERE to_char(production_date, 'YYYY-MM') = $1`, [ym]);
     const { rows: cons } = await query(`SELECT material_id, SUM(COALESCE(automatic_qty_kg, manual_qty_kg, 0)) AS kg FROM rm_daily_consumption WHERE to_char(consumption_date, 'YYYY-MM') = $1 GROUP BY material_id`, [ym]);
     let cost = 0;
@@ -1504,7 +1532,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
 // (stock value, balance on open orders, month's purchases, debit notes due)
 // plus a pending-approval count, per AdminStock.dc.html.
 router.get("/reports/stock-summary", requireRole(...ADMIN), requirePermission("material.stock-valuation", "view"), async (req, res) => {
-  const month = new Date().toISOString().slice(0, 7);
+  const month = istMonth();
 
   const stockRows = await bookStockRows();
   let stockValue = 0;

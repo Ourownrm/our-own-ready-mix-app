@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 154, Ver. 9.80)
+# OORM App — Current State (as of App 155, Ver. 9.81)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -68,6 +68,60 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 `todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 155 — security, a permission leak, the lost cube batches, and the end of the date bug (v9.81)
+
+Cleared everything outstanding from the Round 145-154 review (`claude/code-review-rounds-145-154.md`).
+
+**AUTH — the token proves WHO, never WHAT.** `requireAuth` used to trust the JWT payload whole, and
+the token lives 30 days. So deactivating somebody revoked nothing (`is_active` was read only in
+`GET /auth/me`, which just logs the frontend out) and changing a role did nothing (`requireRole` read
+the role from the token). A demoted lab technician could still WRITE lab records. Both reproduced
+live. Now `requireAuth` reads `id, role, is_active` from `users` per request behind a 5-second TTL,
+401s on inactive, and takes role/name from the row. `clearUserCache()` fires on every role change and
+every activate/deactivate — including `administrator.js`'s own status toggle, which used to clear
+nothing. Also: the old bare `catch` turned a DB hiccup into "your session expired"; only real JWT
+errors say that now.
+
+**PERMISSION LEAK.** `materialModule.js` gated stock rates and valuation with
+`if (req.user.role !== "store")` — a string compare that excluded one role, so the PLANT OPERATOR
+(in STOCK_READ_ROLES) received rate_per_kg, stock_value and cost_plant_consumption. Those belong to
+`material.stock-valuation`, Administrator-only, and the Access Control page could not revoke them.
+Now asks `can(req.user, "material.stock-valuation", "view")`. check-guards.mjs structurally cannot
+catch this class — the route's declared key/action was legitimate; the leak was inside the handler.
+
+**THE LOST CUBE BATCHES** (lab technician's report, from 21 Sept, reproduced exactly). QC's cube-count
+box defaulted to 0; the lab's queue is `COALESCE(number_of_cubes,0) > 0`. QC filling slump + sample
+IDs but not that box saved a good record the lab could not see. NOTE THE HISTORY BEFORE "FIXING" IT
+AGAIN: it defaulted to 3 until Ver. 9.29, which created phantom batches; that was changed to 0, which
+created this. Both defaults answer a question nobody asked. There is now NO default — blank, required,
+0 is valid but must be stated; the order's `cube_samples_required` is shown beside the box ("order
+asks for 3"), which the API always sent and the form never displayed; sample IDs alongside a zero
+count is refused. REPAIR_155 back-fills existing rows from the number of sample IDs listed,
+deliberately only where sample_ids is non-empty.
+
+**DELIVERY CHALLAN MODULE — decided: stays separate, print-only.** A docket writes only to
+`solitaire_dockets`; it raises no Delivery Note, records no QC, never reaches the lab. Round 151 moved
+it into the header where everyone can reach it, which is when the plant started using it. The print
+confirmation and the header tooltip now say plainly what it does and does not do.
+
+**RECURRING BUG PATTERN #1 — ENDED MECHANICALLY.** All 49 remaining UTC-day sites converted across 25
+files to new `backend/src/lib/istDate.js` and `frontend/src/lib/istDate.js`, plus
+`backend/scripts/check-dates.mjs` (sibling of check-guards.mjs) so it cannot come back; `// ist-ok:`
+is the escape hatch. Worst three fixed: stock cover inflated ~30x on the 1st of the month
+(`new Date().getDate()` is the UTC day-of-month — and it also divided a PAST month's consumption by
+today's day number); CubeTestReport's month filter wrong EVERY day (local-fields constructor printed
+via toISOString lands on the previous month's last day); and dates written a day early into stored
+records (follow-up due dates, mix-design effective dates, supplier rate valid_from, order_date, site
+cast dates, payment dates).
+
+**LESSON WORTH KEEPING:** a clean build did NOT catch the migration — four files called a helper they
+had not imported, a runtime ReferenceError Vite compiles happily. A static "does every helper call
+have a matching import" pass caught all four. Repeat that after any bulk sweep.
+
+**STILL OPEN:** guard conversion is at 58 of 499 routes, and 94 of 111 catalogue keys gate nothing
+server-side (they hide a tile but do not stop a direct API call). Weighbridge agent not yet installed
+on the plant PC.
 
 ## Round 154 — Weighbridge integration (v9.80)
 

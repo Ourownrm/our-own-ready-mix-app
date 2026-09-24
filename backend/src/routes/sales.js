@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
+import { daysElapsedIn, istDay, istDaysAgo, istDaysFromNow, istMonth } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -542,10 +543,14 @@ function missingAnswerKeys(isNewProject, answers) {
   });
 }
 
+// Round 155 — was built from `new Date()` and printed with toISOString(), i.e.
+// the UTC day. The result is stored as visit_followups.due_date, which
+// lib/scheduledChecks.js then reads as `(CURRENT_DATE - vf.due_date)` — pure
+// IST SQL. A visit logged at 01:15 IST produced a follow-up dated one day
+// early, permanently, and the daily digest called it overdue 24 hours before
+// it was.
 function daysFromNow(n) {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return istDaysFromNow(n);
 }
 
 // The actual "don't miss the order" logic — reads the combination of
@@ -669,7 +674,7 @@ async function applyVisitFollowupsAndNotifications({ visit, isNewProject, answer
     // Anything due today or tomorrow gets pushed immediately — this is the
     // actual fix for orders getting missed on slow follow-up, not just a
     // list someone has to remember to check.
-    const dueInDays = f.due_in_days ?? Math.round((new Date(dueDate) - new Date(new Date().toISOString().slice(0, 10))) / 86400000);
+    const dueInDays = f.due_in_days ?? Math.round((new Date(dueDate) - new Date(istDay())) / 86400000);
     if (dueInDays <= 1) {
       await pushToRole(f.role, { title: "Follow-up due " + (dueInDays <= 0 ? "today" : "tomorrow"), body: `${visitedName} — ${f.title}`, url: f.role === "sales_executive" ? "/sales" : "/manager" });
     }

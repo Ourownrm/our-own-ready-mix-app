@@ -1,9 +1,10 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { query } from "../db.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
 import { voidInvoiceForTicket, generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { fetchChallanData } from "../lib/challanData.js";
+import { istDay } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth); // per-route role checks below, since customers/sites/rates need broader access
@@ -81,6 +82,12 @@ router.patch("/users/:id/status", requireRole("administrator"), async (req, res)
   if (await blockIfSuperAdminTarget(req, res)) return;
   const { is_active } = req.body;
   await query("UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2", [is_active, req.params.id]);
+  // Round 155 — this is the toggle an Administrator actually reaches for when
+  // somebody leaves, and until now it cleared nothing. requireAuth reads
+  // is_active per request behind a 5-second cache, so without this the person
+  // keeps working API access for those few seconds; with it, the next request
+  // is refused. (The Super Admin equivalent in superAdmin.js does the same.)
+  clearUserCache(req.params.id);
   res.json({ ok: true });
 });
 
@@ -1108,9 +1115,25 @@ router.post("/mix-design-assignments", requireRole("administrator", "manager"), 
   if (!customer_id || !mix_grade_id || !mix_design_id) {
     return res.status(400).json({ error: "Customer, grade, and mix design are all required." });
   }
-  const since = effective_from ? new Date(effective_from) : new Date();
-  if (isNaN(since)) return res.status(400).json({ error: "Invalid effective date." });
-  const sinceStr = since.toISOString().slice(0, 10);
+  // Round 155 — this used to be `new Date(effective_from|now).toISOString()
+  // .slice(0,10)`, the UTC day. Per this route's own comment below, sinceStr
+  // drives a bulk rewrite of resolved_mix_design_id on every order dated on or
+  // after it — so before 05:30 IST the default back-dated by a day and rewrote
+  // the design on concrete that had already been poured and delivered,
+  // including what the customer portal shows for it.
+  //
+  // An explicit effective_from arrives from an <input type="date"> as
+  // yyyy-mm-dd already; re-parsing it through Date and back only risks moving
+  // it, so it is validated and used verbatim.
+  let sinceStr;
+  if (effective_from) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(effective_from))) {
+      return res.status(400).json({ error: "Invalid effective date." });
+    }
+    sinceStr = String(effective_from);
+  } else {
+    sinceStr = istDay();
+  }
   const { rows: designCheck } = await query(
     "SELECT id, mix_grade_id, status FROM mix_designs WHERE id = $1", [mix_design_id]
   );

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -28,17 +29,12 @@ const STAFF_ROLES = ["manager", "administrator"];
 //                        breakdown for that truck.
 
 // Round 153 fix — these defaults used to be built with
-// `new Date().toISOString().slice(0, 10)`, which is the UTC calendar day, not
+// `istDay()`, which is the UTC calendar day, not
 // the IST one. Between midnight and 05:30 IST that named YESTERDAY, so opening
 // this screen early in the morning quietly dropped the whole of the current
 // day's fills out of the range while the page still said it was showing today.
 // Every query below compares against a database session pinned to
 // Asia/Kolkata (see db.js), so the default has to be the IST day too.
-function istDay(ms) {
-  // en-CA gives ISO-shaped yyyy-mm-dd, which is what the SQL below wants.
-  return new Date(ms).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-}
-
 function dateRange(req) {
   const toDate = req.query.to_date || istDay(Date.now());
   const fromDate = req.query.from_date || istDay(Date.now() - 90 * 86400000);

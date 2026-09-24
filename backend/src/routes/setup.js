@@ -2523,6 +2523,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_solitaire_mix_designs_code ON solitaire_mi
     );
 
     // ========================================================================
+    // ROUND 155 — recover the cube batches the lab could not see.
+    //
+    // The QC form's cube-count box defaulted to 0 (Ver. 9.29 set it that way to
+    // stop the previous default of 3 creating phantom batches). Lab Technician's
+    // queue is `WHERE COALESCE(number_of_cubes, 0) > 0`, so any QC submission
+    // where the engineer filled in the sample IDs but left that box alone saved
+    // fine and then vanished from the lab entirely. The lab reported it from
+    // 21 September; it was reproduced exactly on a clean database.
+    //
+    // Round 155 makes the field required so no new row can be written this way.
+    // This repairs the rows already written. A row that lists sample IDs is
+    // unambiguous evidence that cubes were physically cast — the count is
+    // simply how many IDs were listed.
+    //
+    // Deliberately NARROW. Only rows with a non-empty sample_ids are touched.
+    // A row with 0 cubes and no sample IDs means exactly what it says — no
+    // cubes were cast — and inventing a count for it would recreate the Ver.
+    // 9.29 phantom-batch bug from the other direction.
+    const cubeBackfill = await pool.query(
+      `UPDATE plant_qc
+          SET number_of_cubes = cardinality(
+                array_remove(string_to_array(regexp_replace(sample_ids, '\\s', '', 'g'), ','), '')
+              )
+        WHERE COALESCE(number_of_cubes, 0) = 0
+          AND sample_ids IS NOT NULL
+          AND btrim(sample_ids) <> ''
+          AND cardinality(
+                array_remove(string_to_array(regexp_replace(sample_ids, '\\s', '', 'g'), ','), '')
+              ) > 0
+        RETURNING ticket_id, number_of_cubes`
+    );
+    log.push(
+      cubeBackfill.rows.length
+        ? `Schema migration applied (Round 155 — recovered ${cubeBackfill.rows.length} cube batch(es) that ` +
+          `were recorded with sample IDs but a zero cube count, so the Lab Technician could not see them. ` +
+          `Ticket(s): ${cubeBackfill.rows.map((r) => r.ticket_id).join(", ")}. ` +
+          `The cube count on the QC form is now a required field, so this cannot recur.`
+        : `Round 155 — no cube batches needed recovering; nothing was recorded with sample IDs but no count.`
+    );
+
+    // ========================================================================
     // ROUND 154 — weighbridge integration tables.
     //
     // Additive only, and written so a re-run is a no-op: every table is

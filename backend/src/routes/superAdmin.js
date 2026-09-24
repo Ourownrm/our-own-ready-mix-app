@@ -17,7 +17,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { query } from "../db.js";
 import { pluginStates, clearPluginCache } from "../lib/plugins.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
 import { CATALOGUE, CATALOGUE_BY_KEY, GROUPS, ROLES, ACTIONS, PERMISSION_BY_SCREEN, isLocked } from "../lib/permissionCatalogue.js";
 import { effectivePermissions, clearPermissionCache } from "../lib/permissions.js";
 
@@ -279,6 +279,13 @@ router.post("/users/:id/role", async (req, res) => {
     return res.status(400).json({ error: "That would leave no Super Admin. Promote someone else first." });
   }
   await query(`UPDATE users SET role = $1 WHERE id = $2`, [role, userId]);
+  // Round 155 — BOTH caches. clearPermissionCache alone used to be inert here:
+  // the permission layer would recompute, but from the role in the person's
+  // 30-day token, and reach the identical answer. requireAuth now reads the
+  // role from the row, so dropping them from the identity cache is what
+  // actually makes a promotion or demotion take effect on the next request
+  // instead of at the token's expiry.
+  clearUserCache(userId);
   clearPermissionCache(userId);
   res.json({ ok: true, role });
 });
@@ -312,6 +319,10 @@ router.patch("/users/:id/status", async (req, res) => {
     return res.status(400).json({ error: "That would leave no active Super Admin." });
   }
   await query(`UPDATE users SET is_active = $1 WHERE id = $2`, [isActive, userId]);
+  // Round 155 — this is the one that matters most. Before requireAuth read
+  // is_active, turning somebody off logged the FRONTEND out and left every API
+  // route open to their token for up to 30 days.
+  clearUserCache(userId);
   clearPermissionCache(userId);
   res.json({ ok: true });
 });

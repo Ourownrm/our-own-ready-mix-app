@@ -35,14 +35,47 @@ router.get("/pending-qc", async (req, res) => {
 router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), async (req, res) => {
   const { slump_mm, temperature_c, number_of_cubes, sample_ids, remarks } = req.body;
   if (!slump_mm) return res.status(400).json({ error: "Slump reading is required." });
-  // `number_of_cubes || null` would silently coerce an explicit 0 (no cubes
-  // prepared for this ticket — now the form's own default) into NULL, since
-  // 0 is falsy in JS. Cube batch visibility for Lab Technician already
-  // treats NULL and 0 the same (`COALESCE(number_of_cubes, 0) > 0`), but the
-  // stored value itself should still reflect what was actually entered.
-  const cubesEntered = number_of_cubes === "" || number_of_cubes === null || number_of_cubes === undefined
-    ? null
-    : Number(number_of_cubes);
+
+  // ROUND 155 — the cube count is now REQUIRED, and this is the important
+  // line in this file.
+  //
+  // What the lab technician reported, and what was reproduced on a clean
+  // database: QC filled in slump, temperature and the sample IDs, left the
+  // cube-count box alone, and the pour never appeared in the lab's queue at
+  // all — because that queue is `WHERE COALESCE(number_of_cubes, 0) > 0` and
+  // the form's default was 0. The samples were physically taken; their IDs
+  // were sitting in this very row; the lab could not see them.
+  //
+  // The history is worth keeping, because the obvious "fix" is the old bug:
+  // this form once defaulted to 3, which created PHANTOM batches for loads
+  // where nothing was cast, and Ver. 9.29 changed it to 0 to stop that. Both
+  // defaults are wrong in the same way — they answer a question nobody asked.
+  // So there is no default any more. QC states the number, including stating
+  // zero, and the app refuses to release the load until they do.
+  //
+  // An explicit 0 is a legitimate, meaningful answer ("no cubes for this
+  // load") and must survive: `number_of_cubes || null` would coerce it to
+  // NULL, since 0 is falsy in JS. Hence the identity checks rather than a
+  // truthiness test.
+  if (number_of_cubes === "" || number_of_cubes === null || number_of_cubes === undefined) {
+    return res.status(400).json({
+      error: "Enter the number of cubes cast for this load. Enter 0 if none were cast — it cannot be left blank.",
+    });
+  }
+  const cubesEntered = Number(number_of_cubes);
+  if (!Number.isInteger(cubesEntered) || cubesEntered < 0 || cubesEntered > 60) {
+    return res.status(400).json({ error: "Number of cubes must be a whole number between 0 and 60." });
+  }
+
+  // A contradiction the old code let through silently: sample IDs listed while
+  // the count says zero. That is precisely the shape of the rows this bug
+  // produced, so refuse it rather than storing another one.
+  const idsGiven = typeof sample_ids === "string" && sample_ids.trim() !== "";
+  if (cubesEntered === 0 && idsGiven) {
+    return res.status(400).json({
+      error: "You've listed sample IDs but entered 0 cubes. Enter how many cubes were cast, or clear the sample IDs.",
+    });
+  }
 
   await query(
     `INSERT INTO plant_qc (ticket_id, slump_mm, temperature_c, number_of_cubes, sample_ids, remarks, entered_by)

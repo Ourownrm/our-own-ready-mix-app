@@ -3,6 +3,7 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { pushToRole } from "../lib/push.js";
 import { getOrderTrackingPayload } from "../lib/orderTracking.js";
+import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -521,8 +522,8 @@ router.get("/completed-trips", requireRole("manager", "administrator"), async (r
 // for "Site Out", not the unconfirmed 'left_site' geofence hint (see the
 // round-98 postmortem comment on this same mistake in maintenance.js).
 router.get("/truck-timing-report", requireRole("manager", "administrator"), async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const defaultFrom = new Date(Date.now() - 4 * 86400000).toISOString().slice(0, 10); // 5-day window ending today, by default
+  const today = istDay();
+  const defaultFrom = istDaysAgo(4); // 5-day window ending today, by default
   const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : defaultFrom;
   const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : today;
 

@@ -6995,3 +6995,141 @@ exactly those six by name. No new console errors beyond the pre-existing Solitai
 themselves in (the `weighbridge_ticket_id` column ships in this round, unused), and Store's entry of
 the billed challan quantity to enable short-load flagging — the weighbridge carries a challan
 number but no challan quantity.
+
+---
+
+## Round 155 — two security holes, a permission leak, the lost cube batches, and the end of the date bug (v9.81)
+
+Everything outstanding from the Round 145-154 review, plus the lab technician's report. The review
+itself is in `claude/code-review-rounds-145-154.md`.
+
+### The token proves WHO, never WHAT
+
+`backend/src/middleware/auth.js`.
+
+`requireAuth` verified the JWT and trusted its payload whole. The payload carries `{ id, name, role }`
+and is signed for **30 days**. Two consequences, both reproduced against a live database:
+
+**Deactivating somebody did not revoke their API access.** `is_active` was read in exactly one place
+in the entire app — `GET /auth/me` — which logs the *frontend* out. Every guarded route kept serving
+that token real data. Somebody who left the company kept working access for up to a month.
+
+**Changing somebody's role did nothing.** `requireRole` read `req.user.role` from the token, so a lab
+technician demoted to driver could still read *and write* lab records. `superAdmin.js` called
+`clearPermissionCache()` on the change, but that was inert — the next request recomputed from the
+token's role and reached the same answer. Worse for `administrator`/`super_admin`, which short-circuit
+in `lib/permissions.js` to the whole catalogue without reading a table at all.
+
+Now `requireAuth` reads `id, role, is_active` from `users` on every request, behind the same 5-second
+TTL the permission layer already uses, and 401s on an inactive account. `role` and `name` come from
+the row, never the token. `clearUserCache()` is called on every role change and every activate/
+deactivate — in `superAdmin.js` and in `administrator.js`, whose own status toggle previously cleared
+nothing — so an intentional change bites on the next request rather than within 5 seconds.
+
+One extra thing fixed while in there: the old bare `catch` around `jwt.verify` turned *every* failure
+into "your session expired". A database hiccup would now tell a legitimate person to log out and back
+in, to no effect. Only genuine JWT errors produce that message; anything else goes to the error
+handler as a 500.
+
+Verified: deactivate → 401 on read and on write, reactivate → 200. Demote to driver → 403 on both,
+and `SELECT count(*) FROM site_cube_casts` confirms **zero** rows were written by the demoted user.
+
+### A permission the Access Control page could not actually revoke
+
+`backend/src/routes/materialModule.js`, `GET /stock` and `GET /physical-stock`.
+
+Rates and stock value were gated by `if (req.user.role !== "store")` — a hardcoded string compare
+that excluded exactly one role. `STOCK_READ_ROLES` is `["administrator", "store", "plant_operator"]`,
+so the **Plant Operator** received `rate_per_kg`, `stock_value` and `cost_plant_consumption`:
+purchase economics that the catalogue grants only to Administrator, under a separate key
+(`material.stock-valuation`). Revoking it on the Access Control page changed nothing.
+
+`check-guards.mjs` cannot catch this — the route's own declared key/action pair is legitimate and the
+leak is inside the handler. It now asks `can(req.user, "material.stock-valuation", "view")`, resolved
+once per request.
+
+Verified: Administrator sees rate 1.85 and value 185,000; Plant Operator receives neither field at
+all; granting `material.stock-valuation` to `plant_operator` makes both appear. The Access Control
+page is now genuinely the switch.
+
+### The cube batches the lab could not see
+
+Reported by the lab technician, noticed from 21 September, reproduced exactly on a clean database.
+
+QC's "Number of cubes" box defaulted to **0**. The lab's queue is
+`WHERE COALESCE(number_of_cubes, 0) > 0`. So a QC engineer who filled in slump, temperature and the
+sample IDs but left that box alone saved a perfectly good record that the lab could not see:
+
+    plant_qc:   slump 120 | number_of_cubes 0 | sample_ids "C-1,C-2,C-3"
+    order says: cube_samples_required = 3
+    lab sees:   []
+
+The history matters, because the obvious fix is the old bug. This form defaulted to **3** until
+Ver. 9.29, which created phantom batches for loads where nothing was cast; that was "fixed" by
+defaulting to 0, which produced the opposite and much quieter failure. Both defaults answer a
+question nobody asked.
+
+**So there is no default.** The field is blank, marked required, and the backend refuses the
+submission if it is missing — 0 is a valid and meaningful answer, but it has to be stated. The order's
+own `cube_samples_required` is now shown beside the box ("order asks for 3"); the API had always sent
+it and the form had simply never displayed it. A count that differs from the order's gets a visible
+note and is recorded as entered. Entering 0 says plainly that the load will not reach the lab. And
+sample IDs listed alongside a zero count — the exact shape of the lost rows — is refused outright.
+
+`REPAIR_155` in setup.js recovers what was already lost: any row with a zero count but a non-empty
+`sample_ids` has its count derived from the number of IDs listed. Deliberately narrow — a row with no
+sample IDs means what it says, and inventing a count for it would recreate the Ver. 9.29 phantom
+batches. Verified both ways: the affected row was recovered and reappeared in the lab's queue with
+3 cubes; a genuine "no cubes cast" row was left at 0.
+
+### The Delivery Challan module says what it is
+
+Confirmed with the plant that the two systems stay separate. A docket printed there writes only to
+`solitaire_dockets` — it raises no Delivery Note, records no QC, and never reaches the lab. That was
+invisible, and the module moved into the header in Round 151 where everyone can reach it. The print
+confirmation now carries a plain notice saying so, and the header tooltip says it too. The separation
+is a decision, so it should be visible at the moment somebody prints rather than buried in a doc.
+
+### The UTC/IST bug class, ended mechanically
+
+Found in rounds 134, 153 and 154, each time fixed locally, each time returning. The review found 49
+more. The plant is IST; every database connection is pinned to `Asia/Kolkata`; the backend Node
+process runs in UTC; `toISOString().slice(0, 10)` is the UTC day and disagrees with every date column
+between 00:00 and 05:30 IST.
+
+Two new files, `backend/src/lib/istDate.js` and `frontend/src/lib/istDate.js`, are now the only place
+the app turns "now" into a date. **All 49 sites converted**, across 25 files. And
+`backend/scripts/check-dates.mjs` — sibling of `check-guards.mjs` — fails if the raw form comes back,
+with a `// ist-ok:` escape hatch that keeps an exemption next to its reason.
+
+The three worst, all now fixed:
+
+* **`materialModule.js` stock cover was inflated up to thirtyfold.** `new Date().getDate()` is the UTC
+  day-of-month: at 03:00 IST on 1 October it returns **30**, so the new month's few hours of
+  consumption were divided by 30 instead of 1 and `stock_days_remaining` came out roughly thirty
+  times too high — silencing the low-stock and reorder warnings on precisely the morning stock is
+  thinnest. `daysElapsedIn()` also fixes a second bug in the same line: asking for a *past* month used
+  to divide that month's consumption by today's day-of-month, where the right denominator is the
+  month's full length.
+* **`CubeTestReport.jsx`'s month filter was wrong every day of the year**, not just before 05:30. It
+  mixed the local-fields constructor with `toISOString()`, so it always started on the last day of
+  the previous month: 24 Sep → `2026-08-31`, 1 Oct → `2026-09-30`, 15 Mar → `2026-02-28`.
+* **Dates written a day early into stored records** — follow-up due dates (`sales.js`), mix-design
+  assignment effective dates (`administrator.js`, which per its own comment rewrites
+  `resolved_mix_design_id` on already-delivered orders), supplier rate `valid_from`
+  (`materialModule.js`), `order_date` (`CreateOrder.jsx`), site cast dates (`LabTechnician.jsx`) and
+  payment dates (`Accountant.jsx`).
+
+A build alone would not have caught the migration: four files ended up calling a helper they had not
+imported — a runtime `ReferenceError` that Vite compiles happily. A static pass over every helper call
+found and fixed all four, and that pass is worth repeating after any similar sweep.
+
+### Verified
+
+Against a throwaway Postgres, re-running the exact reproductions that proved each bug. Both checkers
+green — 58 routes with both guards, 163 files with no dates built in UTC. Clean `npm run build`, no
+console errors on the QC screen.
+
+**Next**: nothing outstanding from the review except resuming guard conversion (58 of 499 routes
+carry both guards; 94 of 111 catalogue keys still gate nothing server-side), and the weighbridge agent
+install on the plant PC.
