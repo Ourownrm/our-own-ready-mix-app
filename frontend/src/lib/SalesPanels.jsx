@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "./api.js";
 import { estimateTravelMinutes, suggestBatchingTime } from "./travelEstimate.js";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "./istDate.js";
 
 export function CreateLeadForm({ setError, onDone }) {
   const [salesExecs, setSalesExecs] = useState([]);
@@ -181,7 +182,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   const [pumps, setPumps] = useState([]);
   const [salespersons, setSalespersons] = useState([]);
   const [form, setForm] = useState({
-    order_date: booking.preferred_date ? booking.preferred_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+    order_date: booking.preferred_date ? booking.preferred_date.slice(0, 10) : todayStr(),
     // Round 119, post-ship again — round 6: this used to be pre-filled
     // straight from booking.preferred_time, which is actually what the
     // CUSTOMER asked for (i.e. required_at_site_time, below) — not

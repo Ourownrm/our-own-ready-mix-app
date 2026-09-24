@@ -4,6 +4,7 @@ import { useAuth } from "./AuthContext.jsx";
 import { generateMixDesignPdf } from "./mixDesignPdf.js";
 import { formatOrderNumber } from "./orderNumber.js";
 import { isAdminLevel } from "./roles.js";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "./istDate.js";
 
 export function List({ rows, columns }) {
   return (
@@ -478,7 +479,7 @@ export function RatesPanel({ setError }) {
     customer_id: "", site_id: "", mix_grade_id: "", rate_per_m3: "",
     line_pump_charge: "", line_pump_min_qty_m3: "20", boom_pump_charge: "", boom_pump_min_qty_m3: "50",
     part_load_min_qty_m3: "5", part_load_charge_per_m3: "",
-    waiting_charge_per_hour: "", effective_from: new Date().toISOString().slice(0, 10),
+    waiting_charge_per_hour: "", effective_from: todayStr(),
   });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
@@ -509,7 +510,7 @@ export function RatesPanel({ setError }) {
   }
 
   async function endRate(id) {
-    const effectiveTo = window.prompt("End this rate as of which date? (it stops applying to new deliveries after this date)", new Date().toISOString().slice(0, 10));
+    const effectiveTo = window.prompt("End this rate as of which date? (it stops applying to new deliveries after this date)", todayStr());
     if (!effectiveTo) return;
     setError("");
     try {
@@ -2328,7 +2329,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
   const [customers, setCustomers] = useState([]);
   const [grades, setGrades] = useState([]);
   const [designs, setDesigns] = useState([]);
-  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", mix_design_id: "", effective_from: new Date().toISOString().slice(0, 10) });
+  const [form, setForm] = useState({ customer_id: "", mix_grade_id: "", mix_design_id: "", effective_from: todayStr() });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -2362,7 +2363,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
       // design too, not just orders placed from now on.
       const result = await apiRequest("/administrator/mix-design-assignments", { method: "POST", body: form });
       setNotice(result.orders_updated > 0 ? `Saved — updated ${result.orders_updated} existing order(s) to this design.` : "Saved.");
-      setForm({ customer_id: "", mix_grade_id: "", mix_design_id: "", effective_from: new Date().toISOString().slice(0, 10) });
+      setForm({ customer_id: "", mix_grade_id: "", mix_design_id: "", effective_from: todayStr() });
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }

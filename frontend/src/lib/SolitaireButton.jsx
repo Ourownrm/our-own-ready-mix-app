@@ -61,7 +61,7 @@ export default function SolitaireButton({ variant = "header" }) {
 
   if (variant === "tile") {
     return (
-      <Link to="/solitaire/login" title="Delivery Challan — opens the batching docket screen, which has its own separate login"
+      <Link to="/solitaire/login" title="Delivery Challan — opens the batching docket screen (separate login). Prints the batching docket only: it does not raise a Delivery Note and records no QC or cube samples."
             style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
                      gap: 6, padding: "14px 10px", marginBottom: 12, borderRadius: 12,
                      background: "#0B6E4A", color: "#fff", textDecoration: "none",
@@ -75,7 +75,7 @@ export default function SolitaireButton({ variant = "header" }) {
 
   return (
     <Link to="/solitaire/login" className="topbar-link solitaire-link"
-          title="Delivery Challan — opens the batching docket screen, which has its own separate login">
+          title="Delivery Challan — opens the batching docket screen (separate login). Prints the batching docket only: it does not raise a Delivery Note and records no QC or cube samples.">
       {icon}
       <span>Delivery Challan</span>
     </Link>
