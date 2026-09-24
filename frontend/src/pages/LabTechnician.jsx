@@ -13,6 +13,7 @@ import { useAuth } from "../lib/AuthContext.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
 import { isAdminLevel } from "../lib/roles.js";
 import TodaysDeliveryNotes from "../lib/TodaysDeliveryNotes.jsx";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 // IS 516 doesn't mandate a fixed vocabulary for failure mode, but these are
 // the patterns a lab technician actually sees in practice — kept as
@@ -891,7 +892,7 @@ function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
 function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
   const [orders, setOrders] = useState([]);
   const [orderId, setOrderId] = useState("");
-  const [castDate, setCastDate] = useState(new Date().toISOString().slice(0, 10));
+  const [castDate, setCastDate] = useState(todayStr());
   const [numberOfCubes, setNumberOfCubes] = useState("");
   const [sampleIds, setSampleIds] = useState("");
   const [remarks, setRemarks] = useState("");

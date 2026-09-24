@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { daysAgoStr, istDay, todayStr } from "../lib/istDate.js";
 
 // Round 134, item 8 — 360-degree fuel analysis. Real data, pulled live from
 // the backend (GET /fuel-analysis/fleet and /fuel-analysis/truck/:id — see
@@ -21,15 +22,6 @@ import { TopBar } from "../lib/TopBar.jsx";
 // on the server is an IST day (db.js pins the session to Asia/Kolkata), so
 // these have to be IST too. en-CA formats as yyyy-mm-dd, which is what a
 // <input type="date"> wants.
-function istDay(ms) {
-  return new Date(ms).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-}
-function todayStr() {
-  return istDay(Date.now());
-}
-function daysAgoStr(n) {
-  return istDay(Date.now() - n * 86400000);
-}
 function fmtDateShort(d) {
   return d ? new Date(d).toLocaleDateString([], { day: "2-digit", month: "short" }) : "—";
 }

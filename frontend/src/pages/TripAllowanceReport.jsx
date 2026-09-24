@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
 function formatDateTime(d) {
   if (!d) return "–";
   return new Date(d).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });

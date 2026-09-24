@@ -1,10 +1,7 @@
 import { useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 export default function DelayJustificationReport() {
   const [filters, setFilters] = useState({ from_date: todayStr(), to_date: todayStr(), delay_type: "all", min_delay_minutes: "5" });

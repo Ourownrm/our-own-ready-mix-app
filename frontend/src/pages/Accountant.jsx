@@ -4,6 +4,7 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { RatesPanel } from "../lib/MasterDataPanels.jsx";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 export default function Accountant() {
   const [stats, setStats] = useState(null);
@@ -66,7 +67,7 @@ export default function Accountant() {
         styles: { fontSize: 9 },
         headStyles: { fillColor: [199, 91, 18] },
       });
-      doc.save(`Customer_Outstanding_${new Date().toISOString().slice(0, 10)}.pdf`);
+      doc.save(`Customer_Outstanding_${todayStr()}.pdf`);
     } catch (err) {
       setError(err.message || "Couldn't export PDF.");
     } finally {
@@ -91,7 +92,7 @@ export default function Accountant() {
       const ws = XLSX.utils.json_to_sheet(sheetRows);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Outstanding");
-      XLSX.writeFile(wb, `Customer_Outstanding_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      XLSX.writeFile(wb, `Customer_Outstanding_${todayStr()}.xlsx`);
     } catch (err) {
       setError(err.message || "Couldn't export Excel.");
     } finally {
@@ -260,7 +261,7 @@ function Kpi({ label, value }) {
 function BulkPaymentForm({ customer, onDone, onCancel }) {
   const [invoices, setInvoices] = useState([]);
   const [amount, setAmount] = useState("");
-  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
+  const [paymentDate, setPaymentDate] = useState(todayStr());
   const [mode, setMode] = useState("cash");
   const [reference, setReference] = useState("");
   const [remarks, setRemarks] = useState("");

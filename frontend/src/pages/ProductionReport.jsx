@@ -4,13 +4,11 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import QcDetailModal from "../lib/QcDetailModal.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 const STATUS_OPTIONS = ["All", "Signed", "Pending", "Refused"];
 const FILTER_KEYS = ["customer_id", "site_id", "truck_id", "driver_id", "salesperson_id", "pump_id", "supervisor_id"];
 
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
 function formatDate(d) {
   if (!d) return "–";
   return new Date(d).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });

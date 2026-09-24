@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 // Round 130 — new Manager Dashboard report, built from the confirmed
 // TruckTimingReport.dc.html mockup: same trips as the dashboard's own
@@ -9,12 +10,6 @@ import { TopBar } from "../lib/TopBar.jsx";
 // Backed by GET /orders/truck-timing-report — see that route's own comment
 // for exactly which trip_events each column reads.
 
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
-function daysAgoStr(n) {
-  return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
-}
 function fmtTime(ts) {
   return ts ? new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
 }

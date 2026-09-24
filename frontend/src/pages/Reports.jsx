@@ -9,6 +9,7 @@ import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 import { isAdminLevel } from "../lib/roles.js";
+import { monthStartStr, todayStr } from "../lib/istDate.js";
 
 export default function Reports() {
   const [data, setData] = useState(null);
@@ -306,14 +307,6 @@ function SimpleTable({ rows, columns, empty, rowLink }) {
   );
 }
 
-function monthStartStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-}
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 function formatDate(d) {
   if (!d) return "–";
   return new Date(d).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });

@@ -367,6 +367,25 @@ export default function SolitaireApp() {
                   <span className="k">Sheet to print</span><span>: Sheet {sheetNumber} (Qty {prodQty} ÷ Capacity {mixerCap})</span>
                 </div>
               </div>
+
+              {/* Round 155 — say plainly what this screen is and is not.
+                  This module writes only its own docket record. It does NOT
+                  create a delivery note in the main app, so nothing printed
+                  here reaches Plant QC, no cubes are recorded against it, and
+                  it never appears in the Lab Technician's testing queue. That
+                  split was invisible until the lab reported missing batches
+                  in September, and the plant confirmed the two systems should
+                  stay separate — so the separation has to be visible at the
+                  moment somebody prints, not buried in a document. */}
+              <div style={{
+                marginTop: 10, padding: "8px 10px", borderRadius: 6,
+                background: "#FFF6E5", border: "1px solid #E0C48A",
+                fontSize: 11.5, lineHeight: 1.5, color: "#6B4E00",
+              }}>
+                <b>This prints the batching docket only.</b> It does not raise a Delivery Note,
+                and no QC or cube sample is recorded against it. If this load needs a Delivery
+                Note or cube testing, it must also be raised in the main app by the Plant Operator.
+              </div>
             </div>
             <div className="sol-popup-actions">
               <button onClick={() => setOverlay(null)} disabled={printing}>No</button>

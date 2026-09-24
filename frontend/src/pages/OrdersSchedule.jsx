@@ -5,6 +5,7 @@ import { useAuth } from "../lib/AuthContext.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
 import { isAdminLevel } from "../lib/roles.js";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 export default function OrdersSchedule() {
   const [orders, setOrders] = useState([]);
@@ -184,7 +185,7 @@ function PictureReportPanel({ orders }) {
       const html2canvas = (await import("html2canvas")).default;
       const canvas = await html2canvas(captureRef.current, { backgroundColor: "#ffffff", scale: 2 });
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-      const filename = `oorm-${day}-orders-${new Date().toISOString().slice(0, 10)}.png`;
+      const filename = `oorm-${day}-orders-${todayStr()}.png`;
       const file = new File([blob], filename, { type: "image/png" });
 
       if (navigator.canShare && navigator.canShare({ files: [file] })) {

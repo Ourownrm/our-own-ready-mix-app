@@ -9,14 +9,8 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { generateCubeTestPdf, generateCombinedPourCubeTestPdf } from "../lib/cubeTestPdf.js";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
-function monthStartStr() {
-  const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
-}
 function fmtDate(d) {
   if (!d) return "—";
   return new Date(d).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { estimateTravelMinutes, suggestBatchingTime } from "../lib/travelEstimate.js";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 const initialForm = {
-  order_date: new Date().toISOString().slice(0, 10),
+  order_date: todayStr(),
   scheduled_batching_time: "08:00",
   required_at_site_time: "",
   truck_dispatch_interval_minutes: 20,

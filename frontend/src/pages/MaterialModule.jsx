@@ -26,6 +26,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
+import { monthStartStr, todayStr } from "../lib/istDate.js";
 
 // ===================== Shared helpers =====================
 
@@ -69,10 +70,6 @@ const kpiGridStyle = { display: "grid", gridTemplateColumns: "repeat(auto-fit, m
 // in IST (+5:30) every date before 05:30, and the 1st of any month, comes back
 // as the PREVIOUS day/month. These build the string from the local calendar
 // fields instead, which is what "today" and "this month" mean to a plant.
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 function thisMonthStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -2265,7 +2262,12 @@ function TransporterFreightReport() {
 }
 
 function CostPerM3Report() {
-  const [from, setFrom] = useState(() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10); });
+  // Round 155 — was `d.setDate(1); d.toISOString().slice(0,10)`, which is the
+  // UTC day of the 1st. Ironic in this file: lines 68-78 already carry a
+  // comment saying "Deliberately NOT toISOString().slice(...)" and define a
+  // correct helper, which CostPerM3Report then ignored. Now it uses the shared
+  // one, which is that same reasoning in one place.
+  const [from, setFrom] = useState(() => monthStartStr());
   const [to, setTo] = useState(todayStr());
   const [data, setData] = useState(null);
   const [error, setError] = useState("");

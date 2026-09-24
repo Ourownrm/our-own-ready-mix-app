@@ -9,6 +9,7 @@ import ShareableVisitReport from "../lib/ShareableVisitReport.jsx";
 import VisitCadenceStrip from "../lib/VisitCadenceStrip.jsx";
 import { TruckTrackingPanel } from "../lib/DeliveryTrackingView.jsx";
 import { isAdminLevel } from "../lib/roles.js";
+import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -1124,7 +1125,7 @@ function NewVisitForm({ onDone, onCancel }) {
   const [browseAll, setBrowseAll] = useState(false);
   const [visitedName, setVisitedName] = useState("");
   const [visitorType, setVisitorType] = useState("customer");
-  const [visitDate, setVisitDate] = useState(new Date().toISOString().slice(0, 10));
+  const [visitDate, setVisitDate] = useState(todayStr());
   const [visitTime, setVisitTime] = useState(new Date().toTimeString().slice(0, 5));
   const [contactPerson, setContactPerson] = useState("");
   const [contactNumber, setContactNumber] = useState("");

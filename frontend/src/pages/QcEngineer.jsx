@@ -9,7 +9,19 @@ export default function QcEngineer() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [qcTicketId, setQcTicketId] = useState("");
-  const [qcForm, setQcForm] = useState({ slump_mm: "", temperature_c: "", number_of_cubes: 0, sample_ids: "", remarks: "" });
+  // Round 155 — number_of_cubes starts EMPTY, not 0 and not 3.
+  //
+  // It defaulted to 3 until Ver. 9.29, which created phantom batches in the
+  // lab's queue for loads where nothing was cast. That was "fixed" by
+  // defaulting to 0 — which produced the opposite and quieter failure the lab
+  // reported in September: QC entered slump and sample IDs, left this box
+  // alone, and the pour never reached the lab at all, because the lab's queue
+  // is `COALESCE(number_of_cubes, 0) > 0`.
+  //
+  // Both defaults answer a question nobody asked. There is no default now: the
+  // field is required, 0 is a valid and meaningful answer, and the backend
+  // refuses the submission if it is blank.
+  const [qcForm, setQcForm] = useState({ slump_mm: "", temperature_c: "", number_of_cubes: "", sample_ids: "", remarks: "" });
 
   async function load() {
     try {
@@ -30,6 +42,15 @@ export default function QcEngineer() {
     return () => clearInterval(interval);
   }, []);
 
+  // Which ticket is selected, so the form can show what its order actually
+  // asks for. pendingQc already carries cube_samples_required from
+  // qcEngineer.js's /pending-qc query.
+  const selectedTicket = pendingQc.find((t) => String(t.id) === String(qcTicketId)) || null;
+  const cubeMismatch =
+    selectedTicket?.cube_samples_required != null &&
+    qcForm.number_of_cubes !== "" &&
+    Number(qcForm.number_of_cubes) !== Number(selectedTicket.cube_samples_required);
+
   async function submitQc(e) {
     e.preventDefault();
     setError(""); setNotice("");
@@ -37,7 +58,7 @@ export default function QcEngineer() {
     try {
       await apiRequest(`/qc-engineer/${qcTicketId}/plant-qc`, { method: "POST", body: qcForm });
       setNotice("QC submitted, ticket moved to dispatched.");
-      setQcForm({ slump_mm: "", temperature_c: "", number_of_cubes: 0, sample_ids: "", remarks: "" });
+      setQcForm({ slump_mm: "", temperature_c: "", number_of_cubes: "", sample_ids: "", remarks: "" });
       setQcTicketId("");
       load();
     } catch (err) {
@@ -116,8 +137,34 @@ export default function QcEngineer() {
               </div>
             </div>
             <div>
-              <div style={{ color: "var(--slate)" }}>Number of cubes</div>
-              <input type="number" value={qcForm.number_of_cubes} onChange={(e) => setQcForm({ ...qcForm, number_of_cubes: e.target.value })} />
+              <div style={{ color: "var(--slate)", display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <span>Number of cubes <span style={{ color: "var(--alert-red)" }}>*</span></span>
+                {/* The order has always carried this number and the API has
+                    always sent it — it was simply never shown, so QC had no
+                    prompt that 3 cubes were expected for this load. */}
+                {selectedTicket?.cube_samples_required != null && (
+                  <span style={{ color: "var(--rebar)", fontWeight: 600 }}>
+                    order asks for {selectedTicket.cube_samples_required}
+                  </span>
+                )}
+              </div>
+              <input
+                type="number" min="0" max="60" step="1" required
+                placeholder="how many were actually cast"
+                value={qcForm.number_of_cubes}
+                onChange={(e) => setQcForm({ ...qcForm, number_of_cubes: e.target.value })}
+              />
+              {cubeMismatch && (
+                <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 4 }}>
+                  That differs from the {selectedTicket.cube_samples_required} this order asks for — fine if
+                  that is what was cast, it will be recorded as entered.
+                </div>
+              )}
+              {qcForm.number_of_cubes === "0" && (
+                <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4 }}>
+                  No cubes cast for this load — it will not appear in the lab's testing queue.
+                </div>
+              )}
             </div>
             <div>
               <div style={{ color: "var(--slate)" }}>Sample IDs</div>
