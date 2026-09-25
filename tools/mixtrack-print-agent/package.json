@@ -1,0 +1,11 @@
+{
+  "name": "mixtrack-print-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fills BPR107a.xlsm on the plant PC and calls its own print macro.",
+  "scripts": {
+    "start": "node agent.js",
+    "once": "node agent.js --once"
+  }
+}

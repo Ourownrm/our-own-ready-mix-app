@@ -1,0 +1,12 @@
+{
+  "apiUrl": "https://YOUR-BACKEND.onrender.com",
+  "apiKey": "the same value as MIXTRACK_API_KEY on the backend",
+
+  "templatePath": "C:\\OORM\\BPR107a.xlsm",
+  "pdfFolder": "C:\\OORM\\Batch Reports",
+  "workDir": "C:\\OORM\\work",
+
+  "pollSeconds": 20,
+
+  "_powershellPath": "Only set this if Excel on this PC is 32-bit. Then use C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe"
+}
