@@ -183,6 +183,33 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 157 — the batching plant. Deliberately a sibling of Weighbridge
+    // rather than a tile under Production: the two are the same kind of thing,
+    // a machine's own record arriving here on its own, and they are read by
+    // the same people for the same reason — what actually happened, as against
+    // what somebody typed in.
+    key: "plant-production",
+    label: "Plant Production",
+    icon: "factory",
+    colour: "#4A5A7B",
+    tint: "#E8EBF2",
+    to: "/plant-production",
+    screens: [],
+  },
+  {
+    // Round 158 — sits beside Weighbridge and Plant Production because it is
+    // the same kind of thing: a disagreement between what a machine measured
+    // and what a human wrote down. The badge is the point — a Manager should
+    // be able to see there is a decision waiting without opening anything.
+    key: "receipt-differences",
+    label: "Receipt Differences",
+    icon: "target",
+    colour: "#8A4B52",
+    tint: "#F4E9EA",
+    to: "/receipt-differences",
+    screens: [],
+  },
+  {
     key: "users-roles",
     label: "Users & Roles",
     icon: "people",

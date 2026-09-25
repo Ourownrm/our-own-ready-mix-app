@@ -61,13 +61,13 @@ export default function SolitaireButton({ variant = "header" }) {
 
   if (variant === "tile") {
     return (
-      <Link to="/solitaire/login" title="Delivery Challan — opens the batching docket screen (separate login). Prints the batching docket only: it does not raise a Delivery Note and records no QC or cube samples."
+      <Link to="/solitaire/login" title="MixTrack — opens the batching docket screen (separate login). Prints the batching docket only: it does not raise a Delivery Note and records no QC or cube samples."
             style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
                      gap: 6, padding: "14px 10px", marginBottom: 12, borderRadius: 12,
                      background: "#0B6E4A", color: "#fff", textDecoration: "none",
                      boxShadow: "0 1px 3px rgba(0,0,0,0.18)" }}>
         {icon}
-        <span style={{ fontSize: 13.5, fontWeight: 700 }}>Delivery Challan</span>
+        <span style={{ fontSize: 13.5, fontWeight: 700 }}>MixTrack</span>
         <span style={{ fontSize: 10.5, opacity: 0.85 }}>Separate login</span>
       </Link>
     );
@@ -75,9 +75,9 @@ export default function SolitaireButton({ variant = "header" }) {
 
   return (
     <Link to="/solitaire/login" className="topbar-link solitaire-link"
-          title="Delivery Challan — opens the batching docket screen (separate login). Prints the batching docket only: it does not raise a Delivery Note and records no QC or cube samples.">
+          title="MixTrack — opens the batching docket screen (separate login). Prints the batching docket only: it does not raise a Delivery Note and records no QC or cube samples.">
       {icon}
-      <span>Delivery Challan</span>
+      <span>MixTrack</span>
     </Link>
   );
 }

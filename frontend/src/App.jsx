@@ -59,6 +59,8 @@ import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 import MaterialModule from "./pages/MaterialModule.jsx";
 import Weighbridge from "./pages/Weighbridge.jsx";
+import PlantProduction from "./pages/PlantProduction.jsx";
+import ReceiptVariance from "./pages/ReceiptVariance.jsx";
 import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
 import SuperAdmin from "./pages/SuperAdmin.jsx";
 
@@ -252,6 +254,20 @@ export default function App() {
               Super Admin's Access Control page controls. */}
           <Route path="/weighbridge" element={
             <ProtectedRoute roles={["store", "administrator", "manager", "plant_operator", "lab_technician"]}><Weighbridge /></ProtectedRoute>
+          } />
+          {/* Round 157 — the batching plant's own record of what it made and
+              what it consumed, fed one-way by the MCI370 agent. Same shape as
+              the weighbridge above: roles are the outer gate, and
+              production.plant-data / production.plant-mapping decide the rest. */}
+          <Route path="/plant-production" element={
+            <ProtectedRoute roles={["administrator", "manager", "store", "plant_operator", "qc_engineer", "lab_technician"]}><PlantProduction /></ProtectedRoute>
+          } />
+          {/* Round 158 — the Manager's decision on a disputed load, and the
+              pattern those disputes make over time. Manager is in the role
+              list for the queue; the variance report itself is Administrator,
+              enforced by material.reports rather than by the route. */}
+          <Route path="/receipt-differences" element={
+            <ProtectedRoute roles={["administrator", "manager"]}><ReceiptVariance /></ProtectedRoute>
           } />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>
