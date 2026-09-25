@@ -87,6 +87,18 @@ export const solitaireApi = {
   createDocket: (data) => request("/dockets", { method: "POST", body: JSON.stringify(data) }),
   searchDockets: (q) => request(`/dockets?q=${encodeURIComponent(q || "")}`),
   docketPdfUrl: (id) => `${API_BASE}/dockets/${id}/pdf`,
+  docketCells: (id) => request(`/dockets/${id}/cells`),
+
+  // Round 161 — the recipe map, the loads waiting for a ticket, and the queue.
+  recipeMap: () => request("/recipe-map"),
+  saveRecipeMap: (data) => request("/recipe-map", { method: "POST", body: JSON.stringify(data) }),
+  deleteRecipeMap: (id) => request(`/recipe-map/${id}`, { method: "DELETE" }),
+  seedMixDesigns: () => request("/mix-designs/seed-from-plant", { method: "POST" }),
+  mixDesignHistory: (id) => request(`/mix-designs/${id}/history`),
+  pendingLoads: () => request("/pending-loads"),
+  printLoad: (data) => request("/pending-loads/print", { method: "POST", body: JSON.stringify(data) }),
+  printJobs: () => request("/print-jobs"),
+  retryPrintJob: (id) => request(`/print-jobs/${id}/retry`, { method: "POST" }),
 };
 
 export { SolitaireApiError };
