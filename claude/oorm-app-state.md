@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 155, Ver. 9.81)
+# OORM App — Current State (as of App 156, Ver. 9.82)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -68,6 +68,46 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 `todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 156 — what the first week of live weighbridge data taught us (v9.82)
+
+Three corrections to Round 154, all reported by the plant within days of the agent going live.
+
+**ONE WEIGHBRIDGE NAME != ONE MATERIAL.** Round 154 keyed mappings on the normalised name alone. The
+plant buys fly ash from JSW, Thoothukudi and Adani and the weighbridge calls all three `FLY ASH` — the
+SUPPLIER is the only discriminator. Material mappings now carry an optional `supplier_scope_id`; most
+specific wins, unscoped is the fallback. Two PARTIAL unique indexes, not one constraint, because NULLs
+never collide in a Postgres UNIQUE index. The unmapped queue reports a material per supplier.
+
+**CHANGING A MAPPING HAD TO ACTUALLY CHANGE SOMETHING.** The Change button reported success and moved
+nothing, because reresolveOutstanding only swept `needs_review`. It now also sweeps MATCHED tickets
+that NO RECEIPT HAS CLAIMED. A claimed ticket is left alone on purpose — its material is already
+credited to stock and priced into a weighted average; correct those by editing the receipt.
+
+**VEHICLE REGISTRY, replacing map-it-or-ignore-it.** Nearly every lorry here is a supplier's, so the
+Round 154 binary meant discarding the vehicle on almost every ticket. `weighbridge_vehicles` now holds
+one row per lorry, AUTO-CREATED on first sight — critical, because the plant does not know a
+supplier's registration until the lorry is on the weighbridge, so anything needing pre-registration
+would never be done. Vehicles no longer appear in the review queue at all and never block a ticket. A
+registration exactly matching one of our active trucks self-links (our own fleet list, not a guess).
+Screen shows trips/tonnage/avg load/usual tare, owner assignment, and typo merging that leaves an
+alias behind. `is_junk` is what "not ours" means now: test weighments only.
+
+**RE-CHECK ALL** (`POST /weighbridge/recheck`). The gap the plant hit day one: re-resolution ran only
+on a MAPPING change, so populating the Material Module masters reached nothing already synced — 129
+tickets stuck against records that would have matched.
+
+**RECEIPTS PICK UP THE WEIGHBRIDGE.** `GET /material-module/orders/:id/weighbridge-tickets` offers
+matched, unclaimed tickets matching the order's material AND supplier. Fills weighed net, vehicle, real
+DC number — deliberately NOT the billed quantity (the weighbridge has a DC number field but no DC
+quantity; that missing figure is what makes short-load checking possible). Accepted qty DOES default
+from the weighed figure — unlike Round 155's cube count, the machine knows this answer. Short load
+FLAGS, never blocks, but beyond tolerance requires `short_reason`: blocking would push Store into not
+recording the load or fudging the quantity. Guards: no double-claiming a ticket, claimed tickets drop
+off the list, needs_review tickets refused.
+
+**BUG CAUGHT IN VERIFICATION:** the vehicle auto-link reused `$1` as both a varchar column value and a
+text comparison; Postgres refuses with "text versus character varying" (42P08). Cast both uses.
 
 ## Round 155 — security, a permission leak, the lost cube batches, and the end of the date bug (v9.81)
 

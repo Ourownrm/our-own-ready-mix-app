@@ -2523,6 +2523,105 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_solitaire_mix_designs_code ON solitaire_mi
     );
 
     // ========================================================================
+    // ROUND 156 — supplier-scoped material mappings, and the vehicle registry.
+    //
+    // Additive and re-runnable. The two constraint drops are IF EXISTS, the
+    // table and columns are IF NOT EXISTS, and the back-fill at the end only
+    // touches rows that have no vehicle yet.
+    //
+    // See schema.sql's Round 156 block for why each of these exists — in
+    // short, the first week of live weighbridge data showed that one
+    // weighbridge name can mean several materials depending on the supplier,
+    // and that forcing a supplier's lorry to "ignored" threw away the vehicle
+    // on nearly every ticket.
+    // ========================================================================
+    await pool.query(`
+ALTER TABLE weighbridge_material_aliases ADD COLUMN IF NOT EXISTS supplier_scope_id INTEGER REFERENCES rm_suppliers(id);
+ALTER TABLE weighbridge_material_aliases DROP CONSTRAINT IF EXISTS weighbridge_material_aliases_normalised_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wb_mat_alias_unscoped ON weighbridge_material_aliases(normalised) WHERE supplier_scope_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wb_mat_alias_scoped   ON weighbridge_material_aliases(normalised, supplier_scope_id) WHERE supplier_scope_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS weighbridge_vehicles (
+  id            SERIAL PRIMARY KEY,
+  normalised    VARCHAR(60) NOT NULL UNIQUE,
+  registration  VARCHAR(60) NOT NULL,
+  truck_id      INTEGER REFERENCES trucks(id),
+  supplier_id   INTEGER REFERENCES rm_suppliers(id),
+  is_junk       BOOLEAN NOT NULL DEFAULT false,
+  notes         TEXT,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    INTEGER REFERENCES users(id),
+  CHECK (truck_id IS NULL OR supplier_id IS NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wb_vehicles_truck    ON weighbridge_vehicles(truck_id)    WHERE truck_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_wb_vehicles_supplier ON weighbridge_vehicles(supplier_id) WHERE supplier_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_wb_vehicles_lastseen ON weighbridge_vehicles(last_seen_at DESC);
+
+ALTER TABLE weighbridge_tickets ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES weighbridge_vehicles(id);
+CREATE INDEX IF NOT EXISTS idx_wb_tickets_vehicle ON weighbridge_tickets(vehicle_id);
+
+ALTER TABLE weighbridge_vehicle_aliases ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES weighbridge_vehicles(id);
+ALTER TABLE weighbridge_vehicle_aliases DROP CONSTRAINT IF EXISTS weighbridge_vehicle_aliases_check;
+
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS short_reason TEXT;
+`);
+
+    // Register every vehicle already sitting in the synced tickets, so the
+    // registry arrives populated rather than empty. One row per distinct
+    // normalised registration, carrying the first spelling seen and the real
+    // first/last dates — a month of history rather than a blank page.
+    //
+    // The blank-name list matches lib/weighbridgeNames.js's own, because the
+    // weighbridge has no concept of an empty field: "the operator left it
+    // blank" arrives as the literal text N/A, NONE or NIL, and none of those
+    // is a lorry.
+    const vehBackfill = await pool.query(
+      `WITH seen AS (
+         SELECT upper(regexp_replace(raw_vehicle, '[^A-Za-z0-9]', '', 'g')) AS norm,
+                (array_agg(raw_vehicle ORDER BY weighed_at DESC NULLS LAST))[1] AS sample,
+                min(weighed_at) AS first_at, max(weighed_at) AS last_at
+         FROM weighbridge_tickets
+         WHERE raw_vehicle IS NOT NULL
+         GROUP BY 1
+       )
+       INSERT INTO weighbridge_vehicles (normalised, registration, first_seen_at, last_seen_at)
+       SELECT norm, sample, COALESCE(first_at, now()), COALESCE(last_at, now())
+       FROM seen
+       WHERE norm <> '' AND norm NOT IN ('NA','NONE','NIL','NULL','N','0','TEST','XXX','ABC')
+       ON CONFLICT (normalised) DO NOTHING
+       RETURNING id`
+    );
+
+    // Point the tickets at their vehicle, and carry over any Round 155 mapping
+    // that already said "this spelling is one of our trucks" so that work is
+    // not lost.
+    await pool.query(
+      `UPDATE weighbridge_vehicles v
+          SET truck_id = a.truck_id
+         FROM weighbridge_vehicle_aliases a
+        WHERE a.normalised = v.normalised AND a.truck_id IS NOT NULL AND v.truck_id IS NULL
+          AND v.supplier_id IS NULL`
+    );
+    const vehLinked = await pool.query(
+      `UPDATE weighbridge_tickets t
+          SET vehicle_id = v.id
+         FROM weighbridge_vehicles v
+        WHERE v.normalised = upper(regexp_replace(t.raw_vehicle, '[^A-Za-z0-9]', '', 'g'))
+          AND t.vehicle_id IS NULL
+        RETURNING t.ticket_number`
+    );
+
+    log.push(
+      `Schema migration applied (Round 156 — supplier-scoped material mappings + vehicle registry). ` +
+      `Registered ${vehBackfill.rows.length} vehicle(s) from tickets already synced and linked ` +
+      `${vehLinked.rows.length} ticket(s) to them. A lorry nobody has seen before now registers itself ` +
+      `on arrival, so no weighment waits on a vehicle being known in advance.`
+    );
+
+    // ========================================================================
     // ROUND 155 — recover the cube batches the lab could not see.
     //
     // The QC form's cube-count box defaulted to 0 (Ver. 9.29 set it that way to

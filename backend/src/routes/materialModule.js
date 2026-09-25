@@ -532,8 +532,52 @@ function computeFreightTotal(freight_rate, freight_basis, accepted_qty, accepted
   return Number(freight_rate) * Number(accepted_qty); // per_purchase_unit, the default
 }
 
+// ROUND 156 — the weighbridge tickets this order could be receiving against.
+//
+// Matched only, and only ones no receipt has claimed. Matching is on the
+// order's OWN material and supplier, so Store is never offered a load of fly
+// ash against a 20 MM order — the pairing is the point, and it is also what
+// makes the supplier-scoped material mapping matter: without it every fly ash
+// would resolve to the same record and this list would offer the wrong loads.
+//
+// Not date-limited to today. A lorry weighed at 11pm and receipted the next
+// morning is ordinary, and the count is small because claimed tickets drop out.
+router.get("/orders/:id/weighbridge-tickets", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "create"), async (req, res) => {
+  const orderId = Number(req.params.id);
+  if (!Number.isInteger(orderId)) return res.status(400).json({ error: "Invalid order id." });
+  try {
+    const { rows } = await query(
+      `SELECT wb.ticket_number, wb.weighed_at, wb.net_weight_kg, wb.empty_weight_kg, wb.loaded_weight_kg,
+              wb.raw_vehicle, wb.challan_number, wb.purpose,
+              COALESCE(v.registration, wb.raw_vehicle) AS vehicle_registration,
+              m.kg_per_purchase_unit,
+              -- Offered in the order's own purchase unit, because that is what
+              -- Store types into the accepted-quantity box. Doing it here keeps
+              -- the conversion in one place rather than in the screen.
+              ROUND((wb.net_weight_kg / NULLIF(m.kg_per_purchase_unit, 0))::numeric, 2) AS net_purchase_units
+       FROM weighbridge_tickets wb
+       JOIN rm_orders o ON o.id = $1
+       JOIN rm_materials m ON m.id = o.material_id
+       LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
+       LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number
+       WHERE wb.match_status = 'matched'
+         AND r.id IS NULL
+         AND wb.material_id = o.material_id
+         AND wb.supplier_id IS NOT DISTINCT FROM o.supplier_id
+         AND wb.net_weight_kg IS NOT NULL
+       ORDER BY wb.weighed_at DESC NULLS LAST
+       LIMIT 40`,
+      [orderId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the weighbridge tickets for this order." });
+  }
+});
+
 router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "create"), async (req, res) => {
-  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes } = req.body;
+  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason } = req.body;
   if (!order_id) return res.status(400).json({ error: "Select the order this receipt is against." });
   if (!supplier_qty || Number(supplier_qty) <= 0) return res.status(400).json({ error: "Enter the supplier's invoice/DC quantity." });
 
@@ -567,24 +611,67 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
 
   const shortQty = Number(supplier_qty) - finalAcceptedQty;
 
+  // ROUND 156 — a short load beyond tolerance needs a REASON, not a block.
+  //
+  // The lorry has arrived and the material is in the yard. Refusing to record
+  // that would push Store into not recording it at all, or into fudging the
+  // accepted quantity until the app stops complaining — both worse than a note.
+  // But a shortfall outside the material's own tolerance should be a decision
+  // somebody made rather than a number nobody looked at, so it has to carry
+  // one sentence saying what happened.
+  const tolerancePct = order.tolerance_pct != null ? Number(order.tolerance_pct) : null;
+  const deviationPct = Number(supplier_qty) > 0 ? Math.abs(shortQty) / Number(supplier_qty) * 100 : 0;
+  const toleranceExceeded = tolerancePct != null && deviationPct > tolerancePct;
+  if (toleranceExceeded && !String(short_reason || "").trim()) {
+    return res.status(400).json({
+      error: `This load is ${shortQty.toFixed(2)} short of the billed quantity (${deviationPct.toFixed(2)}%, ` +
+             `tolerance is ${tolerancePct}%). Say briefly why before saving — spillage, a disputed slip, ` +
+             `a re-weigh, whatever it was.`,
+      tolerance_exceeded: true,
+      short_qty: shortQty,
+      deviation_pct: deviationPct,
+    });
+  }
+
+  // ROUND 156 — the weighbridge ticket this receipt was weighed on.
+  //
+  // Checked rather than trusted: a ticket that is still in review has no
+  // reliable material or supplier behind it, and a ticket another receipt has
+  // already claimed would double-credit the same load into stock. Both are
+  // easy to do by accident from a stale screen.
+  let ticketId = null;
+  if (weighbridge_ticket_id !== undefined && weighbridge_ticket_id !== null && weighbridge_ticket_id !== "") {
+    ticketId = Number(weighbridge_ticket_id);
+    if (!Number.isInteger(ticketId)) return res.status(400).json({ error: "Invalid weighbridge ticket." });
+    const { rows: tk } = await query(
+      `SELECT wb.ticket_number, wb.match_status::text AS match_status, r.id AS claimed_by
+       FROM weighbridge_tickets wb
+       LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number
+       WHERE wb.ticket_number = $1`,
+      [ticketId]
+    );
+    if (!tk.length) return res.status(400).json({ error: "That weighbridge ticket does not exist." });
+    if (tk[0].claimed_by) {
+      return res.status(400).json({ error: `Weighbridge ticket #${ticketId} is already on receipt #${tk[0].claimed_by}.` });
+    }
+    if (tk[0].match_status !== "matched") {
+      return res.status(400).json({ error: `Weighbridge ticket #${ticketId} is still in review — resolve its names first.` });
+    }
+  }
+
   const { rows } = await query(
     `INSERT INTO rm_receipts
        (order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, accepted_qty_kg, transporter_id,
         freight_rate, freight_basis, vehicle_number, challan_number, short_qty, debit_note_amount,
-        landed_rate_per_kg, received_by, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+        landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
     [order_id, supplier_qty, weighbridge_weight_kg || null, finalAcceptedQty, acceptedQtyKg,
       transporter_id || order.transporter_id || null, useFreightRate || null, useFreightBasis || null,
       vehicle_number || null, challan_number || null, shortQty, debit_note_amount || null,
-      landedRatePerKg, req.user.id, notes || null]
+      landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null]
   );
 
-  const tolerancePct = order.tolerance_pct != null ? Number(order.tolerance_pct) : null;
-  const deviationPct = Number(supplier_qty) > 0 ? Math.abs(shortQty) / Number(supplier_qty) * 100 : 0;
-  res.status(201).json({
-    ...rows[0],
-    tolerance_exceeded: tolerancePct != null && deviationPct > tolerancePct,
-  });
+  res.status(201).json({ ...rows[0], tolerance_exceeded: toleranceExceeded });
 });
 
 // Admin-only edit/delete for a wrong receipt entry (item 6, round 140). Book

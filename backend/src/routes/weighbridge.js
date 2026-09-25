@@ -39,7 +39,7 @@ import crypto from "crypto";
 import { pool, query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
-import { loadResolver, resolveTicket, normalise } from "../lib/weighbridgeNames.js";
+import { loadResolver, resolveTicket, resolveVehicle, normalise } from "../lib/weighbridgeNames.js";
 
 const router = Router();
 
@@ -162,7 +162,7 @@ const UPSERT_COLS = [
   "remarks", "charges", "concrete_grade",
   "empty_weight_kg", "loaded_weight_kg", "net_weight_kg",
   "ticket_date", "empty_weighed_at", "loaded_weighed_at", "weighed_at",
-  "material_id", "supplier_id", "truck_id", "match_status", "unresolved", "source_hash",
+  "material_id", "supplier_id", "truck_id", "vehicle_id", "match_status", "unresolved", "source_hash",
 ];
 
 router.post("/sync", async (req, res) => {
@@ -216,6 +216,15 @@ router.post("/sync", async (req, res) => {
 
     for (const row of clean) {
       Object.assign(row, resolveTicket(resolver, row));
+      // Round 156 — the vehicle registers itself. This is a write, so unlike
+      // material and supplier it cannot come from the in-memory resolver: a
+      // registration nobody has seen before has to become a row before the
+      // ticket can point at it. Sequential rather than parallel on purpose —
+      // two tickets in one batch often carry the same new lorry, and letting
+      // them race would leave the ON CONFLICT doing the work twice.
+      const veh = await resolveVehicle(row.raw_vehicle);
+      row.vehicle_id = veh.vehicle_id;
+      row.truck_id = veh.truck_id;
       row.source_hash = hashRow(row);
     }
 
@@ -266,6 +275,7 @@ router.post("/sync", async (req, res) => {
            material_id       = EXCLUDED.material_id,
            supplier_id       = EXCLUDED.supplier_id,
            truck_id          = EXCLUDED.truck_id,
+           vehicle_id        = EXCLUDED.vehicle_id,
            match_status      = CASE WHEN weighbridge_tickets.match_status = 'ignored'
                                     THEN 'ignored'::wb_match_status
                                     ELSE EXCLUDED.match_status END,
@@ -346,11 +356,19 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
               wb.ticket_date, wb.weighed_at, wb.match_status, wb.unresolved,
               wb.review_note, wb.revision, wb.last_synced_at,
               m.name AS material_name, s.name AS supplier_name, t.truck_number,
+              -- Round 156 — the registry's view of the lorry. veh_owner says
+              -- who it belongs to when somebody has said; it is blank for a
+              -- vehicle that is simply being counted, which is fine and is
+              -- the normal state for a supplier's lorry nobody has attributed.
+              v.registration AS vehicle_registration,
+              COALESCE(t.truck_number, vs.name) AS veh_owner,
               r.id AS receipt_id
        FROM weighbridge_tickets wb
        LEFT JOIN rm_materials m ON m.id = wb.material_id
        LEFT JOIN rm_suppliers s ON s.id = wb.supplier_id
        LEFT JOIN trucks t       ON t.id = wb.truck_id
+       LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
+       LEFT JOIN rm_suppliers vs ON vs.id = v.supplier_id
        LEFT JOIN rm_receipts r  ON r.weighbridge_ticket_id = wb.ticket_number
        WHERE ($1::text IS NULL OR wb.match_status = $1::wb_match_status)
          AND (wb.weighed_at IS NULL OR wb.weighed_at >= now() - ($2 || ' days')::interval)
@@ -437,33 +455,53 @@ router.patch("/tickets/:id", requireRole(...WB_EDIT_ROLES), requirePermission("m
 // Every weighbridge spelling that has not been resolved, with how many tickets
 // carry it and when it was last seen — so the busiest, most recent unknowns
 // sort to the top and get mapped first.
+//
+// ROUND 156 — two changes.
+//
+// Vehicles are gone from this list. They register themselves now (see
+// lib/weighbridgeNames.js resolveVehicle), so there is nothing here for a
+// human to decide; the Vehicles screen handles ownership and typo merging
+// separately, and neither holds a ticket up.
+//
+// An unresolved MATERIAL is now reported per supplier, not once overall. The
+// plant buys three fly ashes that the weighbridge calls "FLY ASH", and the
+// mapping screen has to offer a row per supplier or there is no way to tell
+// them apart. `suppliers` carries the ones this spelling has actually arrived
+// from, so the screen only ever offers real combinations.
 router.get("/unmapped", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "view"), async (req, res) => {
   try {
     const { rows } = await query(
       `WITH flagged AS (
-         SELECT ticket_number, weighed_at, unresolved,
-                raw_material, raw_supplier, raw_vehicle
+         SELECT ticket_number, weighed_at, unresolved, supplier_id,
+                raw_material, raw_supplier
          FROM weighbridge_tickets
          WHERE match_status <> 'ignored' AND array_length(unresolved, 1) > 0
-       )
-       SELECT kind, raw_sample, n, last_seen FROM (
-         SELECT 'material' AS kind,
+       ),
+       mat AS (
+         SELECT upper(regexp_replace(COALESCE(raw_material, ''), '[^A-Za-z0-9]', '', 'g')) AS norm,
                 (array_agg(raw_material ORDER BY weighed_at DESC NULLS LAST))[1] AS raw_sample,
                 count(*)::int AS n, max(weighed_at) AS last_seen,
-                upper(regexp_replace(COALESCE(raw_material, ''), '[^A-Za-z0-9]', '', 'g')) AS norm
-         FROM flagged WHERE 'material' = ANY(unresolved) GROUP BY norm
+                -- The suppliers this spelling has actually arrived from, resolved
+                -- ones only: an unresolved supplier cannot scope anything yet.
+                COALESCE(
+                  jsonb_agg(DISTINCT jsonb_build_object('id', f.supplier_id, 'name', s.name))
+                    FILTER (WHERE f.supplier_id IS NOT NULL),
+                  '[]'::jsonb
+                ) AS suppliers
+         FROM flagged f LEFT JOIN rm_suppliers s ON s.id = f.supplier_id
+         WHERE 'material' = ANY(f.unresolved) GROUP BY norm
+       ),
+       sup AS (
+         SELECT upper(regexp_replace(COALESCE(raw_supplier, ''), '[^A-Za-z0-9]', '', 'g')) AS norm,
+                (array_agg(raw_supplier ORDER BY weighed_at DESC NULLS LAST))[1] AS raw_sample,
+                count(*)::int AS n, max(weighed_at) AS last_seen,
+                '[]'::jsonb AS suppliers
+         FROM flagged WHERE 'supplier' = ANY(unresolved) GROUP BY norm
+       )
+       SELECT kind, raw_sample, n, last_seen, suppliers FROM (
+         SELECT 'material' AS kind, raw_sample, n, last_seen, suppliers FROM mat
          UNION ALL
-         SELECT 'supplier',
-                (array_agg(raw_supplier ORDER BY weighed_at DESC NULLS LAST))[1],
-                count(*)::int, max(weighed_at),
-                upper(regexp_replace(COALESCE(raw_supplier, ''), '[^A-Za-z0-9]', '', 'g'))
-         FROM flagged WHERE 'supplier' = ANY(unresolved) GROUP BY 5
-         UNION ALL
-         SELECT 'vehicle',
-                (array_agg(raw_vehicle ORDER BY weighed_at DESC NULLS LAST))[1],
-                count(*)::int, max(weighed_at),
-                upper(regexp_replace(COALESCE(raw_vehicle, ''), '[^A-Za-z0-9]', '', 'g'))
-         FROM flagged WHERE 'vehicle' = ANY(unresolved) GROUP BY 5
+         SELECT 'supplier', raw_sample, n, last_seen, suppliers FROM sup
        ) u
        ORDER BY n DESC, last_seen DESC NULLS LAST
        LIMIT 300`
@@ -479,20 +517,27 @@ router.get("/unmapped", requireRole(...MAPPING_ROLES), requirePermission("materi
 // needs one call rather than four.
 router.get("/aliases", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "view"), async (req, res) => {
   try {
-    const [mat, sup, veh, materials, suppliers, trucks] = await Promise.all([
-      query(`SELECT a.id, a.normalised, a.raw_sample, a.is_ignored, a.mapped_at, m.name AS target
-             FROM weighbridge_material_aliases a LEFT JOIN rm_materials m ON m.id = a.material_id ORDER BY a.raw_sample`),
+    const [mat, sup, materials, suppliers] = await Promise.all([
+      // Round 156 — a material rule may be scoped to one supplier. scope_name
+      // is null for the fallback rule that applies to everyone else.
+      query(`SELECT a.id, a.normalised, a.raw_sample, a.is_ignored, a.mapped_at,
+                    m.name AS target, a.supplier_scope_id, sc.name AS scope_name
+             FROM weighbridge_material_aliases a
+             LEFT JOIN rm_materials m  ON m.id  = a.material_id
+             LEFT JOIN rm_suppliers sc ON sc.id = a.supplier_scope_id
+             ORDER BY a.raw_sample, sc.name NULLS FIRST`),
       query(`SELECT a.id, a.normalised, a.raw_sample, a.is_ignored, a.mapped_at, s.name AS target
              FROM weighbridge_supplier_aliases a LEFT JOIN rm_suppliers s ON s.id = a.supplier_id ORDER BY a.raw_sample`),
-      query(`SELECT a.id, a.normalised, a.raw_sample, a.is_ignored, a.mapped_at, t.truck_number AS target
-             FROM weighbridge_vehicle_aliases a LEFT JOIN trucks t ON t.id = a.truck_id ORDER BY a.raw_sample`),
       query(`SELECT id, name FROM rm_materials WHERE is_active = true ORDER BY name`),
       query(`SELECT id, name FROM rm_suppliers WHERE is_active = true ORDER BY name`),
-      query(`SELECT id, truck_number AS name FROM trucks WHERE is_active = true ORDER BY truck_number`),
     ]);
     res.json({
-      material: mat.rows, supplier: sup.rows, vehicle: veh.rows,
-      options: { material: materials.rows, supplier: suppliers.rows, vehicle: trucks.rows },
+      material: mat.rows,
+      supplier: sup.rows,
+      // Vehicles are no longer mapped here — they have their own screen from
+      // Round 156, because they register themselves and the question is who
+      // owns them, not what they are.
+      options: { material: materials.rows, supplier: suppliers.rows },
     });
   } catch (err) {
     console.error(err);
@@ -500,10 +545,12 @@ router.get("/aliases", requireRole(...MAPPING_ROLES), requirePermission("materia
   }
 });
 
+// Vehicles are absent on purpose from Round 156: they are not mapped to
+// anything, they register themselves, and their ownership is set on the
+// Vehicles screen further down this file.
 const ALIAS_TABLES = {
   material: { table: "weighbridge_material_aliases", idCol: "material_id", master: "rm_materials" },
   supplier: { table: "weighbridge_supplier_aliases", idCol: "supplier_id", master: "rm_suppliers" },
-  vehicle:  { table: "weighbridge_vehicle_aliases",  idCol: "truck_id",    master: "trucks" },
 };
 
 // Re-run resolution over every ticket with anything still outstanding. Called
@@ -527,21 +574,50 @@ const ALIAS_TABLES = {
 // a mapping change must not drag them back into view.
 async function reresolveOutstanding() {
   const resolver = await loadResolver();
+  // WHICH TICKETS ARE RE-EXAMINED, and the line this draws is the important
+  // part of Round 156.
+  //
+  // Everything that is not yet accounted for gets re-resolved: tickets waiting
+  // on a human, tickets matched but with something still unresolved, tickets
+  // with no vehicle row yet — and, added in Round 156, tickets that are
+  // MATCHED BUT NOT YET CLAIMED BY A RECEIPT.
+  //
+  // That last clause is what makes "Change" mean anything. Correcting a rule
+  // used to report success and leave every already-matched ticket sitting on
+  // the old material, because the sweep skipped them — so the plant would
+  // change a mapping, see "saved", and watch nothing happen. Reported by the
+  // yard within a day of the feed going live.
+  //
+  // A ticket a receipt HAS claimed is deliberately left alone. Its material is
+  // already credited to stock and already priced into a weighted average;
+  // silently moving it because somebody tidied a mapping would rewrite history
+  // nobody asked to rewrite. Those are corrected by editing the receipt.
   const { rows } = await query(
-    `SELECT ticket_number, raw_material, raw_material_code, raw_supplier, raw_vehicle
-     FROM weighbridge_tickets
-     WHERE match_status = 'needs_review'
-        OR (match_status = 'matched' AND array_length(unresolved, 1) > 0)`
+    `SELECT wb.ticket_number, wb.raw_material, wb.raw_material_code, wb.raw_supplier, wb.raw_vehicle, wb.vehicle_id
+     FROM weighbridge_tickets wb
+     LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number
+     WHERE r.id IS NULL
+       AND (
+            wb.match_status = 'needs_review'
+         OR (wb.match_status = 'matched' AND array_length(wb.unresolved, 1) > 0)
+         OR (wb.match_status = 'matched')
+         OR (wb.match_status <> 'ignored' AND wb.vehicle_id IS NULL AND wb.raw_vehicle IS NOT NULL)
+       )`
   );
   let cleared = 0;
   for (const t of rows) {
     const r = resolveTicket(resolver, t);
+    // Round 156 — the vehicle is resolved here too, which also registers any
+    // lorry that arrived before the registry existed. That is why the query
+    // above includes tickets with no vehicle_id even when everything else
+    // about them is already settled.
+    const veh = await resolveVehicle(t.raw_vehicle);
     await query(
       `UPDATE weighbridge_tickets
-          SET material_id = $2, supplier_id = $3, truck_id = $4,
-              match_status = $5::wb_match_status, unresolved = $6
+          SET material_id = $2, supplier_id = $3, truck_id = $4, vehicle_id = $5,
+              match_status = $6::wb_match_status, unresolved = $7
         WHERE ticket_number = $1`,
-      [t.ticket_number, r.material_id, r.supplier_id, r.truck_id, r.match_status, r.unresolved]
+      [t.ticket_number, r.material_id, r.supplier_id, veh.truck_id, veh.vehicle_id, r.match_status, r.unresolved]
     );
     if (r.match_status === "matched") cleared++;
   }
@@ -551,7 +627,7 @@ async function reresolveOutstanding() {
 router.post("/aliases", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "create"), async (req, res) => {
   const kind = req.body?.kind;
   const spec = ALIAS_TABLES[kind];
-  if (!spec) return res.status(400).json({ error: "kind must be material, supplier or vehicle." });
+  if (!spec) return res.status(400).json({ error: "kind must be material or supplier." });
 
   const rawSample = String(req.body?.raw_sample ?? "").trim();
   const norm = normalise(rawSample);
@@ -563,27 +639,73 @@ router.post("/aliases", requireRole(...MAPPING_ROLES), requirePermission("materi
     return res.status(400).json({ error: "Pick something to map it to, or mark it ignored." });
   }
 
+  // ROUND 156 — an optional supplier scope, materials only.
+  //
+  // With a scope, this rule applies only to tickets from that supplier and
+  // beats the unscoped one. Without, it is the fallback for everyone else.
+  // That is what lets "FLY ASH" mean the JSW product on a JSW ticket and the
+  // Thoothukudi product on a Thoothukudi one.
+  //
+  // Scoping a SUPPLIER name would be circular — the scope is the supplier —
+  // so it is refused rather than quietly ignored.
+  const rawScope = req.body?.supplier_scope_id;
+  const scopeId = rawScope === undefined || rawScope === null || rawScope === "" ? null : Number(rawScope);
+  if (scopeId !== null && !Number.isInteger(scopeId)) {
+    return res.status(400).json({ error: "Invalid supplier scope." });
+  }
+  if (scopeId !== null && kind !== "material") {
+    return res.status(400).json({ error: "Only a material rule can be scoped to a supplier." });
+  }
+
   try {
     if (!isIgnored) {
       const { rows: exists } = await query(`SELECT 1 FROM ${spec.master} WHERE id = $1`, [targetId]);
       if (!exists.length) return res.status(400).json({ error: "That record no longer exists." });
     }
-    // Re-mapping an existing alias is a normal correction, so this upserts
-    // rather than refusing. The old mapping is replaced and the affected
-    // tickets are re-resolved below.
-    await query(
-      `INSERT INTO ${spec.table} (normalised, raw_sample, ${spec.idCol}, is_ignored, mapped_by)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (normalised) DO UPDATE SET
-         raw_sample = EXCLUDED.raw_sample,
-         ${spec.idCol} = EXCLUDED.${spec.idCol},
-         is_ignored = EXCLUDED.is_ignored,
-         mapped_by = EXCLUDED.mapped_by,
-         mapped_at = now()`,
-      [norm, rawSample.slice(0, 150), targetId, isIgnored, req.user.id]
-    );
+    if (scopeId !== null) {
+      const { rows: sc } = await query(`SELECT 1 FROM rm_suppliers WHERE id = $1`, [scopeId]);
+      if (!sc.length) return res.status(400).json({ error: "That supplier no longer exists." });
+    }
+
+    // Re-mapping an existing rule is a normal correction, so this upserts
+    // rather than refusing — that is the "Change" button on the screen. The
+    // two partial unique indexes mean a scoped rule and the unscoped fallback
+    // for the same name coexist and are corrected independently, so the
+    // conflict target has to be named explicitly rather than left to the
+    // column: ON CONFLICT (normalised) alone would not match the scoped index.
+    if (kind === "material") {
+      if (scopeId === null) {
+        await query(
+          `INSERT INTO weighbridge_material_aliases (normalised, raw_sample, material_id, is_ignored, mapped_by, supplier_scope_id)
+           VALUES ($1, $2, $3, $4, $5, NULL)
+           ON CONFLICT (normalised) WHERE supplier_scope_id IS NULL DO UPDATE SET
+             raw_sample = EXCLUDED.raw_sample, material_id = EXCLUDED.material_id,
+             is_ignored = EXCLUDED.is_ignored, mapped_by = EXCLUDED.mapped_by, mapped_at = now()`,
+          [norm, rawSample.slice(0, 120), targetId, isIgnored, req.user.id]
+        );
+      } else {
+        await query(
+          `INSERT INTO weighbridge_material_aliases (normalised, raw_sample, material_id, is_ignored, mapped_by, supplier_scope_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (normalised, supplier_scope_id) WHERE supplier_scope_id IS NOT NULL DO UPDATE SET
+             raw_sample = EXCLUDED.raw_sample, material_id = EXCLUDED.material_id,
+             is_ignored = EXCLUDED.is_ignored, mapped_by = EXCLUDED.mapped_by, mapped_at = now()`,
+          [norm, rawSample.slice(0, 120), targetId, isIgnored, req.user.id, scopeId]
+        );
+      }
+    } else {
+      await query(
+        `INSERT INTO weighbridge_supplier_aliases (normalised, raw_sample, supplier_id, is_ignored, mapped_by)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (normalised) DO UPDATE SET
+           raw_sample = EXCLUDED.raw_sample, supplier_id = EXCLUDED.supplier_id,
+           is_ignored = EXCLUDED.is_ignored, mapped_by = EXCLUDED.mapped_by, mapped_at = now()`,
+        [norm, rawSample.slice(0, 150), targetId, isIgnored, req.user.id]
+      );
+    }
+
     const cleared = await reresolveOutstanding();
-    res.json({ ok: true, normalised: norm, tickets_cleared: cleared });
+    res.json({ ok: true, normalised: norm, scoped: scopeId !== null, tickets_cleared: cleared });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not save the mapping." });
@@ -593,12 +715,12 @@ router.post("/aliases", requireRole(...MAPPING_ROLES), requirePermission("materi
 router.delete("/aliases/:kind/:id", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
   const spec = ALIAS_TABLES[req.params.kind];
   const id = Number(req.params.id);
-  if (!spec) return res.status(400).json({ error: "kind must be material, supplier or vehicle." });
+  if (!spec) return res.status(400).json({ error: "kind must be material or supplier." });
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid mapping id." });
   try {
     const { rowCount } = await query(`DELETE FROM ${spec.table} WHERE id = $1`, [id]);
     if (!rowCount) return res.status(404).json({ error: "Mapping not found." });
-    // Removing a mapping can only ever push tickets back into the queue, but
+    // Removing a rule can only ever push tickets back into the queue, but
     // matched tickets are not re-checked here — they keep the ids they were
     // resolved to, which is the honest behaviour: stock that was already
     // credited does not un-credit because somebody tidied the mapping list.
@@ -607,6 +729,217 @@ router.delete("/aliases/:kind/:id", requireRole(...MAPPING_ROLES), requirePermis
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not remove the mapping." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 156 — re-check every outstanding ticket, on demand.
+//
+// The gap this closes: re-resolution used to run only when a MAPPING changed.
+// So populating the Material Module's own masters — adding "20 MM" as a
+// material, or Starmetals as a supplier — reached nothing that had already
+// synced, and the plant was left with a hundred tickets stuck in Needs review
+// against masters that would now match them perfectly. The only workaround was
+// to save an unrelated mapping and let its sweep pick everything up, which is
+// not a thing anybody should have to know.
+// ---------------------------------------------------------------------------
+router.post("/recheck", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
+  try {
+    const before = await query(
+      `SELECT count(*)::int AS n FROM weighbridge_tickets WHERE match_status = 'needs_review'`
+    );
+    const cleared = await reresolveOutstanding();
+    const after = await query(
+      `SELECT count(*)::int AS n FROM weighbridge_tickets WHERE match_status = 'needs_review'`
+    );
+    res.json({
+      ok: true,
+      tickets_cleared: cleared,
+      needs_review_before: before.rows[0].n,
+      needs_review_now: after.rows[0].n,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not re-check the tickets." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 156 — the vehicle registry.
+//
+// Round 154 made this a binary: map the lorry to one of our trucks, or mark it
+// ignored. Almost every vehicle over this weighbridge is a supplier's, so in
+// practice that meant discarding the vehicle on nearly every ticket — and with
+// it any way to ask which lorry arrives light or whether a tare is drifting.
+//
+// Now every registration has a row, created on arrival, and the only questions
+// left for a human are optional enrichment: who owns it, and whether a
+// misspelling should be merged into a lorry already on the list.
+// ---------------------------------------------------------------------------
+router.get("/vehicles", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 90, 1), 1000);
+    const { rows } = await query(
+      `SELECT v.id, v.registration, v.normalised, v.is_junk, v.notes,
+              v.first_seen_at, v.last_seen_at,
+              t.truck_number, v.truck_id,
+              s.name AS supplier_name, v.supplier_id,
+              COALESCE(st.trips, 0)      AS trips,
+              COALESCE(st.total_kg, 0)   AS total_kg,
+              st.avg_kg,
+              -- The tare a lorry usually shows. A drift in this is the shape a
+              -- weighbridge fiddle takes, so it is worth having in front of
+              -- somebody even though nothing acts on it automatically.
+              st.usual_tare_kg,
+              (SELECT count(*)::int FROM weighbridge_vehicle_aliases a WHERE a.vehicle_id = v.id) AS alias_count
+       FROM weighbridge_vehicles v
+       LEFT JOIN trucks t       ON t.id = v.truck_id
+       LEFT JOIN rm_suppliers s ON s.id = v.supplier_id
+       LEFT JOIN LATERAL (
+         SELECT count(*)::int AS trips,
+                sum(wt.net_weight_kg)::bigint AS total_kg,
+                round(avg(wt.net_weight_kg))::int AS avg_kg,
+                mode() WITHIN GROUP (ORDER BY wt.empty_weight_kg) AS usual_tare_kg
+         FROM weighbridge_tickets wt
+         WHERE wt.vehicle_id = v.id
+           AND wt.match_status <> 'ignored'
+           AND (wt.weighed_at IS NULL OR wt.weighed_at >= now() - ($1 || ' days')::interval)
+       ) st ON true
+       ORDER BY COALESCE(st.trips, 0) DESC, v.last_seen_at DESC
+       LIMIT 500`,
+      [String(days)]
+    );
+
+    // The spellings that have been merged into each lorry, so the screen can
+    // show what it absorbed rather than hiding the operator's actual typing.
+    const { rows: aliases } = await query(
+      `SELECT vehicle_id, raw_sample FROM weighbridge_vehicle_aliases WHERE vehicle_id IS NOT NULL ORDER BY raw_sample`
+    );
+    const byVehicle = new Map();
+    for (const a of aliases) {
+      if (!byVehicle.has(a.vehicle_id)) byVehicle.set(a.vehicle_id, []);
+      byVehicle.get(a.vehicle_id).push(a.raw_sample);
+    }
+
+    const [trucks, suppliers] = await Promise.all([
+      query(`SELECT id, truck_number AS name FROM trucks WHERE is_active = true ORDER BY truck_number`),
+      query(`SELECT id, name FROM rm_suppliers WHERE is_active = true ORDER BY name`),
+    ]);
+
+    res.json({
+      vehicles: rows.map((r) => ({ ...r, aliases: byVehicle.get(r.id) || [] })),
+      options: { trucks: trucks.rows, suppliers: suppliers.rows },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the vehicles." });
+  }
+});
+
+// Say who a lorry belongs to, correct its registration, or mark it junk.
+// Nothing here is required for the feed to work — it is all enrichment.
+router.patch("/vehicles/:id", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid vehicle id." });
+
+  const body = req.body || {};
+  const truckId = body.truck_id === "" || body.truck_id === undefined ? null : Number(body.truck_id);
+  const supplierId = body.supplier_id === "" || body.supplier_id === undefined ? null : Number(body.supplier_id);
+  if (truckId !== null && supplierId !== null) {
+    return res.status(400).json({ error: "A lorry is either one of ours or a supplier's, not both." });
+  }
+  if ((truckId !== null && !Number.isInteger(truckId)) || (supplierId !== null && !Number.isInteger(supplierId))) {
+    return res.status(400).json({ error: "Invalid owner." });
+  }
+
+  try {
+    const { rows } = await query(
+      `UPDATE weighbridge_vehicles
+          SET truck_id     = $2,
+              supplier_id  = $3,
+              is_junk      = COALESCE($4, is_junk),
+              registration = COALESCE($5, registration),
+              notes        = COALESCE($6, notes),
+              updated_by   = $7
+        WHERE id = $1
+        RETURNING id, registration, truck_id, supplier_id, is_junk`,
+      [id, truckId, supplierId,
+       typeof body.is_junk === "boolean" ? body.is_junk : null,
+       body.registration ? String(body.registration).trim().slice(0, 60) : null,
+       body.notes === undefined ? null : String(body.notes).slice(0, 500),
+       req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Vehicle not found." });
+
+    // Saying "this lorry is our TM-03" has to reach the tickets that already
+    // carry it, or the truck link would only apply to loads weighed from now
+    // on — the same retroactivity the material mappings have.
+    await query(
+      `UPDATE weighbridge_tickets SET truck_id = $2
+        WHERE vehicle_id = $1 AND match_status <> 'ignored'`,
+      [id, rows[0].is_junk ? null : rows[0].truck_id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not update the vehicle." });
+  }
+});
+
+// Fold one registry row into another — the typo case (31KL77D4 into KL77D4231).
+// The losing row's tickets are repointed and an alias is left behind, so the
+// same misspelling arriving again lands on the right lorry without anybody
+// doing this twice.
+router.post("/vehicles/:id/merge", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
+  const fromId = Number(req.params.id);
+  const intoId = Number(req.body?.into_id);
+  if (!Number.isInteger(fromId) || !Number.isInteger(intoId)) {
+    return res.status(400).json({ error: "Invalid vehicle id." });
+  }
+  if (fromId === intoId) return res.status(400).json({ error: "That is the same vehicle." });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: both } = await client.query(
+      `SELECT id, normalised, registration FROM weighbridge_vehicles WHERE id = ANY($1::int[])`,
+      [[fromId, intoId]]
+    );
+    if (both.length !== 2) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "One of those vehicles no longer exists." });
+    }
+    const from = both.find((v) => v.id === fromId);
+
+    const moved = await client.query(
+      `UPDATE weighbridge_tickets SET vehicle_id = $2 WHERE vehicle_id = $1 RETURNING ticket_number`,
+      [fromId, intoId]
+    );
+    // Leave the trail: the spelling that was merged keeps pointing at the
+    // winner, so it resolves straight there next time.
+    await client.query(
+      `INSERT INTO weighbridge_vehicle_aliases (normalised, raw_sample, vehicle_id, is_ignored, mapped_by)
+       VALUES ($1, $2, $3, false, $4)
+       ON CONFLICT (normalised) DO UPDATE SET vehicle_id = EXCLUDED.vehicle_id, mapped_at = now()`,
+      [from.normalised, from.registration, intoId, req.user.id]
+    );
+    await client.query(`DELETE FROM weighbridge_vehicles WHERE id = $1`, [fromId]);
+    // The winner now covers the whole period both rows spanned.
+    await client.query(
+      `UPDATE weighbridge_vehicles v
+          SET first_seen_at = LEAST(v.first_seen_at, $2::timestamptz),
+              last_seen_at  = GREATEST(v.last_seen_at, $3::timestamptz)
+        WHERE v.id = $1`,
+      [intoId, req.body?.first_seen_at || new Date().toISOString(), req.body?.last_seen_at || new Date().toISOString()]
+    );
+    await client.query("COMMIT");
+    res.json({ ok: true, tickets_moved: moved.rows.length });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error(err);
+    res.status(500).json({ error: "Could not merge the vehicles." });
+  } finally {
+    client.release();
   }
 });
 

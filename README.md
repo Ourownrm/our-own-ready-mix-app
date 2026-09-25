@@ -7133,3 +7133,109 @@ console errors on the QC screen.
 **Next**: nothing outstanding from the review except resuming guard conversion (58 of 499 routes
 carry both guards; 94 of 111 catalogue keys still gate nothing server-side), and the weighbridge agent
 install on the plant PC.
+
+---
+
+## Round 156 — what the first week of live weighbridge data taught us (v9.82)
+
+Three corrections to Round 154, all reported by the plant within days of the agent going live, and all
+the same kind of mistake: a model too simple for the real yard.
+
+### One weighbridge name does not mean one material
+
+Round 154 keyed a mapping on the normalised name alone, so `FLY ASH` could only ever resolve to a
+single record. The plant buys fly ash from JSW, Thoothukudi and Adani; the weighbridge calls all three
+`FLY ASH`, and the **supplier is the only thing that tells them apart**.
+
+A material mapping can now be scoped to a supplier. Most specific wins: a rule for *FLY ASH from JSW*
+beats the plain *FLY ASH* rule, which remains the fallback for everyone else. The unmapped queue
+reports a material per supplier rather than once overall, so the screen offers a row per real
+combination plus an "anyone else" fallback.
+
+Two partial unique indexes rather than one constraint, because NULLs never collide in a Postgres
+UNIQUE index — without the first, nothing would stop two unscoped rules for the same name.
+
+Verified: the same `FLY ASH` spelling resolving to *Fly Ash - JSW* on a JSW ticket and *Fly Ash -
+Thoothukudi* on a Thoothukudi one, and a third supplier's `FLY ASH` correctly **not** inheriting
+either rule.
+
+### Changing a mapping now actually changes something
+
+The plant asked for this directly: a way to correct an auto-mapped name. Saving the same spelling and
+scope again replaces the rule — that is the **Change** button — but during verification it reported
+success and moved nothing, because the re-resolution sweep only covered tickets that were still
+`needs_review`. Anything already matched kept the old material forever.
+
+The sweep now also covers **matched tickets that no receipt has claimed**. A ticket a receipt *has*
+claimed is deliberately left alone: its material is already credited to stock and priced into a
+weighted average, and silently moving it because somebody tidied a mapping would rewrite history
+nobody asked to rewrite. Those are corrected by editing the receipt.
+
+### A lorry that is not ours is still worth knowing about
+
+Round 154 offered a binary — map the vehicle to one of our trucks, or mark it ignored. Nearly every
+lorry over this weighbridge belongs to a supplier, so in practice that meant discarding the vehicle on
+almost every ticket, and with it any way to ask which lorry arrives light or whether a tare is
+drifting.
+
+`weighbridge_vehicles` is a registry: one row per physical lorry, **created automatically the first
+time it crosses the weighbridge**. That auto-creation is the crucial part — the plant does not know a
+supplier's registration until the lorry is standing on the weighbridge, so anything requiring
+pre-registration would never be done. Nothing is ever blocked waiting on a vehicle, and vehicles have
+been removed from the review queue entirely.
+
+A registration that exactly matches one of our own active trucks links itself. That is not a guess in
+the way a material lookup would be: it is our own fleet list, and there is only one lorry with a given
+registration.
+
+The new Vehicles screen shows trips, tonnage, average load and **usual tare** per lorry, lets an
+Administrator say who owns one, and merges a typo into the lorry it was meant to be — leaving an alias
+behind so the same misspelling lands correctly next time. "Not ours" now means only what it should:
+test weighments and junk.
+
+Verified: five lorries self-registering with nothing blocked, `KL77D 4231` auto-linking to our truck,
+and `31KL77D4` merging into it — one ticket moved, alias recorded, trips going 1 → 2.
+
+### Re-check all
+
+The gap the plant hit on day one. Re-resolution ran only when a *mapping* changed, so populating the
+Material Module's own masters reached nothing already synced — 129 tickets sat in Needs review against
+records that would have matched them perfectly. The only workaround was to save an unrelated mapping
+and let its sweep pick everything up, which is not a thing anybody should have to know.
+
+`POST /weighbridge/recheck`, and a button next to the queue. Verified taking needs_review from 1 to 0
+after adding the missing material to the masters.
+
+### The receipt picks up the weighbridge
+
+`GET /material-module/orders/:id/weighbridge-tickets` offers the matched, unclaimed tickets whose
+material *and supplier* match the order — which is also what makes the supplier-scoped mapping matter,
+since without it every fly ash would resolve alike and this list would offer the wrong loads.
+
+Picking one fills the weighed net, the vehicle and a real DC number. It deliberately does **not** fill
+the billed quantity: the weighbridge records a DC number but never a DC quantity, and that missing
+figure is the only thing that makes short-load checking possible. Accepted quantity defaults to the
+weighed figure converted to purchase units — unlike the cube count in Round 155, the machine genuinely
+knows this answer, and making Store retype it would only invite typos.
+
+A short load **flags but does not block**, except that a shortfall beyond the material's tolerance now
+requires a reason. Blocking would push Store into not recording the load at all, or into fudging the
+accepted quantity until the app stopped complaining — both worse than a note. Guards verified: the
+same ticket cannot be claimed twice (it would double-credit stock), a claimed ticket drops off the
+offered list, a ticket still in review is refused, and a within-tolerance short saves with no reason.
+
+Stock is credited from what was weighed, never what was billed: two receipts of 34,190 and 33,000 kg
+gave book stock of exactly 67,190 kg.
+
+### Verified
+
+Against a throwaway Postgres with two fly ashes deliberately sharing one weighbridge name. Both
+checkers green — 63 routes carrying both guards, 163 files with no dates built in UTC. Clean build, no
+console errors.
+
+One bug caught and fixed mid-verification: the vehicle auto-link reused `$1` as both a varchar column
+value and a text comparison, and Postgres refused the statement with "text versus character varying".
+Both uses are now cast explicitly.
+
+**Next**: the Task Scheduler action on the weighbridge PC (`0x80070002` — the program path), and
+resuming guard conversion.

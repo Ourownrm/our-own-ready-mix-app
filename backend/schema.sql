@@ -2517,3 +2517,108 @@ CREATE INDEX idx_wb_sync_log_received ON weighbridge_sync_log(received_at DESC);
 -- never becomes a receipt (an outbound load, a re-weigh) is perfectly normal.
 ALTER TABLE rm_receipts ADD COLUMN weighbridge_ticket_id INTEGER REFERENCES weighbridge_tickets(ticket_number);
 CREATE INDEX idx_rm_receipts_wb_ticket ON rm_receipts(weighbridge_ticket_id);
+
+-- ============================================================================
+-- ROUND 156 — what the first week of live weighbridge data taught us.
+--
+-- Three corrections to Round 154, all of them found by the plant within days
+-- of the agent going live, and all of them the same kind of mistake: a model
+-- that was too simple for the real yard.
+--
+-- 1. A WEIGHBRIDGE NAME DOES NOT MEAN ONE MATERIAL. Round 154 keyed a mapping
+--    on the normalised name alone, so "FLY ASH" could only ever resolve to one
+--    record. The plant buys fly ash from JSW, Thoothukudi and Adani and the
+--    weighbridge calls all three "FLY ASH" — the supplier is the only thing
+--    that tells them apart. So a mapping may now be SCOPED to a supplier, and
+--    the most specific rule wins.
+--
+-- 2. A LORRY THAT IS NOT OURS IS STILL WORTH KNOWING ABOUT. Round 154 offered
+--    a binary: map the vehicle to one of our trucks, or mark it ignored. Nearly
+--    every lorry on this weighbridge belongs to a supplier, so in practice that
+--    meant throwing away the vehicle on almost every ticket — and with it any
+--    chance of asking which lorry arrives light, or whether a tare is drifting.
+--    Vehicles now get their own registry, created automatically on first sight,
+--    because the plant does not know a supplier's registration until the lorry
+--    is on the weighbridge.
+--
+-- 3. A SHORT LOAD NEEDS A REASON, NOT A BLOCK. Recorded on the receipt.
+-- ============================================================================
+
+-- ---------------------------------------------------------------------------
+-- 1. Supplier-scoped material mappings.
+--
+-- supplier_scope_id NULL means "whoever it came from" — the Round 154
+-- behaviour, kept as the fallback. A row with a supplier set applies only to
+-- tickets from that supplier and beats the fallback.
+--
+-- Two partial unique indexes rather than one constraint, because in Postgres
+-- NULLs never collide in a UNIQUE index: without the first one, nothing would
+-- stop two unscoped rules for the same name.
+-- ---------------------------------------------------------------------------
+ALTER TABLE weighbridge_material_aliases ADD COLUMN supplier_scope_id INTEGER REFERENCES rm_suppliers(id);
+ALTER TABLE weighbridge_material_aliases DROP CONSTRAINT IF EXISTS weighbridge_material_aliases_normalised_key;
+CREATE UNIQUE INDEX idx_wb_mat_alias_unscoped ON weighbridge_material_aliases(normalised) WHERE supplier_scope_id IS NULL;
+CREATE UNIQUE INDEX idx_wb_mat_alias_scoped   ON weighbridge_material_aliases(normalised, supplier_scope_id) WHERE supplier_scope_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 2. The vehicle registry.
+--
+-- One row per physical lorry, ours or a supplier's. `normalised` is the lookup
+-- key (uppercased, non-alphanumerics stripped), so the nine ways an operator
+-- might type the same registration collapse onto one record without anybody
+-- doing anything.
+--
+-- AUTO-CREATED. A registration nobody has seen before gets a row the moment it
+-- crosses the weighbridge. This is the crucial difference from Round 154's
+-- design: the plant genuinely does not know a supplier's vehicle number until
+-- the lorry arrives, so anything requiring pre-registration would be dead on
+-- arrival. Nothing is ever blocked waiting for a vehicle.
+--
+-- truck_id and supplier_id are both optional and both enrichment:
+--   truck_id set    -> one of ours, and the ticket resolves to that truck
+--   supplier_id set -> a named supplier's lorry, so tonnage lands against them
+--   neither         -> seen, counted, not yet attributed. Perfectly usable.
+-- is_junk is what "not ours" now means, and only that: test weighments,
+-- blanks, a number typed into the wrong field.
+-- ---------------------------------------------------------------------------
+CREATE TABLE weighbridge_vehicles (
+  id            SERIAL PRIMARY KEY,
+  normalised    VARCHAR(60) NOT NULL UNIQUE,
+  -- The spelling shown to people: the first one seen, editable by an
+  -- Administrator into whatever the registration actually is.
+  registration  VARCHAR(60) NOT NULL,
+  truck_id      INTEGER REFERENCES trucks(id),
+  supplier_id   INTEGER REFERENCES rm_suppliers(id),
+  is_junk       BOOLEAN NOT NULL DEFAULT false,
+  notes         TEXT,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    INTEGER REFERENCES users(id),
+  -- A lorry cannot be both one of ours and a supplier's.
+  CHECK (truck_id IS NULL OR supplier_id IS NULL)
+);
+
+CREATE INDEX idx_wb_vehicles_truck    ON weighbridge_vehicles(truck_id)    WHERE truck_id IS NOT NULL;
+CREATE INDEX idx_wb_vehicles_supplier ON weighbridge_vehicles(supplier_id) WHERE supplier_id IS NOT NULL;
+CREATE INDEX idx_wb_vehicles_lastseen ON weighbridge_vehicles(last_seen_at DESC);
+
+ALTER TABLE weighbridge_tickets ADD COLUMN vehicle_id INTEGER REFERENCES weighbridge_vehicles(id);
+CREATE INDEX idx_wb_tickets_vehicle ON weighbridge_tickets(vehicle_id);
+
+-- The vehicle alias table stops meaning "which truck" and starts meaning
+-- "which registry row" — that is how a genuine typo (31KL77D4) is merged into
+-- the lorry it was meant to be, without losing the fact that it was typed.
+ALTER TABLE weighbridge_vehicle_aliases ADD COLUMN vehicle_id INTEGER REFERENCES weighbridge_vehicles(id);
+ALTER TABLE weighbridge_vehicle_aliases DROP CONSTRAINT IF EXISTS weighbridge_vehicle_aliases_check;
+
+-- ---------------------------------------------------------------------------
+-- 3. Why a short load was accepted.
+--
+-- Deliberately NOT a block on saving. The lorry has arrived and the material
+-- is in the yard; refusing to record that would push Store into not recording
+-- it at all, which is worse than recording it with a note. But a shortfall
+-- beyond the material's tolerance now has to carry a reason, so it is a
+-- decision somebody made rather than a number nobody looked at.
+-- ---------------------------------------------------------------------------
+ALTER TABLE rm_receipts ADD COLUMN short_reason TEXT;
