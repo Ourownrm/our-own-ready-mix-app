@@ -1048,7 +1048,7 @@ function OrderSummary({ o }) {
 // itself (a new order) if a different transporter actually showed up.
 
 function blankReceiptForm() {
-  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "" };
+  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "" };
 }
 
 function receiptEditForm(r) {
@@ -1091,6 +1091,34 @@ function ReceiptsTab({ role }) {
     setReceiving(o);
     setForm(blankReceiptForm());
     setError(""); setNotice(""); setWarning("");
+  }
+
+  // Round 156 — the weighbridge tickets this order could be receiving against.
+  // Matched, unclaimed, and already narrowed to the order's own material and
+  // supplier by the backend, so nothing here can offer the wrong load.
+  const [wbTickets, setWbTickets] = useState([]);
+  useEffect(() => {
+    if (!receiving) { setWbTickets([]); return; }
+    let alive = true;
+    apiRequest(`/material-module/orders/${receiving.id}/weighbridge-tickets`)
+      .then((r) => { if (alive) setWbTickets(r); })
+      .catch(() => { if (alive) setWbTickets([]); });
+    return () => { alive = false; };
+  }, [receiving]);
+
+  // Picking a ticket fills what the weighbridge actually knows and leaves the
+  // rest to Store. The billed quantity is deliberately NOT filled: the
+  // weighbridge records a DC number but never a DC quantity, and that missing
+  // number is the only thing that makes short-load checking possible.
+  function useTicket(t) {
+    setForm((f) => ({
+      ...f,
+      weighbridge_ticket_id: String(t.ticket_number),
+      weighbridge_weight_kg: String(t.net_weight_kg),
+      accepted_qty: t.net_purchase_units != null ? String(t.net_purchase_units) : f.accepted_qty,
+      vehicle_number: t.vehicle_registration || f.vehicle_number,
+      challan_number: t.challan_number && t.challan_number !== "001" ? t.challan_number : f.challan_number,
+    }));
   }
 
   async function submitReceipt(e) {
@@ -1189,6 +1217,48 @@ function ReceiptsTab({ role }) {
           <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 10 }}>
             Outstanding on this order: {fmtNum(outstandingQty)} {outstandingUnit}
           </div>
+          {/* Round 156 — pick the weighbridge ticket this load was weighed on. */}
+          {!!wbTickets.length && !form.weighbridge_ticket_id && (
+            <div style={{ border: "1px solid var(--rebar)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
+                Weighbridge tickets waiting ({wbTickets.length})
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 190, overflowY: "auto" }}>
+                {wbTickets.map((t) => (
+                  <div key={t.ticket_number} style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--border)", borderRadius: 7, padding: "8px 10px" }}>
+                    <div style={{ flexGrow: 1 }}>
+                      <div style={{ fontSize: 12.5 }}>
+                        <strong>#{t.ticket_number}</strong> · {t.vehicle_registration || "—"} ·{" "}
+                        {t.weighed_at ? new Date(t.weighed_at).toLocaleString([], { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--slate)" }}>
+                        {fmtNum(t.net_weight_kg)} kg ≈ {fmtNum(t.net_purchase_units)} {outstandingUnit}
+                      </div>
+                    </div>
+                    <button type="button" className="btn-primary" style={{ fontSize: 12 }} onClick={() => useTicket(t)}>
+                      Use this
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 8, lineHeight: 1.5 }}>
+                Or fill the form by hand for a delivery that never crossed the weighbridge.
+              </div>
+            </div>
+          )}
+
+          {!!form.weighbridge_ticket_id && (
+            <div style={{ border: "1px solid var(--signal-green)", background: "var(--signal-green-bg)", borderRadius: 8, padding: "10px 12px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 12.5, flexGrow: 1 }}>
+                Linked to weighbridge ticket <strong>#{form.weighbridge_ticket_id}</strong> — weight and vehicle came from it.
+              </span>
+              <button type="button" style={{ fontSize: 12 }}
+                      onClick={() => setForm({ ...form, weighbridge_ticket_id: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "" })}>
+                Unlink
+              </button>
+            </div>
+          )}
+
           <form onSubmit={submitReceipt}>
             <Field label={`Supplier's invoice/DC quantity (${outstandingUnit})`}>
               <input required type="number" step="0.01" min="0" value={form.supplier_qty} onChange={(e) => setForm({ ...form, supplier_qty: e.target.value })} style={inputStyle} />
@@ -1202,6 +1272,14 @@ function ReceiptsTab({ role }) {
             <Field label="Vehicle number"><input value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value })} style={inputStyle} /></Field>
             <Field label="Challan number"><input value={form.challan_number} onChange={(e) => setForm({ ...form, challan_number: e.target.value })} style={inputStyle} /></Field>
             <Field label="Debit note amount (optional, ₹ — for short supply)"><input type="number" step="0.01" min="0" value={form.debit_note_amount} onChange={(e) => setForm({ ...form, debit_note_amount: e.target.value })} style={inputStyle} /></Field>
+            {/* Round 156 — required by the backend only when the shortfall is
+                beyond the material's tolerance. Always shown, because asking
+                for it after a rejected save is a worse experience than a box
+                that is usually left empty. */}
+            <Field label="If this load is short, why? (needed when it is beyond tolerance)">
+              <input value={form.short_reason} onChange={(e) => setForm({ ...form, short_reason: e.target.value })}
+                     placeholder="spillage · disputed slip · re-weighed" style={inputStyle} />
+            </Field>
             <Field label="Notes (optional)"><textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
             <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Confirm receipt"}</button>
           </form>

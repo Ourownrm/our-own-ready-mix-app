@@ -309,7 +309,7 @@ function Receipts({ canEdit }) {
 // Mapping
 // ---------------------------------------------------------------------------
 
-const KIND_LABEL = { material: "Material", supplier: "Supplier", vehicle: "Vehicle" };
+const KIND_LABEL = { material: "Material", supplier: "Supplier" };
 
 function Mapping() {
   const [unmapped, setUnmapped] = useState([]);
@@ -317,7 +317,10 @@ function Mapping() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [draft, setDraft] = useState({});   // `${kind}:${raw_sample}` -> target id or "ignore"
+  const [busy, setBusy] = useState(false);
+  // Keyed `${kind}:${raw_sample}:${scopeId|""}` — the scope is part of the key
+  // because one spelling now has a row per supplier, each with its own choice.
+  const [draft, setDraft] = useState({});
 
   async function load() {
     setError("");
@@ -337,22 +340,21 @@ function Mapping() {
 
   useEffect(() => { load(); }, []);
 
-  async function save(kind, rawSample) {
-    const choice = draft[`${kind}:${rawSample}`];
+  async function save(kind, rawSample, scopeId) {
+    const key = `${kind}:${rawSample}:${scopeId ?? ""}`;
+    const choice = draft[key];
     if (!choice) return;
-    setError("");
-    setNotice("");
+    setError(""); setNotice("");
     try {
-      const res = await apiRequest("/weighbridge/aliases", {
-        method: "POST",
-        body: choice === "ignore"
-          ? { kind, raw_sample: rawSample, is_ignored: true }
-          : { kind, raw_sample: rawSample, target_id: Number(choice) },
-      });
+      const body = { kind, raw_sample: rawSample };
+      if (scopeId != null) body.supplier_scope_id = scopeId;
+      if (choice === "ignore") body.is_ignored = true;
+      else body.target_id = Number(choice);
+      const res = await apiRequest("/weighbridge/aliases", { method: "POST", body });
       setNotice(
         res.tickets_cleared
-          ? `Mapped. ${res.tickets_cleared} ticket${res.tickets_cleared === 1 ? "" : "s"} cleared the review queue.`
-          : "Mapped. No tickets cleared yet — something else on them is still unmapped."
+          ? `Mapped${res.scoped ? " for that supplier" : ""}. ${res.tickets_cleared} ticket${res.tickets_cleared === 1 ? "" : "s"} cleared the review queue.`
+          : `Mapped${res.scoped ? " for that supplier" : ""}. No tickets cleared yet — something else on them is still unmapped.`
       );
       await load();
     } catch (err) {
@@ -361,8 +363,7 @@ function Mapping() {
   }
 
   async function remove(kind, id) {
-    setError("");
-    setNotice("");
+    setError(""); setNotice("");
     try {
       await apiRequest(`/weighbridge/aliases/${kind}/${id}`, { method: "DELETE" });
       await load();
@@ -371,14 +372,50 @@ function Mapping() {
     }
   }
 
+  // Round 156 — re-check on demand. Adding a material or supplier to the
+  // Material Module's own masters used to reach nothing already synced,
+  // because re-resolution only ran when a MAPPING changed. That left the plant
+  // staring at a hundred tickets in Needs review against masters that would
+  // have matched them perfectly.
+  async function recheck() {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const r = await apiRequest("/weighbridge/recheck", { method: "POST" });
+      setNotice(
+        r.tickets_cleared
+          ? `Re-checked. ${r.tickets_cleared} ticket${r.tickets_cleared === 1 ? "" : "s"} resolved — ${r.needs_review_now} still need a human (was ${r.needs_review_before}).`
+          : `Re-checked. Nothing new resolved — ${r.needs_review_now} still waiting.`
+      );
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not re-check the tickets.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const existing = useMemo(() => {
     if (!aliases) return [];
-    return ["material", "supplier", "vehicle"].flatMap((kind) =>
+    return ["material", "supplier"].flatMap((kind) =>
       (aliases[kind] || []).map((a) => ({ ...a, kind }))
     );
   }, [aliases]);
 
   if (loading) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+
+  const materialOptions = aliases?.options?.material || [];
+  const supplierOptions = aliases?.options?.supplier || [];
+
+  // One unmapped entry renders either as a single row, or — for a material
+  // that has arrived from more than one supplier — as a row per supplier plus
+  // a fallback. That is the whole point of Round 156: "FLY ASH" is not one
+  // answer when three suppliers send three different products under it.
+  function scopeRows(u) {
+    if (u.kind !== "material") return [{ scopeId: null, scopeName: null }];
+    const sups = (u.suppliers || []).filter((s) => s && s.id != null);
+    if (sups.length <= 1) return [{ scopeId: null, scopeName: null }];
+    return [...sups.map((s) => ({ scopeId: s.id, scopeName: s.name })), { scopeId: null, scopeName: null }];
+  }
 
   return (
     <>
@@ -386,16 +423,30 @@ function Mapping() {
       {notice && <div className="card" style={{ marginBottom: 14, color: "var(--signal-green)", fontSize: 13 }}>{notice}</div>}
 
       <div className="card" style={{ marginBottom: 16, fontSize: 13, lineHeight: 1.6 }}>
-        <strong>Map each weighbridge spelling once.</strong> It applies to every ticket that has
-        ever carried it, not just future ones — so mapping “KL77D423” clears the whole backlog of
-        that typo immediately. Case and punctuation are already handled, which is why “20 MM” and
-        “20MM” never appear here. Choose <em>Not ours</em> for a lorry or material that genuinely
-        is not one of yours; that resolves it cleanly instead of leaving it in the queue forever.
+        <strong>Map each weighbridge spelling once.</strong> It applies to every ticket that has ever
+        carried it, not just future ones. Case and punctuation are already handled, which is why
+        “20 MM” and “20MM” never appear here.
+        <br />
+        <strong>One name can mean several materials.</strong> When a spelling has arrived from more than
+        one supplier, you get a row per supplier — so “FLY ASH” from JSW and “FLY ASH” from Thoothukudi
+        can be two different materials. The last row, <em>anyone else</em>, is the fallback for suppliers
+        you have not named.
       </div>
 
-      <h3 style={{ fontSize: 15, margin: "0 0 10px" }}>
-        Waiting to be mapped {unmapped.length ? `(${unmapped.length})` : ""}
-      </h3>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 10px" }}>
+        <h3 style={{ fontSize: 15, margin: 0 }}>
+          Waiting to be mapped {unmapped.length ? `(${unmapped.length})` : ""}
+        </h3>
+        <button type="button" style={{ marginLeft: "auto", fontSize: 13 }} disabled={busy} onClick={recheck}>
+          {busy ? "Re-checking…" : "Re-check all tickets"}
+        </button>
+      </div>
+
+      <div className="card" style={{ marginBottom: 14, fontSize: 12, color: "var(--slate)", lineHeight: 1.55 }}>
+        Use <strong>Re-check all</strong> after adding materials or suppliers in the Material Module.
+        Tickets already synced do not re-examine themselves when a master record appears, so without it
+        they sit in Needs review against a record that would now match them.
+      </div>
 
       {!unmapped.length && (
         <div className="card" style={{ fontSize: 13, color: "var(--signal-green)", marginBottom: 22 }}>
@@ -410,44 +461,54 @@ function Mapping() {
               <tr style={{ textAlign: "left", background: "var(--concrete)" }}>
                 <th style={{ padding: "9px 12px" }}>Type</th>
                 <th style={{ padding: "9px 12px" }}>As the weighbridge has it</th>
+                <th style={{ padding: "9px 12px" }}>When it comes from</th>
                 <th style={{ padding: "9px 12px", textAlign: "right" }}>Tickets</th>
-                <th style={{ padding: "9px 12px" }}>Last seen</th>
                 <th style={{ padding: "9px 12px" }}>Map it to</th>
                 <th style={{ padding: "9px 12px" }} />
               </tr>
             </thead>
             <tbody>
-              {unmapped.map((u) => {
-                const key = `${u.kind}:${u.raw_sample}`;
-                const options = aliases?.options?.[u.kind] || [];
-                return (
-                  <tr key={key} style={{ borderTop: "1px solid var(--border)" }}>
-                    <td style={{ padding: "9px 12px" }}>{KIND_LABEL[u.kind]}</td>
-                    <td style={{ padding: "9px 12px", fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>
-                      {u.raw_sample || <span style={{ color: "var(--slate)", fontStyle: "italic" }}>(blank)</span>}
-                    </td>
-                    <td style={{ padding: "9px 12px", textAlign: "right", fontWeight: 600 }}>{u.n}</td>
-                    <td style={{ padding: "9px 12px", whiteSpace: "nowrap" }}>{fmtWhen(u.last_seen)}</td>
-                    <td style={{ padding: "9px 12px" }}>
-                      <select
-                        value={draft[key] || ""}
-                        onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
-                        style={{ fontSize: 13, minWidth: 200 }}
-                      >
-                        <option value="">Choose…</option>
-                        {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                        <option value="ignore">— Not ours, ignore it —</option>
-                      </select>
-                    </td>
-                    <td style={{ padding: "9px 12px" }}>
-                      <button type="button" className="btn-primary" style={{ fontSize: 12 }}
-                              disabled={!draft[key]}
-                              onClick={() => save(u.kind, u.raw_sample)}>
-                        Save
-                      </button>
-                    </td>
-                  </tr>
-                );
+              {unmapped.flatMap((u) => {
+                const rows = scopeRows(u);
+                const options = u.kind === "material" ? materialOptions : supplierOptions;
+                return rows.map((sc, i) => {
+                  const key = `${u.kind}:${u.raw_sample}:${sc.scopeId ?? ""}`;
+                  return (
+                    <tr key={key} style={{ borderTop: i === 0 ? "1px solid var(--border)" : "1px dotted var(--border)" }}>
+                      <td style={{ padding: "9px 12px" }}>{i === 0 ? KIND_LABEL[u.kind] : ""}</td>
+                      <td style={{ padding: "9px 12px", fontFamily: "ui-monospace, monospace", fontWeight: i === 0 ? 600 : 400, color: i === 0 ? "inherit" : "var(--slate)" }}>
+                        {i === 0
+                          ? (u.raw_sample || <span style={{ color: "var(--slate)", fontStyle: "italic" }}>(blank)</span>)
+                          : ""}
+                      </td>
+                      <td style={{ padding: "9px 12px" }}>
+                        {sc.scopeName
+                          ? <span style={{ fontWeight: 600, color: "var(--rebar)" }}>{sc.scopeName}</span>
+                          : <span style={{ color: "var(--slate)" }}>{rows.length > 1 ? "anyone else" : "any supplier"}</span>}
+                      </td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontWeight: 600 }}>{i === 0 ? u.n : ""}</td>
+                      <td style={{ padding: "9px 12px" }}>
+                        <select
+                          aria-label={`Map ${u.raw_sample}${sc.scopeName ? ` from ${sc.scopeName}` : ""}`}
+                          value={draft[key] || ""}
+                          onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+                          style={{ fontSize: 13, minWidth: 210 }}
+                        >
+                          <option value="">Choose…</option>
+                          {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                          <option value="ignore">— Not ours, ignore it —</option>
+                        </select>
+                      </td>
+                      <td style={{ padding: "9px 12px" }}>
+                        <button type="button" className="btn-primary" style={{ fontSize: 12 }}
+                                disabled={!draft[key]}
+                                onClick={() => save(u.kind, u.raw_sample, sc.scopeId)}>
+                          Save
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                });
               })}
             </tbody>
           </table>
@@ -469,36 +530,233 @@ function Mapping() {
               <tr style={{ textAlign: "left", background: "var(--concrete)" }}>
                 <th style={{ padding: "9px 12px" }}>Type</th>
                 <th style={{ padding: "9px 12px" }}>Weighbridge spelling</th>
+                <th style={{ padding: "9px 12px" }}>When it comes from</th>
                 <th style={{ padding: "9px 12px" }}>Means</th>
                 <th style={{ padding: "9px 12px" }} />
               </tr>
             </thead>
             <tbody>
-              {existing.map((a) => (
-                <tr key={`${a.kind}-${a.id}`} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ padding: "9px 12px" }}>{KIND_LABEL[a.kind]}</td>
-                  <td style={{ padding: "9px 12px", fontFamily: "ui-monospace, monospace" }}>{a.raw_sample}</td>
-                  <td style={{ padding: "9px 12px" }}>
-                    {a.is_ignored
-                      ? <span style={{ color: "var(--slate)", fontStyle: "italic" }}>not ours — ignored</span>
-                      : (a.target || <span style={{ color: "var(--alert-red)" }}>record no longer exists</span>)}
-                  </td>
-                  <td style={{ padding: "9px 12px" }}>
-                    <button type="button" style={{ fontSize: 12 }} onClick={() => remove(a.kind, a.id)}>
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {existing.map((a) => {
+                const key = `${a.kind}:${a.raw_sample}:${a.supplier_scope_id ?? ""}`;
+                const options = a.kind === "material" ? materialOptions : supplierOptions;
+                return (
+                  <tr key={`${a.kind}-${a.id}`} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "9px 12px" }}>{KIND_LABEL[a.kind]}</td>
+                    <td style={{ padding: "9px 12px", fontFamily: "ui-monospace, monospace" }}>{a.raw_sample}</td>
+                    <td style={{ padding: "9px 12px" }}>
+                      {a.scope_name
+                        ? <span style={{ fontWeight: 600, color: "var(--rebar)" }}>{a.scope_name}</span>
+                        : <span style={{ color: "var(--slate)" }}>any supplier</span>}
+                    </td>
+                    <td style={{ padding: "9px 12px" }}>
+                      {/* Round 156 — a wrong rule is corrected in place. Saving
+                          the same spelling and scope again replaces it, so
+                          there is no delete-then-redo dance. */}
+                      <select
+                        aria-label={`Change what ${a.raw_sample} means`}
+                        value={draft[key] ?? ""}
+                        onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+                        style={{ fontSize: 13, minWidth: 200 }}
+                      >
+                        <option value="">
+                          {a.is_ignored ? "not ours — ignored" : (a.target || "record no longer exists")}
+                        </option>
+                        {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                        <option value="ignore">— Not ours, ignore it —</option>
+                      </select>
+                    </td>
+                    <td style={{ padding: "9px 12px", whiteSpace: "nowrap" }}>
+                      <button type="button" className="btn-primary" style={{ fontSize: 12, marginRight: 6 }}
+                              disabled={!draft[key]}
+                              onClick={() => save(a.kind, a.raw_sample, a.supplier_scope_id ?? null)}>
+                        Change
+                      </button>
+                      <button type="button" style={{ fontSize: 12 }} onClick={() => remove(a.kind, a.id)}>
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
       <p style={{ fontSize: 12, color: "var(--slate)", marginTop: 14, lineHeight: 1.6 }}>
-        Removing a mapping puts future tickets with that spelling back in the review queue. It does
-        not un-resolve tickets that already matched — stock credited against them stays credited,
-        which is the honest behaviour when somebody is only tidying this list.
+        Changing or removing a rule re-checks every ticket still waiting. It does not un-resolve tickets
+        that already matched — stock credited against them stays credited, which is the honest behaviour
+        when somebody is only tidying this list.
+      </p>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Vehicles — Round 156
+// ---------------------------------------------------------------------------
+
+function fmtT(kg) {
+  if (kg == null) return "—";
+  return `${(Number(kg) / 1000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} t`;
+}
+
+function Vehicles({ canEdit }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [mergeFrom, setMergeFrom] = useState(null);
+
+  async function load() {
+    setError("");
+    try {
+      setData(await apiRequest("/weighbridge/vehicles"));
+    } catch (err) {
+      setError(err.message || "Could not load the vehicles.");
+    }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function setOwner(v, value) {
+    setError(""); setNotice("");
+    const body = { truck_id: null, supplier_id: null, is_junk: false };
+    if (value.startsWith("t:")) body.truck_id = Number(value.slice(2));
+    else if (value.startsWith("s:")) body.supplier_id = Number(value.slice(2));
+    else if (value === "junk") body.is_junk = true;
+    try {
+      await apiRequest(`/weighbridge/vehicles/${v.id}`, { method: "PATCH", body });
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not update that vehicle.");
+    }
+  }
+
+  async function doMerge(intoId) {
+    setError(""); setNotice("");
+    try {
+      const r = await apiRequest(`/weighbridge/vehicles/${mergeFrom.id}/merge`, {
+        method: "POST",
+        body: { into_id: intoId, first_seen_at: mergeFrom.first_seen_at, last_seen_at: mergeFrom.last_seen_at },
+      });
+      setNotice(`Merged. ${r.tickets_moved} ticket${r.tickets_moved === 1 ? "" : "s"} moved across.`);
+      setMergeFrom(null);
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not merge those vehicles.");
+    }
+  }
+
+  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+
+  const { vehicles, options } = data;
+  const unattributed = vehicles.filter((v) => !v.truck_id && !v.supplier_id && !v.is_junk).length;
+
+  return (
+    <>
+      {error && <div className="card" style={{ marginBottom: 14, color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}
+      {notice && <div className="card" style={{ marginBottom: 14, color: "var(--signal-green)", fontSize: 13 }}>{notice}</div>}
+
+      <div className="card" style={{ marginBottom: 16, fontSize: 13, lineHeight: 1.6 }}>
+        <strong>Every lorry gets a record, whether or not it is yours.</strong> A supplier's vehicle
+        registers itself the first time it crosses the weighbridge — nobody needs to know its number in
+        advance, which matters because you don't until it arrives. The different ways an operator might
+        type the same registration collapse onto one record, so trips and tonnage add up per lorry.
+        <br />
+        Saying who owns one is optional. It is worth doing where you want a supplier's tonnage to add up,
+        and it is not worth doing for a lorry you will see once.
+      </div>
+
+      {mergeFrom && (
+        <div className="card" style={{ marginBottom: 16, background: "var(--amber-bg)", borderColor: "var(--amber)" }}>
+          <div style={{ fontSize: 13, marginBottom: 8 }}>
+            Merge <strong style={{ fontFamily: "ui-monospace, monospace" }}>{mergeFrom.registration}</strong> into
+            which lorry? Its {mergeFrom.trips} ticket{mergeFrom.trips === 1 ? "" : "s"} move across, and this
+            spelling will resolve straight there in future.
+          </div>
+          <select aria-label="Merge into which vehicle" defaultValue="" style={{ fontSize: 13, minWidth: 260 }}
+                  onChange={(e) => { if (e.target.value) doMerge(Number(e.target.value)); }}>
+            <option value="">Choose the lorry it should have been…</option>
+            {vehicles.filter((v) => v.id !== mergeFrom.id).map((v) => (
+              <option key={v.id} value={v.id}>{v.registration} — {v.trips} trips</option>
+            ))}
+          </select>
+          <button type="button" style={{ fontSize: 13, marginLeft: 8 }} onClick={() => setMergeFrom(null)}>Cancel</button>
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
+        <h3 style={{ fontSize: 15, margin: 0 }}>Vehicles seen at the weighbridge ({vehicles.length})</h3>
+        {unattributed > 0 && (
+          <span style={{ fontSize: 12.5, color: "var(--slate)" }}>{unattributed} not yet attributed to anyone</span>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: "left", background: "var(--concrete)" }}>
+              <th style={{ padding: "9px 12px" }}>Registration</th>
+              <th style={{ padding: "9px 12px" }}>Belongs to</th>
+              <th style={{ padding: "9px 12px", textAlign: "right" }}>Trips</th>
+              <th style={{ padding: "9px 12px", textAlign: "right" }}>Tonnage</th>
+              <th style={{ padding: "9px 12px", textAlign: "right" }}>Avg load</th>
+              <th style={{ padding: "9px 12px", textAlign: "right" }}>Usual tare</th>
+              {canEdit && <th style={{ padding: "9px 12px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {vehicles.map((v) => {
+              const owner = v.truck_id ? `t:${v.truck_id}` : v.supplier_id ? `s:${v.supplier_id}` : v.is_junk ? "junk" : "";
+              return (
+                <tr key={v.id} style={{ borderTop: "1px solid var(--border)", opacity: v.is_junk ? 0.55 : 1 }}>
+                  <td style={{ padding: "9px 12px" }}>
+                    <div style={{ fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>{v.registration}</div>
+                    {!!v.aliases.length && (
+                      <div style={{ fontSize: 11, color: "var(--slate)", fontFamily: "ui-monospace, monospace" }}>
+                        also typed as {v.aliases.join(" · ")}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ padding: "9px 12px" }}>
+                    {canEdit ? (
+                      <select aria-label={`Who owns ${v.registration}`} value={owner}
+                              onChange={(e) => setOwner(v, e.target.value)}
+                              style={{ fontSize: 13, minWidth: 190 }}>
+                        <option value="">not attributed</option>
+                        <optgroup label="One of ours">
+                          {options.trucks.map((t) => <option key={`t${t.id}`} value={`t:${t.id}`}>{t.name}</option>)}
+                        </optgroup>
+                        <optgroup label="A supplier's lorry">
+                          {options.suppliers.map((s) => <option key={`s${s.id}`} value={`s:${s.id}`}>{s.name}</option>)}
+                        </optgroup>
+                        <option value="junk">— not a real lorry —</option>
+                      </select>
+                    ) : (
+                      <span>{v.truck_number || v.supplier_name || <span style={{ color: "var(--slate)" }}>—</span>}</span>
+                    )}
+                  </td>
+                  <td style={{ padding: "9px 12px", textAlign: "right", fontWeight: 600 }}>{v.trips}</td>
+                  <td style={{ padding: "9px 12px", textAlign: "right" }}>{fmtT(v.total_kg)}</td>
+                  <td style={{ padding: "9px 12px", textAlign: "right" }}>{fmtT(v.avg_kg)}</td>
+                  <td style={{ padding: "9px 12px", textAlign: "right", color: "var(--slate)" }}>
+                    {v.usual_tare_kg != null ? `${Number(v.usual_tare_kg).toLocaleString()} kg` : "—"}
+                  </td>
+                  {canEdit && (
+                    <td style={{ padding: "9px 12px" }}>
+                      <button type="button" style={{ fontSize: 12 }} onClick={() => setMergeFrom(v)}>Merge…</button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p style={{ fontSize: 12, color: "var(--slate)", marginTop: 14, lineHeight: 1.6 }}>
+        Usual tare is the empty weight this lorry most often shows. Nothing acts on it automatically, but a
+        tare that drifts is worth a look — it is the shape a weighbridge problem tends to take.
       </p>
     </>
   );
@@ -542,9 +800,16 @@ export default function Weighbridge() {
             <button type="button" className={`btn-tab ${tab === "mapping" ? "active" : ""}`} onClick={() => setTab("mapping")}>
               Name mapping
             </button>
+            <button type="button" className={`btn-tab ${tab === "vehicles" ? "active" : ""}`} onClick={() => setTab("vehicles")}>
+              Vehicles
+            </button>
           </div>
         )}
-        {tab === "mapping" && canMap ? <Mapping /> : <Receipts canEdit={canEdit} />}
+        {tab === "mapping" && canMap
+          ? <Mapping />
+          : tab === "vehicles" && canView
+            ? <Vehicles canEdit={canMap} />
+            : <Receipts canEdit={canEdit} />}
       </div>
     </>
   );
