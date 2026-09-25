@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "check": "node scripts/check-guards.mjs && node scripts/check-dates.mjs && node scripts/check-receipts.mjs && node scripts/check-plant-qty.mjs && node scripts/check-workbook-cells.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

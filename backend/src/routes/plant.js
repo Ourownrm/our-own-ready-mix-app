@@ -972,6 +972,81 @@ router.post("/manual", requireRole(...PLANT_MANUAL), requirePermission("producti
   }
 });
 
+/* =========================================================================
+ * ROUND 160 — the QC delay allowance behind the ticket's finish time.
+ *
+ * BPR107a.xlsm used to compute the finish time itself. That formula is gone,
+ * so MixTrack writes cell K21, and what it writes is the plant's own end time
+ * plus an allowance: plant QC procedure runs on past the mixer finishing, and
+ * the ticket should say when the load was released rather than when the last
+ * batch dropped.
+ *
+ * Per site OR per customer, and site wins when both exist — the delay belongs
+ * to the pour, not to whoever is paying for it. A row with neither set is the
+ * plant-wide default, of which the unique indexes permit exactly one.
+ *
+ * Administrator to change, Manager to read. This moves a time printed on a
+ * document that goes to a customer, which makes it a settings decision rather
+ * than a shift-floor one — deliberately NOT the Plant Operator's, unlike the
+ * manual entry endpoints above.
+ * ===================================================================== */
+
+const QC_DELAY_READ = ["administrator", "manager"];
+
+router.get("/qc-delays", requireRole(...QC_DELAY_READ), requirePermission("production.mixtrack-qc-delay", "view"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT q.id, q.customer_id, q.site_id, q.delay_minutes, q.note,
+            to_char(q.updated_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS updated_at,
+            c.name AS customer_name, s.name AS site_name, u.name AS updated_by_name
+       FROM mixtrack_qc_delays q
+       LEFT JOIN customers c ON c.id = q.customer_id
+       LEFT JOIN sites s ON s.id = q.site_id
+       LEFT JOIN users u ON u.id = q.updated_by
+      ORDER BY (q.site_id IS NULL AND q.customer_id IS NULL), s.name NULLS LAST, c.name NULLS LAST`
+  );
+  res.json(rows);
+});
+
+router.post("/qc-delays", requireRole(...PLANT_ADMIN), requirePermission("production.mixtrack-qc-delay", "create"), async (req, res) => {
+  const { customer_id, site_id, delay_minutes, note } = req.body || {};
+  const mins = Number(delay_minutes);
+  if (!Number.isFinite(mins) || mins < 0 || mins > 240) {
+    return res.status(400).json({ error: "The allowance must be between 0 and 240 minutes." });
+  }
+  // Both set is refused rather than silently resolved. A row that names a
+  // customer AND a site reads as "this customer at this site", which is not
+  // what the lookup does, and a rule that does not mean what it says is worse
+  // than no rule.
+  if (customer_id && site_id) {
+    return res.status(400).json({ error: "Set the allowance against a site or a customer, not both." });
+  }
+  const { rows } = await query(
+    `INSERT INTO mixtrack_qc_delays (customer_id, site_id, delay_minutes, note, updated_by)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT DO NOTHING
+     RETURNING id, customer_id, site_id, delay_minutes`,
+    [customer_id || null, site_id || null, Math.round(mins), note || null, req.user.id]
+  );
+  if (!rows.length) {
+    // The unique indexes caught an existing rule for the same target, so this
+    // is an edit rather than a new rule.
+    const { rows: updated } = await query(
+      `UPDATE mixtrack_qc_delays
+          SET delay_minutes = $3, note = $4, updated_by = $5, updated_at = now()
+        WHERE (site_id IS NOT DISTINCT FROM $2) AND (customer_id IS NOT DISTINCT FROM $1)
+        RETURNING id, customer_id, site_id, delay_minutes`,
+      [customer_id || null, site_id || null, Math.round(mins), note || null, req.user.id]
+    );
+    return res.json(updated[0] || null);
+  }
+  res.status(201).json(rows[0]);
+});
+
+router.delete("/qc-delays/:id", requireRole(...PLANT_ADMIN), requirePermission("production.mixtrack-qc-delay", "edit"), async (req, res) => {
+  await query(`DELETE FROM mixtrack_qc_delays WHERE id = $1`, [req.params.id]);
+  res.json({ ok: true });
+});
+
 router.post("/recheck", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "edit"), async (req, res) => {
   try {
     const touched = await reresolveSilos();

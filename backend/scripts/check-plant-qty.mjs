@@ -28,8 +28,12 @@
 
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = path.join(process.cwd(), "src");
+// Resolved from this file, not the shell's working directory: run from the
+// repository root rather than backend/ and a cwd-relative path silently
+// scans nothing, which a checker reports as a pass.
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 // sum/avg over a column that is not per-batch. Whitespace-tolerant, because
 // these appear inside formatted SQL.

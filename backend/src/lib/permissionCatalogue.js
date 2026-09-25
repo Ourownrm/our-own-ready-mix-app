@@ -217,6 +217,15 @@ export const CATALOGUE = [
   f("production.plant-mapping", "production", "Plant silo mapping", VCE,
     { administrator: VCE }),
 
+  // ROUND 160 — the QC allowance added to the ticket's finish time, per
+  // customer or site.
+  //
+  // Administrator only, and deliberately not the Plant Operator's: this moves
+  // the time printed on a document that goes to the customer, so it is a
+  // settings decision rather than a shift-floor one. A Manager may look.
+  f("production.mixtrack-qc-delay", "production", "MixTrack QC delay allowance", VCE,
+    { administrator: VCE, manager: V }),
+
   // ---------- Store & supplies ----------
   f("store.items", "store", "Store stock items", VCE,
     { administrator: VCE, manager: VCE, store: VC, accountant: V }),

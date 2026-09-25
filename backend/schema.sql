@@ -2976,3 +2976,193 @@ CREATE INDEX idx_rm_receipts_pending ON rm_receipts(confirmation_status)
 -- ---------------------------------------------------------------------------
 CREATE VIEW rm_receipts_effective AS
   SELECT * FROM rm_receipts WHERE confirmation_status <> 'pending';
+
+-- ============================================================================
+-- ROUND 160 — the MixTrack ticket's own fields
+-- ============================================================================
+--
+-- BPR107a.xlsm lost three formulas this round. M32 (Recipe Name), AZ32 (Driver
+-- Name) and AZ34 (Order No) were lookups the sheet did for itself; the user
+-- removed them and MixTrack supplies all three now. A lookup needs nothing
+-- stored, a written value does — hence these columns.
+--
+-- The change was not cosmetic. AZ32 looked the driver up against an 11-row
+-- table while the plant has run 17 trucks and 28 drivers, so it was returning
+-- #N/A on most loads; M32 looked the recipe name up from the code, and the two
+-- are different strings on 210 of 2,495 real loads ("M30 B" vs "M30B").
+
+-- Order No — cell AZ34, from Batch_Dat_Trans.Order_No.
+--
+-- Not a number. MCI370 has no numeric order reference anywhere (Order_Master's
+-- own jobno and accno are '0' on every row); Order_No holds the ORDER NAME,
+-- which the operator types as the customer. So this usually reads the same as
+-- the customer, which is what the old =M26 formula was approximating.
+--
+-- Stored as text, verbatim, for the reason every other vendor string in this
+-- app is: it is their data and we do not get to tidy it.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS order_no VARCHAR(100);
+
+-- Recipe Name — cell M32, from Batch_Dat_Trans.Recipe_Name.
+--
+-- Denormalised deliberately. The mix design's name is what we would otherwise
+-- join to, but the ticket must print what the PLANT called the recipe on the
+-- day, not what our master data calls it now. A ticket is a record of a load
+-- that happened; renaming a mix design in six months must not rewrite it.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS recipe_name VARCHAR(120);
+
+-- Batch start and end — cells K19 and K21, from the plant's own clock.
+--
+-- K21's formula was removed in the previous revision, so the finish time is
+-- written too. It is the plant's end time PLUS a QC allowance, because plant
+-- QC procedure runs on past the mixer finishing and the ticket should show
+-- when the load was released rather than when the last batch dropped.
+--
+-- Both the plant's figure and the allowance are stored, not just the sum: when
+-- somebody asks why a ticket says 12:16 the answer has to be recoverable.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS batch_started_at   TIMESTAMPTZ;
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS batch_ended_at     TIMESTAMPTZ;
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS qc_delay_minutes   INTEGER NOT NULL DEFAULT 0;
+
+-- The QC allowance itself, per customer or per site.
+--
+-- Site wins over customer when both are set, because the delay is a property
+-- of the pour rather than of who is paying for it. Null customer AND null site
+-- is the plant-wide default, of which there is at most one.
+CREATE TABLE IF NOT EXISTS mixtrack_qc_delays (
+  id            SERIAL PRIMARY KEY,
+  customer_id   INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+  site_id       INTEGER REFERENCES sites(id) ON DELETE CASCADE,
+  delay_minutes INTEGER NOT NULL DEFAULT 0 CHECK (delay_minutes >= 0 AND delay_minutes <= 240),
+  note          TEXT,
+  updated_by    INTEGER REFERENCES users(id),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_site
+  ON mixtrack_qc_delays(site_id) WHERE site_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_customer
+  ON mixtrack_qc_delays(customer_id) WHERE site_id IS NULL AND customer_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_default
+  ON mixtrack_qc_delays((true)) WHERE site_id IS NULL AND customer_id IS NULL;
+
+-- order_no, recipe_name and truck_driver already exist on plant_batches and
+-- the agent already sends all three — Round 157 stored them without having a
+-- use for them yet. This round gives them one, so only the index is new.
+--
+-- Order_No is the key to map customers on, NOT Customer_Code. Order_No
+-- resolves into MCI370's Order_Master on 2,492 of 2,492 real loads;
+-- Customer_Code fails against Customer_Master on 1,911 of 2,485, because
+-- Customer_Master is a stale 41-row list while the real customer list lives in
+-- Order_Master with 97 entries. The two also disagree on 184 loads, almost all
+-- typos from the operator typing the same name into two fields
+-- ("PM KELUKUTTY" against "PM KELKUTTY", 123 loads).
+--
+-- customer_code is kept alongside it for display and for the audit trail: it
+-- is what the panel showed on the day, and that is worth not losing.
+CREATE INDEX IF NOT EXISTS idx_plant_batches_order_no ON plant_batches(order_no);
+
+-- ============================================================================
+-- ROUND 161 — MixTrack makes the ticket
+-- ============================================================================
+
+-- The recipe map — MCI370's code to the Mix Design sheet's own recipe.
+--
+-- This exists because the two spellings genuinely differ and always will: the
+-- plant writes 'M25A', the sheet has 'M 25 A'. Measured over 2,495 real loads,
+-- the plant's code matches a sheet row EXACTLY — which is what VLOOKUP(...,
+-- FALSE) requires — on 2 loads. Ignoring spacing it matches 1,558 (62%).
+--
+-- Deliberately a HUMAN mapping, not normalise-and-hope. The same decision as
+-- the weighbridge's name aliases and for the same reason: 'M25A' and 'M25 A'
+-- are one edit apart from 'M35A', and a wrong auto-match prints the wrong mix
+-- on a document that goes to a customer.
+CREATE TABLE IF NOT EXISTS mixtrack_recipe_map (
+  id            SERIAL PRIMARY KEY,
+  -- MCI370's Recipe_Code, verbatim. Their data, not tidied.
+  mci370_code   VARCHAR(50) NOT NULL UNIQUE,
+  -- What goes in Load!H45. Points at the design rather than repeating its
+  -- code, so renaming a recipe cannot orphan the mapping.
+  mix_design_id INTEGER NOT NULL REFERENCES solitaire_mix_designs(id) ON DELETE RESTRICT,
+  mapped_by     INTEGER REFERENCES solitaire_accounts(id),
+  mapped_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  note          TEXT
+);
+
+-- Every change QC makes to a mix design, kept.
+--
+-- These numbers decide what is printed on a customer's ticket and what the
+-- plant is judged against. "Who changed the water content, and when" has to be
+-- answerable, and the row itself only ever holds the current value.
+CREATE TABLE IF NOT EXISTS mixtrack_mix_design_log (
+  id            SERIAL PRIMARY KEY,
+  mix_design_id INTEGER NOT NULL REFERENCES solitaire_mix_designs(id) ON DELETE CASCADE,
+  action        VARCHAR(12) NOT NULL CHECK (action IN ('create', 'update', 'deactivate', 'seed')),
+  -- The whole row before and after, as JSON. Column-by-column diffing would
+  -- need a migration every time the design widens; this does not.
+  before_json   JSONB,
+  after_json    JSONB,
+  changed_by    INTEGER REFERENCES solitaire_accounts(id),
+  changed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mixtrack_mix_log ON mixtrack_mix_design_log(mix_design_id, changed_at DESC);
+
+-- The print queue.
+--
+-- A job is created when the operator saves Production Qty, and carries a
+-- SNAPSHOT of every cell value at that moment. The agent on the plant PC
+-- claims it, writes the Mix Design and Load sheets into a working copy, calls
+-- the workbook's own PrintOrderandAsPDF, and reports back.
+--
+-- The snapshot is the point. A reprint must reproduce the paper that was
+-- handed over, and a job that is retried tomorrow must not pick up a mix
+-- design QC edited in between.
+CREATE TABLE IF NOT EXISTS mixtrack_print_jobs (
+  id            SERIAL PRIMARY KEY,
+  docket_id     INTEGER NOT NULL REFERENCES solitaire_dockets(id) ON DELETE CASCADE,
+  status        VARCHAR(12) NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'claimed', 'done', 'failed')),
+  payload_json  JSONB NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  claimed_at    TIMESTAMPTZ,
+  completed_at  TIMESTAMPTZ,
+  error         TEXT,
+  pdf_filename  TEXT,
+  agent_version VARCHAR(20),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mixtrack_jobs_pending ON mixtrack_print_jobs(created_at)
+  WHERE status IN ('pending', 'claimed');
+
+-- Which plant load a docket came from, so a load cannot be ticketed twice.
+-- Partial UNIQUE: hand-raised dockets carry no load and must not collide.
+-- Types MATCH plant_batches exactly: plant_no is VARCHAR there (MCI370 can be
+-- networked across plants and the value is theirs, not ours) and batch_no is
+-- BIGINT. A mismatched type here would make the join silently cast on every
+-- lookup, and would eventually refuse a value plant_batches accepts.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS plant_no         VARCHAR(50);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS plant_batch_no   BIGINT;
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS plant_batch_year INTEGER;
+-- MCI370's OWN recipe code, which is what the ticket PRINTS (M29 -> J14 on
+-- every numbered sheet). lookup_code beside it is the workbook's spelling and
+-- is what the VLOOKUP uses (H45). Keeping only one of them was a real bug
+-- caught in verification: the payload printed the workbook's code where the
+-- plant's belonged, which is exactly what splitting H45 from M29 was for.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS recipe_code      VARCHAR(50);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS lookup_code    VARCHAR(50);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS pdf_purged_at  TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_docket_plant_load
+  ON solitaire_dockets(plant_no, plant_batch_year, plant_batch_no)
+  WHERE plant_batch_no IS NOT NULL;
+
+-- PDF retention. The docket ROW is kept forever — about 1 KB, so the whole
+-- searchable history costs ~1.5 MB a year at this plant's 1,500 loads. Only
+-- pdf_data is purged, because at ~200 KB a ticket that is ~290 MB a year and
+-- would fill a 1 GB database in three years.
+--
+-- Nothing is lost: every PDF also lives in a folder on the plant PC, and past
+-- the window the search window reprints it through the workbook's own
+-- PrintPDFFromFolderByNumber, which finds it there by number.
+INSERT INTO solitaire_settings (key, value)
+VALUES ('pdf_retention_months', '2')
+ON CONFLICT (key) DO NOTHING;

@@ -47,7 +47,7 @@ import qcDashboardRoutes from "./routes/qcDashboard.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 // Round 146 — Super Admin per-user access control.
 import superAdminRoutes from "./routes/superAdmin.js";
-import solitaireRoutes from "./routes/solitaire.js";
+import solitaireRoutes, { printRouter as mixtrackPrintRouter } from "./routes/solitaire.js";
 import solitaireAccessRoutes from "./routes/solitaireAccess.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
@@ -202,6 +202,12 @@ app.use("/api/super-admin", superAdminRoutes);
 // expose anything — a Super Admin switching the plugin off makes every route
 // below answer 404 without a redeploy.
 app.use("/api/solitaire", solitaireRoutes);
+// ROUND 161 — the MixTrack print agent. A separate mount because it does NOT
+// take a browser session: it authenticates with MIXTRACK_API_KEY, like the
+// weighbridge and plant agents, and so must sit outside the module's own
+// cookie-and-device auth. It stays on the app-wide CORS policy (no cookies)
+// rather than the credentialed Solitaire one.
+app.use("/api/mixtrack-print", mixtrackPrintRouter);
 app.use("/api/solitaire-access", solitaireAccessRoutes);
 app.use("/api/booking-links", bookingLinksRoutes);
 // Manager/Admin-only, staff auth as usual — generates/lists/revokes the

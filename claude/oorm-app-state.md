@@ -1,4 +1,4 @@
-# OORM App — Current State (as of App 156, Ver. 9.82)
+# OORM App — Current State (as of Round 161, Ver. 9.87)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -68,6 +68,128 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 `todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 161 — MixTrack makes the ticket (v9.87)
+
+**Visit `/setup?key=...` once** AND set **`MIXTRACK_API_KEY`**. Unset = the print endpoints are
+CLOSED, not open (verified). New: `mixtrack_recipe_map`, `mixtrack_mix_design_log`,
+`mixtrack_print_jobs`, docket columns (plant link, recipe_code, lookup_code, pdf_purged_at),
+`pdf_retention_months` = 2.
+
+**THE WORKBOOK ALREADY PRINTS.** Decompiling the VBA found `PrintOrderandAsPDF` (prints, names the
+PDF from cell values, exports) and `PrintPDFFromFolderByNumber` (finds a saved PDF by number and
+reprints). MixTrack fills cells and CALLS them — it does not reimplement printing. This settles the
+architecture: **Excel on the plant PC** via `tools/mixtrack-print-agent/`, NOT LibreOffice on
+Render as Round 160 assumed.
+
+**H45 vs M29 — two cells, two jobs.** M29 is what the ticket PRINTS (`J14 = Load!M29` on every
+numbered sheet). H45 (was `=M29`) is the LOOKUP KEY for
+`VLOOKUP($H$45,'Mix Design'!B3:W65,n,FALSE)` across thirteen ingredients. Plant writes `M25A`,
+sheet has `M 25 A`; one cell cannot do both. **Shipped wrong first** — the payload read the code
+off the mix design, printing the workbook's spelling where the plant's belonged, defeating the
+whole split. Caught by reading the first real payload.
+
+**The map, and what mapping cannot fix.** Exact match over 2,495 loads: **2**. Ignoring spacing:
+1,558 (62%). The other **937 (38%)** use a recipe with NO Mix Design row in any spelling — M25A
+(448), M30 B (210), M35 A (136), M25 E (85), M35 ULCCS (44), WATER BATCH (12), M40 SCC (2). So QC
+gets **seed-from-plant**: creates each missing design from `<slot>_Rec` (stored since Round 159),
+logged with action `seed`. A recipe the plant reported no design values for is LEFT ALONE — an
+all-zero design looks complete and prints zeros. Mapping is human; the suggestion is shown, never
+applied, and two designs normalising alike produce none.
+
+**HELD LOADS DO NOT PRINT** (user's decision). No mapping, or a deactivated design → refused with
+the recipe NAMED. Deactivating a design a recipe still maps to is refused too.
+
+**Production Qty is the trigger.** Nothing can print before it — `I40` derives the sheet from
+`AO29`. Saving it creates docket + job in one transaction. Plant's own figure shown as a check,
+never a default. Partial unique index on (plant, year, batch_no) stops double-ticketing.
+
+**The job carries a SNAPSHOT** of every cell and every Mix Design row, so a retry or a reprint
+reproduces the paper handed over rather than picking up a later QC edit. Agent claims with
+`UPDATE ... RETURNING ... FOR UPDATE SKIP LOCKED`; a job claimed but unreported is re-offered after
+10 min. **The agent refuses to print if the workbook's own `I40` disagrees with the app's sheet
+number** — wrong sheet = wrong NUMBER OF BATCH BLOCKS on a customer's ticket.
+
+**PDFs: 2 months** (user's decision). ~1,500 loads/yr × ~200 KB = ~290 MB/yr, fills 1 GB in 3
+years. The docket ROW is NEVER purged (~1 KB, ~1.5 MB/yr) — only `pdf_data`, with `pdf_purged_at`
+so the search window says "reprint from the plant PC" rather than looking like it never printed.
+
+**Moisture — the average was wrong.** AO34 takes one number; averaging every gate gave 2.45% from
+sand 6.04 / 12mm 0.8 / 20mm 0.5, describing nothing. It is the SAND's (gate2). Note AO34 feeds NO
+formula: the moisture that drives the calculation is the Mix Design sheet's columns R-U, a stored
+per-recipe figure, NOT the plant's live reading. Worth revisiting with the user.
+
+**Save folder**: `'Mix Design'!AF4` shipped as `G:\BPR105\BATCH REPORT 2026` — a MAPPED DRIVE,
+invisible to the SYSTEM account a scheduled agent runs under, with the year baked in. The agent
+writes the cell itself from a local path.
+
+**Next**: deploy both agents to the plant PC (MCI370 agent still never deployed — `npm run probe`
+first), map the real silos, and settle whether the ticket should use the plant's live moisture.
+
+## Round 160 — the ticket workbook stops guessing (v9.86)
+
+**Visit `/setup?key=...` once** — adds `order_no`, `recipe_name`, `batch_started_at`,
+`batch_ended_at`, `qc_delay_minutes` to `solitaire_dockets`, the new `mixtrack_qc_delays` table, an
+index on `plant_batches.order_no`, and REPAIR_160.
+
+**BPR107a.xlsm arrived**, then twice more with the user's own revisions. Three formulas are gone —
+**M32** (Recipe Name), **AZ32** (Driver Name), **AZ34** (Order No) — and MixTrack writes all three.
+Not a transfer of work: both lookups were already FAILING on real data.
+
+- `AZ32` looked the driver up against an 11-row table. The plant has run **17 trucks, 28 drivers**;
+  11 of those trucks are not in the table, and the listed registrations do not match MCI370's
+  spacing (`KL14AF2789` vs `KL14 AF 2789`, two with trailing spaces). Where it did hit, the names
+  disagreed — sheet RAGHAV/DAMUDAR vs plant RAGHAVENDRA/DAMU.
+- `M32` looked the recipe NAME up from the CODE. They are different strings on **210 of 2,495
+  loads** (`M30 B` vs `M30B`).
+
+**CUSTOMER KEY CORRECTED — Order_No, not Customer_Code.** `Order_No` resolves into `Order_Master`
+on **2,492 of 2,492** loads; `Customer_Code` resolves into `Customer_Master` on only **574 of
+2,485**. `Customer_Master` is a stale 41-row list; the real list is `Order_Master`'s 97 rows. The
+two fields also disagree on 184 loads (`PM KELUKUTTY`/`PM KELKUTTY`, 123). The Round 157 note saying
+to read `Customer_Master` was WRONG — see `claude/mci370-customer-key-correction.md`. MCI370 has no
+numeric order reference at all (`jobno`/`accno` are `'0'` everywhere), so AZ34 prints a name.
+
+**`lib/mixtrackWorkbook.js` is the single source of truth** for the 16-cell Load-sheet map, the
+protected cells (`I40`), and the removed Batch Time cells. Cell map, docket schema and checker
+cannot drift apart.
+
+**SHEET-SELECTION BUG.** `computeSheetNumber` divided quantity by mixer capacity; the workbook's own
+`I40` is `ceil(AO29)` clamped 1-10, depending on NOTHING else. They agree only because this mixer is
+1 m³ — at 0.5 m³ a 4 m³ load would print sheet 8 for a four-batch load. Verified equal to `I40`
+across ten quantities with capacity deliberately 0.5.
+
+**BATCH TIME REMOVAL BROKE THE QUANTITY CHECK.** The user deleted `W8:AA10` on sheets 1-10; `W12`
+sat inside it and was something else — the `"OK"`/`"WRONG QTY"` guard `Load!H41`-`AR41` read, which
+became `#REF!`. Those seven cells were CLEARED, not restored: with the agent writing AO29 and `I40`
+deriving the sheet, the mismatch cannot occur. (It only ever covered sheets 1-7 anyway.)
+
+**QC DELAY ALLOWANCE.** `K21 = plant Batch_End_Time + allowance`, per site or per customer, **site
+wins** (the delay belongs to the pour). New key `production.mixtrack-qc-delay` — Administrator
+edits, Manager views, deliberately NOT Plant Operator: it moves a time printed on a customer's
+document. The resolved figure is **stored on the docket**, so a reprint reproduces the paper handed
+over; verified by changing 12 → 45 min and confirming the old docket still reprints 12:28:24.
+
+**RAND() KEPT.** Row 28 on the numbered sheets ("Actual") is `=$B$27+($B$27*n*(0.5-RAND()))/100` —
+±0.5% aggregates, ±1% powders, 102 cells on sheet 10. The user decided to KEEP this. Consequence to
+remember: the printed ticket and its archived PDF will NOT match the measured per-batch weights the
+app holds, and re-randomise on every recalculation. Do not "fix" it without asking.
+
+**FIFTH CHECKER** — `check-workbook-cells.mjs`: an unwritten cell keeps the PREVIOUS load's value
+(the workbook is reused), writing `I40` destroys a formula, and a reference to a removed cell reads
+blank rather than failing. Also fixed while nearby: `check-receipts.mjs` and `check-plant-qty.mjs`
+resolved their scan root from `process.cwd()`, so running them from the repo root scanned NOTHING
+and reported a pass. Both now resolve from their own location. `npm run check` in `backend/` runs
+all five.
+
+Verified: fresh DB and an upgrade from Round 159 both migrating cleanly (REPAIR_160 fired only on
+the upgrade, as intended); all 16 cells written with none blank; times 12:03:21 PM / 12:16:24 PM in
+IST; site allowance beating customer allowance to the minute; both-at-once and out-of-range refused;
+Administrator read+write, Manager read only, Plant Operator neither. 82 routes carry both guards.
+
+**Next**: the Excel fill-and-export step itself, which needs LibreOffice headless on the server —
+the workbook is no longer the blocker, the engine is. Then auto-print, the PDF copy, and the search
+window. Agent still not deployed to the plant PC (`npm run probe` first).
 
 ## Round 159 — the plant corrected against real data, silo timeline, MixTrack (v9.85)
 

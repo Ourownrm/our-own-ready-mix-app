@@ -28,8 +28,12 @@
 
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = path.join(process.cwd(), "src");
+// Resolved from this file, not the shell's working directory: run from the
+// repository root rather than backend/ and a cwd-relative path silently
+// scans nothing, which a checker reports as a pass.
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 // Files that are allowed to talk about the raw table freely: the migration
 // runner creates and alters it, so requiring a marker per DDL line would be

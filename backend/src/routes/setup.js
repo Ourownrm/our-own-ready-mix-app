@@ -2827,6 +2827,62 @@ UPDATE app_plugins SET label = 'MixTrack'
     );
 
     // ========================================================================
+    // ROUND 160 — the ticket workbook lost three lookups, so we store three
+    // more fields.
+    //
+    // M32 (Recipe Name), AZ32 (Driver Name) and AZ34 (Order No) were formulas
+    // BPR107a.xlsm worked out for itself. The user removed them; MixTrack
+    // writes all three now. A lookup needs nothing stored, a written value
+    // does.
+    //
+    // Both removed lookups were already failing on real data, which is the
+    // part worth recording: AZ32 looked the driver up against an 11-row table
+    // while the plant has run 17 trucks and 28 drivers, returning #N/A on most
+    // loads; M32 looked the recipe name up from the code, and Recipe_Code and
+    // Recipe_Name are different strings on 210 of 2,495 real loads.
+    // ========================================================================
+    await pool.query(`
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS order_no           VARCHAR(100);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS recipe_name        VARCHAR(120);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS batch_started_at   TIMESTAMPTZ;
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS batch_ended_at     TIMESTAMPTZ;
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS qc_delay_minutes   INTEGER NOT NULL DEFAULT 0;
+
+-- The QC allowance, per customer or per site. Site wins over customer when
+-- both are set: the delay belongs to the pour, not to who is paying for it.
+CREATE TABLE IF NOT EXISTS mixtrack_qc_delays (
+  id            SERIAL PRIMARY KEY,
+  customer_id   INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+  site_id       INTEGER REFERENCES sites(id) ON DELETE CASCADE,
+  delay_minutes INTEGER NOT NULL DEFAULT 0 CHECK (delay_minutes >= 0 AND delay_minutes <= 240),
+  note          TEXT,
+  updated_by    INTEGER REFERENCES users(id),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_site
+  ON mixtrack_qc_delays(site_id) WHERE site_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_customer
+  ON mixtrack_qc_delays(customer_id) WHERE site_id IS NULL AND customer_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_default
+  ON mixtrack_qc_delays((true)) WHERE site_id IS NULL AND customer_id IS NULL;
+
+-- order_no, recipe_name and truck_driver already exist on plant_batches and
+-- the agent already sends all three; Round 157 stored them without yet having
+-- a use for them. Only the index is new.
+--
+-- Order_No is the key to map customers on, NOT Customer_Code: it resolves into
+-- MCI370's Order_Master on 2,492 of 2,492 real loads, while Customer_Code
+-- fails against Customer_Master on 1,911 of 2,485.
+CREATE INDEX IF NOT EXISTS idx_plant_batches_order_no ON plant_batches(order_no);
+`);
+    log.push(
+      "Schema migration applied (Round 160 — the ticket's recipe name, driver and order number " +
+      "are stored rather than looked up, batch start/end times with a per-site QC allowance, and " +
+      "the plant's order number as the customer key)."
+    );
+
+    // ========================================================================
     // ROUND 158 — back-fill the variance on receipts already taken.
     //
     // The variance report is only worth opening if it has history behind it —
@@ -2894,6 +2950,107 @@ UPDATE app_plugins SET label = 'MixTrack'
       manualRepaired.rows.length
         ? `Schema migration applied (Round 159 — the Plant Operator can now enter the consumption and production the plant did not record).`
         : `Round 159 — plant manual-entry access already in place, nothing to repair.`
+    );
+
+    // ========================================================================
+    // ROUND 161 — MixTrack makes the ticket.
+    //
+    // The recipe map exists because MCI370 and the workbook's Mix Design sheet
+    // spell the same recipe differently and always will: the plant writes
+    // 'M25A', the sheet has 'M 25 A'. Over 2,495 real loads the plant's code
+    // matches a sheet row EXACTLY — which is what VLOOKUP(..., FALSE) needs —
+    // on 2 loads. It is a human mapping rather than normalise-and-hope, for
+    // the same reason the weighbridge's aliases are: 'M25A' is one edit from
+    // 'M35A', and a wrong auto-match prints the wrong mix for a customer.
+    // ========================================================================
+    await pool.query(`
+CREATE TABLE IF NOT EXISTS mixtrack_recipe_map (
+  id            SERIAL PRIMARY KEY,
+  mci370_code   VARCHAR(50) NOT NULL UNIQUE,
+  mix_design_id INTEGER NOT NULL REFERENCES solitaire_mix_designs(id) ON DELETE RESTRICT,
+  mapped_by     INTEGER REFERENCES solitaire_accounts(id),
+  mapped_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  note          TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mixtrack_mix_design_log (
+  id            SERIAL PRIMARY KEY,
+  mix_design_id INTEGER NOT NULL REFERENCES solitaire_mix_designs(id) ON DELETE CASCADE,
+  action        VARCHAR(12) NOT NULL CHECK (action IN ('create', 'update', 'deactivate', 'seed')),
+  before_json   JSONB,
+  after_json    JSONB,
+  changed_by    INTEGER REFERENCES solitaire_accounts(id),
+  changed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mixtrack_mix_log ON mixtrack_mix_design_log(mix_design_id, changed_at DESC);
+
+CREATE TABLE IF NOT EXISTS mixtrack_print_jobs (
+  id            SERIAL PRIMARY KEY,
+  docket_id     INTEGER NOT NULL REFERENCES solitaire_dockets(id) ON DELETE CASCADE,
+  status        VARCHAR(12) NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'claimed', 'done', 'failed')),
+  payload_json  JSONB NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  claimed_at    TIMESTAMPTZ,
+  completed_at  TIMESTAMPTZ,
+  error         TEXT,
+  pdf_filename  TEXT,
+  agent_version VARCHAR(20),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mixtrack_jobs_pending ON mixtrack_print_jobs(created_at)
+  WHERE status IN ('pending', 'claimed');
+
+-- Types MATCH plant_batches exactly: plant_no is VARCHAR there (MCI370 can be
+-- networked across plants and the value is theirs, not ours) and batch_no is
+-- BIGINT. A mismatched type here would make the join silently cast on every
+-- lookup, and would eventually refuse a value plant_batches accepts.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS plant_no         VARCHAR(50);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS plant_batch_no   BIGINT;
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS plant_batch_year INTEGER;
+-- MCI370's OWN recipe code, which is what the ticket PRINTS (M29 -> J14 on
+-- every numbered sheet). lookup_code beside it is the workbook's spelling and
+-- is what the VLOOKUP uses (H45). Keeping only one of them was a real bug
+-- caught in verification: the payload printed the workbook's code where the
+-- plant's belonged, which is exactly what splitting H45 from M29 was for.
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS recipe_code      VARCHAR(50);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS lookup_code      VARCHAR(50);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS pdf_purged_at    TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_docket_plant_load
+  ON solitaire_dockets(plant_no, plant_batch_year, plant_batch_no)
+  WHERE plant_batch_no IS NOT NULL;
+
+-- Two months, the user's decision. The docket ROW is kept forever (~1 KB, so
+-- the whole history is ~1.5 MB a year here); only pdf_data is purged, because
+-- at ~200 KB a ticket and ~1,500 loads a year that is ~290 MB a year and fills
+-- a 1 GB database in three. Every PDF also lives on the plant PC, and past the
+-- window the search window reprints it from there.
+INSERT INTO solitaire_settings (key, value)
+VALUES ('pdf_retention_months', '2')
+ON CONFLICT (key) DO NOTHING;
+`);
+    log.push(
+      "Schema migration applied (Round 161 — the recipe map, QC's mix-design edit history, the " +
+      "print queue, and a two-month PDF retention window)."
+    );
+
+    // Round 160 — production.mixtrack-qc-delay is a new key, and the seeding
+    // loop only runs for a role with no rows at all, so it would never be
+    // reached on an installation that already has permissions.
+    const REPAIR_160 = [
+      ["manager", "production.mixtrack-qc-delay", "view"],
+    ];
+    const qcDelayRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING RETURNING role::text`,
+      [REPAIR_160.map((r) => r[0]), REPAIR_160.map((r) => r[1]), REPAIR_160.map((r) => r[2])]
+    );
+    log.push(
+      qcDelayRepaired.rows.length
+        ? `Schema migration applied (Round 160 — a Manager can now see the QC delay allowance that moves the ticket's finish time). Administrator can change it.`
+        : `Round 160 — QC delay allowance access already in place, nothing to repair.`
     );
 
     // Register every vehicle already sitting in the synced tickets, so the

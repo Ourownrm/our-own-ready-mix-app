@@ -7562,3 +7562,242 @@ along.
 
 **Next**: MixTrack itself — the ticket, the print, the PDF and the search window. That needs the
 workbook with its finish-time formula replaced by a value the agent writes.
+
+---
+
+## Round 160 — the ticket workbook stops guessing (v9.86)
+
+BPR107a.xlsm arrived, and then arrived twice more with the user's own revisions. Three of its
+formulas are gone: **M32** (Recipe Name), **AZ32** (Driver Name) and **AZ34** (Order No). MixTrack
+writes all three now.
+
+That sounds like moving work from the sheet into the app. It is not — both lookups were already
+failing on real data, and the ticket has been printing wrong values.
+
+### The driver lookup was returning #N/A on most loads
+
+`AZ32` was `VLOOKUP(BG29, 'Mix Design'!Z4:AA16, 2, FALSE)` — the registration against an eleven-row
+table. The plant has run **17 trucks and 28 drivers**. Eleven of those seventeen trucks are not in
+the table at all.
+
+Worse, the registrations that *are* listed do not match the way MCI370 writes them: the plant sends
+`KL14AF2789` where the table has `KL14 AF 2789`, and two table entries carry a trailing space. Exact
+match fails on both. Where the lookup did succeed, the names disagreed anyway — the sheet says
+RAGHAV and DAMUDAR where the plant says RAGHAVENDRA and DAMU.
+
+`Truck_Driver` is populated on all 2,495 loads. It is simply better data.
+
+### The recipe name cannot be derived from the recipe code
+
+`M32` looked the name up from the code. `Recipe_Code` and `Recipe_Name` are **different strings on
+210 of 2,495 loads** — `M30 B` against `M30B`. The lookup could not have reproduced the name even
+with a complete table.
+
+### Order No is not a number, and it is the better customer key
+
+`AZ34` was `=M26`, which quietly printed the customer where the order number belongs. MCI370 has no
+numeric order reference anywhere — `Order_Master.jobno` and `.accno` are `'0'` on every row. Its
+`Order_No` holds the **order name**, which the operator types as the customer, so the old formula
+was approximately right by accident.
+
+The useful discovery is which of the two customer fields to trust:
+
+| field | resolves against its master table |
+|---|---|
+| `Order_No` → `Order_Master` | **2,492 of 2,492** |
+| `Customer_Code` → `Customer_Master` | 574 of 2,485 |
+
+`Customer_Master` is a stale 41-row list; the real customer list lives in `Order_Master` with 97
+entries. The two fields also disagree on 184 loads, almost all typos from the same name being typed
+into two boxes — `PM KELUKUTTY` against `PM KELKUTTY`, 123 loads.
+
+So customer mapping keys on `Order_No`. The Round 157 note saying to read `Customer_Master` was
+wrong and has been corrected.
+
+### Batch Time is gone, and it took the quantity check with it
+
+The user removed the Batch Time block (`W8:AA10`) from sheets 1–10, since the batch's timing now
+comes from the plant's own clock into K19 and K21. `W12` sat inside that block and was something
+else entirely — the `"OK"` / `"WRONG QTY"` guard that `Load!H41`–`AR41` read, which all turned into
+`#REF!`.
+
+Those seven cells were cleared rather than restored: with the agent writing AO29 and `I40` deriving
+the sheet from it, the mismatch the guard watched for can no longer happen. (It only ever covered
+sheets 1–7 in any case; 8, 9 and 10 were never wired into row 41.)
+
+### The sheet-selection bug this uncovered
+
+`computeSheetNumber` divided the load quantity by the mixer capacity. The workbook's own `I40` is
+`IF(AO29<=1,1,…,10)` — **ceil of the quantity alone**, depending on nothing else.
+
+The two agree only because this plant's mixer is exactly 1 m³. At 0.5 m³ a 4 m³ load would have been
+recorded against sheet 8 while Excel printed sheet 4 — a ticket carrying eight batch blocks for a
+load that had four. Now both come from `lib/mixtrackWorkbook.js`, verified equal to `I40` across ten
+quantities with the capacity deliberately set to 0.5.
+
+### The QC delay allowance
+
+K21's own formula was removed in the user's first revision, so MixTrack writes the finish time:
+
+    K21 = the plant's Batch_End_Time + the QC allowance
+
+The allowance exists because plant QC procedure runs on past the mixer finishing, and the ticket
+should say when the load was *released*. It is set per site or per customer, and **site wins** — the
+delay belongs to the pour, not to who is paying for it. Administrator sets it, Manager may look;
+deliberately not the Plant Operator's, because it moves a time printed on a customer's document.
+
+The resolved figure is **stored on the docket**, not looked up at print time. A reprint has to
+reproduce the paper that was handed over; changing the setting next month must not quietly reprint
+an old ticket with a different finish time. Verified: the allowance was changed from 12 to 45
+minutes and the existing docket still reprints 12:28:24.
+
+### A fifth checker
+
+`check-workbook-cells.mjs` joins the other four. A ticket that prints a wrong name is nearly
+impossible to debug from the paper alone, and there are three silent ways in:
+
+1. A mapped cell stops being written. The workbook is reused load after load, so the cell keeps the
+   **previous** load's value and prints a plausible wrong name, time or quantity.
+2. Code writes a cell holding one of the workbook's own formulas. `I40` is the one that matters, and
+   writing a value there destroys it permanently.
+3. Code references one of the removed Batch Time cells, which now read as blank rather than failing.
+
+`check-receipts.mjs` and `check-plant-qty.mjs` were also fixed while nearby: both resolved their
+scan root from `process.cwd()`, so running them from the repository root rather than `backend/`
+scanned nothing at all and reported a pass. Both now resolve from their own location, and
+`npm run check` in `backend/` runs all five.
+
+### Verified
+
+Fresh database and an upgrade from Round 159, both migrating cleanly. All sixteen mapped cells
+written for a real docket with none left blank, times reading 12:03:21 PM and 12:16:24 PM in IST
+exactly as the workbook holds them. Site allowance beating customer allowance, both applied to the
+minute. Both-at-once and out-of-range refused. Permission gates: Administrator reads and writes,
+Manager reads only, Plant Operator neither.
+
+---
+
+## Round 161 — MixTrack makes the ticket (v9.87)
+
+**Visit `/setup?key=...` once**, and set **`MIXTRACK_API_KEY`** on the backend before the print
+agent can do anything. Left unset the print endpoints are **closed, not open** — verified.
+
+The flow the user specified, end to end: the operator creates the docket in MCI370, the plant
+agent sends the load, MixTrack fills the Load sheet of `BPR107a.xlsm`, the operator types one
+figure, and the ticket prints.
+
+### The workbook already prints, so we do not
+
+Decompiling the VBA found **`PrintOrderandAsPDF`** already in the file — its own strings read
+*"Print the sheet"*, *"Export the sheet to a PDF file"*, *"Define the PDF file name based on
+values from the cells"* — and **`PrintPDFFromFolderByNumber`**, which *"Search[es] for a matching
+PDF file"*.
+
+So the printing and the reprint were written years ago. MixTrack fills cells and calls the macro.
+
+That settles where the work happens: **Excel on the plant PC**, through a new agent in
+`tools/mixtrack-print-agent/`, not LibreOffice headless on Render as Round 160 assumed. Real
+Excel evaluates the real file (it uses `_xlfn.IFNA` and a web of VLOOKUPs), and the printer and
+the save folder are both on that machine.
+
+### H45 and M29 do different jobs
+
+The recipe code appears twice on the Load sheet:
+
+- **`M29`** is what the ticket PRINTS — every numbered sheet reads `J14 = Load!M29`
+- **`H45`** (`=M29` before this round) is the LOOKUP KEY — rows 46-48 run
+  `VLOOKUP(Load!$H$45, 'Mix Design'!B3:W65, n, FALSE)` for thirteen ingredients
+
+The plant writes `M25A` where the sheet has `M 25 A`, so one cell cannot hold both. Splitting
+them means the ticket shows the plant's own code while the lookup uses the mapped one — both of
+the user's rules at once.
+
+**This was shipped wrong first.** The payload took the recipe code off the mix design, so the
+ticket printed the workbook's spelling where the plant's belonged — defeating the entire split.
+Caught by reading the first real payload, not by any test.
+
+### The recipe map, and the 38% the mapping cannot reach
+
+Over 2,495 real loads, the plant's recipe code matches a Mix Design row **exactly** — which is
+what `VLOOKUP(..., FALSE)` requires — on **2 loads**. Ignoring spacing, 1,558 (62%).
+
+The other **937 loads (38%)** use a recipe with no Mix Design row in any spelling: M25A (448),
+M30 B (210), M35 A (136), M25 E (85), M35 ULCCS (44), WATER BATCH (12), M40 SCC (2). Mapping
+cannot point at a row that does not exist.
+
+So QC gets a **seed from the plant's own design values** — `<slot>_Rec` per load, stored since
+Round 159 — creating each missing design from what the machine is actually batching to, logged
+with action `seed` so it is always clear which numbers a human chose. A recipe for which the
+plant reported no design values at all is left alone rather than created as zeros: an all-zero
+design looks complete and prints a ticket of zeros.
+
+Mapping is a human act, with a suggestion shown beside the dropdown and never applied. Two
+designs normalising the same way produce no suggestion at all — the weighbridge learned that with
+its two SREE MUTHAPPANs.
+
+### A held load does not print
+
+The user's decision. A load whose recipe has no mapping, or whose design has been deactivated, is
+**refused with the recipe named**. The ticket would otherwise print with empty weight columns,
+and that document goes to a customer. Deactivating a design that a recipe still maps to is
+refused for the same reason.
+
+### Production Qty is the trigger
+
+Nothing can print before it, because `Load!I40` derives the sheet from `AO29`. Saving it creates
+the docket and queues the print job in one transaction. The plant's own figure is shown beside
+the box as a check, never as a default.
+
+A partial unique index on (plant, year, batch number) is what stops two operators ticketing the
+same load from two screens.
+
+### The job carries a snapshot
+
+The payload — every Load cell, every Mix Design row — is stored on the job at the moment the
+quantity is saved. A retry tomorrow, or a reprint next year, reproduces the paper that was handed
+over rather than picking up a mix design QC has edited since.
+
+The agent claims work with a single `UPDATE ... RETURNING ... FOR UPDATE SKIP LOCKED`, so two
+agents cannot take one job. A job claimed but never reported is offered again after ten minutes.
+
+Before printing, the agent compares the workbook's own `I40` against the sheet number the app
+computed. If they disagree **nothing prints** — on this ticket the sheet number decides how many
+batch blocks appear, so the wrong sheet means eight batches shown for a four-batch load.
+
+### Two months of PDFs
+
+The user's decision, and the arithmetic behind it: ~1,500 loads a year here, so at ~200 KB a
+ticket that is ~290 MB a year and fills a 1 GB database in three.
+
+The docket **row** is never purged — about 1 KB, so the whole searchable history costs ~1.5 MB a
+year. Only `pdf_data` goes, and `pdf_purged_at` records that it was removed on purpose so the
+search window can say "reprint from the plant PC" rather than looking like a ticket that never
+printed. Every PDF also lives in a folder on that machine, where the workbook's own
+`PrintPDFFromFolderByNumber` finds it.
+
+### Moisture: the average was wrong
+
+`AO34` takes one number, and the first attempt averaged every gate that reported one. On a real
+load giving sand 6.04%, 12mm 0.8% and 20mm 0.5% that is 2.45% — a figure describing nothing. It
+is the **sand's** moisture, which is where nearly all the free water in a mix is and what a
+batcher means by "the moisture".
+
+Worth knowing: `AO34` feeds no formula at all. The moisture that drives the calculation comes
+from the Mix Design sheet's own columns R-U, per recipe — a stored figure, not the plant's live
+reading.
+
+### The save folder
+
+`'Mix Design'!AF4` shipped as `G:\BPR105\BATCH REPORT 2026`. A **mapped drive is per-user and
+invisible to the SYSTEM account** a scheduled agent runs under, and the year is baked into the
+folder name. The agent writes that cell itself from a local path, so neither can bite.
+
+### Verified
+
+Fresh database and an upgrade from Round 160, both clean. A held load refused twice with the
+recipe named, then mapped by QC and printed. The same load refused a second ticket. Seeding
+created the missing design from the plant's values and unblocked its load. The QC allowance
+carried 13:22:40 through to 13:34:40 on the ticket. Sheet 6 for 6 m³, sheet 7 for 7 m³. The agent
+reporting success, reporting a failure, and the operator retrying it. The purge clearing a
+three-month-old PDF while leaving the docket row and every figure on it intact. Permission gates:
+the operator reads but cannot map or seed; QC and admin can both. Wrong key and no key both 401.
