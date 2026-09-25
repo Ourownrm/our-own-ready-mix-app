@@ -10,7 +10,7 @@
 // This is deliberately NOT part of the permission catalogue, which answers a
 // different question. Permissions decide what a PERSON may do with a module
 // that exists; a plugin decides whether the module exists for anyone at all.
-// Conflating them would mean "switch off Solitaire" had to be expressed as
+// Conflating them would mean "switch off MixTrack" had to be expressed as
 // revoking a permission from every role one at a time, and a role added later
 // would quietly get it back.
 //

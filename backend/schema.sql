@@ -2622,3 +2622,357 @@ ALTER TABLE weighbridge_vehicle_aliases DROP CONSTRAINT IF EXISTS weighbridge_ve
 -- decision somebody made rather than a number nobody looked at.
 -- ---------------------------------------------------------------------------
 ALTER TABLE rm_receipts ADD COLUMN short_reason TEXT;
+
+-- ============================================================================
+-- ROUND 157 — MCI370 BATCHING PLANT: production and material consumption.
+--
+-- The plant's control software is Schwing Stetter's MCI370 — a closed VB6
+-- program writing to a plain MS Access file, MCI70_batch.Mdb, normally at
+-- C:\SSI\MCI370\. We read it and never write to it: there is no vendor-supported
+-- write contract, and Jet file locking against live control software is not a
+-- risk worth taking on a plant that is batching concrete.
+--
+-- The schema below is built from the REAL MCI370 tables, read out of the
+-- installer's own .mdb with mdbtools (2026-09-25). Nothing here is guessed.
+--
+-- THE THREE THINGS THAT SHAPE IT:
+--
+-- 1. A LOAD IS SEVERAL MIXES. `Batch_Transaction` has a `Batch_Index` and one
+--    row per MIX; `Batch_Dat_Trans` has one row per LOAD. A 6 m³ truck filled
+--    by a 1 m³ mixer is six rows against one load. Consumption therefore has to
+--    be summed across the mixes, and the natural key needs Batch_Index in it or
+--    five sixths of a load would be silently dropped.
+--
+-- 2. MCI370 ALREADY NAMES THE SILOS. `NameSetUp` carries Gate1Name..Gate6Name,
+--    Cem1Name..Cem4Name, FillName, Wtr1/2Name, Admix1/12/2/22Name, SilicaName,
+--    SlurryName and PigName — the plant operator names each one in MCI370's own
+--    setup screen. The installer copy still holds the vendor's previous
+--    customer's config (Gate1Name "40 MM", Gate2Name "SAND", Gate3Name "10 MM",
+--    Gate4Name "20 MM", Cem1Name "FLY", Cem2Name "CEM"), which is exactly how
+--    ours will look. Unused slots are marked "0", "-", blank, or left at a
+--    default like "Agg6", so the agent skips those.
+--
+--    That means silo -> material is the SAME problem as the weighbridge's
+--    material names, and it gets the same answer: normalise, look up an alias
+--    table a human maintains, never fuzzy-match.
+--
+-- 3. WEIGHTS ARE KILOGRAMS AS THE PLANT WEIGHED THEM. Actual and target, per
+--    slot, per mix. Moisture is a real number here (unlike the weighbridge's
+--    free-text field), so aggregate moisture compensation can finally be seen.
+-- ============================================================================
+
+CREATE TABLE plant_batches (
+  id SERIAL PRIMARY KEY,
+
+  -- The natural key, exactly as MCI370 keys it. Batch_No restarts each year,
+  -- hence batch_year; Plant_No is carried because MCI370 supports a networked
+  -- multi-plant setup and a second plant would otherwise collide.
+  plant_no      VARCHAR(50) NOT NULL DEFAULT '1',
+  batch_year    INTEGER NOT NULL,
+  batch_no      BIGINT NOT NULL,
+  batch_index   INTEGER NOT NULL DEFAULT 1,
+
+  -- When. batched_at is the IST instant the agent derives from Batch_Date +
+  -- Batch_Time; batch_date is the IST calendar day everything reports on.
+  batched_at    TIMESTAMPTZ,
+  batch_date    DATE,
+
+  -- What was made. recipe_code is MCI370's own; resolved_mix_grade_id links it
+  -- to ours where somebody has said which is which.
+  recipe_code   VARCHAR(50),
+  recipe_name   VARCHAR(100),
+  strength      INTEGER,
+  consistency   INTEGER,
+
+  -- Who for, and in what. All free text on MCI370's side — the same mapping
+  -- problem as the weighbridge, deliberately NOT resolved automatically.
+  customer_code VARCHAR(100),
+  site_name     VARCHAR(175),
+  truck_no      VARCHAR(50),
+  truck_driver  VARCHAR(50),
+  order_no      VARCHAR(50),
+  -- MCI370 records who was on the panel. Worth having: it is the only
+  -- per-batch operator identity in the whole chain (the weighbridge has none).
+  batcher_name  VARCHAR(100),
+
+  -- Quantities, m³. ROUND 159 — the names here are load-bearing, because the
+  -- source's own naming is a trap and Round 157 fell straight into it.
+  --
+  -- MCI370's Batch_Transaction.Production_Qty is a RUNNING TOTAL of the load so
+  -- far: batch 1 reads 1, batch 2 reads 2, batch 8 reads 8. Verified on 2,496
+  -- of 2,496 real loads, no exceptions. Summing it reported 73,987 m³ against a
+  -- true 16,010 — every production figure 4.6x too high.
+  --
+  -- So: batch_qty_m3 is the ONLY column to sum. load_qty_m3 is constant across
+  -- a load's batches and must never be summed across them. cumulative_qty_m3 is
+  -- kept verbatim for audit and is not a quantity anybody should compute with.
+  batch_qty_m3      NUMERIC(10,3),   -- THIS batch (MCI370 Batch_Size). Sum this.
+  load_qty_m3       NUMERIC(10,3),   -- the whole load (Batch_Dat_Trans.Production_Qty)
+  cumulative_qty_m3 NUMERIC(10,3),   -- raw running total, audit only, NEVER summed
+
+  ordered_qty_m3    NUMERIC(10,3),
+  returned_qty_m3   NUMERIC(10,3),
+  with_this_load_m3 NUMERIC(10,3),
+  mixer_capacity_m3 NUMERIC(10,3),
+  mixing_time_s     NUMERIC(10,2),
+
+  -- ROUND 159 — the real clock. Batch_Time is stamped 12/30/99 on every row,
+  -- so the load's start and finish come from Batch_Start_Time / Batch_End_Time,
+  -- which MCI370 stores as clean text ('11:57:16 AM'). Cycle time falls out of
+  -- these two and nobody has ever used them.
+  load_started_at   TIMESTAMPTZ,
+  load_ended_at     TIMESTAMPTZ,
+
+  -- MCI370 has its own weighbridge hook. Captured so the two sources can be
+  -- compared later; nothing in this app acts on it yet.
+  weighed_net_weight_kg NUMERIC(12,2),
+  weighbridge_stat      VARCHAR(1),
+
+  -- Sync bookkeeping, same pattern as weighbridge_tickets: a hash of the source
+  -- row so re-sending an unchanged batch costs one comparison.
+  source_hash     CHAR(64) NOT NULL,
+  revision        INTEGER NOT NULL DEFAULT 1,
+  first_synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_synced_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  UNIQUE (plant_no, batch_year, batch_no, batch_index)
+);
+
+CREATE INDEX idx_plant_batches_date   ON plant_batches(batch_date DESC);
+CREATE INDEX idx_plant_batches_at     ON plant_batches(batched_at DESC);
+CREATE INDEX idx_plant_batches_recipe ON plant_batches(recipe_code);
+
+-- ---------------------------------------------------------------------------
+-- One row per material slot per mix. Twenty slots exist in MCI370
+-- (gate1-6, cement1-4, filler1, water1-2, silica, slurry, adm1a/adm1b,
+-- adm2a/adm2b, pigment) but a plant uses only the ones it has, so a row is
+-- written only where the slot is named AND something was actually weighed.
+--
+-- slot_name is MCI370's own text for that silo, stored verbatim. It is the
+-- audit trail and the thing the alias table maps: if somebody renames a silo
+-- on the panel, the change is visible here rather than silently re-pointing
+-- history.
+-- ---------------------------------------------------------------------------
+CREATE TABLE plant_batch_materials (
+  id           SERIAL PRIMARY KEY,
+  batch_id     INTEGER NOT NULL REFERENCES plant_batches(id) ON DELETE CASCADE,
+  slot         VARCHAR(20) NOT NULL,
+  slot_name    VARCHAR(60),
+  -- ROUND 159 — THREE figures, not two, and they answer different questions.
+  --
+  --   design_kg_per_m3  what the recipe asks for, per m³ (MCI370's <slot>_Rec
+  --                     on the load header). The "theoretical" figure.
+  --   target_kg         that design after the panel corrects for aggregate
+  --                     moisture — what it was actually aiming at on THIS batch.
+  --   actual_kg         what the load cells weighed.
+  --
+  -- design vs target shows the moisture correction working; target vs actual
+  -- shows the plant's accuracy. Reporting only one of those hides the other.
+  design_kg_per_m3 NUMERIC(12,3),
+  actual_kg    NUMERIC(12,3),
+  target_kg    NUMERIC(12,3),
+  -- Gates carry a real moisture percentage; cement, water and admixtures carry
+  -- a correction instead. Both are nullable and only one is ever set.
+  moisture_pct NUMERIC(6,2),
+  correction   NUMERIC(10,3),
+  material_id  INTEGER REFERENCES rm_materials(id),
+  UNIQUE (batch_id, slot)
+);
+
+CREATE INDEX idx_plant_batch_materials_batch    ON plant_batch_materials(batch_id);
+CREATE INDEX idx_plant_batch_materials_material ON plant_batch_materials(material_id);
+CREATE INDEX idx_plant_batch_materials_slotname ON plant_batch_materials(slot_name);
+
+-- ---------------------------------------------------------------------------
+-- Silo name -> our material. Same shape and the same reasoning as
+-- weighbridge_material_aliases: normalise (uppercase, strip non-alphanumerics),
+-- look up, and send anything unrecognised to a human rather than guessing.
+--
+-- No supplier scope here, unlike the weighbridge. A silo holds one material at
+-- a time whoever supplied it, so the ambiguity that forced supplier scoping in
+-- Round 156 does not arise — what came out of Gate 4 is 20 MM regardless of
+-- who delivered it.
+-- ---------------------------------------------------------------------------
+CREATE TABLE plant_silo_aliases (
+  id SERIAL PRIMARY KEY,
+  -- ROUND 159 — keyed on the SLOT, not the name.
+  --
+  -- Their plant names Gate1 and Gate2 both "M SAND". A name-keyed alias makes
+  -- the two hoppers inseparable: map one and the other follows, and if a hopper
+  -- is ever renamed on the panel its history silently re-points. The slot is
+  -- the physical thing and never moves, so that is what carries the decision.
+  slot         VARCHAR(20) NOT NULL UNIQUE,
+  slot_name    VARCHAR(60),          -- what the panel called it when mapped
+  material_id  INTEGER REFERENCES rm_materials(id),
+  -- A hopper that is not stock at all: mains water, a spare. Its weights still
+  -- show in consumption; they simply do not come off anybody's stock.
+  is_ignored   BOOLEAN NOT NULL DEFAULT false,
+  -- ROUND 159 — a REFILLABLE silo takes its material from the fill history
+  -- instead of from material_id, because CEM1/2/3 hold whatever was last put
+  -- in them. See plant_silo_fills.
+  is_refillable BOOLEAN NOT NULL DEFAULT false,
+  mapped_by    INTEGER REFERENCES users(id),
+  mapped_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR is_refillable OR material_id IS NOT NULL)
+);
+
+-- MCI370 recipe code -> our mix grade, so production can be reported by the
+-- grades the rest of the app knows about.
+-- ---------------------------------------------------------------------------
+-- ROUND 159 — what a silo held, and when.
+--
+-- CEM1, CEM2 and CEM3 are STORAGE, not fixed materials: they get filled with
+-- whatever cement or fly ash was bought. A static "CEM2 means Ultratech"
+-- mapping would be wrong the moment the silo is refilled, and worse, it would
+-- silently relabel every batch already behind it.
+--
+-- So a fill is an event on a timeline. Store records which silo a cement or
+-- fly-ash receipt went into; from that fill until the next one, the silo holds
+-- that material. A batch that drew from CEM2 on 3 August is attributed to
+-- whatever was in CEM2 on 3 August, and a fill on the 10th changes nothing
+-- behind it.
+--
+-- MCI370 cannot help here: its own Batch_Stock table is all zeros and was last
+-- written in December 2013. The fill record is the only source there is.
+-- ---------------------------------------------------------------------------
+CREATE TABLE plant_silo_fills (
+  id SERIAL PRIMARY KEY,
+  slot        VARCHAR(20) NOT NULL,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+
+  -- The receipt this fill came from, where there is one. Null for the opening
+  -- declaration ("what is in the silos right now"), which has no receipt behind
+  -- it because it predates the app knowing about silos at all.
+  receipt_id  INTEGER REFERENCES rm_receipts(id) ON DELETE SET NULL,
+
+  filled_at   TIMESTAMPTZ NOT NULL,
+  qty_kg      NUMERIC(14,2) NOT NULL,
+
+  -- Topped up before empty: the new material takes over from this point, and we
+  -- record honestly that it went in on a remaining balance rather than
+  -- pretending to a precision nobody has.
+  was_empty         BOOLEAN,
+  balance_before_kg NUMERIC(14,2),
+
+  notes       TEXT,
+  recorded_by INTEGER REFERENCES users(id),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CHECK (qty_kg > 0)
+);
+
+-- The lookup this table exists for is "what was in slot X at time T", so the
+-- index is on exactly that, newest first.
+CREATE INDEX idx_plant_silo_fills_slot_time ON plant_silo_fills(slot, filled_at DESC);
+CREATE INDEX idx_plant_silo_fills_receipt   ON plant_silo_fills(receipt_id);
+CREATE INDEX idx_plant_silo_fills_material  ON plant_silo_fills(material_id);
+
+-- ---------------------------------------------------------------------------
+-- ROUND 159 — what the plant did NOT record.
+--
+-- The operator's figure is ADDED to the plant's, never substituted for it. A
+-- hand mix, a load batched while the agent was offline, sand taken for
+-- something else: all real, none of it visible to the load cells. Keeping them
+-- in a separate table is what makes "the plant weighed this" remain a true
+-- statement no matter what anybody types.
+--
+-- material_id NULL means the row is a production entry (m³) rather than a
+-- consumption entry (kg) — the two share a table because they share a day, an
+-- author and a reason, and splitting them would duplicate all three.
+-- ---------------------------------------------------------------------------
+CREATE TABLE plant_manual_entries (
+  id SERIAL PRIMARY KEY,
+  entry_date  DATE NOT NULL,
+  material_id INTEGER REFERENCES rm_materials(id),
+  qty_kg      NUMERIC(14,2),     -- consumption rows
+  qty_m3      NUMERIC(12,3),     -- production rows
+  reason      TEXT,
+  entered_by  INTEGER NOT NULL REFERENCES users(id),
+  entered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- One row per material per day, and one production row per day.
+  UNIQUE (entry_date, material_id),
+  CHECK ((material_id IS NOT NULL AND qty_kg IS NOT NULL AND qty_m3 IS NULL)
+      OR (material_id IS NULL     AND qty_m3 IS NOT NULL AND qty_kg IS NULL))
+);
+
+CREATE INDEX idx_plant_manual_date ON plant_manual_entries(entry_date DESC);
+
+CREATE TABLE plant_recipe_aliases (
+  id            SERIAL PRIMARY KEY,
+  normalised    VARCHAR(60) NOT NULL UNIQUE,
+  raw_sample    VARCHAR(100) NOT NULL,
+  mix_grade_id  INTEGER REFERENCES mix_grades(id),
+  is_ignored    BOOLEAN NOT NULL DEFAULT false,
+  mapped_by     INTEGER REFERENCES users(id),
+  mapped_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR mix_grade_id IS NOT NULL)
+);
+
+CREATE TABLE plant_sync_log (
+  id             SERIAL PRIMARY KEY,
+  received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  agent_version  VARCHAR(20),
+  rows_sent      INTEGER NOT NULL DEFAULT 0,
+  rows_inserted  INTEGER NOT NULL DEFAULT 0,
+  rows_updated   INTEGER NOT NULL DEFAULT 0,
+  rows_unchanged INTEGER NOT NULL DEFAULT 0,
+  rows_rejected  INTEGER NOT NULL DEFAULT 0,
+  highest_batch  BIGINT,
+  batch_year     INTEGER,
+  error          TEXT
+);
+
+CREATE INDEX idx_plant_sync_log_received ON plant_sync_log(received_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- ROUND 158 — the weighed figure and the billed figure, side by side.
+--
+-- Round 156 refused to save a receipt whose shortfall was beyond the material's
+-- tolerance until somebody typed a reason. That was the wrong instinct: the
+-- lorry has arrived and the material is in the yard, so refusing to record it
+-- only pushes Store into not recording it, or into fudging the accepted figure
+-- until the app stops complaining. A receipt now ALWAYS saves.
+--
+-- What replaces the block is a decision. Where the two figures agree (or differ
+-- within tolerance) the receipt posts immediately at the weighed figure, as
+-- before. Where they genuinely disagree it posts as 'pending' and waits for a
+-- Manager or Administrator to say which quantity stands — because that choice
+-- moves both stock and money, and it is not Store's call to make alone.
+-- ---------------------------------------------------------------------------
+
+-- Which figure accepted_qty was taken from, so a report can say why rather than
+-- only what. 'weighed' = the weighbridge, 'supplier' = their invoice/DC,
+-- 'entered' = a human typed a third number over both.
+ALTER TABLE rm_receipts ADD COLUMN accepted_basis VARCHAR(12) NOT NULL DEFAULT 'weighed';
+
+-- Signed, and always populated: positive means the supplier billed for more
+-- than was accepted. short_qty is left as it was (null unless short) because
+-- existing reports read it.
+ALTER TABLE rm_receipts ADD COLUMN variance_qty NUMERIC(12,2);
+ALTER TABLE rm_receipts ADD COLUMN variance_pct NUMERIC(8,3);
+
+-- 'auto'      — within tolerance, posted straight away, no decision needed.
+-- 'pending'   — beyond tolerance, waiting on a Manager. Counts for NOTHING yet.
+-- 'confirmed' — a Manager has chosen which figure stands.
+ALTER TABLE rm_receipts ADD COLUMN confirmation_status VARCHAR(12) NOT NULL DEFAULT 'auto';
+ALTER TABLE rm_receipts ADD COLUMN confirmed_by INTEGER REFERENCES users(id);
+ALTER TABLE rm_receipts ADD COLUMN confirmed_at TIMESTAMPTZ;
+ALTER TABLE rm_receipts ADD COLUMN confirm_note TEXT;
+
+CREATE INDEX idx_rm_receipts_pending ON rm_receipts(confirmation_status)
+  WHERE confirmation_status = 'pending';
+
+-- ---------------------------------------------------------------------------
+-- THE POINT OF THIS VIEW. A pending receipt must not reach stock, valuation,
+-- landed rate, order fulfilment or any report — and rm_receipts is read in
+-- fifteen places across this file and materialModule.js. Filtering each of
+-- those by hand is precisely how one gets missed and stock goes quietly wrong
+-- for a month.
+--
+-- So every READ of receipts goes through this view, and only the receipts
+-- screen, the confirmation queue and the audit trail read the table directly.
+-- A future query that joins rm_receipts_effective is correct by construction;
+-- one that joins rm_receipts has to mean it.
+-- ---------------------------------------------------------------------------
+CREATE VIEW rm_receipts_effective AS
+  SELECT * FROM rm_receipts WHERE confirmation_status <> 'pending';

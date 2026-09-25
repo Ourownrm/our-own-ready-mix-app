@@ -2355,7 +2355,7 @@ CREATE INDEX IF NOT EXISTS idx_solitaire_dockets_batch ON solitaire_dockets(batc
     // surprise exposure. ON CONFLICT DO NOTHING means a later /setup never
     // re-enables a plugin a Super Admin has deliberately switched off.
     const pluginSeed = await pool.query(
-      `INSERT INTO app_plugins (key, label, is_enabled) VALUES ('solitaire', 'Delivery Challan (Solitaire)', true)
+      `INSERT INTO app_plugins (key, label, is_enabled) VALUES ('solitaire', 'MixTrack', true)
        ON CONFLICT (key) DO NOTHING RETURNING key`
     );
 
@@ -2523,6 +2523,144 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_solitaire_mix_designs_code ON solitaire_mi
     );
 
     // ========================================================================
+    // ROUND 157 — MCI370 batching plant: production and consumption.
+    //
+    // Additive and re-runnable. Built from the real MCI370 Access schema read
+    // out of the installer's own .mdb — see schema.sql's Round 157 block for
+    // why a load is several mixes and why NameSetUp matters.
+    // ========================================================================
+    await pool.query(`
+CREATE TABLE IF NOT EXISTS plant_batches (
+  id SERIAL PRIMARY KEY,
+  plant_no      VARCHAR(50) NOT NULL DEFAULT '1',
+  batch_year    INTEGER NOT NULL,
+  batch_no      BIGINT NOT NULL,
+  batch_index   INTEGER NOT NULL DEFAULT 1,
+  batched_at    TIMESTAMPTZ,
+  batch_date    DATE,
+  recipe_code   VARCHAR(50),
+  recipe_name   VARCHAR(100),
+  strength      INTEGER,
+  consistency   INTEGER,
+  customer_code VARCHAR(100),
+  site_name     VARCHAR(175),
+  truck_no      VARCHAR(50),
+  truck_driver  VARCHAR(50),
+  order_no      VARCHAR(50),
+  batcher_name  VARCHAR(100),
+  production_qty_m3 NUMERIC(10,3),
+  ordered_qty_m3    NUMERIC(10,3),
+  returned_qty_m3   NUMERIC(10,3),
+  with_this_load_m3 NUMERIC(10,3),
+  batch_size_m3     NUMERIC(10,3),
+  mixer_capacity_m3 NUMERIC(10,3),
+  mixing_time_s     NUMERIC(10,2),
+  weighed_net_weight_kg NUMERIC(12,2),
+  weighbridge_stat      VARCHAR(1),
+  source_hash     CHAR(64) NOT NULL,
+  revision        INTEGER NOT NULL DEFAULT 1,
+  first_synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_synced_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (plant_no, batch_year, batch_no, batch_index)
+);
+CREATE INDEX IF NOT EXISTS idx_plant_batches_date   ON plant_batches(batch_date DESC);
+CREATE INDEX IF NOT EXISTS idx_plant_batches_at     ON plant_batches(batched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plant_batches_recipe ON plant_batches(recipe_code);
+
+CREATE TABLE IF NOT EXISTS plant_batch_materials (
+  id           SERIAL PRIMARY KEY,
+  batch_id     INTEGER NOT NULL REFERENCES plant_batches(id) ON DELETE CASCADE,
+  slot         VARCHAR(20) NOT NULL,
+  slot_name    VARCHAR(60),
+  actual_kg    NUMERIC(12,3),
+  target_kg    NUMERIC(12,3),
+  moisture_pct NUMERIC(6,2),
+  correction   NUMERIC(10,3),
+  material_id  INTEGER REFERENCES rm_materials(id),
+  UNIQUE (batch_id, slot)
+);
+CREATE INDEX IF NOT EXISTS idx_plant_batch_materials_batch    ON plant_batch_materials(batch_id);
+CREATE INDEX IF NOT EXISTS idx_plant_batch_materials_material ON plant_batch_materials(material_id);
+CREATE INDEX IF NOT EXISTS idx_plant_batch_materials_slotname ON plant_batch_materials(slot_name);
+
+CREATE TABLE IF NOT EXISTS plant_silo_aliases (
+  id          SERIAL PRIMARY KEY,
+  normalised  VARCHAR(60) NOT NULL UNIQUE,
+  raw_sample  VARCHAR(60) NOT NULL,
+  material_id INTEGER REFERENCES rm_materials(id),
+  is_ignored  BOOLEAN NOT NULL DEFAULT false,
+  mapped_by   INTEGER REFERENCES users(id),
+  mapped_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR material_id IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS plant_recipe_aliases (
+  id            SERIAL PRIMARY KEY,
+  normalised    VARCHAR(60) NOT NULL UNIQUE,
+  raw_sample    VARCHAR(100) NOT NULL,
+  mix_grade_id  INTEGER REFERENCES mix_grades(id),
+  is_ignored    BOOLEAN NOT NULL DEFAULT false,
+  mapped_by     INTEGER REFERENCES users(id),
+  mapped_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_ignored OR mix_grade_id IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS plant_sync_log (
+  id             SERIAL PRIMARY KEY,
+  received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  agent_version  VARCHAR(20),
+  rows_sent      INTEGER NOT NULL DEFAULT 0,
+  rows_inserted  INTEGER NOT NULL DEFAULT 0,
+  rows_updated   INTEGER NOT NULL DEFAULT 0,
+  rows_unchanged INTEGER NOT NULL DEFAULT 0,
+  rows_rejected  INTEGER NOT NULL DEFAULT 0,
+  highest_batch  BIGINT,
+  batch_year     INTEGER,
+  error          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plant_sync_log_received ON plant_sync_log(received_at DESC);
+`);
+
+    const { rows: pbCount } = await pool.query(`SELECT count(*)::int AS n FROM plant_batches`);
+    log.push(
+      `Schema migration applied (Round 157 — MCI370 production and consumption). ` +
+      `plant_batches holds ${pbCount[0].n} mix(es). ` +
+      (process.env.PLANT_API_KEY
+        ? `PLANT_API_KEY is set, so the MCI370 agent can post to /api/plant/sync.`
+        : `PLANT_API_KEY is NOT set — /api/plant/sync will reject every call until it is. ` +
+          `Set it in the backend environment and give the same value to the agent on the plant PC.`)
+    );
+
+    // Round 157 — the two new plant permission keys. Same mechanism and reason
+    // as REPAIR_148/153/154: the seeding loop only fires for a role with NO
+    // rows, so a brand new catalogue KEY never reaches a live installation.
+    // Without this the Plant Production tile would appear and then 403.
+    //
+    // production.plant-mapping is deliberately absent — Administrator alone,
+    // computed rather than seeded.
+    const REPAIR_157 = [
+      ["manager", "production.plant-data", "view"],
+      ["store", "production.plant-data", "view"],
+      ["plant_operator", "production.plant-data", "view"],
+      ["qc_engineer", "production.plant-data", "view"],
+      ["lab_technician", "production.plant-data", "view"],
+    ];
+    const plantRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING
+       RETURNING role::text`,
+      [REPAIR_157.map((r) => r[0]), REPAIR_157.map((r) => r[1]), REPAIR_157.map((r) => r[2])]
+    );
+    log.push(
+      plantRepaired.rows.length
+        ? `Schema migration applied (Round 157 — plant production access granted to ` +
+          `${plantRepaired.rows.map((r) => r.role).join(", ")}). Super Admin can revoke any of it.`
+        : `Round 157 — plant production access defaults already in place, nothing to repair.`
+    );
+
+
+    // ========================================================================
     // ROUND 156 — supplier-scoped material mappings, and the vehicle registry.
     //
     // Additive and re-runnable. The two constraint drops are IF EXISTS, the
@@ -2567,7 +2705,196 @@ ALTER TABLE weighbridge_vehicle_aliases ADD COLUMN IF NOT EXISTS vehicle_id INTE
 ALTER TABLE weighbridge_vehicle_aliases DROP CONSTRAINT IF EXISTS weighbridge_vehicle_aliases_check;
 
 ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS short_reason TEXT;
+
+-- ROUND 158 — receipts always save; a real disagreement waits on a Manager.
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS accepted_basis VARCHAR(12) NOT NULL DEFAULT 'weighed';
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS variance_qty NUMERIC(12,2);
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS variance_pct NUMERIC(8,3);
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS confirmation_status VARCHAR(12) NOT NULL DEFAULT 'auto';
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS confirmed_by INTEGER REFERENCES users(id);
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS confirm_note TEXT;
+CREATE INDEX IF NOT EXISTS idx_rm_receipts_pending ON rm_receipts(confirmation_status)
+  WHERE confirmation_status = 'pending';
+
+-- Every existing receipt was saved under the old rules, which means somebody
+-- already accepted its quantity — nothing historical should land in the queue
+-- and start demanding decisions about lorries that left months ago.
+CREATE OR REPLACE VIEW rm_receipts_effective AS
+  SELECT * FROM rm_receipts WHERE confirmation_status <> 'pending';
 `);
+
+    // ========================================================================
+    // ROUND 159 — the plant, corrected against its own real data.
+    //
+    // Round 157 was designed against the installer's BLANK template, which is
+    // the only thing that was available. The live database showed two of its
+    // assumptions to be wrong, and one of them was serious.
+    // ========================================================================
+    await pool.query(`
+-- The quantity columns are renamed rather than added to, because the old name
+-- IS the bug: anybody who sums production_qty_m3 gets a figure 4.6x too high.
+-- Renaming is safe here: the plant agent has never been deployed, so these
+-- tables are empty on every installation. The guards make it re-runnable.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'plant_batches' AND column_name = 'production_qty_m3') THEN
+    ALTER TABLE plant_batches RENAME COLUMN production_qty_m3 TO cumulative_qty_m3;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'plant_batches' AND column_name = 'batch_size_m3') THEN
+    ALTER TABLE plant_batches RENAME COLUMN batch_size_m3 TO batch_qty_m3;
+  END IF;
+END $$;
+
+ALTER TABLE plant_batches ADD COLUMN IF NOT EXISTS batch_qty_m3      NUMERIC(10,3);
+ALTER TABLE plant_batches ADD COLUMN IF NOT EXISTS load_qty_m3       NUMERIC(10,3);
+ALTER TABLE plant_batches ADD COLUMN IF NOT EXISTS cumulative_qty_m3 NUMERIC(10,3);
+ALTER TABLE plant_batches ADD COLUMN IF NOT EXISTS load_started_at   TIMESTAMPTZ;
+ALTER TABLE plant_batches ADD COLUMN IF NOT EXISTS load_ended_at     TIMESTAMPTZ;
+
+-- The recipe's own per-m³ figure, so design / target / actual can all be shown.
+ALTER TABLE plant_batch_materials ADD COLUMN IF NOT EXISTS design_kg_per_m3 NUMERIC(12,3);
+
+-- Silo mappings move from being keyed on the hopper's NAME to being keyed on
+-- the hopper itself. Their plant calls Gate1 and Gate2 both "M SAND", which a
+-- name-keyed alias cannot tell apart.
+ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS slot          VARCHAR(20);
+ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS is_refillable BOOLEAN NOT NULL DEFAULT false;
+-- Carry old name-keyed mappings over to the slot key, but only where that old
+-- column still exists: a database built fresh from schema.sql never had it.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'plant_silo_aliases' AND column_name = 'normalised') THEN
+    EXECUTE 'UPDATE plant_silo_aliases SET slot = normalised WHERE slot IS NULL';
+  END IF;
+END $$;
+DELETE FROM plant_silo_aliases a USING plant_silo_aliases b
+ WHERE a.id > b.id AND a.slot = b.slot;
+DELETE FROM plant_silo_aliases WHERE slot IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plant_silo_aliases_slot ON plant_silo_aliases(slot);
+
+CREATE TABLE IF NOT EXISTS plant_silo_fills (
+  id SERIAL PRIMARY KEY,
+  slot        VARCHAR(20) NOT NULL,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  receipt_id  INTEGER REFERENCES rm_receipts(id) ON DELETE SET NULL,
+  filled_at   TIMESTAMPTZ NOT NULL,
+  qty_kg      NUMERIC(14,2) NOT NULL,
+  was_empty         BOOLEAN,
+  balance_before_kg NUMERIC(14,2),
+  notes       TEXT,
+  recorded_by INTEGER REFERENCES users(id),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (qty_kg > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_plant_silo_fills_slot_time ON plant_silo_fills(slot, filled_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plant_silo_fills_receipt   ON plant_silo_fills(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_plant_silo_fills_material  ON plant_silo_fills(material_id);
+
+CREATE TABLE IF NOT EXISTS plant_manual_entries (
+  id SERIAL PRIMARY KEY,
+  entry_date  DATE NOT NULL,
+  material_id INTEGER REFERENCES rm_materials(id),
+  qty_kg      NUMERIC(14,2),
+  qty_m3      NUMERIC(12,3),
+  reason      TEXT,
+  entered_by  INTEGER NOT NULL REFERENCES users(id),
+  entered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (entry_date, material_id),
+  CHECK ((material_id IS NOT NULL AND qty_kg IS NOT NULL AND qty_m3 IS NULL)
+      OR (material_id IS NULL     AND qty_m3 IS NOT NULL AND qty_kg IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_plant_manual_date ON plant_manual_entries(entry_date DESC);
+
+-- The receipt says which silo it filled, so the fill can be created from it.
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS silo_slot VARCHAR(20);
+
+-- ROUND 159 — Solitaire is called MixTrack now. The plugin row is created once
+-- on first setup, so an installation that already has it keeps the old label
+-- forever unless it is updated here. The KEY stays 'solitaire': it is internal,
+-- nothing shows it to anybody, and changing it would break every existing
+-- permission grant for no gain.
+UPDATE app_plugins SET label = 'MixTrack'
+ WHERE key = 'solitaire' AND label <> 'MixTrack';
+`);
+    log.push(
+      "Schema migration applied (Round 159 — plant quantities renamed so the cumulative figure " +
+      "cannot be summed by accident, recipe design values, real load start/end times, silo fill " +
+      "history and manual entries)."
+    );
+
+    // ========================================================================
+    // ROUND 158 — back-fill the variance on receipts already taken.
+    //
+    // The variance report is only worth opening if it has history behind it —
+    // a supplier consistently billing more than they deliver is a pattern over
+    // months, not something visible in next week's loads. Every past receipt
+    // already holds both figures, so the variance can simply be computed.
+    //
+    // Only rows where it has not been computed yet, so re-running /setup is
+    // free. Nothing is moved into the queue: these were all accepted under the
+    // old rules by somebody who was there at the time, and dragging lorries
+    // from months ago into a Manager's queue would be absurd.
+    // ========================================================================
+    const varianceFilled = await pool.query(
+      `UPDATE rm_receipts
+          SET variance_qty = supplier_qty - accepted_qty,
+              variance_pct = CASE WHEN supplier_qty > 0
+                                  THEN round(((supplier_qty - accepted_qty) / supplier_qty * 100)::numeric, 3)
+                                  ELSE NULL END
+        WHERE variance_qty IS NULL
+        RETURNING id`
+    );
+    log.push(
+      varianceFilled.rows.length
+        ? `Schema migration applied (Round 158 — variance computed on ${varianceFilled.rows.length} existing receipt(s)). ` +
+          `All of them stay accepted as recorded; none were moved into the confirmation queue.`
+        : `Round 158 — receipt variance already computed, nothing to back-fill.`
+    );
+
+    // material.receipt-confirm is a brand new catalogue KEY, and the seeding
+    // loop only runs for a role with NO rows at all — so on a live database
+    // Manager would get the screen and then 403 on it. Same repair as 148,
+    // 153, 154, 155 and 157.
+    const REPAIR_158 = [
+      ["manager", "material.receipt-confirm", "view"],
+      ["manager", "material.receipt-confirm", "edit"],
+    ];
+    const confirmRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING
+       RETURNING role::text`,
+      [REPAIR_158.map((r) => r[0]), REPAIR_158.map((r) => r[1]), REPAIR_158.map((r) => r[2])]
+    );
+    log.push(
+      confirmRepaired.rows.length
+        ? `Schema migration applied (Round 158 — Manager can now confirm a disputed receipt quantity). ` +
+          `Administrator already could. Super Admin can revoke it.`
+        : `Round 158 — receipt confirmation access already in place, nothing to repair.`
+    );
+
+    // Round 159 — production.plant-manual is a new key, so the seeding loop
+    // (which only runs for a role with no rows at all) never reaches it.
+    const REPAIR_159 = [
+      ["plant_operator", "production.plant-manual", "view"],
+      ["plant_operator", "production.plant-manual", "create"],
+      ["plant_operator", "production.plant-manual", "edit"],
+    ];
+    const manualRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING RETURNING role::text`,
+      [REPAIR_159.map((r) => r[0]), REPAIR_159.map((r) => r[1]), REPAIR_159.map((r) => r[2])]
+    );
+    log.push(
+      manualRepaired.rows.length
+        ? `Schema migration applied (Round 159 — the Plant Operator can now enter the consumption and production the plant did not record).`
+        : `Round 159 — plant manual-entry access already in place, nothing to repair.`
+    );
 
     // Register every vehicle already sitting in the synced tickets, so the
     // registry arrives populated rather than empty. One row per distinct

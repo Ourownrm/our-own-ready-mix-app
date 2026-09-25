@@ -1,4 +1,4 @@
-// Main-app-side "Solitaire Access" API. This file lives on the MAIN app's
+// Main-app-side "MixTrack Access" API. This file lives on the MAIN app's
 // side of the boundary — protected by the main app's own requireAuth /
 // requireRole, NOT Solitaire's own auth (see routes/solitaire.js and
 // middleware/solitaireAuth.js for that side). It is the ONE integration point
@@ -42,7 +42,7 @@ router.use(requireSolitaireConfigured);
 router.use(requireAuth);
 
 // Any logged-in main-app user can check their OWN Solitaire access — this
-// is what drives whether the "Solitaire" button shows on their dashboard.
+// is what drives whether the "MixTrack" button shows on their dashboard.
 // Deliberately not admin-gated (unlike everything else in this file).
 router.get("/me", async (req, res) => {
   const { rows } = await query(
@@ -78,7 +78,7 @@ router.get("/", async (req, res) => {
 router.post("/:userId/grant", async (req, res) => {
   const { username, password, role } = req.body || {};
   if (!username || !password || !role) {
-    return res.status(400).json({ error: "Username, password, and Solitaire role are all required." });
+    return res.status(400).json({ error: "Username, password, and MixTrack role are all required." });
   }
   if (!["operator", "qc", "admin"].includes(role)) {
     return res.status(400).json({ error: "Role must be operator, qc, or admin." });
@@ -95,7 +95,7 @@ router.post("/:userId/grant", async (req, res) => {
     `SELECT id FROM solitaire_accounts WHERE username = $1 AND granted_to_user_id IS DISTINCT FROM $2`,
     [username.trim(), req.params.userId]
   );
-  if (clash.length) return res.status(400).json({ error: "That Solitaire username is already taken." });
+  if (clash.length) return res.status(400).json({ error: "That MixTrack username is already taken." });
 
   const passwordHash = await bcrypt.hash(password, 10);
   const { rows } = await query(
@@ -110,7 +110,7 @@ router.post("/:userId/grant", async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-// Revokes access — that user's "Solitaire" dashboard button disappears
+// Revokes access — that user's "MixTrack" dashboard button disappears
 // (their own GET /me above starts returning has_access: false). Device
 // authorizations are untouched: the device-lock is a separate, company-wide
 // concept, not tied to any one account.
@@ -120,7 +120,7 @@ router.post("/:userId/revoke", async (req, res) => {
      WHERE granted_to_user_id = $2 RETURNING id`,
     [req.user.id, req.params.userId]
   );
-  if (!rows.length) return res.status(404).json({ error: "This user has no Solitaire account to revoke." });
+  if (!rows.length) return res.status(404).json({ error: "This user has no MixTrack account to revoke." });
   res.json({ ok: true });
 });
 

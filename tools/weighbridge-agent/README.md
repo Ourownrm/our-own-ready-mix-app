@@ -78,15 +78,59 @@ each spelling once.
 
 ## Step 5 — leave it running
 
-The simplest reliable option on Windows is Task Scheduler:
+Run it as a **scheduled task that fires every five minutes**, not as a window you
+leave open. `npm start` is for testing; in daily use there should be no window
+at all, because a console window on the weighbridge PC is a console window an
+operator will eventually close.
 
-* Create a task, **Run whether user is logged on or not**.
-* Trigger: **At startup**, and tick **Repeat every 5 minutes** as a safety net
-  in case it ever exits.
-* Action: start `node` with argument `agent.js`, "Start in" set to this folder.
+Open Task Scheduler and create a task like this:
 
-The agent polls every 60 seconds on its own, so the 5-minute repeat only matters
-if the process dies.
+**General tab.** Name it `OORM weighbridge sync`. Click **Change User or
+Group…**, type `SYSTEM`, click **Check Names**, OK. "Run whether user is logged
+on or not" selects itself and greys out — and, crucially, **it stops asking for
+a password**, which matters because the weighbridge account has none. Tick **Run
+with highest privileges**.
+
+**Triggers tab.** New → **At startup**. Tick **Delay task for** `2 minutes` —
+MySQL is often not ready the instant Windows is. Then tick **Repeat task every**
+`5 minutes`, for a duration of **Indefinitely**.
+
+**Actions tab.** For **Program/script**, click **Browse…** and select
+`node.exe`. Do NOT type the word `node`, and do not paste the path either —
+both give `0x80070002 — the system cannot find the file specified` when the task
+runs. Only browsing to it works. `where node` in Command Prompt tells you which
+folder to browse to, usually `C:\Program Files\nodejs\`. Put
+`agent.js --once` in **Add arguments** — note the `--once` — and this folder in
+**Start in**.
+
+**Settings tab.** Untick **Stop the task if it runs longer than 3 days**. Tick
+**Run task as soon as possible after a scheduled start is missed**. Set **If the
+task fails, restart every** 1 minute, 3 attempts.
+
+Right-click → **Run** to test: **Last Run Result** should read `0x0` and no
+window should appear. Note that Run bypasses the triggers, so it proves the
+action works, not the schedule — to test that, restart the machine and check
+**Last Run Time** advances within five minutes.
+
+### Why `--once` rather than leaving it running
+
+The agent can poll continuously, but a task that starts, works for two seconds
+and exits is far better suited to an unattended PC. Nothing to leave open,
+nothing to crash and stay crashed, no process to restart after a reboot, and no
+three-day execution limit to trip over. Re-sending costs nothing — the app
+compares and skips anything unchanged — so running it every five minutes is
+free. The app treats the agent as live for ten minutes, so a five-minute cycle
+keeps the indicator green with room to spare.
+
+### The log file
+
+Because the task runs invisibly, the agent writes everything it does to
+**`agent.log`** in this folder — every cycle, every count, and the full error if
+something fails. When it passes a megabyte it is moved to `agent.log.1` and a
+fresh one starts, so it can never fill the disk.
+
+That file is the first thing to look at when the app says the agent has gone
+stale, and the most useful thing to send back when asking for help.
 
 ## What it actually sends
 

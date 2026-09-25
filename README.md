@@ -7239,3 +7239,326 @@ Both uses are now cast explicitly.
 
 **Next**: the Task Scheduler action on the weighbridge PC (`0x80070002` — the program path), and
 resuming guard conversion.
+
+---
+
+## Round 157 — the batching plant reports itself (v9.83)
+
+Solitaire is dropped. A search-and-print screen could not be added inside MCI370 without modifying
+vendor control software, which is not a thing anybody should do to the machine that batches the
+concrete — so the effort moved to the question that was worth answering anyway: **what did the plant
+actually make, and what did it actually consume?**
+
+Until now that answer lived only in MCI370's own Access database on the control PC, readable by one
+person standing at one machine. This round brings it into the app, one-way and read-only, the same
+shape as the weighbridge.
+
+### The MCI370 agent
+
+`tools/mci370-agent/`. It reads Schwing Stetter's Jet 4.0 `.mdb` through **32-bit PowerShell and
+ADODB**, which matters more than it sounds: Jet 4.0 ships with Windows but only in its 32-bit form,
+so calling `C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe` explicitly means **no driver
+has to be installed on the plant PC at all**. Nothing is added to a machine whose job is to run the
+plant.
+
+Two rules the agent never breaks. **MCI370.exe is never modified**, and **its database is never
+written to** — the agent copies the file and reads the copy, so a batch in progress cannot be
+disturbed by anything this app does. As with the weighbridge, the source database is the queue: on a
+failed post the cursor simply does not advance, and nothing is spooled locally to go stale.
+
+`npm run probe` comes first on any new machine. It answers, in order, the four things that actually go
+wrong during a deployment — is 32-bit PowerShell where we expect it, will Jet open this file, has the
+plant named its hoppers, and is there real data — and it sends nothing anywhere.
+
+### One load is several mixes
+
+The single most important thing about this data, and the thing that would quietly corrupt every figure
+if it were missed. `Batch_Dat_Trans` holds one row per **load**; `Batch_Transaction` holds one row per
+**mix**, keyed by `Batch_Index`. A 6 m³ load is six mixes, and consumption is the sum across them.
+Production is not.
+
+Two smaller traps, both real and both found in the vendor's own sample data. `Batch_Time` carries an
+1899 date alongside the clock, so the day comes from `Batch_Date` and only the time of day from
+`Batch_Time`. And `NameSetUp` is where the plant records what it calls each hopper — Gate 1 through 6,
+Cement 1 through 4, filler, water, admixtures — which is why the app never has to guess at a silo's
+identity from its weights.
+
+### Silos, named by the plant and mapped once
+
+Twenty physical slots. Whatever the panel calls Gate 4 is what appears in the app, and an
+Administrator says once which of our materials it holds. Placeholder names the panel leaves in unused
+hoppers — `0`, `-`, `Agg6` — are recognised and skipped rather than presented as work.
+
+**Consumption is reported by silo, not by material**, which is the deliberate opposite of the
+weighbridge. An unmapped hopper still shows its real weights, because the plant genuinely weighed
+them: the numbers are true before the mapping work is done. At the weighbridge an unresolved name
+means we do not know what arrived, and a total would be a lie.
+
+A hopper that is not stock at all — mains water, a spare — is marked as such and reads as a settled
+decision everywhere, rather than nagging forever as outstanding work. `POST /plant/recheck` re-resolves
+already-synced rows after new materials are added to the masters, the lesson Round 156 learned the
+hard way.
+
+### The screen
+
+Three tabs. **Production** gives m³ by day and by recipe and the recent loads with truck, site and
+batcher. **Consumption** gives kilograms per silo with design-versus-actual, moisture, and the figure a
+ready-mix plant actually lives by — **kilograms per cubic metre**. **Silos** is the Administrator-only
+mapping.
+
+Gated by `production.plant-data` (view) and `production.plant-mapping` (Administrator only). Verified
+both ways: a Manager reads the data and is refused the mapping, a Driver is refused everything, and
+`PLANT_API_KEY` left unset means the sync endpoint is **closed**, not open.
+
+### Verified
+
+Against a throwaway Postgres, transformed from real MCI370 rows. Six mixes resolved to one 6 m³ M25
+load — truck KL77D4231, Kakkanad Villa, batcher Rajesh — and consumption came out at textbook M25
+proportions: 323 kg cement, 80 fly ash, 764 sand, 620 + 300 aggregate and 150 water per m³, 2,236
+kg/m³ overall. Sanity of that kind is the only real test of a field map derived from a blank template.
+
+Idempotency held: a re-send left all six unchanged, a corrected mix updated exactly one row to revision
+2, and all 30 material rows kept their mapping. The mapping round trip moved 6 rows out and back.
+Both checkers green — 71 routes carrying both guards, 166 files with no dates built in UTC. Clean
+build, no console errors.
+
+Three bugs caught and fixed during verification, all of the same family — things that compile and only
+fail at runtime. `prod.rows[0]` where the destructuring had already unwrapped it. A `//` comment pasted
+inside a SQL template literal, which is a syntax error to Postgres rather than a comment. And a
+correlated subquery referencing a column that *is* in the GROUP BY: Postgres will not match a grouping
+expression through a subquery boundary however identical the text, so the lookup had to sit inside
+`bool_or(EXISTS (...))`.
+
+One date decision worth recording. `GET /plant/production` returns the day as a plain `YYYY-MM-DD`
+string rather than a DATE, because node-postgres turns a DATE into a JS Date at the session timezone
+and the browser then converts it back — the exact round trip that has produced this app's UTC/IST bug
+four times now. A string cannot drift.
+
+**Next**: running `npm run probe` on the plant control PC and mapping its real silos, and the
+weighbridge PC's Task Scheduler action (`0x80070002` — the program path).
+
+---
+
+## Round 158 — a receipt always saves, and a lorry can be assigned again (v9.84)
+
+Three things from live use, two of them my own bugs.
+
+### The vehicle owner dropdown never worked
+
+Assigning a lorry to a supplier, to one of your own trucks, or marking it junk —
+all three failed, and had failed since the day Round 156 shipped.
+
+The screen sends `{ truck_id: null, supplier_id: 7 }`. The endpoint tested for empty-string and
+undefined before converting, and `Number(null)` in JavaScript is **0**, not nothing. So the server
+saw truck 0 *and* supplier 7, concluded the lorry had been claimed as both ours and a supplier's,
+and refused it.
+
+It survived Round 156's verification because I tested the endpoint with curl, sending only the field
+I was setting — where the other really was undefined. The screen sends both. That is the difference
+between testing an API and testing the thing somebody touches, and the lesson is the cheaper of the
+two to learn.
+
+The same `Number(null) === 0` trap sat in three more places. None broke a happy path — they failed
+later with a misleading "that material no longer exists" — but all four now require a positive
+integer, so an id of 0 can never look valid again.
+
+A second, quieter bug alongside it: the Vehicles and Mapping controls were shown to anyone with
+mapping **view**, while the endpoints behind them require **edit**. Somebody granted read-only saw
+live dropdowns that answered 403. Read and write are now gated by the action each actually needs,
+and a read-only viewer is told so rather than left clicking at dead controls.
+
+### A receipt is no longer refused
+
+Round 156 would not save a receipt whose shortfall was beyond the material's tolerance until
+somebody typed a reason. That was the wrong instinct, and live use showed it: the lorry has arrived
+and the material is in the yard. Refusing to record that pushes Store into not recording it at all,
+or into fudging the accepted quantity until the app stops complaining — both worse than a number
+without an explanation.
+
+**A receipt now always saves, whatever the difference.** What replaces the block is a decision.
+Within tolerance nothing changes: the receipt posts immediately at the weighed figure and nobody is
+asked anything. Beyond it, the receipt still saves but posts as *pending* — it counts for nothing
+until a Manager or Administrator says which quantity stands, because that choice moves both stock
+and money.
+
+Scoping the approval to only the loads that need it was deliberate. An approval step that fires on
+every routine delivery gets clicked through without being read, and is then worse than no approval
+at all.
+
+The old message also described every case as "short", which read as nonsense — "-5.00 short" —
+whenever the weighbridge came in heavy. Variance is now stored **signed**, positive meaning the
+supplier billed for more than was accepted, and an excess is described as one.
+
+### Keeping a pending receipt out of stock, once
+
+Receipts are read in fifteen places for stock, valuation, landed rate, order fulfilment and reports.
+Adding "and not pending" to each of those by hand is exactly how one gets missed and stock goes
+quietly wrong for a month.
+
+So there is now a view, `rm_receipts_effective`, with the filter built in, and every read goes
+through it. Only writes, the receipts screen, the confirmation queue and the double-claim check
+touch the table directly, each saying so in a marker.
+
+`scripts/check-receipts.mjs` enforces it — the third checker in this project built on the same
+principle as `check-guards.mjs` and `check-dates.mjs`, and like both of those it exists because the
+mistake had already been made once. It found two sites in the weighbridge router within a minute of
+being written that I had not thought of.
+
+### The variance report
+
+`weighbridge-comparison` already lists individual receipts, which answers "what happened on
+Tuesday". It does not answer the question that costs money: **is this supplier short-billing as a
+habit?** One load 3% light is spillage; forty loads averaging 3% light, always in the same
+direction, is not.
+
+Hence a rollup by supplier and by material. Two columns carry the judgement. **Net** is what you are
+actually out of pocket by. **Mean difference** ignores direction and says how unreliable the weighing
+is — a supplier whose loads scatter either side nets out to nothing while being thoroughly
+unreliable, and that is a different conversation. **Short against over** is the tell: genuine
+mis-weighing lands on both sides, and a supplier always short and never over is not making mistakes.
+
+### Both agents now keep a log
+
+Running as a scheduled task under SYSTEM means no window and no console, which is right — but it
+also meant a failure left nothing to read. Each agent now writes every cycle, count and error to
+`agent.log` beside it, rotating at a megabyte so it cannot fill the disk.
+
+Both READMEs now carry the setup that actually works on an unattended plant PC, learned the hard way
+this week: run as **SYSTEM** so no password is ever asked, fire `agent.js --once` on a **five-minute
+repeat** rather than leaving a process running, and — the one that cost a day — **browse to
+`node.exe` rather than typing or pasting its path**, because Task Scheduler answers `0x80070002`
+otherwise.
+
+### Verified
+
+Against a throwaway Postgres. A load 0.5% out posts itself; one 7.5% out saves and waits. Stock read
+19,900 kg with the disputed load pending and 38,400 kg after it was confirmed — the view doing its
+job. Accepting the supplier's figure instead recomputed quantity, kilograms and landed rate
+together, because leaving the landed rate derived from the figure that was *not* chosen is the kind
+of error nobody spots for months. Store was refused both the queue and the confirmation (403);
+confirming twice was refused with a clear message rather than silently overwriting.
+
+The migration was tested the way it will actually run — against a database with the Round 158
+columns stripped out and five existing receipts. It failed the first time: the back-fill ran before
+the DDL that creates the columns it writes to. Moved, re-run, and 5 receipts gained a computed
+variance with none of them dragged into the queue, which is the point — they were all accepted at
+the time by somebody who was standing there.
+
+All four assignment paths on the vehicle screen now work with the exact payload the screen sends,
+and claiming a lorry as both ours and a supplier's is still refused. Three checkers green — 74
+routes carrying both guards, 167 files with no dates built in UTC, every receipt read through the
+view. Clean build, no console errors.
+
+**Next**: Round 159 — the plant. The production bug the live MCI370 data exposed, the silo contents
+timeline linked to material receipts, and the design-versus-actual figures.
+
+---
+
+## Round 159 — the plant, corrected against its own data (v9.85)
+
+Round 157 was designed against the installer's blank template, because that was all there was. The
+live database — 2,495 loads, 18,505 batches, 46.7 MB against the template's 5.7 — showed one of its
+assumptions to be badly wrong.
+
+### Production was going to be 4.6 times too high
+
+`Production_Qty` on a batch row is **a running total of the load so far**, not that batch's quantity.
+Batch 1 reads 1, batch 2 reads 2, batch 8 reads 8. True on **2,496 of 2,496 loads**, no exceptions.
+
+Round 157 summed it. On the real data that reports **73,987 m³ against a true 16,010** — every
+production figure 4.6x too high, every consumption-per-m³ correspondingly too low, and material cost
+per m³ wrong in the same proportion. It passed verification because my synthetic payload used 1 m³
+per batch, the one case where summing and cumulating agree.
+
+The fix is in the naming, not just the arithmetic. Three columns now, and only one may be summed:
+`batch_qty_m3` (this batch alone), `load_qty_m3` (the whole load, identical on each of its batches),
+`cumulative_qty_m3` (the raw running total, audit only). `scripts/check-plant-qty.mjs` fails the
+build on `sum(cumulative_qty_m3)` or `sum(load_qty_m3)` — the fourth checker in this project, and
+like the other three it exists because the mistake had already been made once.
+
+Verified by running the agent's real transform over all 18,505 real batches: **16,010.5 m³**, against
+an independent per-load check of 16,009.5. The 1 m³ gap is a single orphaned 2016 vendor demo row
+with no load header, and it explains itself.
+
+### Your vocabulary, not the vendor's
+
+A **load** is the truckful. A **batch** is one drop of the mixer into it. Yours average 7.4 batches
+to a load.
+
+This collides head-on with MCI370's own naming and the collision is worth stating plainly, because it
+will otherwise bite every future conversation: **MCI370's `Batch_No` is the LOAD number** — its own
+reprint dialog calls it "Batch No / Docket No" — and `Batch_Index` is the batch. The app now says
+load and batch throughout.
+
+### Three figures per material, not two
+
+The load header carries `<slot>_Rec`: the recipe's design quantity per m³. With the moisture-adjusted
+`_Target` and the weighed `_Actual` that makes three numbers answering three different questions, and
+the first month of real data shows why both comparisons matter:
+
+M SAND asks for 777 kg/m³ by design, the panel targets 794 after correcting for 6% moisture, and 793
+is weighed. Water asks for 145 and the panel targets 107 — **38 kg less, because the sand is carrying
+it**. Design against target shows the moisture correction working; target against actual shows the
+plant's accuracy. Reporting one hides the other.
+
+### The real clock
+
+`Batch_Time` is stamped `12/30/99` on every row — the 1899 trap, confirmed live. `Batch_Start_Time`
+and `Batch_End_Time` are clean text on the header and nobody has ever used them. Cycle time now falls
+out for free: **median 11:29, fastest 2:18, slowest 27:29** across September.
+
+### Silos hold whatever you last put in them
+
+CEM1, CEM2 and CEM3 are storage, not materials. A static "CEM2 means Ultratech" mapping is wrong the
+moment the silo is refilled — and worse, it silently relabels every batch already behind it.
+
+So a fill is an event on a timeline. Store says which silo a cement or fly-ash receipt went into, and
+from that fill until the next one the silo holds that material. Verified to the hour: one fill of
+Ramco on 1 September and one of Ultratech at 10:00 on the 19th split 1,129 batches correctly, with
+the boundary day itself divided at the right hour.
+
+MCI370 cannot help here at all — its own `Batch_Stock` table is every-figure-zero and was last
+written in **December 2013**. The fill record is the only source there is.
+
+Mappings are also keyed on the **hopper** now, not its name: your plant calls both Gate 1 and Gate 2
+"M SAND", and a name-keyed alias could never tell them apart. `"1"` joins the placeholder names
+skipped as unused, because the live `Admix12Name` reads literally that.
+
+### Auto plus manual, never instead of
+
+The plant's figure is read-only — it is what the load cells weighed, and if it looks wrong that is a
+finding, not a typo. The Plant Operator enters **only what the plant did not record**: a hand mix, a
+load batched while the agent was offline, sand taken for a yard repair. The two are added.
+
+Cost per m³ divides by the combined figure. On the verification day that is 54 m³ rather than 51 — a
+5.9% difference in cost per m³ that would otherwise be silently wrong. Store can read the day's
+figures and is refused the entry; the Plant Operator can do both.
+
+### Solitaire is MixTrack
+
+Every user-visible label, message and menu entry. The internal names — table names, route paths, the
+`solitaire` permission keys — are deliberately untouched: nobody sees them, and renaming live tables
+buys nothing but risk. A migration updates the plugin label on installations that already have it.
+
+Care was taken over one distinction, since it is the confusion that prompted the rename: "Delivery
+Challan" in the Material Module and Today's Delivery Notes means **the app's own** challan and is
+left alone. Only the batching-docket module became MixTrack.
+
+### Verified
+
+Against a throwaway Postgres carrying **1,857 real batches from 271 real loads** — September 2026,
+transformed by the agent's own code. Production reconciles three ways. All 1,857 batches carry real
+start and end times; all 12,977 material rows carry design figures. Four checkers green: 79 routes
+with both guards, 167 files with no UTC dates, every receipt read through the view, production
+summing the per-batch quantity only. Clean build, no page errors.
+
+Five bugs caught during verification, every one of them by running against real data rather than
+reasoning about it: `SLOT_BY_KEY.has()` on a plain object; `reresolveSilos` dropped entirely when I
+rebuilt the route file from pieces; a LATERAL that cannot reference its own UPDATE target, replaced
+by a CTE that also removed a second statement; the migration's silo back-fill referencing a column
+that does not exist on a fresh install; and `design_kg_per_m3` reaching the database as null on every
+row because the payload sanitiser silently drops unknown keys — the agent had been sending it all
+along.
+
+**Next**: MixTrack itself — the ticket, the print, the PDF and the search window. That needs the
+workbook with its finish-time formula replaced by a value the agent writes.

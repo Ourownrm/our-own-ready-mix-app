@@ -409,7 +409,7 @@ const ORDER_LIST_FROM = `
   JOIN users ru ON ru.id = o.requested_by
   LEFT JOIN users au ON au.id = o.approved_by
   LEFT JOIN LATERAL (
-    SELECT SUM(r.accepted_qty) AS received_qty FROM rm_receipts r WHERE r.order_id = o.id
+    SELECT SUM(r.accepted_qty) AS received_qty FROM rm_receipts_effective r WHERE r.order_id = o.id
   ) recv ON true
 `;
 
@@ -559,7 +559,7 @@ router.get("/orders/:id/weighbridge-tickets", requireRole(...ORDER_ROLES), requi
        JOIN rm_orders o ON o.id = $1
        JOIN rm_materials m ON m.id = o.material_id
        LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
-       LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number
+       LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: claim check must see pending receipts, or a ticket could be claimed twice
        WHERE wb.match_status = 'matched'
          AND r.id IS NULL
          AND wb.material_id = o.material_id
@@ -594,9 +594,14 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
   // units when Store doesn't override it — the weighbridge figure is the
   // whole point of this comparison, so it's the default, not the fallback.
   let finalAcceptedQty = accepted_qty;
+  // Round 158 — record WHERE the accepted figure came from, not just what it
+  // was. The variance report is far more useful when it can say a quantity was
+  // the weighbridge's own reading rather than something typed over the top.
+  let acceptedBasis = "entered";
   if (finalAcceptedQty === undefined || finalAcceptedQty === null || finalAcceptedQty === "") {
     if (!weighbridge_weight_kg) return res.status(400).json({ error: "Enter the accepted quantity, or the weighbridge weight to derive it from." });
     finalAcceptedQty = Number(weighbridge_weight_kg) / Number(order.kg_per_purchase_unit);
+    acceptedBasis = "weighed";
   }
   finalAcceptedQty = Number(finalAcceptedQty);
   if (finalAcceptedQty <= 0) return res.status(400).json({ error: "Accepted quantity must be greater than zero." });
@@ -619,19 +624,40 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
   // But a shortfall outside the material's own tolerance should be a decision
   // somebody made rather than a number nobody looked at, so it has to carry
   // one sentence saying what happened.
+  // ROUND 158 — the block is gone. A receipt ALWAYS saves.
+  //
+  // Round 156 refused this save until somebody typed a reason, and it was the
+  // wrong instinct: the lorry has arrived and the material is in the yard.
+  // Refusing to record that pushes Store into not recording it at all, or into
+  // fudging the accepted figure until the app stops complaining — both worse
+  // than an unexplained number.
+  //
+  // What takes its place is a DECISION rather than an obstacle. Within
+  // tolerance the receipt posts straight away at the weighed figure, exactly as
+  // before, and nobody is troubled. Beyond it, the receipt still saves but
+  // posts as 'pending': it counts for nothing until a Manager says which of the
+  // two quantities stands. That choice moves both stock and money, so it is not
+  // Store's alone to make — but nor is it a reason to keep a lorry's load out
+  // of the system while somebody goes looking for a manager.
+  //
+  // signed: positive means the supplier billed for more than we accepted. Note
+  // deviationPct is computed on the ABSOLUTE difference, because an excess is
+  // just as much a disagreement as a shortfall — Round 156 used the same
+  // absolute value but then described every case as "short", which read as
+  // nonsense ("-5.00 short") whenever the weighbridge came in heavy.
   const tolerancePct = order.tolerance_pct != null ? Number(order.tolerance_pct) : null;
-  const deviationPct = Number(supplier_qty) > 0 ? Math.abs(shortQty) / Number(supplier_qty) * 100 : 0;
+  const varianceQty = shortQty;
+  const deviationPct = Number(supplier_qty) > 0 ? Math.abs(varianceQty) / Number(supplier_qty) * 100 : 0;
   const toleranceExceeded = tolerancePct != null && deviationPct > tolerancePct;
-  if (toleranceExceeded && !String(short_reason || "").trim()) {
-    return res.status(400).json({
-      error: `This load is ${shortQty.toFixed(2)} short of the billed quantity (${deviationPct.toFixed(2)}%, ` +
-             `tolerance is ${tolerancePct}%). Say briefly why before saving — spillage, a disputed slip, ` +
-             `a re-weigh, whatever it was.`,
-      tolerance_exceeded: true,
-      short_qty: shortQty,
-      deviation_pct: deviationPct,
-    });
-  }
+  const needsConfirmation = toleranceExceeded;
+  const confirmationStatus = needsConfirmation ? "pending" : "auto";
+  // Stored SIGNED, while the tolerance test above uses the absolute value.
+  // The direction is the informative part — a supplier always short is a
+  // different problem from one that scatters — and the report takes abs()
+  // where it wants magnitude. The back-fill in setup.js stores it signed too;
+  // they must agree or the report mixes two conventions in one column.
+  const variancePct = Number(supplier_qty) > 0
+    ? Number((varianceQty / Number(supplier_qty) * 100).toFixed(3)) : 0;
 
   // ROUND 156 — the weighbridge ticket this receipt was weighed on.
   //
@@ -646,7 +672,7 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
     const { rows: tk } = await query(
       `SELECT wb.ticket_number, wb.match_status::text AS match_status, r.id AS claimed_by
        FROM weighbridge_tickets wb
-       LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number
+       LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: claim check must see pending receipts, or a ticket could be claimed twice
        WHERE wb.ticket_number = $1`,
       [ticketId]
     );
@@ -660,18 +686,31 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
   }
 
   const { rows } = await query(
-    `INSERT INTO rm_receipts
+    `INSERT INTO rm_receipts   -- receipts-raw: the write itself
        (order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, accepted_qty_kg, transporter_id,
         freight_rate, freight_basis, vehicle_number, challan_number, short_qty, debit_note_amount,
-        landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+        landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason,
+        accepted_basis, variance_qty, variance_pct, confirmation_status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
     [order_id, supplier_qty, weighbridge_weight_kg || null, finalAcceptedQty, acceptedQtyKg,
       transporter_id || order.transporter_id || null, useFreightRate || null, useFreightBasis || null,
       vehicle_number || null, challan_number || null, shortQty, debit_note_amount || null,
-      landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null]
+      landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null,
+      acceptedBasis, varianceQty, variancePct, confirmationStatus]
   );
 
-  res.status(201).json({ ...rows[0], tolerance_exceeded: toleranceExceeded });
+  res.status(201).json({
+    ...rows[0],
+    tolerance_exceeded: toleranceExceeded,
+    // The screen needs to say what just happened, and the two outcomes are
+    // genuinely different: one is filed, the other is waiting on somebody.
+    pending_confirmation: needsConfirmation,
+    message: needsConfirmation
+      ? `Saved. The weighed quantity and the supplier's differ by ${deviationPct.toFixed(1)}% ` +
+        `(tolerance ${tolerancePct}%), so this receipt is waiting for a Manager to confirm which ` +
+        `figure stands. It does not affect stock until then.`
+      : null,
+  });
 });
 
 // Admin-only edit/delete for a wrong receipt entry (item 6, round 140). Book
@@ -682,7 +721,7 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
 router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material.receipts", "edit"), async (req, res) => {
   const { rows: existingRows } = await query(
     `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct
-     FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id
+     FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: editing a receipt must be able to load a pending one
      WHERE r.id = $1`,
     [req.params.id]
   );
@@ -717,7 +756,7 @@ router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material
   const shortQty = supplierQty - acceptedQty;
 
   const { rows } = await query(
-    `UPDATE rm_receipts SET
+    `UPDATE rm_receipts SET   -- receipts-raw: the write itself
        supplier_qty = $1, weighbridge_weight_kg = $2, accepted_qty = $3, accepted_qty_kg = $4,
        transporter_id = $5, freight_rate = $6, freight_basis = $7, vehicle_number = $8, challan_number = $9,
        short_qty = $10, debit_note_amount = $11, landed_rate_per_kg = $12, notes = $13
@@ -731,6 +770,7 @@ router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material
 });
 
 router.delete("/receipts/:id", requireRole(...ADMIN), requirePermission("material.receipts", "delete"), async (req, res) => {
+  // receipts-raw: the write itself
   const { rows } = await query(`DELETE FROM rm_receipts WHERE id = $1 RETURNING id`, [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: "Receipt not found." });
   res.json({ deleted: true });
@@ -751,7 +791,7 @@ router.get("/receipts", requireRole(...ORDER_ROLES), requirePermission("material
   const { rows } = await query(
     `SELECT r.*, o.material_id, o.supplier_id, m.name AS material_name, m.purchase_unit,
             s.name AS supplier_name, t.name AS transporter_name, ru.name AS received_by_name
-     FROM rm_receipts r
+     FROM rm_receipts r   -- receipts-raw: the receipts screen deliberately shows pending ones, flagged
      JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_materials m ON m.id = o.material_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
@@ -763,6 +803,127 @@ router.get("/receipts", requireRole(...ORDER_ROLES), requirePermission("material
     params
   );
   res.json(rows);
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 158 — the confirmation queue.
+//
+// Only the receipts where the weighbridge and the supplier's invoice genuinely
+// disagree land here. Everything within tolerance posted itself and nobody is
+// asked anything, which is the point: an approval step that fires on every
+// routine delivery gets clicked through without being read, and then it is
+// worse than no approval at all.
+// ---------------------------------------------------------------------------
+const CONFIRM_ROLES = ["administrator", "manager"];
+
+router.get("/receipts/pending", requireRole(...CONFIRM_ROLES), requirePermission("material.receipt-confirm", "view"), async (req, res) => {
+  try {
+    const { rows } = await query(
+      // receipts-raw: this queue exists to show exactly the pending ones
+      `SELECT r.id, r.received_at, r.supplier_qty, r.weighbridge_weight_kg, r.accepted_qty,
+              r.variance_qty, r.variance_pct, r.short_reason, r.notes, r.challan_number,
+              r.vehicle_number, r.accepted_basis,
+              o.id AS order_id, o.rate AS order_rate,
+              m.id AS material_id, m.name AS material_name, m.purchase_unit,
+              m.kg_per_purchase_unit, m.tolerance_pct,
+              s.name AS supplier_name, ru.name AS received_by_name,
+              -- What accepting each figure would actually mean in money, so the
+              -- decision is not taken on quantities alone.
+              round((r.supplier_qty * o.rate)::numeric, 2) AS value_if_supplier,
+              round((r.accepted_qty * o.rate)::numeric, 2) AS value_if_weighed
+       FROM rm_receipts r   -- receipts-raw: this queue exists to show exactly the pending ones
+       JOIN rm_orders o ON o.id = r.order_id
+       JOIN rm_materials m ON m.id = o.material_id
+       JOIN rm_suppliers s ON s.id = o.supplier_id
+       JOIN users ru ON ru.id = r.received_by
+       WHERE r.confirmation_status = 'pending'
+       ORDER BY r.received_at ASC`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the receipts waiting for confirmation." });
+  }
+});
+
+router.post("/receipts/:id/confirm", requireRole(...CONFIRM_ROLES), requirePermission("material.receipt-confirm", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid receipt id." });
+
+  const basis = String(req.body?.basis || "").trim();
+  if (!["weighed", "supplier", "entered"].includes(basis)) {
+    return res.status(400).json({ error: "Say which figure stands: the weighed one, the supplier's, or a quantity you enter." });
+  }
+
+  try {
+    const { rows: found } = await query(
+      // receipts-raw: confirming is what takes a receipt out of 'pending'
+      `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.freight_rate AS order_freight_rate,
+              o.freight_basis AS order_freight_basis, m.kg_per_purchase_unit
+       FROM rm_receipts r   -- receipts-raw: confirming is what takes a receipt out of 'pending'
+       JOIN rm_orders o ON o.id = r.order_id
+       JOIN rm_materials m ON m.id = o.material_id
+       WHERE r.id = $1`,
+      [id]
+    );
+    if (!found.length) return res.status(404).json({ error: "Receipt not found." });
+    const r = found[0];
+    if (r.confirmation_status !== "pending") {
+      // Two managers opening the queue at once is ordinary, and the second one
+      // should be told plainly rather than silently overwriting the first.
+      return res.status(409).json({
+        error: `This receipt was already settled${r.confirmed_at ? ` on ${new Date(r.confirmed_at).toLocaleDateString("en-GB")}` : ""}. Reload the queue.`,
+      });
+    }
+
+    const kgPerUnit = Number(r.kg_per_purchase_unit);
+    let acceptedQty;
+    if (basis === "supplier") acceptedQty = Number(r.supplier_qty);
+    else if (basis === "weighed") acceptedQty = Number(r.accepted_qty);
+    else {
+      acceptedQty = Number(req.body?.accepted_qty);
+      if (!Number.isFinite(acceptedQty) || acceptedQty <= 0) {
+        return res.status(400).json({ error: "Enter the quantity you want accepted." });
+      }
+    }
+
+    // Everything downstream of the quantity has to move with it — the landed
+    // rate is what stock valuation reads, and leaving it computed from the
+    // figure that was NOT chosen is the kind of error nobody spots for months.
+    const acceptedQtyKg = acceptedQty * kgPerUnit;
+    const freightTotal = computeFreightTotal(
+      r.freight_rate ?? r.order_freight_rate,
+      r.freight_basis ?? r.order_freight_basis,
+      acceptedQty, acceptedQtyKg
+    );
+    const baseCost = acceptedQty * Number(r.order_rate) + freightTotal;
+    const taxAmount = r.gst_treatment === "included" ? baseCost * (Number(r.tax_pct) / 100) : 0;
+    const landedRatePerKg = (baseCost + taxAmount) / acceptedQtyKg;
+    const varianceQty = Number(r.supplier_qty) - acceptedQty;
+    // Signed, to match the POST above and the back-fill in setup.js.
+    const variancePct = Number(r.supplier_qty) > 0
+      ? varianceQty / Number(r.supplier_qty) * 100 : 0;
+
+    const { rows } = await query(
+      // receipts-raw: the write itself
+      `UPDATE rm_receipts
+          SET accepted_qty = $2, accepted_qty_kg = $3, landed_rate_per_kg = $4,
+              short_qty = CASE WHEN $5::numeric > 0 THEN $5::numeric ELSE NULL END,
+              variance_qty = $5, variance_pct = $6, accepted_basis = $7,
+              confirmation_status = 'confirmed', confirmed_by = $8, confirmed_at = now(),
+              confirm_note = $9
+        WHERE id = $1 AND confirmation_status = 'pending'
+        RETURNING *`,
+      [id, acceptedQty, acceptedQtyKg, landedRatePerKg, varianceQty,
+       Number(variancePct.toFixed(3)), basis, req.user.id,
+       String(req.body?.note || "").trim() || null]
+    );
+    if (!rows.length) return res.status(409).json({ error: "Somebody settled this receipt first. Reload the queue." });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not confirm that receipt." });
+  }
 });
 
 // ===================== Daily consumption & production (Plant Operator) =====================
@@ -849,7 +1010,7 @@ async function monthlyWeightedAvgRates(materialId) {
     `SELECT to_char(date_trunc('month', r.received_at), 'YYYY-MM') AS ym,
             SUM(r.accepted_qty_kg * r.landed_rate_per_kg) AS value_sum,
             SUM(r.accepted_qty_kg) AS qty_sum
-     FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id
+     FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
      WHERE o.material_id = $1 AND r.landed_rate_per_kg IS NOT NULL
      GROUP BY 1 ORDER BY 1`,
     [materialId]
@@ -879,7 +1040,7 @@ async function bookStockRows() {
     FROM rm_materials m
     LEFT JOIN LATERAL (
       SELECT SUM(r.accepted_qty_kg) AS total_kg
-      FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = m.id
+      FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = m.id
     ) recv ON true
     LEFT JOIN LATERAL (
       SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) AS total_kg
@@ -895,7 +1056,7 @@ async function bookStockRows() {
     -- rather than only the running balance.
     LEFT JOIN LATERAL (
       SELECT SUM(r.accepted_qty_kg) AS month_kg
-      FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id
+      FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
       WHERE o.material_id = m.id AND date_trunc('month', r.received_at) = date_trunc('month', CURRENT_DATE)
     ) monthrecv ON true
     WHERE m.is_active
@@ -970,7 +1131,7 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("materi
      FROM rm_orders o
      JOIN rm_materials m ON m.id = o.material_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
-     LEFT JOIN rm_receipts r ON r.order_id = o.id
+     LEFT JOIN rm_receipts_effective r ON r.order_id = o.id
      WHERE o.status = 'approved'
      GROUP BY o.id, o.ordered_qty, m.id, m.name, m.purchase_unit, m.kg_per_purchase_unit, s.name, o.scope
      HAVING COALESCE(SUM(r.accepted_qty), 0) < o.ordered_qty
@@ -1019,7 +1180,7 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
   for (const m of materials) {
     const { rows: openingRows } = await query(
       `SELECT
-         $2::numeric + COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = $1 AND r.received_at < $3::date), 0)
+         $2::numeric + COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = $1 AND r.received_at < $3::date), 0)
          - COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c WHERE c.material_id = $1 AND c.consumption_date < $3::date), 0)
          AS opening_kg`,
       [m.id, m.opening_stock_kg, monthStart]
@@ -1028,7 +1189,7 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
 
     const { rows: monthRows } = await query(
       `SELECT
-         COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id
+         COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
                    WHERE o.material_id = $1 AND r.received_at >= $2::date AND r.received_at < $2::date + INTERVAL '1 month'), 0) AS purchase_kg,
          COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c
                    WHERE c.material_id = $1 AND c.consumption_date >= $2::date AND c.consumption_date < $2::date + INTERVAL '1 month'), 0) AS plant_consumption_kg`,
@@ -1141,7 +1302,7 @@ router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePerm
     `SELECT r.id, r.received_at, m.name AS material_name, m.purchase_unit, m.tolerance_pct,
             s.name AS supplier_name, r.supplier_qty, r.weighbridge_weight_kg, r.accepted_qty,
             r.short_qty, r.debit_note_amount, r.vehicle_number, r.challan_number
-     FROM rm_receipts r
+     FROM rm_receipts_effective r
      JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_materials m ON m.id = o.material_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
@@ -1155,6 +1316,99 @@ router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePerm
     return { ...r, tolerance_exceeded: r.tolerance_pct != null && deviationPct > Number(r.tolerance_pct) };
   });
   res.json(withFlags);
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 158 — the variance report.
+//
+// weighbridge-comparison above already lists individual receipts, and that is
+// the right tool for "what happened on Tuesday". It is the wrong tool for the
+// question that actually costs money, which is whether a particular supplier
+// is SHORT-BILLING AS A HABIT. One load 3% light is weather and spillage;
+// forty loads averaging 3% light, always in the same direction, is not.
+//
+// Hence the rollup. Two things make it readable rather than just arithmetic:
+//
+//   net vs absolute. Net variance is what you are actually out of pocket by.
+//   Mean absolute variance says how NOISY a supplier is. A supplier whose
+//   loads scatter either side of the mark averages out to nothing on net while
+//   being thoroughly unreliable, and those are different conversations.
+//
+//   short_loads vs over_loads. A supplier genuinely mis-weighing lands on both
+//   sides. One that is always short, never over, is not making mistakes.
+// ---------------------------------------------------------------------------
+router.get("/reports/variance", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+  try {
+    const params = [];
+    let where = "r.variance_qty IS NOT NULL";
+    if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_at >= $${params.length}::date`; }
+    if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_at < $${params.length}::date + INTERVAL '1 day'`; }
+    if (req.query.supplier_id) { params.push(req.query.supplier_id); where += ` AND o.supplier_id = $${params.length}`; }
+    if (req.query.material_id) { params.push(req.query.material_id); where += ` AND o.material_id = $${params.length}`; }
+
+    const roll = (groupCols, labelCols) => `
+      SELECT ${labelCols},
+             count(*)::int                                   AS loads,
+             sum(r.supplier_qty)::numeric                     AS billed_qty,
+             sum(r.accepted_qty)::numeric                     AS accepted_qty,
+             sum(r.variance_qty)::numeric                     AS net_variance_qty,
+             round(avg(abs(r.variance_pct))::numeric, 2)      AS mean_abs_variance_pct,
+             round((CASE WHEN sum(r.supplier_qty) > 0
+                         THEN sum(r.variance_qty) / sum(r.supplier_qty) * 100
+                         ELSE 0 END)::numeric, 2)             AS net_variance_pct,
+             count(*) FILTER (WHERE r.variance_qty > 0)::int  AS short_loads,
+             count(*) FILTER (WHERE r.variance_qty < 0)::int  AS over_loads,
+             -- What the net shortfall is worth at the order's own rate, which
+             -- is the number that makes somebody pick up the phone.
+             round(sum(r.variance_qty * o.rate)::numeric, 2)  AS net_variance_value
+      FROM rm_receipts_effective r
+      JOIN rm_orders o ON o.id = r.order_id
+      JOIN rm_materials m ON m.id = o.material_id
+      JOIN rm_suppliers s ON s.id = o.supplier_id
+      WHERE ${where}
+      GROUP BY ${groupCols}
+      ORDER BY sum(r.variance_qty * o.rate) DESC NULLS LAST`;
+
+    const [bySupplier, byMaterial, detail, totals] = await Promise.all([
+      query(roll("s.id, s.name", "s.id AS supplier_id, s.name AS supplier_name"), params),
+      query(roll("m.id, m.name, m.purchase_unit",
+                 "m.id AS material_id, m.name AS material_name, m.purchase_unit"), params),
+      query(
+        `SELECT r.id, r.received_at, r.supplier_qty, r.accepted_qty, r.weighbridge_weight_kg,
+                r.variance_qty, r.variance_pct, r.accepted_basis, r.confirmation_status,
+                r.short_reason, r.confirm_note, r.vehicle_number, r.challan_number,
+                m.name AS material_name, m.purchase_unit, m.tolerance_pct,
+                s.name AS supplier_name, cu.name AS confirmed_by_name
+         FROM rm_receipts_effective r
+         JOIN rm_orders o ON o.id = r.order_id
+         JOIN rm_materials m ON m.id = o.material_id
+         JOIN rm_suppliers s ON s.id = o.supplier_id
+         LEFT JOIN users cu ON cu.id = r.confirmed_by
+         WHERE ${where}
+         ORDER BY abs(r.variance_pct) DESC NULLS LAST, r.received_at DESC
+         LIMIT 300`, params),
+      query(
+        `SELECT count(*)::int AS loads,
+                sum(r.variance_qty)::numeric AS net_variance_qty,
+                round(sum(r.variance_qty * o.rate)::numeric, 2) AS net_variance_value,
+                count(*) FILTER (WHERE r.confirmation_status = 'confirmed')::int AS confirmed_loads
+         FROM rm_receipts_effective r
+         JOIN rm_orders o ON o.id = r.order_id
+         JOIN rm_materials m ON m.id = o.material_id
+         JOIN rm_suppliers s ON s.id = o.supplier_id
+         WHERE ${where}`, params),
+    ]);
+
+    res.json({
+      by_supplier: bySupplier.rows,
+      by_material: byMaterial.rows,
+      detail: detail.rows,
+      totals: totals.rows[0],
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not build the variance report." });
+  }
 });
 
 // Daily consumption: mix (challan-derived, grade-split) vs actual (operator's
@@ -1380,7 +1634,7 @@ router.get("/reports/supplier-purchase-summary", requireRole(...ADMIN), requireP
             COUNT(r.id) AS receipt_count,
             SUM(r.accepted_qty_kg) AS total_qty_kg,
             SUM(r.accepted_qty_kg * r.landed_rate_per_kg) AS total_value
-     FROM rm_receipts r
+     FROM rm_receipts_effective r
      JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
      WHERE ${where}
@@ -1404,7 +1658,7 @@ router.get("/reports/transporter-freight", requireRole(...ADMIN), requirePermiss
                   WHEN r.freight_basis = 'per_trip' THEN r.freight_rate
                   ELSE r.freight_rate * r.accepted_qty
                 END) AS total_freight
-     FROM rm_receipts r
+     FROM rm_receipts_effective r
      JOIN rm_transporters t ON t.id = r.transporter_id
      WHERE ${where}
      GROUP BY t.id, t.name
@@ -1535,7 +1789,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
   const { rows: monthReceipts } = await query(
     `SELECT r.accepted_qty_kg, r.landed_rate_per_kg, r.debit_note_amount, r.short_qty, r.supplier_qty,
             o.material_id, o.supplier_id, m.name AS material_name, m.purchase_unit, s.name AS supplier_name
-     FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id
+     FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_materials m ON m.id = o.material_id JOIN rm_suppliers s ON s.id = o.supplier_id
      WHERE to_char(r.received_at, 'YYYY-MM') = $1`,
     [month]
@@ -1574,7 +1828,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
     .sort((a, b) => b.total_qty_kg - a.total_qty_kg);
 
   const { rows: toleranceRows } = await query(
-    `SELECT COUNT(*) AS n FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id JOIN rm_materials m ON m.id = o.material_id
+    `SELECT COUNT(*) AS n FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id JOIN rm_materials m ON m.id = o.material_id
      WHERE to_char(r.received_at, 'YYYY-MM') = $1 AND m.tolerance_pct IS NOT NULL
        AND r.supplier_qty > 0 AND ABS(r.short_qty) / r.supplier_qty * 100 > m.tolerance_pct`,
     [month]
@@ -1633,13 +1887,13 @@ router.get("/reports/stock-summary", requireRole(...ADMIN), requirePermission("m
   const { rows: openOrders } = await query(
     `SELECT o.rate, o.ordered_qty, COALESCE(recv.received_qty, 0) AS received_qty
      FROM rm_orders o
-     LEFT JOIN LATERAL (SELECT SUM(r.accepted_qty) AS received_qty FROM rm_receipts r WHERE r.order_id = o.id) recv ON true
+     LEFT JOIN LATERAL (SELECT SUM(r.accepted_qty) AS received_qty FROM rm_receipts_effective r WHERE r.order_id = o.id) recv ON true
      WHERE o.status = 'approved'`
   );
   const openOrderBalanceValue = openOrders.reduce((sum, o) => sum + Math.max(0, Number(o.ordered_qty) - Number(o.received_qty)) * Number(o.rate), 0);
 
   const { rows: monthReceipts } = await query(
-    `SELECT accepted_qty_kg, landed_rate_per_kg, debit_note_amount FROM rm_receipts WHERE to_char(received_at, 'YYYY-MM') = $1`,
+    `SELECT accepted_qty_kg, landed_rate_per_kg, debit_note_amount FROM rm_receipts_effective WHERE to_char(received_at, 'YYYY-MM') = $1`,
     [month]
   );
   const monthPurchaseValue = monthReceipts.reduce((sum, r) => sum + Number(r.accepted_qty_kg) * Number(r.landed_rate_per_kg || 0), 0);

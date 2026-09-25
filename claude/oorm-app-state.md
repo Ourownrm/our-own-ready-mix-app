@@ -69,6 +69,151 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
 
+## Round 159 — the plant corrected against real data, silo timeline, MixTrack (v9.85)
+
+**Visit `/setup?key=...` once** — renames plant quantity columns, adds design values, load
+start/end, plant_silo_fills, plant_manual_entries, rm_receipts.silo_slot, REPAIR_159, and updates
+the plugin label to MixTrack.
+
+**VOCABULARY.** A **load** is the truckful; a **batch** is one drop of the mixer into it (~7.4 per
+load). MCI370's own naming is the REVERSE: its `Batch_No` identifies a LOAD (its reprint dialog says
+"Batch No / Docket No"), `Batch_Index` identifies a batch. Keep this straight.
+
+**THE BUG.** `Batch_Transaction.Production_Qty` is a RUNNING TOTAL of the load so far (1,2,3…8) —
+2,496/2,496 loads. Round 157 summed it: 73,987 m³ against a true 16,010, i.e. 4.6x. Passed
+verification only because the synthetic payload used 1 m³/batch. Columns renamed so the mistake is
+hard to make: `batch_qty_m3` (sum THIS), `load_qty_m3` (constant per load, never summed),
+`cumulative_qty_m3` (audit only). **`scripts/check-plant-qty.mjs`** enforces it — 4th checker.
+Verified over all 18,505 real batches: 16,010.5 vs independent per-load 16,009.5 (1 m³ = orphan 2016
+vendor row).
+
+**Three figures per material**: `design_kg_per_m3` (`<slot>_Rec` on the header) → `target_kg`
+(moisture-adjusted) → `actual_kg`. Real data: M SAND design 777, target 794, actual 793; WATER design
+145, target 107 — 38 kg less because the sand carries it.
+
+**Real clock**: `Batch_Start_Time`/`Batch_End_Time` (clean text) → `load_started_at`/`load_ended_at`.
+`Batch_Time` is stamped 12/30/99 on every row. Median cycle 11:29.
+
+**Silos are refillable storage.** `plant_silo_fills` is a timeline; a batch is costed against whatever
+the silo held at its own moment. `is_refillable` on the alias; `siloMaterialAt()` resolves by time;
+`reresolveSilos()` uses a CTE (a LATERAL cannot reference its own UPDATE target). MCI370's
+`Batch_Stock` is all zeros since Dec 2013 — the fill record is the ONLY source. Aliases now keyed on
+**slot**, not name (Gate1 and Gate2 are both "M SAND"). `"1"` added to placeholder names.
+
+**Auto + manual**: `plant_manual_entries` (material_id NULL = a production row). Plant figure is
+read-only; operator enters ONLY what the plant missed; the two are ADDED. Cost divides by the
+combined figure — 54 vs 51 m³ on the test day, 5.9%. New key `production.plant-manual`
+(administrator + plant_operator). Store reads, cannot enter.
+
+**Solitaire → MixTrack** in every user-visible string. Internal names (tables, routes,
+`solitaire.*` permission keys) deliberately unchanged. "Delivery Challan" in MaterialModule and
+TodaysDeliveryNotes means the APP's own challan — left alone.
+
+Five bugs caught in verification, all by real data: `SLOT_BY_KEY.has()` on a plain object;
+`reresolveSilos` dropped when rebuilding the route file from pieces; LATERAL vs UPDATE target;
+migration referencing `normalised` which a fresh install never had; `design_kg_per_m3` dropped by the
+payload sanitiser (sanitisers need every new field added in TWO places).
+
+**Next**: MixTrack itself — ticket, auto-print, PDF, search window. Blocked on the workbook with its
+finish-time formula replaced by a value.
+
+## Round 158 — a receipt always saves, and a lorry can be assigned again (v9.84)
+
+**Visit `/setup?key=...` once** — new columns on rm_receipts, the
+`rm_receipts_effective` view, a variance back-fill and REPAIR_158.
+
+**The vehicle dropdown never worked.** `Number(null)` is 0, not null — so the screen's
+`{truck_id: null, supplier_id: 7}` looked like "both" and every assignment (truck, supplier AND
+junk) was refused. Survived Round 156 because I tested with curl, sending only the field I set.
+Same trap fixed in three more places; all id parses now require a POSITIVE integer.
+Also: Vehicles/Mapping controls were gated on mapping VIEW while the endpoints need EDIT.
+
+**Receipts always save now.** Round 156's tolerance block is gone — the lorry has arrived, refusing
+to record it only invites fudged numbers. Within tolerance: posts immediately at the weighed
+figure, as before. Beyond tolerance: saves as `confirmation_status='pending'` and counts for
+NOTHING until a Manager or Admin picks which quantity stands. Approval is deliberately scoped to
+only the disputed loads — an approval on every delivery gets clicked through unread.
+
+**`rm_receipts_effective`** — a view with the pending filter built in. Receipts are read in 15
+places for stock/valuation/reports; filtering each by hand is how one gets missed. All reads go
+through the view; only writes, the receipts screen, the queue and the double-claim check touch the
+table, each carrying a `-- receipts-raw:` marker. **`scripts/check-receipts.mjs`** enforces it —
+third checker after check-guards and check-dates, and it found two weighbridge sites I'd missed
+within a minute of existing.
+
+**variance_qty/variance_pct are SIGNED** (positive = supplier billed more). Round 156 stored the
+absolute value and called every case "short", which read as "-5.00 short" on an excess. The
+back-fill and the POST must agree on sign or the report mixes conventions in one column.
+
+**New**: `material.receipt-confirm` (VE; administrator + manager, screen `receipt-differences`),
+`GET /material-module/receipts/pending`, `POST /receipts/:id/confirm` (basis weighed|supplier|
+entered — recomputes qty, kg AND landed rate together), `GET /reports/variance` (rollup by supplier
+and material: net, mean-absolute, short/over counts, value), and `frontend/src/pages/
+ReceiptVariance.jsx` at `/receipt-differences`.
+
+**Both agents now write `agent.log`** (rotating at 1 MB to `.log.1`), because running under SYSTEM
+means no console. READMEs now carry the setup that works: SYSTEM account (no password prompt),
+`agent.js --once` on a 5-minute repeat, and **browse to node.exe — never type or paste the path**
+(that is the `0x80070002` fix, and it cost a day).
+
+Verified: 0.5% out posts itself, 7.5% out waits; stock 19,900 kg pending → 38,400 kg confirmed;
+supplier basis recomputed landed rate; Store refused (403) on both queue and confirm; double-confirm
+refused. **The migration failed first time** — the back-fill ran before its own DDL; moved and
+re-tested against a stripped database with 5 existing receipts, none dragged into the queue. Three
+checkers green: 74 routes both guards, 167 files no UTC dates, every receipt read via the view.
+
+**Next**: Round 159 — the plant production bug found in the live MCI370 data, the silo contents
+timeline, design-vs-actual.
+
+## Round 157 — the batching plant reports itself (v9.83)
+
+**Visit `/setup?key=...` once** — new tables plus REPAIR_157. Set `PLANT_API_KEY` on the backend
+before the agent can post; left unset the sync endpoint is CLOSED, not open.
+
+Solitaire is dropped for good. A search-and-print screen inside MCI370 would have meant modifying
+vendor control software, which is not acceptable on the machine that batches the concrete. The
+effort moved to production and raw-material consumption, which is what was actually worth having.
+
+**The agent** — `tools/mci370-agent/`. Reads MCI370's Jet 4.0 Access database through 32-bit
+PowerShell + ADODB, so NO driver is installed on the plant PC. It copies the file and reads the
+copy: MCI370.exe is never modified and its database is never written to. Source database is the
+queue — on a failed post the cursor does not advance, nothing spools locally. `npm run probe` first
+on any new machine; it reads only and sends nothing.
+
+**The data shape, which is the thing to get right.** `Batch_Dat_Trans` = one row per LOAD.
+`Batch_Transaction` = one row per MIX, keyed `Batch_Index`. A 6 m³ load is six mixes; consumption
+sums across them, production does not. `Batch_Time` carries an 1899 date, so the day comes from
+`Batch_Date` and only the clock from `Batch_Time`. `NameSetUp` holds the plant's own hopper names —
+Gate1-6, Cem1-4, filler, water, admixtures — which is why silo identity never has to be guessed.
+
+**Twenty slots, mapped once** by an Administrator. Placeholder names (`0`, `-`, `Agg6`) are skipped
+rather than presented as work. Consumption is reported BY SILO, not by material — deliberately the
+opposite of the weighbridge: an unmapped hopper still shows real weights because the plant genuinely
+weighed them, whereas an unresolved weighbridge name means we do not know what arrived. A hopper
+marked "not a stock material" reads as a settled decision everywhere. `POST /plant/recheck`
+re-resolves already-synced rows after masters change — Round 156's lesson, applied up front.
+
+**Screen** — `/plant-production`, three tabs: Production (m³ by day/recipe, recent loads),
+Consumption (kg per silo, design-vs-actual, moisture, kg/m³), Silos (Administrator-only mapping).
+Gated by `production.plant-data` (view) and `production.plant-mapping` (Administrator only).
+
+Verified from real MCI370 rows: six mixes → one 6 m³ M25 load, consumption at textbook proportions
+(323 cement, 80 fly ash, 764 sand, 620+300 aggregate, 150 water per m³; 2,236 kg/m³). Re-send left
+6 unchanged; a corrected mix updated exactly 1 row to revision 2. Manager reads but cannot map, a
+Driver is refused everything, unset `PLANT_API_KEY` closes the endpoint. Both checkers green — 71
+routes with both guards, 166 files with no UTC dates.
+
+Three runtime-only bugs caught: `prod.rows[0]` after destructuring had already unwrapped it; a `//`
+comment inside a SQL template literal (a Postgres syntax error, not a comment); and a correlated
+subquery on a column that IS in the GROUP BY — Postgres will not match a grouping expression through
+a subquery boundary, so it had to sit inside `bool_or(EXISTS (...))`.
+
+`GET /plant/production` returns the day as a plain `YYYY-MM-DD` string, not a DATE: node-postgres
+turns a DATE into a JS Date at the session timezone and the browser converts it back, which is the
+exact round trip behind this app's UTC/IST bug every time it has appeared.
+
+**Not yet done**: `npm run probe` on the plant control PC, and mapping its real silos.
+
 ## Round 156 — what the first week of live weighbridge data taught us (v9.82)
 
 Three corrections to Round 154, all reported by the plant within days of the agent going live.

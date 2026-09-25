@@ -43,9 +43,49 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.WB_CONFIG || path.join(__dirname, "config.json");
 const STATE_PATH = process.env.WB_STATE || path.join(__dirname, "state.json");
 
-function log(...args) {
-  console.log(new Date().toISOString(), ...args);
+// ROUND 158 — write everything to a file as well as the console.
+//
+// Once this agent runs the way it should on the weighbridge PC — as a
+// scheduled task under SYSTEM, invisible, with no window — the console output
+// goes nowhere at all. The first time something failed we had no way to find
+// out why, and the only diagnosis available was running it by hand and
+// watching. A log file is the difference between "it stopped working" and
+// knowing which call failed and when.
+//
+// Kept deliberately crude: append, and when the file passes a megabyte move it
+// aside to agent.log.1 and start again. Two files, bounded size, no dependency
+// and nothing to configure. Logging must never be the reason the agent dies,
+// so every filesystem call here is wrapped and failures are ignored.
+const LOG_PATH = process.env.WB_LOG || path.join(__dirname, "agent.log");
+const LOG_MAX_BYTES = 1024 * 1024;
+
+function writeLogLine(line) {
+  try {
+    try {
+      if (fs.existsSync(LOG_PATH) && fs.statSync(LOG_PATH).size > LOG_MAX_BYTES) {
+        fs.renameSync(LOG_PATH, LOG_PATH + ".1");
+      }
+    } catch { /* rotation is best-effort; keep appending either way */ }
+    fs.appendFileSync(LOG_PATH, line + "\n");
+  } catch { /* a read-only folder must not stop the sync */ }
 }
+
+function log(...args) {
+  const line = [new Date().toISOString(), ...args.map((a) => (typeof a === "string" ? a : JSON.stringify(a)))].join(" ");
+  console.log(line);
+  writeLogLine(line);
+}
+
+// Errors matter more than progress here, and console.error would otherwise be
+// lost for exactly the runs where somebody needs it.
+function logError(...args) {
+  const line = [new Date().toISOString(), "ERROR", ...args.map((a) => (a instanceof Error ? a.stack || a.message : typeof a === "string" ? a : JSON.stringify(a)))].join(" ");
+  console.error(line);
+  writeLogLine(line);
+}
+
+process.on("uncaughtException", (err) => { logError("uncaught", err); process.exit(1); });
+process.on("unhandledRejection", (err) => { logError("unhandled rejection", err); process.exit(1); });
 
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {

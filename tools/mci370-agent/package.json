@@ -1,0 +1,16 @@
+{
+  "name": "oorm-mci370-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reads production and material consumption from the MCI370 batching plant's Access database and posts them to the OORM app. One-way, read-only, no database driver required.",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js",
+    "once": "node agent.js --once",
+    "probe": "node probe.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

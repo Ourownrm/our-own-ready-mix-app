@@ -31,6 +31,7 @@ import maintenanceRoutes from "./routes/maintenance.js";
 import fuelAnalysisRoutes from "./routes/fuelAnalysis.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
 import weighbridgeRoutes from "./routes/weighbridge.js";
+import plantRoutes from "./routes/plant.js";
 import bookingLinksRoutes from "./routes/bookingLinks.js";
 import customerBookingRoutes from "./routes/customerBooking.js";
 import customerAccessRoutes from "./routes/customerAccess.js";
@@ -178,6 +179,9 @@ app.use("/api/delivery-notes", deliveryNotesRoutes);
 // route (POST /sync) that is authenticated by an API key rather than a session,
 // declared above its own requireAuth. See routes/weighbridge.js.
 app.use("/api/weighbridge", weighbridgeRoutes);
+// Round 157 — the MCI370 batching plant. Like the weighbridge router, this one
+// exposes a single API-key route (POST /sync) above its own requireAuth.
+app.use("/api/plant", plantRoutes);
 app.use("/api/loader-operator", loaderOperatorRoutes);
 // Round 139 — Raw Material Module (purchase -> approve -> receive -> consume
 // -> physical count -> reports). Deliberately named /api/material-module

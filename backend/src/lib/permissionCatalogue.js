@@ -156,6 +156,13 @@ export const CATALOGUE = [
     { administrator: E }),
   f("material.receipts", "material", "Material receipts", VCED,
     { administrator: VCED, store: VC }),
+  // Round 158 — deciding which quantity stands when the weighbridge and the
+  // supplier's invoice disagree. Deliberately NOT part of material.receipts:
+  // Store records the load (they are the ones standing there), but the figure
+  // that reaches stock and the ledger is a Manager's call. Separating the keys
+  // is what lets Store keep creating receipts without also settling disputes.
+  f("material.receipt-confirm", "material", "Confirm a disputed receipt quantity", VE,
+    { administrator: VE, manager: VE }, { screen: "receipt-differences" }),
   f("material.consumption", "material", "Daily consumption entry", VCE,
     { administrator: VCE, plant_operator: VCE }),
   f("material.stock", "material", "Stock — quantities", V,
@@ -187,6 +194,27 @@ export const CATALOGUE = [
     { administrator: VE, manager: VE, store: VE, plant_operator: V, lab_technician: V },
     { screen: "weighbridge-receipts" }),
   f("material.weighbridge-mapping", "material", "Weighbridge name mapping", VCE,
+    { administrator: VCE }),
+
+  // Round 157 — the MCI370 batching plant feed. Two keys, split the same way
+  // as the weighbridge's and for the same reason.
+  //
+  // "production.plant-data" is the day-to-day screen: what the plant made and
+  // what it consumed. Wide, because everyone from the Plant Operator to the
+  // lab has a reason to look at it.
+  //
+  // "production.plant-mapping" decides which of our materials a silo holds,
+  // and therefore where a month of consumption is counted. Administrator only.
+  f("production.plant-data", "production", "Plant production & consumption (MCI370)", V,
+    { administrator: V, manager: V, store: V, plant_operator: V, qc_engineer: V, lab_technician: V },
+    { screen: "plant-production" }),
+  // Round 159 — entering what the plant did not record. Separate from
+  // plant-data because reading the plant's figures and adding to them are
+  // different acts: one is information, the other changes what stock and cost
+  // are computed from.
+  f("production.plant-manual", "production", "Plant manual consumption & production", VCE,
+    { administrator: VCE, plant_operator: VCE }),
+  f("production.plant-mapping", "production", "Plant silo mapping", VCE,
     { administrator: VCE }),
 
   // ---------- Store & supplies ----------

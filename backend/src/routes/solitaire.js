@@ -170,7 +170,7 @@ router.post("/login", async (req, res) => {
 
     } else {
       return res.status(403).json({
-        error: "This browser/device is not authorized to open Solitaire. Enter a device code from your Administrator, or ask them to authorize this machine.",
+        error: "This browser/device is not authorized to open MixTrack. Enter a device code from your Administrator, or ask them to authorize this machine.",
         code: "DEVICE_NOT_AUTHORIZED",
       });
     }

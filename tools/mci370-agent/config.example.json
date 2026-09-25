@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy this to config.json and fill it in. config.json is gitignored — it holds the API key.",
+
+  "mdbPath": "C:\\SSI\\MCI370\\MCI70_batch.Mdb",
+
+  "appUrl": "https://YOUR-BACKEND.onrender.com",
+  "apiKey": "PUT-THE-SAME-VALUE-AS-PLANT_API_KEY-HERE",
+
+  "startDate": "2026-09-01",
+  "pollSeconds": 60,
+  "trailingDays": 7,
+  "batchSize": 200,
+  "copyFirst": true,
+  "plantNo": "1"
+}

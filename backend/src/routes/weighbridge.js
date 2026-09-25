@@ -369,7 +369,7 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
        LEFT JOIN trucks t       ON t.id = wb.truck_id
        LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
        LEFT JOIN rm_suppliers vs ON vs.id = v.supplier_id
-       LEFT JOIN rm_receipts r  ON r.weighbridge_ticket_id = wb.ticket_number
+       LEFT JOIN rm_receipts r  ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a pending receipt still claims its ticket, so this must see them
        WHERE ($1::text IS NULL OR wb.match_status = $1::wb_match_status)
          AND (wb.weighed_at IS NULL OR wb.weighed_at >= now() - ($2 || ' days')::interval)
        ORDER BY wb.weighed_at DESC NULLS LAST, wb.ticket_number DESC
@@ -595,7 +595,7 @@ async function reresolveOutstanding() {
   const { rows } = await query(
     `SELECT wb.ticket_number, wb.raw_material, wb.raw_material_code, wb.raw_supplier, wb.raw_vehicle, wb.vehicle_id
      FROM weighbridge_tickets wb
-     LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number
+     LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a pending receipt still claims its ticket, so this must see them
      WHERE r.id IS NULL
        AND (
             wb.match_status = 'needs_review'
@@ -634,8 +634,11 @@ router.post("/aliases", requireRole(...MAPPING_ROLES), requirePermission("materi
   if (!norm) return res.status(400).json({ error: "That name is empty once punctuation is removed — there is nothing to map." });
 
   const isIgnored = req.body?.is_ignored === true;
+  // Round 158 — > 0, not merely an integer: a null body field becomes 0 here,
+  // and 0 passed Number.isInteger() happily before failing later against the
+  // database with a misleading "no longer exists".
   const targetId = isIgnored ? null : Number(req.body?.target_id);
-  if (!isIgnored && !Number.isInteger(targetId)) {
+  if (!isIgnored && !(Number.isInteger(targetId) && targetId > 0)) {
     return res.status(400).json({ error: "Pick something to map it to, or mark it ignored." });
   }
 
@@ -843,8 +846,18 @@ router.patch("/vehicles/:id", requireRole(...MAPPING_ROLES), requirePermission("
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid vehicle id." });
 
   const body = req.body || {};
-  const truckId = body.truck_id === "" || body.truck_id === undefined ? null : Number(body.truck_id);
-  const supplierId = body.supplier_id === "" || body.supplier_id === undefined ? null : Number(body.supplier_id);
+
+  // ROUND 158 — this used to test only for "" and undefined, and then called
+  // Number() on whatever was left. The screen sends an explicit JSON null for
+  // the owner you did NOT pick, and Number(null) is 0, not null — so every
+  // assignment arrived looking like "truck 0 AND supplier 7" and was rejected
+  // by the either/or check below. Truck, supplier and junk were all broken;
+  // the endpoint only ever worked from curl, where the unused field really was
+  // absent. Treat null as "not given", which is what the client means by it.
+  const asId = (v) =>
+    v === "" || v === null || v === undefined ? null : Number(v);
+  const truckId = asId(body.truck_id);
+  const supplierId = asId(body.supplier_id);
   if (truckId !== null && supplierId !== null) {
     return res.status(400).json({ error: "A lorry is either one of ours or a supplier's, not both." });
   }
@@ -893,7 +906,7 @@ router.patch("/vehicles/:id", requireRole(...MAPPING_ROLES), requirePermission("
 router.post("/vehicles/:id/merge", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
   const fromId = Number(req.params.id);
   const intoId = Number(req.body?.into_id);
-  if (!Number.isInteger(fromId) || !Number.isInteger(intoId)) {
+  if (!(Number.isInteger(fromId) && fromId > 0) || !(Number.isInteger(intoId) && intoId > 0)) {
     return res.status(400).json({ error: "Invalid vehicle id." });
   }
   if (fromId === intoId) return res.status(400).json({ error: "That is the same vehicle." });
