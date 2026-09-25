@@ -657,6 +657,110 @@ function Manual({ canEdit }) {
 }
 
 // ---------------------------------------------------------------------------
+// ROUND 160 — the QC delay allowance behind the ticket's finish time.
+//
+// BPR107a.xlsm used to compute its own finish time. That formula is gone, so
+// MixTrack writes cell K21, and what it writes is the plant's end time plus
+// this allowance — because plant QC procedure runs on past the mixer
+// finishing, and the ticket should say when the load was released.
+//
+// Site beats customer. The delay belongs to the pour, not to who is paying.
+function QcDelays({ canEdit }) {
+  const [rows, setRows] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [sites, setSites] = useState([]);
+  const [scope, setScope] = useState("site");
+  const [targetId, setTargetId] = useState("");
+  const [minutes, setMinutes] = useState("");
+  const [note, setNote] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const load = () => apiRequest("/plant/qc-delays").then(setRows).catch(() => {});
+  useEffect(() => {
+    load();
+    apiRequest("/customers").then((c) => setCustomers(c || [])).catch(() => {});
+    apiRequest("/sites").then((s) => setSites(s || [])).catch(() => {});
+  }, []);
+
+  async function save(e) {
+    e.preventDefault();
+    setMsg("");
+    const body = { delay_minutes: Number(minutes), note: note || null };
+    if (scope === "site") body.site_id = Number(targetId) || null;
+    else if (scope === "customer") body.customer_id = Number(targetId) || null;
+    try {
+      await apiRequest("/plant/qc-delays", { method: "POST", body });
+      setMinutes(""); setNote(""); setTargetId("");
+      load();
+    } catch (err) { setMsg(err.message); }
+  }
+
+  const targets = scope === "site" ? sites : scope === "customer" ? customers : [];
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>QC delay allowance</h3>
+      <p style={{ fontSize: 13, color: "var(--muted)", maxWidth: 680 }}>
+        Added to the plant's own finish time before it is printed on the ticket, so the
+        time shown is when the load was released rather than when the last batch dropped.
+        A rule for a site beats a rule for that site's customer; a rule with neither
+        applies to every load that has no more specific rule.
+      </p>
+
+      {canEdit && (
+        <form onSubmit={save} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
+          <label style={{ fontSize: 13 }}>Applies to<br />
+            <select value={scope} onChange={(e) => { setScope(e.target.value); setTargetId(""); }}>
+              <option value="site">A site</option>
+              <option value="customer">A customer</option>
+              <option value="default">Every load (default)</option>
+            </select>
+          </label>
+          {scope !== "default" && (
+            <label style={{ fontSize: 13 }}>{scope === "site" ? "Site" : "Customer"}<br />
+              <select value={targetId} onChange={(e) => setTargetId(e.target.value)} required>
+                <option value="">Choose…</option>
+                {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+          )}
+          <label style={{ fontSize: 13 }}>Minutes<br />
+            <input type="number" min="0" max="240" value={minutes} required
+                   onChange={(e) => setMinutes(e.target.value)} style={{ width: 90 }} />
+          </label>
+          <label style={{ fontSize: 13, flex: "1 1 200px" }}>Why<br />
+            <input value={note} onChange={(e) => setNote(e.target.value)}
+                   placeholder="slump check before release" style={{ width: "100%" }} />
+          </label>
+          <button type="submit" className="btn-primary">Save</button>
+        </form>
+      )}
+      {msg && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{msg}</div>}
+
+      <table className="table">
+        <thead><tr><th>Applies to</th><th style={{ textAlign: "right" }}>Minutes</th><th>Why</th><th>Changed</th>{canEdit && <th />}</tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td>{r.site_name ? `Site — ${r.site_name}` : r.customer_name ? `Customer — ${r.customer_name}` : "Every load"}</td>
+              <td style={{ textAlign: "right" }}>{r.delay_minutes}</td>
+              <td style={{ color: "var(--muted)" }}>{r.note || "—"}</td>
+              <td style={{ color: "var(--muted)", fontSize: 12 }}>{r.updated_at}{r.updated_by_name ? ` · ${r.updated_by_name}` : ""}</td>
+              {canEdit && (
+                <td><button type="button" className="btn-link"
+                        onClick={() => apiRequest(`/plant/qc-delays/${r.id}`, { method: "DELETE" }).then(load)}>Remove</button></td>
+              )}
+            </tr>
+          ))}
+          {!rows.length && <tr><td colSpan={canEdit ? 5 : 4} style={{ textAlign: "center", color: "var(--muted)" }}>
+            No allowance set — tickets show the plant's own finish time.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 export default function PlantProduction() {
   const { can, ready } = usePermissions();
   const [tab, setTab] = useState("production");
@@ -667,6 +771,10 @@ export default function PlantProduction() {
   const canMap = ready && can("production.plant-mapping", "view");
   const canManualView = ready && can("production.plant-manual", "view");
   const canManualEdit = ready && can("production.plant-manual", "create");
+  // Round 160 — Administrator changes it, Manager may look. Deliberately not
+  // the Plant Operator's: this moves a time printed on a customer's document.
+  const canQcDelayView = ready && can("production.mixtrack-qc-delay", "view");
+  const canQcDelayEdit = ready && can("production.mixtrack-qc-delay", "create");
 
   useEffect(() => {
     if (!canView) return;
@@ -746,7 +854,10 @@ export default function PlantProduction() {
           {/* Round 159 — what the plant did not record. Shown to anyone who can
               read the plant data; only the Plant Operator can type into it. */}
           <button type="button" className={`btn-tab ${tab === "manual" ? "active" : ""}`} onClick={() => setTab("manual")}>Manual entry</button>
-          {tab !== "silos" && tab !== "manual" && (
+          {canQcDelayView && (
+            <button type="button" className={`btn-tab ${tab === "qc-delay" ? "active" : ""}`} onClick={() => setTab("qc-delay")}>QC delay</button>
+          )}
+          {tab !== "silos" && tab !== "manual" && tab !== "qc-delay" && (
             <select aria-label="Period" value={days} onChange={(e) => setDays(Number(e.target.value))}
                     style={{ marginLeft: "auto", fontSize: 13 }}>
               <option value={1}>Today</option>
@@ -758,6 +869,7 @@ export default function PlantProduction() {
         </div>
 
         {tab === "silos" && canMap ? <Silos />
+          : tab === "qc-delay" && canQcDelayView ? <QcDelays canEdit={canQcDelayEdit} />
           : tab === "manual" ? <Manual canEdit={canManualEdit} />
           : tab === "consumption" ? <Consumption days={days} />
           : <Production days={days} />}

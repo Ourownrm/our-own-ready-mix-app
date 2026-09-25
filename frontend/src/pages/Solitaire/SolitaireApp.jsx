@@ -10,6 +10,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { solitaireApi } from "../../lib/solitaireApi.js";
+// ROUND 161 — the plant-driven half of MixTrack. Kept in its own file: these
+// are ordinary working screens, while this file is the MCI370 panel replica
+// and mixing the two would make both harder to change.
+import { PendingLoads, RecipeMap, PrintQueue } from "./MixTrackLoads.jsx";
 import { generateSolitaireDocketPdf, computeSheetNumber } from "../../lib/solitaireDocketPdf.js";
 import "./solitaire.css";
 
@@ -83,6 +87,15 @@ export default function SolitaireApp() {
   const [orderQty, setOrderQty] = useState("");
   const [withThisLoad, setWithThisLoad] = useState("");
   const [orderDateTime, setOrderDateTime] = useState("");
+  // ROUND 160 — the three the ticket workbook no longer works out for itself,
+  // plus the plant's own clock. BPR107a.xlsm's M32, AZ32 and AZ34 were
+  // formulas; the user removed them, so these values are sent and written.
+  // Empty is allowed: the plant fills them when a load is synced, and a docket
+  // raised by hand before that carries what the operator typed.
+  const [orderNo, setOrderNo] = useState("");
+  const [recipeName, setRecipeName] = useState("");
+  const [batchStartedAt, setBatchStartedAt] = useState("");
+  const [batchEndedAt, setBatchEndedAt] = useState("");
 
   const [validationMsg, setValidationMsg] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
@@ -95,6 +108,7 @@ export default function SolitaireApp() {
   const [settings, setSettings] = useState({ save_folder_path: "", default_printer: "" });
   const [printing, setPrinting] = useState(false);
   const [devices, setDevices] = useState([]);
+  const [plantTab, setPlantTab] = useState("loads");
 
   useEffect(() => {
     solitaireApi.me().then(setAccount).catch(() => navigate("/solitaire/login", { replace: true }));
@@ -173,6 +187,13 @@ export default function SolitaireApp() {
         customer_id: Number(customerId), site_id: Number(siteId), mix_design_id: mixDesign?.id,
         truck_id: truck?.id, driver_name: driverName,
         production_qty_m3: Number(prodQty), mixer_capacity_m3: Number(mixerCap), moisture_pct: Number(moisture) || null,
+        // ROUND 160 — cells AZ34, M32, K19 and K21. recipe_name falls back to
+        // the mix design's own name only when the plant has not given one:
+        // the ticket should print what the PLANT called the recipe on the day.
+        order_no: orderNo || null,
+        recipe_name: recipeName || mixDesign?.name || null,
+        batch_started_at: batchStartedAt || null,
+        batch_ended_at: batchEndedAt || null,
         pdf_base64: base64, pdf_filename: filename,
       });
       setOverlay(null);
@@ -218,6 +239,7 @@ export default function SolitaireApp() {
                       onClick={() => setOpenMenu(openMenu === "options" ? null : "options")}>Options</button>
               <span className="sol-tb-gap" />
               <button type="button" className="sol-tb-btn" onClick={() => setOverlay("order")}>New Order</button>
+              <button type="button" className="sol-tb-btn" onClick={() => setOverlay("plant")}>Plant loads</button>
               <button type="button" className="sol-tb-btn" onClick={() => { setOverlay("search"); runSearch(""); }}>Search / Reprint</button>
               <button type="button" className="sol-tb-btn primary" onClick={startPrintFlow}>Print Docket</button>
             </div>
@@ -236,6 +258,7 @@ export default function SolitaireApp() {
                 <span className="sol-logout-link" onClick={doLogout}>Sign out</span>
               </span>
               <button className="sol-icon-btn" title="New Order" onClick={() => setOverlay("order")}>＋</button>
+              <button className="sol-icon-btn" title="Loads waiting for a ticket" onClick={() => setOverlay("plant")}>🚚</button>
               <button className="sol-icon-btn" title="Search / Reprint" onClick={() => { setOverlay("search"); runSearch(""); }}>🔍</button>
               <button className="sol-icon-btn primary" title="Print Docket" onClick={startPrintFlow}>🖨</button>
             </div>
@@ -396,6 +419,34 @@ export default function SolitaireApp() {
       )}
 
       {/* ============ Search & Reprint ============ */}
+      {/* ROUND 161 — the plant-driven flow. Three tabs rather than three menu
+          entries, because an operator moves between "what is waiting" and "why
+          is that one held" constantly while a truck is under the plant. */}
+      {overlay === "plant" && (
+        <div className="sol-overlay" onClick={() => setOverlay(null)}>
+          <div className="sol-popup wide" style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="sol-popup-title">
+              <span>Plant loads</span>
+              <span style={{ cursor: "pointer" }} onClick={() => setOverlay(null)}>✕</span>
+            </div>
+            <div className="sol-popup-body">
+              <div style={{ display: "flex", gap: 6 }}>
+                {[["loads", "Loads waiting"], ["map", "Recipe map"], ["queue", "Print queue"]].map(([k, label]) => (
+                  <button key={k} type="button" className={`sol-tb-btn${plantTab === k ? " open" : ""}`}
+                          onClick={() => setPlantTab(k)}>{label}</button>
+                ))}
+              </div>
+              {plantTab === "loads" && (
+                <PendingLoads account={account} customers={customers} trucks={trucks} toast={toast}
+                              onPrinted={() => solitaireApi.nextBatchNumber().then((r) => setBatchNumber(r.next_batch_number)).catch(() => {})} />
+              )}
+              {plantTab === "map" && <RecipeMap account={account} toast={toast} />}
+              {plantTab === "queue" && <PrintQueue toast={toast} />}
+            </div>
+          </div>
+        </div>
+      )}
+
       {overlay === "search" && (
         <div className="sol-overlay" onClick={() => setOverlay(null)}>
           <div className="sol-popup wide" onClick={(e) => e.stopPropagation()}>

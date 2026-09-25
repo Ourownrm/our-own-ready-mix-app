@@ -152,3 +152,20 @@
    photograph was removed at the user's request: the real screenshot is a
    better likeness than a reconstruction, and it now ships with the app. The
    overlay coordinates above are measured from that image. */
+
+/* ROUND 161 — the load, recipe-map and print-queue panels.
+   Deliberately plain: these are working screens inside the module's own
+   chrome, not the MCI370 panel replica, so they follow the popup/master-table
+   styling already here rather than introducing a third look. */
+.sol-panel{ background:#fff; border:1px solid #ccc; padding:12px 14px; margin-bottom:12px; }
+.sol-panel h3{ margin:0 0 8px; font-size:13px; font-weight:700; color:#1f4a86; }
+.sol-panel p{ margin:0 0 10px; }
+.sol-panel code{ background:#eef1e8; padding:0 3px; }
+.sol-panel select, .sol-panel input{ border:1px solid #8a8a8a; padding:3px 4px; font-size:11.5px; max-width:100%; }
+.sol-panel .sol-mtable td{ vertical-align:top; }
+.sol-panel .sol-mtable select{ width:100%; margin-bottom:2px; }
+.sol-panel .sol-mtable input{ width:auto; }
+/* The tables carry a lot of columns; on a phone they scroll inside the panel
+   rather than pushing the page sideways. Same fix Round 145 made app-wide. */
+.sol-panel .sol-mtable{ min-width:720px; }
+.sol-panel{ overflow-x:auto; }
