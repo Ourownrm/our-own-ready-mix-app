@@ -311,7 +311,7 @@ function Receipts({ canEdit }) {
 
 const KIND_LABEL = { material: "Material", supplier: "Supplier" };
 
-function Mapping() {
+function Mapping({ canEdit = true }) {
   const [unmapped, setUnmapped] = useState([]);
   const [aliases, setAliases] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -433,11 +433,20 @@ function Mapping() {
         you have not named.
       </div>
 
+      {/* Round 158 — say why the controls are dead rather than letting somebody
+          click at a dropdown that will never answer. */}
+      {!canEdit && (
+        <div className="card" style={{ marginBottom: 16, fontSize: 13, color: "var(--slate)" }}>
+          You can see the mappings but not change them. A Super Admin can grant that on the Access
+          Control page.
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 10px" }}>
         <h3 style={{ fontSize: 15, margin: 0 }}>
           Waiting to be mapped {unmapped.length ? `(${unmapped.length})` : ""}
         </h3>
-        <button type="button" style={{ marginLeft: "auto", fontSize: 13 }} disabled={busy} onClick={recheck}>
+        <button type="button" style={{ marginLeft: "auto", fontSize: 13 }} disabled={busy || !canEdit} onClick={recheck}>
           {busy ? "Re-checking…" : "Re-check all tickets"}
         </button>
       </div>
@@ -491,6 +500,7 @@ function Mapping() {
                         <select
                           aria-label={`Map ${u.raw_sample}${sc.scopeName ? ` from ${sc.scopeName}` : ""}`}
                           value={draft[key] || ""}
+                          disabled={!canEdit}
                           onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
                           style={{ fontSize: 13, minWidth: 210 }}
                         >
@@ -501,7 +511,7 @@ function Mapping() {
                       </td>
                       <td style={{ padding: "9px 12px" }}>
                         <button type="button" className="btn-primary" style={{ fontSize: 12 }}
-                                disabled={!draft[key]}
+                                disabled={!draft[key] || !canEdit}
                                 onClick={() => save(u.kind, u.raw_sample, sc.scopeId)}>
                           Save
                         </button>
@@ -555,6 +565,7 @@ function Mapping() {
                       <select
                         aria-label={`Change what ${a.raw_sample} means`}
                         value={draft[key] ?? ""}
+                        disabled={!canEdit}
                         onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
                         style={{ fontSize: 13, minWidth: 200 }}
                       >
@@ -567,11 +578,11 @@ function Mapping() {
                     </td>
                     <td style={{ padding: "9px 12px", whiteSpace: "nowrap" }}>
                       <button type="button" className="btn-primary" style={{ fontSize: 12, marginRight: 6 }}
-                              disabled={!draft[key]}
+                              disabled={!draft[key] || !canEdit}
                               onClick={() => save(a.kind, a.raw_sample, a.supplier_scope_id ?? null)}>
                         Change
                       </button>
-                      <button type="button" style={{ fontSize: 12 }} onClick={() => remove(a.kind, a.id)}>
+                      <button type="button" style={{ fontSize: 12 }} disabled={!canEdit} onClick={() => remove(a.kind, a.id)}>
                         Remove
                       </button>
                     </td>
@@ -771,6 +782,11 @@ export default function Weighbridge() {
   const canView = ready && can("material.weighbridge", "view");
   const canEdit = ready && can("material.weighbridge", "edit");
   const canMap = ready && can("material.weighbridge-mapping", "view");
+  // Round 158 — the Vehicles and Mapping controls used to be shown to anyone
+  // with mapping VIEW, while the endpoints behind them require EDIT. Somebody
+  // granted view-only therefore saw live dropdowns that answered 403 on use.
+  // Read and write are now gated by the action each one actually needs.
+  const canMapEdit = ready && can("material.weighbridge-mapping", "edit");
 
   if (!ready) return null;
 
@@ -806,9 +822,9 @@ export default function Weighbridge() {
           </div>
         )}
         {tab === "mapping" && canMap
-          ? <Mapping />
+          ? <Mapping canEdit={canMapEdit} />
           : tab === "vehicles" && canView
-            ? <Vehicles canEdit={canMap} />
+            ? <Vehicles canEdit={canMapEdit} />
             : <Receipts canEdit={canEdit} />}
       </div>
     </>

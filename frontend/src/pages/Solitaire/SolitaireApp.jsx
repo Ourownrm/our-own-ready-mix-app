@@ -491,7 +491,7 @@ export default function SolitaireApp() {
                       const r = await solitaireApi.createPairingCode(label);
                       window.alert(
                         "Device code:  " + r.code + "\n\n" +
-                        "Type this on the new machine's Solitaire login screen, along with a username and password.\n\n" +
+                        "Type this on the new machine's MixTrack login screen, along with a username and password.\n\n" +
                         "It works once and expires in " + r.expires_in_minutes + " minutes. Generating a code cancels any earlier unused one."
                       );
                       solitaireApi.devices().then(setDevices);

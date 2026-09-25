@@ -432,7 +432,7 @@ function PluginsTab({ setError, setNotice }) {
 
   async function toggle(key, on) {
     if (!on && !window.confirm(
-      "Switch the Delivery Challan module off?\n\n" +
+      "Switch MixTrack off?\n\n" +
       "It disappears from the Plant Operator screen and every one of its screens stops " +
       "working, including for anyone signed into it right now. Nothing is deleted — " +
       "switching it back on restores it exactly as it was."
@@ -535,7 +535,7 @@ function PluginsTab({ setError, setNotice }) {
                   <form style={{ display: "grid", gap: 6, marginTop: 7, maxWidth: 320 }}
                         onSubmit={(e) => { e.preventDefault(); grant(u.id); }}>
                     <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })}
-                           placeholder="Solitaire username" required style={{ fontSize: 12 }} />
+                           placeholder="MixTrack username" required style={{ fontSize: 12 }} />
                     <input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
                            placeholder="Password for the module" required style={{ fontSize: 12 }} />
                     <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} style={{ fontSize: 12 }}>

@@ -1126,8 +1126,17 @@ function ReceiptsTab({ role }) {
     setSaving(true); setError(""); setNotice(""); setWarning("");
     try {
       const result = await apiRequest("/material-module/receipts", { method: "POST", body: { order_id: receiving.id, ...form } });
-      setNotice(`Receipt recorded — landed rate ${fmtMoney(result.landed_rate_per_kg)}/kg.`);
-      if (result.tolerance_exceeded) setWarning("Short/excess quantity is beyond this material's tolerance — worth a second look.");
+      // Round 158 — two genuinely different outcomes, so two different things
+      // to say. A receipt that posted is finished business; one waiting on a
+      // Manager has NOT reached stock yet, and Store needs to know that rather
+      // than discovering it when the stock figure looks wrong.
+      if (result.pending_confirmation) {
+        setNotice("Receipt saved and waiting for a Manager.");
+        setWarning(result.message);
+      } else {
+        setNotice(`Receipt recorded — landed rate ${fmtMoney(result.landed_rate_per_kg)}/kg.`);
+        if (result.tolerance_exceeded) setWarning("Short/excess quantity is beyond this material's tolerance — worth a second look.");
+      }
       setReceiving(null);
       await load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
@@ -1276,7 +1285,11 @@ function ReceiptsTab({ role }) {
                 beyond the material's tolerance. Always shown, because asking
                 for it after a rejected save is a worse experience than a box
                 that is usually left empty. */}
-            <Field label="If this load is short, why? (needed when it is beyond tolerance)">
+            {/* Round 158 — no longer required for anything. The receipt saves
+                either way; this just means the Manager reviewing a disputed
+                load can see what the person who was actually standing there
+                thought, which is worth far more than a mandatory field. */}
+            <Field label="If the quantities don't match, what happened? (optional, but it helps whoever reviews it)">
               <input value={form.short_reason} onChange={(e) => setForm({ ...form, short_reason: e.target.value })}
                      placeholder="spillage · disputed slip · re-weighed" style={inputStyle} />
             </Field>
