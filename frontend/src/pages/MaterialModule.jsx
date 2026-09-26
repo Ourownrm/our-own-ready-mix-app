@@ -895,15 +895,22 @@ function OrdersTab({ role }) {
         </div>
       )}
 
-      {orders.map((o) => (
-        <div key={o.id} className="card" style={{ marginBottom: 8 }}>
-          <OrderSummary o={o} />
-          {isAdmin && o.status === "approved" && (
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openRevise(o)}>Revise</button>
-              <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openClose(o)}>Close order</button>
+      {/* Round 163 — grouped by material, so all the orders for M SAND (which
+          may come from several suppliers) sit together. */}
+      {groupByMaterial(orders).map((g) => (
+        <div key={g.material_name}>
+          <MaterialHeading name={g.material_name} count={g.items.length} extra={`${fmtNum(g.items.reduce((s, o) => s + Number(o.ordered_qty || 0), 0))} ${g.items[0].purchase_unit} ordered`} />
+          {g.items.map((o) => (
+            <div key={o.id} className="card" style={{ marginBottom: 8 }}>
+              <OrderSummary o={o} />
+              {isAdmin && o.status === "approved" && (
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openRevise(o)}>Revise</button>
+                  <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openClose(o)}>Close order</button>
+                </div>
+              )}
             </div>
-          )}
+          ))}
         </div>
       ))}
       {orders.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No orders yet.</div>}
@@ -1029,7 +1036,12 @@ function OrderSummary({ o }) {
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 13.5 }}>{o.material_name}</div>
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+            {/* Round 163 — the order number, so an order can be referred to on
+                the phone or against a supplier's bill. */}
+            <span style={{ fontFamily: "monospace", color: "var(--info)", marginRight: 8 }}>{orderNo(o.id)}</span>
+            {o.material_name}
+          </div>
           <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
             {o.supplier_name} · {SCOPE_LABEL[o.scope]}{o.transporter_name ? ` via ${o.transporter_name}` : ""}
           </div>
@@ -1063,6 +1075,38 @@ function OrderSummary({ o }) {
 // document reference rather than a database row.
 function receiptNo(id) {
   return "R-" + String(id).padStart(5, "0");
+}
+
+// Round 163 — an order's number, the same way. The id is stable and unique, so
+// it makes a dependable reference without a separate sequence to maintain.
+function orderNo(id) {
+  return "PO-" + String(id).padStart(5, "0");
+}
+
+// Round 163 — group a list into [{ material_name, items }], preserving the
+// order the items already arrived in within each group. Used by the Orders and
+// Receipts pages, which the user asked to see grouped by material.
+function groupByMaterial(items) {
+  const groups = [];
+  const byName = new Map();
+  for (const it of items) {
+    const name = it.material_name || "—";
+    if (!byName.has(name)) { const g = { material_name: name, items: [] }; byName.set(name, g); groups.push(g); }
+    byName.get(name).items.push(it);
+  }
+  // Alphabetical so the same material always sits in the same place on the page.
+  groups.sort((a, b) => a.material_name.localeCompare(b.material_name));
+  return groups;
+}
+
+// A material group heading, shown above each block of orders or receipts.
+function MaterialHeading({ name, count, extra }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "14px 0 6px", paddingBottom: 3, borderBottom: "2px solid var(--border)" }}>
+      <span style={{ fontSize: 13, fontWeight: 700 }}>{name}</span>
+      <span style={{ fontSize: 11, color: "var(--slate)" }}>{count} {count === 1 ? "order" : "orders"}{extra ? ` · ${extra}` : ""}</span>
+    </div>
+  );
 }
 
 function blankReceiptForm() {
@@ -1218,21 +1262,31 @@ function ReceiptsTab({ role }) {
 
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Approved orders — awaiting receipt</div>
       {receivable.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 16 }}>Nothing outstanding right now.</div>}
-      {receivable.map((o) => {
-        const outstanding = Number(o.ordered_qty) - Number(o.received_qty);
-        return (
-          <div key={o.id} className="card" style={{ marginBottom: 8 }}>
-            <div style={{ fontWeight: 600, fontSize: 13.5 }}>{o.material_name}</div>
-            <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
-              {o.supplier_name} · {SCOPE_LABEL[o.scope]}{o.transporter_name ? ` via ${o.transporter_name}` : ""}
-            </div>
-            <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
-              Ordered {fmtNum(o.ordered_qty)} {o.purchase_unit} · Received so far {fmtNum(o.received_qty)} · Outstanding {fmtNum(outstanding)}
-            </div>
-            <button type="button" style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }} onClick={() => openReceive(o)}>Receive</button>
-          </div>
-        );
-      })}
+      {/* Round 163 — grouped by material, same as the Orders page. */}
+      {groupByMaterial(receivable).map((g) => (
+        <div key={g.material_name}>
+          <MaterialHeading name={g.material_name} count={g.items.length}
+            extra={`${fmtNum(g.items.reduce((s, o) => s + (Number(o.ordered_qty) - Number(o.received_qty)), 0))} ${g.items[0].purchase_unit} outstanding`} />
+          {g.items.map((o) => {
+            const outstanding = Number(o.ordered_qty) - Number(o.received_qty);
+            return (
+              <div key={o.id} className="card" style={{ marginBottom: 8 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+                  <span style={{ fontFamily: "monospace", color: "var(--info)", marginRight: 8 }}>{orderNo(o.id)}</span>
+                  {o.supplier_name}
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
+                  {SCOPE_LABEL[o.scope]}{o.transporter_name ? ` via ${o.transporter_name}` : ""}
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
+                  Ordered {fmtNum(o.ordered_qty)} {o.purchase_unit} · Received so far {fmtNum(o.received_qty)} · Outstanding {fmtNum(outstanding)}
+                </div>
+                <button type="button" style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }} onClick={() => openReceive(o)}>Receive</button>
+              </div>
+            );
+          })}
+        </div>
+      ))}
 
       {/* ROUND 162 — the history is a proper register now, not a stack of
           cards: one row per receipt, with the receipt number, the arrival
@@ -1265,8 +1319,8 @@ function ReceiptsTab({ role }) {
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)", color: "var(--slate)", fontSize: 11 }}>
                 <th style={thCell}>Receipt</th>
+                <th style={thCell}>Order</th>
                 <th style={thCell}>Date</th>
-                <th style={thCell}>Material</th>
                 <th style={thCell}>Supplier / vehicle</th>
                 <th style={{ ...thCell, textAlign: "right" }}>Supplier</th>
                 <th style={{ ...thCell, textAlign: "right" }}>Accepted</th>
@@ -1276,58 +1330,74 @@ function ReceiptsTab({ role }) {
                 <th style={thCell}></th>
               </tr>
             </thead>
-            <tbody>
-              {history.map((r) => {
-                const short = Number(r.short_qty) || 0;
-                const pending = r.confirmation_status === "pending";
-                return (
-                  <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: pending ? "var(--amber-bg)" : undefined }}>
-                    <td style={{ ...tdCell, fontWeight: 600, whiteSpace: "nowrap" }}>
-                      {receiptNo(r.id)}
-                      {pending && <div><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>Pending</span></div>}
-                    </td>
-                    <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
-                      {fmtDate(r.received_date)}
-                      {/* the audit line — when it was entered, if that differs
-                          from the arrival date (a back-dated receipt) */}
-                      {r.received_date && r.received_at && !sameDay(r.received_date, r.received_at) &&
-                        <div style={{ fontSize: 9.5, color: "var(--slate)" }}>entered {fmtDate(r.received_at)}</div>}
-                    </td>
-                    <td style={tdCell}>{r.material_name}</td>
-                    <td style={tdCell}>
-                      {r.supplier_name}
-                      <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
-                        {r.vehicle_number || "—"}{r.transporter_name ? ` · ${r.transporter_name}` : ""}
-                      </div>
-                    </td>
-                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
-                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.accepted_qty)} {r.purchase_unit}</td>
-                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", color: short > 0 ? "var(--alert-red)" : short < 0 ? "var(--info)" : "var(--slate)" }}>
-                      {short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`}
-                    </td>
-                    <td style={tdCell}>
-                      {r.weighbridge_ticket_id
-                        ? <span title={r.wb_net_weight_kg != null ? `${fmtNum(r.wb_net_weight_kg)} kg weighed` : ""}>
-                            <span className="badge badge-info" style={{ fontSize: 9.5, padding: "0 7px" }}>#{r.weighbridge_ticket_id}</span>
-                            {r.wb_net_weight_kg != null && <span style={{ fontSize: 10, color: "var(--slate)" }}> {fmtNum(r.wb_net_weight_kg)}kg</span>}
-                          </span>
-                        : r.weighbridge_weight_kg != null
-                          ? <span style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(r.weighbridge_weight_kg)} kg (manual)</span>
-                          : <span style={{ fontSize: 10.5, color: "var(--slate)" }}>—</span>}
-                    </td>
-                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.landed_rate_per_kg, 4)}</td>
-                    <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
-                      {isAdmin && (
-                        <>
-                          <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>
-                          <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => setDeletingReceipt(r)}>Delete</button>
-                        </>
-                      )}
+            {/* Round 163 — the register is grouped by material: a heading row
+                per material (with its accepted total), then that material's
+                receipts. The Material column is gone from the rows because the
+                heading carries it, and an Order column takes its place. */}
+            {groupByMaterial(history).map((g) => {
+              const acceptedTotal = g.items.reduce((s, r) => s + Number(r.accepted_qty || 0), 0);
+              const unit = g.items[0].purchase_unit;
+              return (
+                <tbody key={g.material_name}>
+                  <tr style={{ background: "var(--rebar-bg, #F3F1EC)" }}>
+                    <td colSpan={10} style={{ padding: "6px 8px", fontWeight: 700, fontSize: 12, borderBottom: "1px solid var(--border)" }}>
+                      {g.material_name}
+                      <span style={{ fontWeight: 400, color: "var(--slate)", marginLeft: 8, fontSize: 11 }}>
+                        {g.items.length} {g.items.length === 1 ? "receipt" : "receipts"} · {fmtNum(acceptedTotal)} {unit} accepted
+                      </span>
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
+                  {g.items.map((r) => {
+                    const short = Number(r.short_qty) || 0;
+                    const pending = r.confirmation_status === "pending";
+                    return (
+                      <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: pending ? "var(--amber-bg)" : undefined }}>
+                        <td style={{ ...tdCell, fontWeight: 600, whiteSpace: "nowrap" }}>
+                          {receiptNo(r.id)}
+                          {pending && <div><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>Pending</span></div>}
+                        </td>
+                        <td style={{ ...tdCell, whiteSpace: "nowrap", fontFamily: "monospace", color: "var(--info)" }}>{r.order_id ? orderNo(r.order_id) : "—"}</td>
+                        <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
+                          {fmtDate(r.received_date)}
+                          {r.received_date && r.received_at && !sameDay(r.received_date, r.received_at) &&
+                            <div style={{ fontSize: 9.5, color: "var(--slate)" }}>entered {fmtDate(r.received_at)}</div>}
+                        </td>
+                        <td style={tdCell}>
+                          {r.supplier_name}
+                          <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
+                            {r.vehicle_number || "—"}{r.transporter_name ? ` · ${r.transporter_name}` : ""}
+                          </div>
+                        </td>
+                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
+                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.accepted_qty)} {r.purchase_unit}</td>
+                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", color: short > 0 ? "var(--alert-red)" : short < 0 ? "var(--info)" : "var(--slate)" }}>
+                          {short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`}
+                        </td>
+                        <td style={tdCell}>
+                          {r.weighbridge_ticket_id
+                            ? <span title={r.wb_net_weight_kg != null ? `${fmtNum(r.wb_net_weight_kg)} kg weighed` : ""}>
+                                <span className="badge badge-info" style={{ fontSize: 9.5, padding: "0 7px" }}>#{r.weighbridge_ticket_id}</span>
+                                {r.wb_net_weight_kg != null && <span style={{ fontSize: 10, color: "var(--slate)" }}> {fmtNum(r.wb_net_weight_kg)}kg</span>}
+                              </span>
+                            : r.weighbridge_weight_kg != null
+                              ? <span style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(r.weighbridge_weight_kg)} kg (manual)</span>
+                              : <span style={{ fontSize: 10.5, color: "var(--slate)" }}>—</span>}
+                        </td>
+                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.landed_rate_per_kg, 4)}</td>
+                        <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
+                          {isAdmin && (
+                            <>
+                              <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>
+                              <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => setDeletingReceipt(r)}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              );
+            })}
           </table>
         </div>
       )}
