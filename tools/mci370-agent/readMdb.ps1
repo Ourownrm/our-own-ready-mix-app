@@ -24,7 +24,13 @@
 
 param(
   [Parameter(Mandatory = $true)][string]$MdbPath,
-  [Parameter(Mandatory = $true)][string]$Sql
+  [Parameter(Mandatory = $true)][string]$Sql,
+  # Round 157 follow-up — MCI370's live database is protected with a Jet
+  # database password. It is the plant's own credential, held by MCI370 and
+  # supplied here from config.json's dbPassword; empty means an unprotected
+  # database, which is how the installer template and the vendor's sample copy
+  # both open. This is a credential the operator provides, not one we recover.
+  [string]$DbPassword = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +46,14 @@ try {
   # database; on a copy that is harmless, and read-only mode means we never
   # take a write lock even if pointed at the original.
   $conn.Mode = 1
-  $conn.Open("Provider=Microsoft.Jet.OLEDB.4.0;Data Source=$MdbPath;")
+  # A Jet database password rides in the connection string as Jet OLEDB:Database
+  # Password. Left blank the clause is harmless, so the same code opens a
+  # protected and an unprotected database.
+  $connStr = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=$MdbPath;"
+  if ($DbPassword -ne "") {
+    $connStr += "Jet OLEDB:Database Password=$DbPassword;"
+  }
+  $conn.Open($connStr)
 
   $rs = New-Object -ComObject ADODB.Recordset
   # 3 = adOpenStatic, 1 = adLockReadOnly.

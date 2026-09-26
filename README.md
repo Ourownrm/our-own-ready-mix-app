@@ -7801,3 +7801,76 @@ carried 13:22:40 through to 13:34:40 on the ticket. Sheet 6 for 6 m³, sheet 7 f
 reporting success, reporting a failure, and the operator retrying it. The purge clearing a
 three-month-old PDF while leaving the docket row and every figure on it intact. Permission gates:
 the operator reads but cannot map or seed; QC and admin can both. Wrong key and no key both 401.
+
+---
+
+## Round 162 — receipts read like a register, and the weighbridge gets a report (v9.88)
+
+**Visit `/setup?key=...` once.** Five things the plant asked for after living with the Material
+Module.
+
+### Back-dated receipts
+
+A load arrives on the 2nd and is entered on the 5th — common — and until now it counted in the
+month it was *typed*, because the receipt had no date of its own beyond its created-at timestamp.
+So the weighted-average rate and the month's stock could both be wrong for a late entry.
+
+`rm_receipts` now carries **`received_date`**, the arrival date, and everything economic keys on
+it: the weighted-average rate, stock-as-of, the month rollups, the physical-stock reports. The old
+`received_at` stays exactly as it was — the audit record of when the row was entered, and by whom.
+Existing receipts were back-filled from the IST day of their `received_at`, so nothing shifted
+month. A future date is refused: a receipt records something that has happened.
+
+Verified: a receipt dated 12 August, entered today, lands in August's weighted-average (20,000 kg
+in Aug, 10,000 in Sep) — and the register shows the arrival date with an "entered on" line only
+when the two differ.
+
+### The date bug this would have shipped with
+
+node-postgres turns a DATE column into a JS Date at the process timezone, which serializes shifted
+— 12 August came back as `2026-08-11T18:30:00Z`. Every read that returns `received_date` to the
+screen now goes through `to_char(...,'YYYY-MM-DD')`, the same rule the rest of the app follows for
+dates. Caught by reading the first real response, not by a test.
+
+### The register
+
+The receipt history was a stack of cards. It is a **table** now — receipt number, arrival date,
+material, supplier and vehicle, supplier vs accepted quantity, variance, the weighbridge link, and
+the landed rate, lined up so a month of deliveries reads down the page. A filter row narrows it by
+date range, material and supplier, and a pending receipt is flagged in place.
+
+### Receipt number and the weighbridge link
+
+Every receipt shows its number (**R-00042**, the id padded) and, where it was weighed, the
+weighbridge ticket it is linked to with that ticket's net weight — rather than the bare weight
+number it showed before, or nothing. A hand-entered weight reads "(manual)".
+
+### Admin edit: the date, and unlinking the weighbridge
+
+The admin receipt edit now carries the arrival date, and can **unlink** a receipt from the wrong
+weighbridge ticket — which frees that ticket to be claimed by the right receipt. Relinking to a
+different ticket is allowed but guarded exactly as the create path is: the ticket must be matched
+and unclaimed by any other receipt, so one weighed load can never be credited into stock twice.
+
+Verified: link shows the net weight, the claimed ticket drops off the order's offer list, unlink
+frees it, and both relink guards (already-claimed, not-yet-matched) refuse.
+
+### The weighbridge records report
+
+The Receipts tab is a queue — recent, actionable. The new **Records** tab is the report people
+kept asking for: every weighment, filterable by date range, material, supplier, purpose and
+status, and searchable by a free-text box across the vehicle, material, supplier, challan and
+driver. It carries the two totals that make it a report — the count and the net tonnage — and the
+tonnage excludes set-aside (test) weighments so a day's figure is real material. It is available
+to anyone who can view the weighbridge, not only the mappers, so the tab bar now shows for a
+view-only user too.
+
+Verified: every filter narrows correctly, the search finds a lorry by part of its number and a
+load by its driver, and the net total excludes the ignored ticket (19,600 kg from the matched one,
+not 27,600).
+
+### Gates and upgrade
+
+Store is refused the receipt edit (admin only); Store, Plant Operator and Administrator all read
+the report. Fresh database and an upgrade from Round 160 both migrate cleanly, existing receipts
+keeping their dates. 84 routes carry both guards; all five checkers green.

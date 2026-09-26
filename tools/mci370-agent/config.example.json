@@ -6,6 +6,9 @@
   "appUrl": "https://YOUR-BACKEND.onrender.com",
   "apiKey": "PUT-THE-SAME-VALUE-AS-PLANT_API_KEY-HERE",
 
+  "_dbPassword": "The MCI370 database password from Schwing Stetter. Leave out or empty if the database has none.",
+  "dbPassword": "",
+
   "startDate": "2026-09-01",
   "pollSeconds": 60,
   "trailingDays": 7,

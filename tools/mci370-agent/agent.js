@@ -127,6 +127,10 @@ const saveState = (s) => { const t = STATE_PATH + ".tmp"; fs.writeFileSync(t, JS
 // Reading the Access file
 // ---------------------------------------------------------------------------
 
+// Set once from config in main(), so every queryMdb call carries the plant's
+// own Jet database password. Empty for an unprotected database.
+let DB_PASSWORD = "";
+
 async function queryMdb(mdbPath, sql) {
   if (!fs.existsSync(PS32)) {
     throw new Error(
@@ -135,9 +139,11 @@ async function queryMdb(mdbPath, sql) {
     );
   }
   const script = path.join(__dirname, "readMdb.ps1");
+  const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+    "-MdbPath", mdbPath, "-Sql", sql];
+  if (DB_PASSWORD) args.push("-DbPassword", DB_PASSWORD);
   const { stdout } = await execFileAsync(
-    PS32,
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-MdbPath", mdbPath, "-Sql", sql],
+    PS32, args,
     { maxBuffer: 64 * 1024 * 1024, windowsHide: true }
   );
   let parsed;
@@ -404,6 +410,9 @@ async function cycle(cfg, state) {
 
 async function main() {
   const cfg = loadConfig();
+  // The plant's own Jet password, if the live database is protected. Set here
+  // once so queryMdb carries it on every read.
+  DB_PASSWORD = cfg.dbPassword || "";
   const state = loadState();
   log(`MCI370 agent ${AGENT_VERSION} starting.`);
   log(`  reading  ${cfg.mdbPath}${cfg.copyFirst ? " (via a copy — the live file is never opened)" : " (DIRECTLY — copyFirst is off)"}`);

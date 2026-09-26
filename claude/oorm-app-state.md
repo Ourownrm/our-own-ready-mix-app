@@ -1,4 +1,4 @@
-# OORM App — Current State (as of Round 161, Ver. 9.87)
+# OORM App — Current State (as of Round 162, Ver. 9.88)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -68,6 +68,43 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 `todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 162 — receipts as a register, weighbridge report (v9.88)
+
+**Visit `/setup?key=...` once.** Five Material-Module/Weighbridge asks from live use.
+
+**BACK-DATED RECEIPTS.** New `rm_receipts.received_date` (DATE) is the ECONOMIC date — a load
+entered late counts in the month it ARRIVED, not the month it was typed. Everything economic
+(weighted-avg rate, stock-as-of, month rollups, physical-stock reports) repointed from received_at
+to received_date; received_at stays as the audit "entered on" timestamp. Existing rows back-filled
+from the IST day of received_at. Future date refused. Shared `validateReceivedDate()` on POST+PATCH.
+
+**DATE BUG caught in verification:** node-pg serialises a DATE shifted (12 Aug -> 2026-08-11T18:30Z).
+Every read returning received_date to the screen now uses `to_char(...,'YYYY-MM-DD')` — the app's
+standard rule. The main list uses `SELECT r.*, to_char(...) AS received_date` (later alias wins).
+
+**REGISTER.** ReceiptsTab history is now a TABLE (receipt no, arrival date, material, supplier/
+vehicle, supplier vs accepted qty, variance, weighbridge link, landed rate) with a filter row
+(date range, material, supplier) and pending flagged in place. Receipt number = `R-` + id padded.
+
+**WEIGHBRIDGE LINK on the receipt.** The list joins weighbridge_tickets for the linked ticket's
+net weight; shows `#ticket + net kg`, or `(manual)` for a hand-typed weight, or `—`.
+
+**ADMIN EDIT gains arrival date + UNLINK.** PATCH takes received_date and weighbridge_ticket_id;
+"" unlinks (frees the ticket for the right receipt), a number relinks but only to a matched,
+unclaimed ticket (same double-claim guard as create).
+
+**WEIGHBRIDGE RECORDS REPORT.** New `GET /weighbridge/report` (+ `/purposes`) with filters
+from_date/to_date (on COALESCE(weighed_at::date, ticket_date)), material_id, supplier_id, purpose,
+status, and free-text `q` across raw vehicle/material/supplier/challan/driver. Returns rows + totals
+(count, net kg EXCLUDING 'ignored'), 1000-row cap with a truncated flag. New "Records" tab on
+Weighbridge.jsx, shown to anyone with view (tab bar no longer gated on canMap).
+
+Verified: 12-Aug receipt lands in Aug's weighted avg; dates display correctly; link shows net wt,
+claimed ticket leaves the offer list, unlink frees it, relink guards fire; every report filter +
+search works, net excludes set-aside; Store refused receipt edit (admin only), Store/Operator/Admin
+all read the report; fresh DB + upgrade from R160 both clean. 84 routes both guards, all 5 checkers
+green.
 
 ## Round 161 — MixTrack makes the ticket (v9.87)
 

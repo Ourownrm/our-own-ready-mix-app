@@ -37,13 +37,15 @@ function fail(msg, hint) {
   process.exit(1);
 }
 
+// Set below from config / env / a --password argument, so the probe can open a
+// password-protected live database with the plant's own credential.
+let DB_PASSWORD = "";
+
 async function q(ps, mdb, sql) {
-  const { stdout } = await execFileAsync(
-    ps,
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-     path.join(__dirname, "readMdb.ps1"), "-MdbPath", mdb, "-Sql", sql],
-    { maxBuffer: 64 * 1024 * 1024, windowsHide: true }
-  );
+  const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+    path.join(__dirname, "readMdb.ps1"), "-MdbPath", mdb, "-Sql", sql];
+  if (DB_PASSWORD) args.push("-DbPassword", DB_PASSWORD);
+  const { stdout } = await execFileAsync(ps, args, { maxBuffer: 64 * 1024 * 1024, windowsHide: true });
   const parsed = JSON.parse(stdout.trim() || "{}");
   if (parsed.error) throw new Error(parsed.error);
   const rows = parsed.rows;
@@ -53,7 +55,13 @@ async function q(ps, mdb, sql) {
 const cfg = fs.existsSync(CONFIG_PATH)
   ? JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"))
   : {};
-const mdbPath = process.argv[2] || cfg.mdbPath;
+// The first non-flag argument is the database path; --password=... (or the
+// MCI_DB_PASSWORD env var, or config's dbPassword) supplies the Jet password
+// so a protected live database can be tried without editing config first.
+const args = process.argv.slice(2);
+const pwArg = args.find((a) => a.startsWith("--password="));
+const mdbPath = args.find((a) => !a.startsWith("--")) || cfg.mdbPath;
+DB_PASSWORD = (pwArg ? pwArg.slice("--password=".length) : (process.env.MCI_DB_PASSWORD ?? cfg.dbPassword ?? ""));
 
 console.log("MCI370 agent — probe\n");
 
@@ -73,7 +81,7 @@ if (!fs.existsSync(mdbPath)) {
        "MCI370 installs to C:\\SSI\\MCI370\\ by default. Search for it:  dir /s /b C:\\MCI70_batch.Mdb");
 }
 const sizeMb = (fs.statSync(mdbPath).size / 1048576).toFixed(1);
-console.log(`  2. Database           OK   ${mdbPath} (${sizeMb} MB)`);
+console.log(`  2. Database           OK   ${mdbPath} (${sizeMb} MB)${DB_PASSWORD ? " — using a database password" : ""}`);
 
 // Always probe a copy — never open the live file, for the same reason the
 // agent doesn't.
