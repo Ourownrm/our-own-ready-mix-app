@@ -142,6 +142,18 @@ function Field({ label, children }) {
 
 const inputStyle = { width: "100%" };
 
+// Round 162 — shared table cell padding for the receipt register.
+const thCell = { padding: "6px 8px", fontWeight: 600 };
+const tdCell = { padding: "6px 8px", verticalAlign: "top" };
+
+// True when a DATE string and a timestamp fall on the same IST day — used to
+// decide whether to show the "entered on" audit line for a back-dated receipt.
+function sameDay(dateStr, ts) {
+  if (!dateStr || !ts) return true;
+  const entered = new Date(ts).toLocaleDateString("en-CA"); // YYYY-MM-DD, local
+  return String(dateStr).slice(0, 10) === entered;
+}
+
 // Tabs each role sees. Materials/Suppliers are master-editing tools kept
 // Administrator-only (Store/Plant Operator still read materials & suppliers
 // live inside their own tabs — e.g. the Orders form's dropdowns — via the
@@ -1047,8 +1059,14 @@ function OrderSummary({ o }) {
 // whatever's on the order and aren't re-picked here — override the order
 // itself (a new order) if a different transporter actually showed up.
 
+// Round 162 — a receipt's number is its id, shown padded so it reads like a
+// document reference rather than a database row.
+function receiptNo(id) {
+  return "R-" + String(id).padStart(5, "0");
+}
+
 function blankReceiptForm() {
-  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "" };
+  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "", received_date: todayStr() };
 }
 
 function receiptEditForm(r) {
@@ -1056,6 +1074,9 @@ function receiptEditForm(r) {
     supplier_qty: r.supplier_qty, weighbridge_weight_kg: r.weighbridge_weight_kg ?? "",
     accepted_qty: r.accepted_qty, vehicle_number: r.vehicle_number || "", challan_number: r.challan_number || "",
     debit_note_amount: r.debit_note_amount ?? "", notes: r.notes || "",
+    // Round 162 — arrival date, and the weighbridge link so admin can unlink.
+    received_date: (r.received_date || "").slice(0, 10),
+    weighbridge_ticket_id: r.weighbridge_ticket_id ?? "",
   };
 }
 
@@ -1076,16 +1097,35 @@ function ReceiptsTab({ role }) {
   const [editForm, setEditForm] = useState({});
   const [deletingReceipt, setDeletingReceipt] = useState(null);
 
+  // Round 162 — the register's filters, plus the master lists that drive their
+  // dropdowns. Materials and suppliers are loaded once; the receipt list
+  // reloads whenever a filter changes.
+  const [filters, setFilters] = useState({ from_date: "", to_date: "", material_id: "", supplier_id: "" });
+  const [materials, setMaterials] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+
+  async function loadHistory() {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(filters)) if (v) qs.set(k, v);
+    const h = await apiRequest(`/material-module/receipts${qs.toString() ? "?" + qs : ""}`);
+    setHistory(h);
+  }
   async function load() {
     try {
-      const [r, h] = await Promise.all([
+      const [r] = await Promise.all([
         apiRequest("/material-module/orders/receivable"),
-        apiRequest("/material-module/receipts"),
+        loadHistory(),
       ]);
-      setReceivable(r); setHistory(h);
+      setReceivable(r);
     } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
+  // Filters re-query just the history, not the whole screen.
+  useEffect(() => { loadHistory().catch((e) => setError(e.message)); }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    apiRequest("/material-module/materials").then(setMaterials).catch(() => {});
+    apiRequest("/material-module/suppliers").then(setSuppliers).catch(() => {});
+  }, []);
 
   function openReceive(o) {
     setReceiving(o);
@@ -1194,32 +1234,103 @@ function ReceiptsTab({ role }) {
         );
       })}
 
-      <div style={{ fontSize: 13, fontWeight: 700, margin: "18px 0 8px" }}>Receipt history</div>
-      {history.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No receipts yet.</div>}
-      {history.map((r) => (
-        <div key={r.id} className="card" style={{ marginBottom: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{r.material_name}</div>
-            <div style={{ fontSize: 11, color: "var(--slate)" }}>{fmtDateTime(r.received_at)}</div>
-          </div>
-          <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
-            {r.supplier_name}{r.transporter_name ? ` · ${r.transporter_name}` : ""}{r.vehicle_number ? ` · ${r.vehicle_number}` : ""}
-          </div>
-          <div style={{ fontSize: 11.5, marginTop: 2 }}>
-            Supplier qty {fmtNum(r.supplier_qty)} {r.purchase_unit} · Accepted {fmtNum(r.accepted_qty)} {r.purchase_unit}
-            {Number(r.short_qty) !== 0 && <span style={{ color: Number(r.short_qty) > 0 ? "var(--alert-red)" : "var(--info)" }}> · {Number(r.short_qty) > 0 ? "Short" : "Excess"} {fmtNum(Math.abs(r.short_qty))}</span>}
-          </div>
-          {r.weighbridge_weight_kg != null && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>Weighbridge: {fmtNum(r.weighbridge_weight_kg)} kg</div>}
-          {r.debit_note_amount != null && <div style={{ fontSize: 11, color: "var(--alert-red)", marginTop: 2 }}>Debit note: {fmtMoney(r.debit_note_amount)}</div>}
-          <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>Received by {r.received_by_name}</div>
-          {isAdmin && (
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openEditReceipt(r)}>Edit</button>
-              <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => setDeletingReceipt(r)}>Delete</button>
-            </div>
-          )}
+      {/* ROUND 162 — the history is a proper register now, not a stack of
+          cards: one row per receipt, with the receipt number, the arrival
+          date, the weighbridge link, and the numbers lined up so a month of
+          deliveries can actually be read down the page. Filters narrow it by
+          date, material and supplier. */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", margin: "18px 0 8px", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Receipt register</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <input type="date" value={filters.from_date} onChange={(e) => setFilters({ ...filters, from_date: e.target.value })} style={{ fontSize: 11.5 }} title="From" />
+          <span style={{ fontSize: 11, color: "var(--slate)" }}>to</span>
+          <input type="date" value={filters.to_date} onChange={(e) => setFilters({ ...filters, to_date: e.target.value })} style={{ fontSize: 11.5 }} title="To" />
+          <select value={filters.material_id} onChange={(e) => setFilters({ ...filters, material_id: e.target.value })} style={{ fontSize: 11.5 }}>
+            <option value="">All materials</option>
+            {materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <select value={filters.supplier_id} onChange={(e) => setFilters({ ...filters, supplier_id: e.target.value })} style={{ fontSize: 11.5 }}>
+            <option value="">All suppliers</option>
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          {(filters.from_date || filters.to_date || filters.material_id || filters.supplier_id) &&
+            <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setFilters({ from_date: "", to_date: "", material_id: "", supplier_id: "" })}>Clear</button>}
         </div>
-      ))}
+      </div>
+      {history.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No receipts match.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)", color: "var(--slate)", fontSize: 11 }}>
+                <th style={thCell}>Receipt</th>
+                <th style={thCell}>Date</th>
+                <th style={thCell}>Material</th>
+                <th style={thCell}>Supplier / vehicle</th>
+                <th style={{ ...thCell, textAlign: "right" }}>Supplier</th>
+                <th style={{ ...thCell, textAlign: "right" }}>Accepted</th>
+                <th style={{ ...thCell, textAlign: "right" }}>Variance</th>
+                <th style={thCell}>Weighbridge</th>
+                <th style={{ ...thCell, textAlign: "right" }}>Landed ₹/kg</th>
+                <th style={thCell}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((r) => {
+                const short = Number(r.short_qty) || 0;
+                const pending = r.confirmation_status === "pending";
+                return (
+                  <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: pending ? "var(--amber-bg)" : undefined }}>
+                    <td style={{ ...tdCell, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {receiptNo(r.id)}
+                      {pending && <div><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>Pending</span></div>}
+                    </td>
+                    <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
+                      {fmtDate(r.received_date)}
+                      {/* the audit line — when it was entered, if that differs
+                          from the arrival date (a back-dated receipt) */}
+                      {r.received_date && r.received_at && !sameDay(r.received_date, r.received_at) &&
+                        <div style={{ fontSize: 9.5, color: "var(--slate)" }}>entered {fmtDate(r.received_at)}</div>}
+                    </td>
+                    <td style={tdCell}>{r.material_name}</td>
+                    <td style={tdCell}>
+                      {r.supplier_name}
+                      <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
+                        {r.vehicle_number || "—"}{r.transporter_name ? ` · ${r.transporter_name}` : ""}
+                      </div>
+                    </td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.accepted_qty)} {r.purchase_unit}</td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", color: short > 0 ? "var(--alert-red)" : short < 0 ? "var(--info)" : "var(--slate)" }}>
+                      {short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`}
+                    </td>
+                    <td style={tdCell}>
+                      {r.weighbridge_ticket_id
+                        ? <span title={r.wb_net_weight_kg != null ? `${fmtNum(r.wb_net_weight_kg)} kg weighed` : ""}>
+                            <span className="badge badge-info" style={{ fontSize: 9.5, padding: "0 7px" }}>#{r.weighbridge_ticket_id}</span>
+                            {r.wb_net_weight_kg != null && <span style={{ fontSize: 10, color: "var(--slate)" }}> {fmtNum(r.wb_net_weight_kg)}kg</span>}
+                          </span>
+                        : r.weighbridge_weight_kg != null
+                          ? <span style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(r.weighbridge_weight_kg)} kg (manual)</span>
+                          : <span style={{ fontSize: 10.5, color: "var(--slate)" }}>—</span>}
+                    </td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.landed_rate_per_kg, 4)}</td>
+                    <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
+                      {isAdmin && (
+                        <>
+                          <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>
+                          <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => setDeletingReceipt(r)}>Delete</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {receiving && (
         <Modal title={`Receive — ${receiving.material_name}`} onClose={() => setReceiving(null)} wide>
@@ -1269,6 +1380,11 @@ function ReceiptsTab({ role }) {
           )}
 
           <form onSubmit={submitReceipt}>
+            {/* Round 162 — the arrival date. Defaults to today; set it back for
+                a load being entered late so it counts in the right month. */}
+            <Field label="Arrival date (set this back for a late entry)">
+              <input type="date" max={todayStr()} value={form.received_date} onChange={(e) => setForm({ ...form, received_date: e.target.value })} style={inputStyle} />
+            </Field>
             <Field label={`Supplier's invoice/DC quantity (${outstandingUnit})`}>
               <input required type="number" step="0.01" min="0" value={form.supplier_qty} onChange={(e) => setForm({ ...form, supplier_qty: e.target.value })} style={inputStyle} />
             </Field>
@@ -1303,6 +1419,18 @@ function ReceiptsTab({ role }) {
         <Modal title={`Edit receipt — ${editingReceipt.material_name}`} onClose={() => setEditingReceipt(null)} wide>
           <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 10 }}>Correcting a wrong entry — short/excess and landed rate are recalculated from these values.</div>
           <form onSubmit={submitEditReceipt}>
+            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>Receipt {receiptNo(editingReceipt.id)}</div>
+            <Field label="Arrival date">
+              <input type="date" max={todayStr()} value={editForm.received_date} onChange={(e) => setEditForm({ ...editForm, received_date: e.target.value })} style={inputStyle} />
+            </Field>
+            {/* Round 162 — unlink a receipt tied to the wrong weighbridge ticket.
+                Unlinking frees that ticket to be claimed by the right receipt. */}
+            {editForm.weighbridge_ticket_id
+              ? <div style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--info)", background: "var(--info-bg)", borderRadius: 7, padding: "8px 10px", marginBottom: 10 }}>
+                  <span style={{ fontSize: 12, flexGrow: 1 }}>Linked to weighbridge ticket <strong>#{editForm.weighbridge_ticket_id}</strong></span>
+                  <button type="button" style={{ fontSize: 11.5 }} onClick={() => setEditForm({ ...editForm, weighbridge_ticket_id: "" })}>Unlink</button>
+                </div>
+              : <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 10 }}>No weighbridge ticket linked.</div>}
             <Field label={`Supplier's invoice/DC quantity (${editingReceipt.purchase_unit})`}>
               <input required type="number" step="0.01" min="0" value={editForm.supplier_qty} onChange={(e) => setEditForm({ ...editForm, supplier_qty: e.target.value })} style={inputStyle} />
             </Field>

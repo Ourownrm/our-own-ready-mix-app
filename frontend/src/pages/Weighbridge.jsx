@@ -775,6 +775,140 @@ function Vehicles({ canEdit }) {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ROUND 162 — the records report.
+//
+// The Receipts tab is the queue: recent, actionable, one status at a time.
+// This answers the other question people bring — "find the weighments for this
+// lorry", "what did we take from this supplier last month" — over ALL history,
+// with the totals that make it a report rather than a list.
+// ---------------------------------------------------------------------------
+function fmtDay(d) {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString([], { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" });
+}
+
+function Records() {
+  const [filters, setFilters] = useState({ from_date: "", to_date: "", material_id: "", supplier_id: "", purpose: "", status: "", q: "" });
+  const [data, setData] = useState({ rows: [], total_count: 0, total_net_kg: 0, truncated: false });
+  const [materials, setMaterials] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [purposes, setPurposes] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    // The material and supplier masters live in the Material Module; the
+    // weighbridge report filters by them, so it reads the same lists. A
+    // view-only weighbridge user may not have those endpoints, so a failure
+    // just leaves the dropdown empty rather than breaking the report.
+    apiRequest("/material-module/materials").then(setMaterials).catch(() => {});
+    apiRequest("/material-module/suppliers").then(setSuppliers).catch(() => {});
+    apiRequest("/weighbridge/purposes").then(setPurposes).catch(() => {});
+  }, []);
+
+  async function run() {
+    setLoading(true); setError("");
+    try {
+      const qs = new URLSearchParams();
+      for (const [k, v] of Object.entries(filters)) if (v) qs.set(k, v);
+      setData(await apiRequest(`/weighbridge/report${qs.toString() ? "?" + qs : ""}`));
+    } catch (err) { setError(err.message); } finally { setLoading(false); }
+  }
+  // Run on mount and whenever a filter changes, debounced lightly for the text box.
+  useEffect(() => { const t = setTimeout(run, filters.q ? 300 : 0); return () => clearTimeout(t); }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const set = (k) => (e) => setFilters({ ...filters, [k]: e.target.value });
+  const anyFilter = Object.values(filters).some(Boolean);
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input placeholder="Search vehicle, material, supplier, challan, driver…" value={filters.q} onChange={set("q")}
+                 style={{ flex: "2 1 240px", fontSize: 13, padding: "6px 8px" }} />
+          <input type="date" value={filters.from_date} onChange={set("from_date")} style={{ fontSize: 12.5 }} title="From date" />
+          <span style={{ fontSize: 12, color: "var(--slate)" }}>to</span>
+          <input type="date" value={filters.to_date} onChange={set("to_date")} style={{ fontSize: 12.5 }} title="To date" />
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+          <select value={filters.material_id} onChange={set("material_id")} style={{ fontSize: 12.5 }}>
+            <option value="">All materials</option>
+            {materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <select value={filters.supplier_id} onChange={set("supplier_id")} style={{ fontSize: 12.5 }}>
+            <option value="">All suppliers</option>
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <select value={filters.purpose} onChange={set("purpose")} style={{ fontSize: 12.5 }}>
+            <option value="">All purposes</option>
+            {purposes.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select value={filters.status} onChange={set("status")} style={{ fontSize: 12.5 }}>
+            <option value="">Any status</option>
+            <option value="matched">Matched</option>
+            <option value="needs_review">Needs review</option>
+            <option value="ignored">Set aside</option>
+          </select>
+          {anyFilter && <button type="button" style={{ fontSize: 12 }} onClick={() => setFilters({ from_date: "", to_date: "", material_id: "", supplier_id: "", purpose: "", status: "", q: "" })}>Clear all</button>}
+        </div>
+      </div>
+
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 20, marginBottom: 10, fontSize: 13, flexWrap: "wrap" }}>
+        <div><strong>{data.total_count.toLocaleString("en-IN")}</strong> <span style={{ color: "var(--slate)" }}>weighments</span></div>
+        <div><strong>{fmtKg(data.total_net_kg)}</strong> <span style={{ color: "var(--slate)" }}>net (excludes set-aside)</span></div>
+        {loading && <div style={{ color: "var(--slate)" }}>Loading…</div>}
+        {data.truncated && <div style={{ color: "var(--amber)" }}>Showing the first 1,000 — narrow the dates to see the rest.</div>}
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)", color: "var(--slate)", fontSize: 11 }}>
+              <th style={{ padding: "6px 8px" }}>Ticket</th>
+              <th style={{ padding: "6px 8px" }}>Weighed</th>
+              <th style={{ padding: "6px 8px" }}>Vehicle</th>
+              <th style={{ padding: "6px 8px" }}>Material</th>
+              <th style={{ padding: "6px 8px" }}>Supplier</th>
+              <th style={{ padding: "6px 8px" }}>Purpose</th>
+              <th style={{ padding: "6px 8px", textAlign: "right" }}>Net</th>
+              <th style={{ padding: "6px 8px" }}>Status</th>
+              <th style={{ padding: "6px 8px" }}>Receipt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((t) => (
+              <tr key={t.ticket_number} style={{ borderBottom: "1px solid var(--border)" }}>
+                <td style={{ padding: "6px 8px", fontWeight: 600, whiteSpace: "nowrap" }}>#{t.ticket_number}</td>
+                <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{t.weighed_at ? fmtWhen(t.weighed_at) : fmtDay(t.ticket_date)}</td>
+                <td style={{ padding: "6px 8px" }}>
+                  {t.vehicle_registration || t.raw_vehicle || "—"}
+                  {t.driver_name && <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{t.driver_name}</div>}
+                </td>
+                <td style={{ padding: "6px 8px" }}>
+                  {t.material_name || <span style={{ color: "var(--slate)" }}>{t.raw_material || "—"}</span>}
+                </td>
+                <td style={{ padding: "6px 8px" }}>
+                  {t.supplier_name || <span style={{ color: "var(--slate)" }}>{t.raw_supplier || "—"}</span>}
+                </td>
+                <td style={{ padding: "6px 8px", fontSize: 11.5, color: "var(--slate)" }}>{t.purpose || "—"}</td>
+                <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>{fmtKg(t.net_weight_kg)}</td>
+                <td style={{ padding: "6px 8px" }}><StatusPill status={t.match_status} /></td>
+                <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{t.receipt_id ? <span className="badge badge-info" style={{ fontSize: 9.5, padding: "0 7px" }}>R-{String(t.receipt_id).padStart(5, "0")}</span> : "—"}</td>
+              </tr>
+            ))}
+            {!data.rows.length && !loading && (
+              <tr><td colSpan={9} style={{ padding: "16px 8px", textAlign: "center", color: "var(--slate)" }}>No weighments match.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function Weighbridge() {
   const { can, ready } = usePermissions();
   const [tab, setTab] = useState("receipts");
@@ -808,24 +942,35 @@ export default function Weighbridge() {
     <>
       <TopBar title="Weighbridge" />
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: "0 16px 32px" }}>
-        {canMap && (
-          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <button type="button" className={`btn-tab ${tab === "receipts" ? "active" : ""}`} onClick={() => setTab("receipts")}>
-              Receipts
-            </button>
-            <button type="button" className={`btn-tab ${tab === "mapping" ? "active" : ""}`} onClick={() => setTab("mapping")}>
-              Name mapping
-            </button>
-            <button type="button" className={`btn-tab ${tab === "vehicles" ? "active" : ""}`} onClick={() => setTab("vehicles")}>
-              Vehicles
-            </button>
-          </div>
-        )}
-        {tab === "mapping" && canMap
-          ? <Mapping canEdit={canMapEdit} />
-          : tab === "vehicles" && canView
-            ? <Vehicles canEdit={canMapEdit} />
-            : <Receipts canEdit={canEdit} />}
+        {/* Round 162 — the Records report is available to anyone who can view
+            the weighbridge, so the tab bar now shows for a view-only user too
+            (it used to appear only for mappers). Mapping and Vehicles stay
+            behind the mapping permission. */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <button type="button" className={`btn-tab ${tab === "receipts" ? "active" : ""}`} onClick={() => setTab("receipts")}>
+            Receipts
+          </button>
+          <button type="button" className={`btn-tab ${tab === "records" ? "active" : ""}`} onClick={() => setTab("records")}>
+            Records
+          </button>
+          {canMap && (
+            <>
+              <button type="button" className={`btn-tab ${tab === "mapping" ? "active" : ""}`} onClick={() => setTab("mapping")}>
+                Name mapping
+              </button>
+              <button type="button" className={`btn-tab ${tab === "vehicles" ? "active" : ""}`} onClick={() => setTab("vehicles")}>
+                Vehicles
+              </button>
+            </>
+          )}
+        </div>
+        {tab === "records"
+          ? <Records />
+          : tab === "mapping" && canMap
+            ? <Mapping canEdit={canMapEdit} />
+            : tab === "vehicles" && canMap
+              ? <Vehicles canEdit={canMapEdit} />
+              : <Receipts canEdit={canEdit} />}
       </div>
     </>
   );
