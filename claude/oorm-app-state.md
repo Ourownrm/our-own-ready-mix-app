@@ -1,4 +1,4 @@
-# OORM App — Current State (as of Round 162, Ver. 9.88)
+# OORM App — Current State (as of Round 163, Ver. 9.89)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -68,6 +68,20 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 `todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 163 — order numbers + group by material (v9.89)
+
+**No schema change** (frontend only, MaterialModule.jsx). Two live-use asks.
+
+**ORDER NUMBERS.** `PO-` + id padded (like R- receipt numbers from R162), shown on the Orders page,
+the Receipts "awaiting receipt" list, and as an **Order** column in the receipt register. The id is
+the number — stable, unique, no separate sequence/migration.
+
+**GROUP BY MATERIAL.** Orders page main list, Receipts "awaiting receipt" list, and the register all
+group by material: a heading per material (count + total), items beneath, materials alphabetical.
+Helpers `orderNo(id)`, `groupByMaterial(items)`, `<MaterialHeading>`. In the register the Material
+column moved into the group heading and the Order column took its slot. Data already present
+(orders: id+material_name; receipts: order_id+material_name) so no backend change.
 
 ## Round 162 — receipts as a register, weighbridge report (v9.88)
 

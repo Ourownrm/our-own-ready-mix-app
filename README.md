@@ -7874,3 +7874,33 @@ not 27,600).
 Store is refused the receipt edit (admin only); Store, Plant Operator and Administrator all read
 the report. Fresh database and an upgrade from Round 160 both migrate cleanly, existing receipts
 keeping their dates. 84 routes carry both guards; all five checkers green.
+
+---
+
+## Round 163 — order numbers, and grouping by material (v9.89)
+
+Two small asks from live use. **No schema change** — no `/setup` needed; redeploy the frontend.
+
+### Order numbers
+
+Every order now shows a number — **PO-00042**, its id padded — on both the Orders page and the
+Receipts page, and every receipt shows the order it was received against as an **Order** column in
+the register. It is the id rather than a separate sequence: the id is already unique and stable, so
+it makes a dependable reference against a supplier's bill without a counter to maintain or a
+migration to run. Receipts already carried their own number (R-00042) from Round 162; this gives
+orders the same, and links the two.
+
+### Grouped by material
+
+The Orders page and the Receipts page were flat lists, so the several M SAND orders — from Periyar,
+from Star Metal, from different suppliers — were scattered down the page. Both pages now **group by
+material**: a heading per material with its order (or receipt) count and total, then that material's
+rows beneath it. Materials are listed alphabetically so the same one always sits in the same place.
+
+On the Orders page the grouping covers the main order list; on the Receipts page it covers both the
+"awaiting receipt" list and the register. In the register the Material column is gone from the rows
+— the group heading carries it — and the new Order column takes its place, so each row still fits.
+
+Frontend only, one file (`MaterialModule.jsx`). Verified that orders carry the id and material, and
+that receipts carry their order_id and material, so both the numbers and the grouping have the data
+they need; the grouping collapses two same-material orders from different suppliers into one block.
