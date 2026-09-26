@@ -3166,3 +3166,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_docket_plant_load
 INSERT INTO solitaire_settings (key, value)
 VALUES ('pdf_retention_months', '2')
 ON CONFLICT (key) DO NOTHING;
+
+-- ============================================================================
+-- ROUND 162 — back-dated receipts, and a receipt's own date
+-- ============================================================================
+--
+-- Until now a receipt's economic date WAS its received_at timestamp — the
+-- moment the row was created. That is wrong for a load being entered days late,
+-- which is common: the lorry arrived on the 2nd, Store records it on the 5th,
+-- and the stock and the weighted-average rate must count it in the month it
+-- actually arrived, not the month it was typed.
+--
+-- So received_date is the ECONOMIC date — when the material arrived — and it is
+-- what every valuation, stock and month query keys on from this round. received_at
+-- stays exactly as it was: the audit trail of when the row was entered, and by
+-- whom. The two are usually the same day and differ only for a back-dated entry.
+ALTER TABLE rm_receipts ADD COLUMN received_date DATE;
+
+-- Back-fill from the IST calendar day of received_at, so existing receipts keep
+-- the economic date they already had. db.js pins the session to Asia/Kolkata,
+-- but received_at is a timestamptz, so the AT TIME ZONE is explicit here rather
+-- than trusting the session — the same UTC/IST care the rest of the app takes.
+UPDATE rm_receipts SET received_date = (received_at AT TIME ZONE 'Asia/Kolkata')::date
+ WHERE received_date IS NULL;
+
+ALTER TABLE rm_receipts ALTER COLUMN received_date SET NOT NULL;
+ALTER TABLE rm_receipts ALTER COLUMN received_date SET DEFAULT CURRENT_DATE;
+
+CREATE INDEX IF NOT EXISTS idx_rm_receipts_received_date ON rm_receipts(received_date);

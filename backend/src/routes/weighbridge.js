@@ -383,6 +383,93 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
   }
 });
 
+// ---------------------------------------------------------------------------
+// ROUND 162 — the records report.
+//
+// The Receipts tab is a working queue: recent tickets, one status at a time,
+// there to be actioned. This is the other thing people ask for — "find me the
+// weighments for this lorry last month", "what did we take from this supplier
+// in September" — a filterable, searchable view over ALL the history with the
+// totals that answer those questions.
+//
+// Every filter is optional and they combine. `q` is a free-text search across
+// the fields a person actually remembers: the raw vehicle/material/supplier
+// spellings, the challan and the driver. Dates filter on weighed_at (the real
+// event), falling back to ticket_date where the weighbridge left no timestamp.
+// ---------------------------------------------------------------------------
+router.get("/report", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+  try {
+    const params = [];
+    const wh = [];
+    const eventDate = "COALESCE(wb.weighed_at::date, wb.ticket_date)";
+
+    if (req.query.from_date) { params.push(req.query.from_date); wh.push(`${eventDate} >= $${params.length}::date`); }
+    if (req.query.to_date)   { params.push(req.query.to_date);   wh.push(`${eventDate} <= $${params.length}::date`); }
+    if (req.query.material_id) { params.push(req.query.material_id); wh.push(`wb.material_id = $${params.length}`); }
+    if (req.query.supplier_id) { params.push(req.query.supplier_id); wh.push(`wb.supplier_id = $${params.length}`); }
+    if (["matched", "needs_review", "ignored"].includes(req.query.status)) {
+      params.push(req.query.status); wh.push(`wb.match_status = $${params.length}::wb_match_status`);
+    }
+    if (req.query.purpose) { params.push(req.query.purpose); wh.push(`wb.purpose = $${params.length}`); }
+    if (req.query.q && req.query.q.trim()) {
+      params.push(`%${req.query.q.trim()}%`);
+      const i = params.length;
+      wh.push(`(wb.raw_vehicle ILIKE $${i} OR wb.raw_material ILIKE $${i} OR wb.raw_supplier ILIKE $${i}
+                OR wb.challan_number ILIKE $${i} OR wb.driver_name ILIKE $${i}
+                OR v.registration ILIKE $${i})`);
+    }
+    const where = wh.length ? wh.join(" AND ") : "true";
+
+    const { rows } = await query(
+      `SELECT wb.ticket_number, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
+              wb.challan_number, wb.driver_name, wb.net_weight_kg, wb.empty_weight_kg, wb.loaded_weight_kg,
+              wb.ticket_date, wb.weighed_at, wb.match_status,
+              m.name AS material_name, s.name AS supplier_name,
+              v.registration AS vehicle_registration,
+              r.id AS receipt_id
+         FROM weighbridge_tickets wb
+         LEFT JOIN rm_materials m ON m.id = wb.material_id
+         LEFT JOIN rm_suppliers s ON s.id = wb.supplier_id
+         LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
+         LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a pending receipt still claims its ticket
+        WHERE ${where}
+        ORDER BY wb.weighed_at DESC NULLS LAST, wb.ticket_number DESC
+        LIMIT 1000`,
+      params
+    );
+
+    // The totals people are really after. Net weight is only meaningful for
+    // tickets that were actually loaded, and 'ignored' rows (test weighments)
+    // are excluded from the tonnage so a day's total is real material.
+    const { rows: totals } = await query(
+      `SELECT count(*)::int AS n,
+              COALESCE(sum(wb.net_weight_kg) FILTER (WHERE wb.match_status <> 'ignored'), 0)::numeric AS net_kg
+         FROM weighbridge_tickets wb
+         LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
+        WHERE ${where}`,
+      params
+    );
+
+    res.json({ rows, total_count: totals[0].n, total_net_kg: Number(totals[0].net_kg), truncated: rows.length === 1000 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not run the weighbridge report." });
+  }
+});
+
+// The distinct purposes present, for the report's filter dropdown — only the
+// values that actually occur, so the filter never offers an empty category.
+router.get("/purposes", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+  try {
+    const { rows } = await query(
+      `SELECT DISTINCT purpose FROM weighbridge_tickets WHERE purpose IS NOT NULL AND purpose <> '' ORDER BY purpose`
+    );
+    res.json(rows.map((r) => r.purpose));
+  } catch (err) {
+    res.status(500).json({ error: "Could not load purposes." });
+  }
+});
+
 // The header strip: how many need a human, and — the question that actually
 // matters at 7am — when did the agent last check in.
 router.get("/summary", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {

@@ -3035,6 +3035,27 @@ ON CONFLICT (key) DO NOTHING;
       "print queue, and a two-month PDF retention window)."
     );
 
+    // ========================================================================
+    // ROUND 162 — a receipt's own date, so a late-entered load counts in the
+    // month it actually arrived rather than the month it was typed.
+    //
+    // received_date is the ECONOMIC date; received_at stays as the audit
+    // timestamp of when the row was entered. Existing receipts are back-filled
+    // from the IST day of received_at so nothing shifts month.
+    // ========================================================================
+    await pool.query(`
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS received_date DATE;
+UPDATE rm_receipts SET received_date = (received_at AT TIME ZONE 'Asia/Kolkata')::date
+ WHERE received_date IS NULL;
+ALTER TABLE rm_receipts ALTER COLUMN received_date SET NOT NULL;
+ALTER TABLE rm_receipts ALTER COLUMN received_date SET DEFAULT CURRENT_DATE;
+CREATE INDEX IF NOT EXISTS idx_rm_receipts_received_date ON rm_receipts(received_date);
+`);
+    log.push(
+      "Schema migration applied (Round 162 — receipts carry their own arrival date, so a " +
+      "back-dated load counts in the right month; existing receipts kept their current date)."
+    );
+
     // Round 160 — production.mixtrack-qc-delay is a new key, and the seeding
     // loop only runs for a role with no rows at all, so it would never be
     // reached on an installation that already has permissions.

@@ -576,10 +576,42 @@ router.get("/orders/:id/weighbridge-tickets", requireRole(...ORDER_ROLES), requi
   }
 });
 
+// ROUND 162 — the arrival date, validated in one place because both the create
+// and the admin edit take it. Returns a YYYY-MM-DD string, or today when blank;
+// answers the response itself and returns undefined when the date is bad, so
+// the caller does `const d = validateReceivedDate(...); if (d === undefined) return;`.
+function validateReceivedDate(value, res) {
+  if (value === undefined || value === null || value === "") {
+    // CURRENT_DATE would do it in SQL, but returning the string keeps the INSERT
+    // parameter list uniform and lets the value be echoed back to the screen.
+    return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD, IST
+  }
+  const s = String(value).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    res.status(400).json({ error: "Enter the arrival date as YYYY-MM-DD." });
+    return undefined;
+  }
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  if (s > today) {
+    res.status(400).json({ error: "A receipt cannot be dated in the future." });
+    return undefined;
+  }
+  return s;
+}
+
 router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "create"), async (req, res) => {
-  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason } = req.body;
+  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date } = req.body;
   if (!order_id) return res.status(400).json({ error: "Select the order this receipt is against." });
   if (!supplier_qty || Number(supplier_qty) <= 0) return res.status(400).json({ error: "Enter the supplier's invoice/DC quantity." });
+
+  // ROUND 162 — the arrival date. Left blank it is today; a back-dated entry
+  // sets it to when the load actually arrived, and everything economic (stock,
+  // the weighted-average rate, the month it counts in) keys on this rather than
+  // on when the row was typed. A future date is refused — a receipt is a record
+  // of something that has happened, and a load dated next week is a typo that
+  // would quietly distort next month's opening stock.
+  const receivedDate = validateReceivedDate(received_date, res);
+  if (receivedDate === undefined) return; // validator already answered
 
   const { rows: orders } = await query(
     `SELECT o.*, m.kg_per_purchase_unit, m.tolerance_pct
@@ -690,17 +722,18 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
        (order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, accepted_qty_kg, transporter_id,
         freight_rate, freight_basis, vehicle_number, challan_number, short_qty, debit_note_amount,
         landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason,
-        accepted_basis, variance_qty, variance_pct, confirmation_status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
+        accepted_basis, variance_qty, variance_pct, confirmation_status, received_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
     [order_id, supplier_qty, weighbridge_weight_kg || null, finalAcceptedQty, acceptedQtyKg,
       transporter_id || order.transporter_id || null, useFreightRate || null, useFreightBasis || null,
       vehicle_number || null, challan_number || null, shortQty, debit_note_amount || null,
       landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null,
-      acceptedBasis, varianceQty, variancePct, confirmationStatus]
+      acceptedBasis, varianceQty, variancePct, confirmationStatus, receivedDate]
   );
 
   res.status(201).json({
     ...rows[0],
+    received_date: receivedDate,   // the validated string, not the pg Date
     tolerance_exceeded: toleranceExceeded,
     // The screen needs to say what just happened, and the two outcomes are
     // genuinely different: one is filed, the other is waiting on somebody.
@@ -743,6 +776,43 @@ router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material
   const acceptedQty = Number(merged.accepted_qty);
   if (!acceptedQty || acceptedQty <= 0) return res.status(400).json({ error: "Accepted quantity must be greater than zero." });
 
+  // ROUND 162 — the arrival date can be corrected too. Omitted, the existing
+  // date is kept; a bad or future date is refused by the shared validator.
+  let receivedDate = existing.received_date;
+  if (req.body.received_date !== undefined) {
+    const d = validateReceivedDate(req.body.received_date, res);
+    if (d === undefined) return;
+    receivedDate = d;
+  }
+
+  // ROUND 162 — unlink or relink the weighbridge ticket. This is the admin's
+  // remedy for a receipt tied to the wrong ticket: passing "" or null unlinks
+  // it (which frees that ticket to be claimed by the right receipt); passing a
+  // ticket number relinks, but only to a matched ticket no OTHER receipt holds,
+  // the same guard the create path applies — an unguarded relink would
+  // double-credit one weighed load into stock twice.
+  let ticketId = existing.weighbridge_ticket_id;
+  if (req.body.weighbridge_ticket_id !== undefined) {
+    const raw = req.body.weighbridge_ticket_id;
+    if (raw === null || raw === "" ) {
+      ticketId = null;
+    } else {
+      const want = Number(raw);
+      if (!Number.isInteger(want)) return res.status(400).json({ error: "Invalid weighbridge ticket number." });
+      const { rows: tk } = await query(
+        `SELECT wb.ticket_number, wb.match_status::text AS match_status, r.id AS claimed_by
+           FROM weighbridge_tickets wb
+           LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number AND r.id <> $2   -- receipts-raw: a pending receipt still claims its ticket
+          WHERE wb.ticket_number = $1`,
+        [want, req.params.id]
+      );
+      if (!tk.length) return res.status(404).json({ error: `Weighbridge ticket #${want} does not exist.` });
+      if (tk[0].match_status !== "matched") return res.status(409).json({ error: `Ticket #${want} is not matched yet, so it cannot be linked.` });
+      if (tk[0].claimed_by) return res.status(409).json({ error: `Ticket #${want} is already linked to another receipt.` });
+      ticketId = want;
+    }
+  }
+
   // Preserve the conversion factor the ORIGINAL receipt used (not today's
   // material default) — same "past receipts keep the value used at the
   // time" rule the receipt already followed when it was first recorded.
@@ -759,14 +829,16 @@ router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material
     `UPDATE rm_receipts SET   -- receipts-raw: the write itself
        supplier_qty = $1, weighbridge_weight_kg = $2, accepted_qty = $3, accepted_qty_kg = $4,
        transporter_id = $5, freight_rate = $6, freight_basis = $7, vehicle_number = $8, challan_number = $9,
-       short_qty = $10, debit_note_amount = $11, landed_rate_per_kg = $12, notes = $13
+       short_qty = $10, debit_note_amount = $11, landed_rate_per_kg = $12, notes = $13,
+       received_date = $15, weighbridge_ticket_id = $16
      WHERE id = $14 RETURNING *`,
     [supplierQty, merged.weighbridge_weight_kg || null, acceptedQty, acceptedQtyKg,
       merged.transporter_id || null, merged.freight_rate || null, merged.freight_basis || null,
       merged.vehicle_number || null, merged.challan_number || null, shortQty,
-      merged.debit_note_amount || null, landedRatePerKg, merged.notes || null, req.params.id]
+      merged.debit_note_amount || null, landedRatePerKg, merged.notes || null, req.params.id,
+      receivedDate, ticketId]
   );
-  res.json(rows[0]);
+  res.json({ ...rows[0], received_date: receivedDate });
 });
 
 router.delete("/receipts/:id", requireRole(...ADMIN), requirePermission("material.receipts", "delete"), async (req, res) => {
@@ -783,22 +855,29 @@ router.get("/receipts", requireRole(...ORDER_ROLES), requirePermission("material
     params.push(req.user.id);
     where = `o.requested_by = $${params.length}`;
   }
-  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_at >= $${params.length}::date`; }
-  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_at < $${params.length}::date + INTERVAL '1 day'`; }
+  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
+  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
   if (req.query.material_id) { params.push(req.query.material_id); where += ` AND o.material_id = $${params.length}`; }
   if (req.query.supplier_id) { params.push(req.query.supplier_id); where += ` AND o.supplier_id = $${params.length}`; }
 
   const { rows } = await query(
-    `SELECT r.*, o.material_id, o.supplier_id, m.name AS material_name, m.purchase_unit,
-            s.name AS supplier_name, t.name AS transporter_name, ru.name AS received_by_name
+    `SELECT r.*, to_char(r.received_date,'YYYY-MM-DD') AS received_date,
+            o.material_id, o.supplier_id, m.name AS material_name, m.purchase_unit,
+            s.name AS supplier_name, t.name AS transporter_name, ru.name AS received_by_name,
+            -- ROUND 162 — the weighbridge ticket this receipt was weighed on, so
+            -- the screen can show the link (and its net weight) rather than just
+            -- a bare id. Null for a delivery that never crossed the weighbridge.
+            wb.net_weight_kg AS wb_net_weight_kg,
+            wb.weighed_at    AS wb_weighed_at
      FROM rm_receipts r   -- receipts-raw: the receipts screen deliberately shows pending ones, flagged
      JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_materials m ON m.id = o.material_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
      LEFT JOIN rm_transporters t ON t.id = r.transporter_id
+     LEFT JOIN weighbridge_tickets wb ON wb.ticket_number = r.weighbridge_ticket_id
      JOIN users ru ON ru.id = r.received_by
      WHERE ${where}
-     ORDER BY r.received_at DESC
+     ORDER BY r.received_date DESC, r.received_at DESC
      LIMIT 500`,
     params
   );
@@ -820,7 +899,7 @@ router.get("/receipts/pending", requireRole(...CONFIRM_ROLES), requirePermission
   try {
     const { rows } = await query(
       // receipts-raw: this queue exists to show exactly the pending ones
-      `SELECT r.id, r.received_at, r.supplier_qty, r.weighbridge_weight_kg, r.accepted_qty,
+      `SELECT r.id, r.received_at, to_char(r.received_date,'YYYY-MM-DD') AS received_date, r.supplier_qty, r.weighbridge_weight_kg, r.accepted_qty,
               r.variance_qty, r.variance_pct, r.short_reason, r.notes, r.challan_number,
               r.vehicle_number, r.accepted_basis,
               o.id AS order_id, o.rate AS order_rate,
@@ -837,7 +916,7 @@ router.get("/receipts/pending", requireRole(...CONFIRM_ROLES), requirePermission
        JOIN rm_suppliers s ON s.id = o.supplier_id
        JOIN users ru ON ru.id = r.received_by
        WHERE r.confirmation_status = 'pending'
-       ORDER BY r.received_at ASC`
+       ORDER BY r.received_date ASC, r.received_at ASC`
     );
     res.json(rows);
   } catch (err) {
@@ -1007,7 +1086,7 @@ router.post("/production", requireRole(...CONSUMPTION_ROLES), requirePermission(
 // correction to an old receipt is always reflected everywhere that reads it.
 async function monthlyWeightedAvgRates(materialId) {
   const { rows } = await query(
-    `SELECT to_char(date_trunc('month', r.received_at), 'YYYY-MM') AS ym,
+    `SELECT to_char(date_trunc('month', r.received_date), 'YYYY-MM') AS ym,
             SUM(r.accepted_qty_kg * r.landed_rate_per_kg) AS value_sum,
             SUM(r.accepted_qty_kg) AS qty_sum
      FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
@@ -1057,7 +1136,7 @@ async function bookStockRows() {
     LEFT JOIN LATERAL (
       SELECT SUM(r.accepted_qty_kg) AS month_kg
       FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
-      WHERE o.material_id = m.id AND date_trunc('month', r.received_at) = date_trunc('month', CURRENT_DATE)
+      WHERE o.material_id = m.id AND date_trunc('month', r.received_date) = date_trunc('month', CURRENT_DATE)
     ) monthrecv ON true
     WHERE m.is_active
     ORDER BY m.category, m.name
@@ -1180,7 +1259,7 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
   for (const m of materials) {
     const { rows: openingRows } = await query(
       `SELECT
-         $2::numeric + COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = $1 AND r.received_at < $3::date), 0)
+         $2::numeric + COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = $1 AND r.received_date < $3::date), 0)
          - COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c WHERE c.material_id = $1 AND c.consumption_date < $3::date), 0)
          AS opening_kg`,
       [m.id, m.opening_stock_kg, monthStart]
@@ -1190,7 +1269,7 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
     const { rows: monthRows } = await query(
       `SELECT
          COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
-                   WHERE o.material_id = $1 AND r.received_at >= $2::date AND r.received_at < $2::date + INTERVAL '1 month'), 0) AS purchase_kg,
+                   WHERE o.material_id = $1 AND r.received_date >= $2::date AND r.received_date < $2::date + INTERVAL '1 month'), 0) AS purchase_kg,
          COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c
                    WHERE c.material_id = $1 AND c.consumption_date >= $2::date AND c.consumption_date < $2::date + INTERVAL '1 month'), 0) AS plant_consumption_kg`,
       [m.id, monthStart]
@@ -1296,10 +1375,10 @@ router.get("/reports/open-orders", requireRole(...ADMIN), requirePermission("mat
 router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
   const params = [];
   let where = "true";
-  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_at >= $${params.length}::date`; }
-  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_at < $${params.length}::date + INTERVAL '1 day'`; }
+  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
+  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
   const { rows } = await query(
-    `SELECT r.id, r.received_at, m.name AS material_name, m.purchase_unit, m.tolerance_pct,
+    `SELECT r.id, r.received_at, to_char(r.received_date,'YYYY-MM-DD') AS received_date, m.name AS material_name, m.purchase_unit, m.tolerance_pct,
             s.name AS supplier_name, r.supplier_qty, r.weighbridge_weight_kg, r.accepted_qty,
             r.short_qty, r.debit_note_amount, r.vehicle_number, r.challan_number
      FROM rm_receipts_effective r
@@ -1307,7 +1386,7 @@ router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePerm
      JOIN rm_materials m ON m.id = o.material_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
      WHERE ${where}
-     ORDER BY r.received_at DESC
+     ORDER BY r.received_date DESC, r.received_at DESC
      LIMIT 500`,
     params
   );
@@ -1341,8 +1420,8 @@ router.get("/reports/variance", requireRole(...ADMIN), requirePermission("materi
   try {
     const params = [];
     let where = "r.variance_qty IS NOT NULL";
-    if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_at >= $${params.length}::date`; }
-    if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_at < $${params.length}::date + INTERVAL '1 day'`; }
+    if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
+    if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
     if (req.query.supplier_id) { params.push(req.query.supplier_id); where += ` AND o.supplier_id = $${params.length}`; }
     if (req.query.material_id) { params.push(req.query.material_id); where += ` AND o.material_id = $${params.length}`; }
 
@@ -1374,7 +1453,7 @@ router.get("/reports/variance", requireRole(...ADMIN), requirePermission("materi
       query(roll("m.id, m.name, m.purchase_unit",
                  "m.id AS material_id, m.name AS material_name, m.purchase_unit"), params),
       query(
-        `SELECT r.id, r.received_at, r.supplier_qty, r.accepted_qty, r.weighbridge_weight_kg,
+        `SELECT r.id, r.received_at, to_char(r.received_date,'YYYY-MM-DD') AS received_date, r.supplier_qty, r.accepted_qty, r.weighbridge_weight_kg,
                 r.variance_qty, r.variance_pct, r.accepted_basis, r.confirmation_status,
                 r.short_reason, r.confirm_note, r.vehicle_number, r.challan_number,
                 m.name AS material_name, m.purchase_unit, m.tolerance_pct,
@@ -1385,7 +1464,7 @@ router.get("/reports/variance", requireRole(...ADMIN), requirePermission("materi
          JOIN rm_suppliers s ON s.id = o.supplier_id
          LEFT JOIN users cu ON cu.id = r.confirmed_by
          WHERE ${where}
-         ORDER BY abs(r.variance_pct) DESC NULLS LAST, r.received_at DESC
+         ORDER BY abs(r.variance_pct) DESC NULLS LAST, r.received_date DESC
          LIMIT 300`, params),
       query(
         `SELECT count(*)::int AS loads,
@@ -1627,8 +1706,8 @@ router.get("/reports/weighted-average-rate-history", requireRole(...ADMIN), requ
 router.get("/reports/supplier-purchase-summary", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
   const params = [];
   let where = "true";
-  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_at >= $${params.length}::date`; }
-  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_at < $${params.length}::date + INTERVAL '1 day'`; }
+  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
+  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
   const { rows } = await query(
     `SELECT s.id AS supplier_id, s.name AS supplier_name,
             COUNT(r.id) AS receipt_count,
@@ -1648,8 +1727,8 @@ router.get("/reports/supplier-purchase-summary", requireRole(...ADMIN), requireP
 router.get("/reports/transporter-freight", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
   const params = [];
   let where = "r.transporter_id IS NOT NULL";
-  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_at >= $${params.length}::date`; }
-  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_at < $${params.length}::date + INTERVAL '1 day'`; }
+  if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
+  if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
   const { rows } = await query(
     `SELECT t.id AS transporter_id, t.name AS transporter_name,
             COUNT(r.id) AS trip_count,
@@ -1791,7 +1870,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
             o.material_id, o.supplier_id, m.name AS material_name, m.purchase_unit, s.name AS supplier_name
      FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_materials m ON m.id = o.material_id JOIN rm_suppliers s ON s.id = o.supplier_id
-     WHERE to_char(r.received_at, 'YYYY-MM') = $1`,
+     WHERE to_char(r.received_date, 'YYYY-MM') = $1`,
     [month]
   );
   const monthPurchaseValue = monthReceipts.reduce((sum, r) => sum + Number(r.accepted_qty_kg) * Number(r.landed_rate_per_kg || 0), 0);
@@ -1829,7 +1908,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
 
   const { rows: toleranceRows } = await query(
     `SELECT COUNT(*) AS n FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id JOIN rm_materials m ON m.id = o.material_id
-     WHERE to_char(r.received_at, 'YYYY-MM') = $1 AND m.tolerance_pct IS NOT NULL
+     WHERE to_char(r.received_date, 'YYYY-MM') = $1 AND m.tolerance_pct IS NOT NULL
        AND r.supplier_qty > 0 AND ABS(r.short_qty) / r.supplier_qty * 100 > m.tolerance_pct`,
     [month]
   );
@@ -1893,7 +1972,7 @@ router.get("/reports/stock-summary", requireRole(...ADMIN), requirePermission("m
   const openOrderBalanceValue = openOrders.reduce((sum, o) => sum + Math.max(0, Number(o.ordered_qty) - Number(o.received_qty)) * Number(o.rate), 0);
 
   const { rows: monthReceipts } = await query(
-    `SELECT accepted_qty_kg, landed_rate_per_kg, debit_note_amount FROM rm_receipts_effective WHERE to_char(received_at, 'YYYY-MM') = $1`,
+    `SELECT accepted_qty_kg, landed_rate_per_kg, debit_note_amount FROM rm_receipts_effective WHERE to_char(received_date, 'YYYY-MM') = $1`,
     [month]
   );
   const monthPurchaseValue = monthReceipts.reduce((sum, r) => sum + Number(r.accepted_qty_kg) * Number(r.landed_rate_per_kg || 0), 0);
