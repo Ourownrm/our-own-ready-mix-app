@@ -152,4 +152,40 @@ router.get("/:ticketId/qc-detail", async (req, res) => {
   res.json(rows[0]);
 });
 
+// ROUND 164 — an Administrator can correct a delivery note's status.
+//
+// The status (pending / signed / refused) is set by the site supervisor at
+// unloading. Sometimes it is set wrong — marked refused when the customer did
+// sign, or the reverse — and there was no way to fix it after the fact. This
+// lets an Administrator set it straight from the production report, where the
+// status is already shown.
+//
+// Administrator ONLY, deliberately, even though this router also serves the
+// Manager: changing a signed/refused record moves what the delivery ledger and
+// the customer's account treat as accepted, so it is a correction an
+// Administrator owns rather than a routine edit. The change is stamped with who
+// made it and when, on the site_qc row.
+router.patch("/:ticketId/delivery-note-status", requireRole("administrator"), async (req, res) => {
+  const ticketId = Number(req.params.ticketId);
+  if (!Number.isInteger(ticketId)) return res.status(400).json({ error: "Invalid ticket id." });
+  const status = String(req.body?.delivery_note_status || "").toLowerCase();
+  if (!["pending", "signed", "refused"].includes(status)) {
+    return res.status(400).json({ error: "Status must be pending, signed or refused." });
+  }
+  // site_qc holds the status, keyed by ticket. A ticket with no completion
+  // record yet has nothing to correct — say so rather than silently doing
+  // nothing.
+  const { rows } = await query(
+    `UPDATE site_qc
+        SET delivery_note_status = $2::delivery_note_status,
+            note_status_changed_by = $3,
+            note_status_changed_at = now()
+      WHERE ticket_id = $1
+      RETURNING ticket_id, delivery_note_status`,
+    [ticketId, status, req.user.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "This delivery has no completion record to correct yet." });
+  res.json(rows[0]);
+});
+
 export default router;

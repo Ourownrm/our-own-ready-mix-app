@@ -3194,3 +3194,12 @@ ALTER TABLE rm_receipts ALTER COLUMN received_date SET NOT NULL;
 ALTER TABLE rm_receipts ALTER COLUMN received_date SET DEFAULT CURRENT_DATE;
 
 CREATE INDEX IF NOT EXISTS idx_rm_receipts_received_date ON rm_receipts(received_date);
+
+-- ============================================================================
+-- ROUND 164 — an Administrator can correct a delivery note's status
+-- ============================================================================
+-- The site supervisor sets delivery_note_status at unloading; these record who
+-- corrected it afterwards, if anyone. Additive and nullable — existing rows are
+-- untouched.
+ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_by INTEGER REFERENCES users(id);
+ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_at TIMESTAMPTZ;

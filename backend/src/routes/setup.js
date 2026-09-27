@@ -3056,6 +3056,14 @@ CREATE INDEX IF NOT EXISTS idx_rm_receipts_received_date ON rm_receipts(received
       "back-dated load counts in the right month; existing receipts kept their current date)."
     );
 
+    // ROUND 164 — audit columns for an Administrator's correction of a delivery
+    // note's status. Additive and nullable.
+    await pool.query(`
+ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_by INTEGER REFERENCES users(id);
+ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_at TIMESTAMPTZ;
+`);
+    log.push("Schema migration applied (Round 164 — an Administrator can correct a delivery note's status).");
+
     // Round 160 — production.mixtrack-qc-delay is a new key, and the seeding
     // loop only runs for a role with no rows at all, so it would never be
     // reached on an installation that already has permissions.
