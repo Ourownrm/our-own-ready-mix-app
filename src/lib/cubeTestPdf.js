@@ -67,23 +67,25 @@ function fmtInt(v) {
   return Math.round(Number(v)).toLocaleString("en-IN");
 }
 
-// Round 120, item 4d — one result's full report, as its own function so it
-// can be called either standalone (generateCubeTestPdf, one page, save
-// immediately) or in a loop onto a shared document (generateCombinedCubeTestPdf
-// below, for "these results all landed on the same day" — one PDF, one
-// section per result, per how that question was resolved). Draws onto the
-// `doc` it's given starting at the top of whatever page it's currently on —
-// the caller is responsible for adding a new page between results.
-async function renderCubeTestSection(doc, data, logoData) {
-  function ensureSpace(y, needed) {
-    if (y + needed > BOTTOM_LIMIT) {
-      doc.addPage();
-      return 15;
-    }
-    return y;
-  }
+// Round 131 feedback — a cube slot gets created for every sample taken (see
+// labTechnician.js's submit route), but a sample the Lab Technician never
+// actually got a reading for still has weight_kg/testing_load_kn both null.
+// The report should only ever list cubes someone actually tested — an
+// untested slot showing up as a blank/dash row reads as a missing result,
+// not as "not sampled here." Cube averages already correctly exclude these
+// (Round 124 item 5's avg() fix) — this is purely the row-display side.
+function testedCubesOf(cubes) {
+  return (cubes || []).filter((c) => c.weight_kg != null && c.weight_kg !== "" || c.testing_load_kn != null && c.testing_load_kn !== "");
+}
 
-  // ---------------- Header ----------------
+// Round 133 — every page of a multi-page report now repeats this header
+// (previously drawn once, at the very top of page 1 only — a page 2 of a
+// long report had no company name, report title, or customer/site/grade
+// context at all). Split out so ensureSpace can call it again each time it
+// adds a page. `continued` shortens the title-block IS-code line into a
+// single "(continued)" tag instead — repeating the full three-standard
+// citation on every page read as noise once it's already on page 1.
+function drawSingleTestHeader(doc, data, logoData, { continued } = {}) {
   let y = 16;
   // Round 128 — logo up 10% (15mm -> 16.5mm); kept centered on the same spot
   // the old 15mm logo occupied (y-9 to y+6, center y-1.5) rather than just
@@ -108,7 +110,7 @@ async function renderCubeTestSection(doc, data, logoData) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.2);
   doc.setTextColor(...SLATE);
-  doc.text("IS 516 (Part 1)  |  IS:456-2000  |  IS 1199 (1959)", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
+  doc.text(continued ? "(continued)" : "IS 516 (Part 1)  |  IS:456-2000  |  IS 1199 (1959)", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
 
   // Gap before the rule: the logo's bottom edge sits at y+6.75 (round 128 —
   // addImage placed at y-9.75 with a 16.5mm height), so the rule needs to
@@ -122,6 +124,10 @@ async function renderCubeTestSection(doc, data, logoData) {
   y += 7;
 
   // ---------------- Spec grid ----------------
+  // "No. of Cubes" (spec grid) is how many samples were taken; the TEST
+  // SUMMARY bar's count further down is how many actually went into the
+  // average — not the same number once an untested sample is excluded (see
+  // testedCubesOf).
   const cubeCount = data.cubes?.length || data.number_of_cubes || 0;
   // Round 128, items 1/2/6 — Customer and Site pulled out into their own
   // 50/50 row so a long customer name isn't clipped to a quarter-width
@@ -146,7 +152,6 @@ async function renderCubeTestSection(doc, data, logoData) {
     const rh = 8.6;
 
     // Top row — Customer | Site, 50/50 width.
-    y = ensureSpace(y, rh + 2);
     const cw2 = CONTENT_W / 2;
     doc.setDrawColor(...BORDER);
     doc.rect(MARGIN_X, y, CONTENT_W, rh);
@@ -168,7 +173,6 @@ async function renderCubeTestSection(doc, data, logoData) {
     // Remaining fields — 4-column grid.
     const cw = CONTENT_W / 4;
     const rows = Math.ceil(specs.length / 4);
-    y = ensureSpace(y, rh * rows + 2);
     doc.rect(MARGIN_X, y, CONTENT_W, rh * rows);
     specs.forEach((s, i) => {
       const col = i % 4, row = Math.floor(i / 4);
@@ -188,6 +192,60 @@ async function renderCubeTestSection(doc, data, logoData) {
     });
     y += rh * rows + 5;
   }
+  return y;
+}
+
+// Fixed-position footer — drawn at the same spot near the bottom of EVERY
+// page (round 133; previously drawn once, in the content flow, wherever
+// the last section happened to end — so a multi-page report only ever got
+// one footer, on its last page, and never on the pages before it). Height
+// cut from 7.5mm to 5mm per feedback ("reduce the size of the blue
+// coloured footer").
+function drawSingleTestFooter(doc, data) {
+  const y = 285;
+  doc.setFillColor(...NAVY);
+  doc.rect(MARGIN_X, y, CONTENT_W, 5, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(6.6);
+  doc.setTextColor(220, 228, 236);
+  doc.text("OORM-QC-13", MARGIN_X + 3, y + 3.4);
+  doc.text(`REPORT DATE: ${fmtDate(data.tested_at)}`, PAGE_W / 2, y + 3.4, { align: "center" });
+  doc.text("REV. 0", PAGE_W - MARGIN_X - 3, y + 3.4, { align: "right" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.2);
+  doc.setTextColor(...SLATE);
+  doc.text(
+    "Our Own Ready Mix, Plot No 3C-2, Industrial Area, Ananthapuram, Kasaragod, Kerala, India — 671321  ·  +91 83 4007 4006  ·  mail@ourownrm.com",
+    PAGE_W / 2, y + 8.5, { align: "center" }
+  );
+}
+
+// Round 120, item 4d — one result's full report, as its own function so it
+// could be called either standalone or in a loop onto a shared document.
+// Round 131 — generateCubeTestPdf (the standalone case) now goes through
+// renderCombinedPourSection instead (see that function's own generator,
+// further down, for why); this one is kept solely for
+// generateCombinedCubeTestPdf below, for "these results all landed on the
+// same day, possibly different pours" — one PDF, one section per result, a
+// genuinely different report shape than a single pour's own combined view.
+// Draws onto the `doc` it's given starting at the top of whatever page it's
+// currently on — the caller is responsible for adding a new page between
+// results.
+async function renderCubeTestSection(doc, data, logoData) {
+  // BOTTOM_LIMIT now leaves room for the fixed footer (drawSingleTestFooter,
+  // anchored at y=285) rather than letting content run into it.
+  function ensureSpace(y, needed) {
+    if (y + needed > BOTTOM_LIMIT) {
+      drawSingleTestFooter(doc, data);
+      doc.addPage();
+      return drawSingleTestHeader(doc, data, logoData, { continued: true });
+    }
+    return y;
+  }
+
+  let y = drawSingleTestHeader(doc, data, logoData, { continued: false });
+  const testedCubeCount = testedCubesOf(data.cubes).length || data.cubes?.length || data.number_of_cubes || 0;
 
   // ---------------- Test summary ----------------
   y = ensureSpace(y, 8);
@@ -196,7 +254,7 @@ async function renderCubeTestSection(doc, data, logoData) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   doc.setTextColor(...WHITE);
-  doc.text(`TEST SUMMARY — AVERAGE OF ${cubeCount} CUBE${cubeCount === 1 ? "" : "S"}`, MARGIN_X + 3, y + 4.4);
+  doc.text(`TEST SUMMARY — AVERAGE OF ${testedCubeCount} CUBE${testedCubeCount === 1 ? "" : "S"}`, MARGIN_X + 3, y + 4.4);
   y += 6.4;
 
   const meetsTarget = data.testing_age_days === 28 && data.fck_28day_mpa != null && data.average_strength_mpa != null
@@ -297,7 +355,7 @@ async function renderCubeTestSection(doc, data, logoData) {
   doc.text("CUBE TEST ANALYSIS", MARGIN_X + 3, y + 4.4);
   y += 6.4;
   {
-    const cubes = data.cubes || [];
+    const cubes = testedCubesOf(data.cubes);
     // Round 128, item 3 — the "Average" column dropped. It showed the same
     // all-cubes average on every row, which read as though each cube had its
     // own average — the actual average already has its own line in TEST
@@ -403,54 +461,14 @@ async function renderCubeTestSection(doc, data, logoData) {
   doc.setTextColor(...SLATE);
   doc.text("Checked By — QA/QC", sigX, sigLineY + 3.8);
 
-  y = Math.max(noteBottom, sigLineY + 7) + 3;
-
-  // ---------------- Footer ----------------
-  y = ensureSpace(y, 16);
-  doc.setFillColor(...NAVY);
-  doc.rect(MARGIN_X, y, CONTENT_W, 7.5, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7.2);
-  doc.setTextColor(220, 228, 236);
-  doc.text("OORM-QC-13", MARGIN_X + 3, y + 5);
-  doc.text(`REPORT DATE: ${fmtDate(data.tested_at)}`, PAGE_W / 2, y + 5, { align: "center" });
-  doc.text("REV. 0", PAGE_W - MARGIN_X - 3, y + 5, { align: "right" });
-  y += 7.5 + 3.5;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(6.8);
-  doc.setTextColor(...SLATE);
-  doc.text(
-    "Our Own Ready Mix, Plot No 3C-2, Industrial Area, Ananthapuram, Kasaragod, Kerala, India — 671321  ·  +91 83 4007 4006  ·  mail@ourownrm.com  ·  www.ourownrm.com",
-    PAGE_W / 2, y, { align: "center" }
-  );
-
+  drawSingleTestFooter(doc, data);
 }
 
-// Round 130 — the ONE-PAGE combined pour report: both testing ages merged
-// into a single report (one header/spec block, one two-column TEST SUMMARY,
-// one CUBE TEST ANALYSIS table spanning both ages with a rowspan-style
-// Average column), replacing the old idea of "combined" meaning two full
-// per-age reports concatenated (that's still what generateCombinedCubeTestPdf
-// below does, for its own different job — same-day results, possibly from
-// different pours). Data comes from GET /lab-technician/cube-pours/:orderId/combined-pdf-data
-// (plant-cast) or GET /lab-technician/site-cube-casts/:castId/combined-pdf-data
-// (site-cast) — `day7`/`day28` are each either that age's full result+cubes,
-// or null if that age hasn't been tested yet (the caller only offers this
-// option once both are done, but this renders sensibly either way).
-async function renderCombinedPourSection(doc, data, logoData) {
-  function ensureSpace(y, needed) {
-    if (y + needed > BOTTOM_LIMIT) {
-      doc.addPage();
-      return 15;
-    }
-    return y;
-  }
-
-  const { day7, day28 } = data;
-  const ages = [["7-Day", 7, day7], ["28-Day", 28, day28]].filter(([, , r]) => r);
-
-  // ---------------- Header ----------------
+// Round 133 — same treatment as drawSingleTestHeader above: split out so it
+// can be redrawn at the top of every page of a multi-page report, not just
+// page 1. Header includes the company name/report title and the
+// customer/site/grade spec grid, per feedback.
+function drawCombinedPourHeader(doc, data, logoData, { day7, day28, continued }) {
   let y = 16;
   if (logoData) {
     try { doc.addImage(logoData, "JPEG", MARGIN_X, y - 9.75, 16.5, 16.5); } catch { /* ignore bad image */ }
@@ -467,11 +485,11 @@ async function renderCombinedPourSection(doc, data, logoData) {
   doc.text("OUR OWN READY-MIX", PAGE_W - MARGIN_X, y - 6, { align: "right" });
   doc.setFontSize(10.5);
   doc.setTextColor(...CHARCOAL);
-  doc.text("CONCRETE CUBE TEST REPORT — COMBINED", PAGE_W - MARGIN_X, y - 1, { align: "right" });
+  doc.text(day7 && day28 ? "CONCRETE CUBE TEST REPORT — COMBINED" : "CONCRETE CUBE TEST REPORT", PAGE_W - MARGIN_X, y - 1, { align: "right" });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.2);
   doc.setTextColor(...SLATE);
-  doc.text("IS 516 (Part 1)  |  IS:456-2000  |  IS 1199 (1959)", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
+  doc.text(continued ? "(continued)" : "IS 516 (Part 1)  |  IS:456-2000  |  IS 1199 (1959)", PAGE_W - MARGIN_X, y + 3.5, { align: "right" });
 
   y += 9;
   doc.setDrawColor(...RED);
@@ -486,7 +504,6 @@ async function renderCombinedPourSection(doc, data, logoData) {
   // cleanly any more) and Casting Date takes its place.
   {
     const rh = 8.6;
-    y = ensureSpace(y, rh + 2);
     const cw2 = CONTENT_W / 2;
     doc.setDrawColor(...BORDER);
     doc.rect(MARGIN_X, y, CONTENT_W, rh);
@@ -512,7 +529,6 @@ async function renderCombinedPourSection(doc, data, logoData) {
       ["Compared Design", data.design_ref_code || "— none on file —"],
     ];
     const cw = CONTENT_W / 4;
-    y = ensureSpace(y, rh + 2);
     doc.rect(MARGIN_X, y, CONTENT_W, rh);
     specs.forEach((s, i) => {
       const cx = MARGIN_X + i * cw;
@@ -529,6 +545,57 @@ async function renderCombinedPourSection(doc, data, logoData) {
     });
     y += rh + 5;
   }
+  return y;
+}
+
+// Fixed-position footer for the combined pour report — same "every page,
+// shorter bar" treatment as drawSingleTestFooter above (round 133).
+function drawCombinedPourFooter(doc, data, day7, day28) {
+  const y = 285;
+  const reportDate = [day7?.tested_at, day28?.tested_at].filter(Boolean).sort().pop();
+  doc.setFillColor(...NAVY);
+  doc.rect(MARGIN_X, y, CONTENT_W, 5, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(6.6);
+  doc.setTextColor(220, 228, 236);
+  doc.text("OORM-QC-13", MARGIN_X + 3, y + 3.4);
+  doc.text(`REPORT DATE: ${fmtDate(reportDate || data.cast_at)}`, PAGE_W / 2, y + 3.4, { align: "center" });
+  doc.text("REV. 0", PAGE_W - MARGIN_X - 3, y + 3.4, { align: "right" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.2);
+  doc.setTextColor(...SLATE);
+  doc.text(
+    "Our Own Ready Mix, Plot No 3C-2, Industrial Area, Ananthapuram, Kasaragod, Kerala, India — 671321  ·  +91 83 4007 4006  ·  mail@ourownrm.com",
+    PAGE_W / 2, y + 8.5, { align: "center" }
+  );
+}
+
+// Round 130 — the ONE-PAGE combined pour report: both testing ages merged
+// into a single report (one header/spec block, one two-column TEST SUMMARY,
+// one CUBE TEST ANALYSIS table spanning both ages with a rowspan-style
+// Average column), replacing the old idea of "combined" meaning two full
+// per-age reports concatenated (that's still what generateCombinedCubeTestPdf
+// below does, for its own different job — same-day results, possibly from
+// different pours). Data comes from GET /lab-technician/cube-pours/:orderId/combined-pdf-data
+// (plant-cast) or GET /lab-technician/site-cube-casts/:castId/combined-pdf-data
+// (site-cast) — `day7`/`day28` are each either that age's full result+cubes,
+// or null if that age hasn't been tested yet (the caller only offers this
+// option once both are done, but this renders sensibly either way).
+async function renderCombinedPourSection(doc, data, logoData) {
+  const { day7, day28 } = data;
+  const ages = [["7-Day", 7, day7], ["28-Day", 28, day28]].filter(([, , r]) => r);
+
+  function ensureSpace(y, needed) {
+    if (y + needed > BOTTOM_LIMIT) {
+      drawCombinedPourFooter(doc, data, day7, day28);
+      doc.addPage();
+      return drawCombinedPourHeader(doc, data, logoData, { day7, day28, continued: true });
+    }
+    return y;
+  }
+
+  let y = drawCombinedPourHeader(doc, data, logoData, { day7, day28, continued: false });
 
   // ---------------- Standards followed (restored per feedback) ----------------
   y = ensureSpace(y, 8);
@@ -540,9 +607,13 @@ async function renderCombinedPourSection(doc, data, logoData) {
   doc.text("STANDARDS FOLLOWED", MARGIN_X + 3, y + 4.4);
   y += 6.4;
   {
-    const failureText = day7 || day28
-      ? `7-Day: ${day7?.failure_type || "Not recorded"}  ·  28-Day: ${day28?.failure_type || "Not recorded"}`
-      : "Not recorded";
+    // Round 131 — a single-age report (only day7 or only day28 present, now
+    // that generateCubeTestPdf routes through this same renderer) shouldn't
+    // claim anything about the age that was never tested; only say "7-Day: X
+    // · 28-Day: Y" once both actually exist.
+    const failureText = day7 && day28
+      ? `7-Day: ${day7.failure_type || "Not recorded"}  ·  28-Day: ${day28.failure_type || "Not recorded"}`
+      : (day7 || day28)?.failure_type || "Not recorded";
     const rows = [
       ["Sampling of Fresh Concrete", "IS 1199 (1959)"],
       ["Casting Location", data.is_site_cast ? "Customer site (site-cast sample)" : "Plant (cast during Plant QC, at batching plant)"],
@@ -584,7 +655,10 @@ async function renderCombinedPourSection(doc, data, logoData) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   doc.setTextColor(...WHITE);
-  doc.text("TEST SUMMARY — 7 & 28 DAY AVERAGES", MARGIN_X + 3, y + 4.4);
+  doc.text(
+    day7 && day28 ? "TEST SUMMARY — 7 & 28 DAY AVERAGES" : `TEST SUMMARY — ${(day7 ? 7 : 28)} DAY AVERAGE`,
+    MARGIN_X + 3, y + 4.4
+  );
   if (meetsTarget !== null) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7.6);
@@ -675,7 +749,7 @@ async function renderCombinedPourSection(doc, data, logoData) {
     y += headH;
 
     const rh = 6.1;
-    const totalRows = ages.reduce((sum, [, , r]) => sum + Math.max((r.cubes || []).length, 1), 0) || 1;
+    const totalRows = ages.reduce((sum, [, , r]) => sum + Math.max(testedCubesOf(r.cubes).length, 1), 0) || 1;
     y = ensureSpace(y, rh * totalRows + 1);
     const tableTop = y;
     doc.setDrawColor(...BORDER);
@@ -686,7 +760,8 @@ async function renderCombinedPourSection(doc, data, logoData) {
 
     let rowCursor = 0;
     ages.forEach(([ageLabel, ageDays, r]) => {
-      const cubes = (r.cubes && r.cubes.length ? r.cubes : [{ cube_label: "—", weight_kg: r.average_weight_kg, density_kgm3: r.average_density_kgm3, testing_load_kn: r.average_load_kn, strength_mpa: r.average_strength_mpa }]);
+      const tested = testedCubesOf(r.cubes);
+      const cubes = tested.length ? tested : [{ cube_label: "—", weight_kg: r.average_weight_kg, density_kgm3: r.average_density_kgm3, testing_load_kn: r.average_load_kn, strength_mpa: r.average_strength_mpa }];
       const groupTop = tableTop + rowCursor * rh;
       cubes.forEach((c, i) => {
         const ry = groupTop + i * rh;
@@ -732,10 +807,17 @@ async function renderCombinedPourSection(doc, data, logoData) {
   doc.setFontSize(7.6);
   doc.setTextColor(...RED);
   doc.text("REMARKS", MARGIN_X + 3, y + 3.9);
-  const remarksParts = [];
-  if (day7?.remarks) remarksParts.push(`7-Day: ${day7.remarks}`);
-  if (day28?.remarks) remarksParts.push(`28-Day: ${day28.remarks}`);
-  const remarksText = remarksParts.length ? remarksParts.join("   ·   ") : "No remarks.";
+  // Round 131 — no age prefix needed on a single-age report; only label
+  // which age a remark belongs to once there's a real choice between two.
+  let remarksText;
+  if (day7 && day28) {
+    const remarksParts = [];
+    if (day7.remarks) remarksParts.push(`7-Day: ${day7.remarks}`);
+    if (day28.remarks) remarksParts.push(`28-Day: ${day28.remarks}`);
+    remarksText = remarksParts.length ? remarksParts.join("   ·   ") : "No remarks.";
+  } else {
+    remarksText = (day7 || day28)?.remarks || "No remarks.";
+  }
   const remarkLines = doc.splitTextToSize(remarksText, CONTENT_W - 6);
   const remarksH = Math.max(remarkLines.length * 3.6 + 4, 16);
   doc.rect(MARGIN_X, y + 5.5, CONTENT_W, remarksH);
@@ -766,28 +848,8 @@ async function renderCombinedPourSection(doc, data, logoData) {
   doc.setFontSize(6.9);
   doc.setTextColor(...SLATE);
   doc.text("Checked By — QA/QC", sigX, y + 3.8);
-  y += 7 + 5;
 
-  // ---------------- Footer ----------------
-  y = ensureSpace(y, 16);
-  const reportDate = [day7?.tested_at, day28?.tested_at].filter(Boolean).sort().pop();
-  doc.setFillColor(...NAVY);
-  doc.rect(MARGIN_X, y, CONTENT_W, 7.5, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7.2);
-  doc.setTextColor(220, 228, 236);
-  doc.text("OORM-QC-13", MARGIN_X + 3, y + 5);
-  doc.text(`REPORT DATE: ${fmtDate(reportDate)}`, PAGE_W / 2, y + 5, { align: "center" });
-  doc.text("REV. 0", PAGE_W - MARGIN_X - 3, y + 5, { align: "right" });
-  y += 7.5 + 3.5;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(6.8);
-  doc.setTextColor(...SLATE);
-  doc.text(
-    "Our Own Ready Mix, Plot No 3C-2, Industrial Area, Ananthapuram, Kasaragod, Kerala, India — 671321  ·  +91 83 4007 4006  ·  mail@ourownrm.com  ·  www.ourownrm.com",
-    PAGE_W / 2, y, { align: "center" }
-  );
+  drawCombinedPourFooter(doc, data, day7, day28);
 }
 
 // Round 130 — the pour's single combined report (both ages, one page). See
@@ -802,12 +864,36 @@ export async function generateCombinedPourCubeTestPdf(data) {
   return doc;
 }
 
+// Round 131 feedback — a single-age report now goes through the exact same
+// renderer as generateCombinedPourCubeTestPdf below (renderCombinedPourSection),
+// with only one of day7/day28 filled in: no Sample IDs in the header, the
+// Age/Average columns and untested-cube omission that already applied to
+// the combined report, and the same Tested By/Checked By footer layout —
+// instead of the older, differently laid out format renderCubeTestSection
+// produces (that function is kept only for generateCombinedCubeTestPdf's own
+// different same-day-multiple-pours job, further below). Every caller of
+// this function — Lab Technician, the customer portal, the public
+// booking-link form, and the staff Cube Test Report — gets the new format
+// automatically, with no call-site changes needed.
 export async function generateCubeTestPdf(data) {
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   let logoData = null;
   try { logoData = await loadLogoBase64(); } catch { /* logo optional — proceed without it */ }
-  await renderCubeTestSection(doc, data, logoData);
+  const wrapped = {
+    order_id: data.order_id,
+    casting_location: data.casting_location,
+    customer_name: data.customer_name,
+    site_name: data.site_name,
+    mix_grade_name: data.mix_grade_name,
+    cast_at: data.cast_at || data.cast_date, // plant results carry cast_at, site-cast results carry cast_date
+    is_site_cast: !!data.is_site_cast,
+    design_ref_code: data.design_ref_code,
+    fck_28day_mpa: data.fck_28day_mpa,
+    day7: data.testing_age_days === 7 ? data : null,
+    day28: data.testing_age_days === 28 ? data : null,
+  };
+  await renderCombinedPourSection(doc, wrapped, logoData);
   // Round 122 — a pour-level result no longer carries a single plant_qc_id
   // (see labTechnician.js's pdf-data route), so the filename falls back to
   // the order id instead once sample_ids/ticket_number are both empty.

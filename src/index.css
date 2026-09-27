@@ -37,6 +37,71 @@ body {
 #root {
   border-top: 4px solid var(--rebar);
   min-height: 100vh;
+  /* Reserve room for .app-footer (fixed to the viewport bottom on every
+     screen) so it never sits over the last bit of a page's content. Round 145
+     made that bar interactive and gave it three groups, which wrap to two
+     lines on a narrow phone — hence the larger reserve. */
+  padding-bottom: 76px;
+}
+
+/* ===== Footer bar (fixed to the viewport bottom on every signed-in screen)
+   Round 138 put the live clock here, out of a top bar that was already tight.
+   Round 145 moved the rest of the header's non-navigation items down to join
+   it — version, name and role, sign out, refresh, notifications — because the
+   header was wrapping to three rows on a phone before any content showed.
+   It is no longer pointer-events: none, since it now holds real buttons. */
+.app-footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  background: var(--charcoal);
+  color: #B8BFC7;
+  font-size: 11px;
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+  box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.15);
+}
+.app-footer-who { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.app-footer-name { color: #fff; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-footer-role { white-space: nowrap; }
+.app-footer-ver { opacity: 0.6; white-space: nowrap; }
+.app-footer-clock {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* The clock is the one thing here that must never be tapped by accident —
+     it is a read-only display sitting between two groups of real buttons. */
+  pointer-events: none;
+}
+.app-footer-actions { display: flex; align-items: center; gap: 6px; }
+.app-footer-btn {
+  background: none;
+  border: 1px solid #454B52;
+  color: #D7DBDF;
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.app-footer-btn:hover { background: #2C3138; }
+.app-footer-btn:disabled { opacity: 0.6; }
+
+/* On a phone the two icon buttons lose their words and the clock drops its
+   seconds' worth of width, so all three groups still fit on one line. Sign
+   out keeps its label — it is the one action you must not have to guess at. */
+@media (max-width: 560px) {
+  .app-footer { font-size: 10.5px; padding: 5px 10px 6px; gap: 5px 10px; }
+  .app-footer-btn-label { display: none; }
+  .app-footer-role { display: none; }
+  /* Losing their words would leave the icon buttons about 24px wide, which is
+     not a target anyone hits wearing gloves. Keep them finger-sized. */
+  .app-footer-btn { padding: 7px 12px; min-width: 40px; font-size: 12px; }
 }
 
 h1, h2, h3 { color: var(--charcoal); margin: 0; }
@@ -48,16 +113,29 @@ h1, h2, h3 { color: var(--charcoal); margin: 0; }
   align-items: center;
   background: var(--charcoal);
   color: #fff;
-  padding: 14px 20px;
+  padding: 12px 18px;
   margin-bottom: 20px;
+  gap: 10px 16px;
+  flex-wrap: wrap;
 }
-.topbar-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
-.topbar-title span { color: #B8BFC7; font-weight: 400; }
+.topbar-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; min-width: 0; }
+.topbar-page { color: #B8BFC7; font-weight: 400; }
+.topbar-nav { display: flex; align-items: center; gap: 14px; }
+.topbar-link { color: #D7DBDF; font-size: 12px; text-decoration: none; white-space: nowrap; }
+.topbar-link:hover { color: #fff; }
+/* Kept for any screen still rendering its own sign-out button; the shared
+   header's moved to the footer (see .app-footer-btn). */
 .topbar-signout {
   background: none; border: 1px solid #454B52; color: #D7DBDF;
   padding: 6px 12px; font-size: 12px; border-radius: 6px;
 }
 .topbar-signout:hover { background: #2C3138; }
+
+@media (max-width: 560px) {
+  .topbar { padding: 10px 14px; }
+  .topbar-title { font-size: 14px; }
+  .topbar-link { font-size: 11.5px; }
+}
 
 /* ===== Buttons ===== */
 button {
@@ -114,6 +192,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
    visually but be a confusing name at the call site. */
 .badge-violet { background: var(--violet-bg); color: var(--violet); }
 
+/* Round 136 — a plain informational tag (e.g. "which vehicles does this
+   action point apply to"), distinct from .badge's status/state meaning. */
+.chip { display: inline-block; background: var(--concrete); border-radius: 20px; padding: 2px 9px; font-size: 11px; color: var(--charcoal); font-weight: 600; }
+
 /* ===== Tables ===== */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--slate); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border-strong); font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
@@ -134,6 +216,24 @@ tr:last-child td { border-bottom: none; }
   color: var(--charcoal);
   font-family: inherit;
 }
+/* Round 151, item 5 — radios and checkboxes must escape the field styling.
+   `.field-input input` sets width:100% with padding and a border, which is
+   right for text and number fields and badly wrong for a radio: each one
+   stretched across its whole label as a large bordered box, with the "7-day" /
+   "28-day" text landing on top of it. That is the overlap reported on the cube
+   test screen, and it would have affected every radio and checkbox inside a
+   .field-input form. Fixed here rather than on the one screen, since the cause
+   is the shared rule. */
+.field-input input[type="radio"],
+.field-input input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
 .field-input input:focus,
 .field-input select:focus,
 .field-input textarea:focus {
@@ -211,6 +311,23 @@ a { color: var(--rebar); }
 .portal-tile-sub { font-size: 11px; color: var(--slate); }
 .portal-tile.cta .portal-tile-sub { color: rgba(255,255,255,.8); }
 .portal-strip { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; margin-top: 14px; display: flex; gap: 12px; align-items: center; text-align: left; width: 100%; font-family: inherit; text-decoration: none; color: inherit; }
+
+/* Round 131, item 4 — "From our plant & sites" rotating photo widget on
+   the customer Home screen (replaces the old rmc-vs-sitemix strip there;
+   photos are Manager/Admin-managed from Masters > Home Screen Photos). */
+.portal-photo-widget { margin-top: 14px; }
+.portal-photo-head { font-size: 12.5px; font-weight: 700; color: var(--charcoal); margin-bottom: 8px; letter-spacing: .2px; }
+.portal-photo-feature { position: relative; height: 168px; border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border); background: var(--concrete); }
+.portal-photo-feature img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.portal-photo-loading { width: 100%; height: 100%; background: linear-gradient(160deg, #DAD5C8 0%, #C8C2B5 100%); }
+.portal-photo-tag { position: absolute; top: 12px; left: 12px; font-size: 9.5px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase; color: #fff; background: rgba(0,0,0,.38); padding: 4px 9px; border-radius: 20px; }
+.portal-photo-arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 50%; background: rgba(0,0,0,.32); border: none; color: #fff; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
+.portal-photo-arrow.left { left: 10px; }
+.portal-photo-arrow.right { right: 10px; }
+.portal-photo-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 14px 12px; background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.62) 100%); color: #fff; font-size: 13px; font-weight: 700; }
+.portal-photo-dots { display: flex; justify-content: center; gap: 5px; margin-top: 9px; }
+.portal-photo-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); border: none; padding: 0; cursor: pointer; }
+.portal-photo-dot.active { background: var(--rebar); width: 16px; border-radius: 3px; }
 
 .portal-group-label { font-size: 11px; font-weight: 700; color: var(--slate); text-transform: uppercase; letter-spacing: .5px; margin: 14px 0 8px; }
 .portal-group-label:first-child { margin-top: 0; }
@@ -298,3 +415,11 @@ a { color: var(--rebar); }
 @media (max-width: 480px) {
   .se-tiles { grid-template-columns: 1fr 1fr; }
 }
+
+/* Round 151 — the Delivery Challan link in the header. Given an icon and a
+   slightly stronger weight so it reads as a way OUT of the main app into a
+   separate module with its own login, rather than as another page link. */
+.topbar-link.solitaire-link{
+  display:inline-flex; align-items:center; gap:5px; font-weight:600;
+}
+.topbar-link.solitaire-link svg{ flex:0 0 auto; }

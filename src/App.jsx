@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/AuthContext.jsx";
+// Round 146 — the signed-in person's effective permissions, fetched once.
+import { PermissionProvider } from "./lib/PermissionContext.jsx";
 import { CustomerLanguageProvider } from "./lib/customerI18n.jsx";
 import { ROLE_HOME } from "./lib/roleHome.js";
 import { getCustomerSession } from "./lib/customerPortalApi.js";
@@ -13,6 +15,7 @@ import PlantOperator from "./pages/PlantOperator.jsx";
 import QcEngineer from "./pages/QcEngineer.jsx";
 import RawMaterialStockEntry from "./pages/RawMaterialStockEntry.jsx";
 import LabTechnician from "./pages/LabTechnician.jsx";
+import LabDueToday from "./pages/LabDueToday.jsx";
 import CubeTestReport from "./pages/CubeTestReport.jsx";
 import Accountant from "./pages/Accountant.jsx";
 import Administrator from "./pages/Administrator.jsx";
@@ -25,12 +28,14 @@ import DelayJustificationReport from "./pages/DelayJustificationReport.jsx";
 import Charts from "./pages/Charts.jsx";
 import CycleTimeReport from "./pages/CycleTimeReport.jsx";
 import TruckTimingReport from "./pages/TruckTimingReport.jsx";
+import FuelAnalysis from "./pages/FuelAnalysis.jsx";
 import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
 import StoreHome from "./pages/StoreHome.jsx";
 import StoreScan from "./pages/StoreScan.jsx";
+import StoreStock from "./pages/StoreStock.jsx";
 import SalesExecutive from "./pages/SalesExecutive.jsx";
 import SalesPerformance from "./pages/SalesPerformance.jsx";
 import LeadsBrowser from "./pages/LeadsBrowser.jsx";
@@ -40,6 +45,8 @@ import NotificationsPage from "./pages/NotificationsPage.jsx";
 import SalesForecast from "./pages/SalesForecast.jsx";
 import TripTimeCrossCheckPage from "./pages/TripTimeCrossCheckPage.jsx";
 import CustomerTracking from "./pages/CustomerTracking.jsx";
+import SolitaireLogin from "./pages/Solitaire/SolitaireLogin.jsx";
+import SolitaireApp from "./pages/Solitaire/SolitaireApp.jsx";
 import Maintenance from "./pages/Maintenance.jsx";
 import CustomerBooking from "./pages/CustomerBooking.jsx";
 import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
@@ -49,6 +56,13 @@ import ServicesPublic from "./pages/ServicesPublic.jsx";
 import RmcVsSitemix from "./pages/RmcVsSitemix.jsx";
 import TechnicalAssistance from "./pages/TechnicalAssistance.jsx";
 import SiteContentEditor from "./pages/SiteContentEditor.jsx";
+import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
+import MaterialModule from "./pages/MaterialModule.jsx";
+import Weighbridge from "./pages/Weighbridge.jsx";
+import PlantProduction from "./pages/PlantProduction.jsx";
+import ReceiptVariance from "./pages/ReceiptVariance.jsx";
+import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
+import SuperAdmin from "./pages/SuperAdmin.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -69,6 +83,7 @@ function RootRedirect() {
 export default function App() {
   return (
     <AuthProvider>
+      <PermissionProvider>
       {/* Round 119, post-ship again — round 6, item 3: was scoped to just
           CustomerPortal.jsx (the logged-in /portal screens); moved up here so
           the language choice (and useCustomerLanguage()/PublicLanguageSwitcher)
@@ -83,6 +98,17 @@ export default function App() {
 
           {/* Public, no login — reached only via a shared per-order link. */}
           <Route path="/track/:token" element={<CustomerTracking />} />
+          {/* Round 149 — the Delivery Challan (Solitaire) plugin. NOT wrapped in
+              ProtectedRoute on purpose: the module has its own login, session and
+              device lock (backend lib/solitaireAuth.js), a separate trust boundary
+              from the main app's. These two routes are the only way in, and they
+              are reachable only from the Plant Operator screen's icon. The pages
+              themselves call the module's API, which answers 404 while the plugin
+              is switched off — so a bookmarked URL lands on the login screen and
+              gets refused there, rather than this route pretending the module is
+              gone when only the icon is. */}
+          <Route path="/solitaire/login" element={<SolitaireLogin />} />
+          <Route path="/solitaire/app" element={<SolitaireApp />} />
           {/* Public, no login — reached only via a shared per-customer+site booking link. */}
           <Route path="/book/:token" element={<CustomerBookingForm />} />
           {/* Public, no login — a potential customer's "get in touch" form (round 119). */}
@@ -131,6 +157,12 @@ export default function App() {
           <Route path="/lab-technician/cube-test-report" element={
             <ProtectedRoute roles={["lab_technician", "administrator"]}><CubeTestReport /></ProtectedRoute>
           } />
+          {/* Round 135 — "Samples Due for Testing", opened from the KPI
+              card on the Lab Technician dashboard. Same role guard as
+              /lab-technician itself (see the Round 125 comment above). */}
+          <Route path="/lab-technician/due-today" element={
+            <ProtectedRoute roles={["lab_technician", "administrator"]}><LabDueToday /></ProtectedRoute>
+          } />
           <Route path="/accountant" element={
             <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>
           } />
@@ -164,6 +196,9 @@ export default function App() {
           <Route path="/truck-timing-report" element={
             <ProtectedRoute roles={["administrator", "manager"]}><TruckTimingReport /></ProtectedRoute>
           } />
+          <Route path="/fuel-analysis" element={
+            <ProtectedRoute roles={["administrator", "manager"]}><FuelAnalysis /></ProtectedRoute>
+          } />
           <Route path="/outstanding-collection-report" element={
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><OutstandingCollectionReport /></ProtectedRoute>
           } />
@@ -179,8 +214,11 @@ export default function App() {
           <Route path="/site-content" element={
             <ProtectedRoute roles={["manager", "administrator"]}><SiteContentEditor /></ProtectedRoute>
           } />
+          <Route path="/home-screen-photos" element={
+            <ProtectedRoute roles={["manager", "administrator"]}><HomeScreenPhotos /></ProtectedRoute>
+          } />
           <Route path="/fuel" element={
-            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator"]}><FuelFilling /></ProtectedRoute>
+            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator", "loader_operator"]}><FuelFilling /></ProtectedRoute>
           } />
           <Route path="/supply-approvals" element={
             <ProtectedRoute roles={["manager", "administrator"]}><SupplyApprovals /></ProtectedRoute>
@@ -190,6 +228,46 @@ export default function App() {
           } />
           <Route path="/store/scan/:token" element={
             <ProtectedRoute roles={["store", "administrator"]}><StoreScan /></ProtectedRoute>
+          } />
+          <Route path="/store-stock" element={
+            <ProtectedRoute roles={["store", "manager", "administrator"]}><StoreStock /></ProtectedRoute>
+          } />
+          {/* Round 139 — Raw Material Module (purchase -> approve -> receive
+              -> consume -> physical count -> reports). No Manager access yet
+              — see the module's own header comment; cheap to add later. */}
+          {/* Round 141 — Cube Strength QC dashboard. Administrator only, on
+              both sides: this guard and the backend router's own
+              requireRole("administrator"). */}
+          {/* Round 146 — access control, the one page only a Super Admin can open. */}
+          <Route path="/super-admin" element={
+            <ProtectedRoute roles={["super_admin"]}><SuperAdmin /></ProtectedRoute>
+          } />
+          <Route path="/cube-qc-dashboard" element={
+            <ProtectedRoute roles={["administrator"]}><CubeQcDashboard /></ProtectedRoute>
+          } />
+          <Route path="/material-module" element={
+            <ProtectedRoute roles={["store", "administrator", "plant_operator"]}><MaterialModule /></ProtectedRoute>
+          } />
+          {/* Round 154 — the weighbridge. The role list here is the outer gate;
+              what each role can actually do on the page is decided by
+              material.weighbridge / material.weighbridge-mapping, which the
+              Super Admin's Access Control page controls. */}
+          <Route path="/weighbridge" element={
+            <ProtectedRoute roles={["store", "administrator", "manager", "plant_operator", "lab_technician"]}><Weighbridge /></ProtectedRoute>
+          } />
+          {/* Round 157 — the batching plant's own record of what it made and
+              what it consumed, fed one-way by the MCI370 agent. Same shape as
+              the weighbridge above: roles are the outer gate, and
+              production.plant-data / production.plant-mapping decide the rest. */}
+          <Route path="/plant-production" element={
+            <ProtectedRoute roles={["administrator", "manager", "store", "plant_operator", "qc_engineer", "lab_technician"]}><PlantProduction /></ProtectedRoute>
+          } />
+          {/* Round 158 — the Manager's decision on a disputed load, and the
+              pattern those disputes make over time. Manager is in the role
+              list for the queue; the variance report itself is Administrator,
+              enforced by material.reports rather than by the route. */}
+          <Route path="/receipt-differences" element={
+            <ProtectedRoute roles={["administrator", "manager"]}><ReceiptVariance /></ProtectedRoute>
           } />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>
@@ -221,6 +299,7 @@ export default function App() {
         </Routes>
       </BrowserRouter>
       </CustomerLanguageProvider>
+      </PermissionProvider>
     </AuthProvider>
   );
 }
