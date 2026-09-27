@@ -2,11 +2,17 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import QrScanner from "../lib/QrScanner.jsx";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 export default function StoreHome() {
   const [scanning, setScanning] = useState(false);
   const [manualToken, setManualToken] = useState("");
   const navigate = useNavigate();
+  // Round 164 — the links here are permission-driven now, so a grant made on
+  // the Super Admin screen actually appears (and a revoke removes it). Before
+  // this the three links were hardcoded, so Store having material.weighbridge
+  // access in the catalogue showed up nowhere — the exact gap reported.
+  const { can, ready } = usePermissions();
 
   function handleDecode(token) {
     setScanning(false);
@@ -46,10 +52,22 @@ export default function StoreHome() {
             </form>
           </>
         )}
-        <Link to="/store-stock"><button type="button" style={{ width: "100%", marginTop: 20 }}>Stock &amp; purchases</button></Link>
-        {/* Round 139 — raw material purchase/receive/stock workflow, separate from the Stock & purchases (store-stock) consumables above. */}
-        <Link to="/material-module"><button type="button" style={{ width: "100%", marginTop: 10 }}>Material Module</button></Link>
-        <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 10 }}>Fuel and lubricant report</button></Link>
+        {/* Round 164 — each link shows only when the person's permissions
+            include it, so what Super Admin grants is what Store sees. Store's
+            own consumables (store-stock) are always theirs; the rest follow
+            the catalogue. The Weighbridge link is new here — Store had
+            weighbridge access in the catalogue but no way to reach it. */}
+        {ready && (
+          <>
+            <Link to="/store-stock"><button type="button" style={{ width: "100%", marginTop: 20 }}>Stock &amp; purchases</button></Link>
+            {can("material.module", "view") &&
+              <Link to="/material-module"><button type="button" style={{ width: "100%", marginTop: 10 }}>Material Module</button></Link>}
+            {can("material.weighbridge", "view") &&
+              <Link to="/weighbridge"><button type="button" style={{ width: "100%", marginTop: 10 }}>Weighbridge</button></Link>}
+            {can("reports.fuel", "view") &&
+              <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 10 }}>Fuel and lubricant report</button></Link>}
+          </>
+        )}
       </div>
     </>
   );

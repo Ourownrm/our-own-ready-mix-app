@@ -25,6 +25,7 @@ import { useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { monthStartStr, todayStr } from "../lib/istDate.js";
 
@@ -154,42 +155,36 @@ function sameDay(dateStr, ts) {
   return String(dateStr).slice(0, 10) === entered;
 }
 
-// Tabs each role sees. Materials/Suppliers are master-editing tools kept
-// Administrator-only (Store/Plant Operator still read materials & suppliers
-// live inside their own tabs — e.g. the Orders form's dropdowns — via the
-// same GET endpoints, without needing this browsing/editing tab).
-// Round 140, item 5: Stock is the landing tab everywhere it's shown — matches
-// the mockup's own nav order (Stock, Receive/Orders/Receipts, Monthly stock,
-// Reports, Cost dashboard | Materials, Suppliers masters last, after a visual
-// divider) instead of opening on the Materials master.
-const TABS_BY_ROLE = {
-  administrator: [
-    { key: "stock", label: "Stock" },
-    { key: "orders", label: "Orders" },
-    { key: "receipts", label: "Receipts" },
-    { key: "consumption", label: "Consumption" },
-    { key: "physical-stock", label: "Physical Stock" },
-    { key: "reports", label: "Reports" },
-    { key: "cost-dashboard", label: "Cost Dashboard" },
-    { key: "materials", label: "Materials" },
-    { key: "suppliers", label: "Suppliers" },
-  ],
-  store: [
-    { key: "stock", label: "Stock" },
-    { key: "orders", label: "Orders" },
-    { key: "receipts", label: "Receipts" },
-    { key: "physical-stock", label: "Physical Stock" },
-  ],
-  plant_operator: [
-    { key: "stock", label: "Stock" },
-    { key: "consumption", label: "Consumption" },
-  ],
-};
+// Round 164 — the tabs are permission-driven now, not a hardcoded per-role
+// map. Each tab names the catalogue key it needs; a tab shows only when the
+// person can view that key. This is what makes a Super Admin grant actually
+// appear — the old TABS_BY_ROLE ignored permissions entirely, so a Store
+// granted material.reports still never saw a Reports tab. The order here is
+// the mockup's nav order (Round 140, item 5): Stock first, masters last.
+// `action` is what the tab needs. Most tabs need "view". The Materials and
+// Suppliers MASTER tabs need "create" (i.e. the ability to edit them): Store
+// and the Plant Operator have VIEW on those keys so the order form's dropdowns
+// work, but that read access must not hand them the master-editing tab. Gating
+// the tab on the edit action keeps the masters Administrator-only by default
+// while staying permission-driven — grant Store material.materials:create and
+// the tab appears.
+const ALL_TABS = [
+  { key: "stock", label: "Stock", perm: "material.stock", action: "view" },
+  { key: "orders", label: "Orders", perm: "material.orders", action: "view" },
+  { key: "receipts", label: "Receipts", perm: "material.receipts", action: "view" },
+  { key: "consumption", label: "Consumption", perm: "material.consumption", action: "view" },
+  { key: "physical-stock", label: "Physical Stock", perm: "material.physical-stock", action: "view" },
+  { key: "reports", label: "Reports", perm: "material.reports", action: "view" },
+  { key: "cost-dashboard", label: "Cost Dashboard", perm: "material.cost-dashboard", action: "view" },
+  { key: "materials", label: "Materials", perm: "material.materials", action: "create" },
+  { key: "suppliers", label: "Suppliers", perm: "material.suppliers", action: "create" },
+];
 
 export default function MaterialModule() {
   const { user } = useAuth();
+  const { can, ready } = usePermissions();
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabs = TABS_BY_ROLE[user?.role] || [];
+  const tabs = ready ? ALL_TABS.filter((t) => can(t.perm, t.action)) : [];
   const requestedTab = searchParams.get("tab");
   const initialTab = tabs.some((t) => t.key === requestedTab) ? requestedTab : (tabs[0]?.key || "");
   const [tab, setTab] = useState(initialTab);
@@ -1321,6 +1316,7 @@ function ReceiptsTab({ role }) {
                 <th style={thCell}>Receipt</th>
                 <th style={thCell}>Order</th>
                 <th style={thCell}>Date</th>
+                <th style={thCell}>Material</th>
                 <th style={thCell}>Supplier / vehicle</th>
                 <th style={{ ...thCell, textAlign: "right" }}>Supplier</th>
                 <th style={{ ...thCell, textAlign: "right" }}>Accepted</th>
@@ -1330,74 +1326,62 @@ function ReceiptsTab({ role }) {
                 <th style={thCell}></th>
               </tr>
             </thead>
-            {/* Round 163 — the register is grouped by material: a heading row
-                per material (with its accepted total), then that material's
-                receipts. The Material column is gone from the rows because the
-                heading carries it, and an Order column takes its place. */}
-            {groupByMaterial(history).map((g) => {
-              const acceptedTotal = g.items.reduce((s, r) => s + Number(r.accepted_qty || 0), 0);
-              const unit = g.items[0].purchase_unit;
-              return (
-                <tbody key={g.material_name}>
-                  <tr style={{ background: "var(--rebar-bg, #F3F1EC)" }}>
-                    <td colSpan={10} style={{ padding: "6px 8px", fontWeight: 700, fontSize: 12, borderBottom: "1px solid var(--border)" }}>
-                      {g.material_name}
-                      <span style={{ fontWeight: 400, color: "var(--slate)", marginLeft: 8, fontSize: 11 }}>
-                        {g.items.length} {g.items.length === 1 ? "receipt" : "receipts"} · {fmtNum(acceptedTotal)} {unit} accepted
-                      </span>
+            {/* Round 164 — the register is a flat table again (the user asked
+                for it ungrouped), sorted by receipt number, newest first. The
+                Material column is back, and the Order column stays. Grouping by
+                material remains on the Orders page and the awaiting-receipt
+                list; only this register is flat. */}
+            <tbody>
+              {[...history].sort((a, b) => b.id - a.id).map((r) => {
+                const short = Number(r.short_qty) || 0;
+                const pending = r.confirmation_status === "pending";
+                return (
+                  <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: pending ? "var(--amber-bg)" : undefined }}>
+                    <td style={{ ...tdCell, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {receiptNo(r.id)}
+                      {pending && <div><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>Pending</span></div>}
+                    </td>
+                    <td style={{ ...tdCell, whiteSpace: "nowrap", fontFamily: "monospace", color: "var(--info)" }}>{r.order_id ? orderNo(r.order_id) : "—"}</td>
+                    <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
+                      {fmtDate(r.received_date)}
+                      {r.received_date && r.received_at && !sameDay(r.received_date, r.received_at) &&
+                        <div style={{ fontSize: 9.5, color: "var(--slate)" }}>entered {fmtDate(r.received_at)}</div>}
+                    </td>
+                    <td style={tdCell}>{r.material_name}</td>
+                    <td style={tdCell}>
+                      {r.supplier_name}
+                      <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
+                        {r.vehicle_number || "—"}{r.transporter_name ? ` · ${r.transporter_name}` : ""}
+                      </div>
+                    </td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.accepted_qty)} {r.purchase_unit}</td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", color: short > 0 ? "var(--alert-red)" : short < 0 ? "var(--info)" : "var(--slate)" }}>
+                      {short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`}
+                    </td>
+                    <td style={tdCell}>
+                      {r.weighbridge_ticket_id
+                        ? <span title={r.wb_net_weight_kg != null ? `${fmtNum(r.wb_net_weight_kg)} kg weighed` : ""}>
+                            <span className="badge badge-info" style={{ fontSize: 9.5, padding: "0 7px" }}>#{r.weighbridge_ticket_id}</span>
+                            {r.wb_net_weight_kg != null && <span style={{ fontSize: 10, color: "var(--slate)" }}> {fmtNum(r.wb_net_weight_kg)}kg</span>}
+                          </span>
+                        : r.weighbridge_weight_kg != null
+                          ? <span style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(r.weighbridge_weight_kg)} kg (manual)</span>
+                          : <span style={{ fontSize: 10.5, color: "var(--slate)" }}>—</span>}
+                    </td>
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.landed_rate_per_kg, 4)}</td>
+                    <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
+                      {isAdmin && (
+                        <>
+                          <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>
+                          <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => setDeletingReceipt(r)}>Delete</button>
+                        </>
+                      )}
                     </td>
                   </tr>
-                  {g.items.map((r) => {
-                    const short = Number(r.short_qty) || 0;
-                    const pending = r.confirmation_status === "pending";
-                    return (
-                      <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: pending ? "var(--amber-bg)" : undefined }}>
-                        <td style={{ ...tdCell, fontWeight: 600, whiteSpace: "nowrap" }}>
-                          {receiptNo(r.id)}
-                          {pending && <div><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>Pending</span></div>}
-                        </td>
-                        <td style={{ ...tdCell, whiteSpace: "nowrap", fontFamily: "monospace", color: "var(--info)" }}>{r.order_id ? orderNo(r.order_id) : "—"}</td>
-                        <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
-                          {fmtDate(r.received_date)}
-                          {r.received_date && r.received_at && !sameDay(r.received_date, r.received_at) &&
-                            <div style={{ fontSize: 9.5, color: "var(--slate)" }}>entered {fmtDate(r.received_at)}</div>}
-                        </td>
-                        <td style={tdCell}>
-                          {r.supplier_name}
-                          <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
-                            {r.vehicle_number || "—"}{r.transporter_name ? ` · ${r.transporter_name}` : ""}
-                          </div>
-                        </td>
-                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
-                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.accepted_qty)} {r.purchase_unit}</td>
-                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", color: short > 0 ? "var(--alert-red)" : short < 0 ? "var(--info)" : "var(--slate)" }}>
-                          {short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`}
-                        </td>
-                        <td style={tdCell}>
-                          {r.weighbridge_ticket_id
-                            ? <span title={r.wb_net_weight_kg != null ? `${fmtNum(r.wb_net_weight_kg)} kg weighed` : ""}>
-                                <span className="badge badge-info" style={{ fontSize: 9.5, padding: "0 7px" }}>#{r.weighbridge_ticket_id}</span>
-                                {r.wb_net_weight_kg != null && <span style={{ fontSize: 10, color: "var(--slate)" }}> {fmtNum(r.wb_net_weight_kg)}kg</span>}
-                              </span>
-                            : r.weighbridge_weight_kg != null
-                              ? <span style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(r.weighbridge_weight_kg)} kg (manual)</span>
-                              : <span style={{ fontSize: 10.5, color: "var(--slate)" }}>—</span>}
-                        </td>
-                        <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.landed_rate_per_kg, 4)}</td>
-                        <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
-                          {isAdmin && (
-                            <>
-                              <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>
-                              <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => setDeletingReceipt(r)}>Delete</button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              );
-            })}
+                );
+              })}
+            </tbody>
           </table>
         </div>
       )}

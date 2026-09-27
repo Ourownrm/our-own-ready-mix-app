@@ -4,6 +4,8 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import QcDetailModal from "../lib/QcDetailModal.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { useAuth } from "../lib/AuthContext.jsx";
+import { isAdminLevel } from "../lib/roles.js";
 import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 
 const STATUS_OPTIONS = ["All", "Signed", "Pending", "Refused"];
@@ -42,6 +44,10 @@ function sumTotalAmount(rows) {
 
 export default function ProductionReport() {
   const [searchParams] = useSearchParams();
+  const { user } = useAuth();
+  // Round 164 — only an Administrator may correct a delivery note's status.
+  const canEditNoteStatus = isAdminLevel(user?.role);
+  const [savingNote, setSavingNote] = useState(null);
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);
   const [trucks, setTrucks] = useState([]);
@@ -111,6 +117,26 @@ export default function ProductionReport() {
     }
     if (pageNum) params.set("page", pageNum);
     return params.toString();
+  }
+
+  // Round 164 — an Administrator corrects a delivery note's status in place.
+  // The changed row is updated locally so the table reflects it without a full
+  // reload losing the current page.
+  async function saveNoteStatus(ticketId, status) {
+    setSavingNote(ticketId); setError("");
+    try {
+      await apiRequest(`/production-report/${ticketId}/delivery-note-status`, {
+        method: "PATCH", body: { delivery_note_status: status },
+      });
+      setResult((prev) => prev && {
+        ...prev,
+        rows: prev.rows.map((row) => row.id === ticketId ? { ...row, delivery_note_status: status } : row),
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingNote(null);
+    }
   }
 
   async function generate(pageNum = 1) {
@@ -414,7 +440,22 @@ export default function ProductionReport() {
                         <td>{r.part_load_charge != null && Number(r.part_load_charge) > 0 ? inr(r.part_load_charge) : "–"}</td>
                         <td>{r.waiting_charge != null && Number(r.waiting_charge) > 0 ? inr(r.waiting_charge) : "–"}</td>
                         <td>{r.total_amount != null ? inr(r.total_amount) : "–"}</td>
-                        <td>{r.delivery_note_status || "–"}</td>
+                        <td>
+                          {canEditNoteStatus ? (
+                            <select
+                              value={r.delivery_note_status || ""}
+                              disabled={savingNote === r.id}
+                              onChange={(e) => saveNoteStatus(r.id, e.target.value)}
+                              style={{ fontSize: 11, padding: "2px 4px" }}
+                              title="Administrator — correct the delivery note status"
+                            >
+                              <option value="" disabled>— set —</option>
+                              <option value="pending">Pending</option>
+                              <option value="signed">Signed</option>
+                              <option value="refused">Refused</option>
+                            </select>
+                          ) : (r.delivery_note_status || "–")}
+                        </td>
                         <td>
                           <button style={{ padding: "3px 8px", fontSize: 11 }} onClick={() => setQcTicketId(r.id)}>
                             QC details
