@@ -1,4 +1,4 @@
-# OORM App — Current State (as of Round 163, Ver. 9.89)
+# OORM App — Current State (as of Round 164, Ver. 9.90)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -68,6 +68,32 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 `todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 164 — permission-driven nav, admin note-status fix, register ungrouped (v9.90)
+
+**Visit `/setup?key=...` once** (two nullable audit columns on site_qc).
+
+**(c) SUPER ADMIN "not working" — diagnosed: backend fine, FRONTEND NAV was hardcoded.** Store's
+/auth/me correctly returns material.weighbridge:[view,edit] and material.receipts:[view,create], and
+a Store token gets 200 on those endpoints. The gap: role home screens ignored permissions, so a
+Super Admin grant changed backend access but not what the user could reach. StoreHome linked only
+Stock/Material Module/Fuel — NO weighbridge link at all. FIXED: StoreHome is now permission-driven
+(`usePermissions().can`) and has a Weighbridge link; Material Module tabs come from ALL_TABS filtered
+by can(perm, action) — masters (Materials/Suppliers) gated on the CREATE action so Store's view-only
+(dropdowns) doesn't expose the master tab. Other role homes still hardcoded — follow-up. Admin grid
+already permission-aware (moot, admin has everything).
+
+**(b) ADMIN corrects delivery note status.** site_qc gains note_status_changed_by/at.
+`PATCH /production-report/:ticketId/delivery-note-status` — requireRole("administrator") ONLY
+(Manager views read-only), validates pending|signed|refused, 404 if no site_qc row. ProductionReport
+shows an admin-only status dropdown per row; Manager sees plain text.
+
+**(a) RECEIPT REGISTER ungrouped again** (user asked). Flat table sorted by receipt number desc,
+Material column restored beside Order column. Grouping stays on Orders page + awaiting-receipt list.
+
+Verified live: admin refused->signed stamped, manager 403, bad value 400; Store home offers
+Weighbridge, module tabs = stock/orders/receipts/physical-stock (masters excluded). 84 routes both
+guards, all checkers green.
 
 ## Round 163 — order numbers + group by material (v9.89)
 

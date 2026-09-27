@@ -7904,3 +7904,59 @@ On the Orders page the grouping covers the main order list; on the Receipts page
 Frontend only, one file (`MaterialModule.jsx`). Verified that orders carry the id and material, and
 that receipts carry their order_id and material, so both the numbers and the grouping have the data
 they need; the grouping collapses two same-material orders from different suppliers into one block.
+
+---
+
+## Round 164 — the permission bug, an admin note-status fix, and the register ungrouped (v9.90)
+
+**Visit `/setup?key=...` once** (two nullable audit columns).
+
+### (c) Why Super Admin grants weren't reaching Store — evaluated end to end
+
+The report: Super Admin shows Store with weighbridge access, but a Store login has no weighbridge
+screen, "not even material receipt access". I traced the whole permission path.
+
+**The backend is correct.** Store's `/auth/me` returns `material.weighbridge: [view, edit]` and
+`material.receipts: [view, create]`, and a Store token gets 200 from the weighbridge and receipts
+endpoints. The catalogue, the seeding, the REPAIR blocks, `effectivePermissions` and
+`permissionsForClient` all agree.
+
+**The bug was entirely in the frontend navigation.** The role home screens were hardcoded and
+never consulted the permission system, so a grant made in Super Admin changed what the backend
+*allowed* but not what the user could *reach*. `StoreHome` linked only Stock, Material Module and
+Fuel report — there was no Weighbridge link anywhere, whatever the catalogue said. This is the
+Round 146 "tile-hiding is inert" limitation grown into a real gap.
+
+Fixes:
+- **`StoreHome`** is permission-driven now. Each link shows only when the person's permissions
+  include it, and a **Weighbridge** link was added — so Store's catalogue weighbridge access
+  finally has a way in, and a Super Admin grant or revoke shows or hides it.
+- **The Material Module tabs** come from the permission set, not a hardcoded per-role map. Each tab
+  names the key it needs; the two master tabs (Materials, Suppliers) need the *edit* action, so
+  Store — which has *view* on those for the order-form dropdowns — still doesn't get the
+  master-editing tabs, while a real grant would surface them.
+
+Verified against a live Store token: the home now offers Weighbridge, and the module still shows
+exactly Stock / Orders / Receipts / Physical Stock — the masters correctly excluded.
+
+Note: the other role home screens (Plant Operator, Manager, and so on) still use fixed navigation.
+The Administrator grid is already permission-aware but moot because Administrator has everything.
+Extending permission-driven navigation to every role is a larger sweep, left as a follow-up.
+
+### (b) An Administrator can correct a delivery note's status
+
+The site supervisor sets a delivery note signed / refused / pending at unloading, and there was no
+way to fix a wrong one. The production report now shows the status as an editable dropdown for an
+**Administrator** (Manager still sees it read-only, since a signed/refused change moves what the
+ledger and the customer's account treat as accepted). `PATCH /production-report/:ticketId/
+delivery-note-status` updates `site_qc` and stamps who changed it and when.
+
+Verified: admin moved a refused note to signed (stamped with the user id), Manager was refused
+403, a bad value 400, and a delivery with no completion record 404.
+
+### (a) The receipt register is flat again
+
+Round 163 grouped the register by material. The user asked to keep it ungrouped, so it is a single
+table sorted by receipt number, newest first, with the Material column back beside the new Order
+column. Grouping stays on the Orders page and the awaiting-receipt list — only this register is
+flat.
