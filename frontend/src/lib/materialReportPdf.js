@@ -28,9 +28,18 @@ function nowStamp() {
 
 export async function printMaterialReport({ title, meta = [], columns, rows, foot = [], landscape = false, filename }) {
   const { jsPDF } = await import("jspdf");
-  const autoTable = (await import("jspdf-autotable")).default;
+  // jspdf-autotable registers `doc.autoTable(...)` on the jsPDF prototype when
+  // imported. Its default export shape differs across builds (function vs a
+  // wrapped object), so we do NOT call the default directly — we import for the
+  // side effect and use `doc.autoTable`, falling back to applyPlugin if a build
+  // ever skips the auto-registration.
+  const autoTableMod = await import("jspdf-autotable");
 
   const doc = new jsPDF({ orientation: landscape ? "landscape" : "portrait", unit: "mm", format: "a4" });
+  if (typeof doc.autoTable !== "function") {
+    const apply = autoTableMod.applyPlugin || (autoTableMod.default && autoTableMod.default.applyPlugin);
+    if (typeof apply === "function") apply(jsPDF);
+  }
   const PAGE_W = doc.internal.pageSize.getWidth();
   const MARGIN_X = 12;
   let y = 14;
@@ -71,7 +80,7 @@ export async function printMaterialReport({ title, meta = [], columns, rows, foo
   }
 
   // ---- table ----
-  autoTable(doc, {
+  doc.autoTable({
     startY: y + 1,
     head: [columns.map((c) => c.header)],
     body: rows,
