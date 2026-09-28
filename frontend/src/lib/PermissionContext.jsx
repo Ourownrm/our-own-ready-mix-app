@@ -64,3 +64,14 @@ export function PermissionProvider({ children }) {
 export function usePermissions() {
   return useContext(PermissionContext);
 }
+
+// Round 165 — a tiny gate for permission-driven navigation. Renders its
+// children only when the current user may view (or `action`) the given key.
+// Used across the role home screens so a Super Admin grant or revoke shows or
+// hides a link. While permissions are still loading it renders nothing, so a
+// link never flashes in before being hidden.
+export function IfCan({ perm, action = "view", children }) {
+  const { can, ready } = usePermissions();
+  if (!ready || !can(perm, action)) return null;
+  return children;
+}

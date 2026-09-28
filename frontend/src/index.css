@@ -310,6 +310,17 @@ a { color: var(--rebar); }
 .portal-tile-title { font-weight: 700; font-size: 14.5px; }
 .portal-tile-sub { font-size: 11px; color: var(--slate); }
 .portal-tile.cta .portal-tile-sub { color: rgba(255,255,255,.8); }
+
+/* Round 166 — Android-style app-icon home, matching the admin dashboard's
+   module tiles: coloured rounded squares with a white glyph and a label,
+   three across, with an optional corner count badge. Same actions and the
+   same permission gating as the flat tiles they replace. */
+.portal-apps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 6px; padding: 4px 2px 2px; }
+.portal-app { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; background: none; border: none; padding: 0; font-family: inherit; cursor: pointer; width: 100%; }
+.portal-app:hover:not(:disabled) { border: none; }
+.portal-app-sq { position: relative; width: 62px; height: 62px; border-radius: 18px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(34,38,43,.14); }
+.portal-app-lbl { font-size: 11px; font-weight: 600; line-height: 1.25; color: var(--charcoal); }
+.portal-app-badge { position: absolute; top: -5px; right: -5px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; background: var(--rebar); color: #fff; font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center; border: 2px solid var(--concrete); }
 .portal-strip { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; margin-top: 14px; display: flex; gap: 12px; align-items: center; text-align: left; width: 100%; font-family: inherit; text-decoration: none; color: inherit; }
 
 /* Round 131, item 4 — "From our plant & sites" rotating photo widget on
