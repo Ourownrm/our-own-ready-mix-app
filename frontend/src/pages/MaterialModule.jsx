@@ -28,6 +28,7 @@ import { useAuth } from "../lib/AuthContext.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { monthStartStr, todayStr } from "../lib/istDate.js";
+import { printMaterialReport } from "../lib/materialReportPdf.js";
 
 // ===================== Shared helpers =====================
 
@@ -1249,6 +1250,54 @@ function ReceiptsTab({ role }) {
   const outstandingUnit = receiving ? receiving.purchase_unit : "";
   const outstandingQty = receiving ? Number(receiving.ordered_qty) - Number(receiving.received_qty) : 0;
 
+  // Round 166 — print the register as currently filtered, newest first.
+  function printReceipts() {
+    const columns = [
+      { header: "Receipt" },
+      { header: "Order" },
+      { header: "Date" },
+      { header: "Material" },
+      { header: "Supplier" },
+      { header: "Vehicle" },
+      { header: "Billed", align: "right" },
+      { header: "Accepted", align: "right" },
+      { header: "Variance", align: "right" },
+      { header: "Weighbridge" },
+      { header: "Landed /kg", align: "right" },
+    ];
+    const rows = [...history].sort((a, b) => b.id - a.id).map((r) => {
+      const short = Number(r.short_qty) || 0;
+      const wb = r.weighbridge_ticket_id
+        ? `#${r.weighbridge_ticket_id}${r.wb_net_weight_kg != null ? ` · ${fmtNum(r.wb_net_weight_kg)}kg` : ""}`
+        : r.weighbridge_weight_kg != null
+          ? `${fmtNum(r.weighbridge_weight_kg)} kg (manual)`
+          : "—";
+      return [
+        receiptNo(r.id) + (r.confirmation_status === "pending" ? " (pending)" : ""),
+        r.order_id ? orderNo(r.order_id) : "—",
+        fmtDate(r.received_date),
+        r.material_name,
+        r.supplier_name || "—",
+        r.vehicle_number || "—",
+        `${fmtNum(r.supplier_qty)} ${r.purchase_unit}`,
+        `${fmtNum(r.accepted_qty)} ${r.purchase_unit}`,
+        short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`,
+        wb,
+        fmtNum(r.landed_rate_per_kg, 4),
+      ];
+    });
+    const meta = [];
+    if (filters.from_date || filters.to_date) meta.push(`${filters.from_date || "…"} to ${filters.to_date || "…"}`);
+    if (filters.material_id) meta.push(`Material: ${materials.find((m) => String(m.id) === String(filters.material_id))?.name || filters.material_id}`);
+    if (filters.supplier_id) meta.push(`Supplier: ${suppliers.find((s) => String(s.id) === String(filters.supplier_id))?.name || filters.supplier_id}`);
+    if (!meta.length) meta.push("All receipts");
+    printMaterialReport({
+      title: "Material Receipts Register",
+      meta, columns, rows, landscape: true,
+      filename: "material-receipts.pdf",
+    });
+  }
+
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
@@ -1304,6 +1353,8 @@ function ReceiptsTab({ role }) {
           </select>
           {(filters.from_date || filters.to_date || filters.material_id || filters.supplier_id) &&
             <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setFilters({ from_date: "", to_date: "", material_id: "", supplier_id: "" })}>Clear</button>}
+          {history.length > 0 &&
+            <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => printReceipts()}>Print (PDF)</button>}
         </div>
       </div>
       {history.length === 0 ? (
@@ -1671,6 +1722,45 @@ function StockTab({ role, onGoTab }) {
   // can never make its order silently stop counting.
   const uncovered = lowMaterials.filter((m) => !openOrders.some((o) => o.material_id === m.material_id));
 
+  // Round 166 — print the stock table exactly as shown (same month, same
+  // valuation columns for the roles that see them).
+  function printStock() {
+    const columns = [
+      { header: "Material" },
+      { header: "Opening", align: "right" },
+      { header: "Received", align: "right" },
+      { header: "Consumed", align: "right" },
+      { header: "Book stock", align: "right" },
+      { header: "Reorder", align: "right" },
+      { header: "Stock lasts", align: "right" },
+      ...(showValuation ? [{ header: "Avg /kg", align: "right" }, { header: "Value", align: "right" }] : []),
+      { header: "Status" },
+    ];
+    const rows = materials.map((m) => {
+      const st = stockStatus(m);
+      return [
+        m.name,
+        fmtMass(m.month_opening_kg),
+        fmtMass(m.month_received_kg),
+        fmtMass(m.month_consumed_kg),
+        `${fmtMass(m.book_stock_kg)}  (${fmtNum(m.book_stock_purchase_units)} ${m.purchase_unit})`,
+        m.reorder_level_kg != null ? fmtMass(m.reorder_level_kg) : "–",
+        m.stock_days_remaining != null ? `${fmtNum(m.stock_days_remaining, 1)} days` : "–",
+        ...(showValuation ? [m.rate_per_kg != null ? fmtMoney(m.rate_per_kg) : "–", m.stock_value != null ? fmtMoney(m.stock_value) : "–"] : []),
+        st.label,
+      ];
+    });
+    const foot = showValuation && materials.length
+      ? [["Total stock value", "", "", "", "", "", "", "", fmtMoney(totalValue), ""]]
+      : [];
+    printMaterialReport({
+      title: "Material Stock",
+      meta: [`As of ${monthLabel(month)}`],
+      columns, rows, foot, landscape: showValuation,
+      filename: `material-stock-${month}.pdf`,
+    });
+  }
+
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
@@ -1699,6 +1789,12 @@ function StockTab({ role, onGoTab }) {
       </div>
 
       {showValuation && <Field label="Rate as of month (for valuation)"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>}
+
+      {!loading && materials.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+          <button type="button" style={{ fontSize: 12 }} onClick={() => printStock()}>Print (PDF)</button>
+        </div>
+      )}
 
       {loading ? (
         <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading...</div>
@@ -1877,6 +1973,44 @@ function PhysicalStockTab({ role }) {
   // Previous five months, for the panel's month switcher.
   const pastMonths = [1, 2, 3, 4, 5].map((back) => addMonths(month, -back));
 
+  // Round 166 — print the reconciliation sheet as shown (saved figures plus
+  // any live draft counts, matching the on-screen computation exactly).
+  function printPhysical() {
+    const columns = [
+      { header: "Raw material" },
+      { header: "Opening", align: "right" },
+      { header: "Purchase", align: "right" },
+      { header: "Plant consumption", align: "right" },
+      { header: "Book stock", align: "right" },
+      { header: "Physical stock", align: "right" },
+      { header: "Actual consumption", align: "right" },
+      { header: "Difference", align: "right" },
+    ];
+    const rows = materials.map((m) => {
+      const physKg = effectiveKg(m);
+      const actual = physKg != null ? Number(m.opening_kg) + Number(m.purchase_kg) - physKg : null;
+      const diff = actual != null ? Number(m.plant_consumption_kg) - actual : null;
+      const diffPct = diff != null && Number(m.plant_consumption_kg) !== 0 ? (diff / Number(m.plant_consumption_kg)) * 100 : null;
+      return [
+        m.name,
+        fmtMass(m.opening_kg),
+        fmtMass(m.purchase_kg),
+        fmtMass(m.plant_consumption_kg),
+        fmtMass(m.book_stock_kg),
+        physKg != null ? fmtMass(physKg) : "–",
+        actual != null ? fmtMass(actual) : "–",
+        diff != null ? `${fmtNum(diff, 0)} kg${diffPct != null ? ` · ${fmtNum(diffPct, 2)}%` : ""}` : "–",
+      ];
+    });
+    const meta = [monthLabel(month)];
+    if (takenBy) meta.push(`Stock taken by ${takenBy.stock_taken_by_name} on ${fmtDateTime(takenBy.taken_at)}`);
+    printMaterialReport({
+      title: "Monthly Physical Stock",
+      meta, columns, rows, landscape: true,
+      filename: `physical-stock-${month}.pdf`,
+    });
+  }
+
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
@@ -1891,6 +2025,12 @@ function PhysicalStockTab({ role }) {
       </div>
 
       <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
+
+      {!loading && materials.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+          <button type="button" style={{ fontSize: 12 }} onClick={() => printPhysical()}>Print (PDF)</button>
+        </div>
+      )}
 
       {loading ? (
         <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading...</div>

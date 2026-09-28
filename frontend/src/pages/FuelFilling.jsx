@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { IfCan } from "../lib/PermissionContext.jsx";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
@@ -543,7 +544,7 @@ function FuelCostReport() {
         <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>
           Fuel and lubricant requests are logged by drivers and machine operators now — no self-service entry here.
         </div>
-        <Link to="/fuel-report"><button type="button" style={{ width: "100%" }}>Open fuel and lubricant report</button></Link>
+        <IfCan perm="reports.fuel"><Link to="/fuel-report"><button type="button" style={{ width: "100%" }}>Open fuel and lubricant report</button></Link></IfCan>
       </div>
     </>
   );

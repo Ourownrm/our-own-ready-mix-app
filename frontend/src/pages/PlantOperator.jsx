@@ -6,6 +6,7 @@ import { queuedRequest, pendingCount, failedCount, clearFailed, startPeriodicFlu
 import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
 import TodaysDeliveryNotes from "../lib/TodaysDeliveryNotes.jsx";
+import { IfCan } from "../lib/PermissionContext.jsx";
 
 function newIdempotencyKey() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -184,9 +185,9 @@ export default function PlantOperator() {
           </form>
         </div>
 
-        <Link to="/delay-justification-report"><button style={{ width: "100%", marginTop: 16 }}>Delay report</button></Link>
+        <IfCan perm="reports.delay-justification"><Link to="/delay-justification-report"><button style={{ width: "100%", marginTop: 16 }}>Delay report</button></Link></IfCan>
         {/* Round 139 — daily raw-material consumption & production entry. */}
-        <Link to="/material-module"><button style={{ width: "100%", marginTop: 10 }}>Material consumption</button></Link>
+        <IfCan perm="material.module"><Link to="/material-module"><button style={{ width: "100%", marginTop: 10 }}>Material consumption</button></Link></IfCan>
         {/* Round 153, item 1 — the notes this screen raises, where the person
             who raised them can open and reprint one. Renders nothing if the
             Super Admin has revoked challan printing from this role. */}

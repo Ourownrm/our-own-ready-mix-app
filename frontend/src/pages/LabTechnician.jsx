@@ -5,6 +5,7 @@
 // used by every other role's own screen (QcEngineer.jsx, Accountant.jsx, etc).
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { IfCan } from "../lib/PermissionContext.jsx";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
@@ -91,7 +92,7 @@ export default function LabTechnician() {
             never did: sample/cube count, both 7-day and 28-day due dates
             together, the poured/cast date, and a "Close — not testing"
             action right on each card. */}
-        <DueTestingCard setError={setError} />
+        <IfCan perm="quality.lab-due-today"><DueTestingCard setError={setError} /></IfCan>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <button className={`btn-tab ${tab === "batches" ? "active" : ""}`} onClick={() => setTab("batches")}>Cube Testing</button>
@@ -104,8 +105,8 @@ export default function LabTechnician() {
               which design, and since when. Assigning/removing stays an
               Administrator/Manager action (Masters → Mix Design Assignments). */}
           <button className={`btn-tab ${tab === "assignments" ? "active" : ""}`} onClick={() => setTab("assignments")}>Assignments</button>
-          <Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link>
-          <Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link>
+          <IfCan perm="quality.cube-test-report"><Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link></IfCan>
+          <IfCan perm="quality.raw-material-stock"><Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link></IfCan>
         </div>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}

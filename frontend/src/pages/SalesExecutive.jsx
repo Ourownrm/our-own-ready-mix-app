@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { IfCan } from "../lib/PermissionContext.jsx";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
@@ -324,11 +325,13 @@ export default function SalesExecutive() {
                 <div className="se-tile-sub">Update running-project numbers</div>
               </button>
               {!isAdmin && (
-                <Link to="/customer-booking" className="se-tile" style={{ textDecoration: "none", color: "inherit" }}>
-                  <div className="se-tile-ic"><IconBookings color="#C75B12" size={17} /></div>
-                  <div className="se-tile-title">Bookings &amp; Feedback</div>
-                  <div className="se-tile-sub">View &amp; respond</div>
-                </Link>
+                <IfCan perm="sales.booking-links">
+                  <Link to="/customer-booking" className="se-tile" style={{ textDecoration: "none", color: "inherit" }}>
+                    <div className="se-tile-ic"><IconBookings color="#C75B12" size={17} /></div>
+                    <div className="se-tile-title">Bookings &amp; Feedback</div>
+                    <div className="se-tile-sub">View &amp; respond</div>
+                  </Link>
+                </IfCan>
               )}
             </div>
 

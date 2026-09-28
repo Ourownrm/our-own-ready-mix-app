@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { IfCan } from "../lib/PermissionContext.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
@@ -538,7 +539,7 @@ export default function DriverDuty() {
               >
                 {t("report_breakdown")}
               </button>
-              <Link to="/fuel"><button type="button" style={{ width: "100%" }}>{t("report_fuel")}</button></Link>
+              <IfCan perm="fleet.fuel-filling"><Link to="/fuel"><button type="button" style={{ width: "100%" }}>{t("report_fuel")}</button></Link></IfCan>
             </div>
             <button
               type="button"

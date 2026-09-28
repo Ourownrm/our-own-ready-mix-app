@@ -42,6 +42,51 @@ function fmtWhen(ts) {
   });
 }
 
+// Round 166 — a quantity in the material's purchase unit.
+function fmtQty(n, unit) {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  const s = Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return unit ? `${s} ${unit}` : s;
+}
+
+// Round 166 — the billed-vs-weighed cell. `v` is the variance object the
+// backend attaches to each ticket (null when the operator typed nothing usable
+// into the weighbridge's billed-qty field). Colours follow the receipt's own
+// convention: billed for MORE than delivered is the costly direction (red),
+// less is green.
+function VarianceCell({ v }) {
+  const sub = { fontSize: 11, color: "var(--slate)", fontWeight: 400 };
+  if (!v) return <span style={{ color: "var(--slate)" }}>—</span>;
+
+  if (v.status === "no_material")
+    return <div style={sub}>billed {fmtQty(v.billed_qty, v.unit)} · map material for variance</div>;
+  if (v.status === "no_weight")
+    return <div style={sub}>billed {fmtQty(v.billed_qty, v.unit)} · no net weight</div>;
+  if (v.status === "implausible")
+    return (
+      <div>
+        <div style={{ color: "var(--amber)", fontWeight: 600 }}>Check billed qty</div>
+        <div style={sub}>billed {fmtQty(v.billed_qty, v.unit)} vs weighed {fmtQty(v.weighed_qty, v.unit)} — wrong unit?</div>
+      </div>
+    );
+
+  // within / beyond. Colour by severity to match the mock-up: within tolerance
+  // is green whichever way it went, beyond tolerance is red and will need a
+  // Manager at receipt time. The +/− sign carries the direction.
+  const over = Number(v.variance_qty) > 0;             // billed for more than delivered
+  const colour = v.status === "beyond" ? "var(--alert-red)" : "var(--signal-green)";
+  const sign = over ? "+" : "";
+  return (
+    <div>
+      <div style={{ color: colour, fontWeight: 700, whiteSpace: "nowrap" }}>
+        {sign}{fmtQty(v.variance_qty, v.unit)} ({v.variance_pct != null ? `${Math.abs(v.variance_pct).toFixed(1)}%` : "—"})
+        {v.status === "beyond" ? " ⚠" : " ✓"}
+      </div>
+      <div style={sub}>billed {fmtQty(v.billed_qty, v.unit)} · weighed {fmtQty(v.weighed_qty, v.unit)}</div>
+    </div>
+  );
+}
+
 // "4 minutes ago" for the agent heartbeat. The question this answers at 7am is
 // "is the weighbridge feed alive", so the exact timestamp matters less than the
 // age, and anything over about ten minutes should look wrong.
@@ -211,6 +256,7 @@ function Receipts({ canEdit }) {
                 <th style={{ padding: "9px 12px" }}>Material</th>
                 <th style={{ padding: "9px 12px" }}>Supplier</th>
                 <th style={{ padding: "9px 12px", textAlign: "right" }}>Net</th>
+                <th style={{ padding: "9px 12px" }}>Billed vs net</th>
                 <th style={{ padding: "9px 12px" }}>Status</th>
                 {canEdit && <th style={{ padding: "9px 12px" }} />}
               </tr>
@@ -265,6 +311,9 @@ function Receipts({ canEdit }) {
                       </div>
                     </td>
                     <td style={{ padding: "9px 12px" }}>
+                      <VarianceCell v={r.variance} />
+                    </td>
+                    <td style={{ padding: "9px 12px" }}>
                       <StatusPill status={r.match_status} />
                       {r.receipt_id && (
                         <div style={{ fontSize: 11, color: "var(--signal-green)" }}>receipt #{r.receipt_id}</div>
@@ -297,9 +346,12 @@ function Receipts({ canEdit }) {
 
       <p style={{ fontSize: 12, color: "var(--slate)", marginTop: 14, lineHeight: 1.6 }}>
         Weights come straight from the weighbridge and are never edited here — a wrong weight is
-        corrected on the weighbridge and arrives on the next sync. Moisture is not imported: the
-        weighbridge stores it as free text and it has never once held a real number, so any
-        moisture deduction is done in the Material Module against a figure the lab provides.
+        corrected on the weighbridge and arrives on the next sync. The <b>billed qty</b> comes the
+        same way: the operator types the supplier's invoice quantity (in the material's purchase
+        unit) into the weighing software's spare field, and the variance against the actual weight
+        is shown above the moment it syncs. Moisture is not imported: the weighbridge stores it as
+        free text that has never once held a real number, so any moisture deduction is done in the
+        Material Module against a figure the lab provides.
       </p>
     </>
   );

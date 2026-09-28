@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { IfCan } from "../lib/PermissionContext.jsx";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { RatesPanel } from "../lib/MasterDataPanels.jsx";
@@ -190,9 +191,9 @@ export default function Accountant() {
       <button onClick={() => { setError(""); setShowRates(true); }} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
       <button onClick={() => setShowOpeningBalances(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Opening balances</button>
       <button onClick={() => setShowPumpChargeReview(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Pump charge review</button>
-      <Link to="/fuel-report" style={{ marginLeft: 12, fontSize: 13 }}>Fuel and lubricant report</Link>
-      <Link to="/outstanding-collection-report" style={{ marginLeft: 12, fontSize: 13 }}>Outstanding Collection</Link>
-      <Link to="/trip-allowance-report" style={{ marginLeft: 12, fontSize: 13 }}>Trip allowance report</Link>
+      <IfCan perm="reports.fuel"><Link to="/fuel-report" style={{ marginLeft: 12, fontSize: 13 }}>Fuel and lubricant report</Link></IfCan>
+      <IfCan perm="accounts.outstanding"><Link to="/outstanding-collection-report" style={{ marginLeft: 12, fontSize: 13 }}>Outstanding Collection</Link></IfCan>
+      <IfCan perm="reports.trip-allowance"><Link to="/trip-allowance-report" style={{ marginLeft: 12, fontSize: 13 }}>Trip allowance report</Link></IfCan>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <div className="card">

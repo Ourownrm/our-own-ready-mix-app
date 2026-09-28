@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { IfCan } from "../lib/PermissionContext.jsx";
 import { apiRequest } from "../lib/api.js";
 import { queuedRequest, pendingCount, startPeriodicFlush, flushQueue } from "../lib/offlineQueue.js";
 import { TopBar } from "../lib/TopBar.jsx";
@@ -331,8 +332,8 @@ export default function SiteSupervisor() {
           </div>
         )}
 
-        <Link to="/fuel"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Fuel & Lubricant Filling</button></Link>
-        <Link to="/delay-justification-report"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Delay report</button></Link>
+        <IfCan perm="fleet.fuel-filling"><Link to="/fuel"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Fuel & Lubricant Filling</button></Link></IfCan>
+        <IfCan perm="reports.delay-justification"><Link to="/delay-justification-report"><button type="button" style={{ width: "100%", marginBottom: 12 }}>Delay report</button></Link></IfCan>
 
         {!selected ? (
           <div style={{ fontSize: 13, color: "var(--slate)", textAlign: "center", marginTop: 40 }}>No deliveries need your confirmation right now.</div>

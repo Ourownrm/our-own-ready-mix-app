@@ -515,36 +515,52 @@ function HomeScreen({ me, onGoTab, onPush }) {
         <div style={{ fontSize: 11.5, color: "#C9CDD2", marginTop: 6, lineHeight: 1.5 }}>{heroSub}</div>
       </div>
 
-      <div className="portal-tiles">
-        <button type="button" className="portal-tile" onClick={() => onGoTab("orders")}>
-          <div className="portal-tile-ic"><IconOrders color="#C75B12" size={17} /></div>
-          <div className="portal-tile-title">{t("title_my_orders")}</div>
-          <div className="portal-tile-sub">{totalCount === null ? "Loading..." : `${totalCount} total${activeCount ? ` · ${activeCount} active` : ""}`}</div>
+      {/* Round 166 — Android-style app icons (see customer-module-icons
+          mockup), matching the admin dashboard's module tiles. Each action is
+          a fixed-colour rounded square with a white glyph and a label; the
+          count badges are the actionable numbers (orders needing attention,
+          orders in progress). Same actions, same permission gating as before. */}
+      <div className="portal-apps">
+        <button type="button" className="portal-app" onClick={() => onGoTab("orders")}>
+          <div className="portal-app-sq" style={{ background: "var(--info)" }}>
+            <IconOrders color="#fff" size={29} />
+            {attentionCount ? <span className="portal-app-badge">{attentionCount}</span> : null}
+          </div>
+          <div className="portal-app-lbl">{t("title_my_orders")}</div>
         </button>
+
+        <button type="button" className="portal-app" onClick={() => onPush({ name: "order-concrete" })}>
+          <div className="portal-app-sq" style={{ background: "var(--rebar)" }}>
+            <IconPlus color="#fff" size={29} />
+          </div>
+          <div className="portal-app-lbl">New Order</div>
+        </button>
+
         {showTracking && (
-          <button type="button" className="portal-tile" onClick={() => onGoTab("track")}>
-            <div className="portal-tile-ic"><IconTrack color="#C75B12" size={17} /></div>
-            <div className="portal-tile-title">{t("home_live_tracking")}</div>
-            <div className="portal-tile-sub">See trucks en route</div>
+          <button type="button" className="portal-app" onClick={() => onGoTab("track")}>
+            <div className="portal-app-sq" style={{ background: "#2F7D6E" }}>
+              <IconTrack color="#fff" size={29} />
+              {activeCount ? <span className="portal-app-badge">{activeCount}</span> : null}
+            </div>
+            <div className="portal-app-lbl">{t("home_live_tracking")}</div>
           </button>
         )}
-        <button type="button" className="portal-tile cta" onClick={() => onPush({ name: "order-concrete" })}>
-          <div className="portal-tile-ic"><IconPlus color="#fff" size={17} /></div>
-          <div className="portal-tile-title">New Order</div>
-          <div className="portal-tile-sub">Order concrete</div>
-        </button>
+
         {showQc && (
-          <button type="button" className="portal-tile" onClick={() => onPush({ name: "qc-reports" })}>
-            <div className="portal-tile-ic"><IconQc color="#C75B12" size={17} /></div>
-            <div className="portal-tile-title">QC Reports</div>
-            <div className="portal-tile-sub">Test results &amp; mix designs</div>
+          <button type="button" className="portal-app" onClick={() => onPush({ name: "qc-reports" })}>
+            <div className="portal-app-sq" style={{ background: "var(--violet)" }}>
+              <IconQc color="#fff" size={29} />
+            </div>
+            <div className="portal-app-lbl">QC Reports</div>
           </button>
         )}
+
         {showWritings && (
-          <button type="button" className="portal-tile" onClick={() => onPush({ name: "technical-writings" })}>
-            <div className="portal-tile-ic"><IconWritings color="#C75B12" size={17} /></div>
-            <div className="portal-tile-title">Technical Writings</div>
-            <div className="portal-tile-sub">Guides &amp; know-how</div>
+          <button type="button" className="portal-app" onClick={() => onPush({ name: "technical-writings" })}>
+            <div className="portal-app-sq" style={{ background: "var(--amber)" }}>
+              <IconWritings color="#fff" size={29} />
+            </div>
+            <div className="portal-app-lbl">Technical Writings</div>
           </button>
         )}
       </div>

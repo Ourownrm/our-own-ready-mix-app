@@ -14,6 +14,7 @@ import ElapsedTimer from "../lib/ElapsedTimer.jsx";
 import { BookingsQueue, CreateLeadForm, CustomerInquiriesCard } from "../lib/SalesPanels.jsx";
 import CreateOrder from "./CreateOrder.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
+import { usePermissions, IfCan } from "../lib/PermissionContext.jsx";
 
 export default function ManagerDashboard() {
   const [stats, setStats] = useState(null);
@@ -30,6 +31,12 @@ export default function ManagerDashboard() {
   const [detailOrderId, setDetailOrderId] = useState(null);
   const [jumpToOrderId, setJumpToOrderId] = useState(null);
   const [unreadCount, setUnreadCount] = useState(0);
+  const { can } = usePermissions();
+  // Round 165 — permission-driven navigation. A menu item carries the
+  // catalogue key it opens; items whose key the signed-in user lacks are
+  // dropped, and GroupedMenu hides a group left with none. Items with no
+  // perm (e.g. a manager-only panel with no distinct key) always show.
+  const allow = (items) => items.filter((it) => !it.perm || can(it.perm, it.permAction || "view"));
 
   async function load() {
     try {
@@ -228,59 +235,59 @@ export default function ManagerDashboard() {
           </Link>
           <GroupedMenu
             label="Reports"
-            items={[
-              { label: "Production Report", to: "/production-report" },
-              { label: "Time cross check", to: "/trip-time-crosscheck" },
-              { label: "Equipment Breakdowns", to: "/breakdowns" },
-              { label: "Maintenance & Best Driver of the Month", to: "/maintenance" },
-              { label: "Fuel and Lubricant report", to: "/fuel-report" },
-              { label: "Trip Allowance report", to: "/trip-allowance-report" },
-              { label: "Statutory Compliance", to: "/compliance" },
-              { label: "Delay justification report", to: "/delay-justification-report" },
-                { label: "Charts", to: "/charts" },
-                { label: "Cycle Time Report", to: "/cycle-time-report" },
-                { label: "Truck Timing Report", to: "/truck-timing-report" },
-                { label: "360° Fuel Analysis", to: "/fuel-analysis" },
-                { label: "Outstanding Collection", to: "/outstanding-collection-report" },
-            ]}
+            items={allow([
+              { label: "Production Report", to: "/production-report", perm: "reports.production" },
+              { label: "Time cross check", to: "/trip-time-crosscheck", perm: "reports.trip-time-crosscheck" },
+              { label: "Equipment Breakdowns", to: "/breakdowns", perm: "fleet.breakdowns" },
+              { label: "Maintenance & Best Driver of the Month", to: "/maintenance", perm: "fleet.maintenance" },
+              { label: "Fuel and Lubricant report", to: "/fuel-report", perm: "reports.fuel" },
+              { label: "Trip Allowance report", to: "/trip-allowance-report", perm: "reports.trip-allowance" },
+              { label: "Statutory Compliance", to: "/compliance", perm: "reports.compliance" },
+              { label: "Delay justification report", to: "/delay-justification-report", perm: "reports.delay-justification" },
+              { label: "Charts", to: "/charts", perm: "reports.charts" },
+              { label: "Cycle Time Report", to: "/cycle-time-report", perm: "reports.cycle-time" },
+              { label: "Truck Timing Report", to: "/truck-timing-report", perm: "reports.truck-timing" },
+              { label: "360° Fuel Analysis", to: "/fuel-analysis", perm: "reports.fuel-analysis" },
+              { label: "Outstanding Collection", to: "/outstanding-collection-report", perm: "accounts.outstanding" },
+            ])}
           />
           <GroupedMenu
             label="Masters"
-            items={[
-              { label: "Customer", onClick: () => setView("customers") },
-              { label: "Projects & Sites", onClick: () => setView("sites") },
-              { label: "Concrete Grade & Rates", onClick: () => setView("rates") },
-              { label: "Approved Mix Assignments", onClick: () => setView("mix-assignments") },
+            items={allow([
+              { label: "Customer", onClick: () => setView("customers"), perm: "masters.customers" },
+              { label: "Projects & Sites", onClick: () => setView("sites"), perm: "masters.sites" },
+              { label: "Concrete Grade & Rates", onClick: () => setView("rates"), perm: "accounts.rates" },
+              { label: "Approved Mix Assignments", onClick: () => setView("mix-assignments"), perm: "quality.mix-assignments" },
               { label: "Mix Designs (approve)", onClick: () => setView("mix-designs") },
-            ]}
+            ])}
           />
           <GroupedMenu
             label="Sales"
-            items={[
-              { label: "Sales Forecast", to: "/sales-forecast" },
-              { label: "Assign a Lead", onClick: () => setView("leads") },
-              { label: "Browse Leads", to: "/leads" },
-              { label: "Customer Feed Back", to: "/customer-feedback" },
-            ]}
+            items={allow([
+              { label: "Sales Forecast", to: "/sales-forecast", perm: "sales.forecast" },
+              { label: "Assign a Lead", onClick: () => setView("leads"), perm: "sales.lead-assign", permAction: "edit" },
+              { label: "Browse Leads", to: "/leads", perm: "sales.leads" },
+              { label: "Customer Feed Back", to: "/customer-feedback", perm: "sales.feedback" },
+            ])}
           />
           <GroupedMenu
             label="Manage"
-            items={[
-              { label: "Correct Order", onClick: () => setView("correct-orders") },
-              { label: "Correct Tickets", onClick: () => setView("correct-tickets") },
-            ]}
+            items={allow([
+              { label: "Correct Order", onClick: () => setView("correct-orders"), perm: "orders.customer-orders" },
+              { label: "Correct Tickets", onClick: () => setView("correct-tickets"), perm: "orders.tickets" },
+            ])}
           />
           <GroupedMenu
             label="Customer Booking"
-            items={[
-              { label: "Booking Links & Requests", to: "/customer-booking" },
-              { label: "Website Content", to: "/site-content" },
-              { label: "Home Screen Photos", to: "/home-screen-photos" },
-            ]}
+            items={allow([
+              { label: "Booking Links & Requests", to: "/customer-booking", perm: "sales.booking-links" },
+              { label: "Website Content", to: "/site-content", perm: "admin.site-content" },
+              { label: "Home Screen Photos", to: "/home-screen-photos", perm: "admin.home-screen-photos" },
+            ])}
           />
-          <Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link>
-          <Link to="/fuel"><button type="button">Fuel & Lubricant Filling</button></Link>
-          <Link to="/store-stock"><button type="button">Store stock</button></Link>
+          <IfCan perm="store.supply-approve" action="edit"><Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link></IfCan>
+          <IfCan perm="fleet.fuel-filling"><Link to="/fuel"><button type="button">Fuel & Lubricant Filling</button></Link></IfCan>
+          <IfCan perm="store.items"><Link to="/store-stock"><button type="button">Store stock</button></Link></IfCan>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
