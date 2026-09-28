@@ -37,7 +37,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import mysql from "mysql2/promise";
 
-const AGENT_VERSION = "1.0";
+const AGENT_VERSION = "1.1";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CONFIG_PATH = process.env.WB_CONFIG || path.join(__dirname, "config.json");
@@ -158,6 +158,11 @@ const WANTED = {
   empty_weight_kg:   ["EmptyWeight"],
   loaded_weight_kg:  ["LoadedWeight"],
   net_weight_kg:     ["NetWeight"],
+  // Round 166 — the supplier's BILLED quantity, typed by the weighbridge
+  // operator into SmartWeigh's spare `actualweight` field (the operator never
+  // types a weight there — NetWeight is computed — so it is free for this).
+  // It is untrusted free text; the app parses a clean number out or ignores it.
+  billed_qty_raw:    ["actualweight", "ActualWeight"],
   _date:             ["Date"],
   _time:             ["Time"],
   _emptyDate:        ["EmptyWeightDate"],
@@ -171,9 +176,10 @@ const WANTED = {
 //   moisturepercentage  VARCHAR the operators type into ('N/A', 'NONE', 'N|A').
 //                       Never a number in three years of data. Moisture
 //                       deduction belongs in the app, against a real figure.
-//   actualweight        VARCHAR, same problem, plus values like '35610+91'.
-//                       NetWeight is the only weight worth importing.
 //   ConcreteVolume      Has been used to store driver names.
+//   (actualweight is now READ — see billed_qty_raw above. It is never a real
+//    scale weight; the plant repurposes it for the supplier's billed qty, and
+//    NetWeight remains the only weight the app trusts as a weight.)
 //   username/systemid/  Always 'admin' / 'Rajesh-PC' / 'Plant 1'. No
 //   plantName           per-operator identity exists to import.
 
@@ -245,6 +251,10 @@ function toTicket(row, col) {
     empty_weight_kg:   num(g("empty_weight_kg")),
     loaded_weight_kg:  num(g("loaded_weight_kg")),
     net_weight_kg:     num(g("net_weight_kg")),
+    // Sent verbatim — the app decides whether it is a usable number. Kept as a
+    // string on purpose: three years of this column holds 'N/A', driver names
+    // and '35610+91', and only the app should judge what counts.
+    billed_qty_raw:    str(g("billed_qty_raw")),
     ticket_date:       combine(g("_date"), g("_time")),
     empty_weighed_at:  combine(g("_emptyDate"), g("_emptyTime")),
     loaded_weighed_at: combine(g("_loadDate"), g("_loadTime")),

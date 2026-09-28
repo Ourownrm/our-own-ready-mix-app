@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OORM — Customer module, Android-style icons (mockup)</title>
+<style>
+  :root {
+    --concrete:#F3F1EC; --charcoal:#22262B; --slate:#5B6470;
+    --rebar:#C75B12; --signal-green:#1D7A55; --info:#2A6F97;
+    --amber:#B4890F; --violet:#7A4BA8; --teal:#2F7D6E; --blue:#1F6FB2;
+    --border:#DEDAD1; --surface:#FFFFFF;
+    --radius:14px;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--concrete); color:var(--charcoal); padding:28px 16px 60px; }
+  h1 { font-size:20px; font-weight:800; text-align:center; }
+  .lede { text-align:center; color:var(--slate); font-size:13px; max-width:640px; margin:8px auto 26px; line-height:1.55; }
+  .note { max-width:760px; margin:0 auto 26px; background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px 18px; font-size:13px; color:var(--slate); line-height:1.6; }
+  .note b { color:var(--charcoal); }
+
+  .stage { display:flex; gap:34px; justify-content:center; align-items:flex-start; flex-wrap:wrap; }
+  .col { display:flex; flex-direction:column; align-items:center; }
+  .col > .tag { font-size:11px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:var(--slate); margin-bottom:10px; }
+  .col.after > .tag { color:var(--rebar); }
+
+  /* phone frame */
+  .phone { width:300px; background:#000; border-radius:34px; padding:9px; box-shadow:0 12px 40px rgba(0,0,0,.22); }
+  .screen { background:var(--concrete); border-radius:26px; overflow:hidden; height:600px; display:flex; flex-direction:column; position:relative; }
+  .statusbar { height:26px; background:#14181C; display:flex; align-items:center; justify-content:space-between; padding:0 16px; color:#fff; font-size:10px; }
+  .body { flex:1; overflow-y:auto; }
+  .hero { background:linear-gradient(135deg,#22262B,#31373E); color:#fff; padding:18px 18px 20px; }
+  .hero h2 { font-size:16px; font-weight:800; line-height:1.35; }
+  .hero p { font-size:11px; color:#C9CDD2; margin-top:6px; }
+
+  /* bottom nav */
+  .tabbar { height:54px; background:#fff; border-top:1px solid var(--border); display:flex; }
+  .tabbar .tab { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:9.5px; color:var(--slate); }
+  .tabbar .tab.on { color:var(--rebar); }
+  .tabbar svg { width:19px; height:19px; }
+
+  /* ---- BEFORE: current flat tiles ---- */
+  .old-tiles { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .old-tile { background:#fff; border:1px solid var(--border); border-radius:12px; padding:12px; text-align:left; }
+  .old-tile .ic { width:34px; height:34px; border-radius:9px; background:#F6E7DB; display:flex; align-items:center; justify-content:center; margin-bottom:8px; }
+  .old-tile .ic svg { width:17px; height:17px; stroke:var(--rebar); fill:none; stroke-width:2; }
+  .old-tile .tt { font-size:12.5px; font-weight:700; }
+  .old-tile .sb { font-size:10.5px; color:var(--slate); margin-top:2px; }
+  .old-tile.cta { background:var(--rebar); border-color:var(--rebar); }
+  .old-tile.cta .ic { background:rgba(255,255,255,.2); } .old-tile.cta .ic svg { stroke:#fff; }
+  .old-tile.cta .tt, .old-tile.cta .sb { color:#fff; }
+
+  /* ---- AFTER: android-style app grid (matches admin dashboard) ---- */
+  .app-grid { padding:20px 12px; display:grid; grid-template-columns:repeat(3,1fr); gap:20px 6px; }
+  .app { display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
+  .app .badge-wrap { position:relative; }
+  .app .sq { width:64px; height:64px; border-radius:18px; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 12px rgba(34,38,43,.14); }
+  .app .sq svg { width:31px; height:31px; stroke:#fff; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .app .lbl { font-size:11px; font-weight:600; line-height:1.25; color:var(--charcoal); }
+  .app .cnt { position:absolute; top:-5px; right:-5px; min-width:19px; height:19px; padding:0 5px; border-radius:10px; background:var(--rebar); color:#fff; font-size:10.5px; font-weight:700; display:flex; align-items:center; justify-content:center; border:2px solid var(--concrete); }
+
+  .legend { max-width:760px; margin:30px auto 0; font-size:12.5px; color:var(--slate); line-height:1.7; }
+  .legend h3 { color:var(--charcoal); font-size:14px; margin-bottom:6px; }
+  .swatch { display:inline-block; width:11px; height:11px; border-radius:3px; vertical-align:middle; margin-right:5px; }
+</style>
+</head>
+<body>
+  <h1>Customer module — Android-style app icons</h1>
+  <p class="lede">The customer portal Home, redrawn so its actions look like the Administrator dashboard: coloured rounded-square app icons with a white glyph and a label, in a phone app-grid — instead of the current flat cards. Same actions, same permissions; only the look changes.</p>
+
+  <div class="note">
+    <b>What changes:</b> each Home action becomes a coloured app tile (64&nbsp;px rounded square, white line-icon, label beneath), three across, with an optional count badge — exactly the visual language of the admin dashboard's module tiles. The bottom tab bar (Home / Orders / Track / More) stays. <b>Nothing about what a customer can see or do changes</b> — tiles still appear only for the permissions that customer has (tracking, QC reports, technical writings).
+  </div>
+
+  <div class="stage">
+    <!-- BEFORE -->
+    <div class="col before">
+      <div class="tag">Now — flat cards</div>
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span>OORM</span></div>
+        <div class="body">
+          <div class="hero"><h2>Building strong,<br>on schedule.</h2><p>2 orders in progress · 1 needs your attention</p></div>
+          <div class="old-tiles">
+            <div class="old-tile"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></div><div class="tt">My Orders</div><div class="sb">6 total · 2 active</div></div>
+            <div class="old-tile"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></div><div class="tt">Live Tracking</div><div class="sb">See trucks en route</div></div>
+            <div class="old-tile cta"><div class="ic"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div><div class="tt">New Order</div><div class="sb">Order concrete</div></div>
+            <div class="old-tile"><div class="ic"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div class="tt">QC Reports</div><div class="sb">Results &amp; mixes</div></div>
+          </div>
+        </div>
+        <div class="tabbar">
+          <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Home</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Orders</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>Track</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>More</div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- AFTER -->
+    <div class="col after">
+      <div class="tag">Proposed — app icons</div>
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span>OORM</span></div>
+        <div class="body">
+          <div class="hero"><h2>Building strong,<br>on schedule.</h2><p>2 orders in progress · 1 needs your attention</p></div>
+          <div class="app-grid">
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:var(--info)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></div><span class="cnt">6</span></div><div class="lbl">My Orders</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:var(--rebar)"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div></div><div class="lbl">New Order</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:var(--teal)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></div><span class="cnt">2</span></div><div class="lbl">Live Tracking</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:var(--violet)"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div></div><div class="lbl">QC Reports</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:var(--amber)"><svg viewBox="0 0 24 24"><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7M9 15h4"/></svg></div></div><div class="lbl">Technical Writings</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:var(--signal-green)"><svg viewBox="0 0 24 24"><path d="M4 15h16M7 15V9l3-4h6l2 4v6"/><path d="M9 15v2M15 15v2"/></svg></div></div><div class="lbl">Delivery Notes</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:var(--blue)"><svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M9 12h6M11.7 12c0 2-.9 3.2-2.4 3.6"/></svg></div><span class="cnt" style="background:var(--amber)">1</span></div><div class="lbl">Statements</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:#6B7280"><svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div></div><div class="lbl">Contact Us</div></div>
+            <div class="app"><div class="badge-wrap"><div class="sq" style="background:#31373E"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L16.5 3h-4l-.4 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1z"/></svg></div></div><div class="lbl">More</div></div>
+          </div>
+        </div>
+        <div class="tabbar">
+          <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Home</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Orders</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>Track</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>More</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <h3>Notes on the design</h3>
+    <p>
+      <span class="swatch" style="background:#1F6FB2"></span>Each action keeps a fixed colour so it becomes recognisable by shape and hue — the same idea as the admin modules. Counts (orders on file, trucks en route, an unpaid statement) sit as a small badge on the corner.<br>
+      The grid is three-across on a phone and reflows wider on a tablet, exactly like the admin grid. Icons are the app's own line-glyph set drawn in white — no images, so they stay crisp and load instantly.<br>
+      <b>Delivery Notes</b>, <b>Statements</b> and <b>Contact Us</b> are shown here as examples of how easily the grid takes new actions later; the current build ships My Orders, New Order, Live Tracking, QC Reports and Technical Writings, each still gated by the customer's own permissions.
+    </p>
+  </div>
+</body>
+</html>

@@ -1,4 +1,4 @@
-# OORM App — Current State (as of Round 164, Ver. 9.90)
+# OORM App — Current State (as of Round 166, Ver. 9.92)
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
@@ -68,6 +68,74 @@ a "Pumps & equipment" tab on FuelAnalysis.jsx sharing the Trucks tab's date rang
 `todayStr`/`daysAgoStr` both built the UTC day with `toISOString().slice(0,10)`, which names
 yesterday between midnight and 05:30 IST. Both now build the IST day, matching `db.js`'s
 Asia/Kolkata session. Worth grepping for this pattern elsewhere — it is the app's recurring bug.
+
+## Round 166 — weighbridge billed-vs-weighed variance, PDF prints, customer app icons (v9.92)
+
+**Visit `/setup?key=...` once** — one nullable column: `weighbridge_tickets.billed_qty_raw`.
+
+**(1) BILLED-QTY VARIANCE AT WEIGHING TIME.** The weighbridge operator types the supplier's billed
+qty into SmartWeigh's spare **`actualweight`** field (verified against the real dump: it never holds a
+real weight — NetWeight is computed — so it's free). The agent (bumped 1.0→1.1) reads it and sends
+`billed_qty_raw`; runtime column discovery still handles a renamed/absent column. Backend stores it
+verbatim (untrusted free text), includes it in the change-hash (an operator correction re-syncs), and
+computes the variance at READ time via `wbVariance()` in routes/weighbridge.js — never stored, so a
+later change to a material's conversion/tolerance is always reflected. Parse rule: a clean positive
+number only (regex), else null → keeps `N/A`/driver-names/`35610+91` out. Magnitude guard: billed >5×
+or <⅕ the weighed qty ⇒ status `implausible` ("check billed qty"), not a nonsense %. Otherwise
+converts net kg ÷ `kg_per_purchase_unit`, variance = billed − weighed, within/beyond vs
+`tolerance_pct` (default `WB_DEFAULT_TOLERANCE`=1%). Statuses: within | beyond | implausible |
+no_material | no_weight | (null). Attached to `/weighbridge/tickets` AND `/weighbridge/report`.
+Frontend Weighbridge Records tab gains a "Billed vs net" column (green ✓ within, red ⚠ beyond, amber
+check, slate "map material"). Colours by SEVERITY (within=green whichever direction) to match the
+approved mock-up; +/− sign carries direction. Verified live: within 0.02MT/0.08%, beyond
+0.80MT/4.17%, implausible 21000-vs-21, N/A→null, unmapped→no_material all correct.
+
+**(2) PRINT (PDF)** on Material Stock / Receipts / Physical Stock. New `lib/materialReportPdf.js`
+(jsPDF + jspdf-autotable, native vector) — plant letterhead, title, active filters as meta,
+generated-on stamp, page footer. Each tab has a `printX()` builder that prints exactly what's shown
+(Stock respects valuation month + value cols/total for non-store roles; Receipts respects
+date/material/supplier filters, newest-first; Physical prints the full reconciliation + who counted).
+
+**(3) CUSTOMER MODULE ANDROID ICONS.** CustomerPortal Home `.portal-tiles` flat cards → `.portal-apps`
+app-icon grid (3-across, 62px coloured rounded squares, white glyph, label, corner count badge),
+matching the admin dashboard, per the approved mockup (customer-module-icons-mockup.html). New CSS in
+index.css. Same actions, same permission gating (My Orders always; New Order; Tracking/QC/Writings
+gated on me.permissions). Badges: My Orders→attentionCount, Tracking→activeCount.
+
+**GOTCHA fixed this round:** a backtick in a SQL comment (`` `actualweight` ``) inside setup.js's
+`pool.query(\`...\`)` template literal closed the string → SyntaxError. SQL comments in JS template
+literals must not use backticks.
+
+## Round 165 — permission-driven navigation for EVERY role (v9.91)
+
+**Visit `/setup?key=...` once** — no schema change; REPAIR_165 grants `sales_executive` the
+`sales.booking-links` view default (the route already allowed the role; only the catalogue default
+was missing, so gating the link would have removed it).
+
+Completes Round 164's flagged follow-up: extend permission-driven nav from Store to all role homes,
+so a Super Admin grant/revoke actually shows/hides links everywhere.
+
+**Mechanism.** New `IfCan` component in `lib/PermissionContext.jsx` — renders children only when
+`can(perm, action="view")`, and nothing while `ready` is false (no flash). Wrapped the cross-screen
+links on: PlantOperator (reports.delay-justification, material.module), SiteSupervisor
+(fleet.fuel-filling, reports.delay-justification), Accountant (reports.fuel, accounts.outstanding,
+reports.trip-allowance), DriverDuty (fleet.fuel-filling; `/driver/settings` left ungated — own
+account), LabTechnician (quality.cube-test-report, quality.raw-material-stock, and the DueTestingCard
+on quality.lab-due-today), FuelFilling (reports.fuel), SalesExecutive (sales.booking-links).
+
+**ManagerDashboard** uses data-driven GroupedMenu arrays: each item carries a `perm` (+ optional
+`permAction`), and an `allow()` filter drops items the user lacks. GroupedMenu already returns null
+for an empty item list, so a fully-revoked group vanishes. Standalone buttons via IfCan: Fuel
+requests → store.supply-approve *edit*, Fuel Filling → fleet.fuel-filling, Store stock → store.items.
+**Deliberately UNGATED: "Mix Designs (approve)"** — Manager holds no `quality.mix-designs` default
+(Administrator/Lab only), so gating it would REMOVE it. Rule: where a role has no matching key for a
+link it currently reaches, leave the link as-is.
+
+**No-regression proof (live /auth/me):** manager token returns all gated keys AND confirms
+quality.mix-designs ABSENT (why that item stays ungated); store returns weighbridge/receipts/fuel;
+sales_executive now returns sales.booking-links:[view]. ManagerDashboard only serves manager+admin
+(admin has everything), so manager is the only role that could regress — it doesn't. Build clean,
+all 5 checkers green (84 routes both guards agree).
 
 ## Round 164 — permission-driven nav, admin note-status fix, register ungrouped (v9.90)
 

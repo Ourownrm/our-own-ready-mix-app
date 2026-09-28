@@ -7960,3 +7960,112 @@ Round 163 grouped the register by material. The user asked to keep it ungrouped,
 table sorted by receipt number, newest first, with the Material column back beside the new Order
 column. Grouping stays on the Orders page and the awaiting-receipt list — only this register is
 flat.
+
+## Round 165 — permission-driven navigation for every role (v9.91)
+
+**Visit `/setup?key=...` once** (one missing default: Sales Executive gets `sales.booking-links` view).
+
+Round 164 fixed the Super Admin gap for Store and flagged the rest as a follow-up: "the other role
+home screens still use fixed navigation… extending permission-driven navigation to every role is a
+larger sweep, left as a follow-up." This round is that sweep. Every role's home now consults the
+permission set, so a grant or revoke on the Super Admin screen actually shows or hides the link —
+the whole point of the access-control page — instead of the backend allowing something the user
+still can't reach (or a hidden tile that the backend would refuse anyway).
+
+### One small gate component, used everywhere
+
+`IfCan` (in `lib/PermissionContext.jsx`) renders its children only when the signed-in user may
+`view` (or a named action) a catalogue key, and nothing while permissions are still loading — so a
+link never flashes in before being hidden. The role homes wrap each cross-screen link in it:
+
+- **Plant Operator** — Delay report (`reports.delay-justification`), Material Module
+  (`material.module`).
+- **Site Supervisor** — Fuel & Lubricant Filling (`fleet.fuel-filling`), Delay report
+  (`reports.delay-justification`).
+- **Accountant** — Fuel report (`reports.fuel`), Outstanding Collection (`accounts.outstanding`),
+  Trip allowance report (`reports.trip-allowance`).
+- **Driver** — Report fuel (`fleet.fuel-filling`). The driver's own account settings stay ungated —
+  they are not a delegable function.
+- **Lab Technician** — Cube Test Report (`quality.cube-test-report`), Raw Material Stock
+  (`quality.raw-material-stock`), and the "samples due" card (`quality.lab-due-today`).
+- **Fuel Filling** — Fuel report (`reports.fuel`).
+- **Sales Executive** — Bookings & Feedback (`sales.booking-links`).
+
+### The Manager dashboard, where the menus are data
+
+The Manager dashboard builds its Reports / Masters / Sales / Manage / Customer Booking dropdowns
+from arrays, so instead of wrapping each link, every item carries the catalogue key it opens and an
+`allow()` filter drops the ones the user lacks. `GroupedMenu` already renders nothing for an empty
+item list, so a group that ends up fully revoked simply disappears. The three standalone buttons
+(Fuel requests → `store.supply-approve` *edit*, Fuel Filling → `fleet.fuel-filling`, Store stock →
+`store.items`) use `IfCan` the same way.
+
+One item is deliberately **not** gated: "Mix Designs (approve)". The Manager reaches that panel
+today but holds no `quality.mix-designs` default (it is Administrator/Lab only), so gating it on
+that key would have *removed* it — a regression, not a fix. Where a menu item has no key the role
+actually holds, it stays as it was.
+
+### Why nothing regressed
+
+The risk of this change is gating a link on a permission the role lacks, which would hide something
+that used to be there. Every gate above is on a key the role holds by default, verified live: a
+Manager token's `/auth/me` returns all the keys its dashboard gates on (and confirms
+`quality.mix-designs` is absent, which is exactly why that one item stays ungated); a Store token
+still returns weighbridge/receipts/fuel; and a Sales Executive token now returns
+`sales.booking-links: [view]` from the new default. `npm run check` still passes all five checkers
+(every route's two guards still agree), and the frontend builds clean.
+
+Because `IfCan` and `allow()` both read the live permission set, a Super Admin revoke now hides the
+link and a grant reveals it — across every role, not just Store.
+
+## Round 166 — billed-vs-weighed variance at the weighbridge, PDF prints, customer app icons (v9.92)
+
+**Visit `/setup?key=...` once** (one nullable column, `weighbridge_tickets.billed_qty_raw`).
+
+### The weighbridge tells the store user whether the invoice matches, at weighing time
+
+The plant wanted the store to see, the moment a lorry leaves the weighbridge, whether the supplier's
+billed quantity matches what was actually delivered — without anyone re-typing anything into the app.
+The clean way, verified against the real SmartWeigh database, is to use one of the weighing software's
+own spare free-text fields: **`actualweight`**, which the operator never fills with a real weight
+(NetWeight is computed), so it's free to hold the supplier's billed quantity, typed once at the
+weighbridge.
+
+- **Agent** — now reads `actualweight` and sends it as `billed_qty_raw` (runtime column discovery
+  already handles a machine that spells it differently or lacks it). Agent bumped to 1.1.
+- **Backend** — `billed_qty_raw` is stored verbatim (untrusted free text — three years of that column
+  holds `N/A`, driver names, `35610+91`) and is part of the ticket's change-hash, so an operator's
+  correction re-syncs. The variance is computed at read time, never stored, so a later change to a
+  material's conversion or tolerance is always reflected. `wbVariance()` parses a clean positive
+  number or nothing, converts the net weight to the purchase unit (÷ `kg_per_purchase_unit`), and
+  **sanity-checks the magnitude**: a billed figure more than 5× (or under ⅕) the weighed load is
+  almost certainly the wrong unit — a kg weight typed in — so it's flagged "check", not turned into a
+  nonsense percentage. Otherwise it returns the signed variance, the %, and within/beyond against the
+  material's `tolerance_pct` (default 1%). Attached to both `/weighbridge/tickets` and
+  `/weighbridge/report`.
+- **Frontend** — the Records tab gains a "Billed vs net" column: green ✓ within tolerance, red ⚠
+  beyond (which will post the receipt as pending for a Manager), amber "check billed qty" for an
+  implausible figure, and a quiet "map material for variance" when the ticket isn't resolved yet.
+
+Verified live end to end against a throwaway database: within (0.02 MT / 0.08%), beyond (0.80 MT /
+4.17%), implausible (21000 typed vs 21 MT weighed → flagged), junk (`N/A` → no variance) and
+unmapped (→ "map material") all resolve correctly through `/auth`-authenticated `/tickets`.
+
+### Print (PDF) on Material Stock, Receipts and Physical Stock
+
+A shared `materialReportPdf.js` (jsPDF + autotable, native vector like the challan/cube-test PDFs)
+renders a plant letterhead, the report title, the active filters (month or date range), a generated-on
+timestamp and a page footer. Each of the three views gets a **Print (PDF)** button that prints exactly
+what's on screen: Stock respects the valuation month and includes the value columns and total for the
+roles that see them; the Receipts register respects the date/material/supplier filters and prints
+newest-first; Physical Stock prints the reconciliation sheet (opening, purchase, plant consumption,
+book, physical, actual, difference) with who took the count.
+
+### Customer module — Android-style app icons
+
+The customer portal Home is redrawn to match the Administrator dashboard, per the mock-up the user
+approved: coloured rounded-square app icons with a white line glyph and a label, three across, with a
+count badge on the actionable ones (orders needing attention, orders in progress) — instead of the
+old flat cards. **Same actions, same permission gating** (My Orders, New Order, and Live Tracking / QC
+Reports / Technical Writings each still shown only for the customer's own permissions); only the look
+changes.
