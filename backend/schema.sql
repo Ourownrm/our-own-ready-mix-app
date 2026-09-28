@@ -2407,6 +2407,15 @@ CREATE TABLE weighbridge_tickets (
   loaded_weight_kg   INTEGER,
   net_weight_kg      INTEGER,
 
+  -- Round 166 — the supplier's BILLED quantity, typed by the weighbridge
+  -- operator into SmartWeigh's spare `actualweight` field (they never type a
+  -- real weight there; NetWeight is computed) and carried across by the agent.
+  -- Stored verbatim as untrusted free text — the app parses a clean number out
+  -- or ignores it, and computes the variance against net_weight_kg at read
+  -- time (see wbVariance in routes/weighbridge.js). NOT a weight, despite the
+  -- SmartWeigh column's name.
+  billed_qty_raw     TEXT,
+
   -- ---- when it happened ---------------------------------------------------
   -- ticket_date is the weighbridge's own Date column, kept for reference.
   -- weighed_at is what the app orders and reports on: the agent derives it from

@@ -2701,6 +2701,11 @@ CREATE INDEX IF NOT EXISTS idx_wb_vehicles_lastseen ON weighbridge_vehicles(last
 ALTER TABLE weighbridge_tickets ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES weighbridge_vehicles(id);
 CREATE INDEX IF NOT EXISTS idx_wb_tickets_vehicle ON weighbridge_tickets(vehicle_id);
 
+-- Round 166 — the supplier's billed quantity, typed into SmartWeigh's spare
+-- actualweight field and synced across. Verbatim free text; the variance is
+-- computed at read time. Idempotent: safe to re-run.
+ALTER TABLE weighbridge_tickets ADD COLUMN IF NOT EXISTS billed_qty_raw TEXT;
+
 ALTER TABLE weighbridge_vehicle_aliases ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES weighbridge_vehicles(id);
 ALTER TABLE weighbridge_vehicle_aliases DROP CONSTRAINT IF EXISTS weighbridge_vehicle_aliases_check;
 
@@ -3082,6 +3087,27 @@ ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_at TIMESTAMPTZ;
         : `Round 160 — QC delay allowance access already in place, nothing to repair.`
     );
 
+    // Round 165 — the role home screens became permission-driven, so every
+    // link is now gated on the destination's own permission. One default was
+    // missing: the Sales Executive's home links to the booking screen (the
+    // route already allows them) but sales.booking-links did not grant them
+    // view, so gating the link would have removed it. The seeding loop only
+    // runs for a role with no rows, so this REPAIR grants that one default.
+    const REPAIR_165 = [
+      ["sales_executive", "sales.booking-links", "view"],
+    ];
+    const navRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING RETURNING role::text`,
+      [REPAIR_165.map((r) => r[0]), REPAIR_165.map((r) => r[1]), REPAIR_165.map((r) => r[2])]
+    );
+    log.push(
+      navRepaired.rows.length
+        ? `Schema migration applied (Round 165 — the Sales Executive keeps its bookings link now that navigation is permission-driven).`
+        : `Round 165 — permission-driven navigation defaults already in place, nothing to repair.`
+    );
+
     // Register every vehicle already sitting in the synced tickets, so the
     // registry arrives populated rather than empty. One row per distinct
     // normalised registration, carrying the first spelling seen and the real
@@ -3216,6 +3242,7 @@ CREATE TABLE IF NOT EXISTS weighbridge_tickets (
   empty_weight_kg    INTEGER,
   loaded_weight_kg   INTEGER,
   net_weight_kg      INTEGER,
+  billed_qty_raw     TEXT,
   ticket_date        DATE,
   empty_weighed_at   TIMESTAMPTZ,
   loaded_weighed_at  TIMESTAMPTZ,

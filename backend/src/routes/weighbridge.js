@@ -57,12 +57,89 @@ const HASH_FIELDS = [
   "purpose", "challan_number", "driver_name", "site_name", "shift", "load_status",
   "remarks", "charges", "concrete_grade",
   "empty_weight_kg", "loaded_weight_kg", "net_weight_kg",
+  // Round 166 — billed qty is part of the ticket's identity: if the operator
+  // corrects it on the weighbridge, the hash changes and the row re-syncs.
+  "billed_qty_raw",
   "ticket_date", "empty_weighed_at", "loaded_weighed_at", "weighed_at",
 ];
 
 function hashRow(row) {
   const payload = HASH_FIELDS.map((f) => (row[f] === null || row[f] === undefined ? "" : String(row[f]))).join("\u0001");
   return crypto.createHash("sha256").update(payload).digest("hex");
+}
+
+// ============================================================================
+// ROUND 166 — the weighbridge-vs-invoice variance, computed at read time.
+//
+// The weighbridge operator types the supplier's BILLED quantity (in the
+// material's purchase unit — e.g. 25 for 25 MT) into SmartWeigh's spare
+// `actualweight` field while weighing; the agent carries it across as
+// billed_qty_raw. The store user then sees, the moment the lorry is off the
+// weighbridge, whether the invoice matches what was actually delivered.
+//
+// Two things make this safe. First, billed_qty_raw is untrusted free text —
+// three years of that column holds 'N/A', driver names and '35610+91' — so we
+// accept ONLY a clean positive number and ignore everything else. Second, we
+// sanity-check its MAGNITUDE against the weighed quantity: a value five times
+// larger (or smaller) than the load is almost certainly the wrong unit (a kg
+// weight typed in, a decimal slip), so we show it but refuse to turn it into a
+// confident percentage. Everything is computed here rather than stored, so a
+// later change to the material's conversion or tolerance is always reflected —
+// the same reason the physical-stock report computes live.
+// ============================================================================
+const WB_MAGNITUDE_FACTOR = 5;     // billed >5× or <1/5 the weighed qty ⇒ wrong unit, not a real variance
+const WB_DEFAULT_TOLERANCE = 1.0;  // %, used only when the material carries no tolerance_pct
+
+function round2(n) { return Math.round(n * 100) / 100; }
+
+function parseBilledQty(rawText) {
+  if (rawText === null || rawText === undefined) return null;
+  const s = String(rawText).trim();
+  // A clean positive number only — no operators, letters or spaces. This is
+  // what keeps '35610+91', 'N/A', 'NONE' and driver names out.
+  if (!/^\d{1,9}(\.\d{1,4})?$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// row must carry: billed_qty_raw, net_weight_kg, material_id,
+// kg_per_purchase_unit, purchase_unit, tolerance_pct. Returns null when the
+// operator typed nothing usable, or a variance object otherwise.
+function wbVariance(row) {
+  const billed = parseBilledQty(row.billed_qty_raw);
+  if (billed === null) return null;
+
+  const unit = row.purchase_unit || null;
+  const net = Number(row.net_weight_kg);
+  if (!Number.isFinite(net) || net <= 0) {
+    return { status: "no_weight", billed_qty: billed, unit };
+  }
+  const kgPer = Number(row.kg_per_purchase_unit);
+  if (!row.material_id || !Number.isFinite(kgPer) || kgPer <= 0) {
+    // Can't convert without a mapped material and its kg-per-unit.
+    return { status: "no_material", billed_qty: billed, unit };
+  }
+
+  const weighed = net / kgPer;                    // purchase unit
+  const factor = billed / weighed;
+  if (factor > WB_MAGNITUDE_FACTOR || factor < 1 / WB_MAGNITUDE_FACTOR) {
+    return { status: "implausible", billed_qty: billed, weighed_qty: round2(weighed), unit };
+  }
+
+  const variance = billed - weighed;              // + ⇒ billed for more than delivered (the costly way)
+  const pct = (variance / weighed) * 100;
+  const tol = (row.tolerance_pct !== null && row.tolerance_pct !== undefined && Number.isFinite(Number(row.tolerance_pct)))
+    ? Number(row.tolerance_pct)
+    : WB_DEFAULT_TOLERANCE;
+  return {
+    status: Math.abs(pct) <= tol ? "within" : "beyond",
+    billed_qty: billed,
+    weighed_qty: round2(weighed),
+    unit,
+    variance_qty: round2(variance),
+    variance_pct: Math.round(pct * 100) / 100,
+    tolerance_pct: tol,
+  };
 }
 
 // ============================================================================
@@ -129,6 +206,9 @@ function cleanRow(raw) {
     empty_weight_kg:   INT_OR_NULL(raw.empty_weight_kg),
     loaded_weight_kg:  INT_OR_NULL(raw.loaded_weight_kg),
     net_weight_kg:     INT_OR_NULL(raw.net_weight_kg),
+    // Round 166 — verbatim, untrusted. Parsed to a number only at read time
+    // (wbVariance), never here: this column has held 'N/A' and driver names.
+    billed_qty_raw:    TEXT_OR_NULL(raw.billed_qty_raw, 60),
     ticket_date:       TS_OR_NULL(raw.ticket_date),
     empty_weighed_at:  TS_OR_NULL(raw.empty_weighed_at),
     loaded_weighed_at: TS_OR_NULL(raw.loaded_weighed_at),
@@ -160,7 +240,7 @@ const UPSERT_COLS = [
   "ticket_number", "raw_vehicle", "raw_material", "raw_material_code", "raw_supplier",
   "purpose", "challan_number", "driver_name", "site_name", "shift", "load_status",
   "remarks", "charges", "concrete_grade",
-  "empty_weight_kg", "loaded_weight_kg", "net_weight_kg",
+  "empty_weight_kg", "loaded_weight_kg", "net_weight_kg", "billed_qty_raw",
   "ticket_date", "empty_weighed_at", "loaded_weighed_at", "weighed_at",
   "material_id", "supplier_id", "truck_id", "vehicle_id", "match_status", "unresolved", "source_hash",
 ];
@@ -268,6 +348,7 @@ router.post("/sync", async (req, res) => {
            empty_weight_kg   = EXCLUDED.empty_weight_kg,
            loaded_weight_kg  = EXCLUDED.loaded_weight_kg,
            net_weight_kg     = EXCLUDED.net_weight_kg,
+           billed_qty_raw    = EXCLUDED.billed_qty_raw,
            ticket_date       = EXCLUDED.ticket_date,
            empty_weighed_at  = EXCLUDED.empty_weighed_at,
            loaded_weighed_at = EXCLUDED.loaded_weighed_at,
@@ -353,6 +434,8 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
       `SELECT wb.ticket_number, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
               wb.challan_number, wb.driver_name, wb.remarks, wb.charges,
               wb.empty_weight_kg, wb.loaded_weight_kg, wb.net_weight_kg,
+              wb.billed_qty_raw, wb.material_id,
+              m.kg_per_purchase_unit, m.purchase_unit, m.tolerance_pct,
               wb.ticket_date, wb.weighed_at, wb.match_status, wb.unresolved,
               wb.review_note, wb.revision, wb.last_synced_at,
               m.name AS material_name, s.name AS supplier_name, t.truck_number,
@@ -376,7 +459,9 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
        LIMIT 500`,
       [status, String(days)]
     );
-    res.json(rows);
+    // Round 166 — attach the billed-vs-weighed variance, computed live so a
+    // change to a material's conversion/tolerance is always reflected.
+    res.json(rows.map((r) => ({ ...r, variance: wbVariance(r) })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load weighbridge tickets." });
@@ -423,6 +508,8 @@ router.get("/report", requireRole(...WB_ROLES), requirePermission("material.weig
     const { rows } = await query(
       `SELECT wb.ticket_number, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
               wb.challan_number, wb.driver_name, wb.net_weight_kg, wb.empty_weight_kg, wb.loaded_weight_kg,
+              wb.billed_qty_raw, wb.material_id,
+              m.kg_per_purchase_unit, m.purchase_unit, m.tolerance_pct,
               wb.ticket_date, wb.weighed_at, wb.match_status,
               m.name AS material_name, s.name AS supplier_name,
               v.registration AS vehicle_registration,
@@ -450,7 +537,12 @@ router.get("/report", requireRole(...WB_ROLES), requirePermission("material.weig
       params
     );
 
-    res.json({ rows, total_count: totals[0].n, total_net_kg: Number(totals[0].net_kg), truncated: rows.length === 1000 });
+    res.json({
+      rows: rows.map((r) => ({ ...r, variance: wbVariance(r) })),
+      total_count: totals[0].n,
+      total_net_kg: Number(totals[0].net_kg),
+      truncated: rows.length === 1000,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not run the weighbridge report." });

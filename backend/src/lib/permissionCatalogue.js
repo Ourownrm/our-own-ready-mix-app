@@ -288,7 +288,11 @@ export const CATALOGUE = [
   f("sales.salespersons", "sales", "Salespersons", VCE,
     { administrator: VCE, manager: VC }, { screen: "salespersons" }),
   f("sales.booking-links", "sales", "Booking Links & Requests", ["view", "create", "delete"],
-    { administrator: ["view", "create", "delete"], manager: ["view", "create", "delete"] }, { screen: "booking-links" }),
+    // Round 165 — sales_executive gets view here. The Sales screen already
+    // links to /customer-booking for them (the route allows the role), so this
+    // makes the catalogue match reality and lets a Super Admin control it. The
+    // create/delete of booking links stays with Administrator and Manager.
+    { administrator: ["view", "create", "delete"], manager: ["view", "create", "delete"], sales_executive: ["view"] }, { screen: "booking-links" }),
   f("sales.portal-access", "sales", "Customer portal access codes", VCED,
     { administrator: VCED }),
 
