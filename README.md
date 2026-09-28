@@ -8069,3 +8069,11 @@ count badge on the actionable ones (orders needing attention, orders in progress
 old flat cards. **Same actions, same permission gating** (My Orders, New Order, and Live Tracking / QC
 Reports / Technical Writings each still shown only for the customer's own permissions); only the look
 changes.
+
+## Round 166a — PDF print fix (v9.93)
+
+The Print (PDF) buttons shipped in v9.92 threw at runtime: `materialReportPdf.js` called the
+`jspdf-autotable` default export as a function (`autoTable(doc, …)`), but in this build that default
+is a wrapped object, so nothing generated. Fixed to use `doc.autoTable(…)` — the plugin registers
+that method on the jsPDF prototype when the module is imported — with an `applyPlugin` fallback for
+any build that skips the auto-registration. Verified it now emits a valid PDF. No other change.

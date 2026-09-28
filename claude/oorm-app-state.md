@@ -1,4 +1,11 @@
-# OORM App — Current State (as of Round 166, Ver. 9.92)
+# OORM App — Current State (as of Round 166a, Ver. 9.93)
+
+**v9.93 (166a) — PDF fix:** materialReportPdf.js called jspdf-autotable's default export as a
+function, but this build's default is a wrapped object → runtime throw, nothing generated. Fixed to
+`doc.autoTable(...)` (the plugin registers that on the jsPDF prototype at import) with an applyPlugin
+fallback. Verified emits valid %PDF. GOTCHA for future PDF work: use `doc.autoTable(opts)`, never
+`autoTable(doc, opts)` from the default import.
+
 
 Reference doc for continuity across sessions. Full round-by-round changelog lives in the
 zip's `oorm-app/README.md` (130+ rounds) — this is a condensed map of where things stand,
