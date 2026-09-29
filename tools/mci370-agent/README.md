@@ -67,6 +67,19 @@ If the probe cannot find the database, pass the path to it directly:
 npm run probe -- "C:\SSI\MCI370\MCI70_batch.Mdb"
 ```
 
+**If the database is password-protected** (ours is — the password comes from Schwing Stetter),
+give the probe the password too, or it will stop at step 2 with "Not a valid password":
+
+```
+npm run probe -- --password=THE-DATABASE-PASSWORD
+```
+
+or, with an explicit path as well:
+
+```
+npm run probe -- "C:\SSI\MCI370\MCI70_batch.Mdb" --password=THE-DATABASE-PASSWORD
+```
+
 ---
 
 ## Step 2 — set the shared key
@@ -110,10 +123,14 @@ Fill in:
 | `mdbPath` | The database path the probe confirmed |
 | `appUrl` | Your backend address, e.g. `https://oorm-backend.onrender.com` |
 | `apiKey` | **Exactly** the `PLANT_API_KEY` value from Step 2 |
+| `dbPassword` | The MCI370 database password from Schwing Stetter. Leave `""` if the database has none. **Ours has one — put it here**, or the agent stops with "Not a valid password". |
 | `startDate` | How far back to go the first time, e.g. `2026-09-01` |
 | `plantNo` | `1` unless you run more than one plant |
 
 Leave the rest alone. Save and close.
+
+> The `dbPassword` (like `apiKey`) is a secret and lives only in `config.json`, which is never
+> zipped and never sent back — it stays on the plant PC.
 
 `config.json` holds the key, so it is deliberately not included in the zip and never goes back
 to us.

@@ -1,4 +1,20 @@
-# OORM App — Current State (as of Round 166a, Ver. 9.93)
+# OORM App — Current State (as of Round 166b, Ver. 9.94)
+
+**v9.94 (166b) — Silos screen fix (found during MCI370 go-live):** `GET /plant/silos` failed with
+`column a.slot_name does not exist` (42703) → Silos tab stuck on "Loading…". Root cause: a MIGRATION
+GAP — `plant_silo_aliases.slot_name` is in schema.sql's CREATE but was never added to setup.js (no
+CREATE column, no ALTER). Fresh-from-schema DBs have it; the /setup-migrated production DB never did.
+Latent until the Silos screen was first opened with real plant data (agent went live today). Second
+adjacent gap: that table's legacy `normalised`/`raw_sample` columns are still NOT NULL on setup.js
+DBs, and the slot-keyed POST /plant/silos insert doesn't populate them → first mapping SAVE would also
+have failed. FIX (setup.js): `ADD COLUMN IF NOT EXISTS slot_name VARCHAR(60)` + guarded DROP NOT NULL
+on normalised/raw_sample. Verified against a reproduction of the old shape (add col, drop constraints,
+slot-keyed insert succeeds, read returns). FRONTEND: all 4 Plant Production tabs surfaced errors as a
+frozen "Loading…" (the `if (!data) return Loading` guard hid the thrown error) → now show `error ||
+"Loading…"`. **GOTCHA (repeat offender): backticks in a SQL comment inside a setup.js `pool.query(\`…\`)`
+template literal close the string → SyntaxError. Never put backticks in those SQL comments.**
+
+## Round 166a — PDF fix (v9.93)
 
 **v9.93 (166a) — PDF fix:** materialReportPdf.js called jspdf-autotable's default export as a
 function, but this build's default is a wrapped object → runtime throw, nothing generated. Fixed to

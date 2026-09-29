@@ -8077,3 +8077,34 @@ The Print (PDF) buttons shipped in v9.92 threw at runtime: `materialReportPdf.js
 is a wrapped object, so nothing generated. Fixed to use `doc.autoTable(…)` — the plugin registers
 that method on the jsPDF prototype when the module is imported — with an `applyPlugin` fallback for
 any build that skips the auto-registration. Verified it now emits a valid PDF. No other change.
+
+## Round 166b — the Silos screen fix (v9.94)
+
+**Visit `/setup?key=...` once** (adds one column, drops two stale constraints on `plant_silo_aliases`).
+
+Reported live right after the MCI370 agent went in: the **Silos** mapping tab wouldn't load — a
+frozen "Loading…". The Render backend log gave it away: `error: column a.slot_name does not exist`
+(42703) from `GET /plant/silos`.
+
+Root cause — a migration gap. `plant_silo_aliases.slot_name` was added to `schema.sql`'s CREATE but
+never to `setup.js`, and no `ALTER … ADD COLUMN` carried it either. A database built fresh from
+`schema.sql` has the column; the production database, which is migrated through `/setup`, never got
+it. It stayed invisible because the Silos screen had never been opened with real plant data before —
+the agent only went live today.
+
+A second, adjacent gap was waiting behind it: that same table, migrated from its old name-keyed
+shape, still had the legacy `normalised`/`raw_sample` columns as `NOT NULL`, and the slot-keyed save
+(`POST /plant/silos`) doesn't populate them — so the first attempt to *save* a mapping would also have
+failed. Fixed in the same migration.
+
+- **`setup.js`** now `ADD COLUMN IF NOT EXISTS slot_name`, and drops the `NOT NULL` on
+  `normalised`/`raw_sample` where those legacy columns still exist (guarded, since a fresh build never
+  had them). Verified on a reproduction of the old table shape: the column is added, the constraints
+  drop, the slot-keyed insert succeeds and the Silos read returns.
+- **Frontend** — every Plant Production tab (Production, Consumption, Silos, Manual entry) showed a
+  permanent "Loading…" when its fetch failed, hiding the real error. They now surface the error text
+  instead of freezing, so the next failure like this is visible on the screen, not only in the server
+  log.
+
+Nothing was lost and no other tab was affected — Production and Consumption read correctly throughout
+(2,451 kg/m³ overall density, per-silo weighed-vs-recipe within ±1%).
