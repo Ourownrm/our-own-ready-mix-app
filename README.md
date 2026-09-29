@@ -8108,3 +8108,18 @@ failed. Fixed in the same migration.
 
 Nothing was lost and no other tab was affected — Production and Consumption read correctly throughout
 (2,451 kg/m³ overall density, per-silo weighed-vs-recipe within ±1%).
+
+## Round 166c — refillable silo save (v9.95)
+
+**Visit `/setup?key=...` once** (replaces one stale CHECK constraint on `plant_silo_aliases`).
+
+Third and last facet of the same `plant_silo_aliases` migration gap, found while mapping silos:
+saving a hopper as **"Refillable storage"** returned "Could not save the silo mapping" (500).
+
+The setup.js CREATE carried the pre-refillable constraint `CHECK (is_ignored OR material_id IS NOT
+NULL)`. A refillable silo has no material and isn't ignored, so it violated the check — while a fixed
+material or "not a stock material" passed, which is why only *refillable* failed. schema.sql already
+had the three-way check `(is_ignored OR is_refillable OR material_id IS NOT NULL)`; a /setup-migrated
+database never got it. Fixed by dropping and re-adding the constraint (Postgres auto-names a single
+inline CHECK `<table>_check`). Reproduced against the old table shape and verified: refillable, fixed
+material and not-stock all save; v9.94's slot_name/NOT-NULL fixes and this together close the gap.

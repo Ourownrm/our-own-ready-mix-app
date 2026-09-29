@@ -1,4 +1,17 @@
-# OORM App — Current State (as of Round 166b, Ver. 9.94)
+# OORM App — Current State (as of Round 166c, Ver. 9.95)
+
+**v9.95 (166c) — refillable silo save fix (3rd facet of the plant_silo_aliases migration gap):**
+marking a silo "Refillable storage" → 500 "Could not save the silo mapping". Cause: setup.js CREATE
+had the pre-refillable `CHECK (is_ignored OR material_id IS NOT NULL)`; refillable (no material, not
+ignored) violates it. Fixed materials + "not stock" passed, so only refillable failed. schema.sql
+already had the 3-way check. FIX (setup.js): DROP CONSTRAINT IF EXISTS plant_silo_aliases_check + ADD
+the 3-way `(is_ignored OR is_refillable OR material_id IS NOT NULL)` — Postgres auto-names a single
+inline CHECK `<table>_check`. Reproduced + verified all 3 save cases. **LESSON: the plant_silo_aliases
+table had THREE latent setup.js gaps (slot_name col missing 166b, normalised/raw_sample NOT NULL 166b,
+CHECK constraint 166c) — when a table's CREATE differs between schema.sql and setup.js, audit ALL of
+columns + constraints + not-null, not just the one that errored.**
+
+## Round 166b — the Silos screen fix (v9.94)
 
 **v9.94 (166b) — Silos screen fix (found during MCI370 go-live):** `GET /plant/silos` failed with
 `column a.slot_name does not exist` (42703) → Silos tab stuck on "Loading…". Root cause: a MIGRATION
