@@ -74,7 +74,10 @@ function Production({ days }) {
   }, [days]);
 
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
-  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  // Round 166b — surface a load error instead of a frozen "Loading…": when the
+  // fetch throws, `data` stays null, so without this the screen never leaves the
+  // loading state and the real reason is invisible (exactly the Silos 42703 bug).
+  if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
   const maxDay = Math.max(...data.by_day.map((d) => Number(d.m3)), 1);
 
@@ -167,7 +170,10 @@ function Consumption({ days }) {
   }, [days]);
 
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
-  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  // Round 166b — surface a load error instead of a frozen "Loading…": when the
+  // fetch throws, `data` stays null, so without this the screen never leaves the
+  // loading state and the real reason is invisible (exactly the Silos 42703 bug).
+  if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
   const m3 = Number(data.total_m3) || 0;
   const totalKg = data.silos.reduce((a, s) => a + Number(s.actual_kg || 0), 0);
@@ -338,7 +344,10 @@ function Silos() {
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
 
-  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  // Round 166b — surface a load error instead of a frozen "Loading…": when the
+  // fetch throws, `data` stays null, so without this the screen never leaves the
+  // loading state and the real reason is invisible (exactly the Silos 42703 bug).
+  if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
   const aliasBySlot = new Map(data.aliases.map((a) => [a.slot, a]));
   const refillable = data.seen.filter((s) => aliasBySlot.get(s.slot)?.is_refillable);
@@ -560,7 +569,10 @@ function Manual({ canEdit }) {
     } catch (err) { setError(err.message); }
   }
 
-  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  // Round 166b — surface a load error instead of a frozen "Loading…": when the
+  // fetch throws, `data` stays null, so without this the screen never leaves the
+  // loading state and the real reason is invisible (exactly the Silos 42703 bug).
+  if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
   const manualByMaterial = new Map(data.entries.filter((e) => e.material_id != null).map((e) => [e.material_id, e]));
   const prodManual = data.entries.find((e) => e.material_id == null);
