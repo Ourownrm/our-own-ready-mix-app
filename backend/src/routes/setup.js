@@ -2790,6 +2790,16 @@ BEGIN
     EXECUTE 'ALTER TABLE plant_silo_aliases ALTER COLUMN raw_sample DROP NOT NULL';
   END IF;
 END $$;
+-- Round 166c — the same table's CHECK constraint predates is_refillable: the
+-- setup.js CREATE has CHECK (is_ignored OR material_id IS NOT NULL), so marking
+-- a silo REFILLABLE (no material, not ignored) violated it and POST /plant/silos
+-- returned 500. schema.sql's CREATE already has the three-way check; this brings
+-- a /setup-migrated database into line. Postgres auto-names a single inline
+-- CHECK <table>_check, so that is the name to replace. Idempotent.
+ALTER TABLE plant_silo_aliases DROP CONSTRAINT IF EXISTS plant_silo_aliases_check;
+ALTER TABLE plant_silo_aliases
+  ADD CONSTRAINT plant_silo_aliases_check
+  CHECK (is_ignored OR is_refillable OR material_id IS NOT NULL);
 -- Carry old name-keyed mappings over to the slot key, but only where that old
 -- column still exists: a database built fresh from schema.sql never had it.
 DO $$
