@@ -2767,6 +2767,29 @@ ALTER TABLE plant_batch_materials ADD COLUMN IF NOT EXISTS design_kg_per_m3 NUME
 -- name-keyed alias cannot tell apart.
 ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS slot          VARCHAR(20);
 ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS is_refillable BOOLEAN NOT NULL DEFAULT false;
+-- Round 166b — slot_name (MCI370's own text for the hopper when it was mapped)
+-- was added to schema.sql's CREATE but never to setup.js's, so a database
+-- migrated through /setup never got the column, and the Silos screen's query
+-- (routes/plant.js selects a.slot_name) failed with 42703 the first time it
+-- was opened. Additive and idempotent.
+ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS slot_name     VARCHAR(60);
+-- Round 166b — the same table, migrated by setup.js from its old name-keyed
+-- shape, still carries the legacy normalised/raw_sample columns as NOT NULL.
+-- The slot-keyed save (POST /plant/silos) never populates them, so the FIRST
+-- attempt to map a silo on such a database would fail the not-null constraint.
+-- Drop the constraint where those columns still exist (a fresh schema.sql build
+-- never had them, hence the guard).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'plant_silo_aliases' AND column_name = 'normalised') THEN
+    EXECUTE 'ALTER TABLE plant_silo_aliases ALTER COLUMN normalised DROP NOT NULL';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'plant_silo_aliases' AND column_name = 'raw_sample') THEN
+    EXECUTE 'ALTER TABLE plant_silo_aliases ALTER COLUMN raw_sample DROP NOT NULL';
+  END IF;
+END $$;
 -- Carry old name-keyed mappings over to the slot key, but only where that old
 -- column still exists: a database built fresh from schema.sql never had it.
 DO $$
