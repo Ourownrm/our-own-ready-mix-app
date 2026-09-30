@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import TodaysDeliveryNotes from "../lib/TodaysDeliveryNotes.jsx";
@@ -82,6 +83,11 @@ export default function QcEngineer() {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
+
+        {/* Round 170 — quick link to the Mix Designs page now under Quality Control. */}
+        <Link to="/mix-designs" className="btn-tab" style={{ display: "inline-block", marginBottom: 14, textDecoration: "none" }}>
+          Mix Designs &amp; Recipes →
+        </Link>
 
         {delayedTrucks.length > 0 && (
           <div className="card" style={{ marginBottom: 16, border: "1px solid var(--alert-red)" }}>

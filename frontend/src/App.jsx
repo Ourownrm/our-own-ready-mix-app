@@ -60,6 +60,7 @@ import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 import MaterialModule from "./pages/MaterialModule.jsx";
 import Weighbridge from "./pages/Weighbridge.jsx";
 import PlantProduction from "./pages/PlantProduction.jsx";
+import QcMixDesigns from "./pages/QcMixDesigns.jsx";
 import ReceiptVariance from "./pages/ReceiptVariance.jsx";
 import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
 import SuperAdmin from "./pages/SuperAdmin.jsx";
@@ -261,6 +262,11 @@ export default function App() {
               production.plant-data / production.plant-mapping decide the rest. */}
           <Route path="/plant-production" element={
             <ProtectedRoute roles={["administrator", "manager", "store", "plant_operator", "qc_engineer", "lab_technician"]}><PlantProduction /></ProtectedRoute>
+          } />
+          {/* Round 170 — Mix Designs moved out of Plant Production into Quality
+              Control. Same data, QC's home. QC Engineer and Lab reach it here. */}
+          <Route path="/mix-designs" element={
+            <ProtectedRoute roles={["administrator", "manager", "qc_engineer", "lab_technician"]}><QcMixDesigns /></ProtectedRoute>
           } />
           {/* Round 158 — the Manager's decision on a disputed load, and the
               pattern those disputes make over time. Manager is in the role
