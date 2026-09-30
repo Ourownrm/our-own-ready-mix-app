@@ -424,6 +424,23 @@ const PLANT_READ = PLANT_ROLES;
 // the person who knows a hand mix happened. Administrator too, for corrections.
 const PLANT_MANUAL = ["administrator", "plant_operator"];
 
+// Round 167 — a shared date window for the reporting routes. When the caller
+// passes a valid from_date AND to_date (YYYY-MM-DD) it's an explicit range;
+// otherwise it falls back to the `days` preset (1/7/30/90…), exactly as before.
+// Returns a WHERE fragment and its params so each query can splice them in at
+// $1 (and $2 for a range). IST is handled by db.js pinning the session to
+// Asia/Kolkata, so CURRENT_DATE and ::date comparisons are the plant's day.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function dateRange(req, col) {
+  const from = ISO_DATE.test(req.query.from_date || "") ? req.query.from_date : null;
+  const to = ISO_DATE.test(req.query.to_date || "") ? req.query.to_date : null;
+  if (from && to) {
+    return { sql: `${col} BETWEEN $1::date AND $2::date`, params: [from, to] };
+  }
+  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 400);
+  return { sql: `${col} >= CURRENT_DATE - ($1::int - 1)`, params: [days] };
+}
+
 // The day's production, and how the plant is running.
 router.get("/summary", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
@@ -480,7 +497,7 @@ router.get("/summary", requireRole(...PLANT_ROLES), requirePermission("productio
 // Production by day, and by recipe within the range.
 router.get("/production", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
-    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 400);
+    const rng = dateRange(req, "batch_date");
     const [byDay, byRecipe] = await Promise.all([
       query(
         // to_char, not the bare date: node-postgres turns a DATE into a JS
@@ -492,9 +509,9 @@ router.get("/production", requireRole(...PLANT_ROLES), requirePermission("produc
                 count(*)::int AS batches,
                 count(DISTINCT (batch_year, batch_no))::int AS loads
          FROM plant_batches
-         WHERE batch_date >= CURRENT_DATE - ($1::int - 1)
+         WHERE ${rng.sql}
          GROUP BY batch_date ORDER BY batch_date DESC`,
-        [days]
+        rng.params
       ),
       query(
         `SELECT COALESCE(recipe_code, '(none)') AS recipe_code,
@@ -502,9 +519,9 @@ router.get("/production", requireRole(...PLANT_ROLES), requirePermission("produc
                 sum(batch_qty_m3)::numeric AS m3,
                 count(DISTINCT (batch_year, batch_no))::int AS loads
          FROM plant_batches
-         WHERE batch_date >= CURRENT_DATE - ($1::int - 1)
+         WHERE ${rng.sql}
          GROUP BY 1 ORDER BY m3 DESC NULLS LAST`,
-        [days]
+        rng.params
       ),
     ]);
     res.json({ by_day: byDay.rows, by_recipe: byRecipe.rows });
@@ -523,7 +540,7 @@ router.get("/production", requireRole(...PLANT_ROLES), requirePermission("produc
 // and is right here because the plant weighed it either way.
 router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
-    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 400);
+    const rng = dateRange(req, "pb.batch_date");
     const { rows } = await query(
       `SELECT pm.slot,
               (array_agg(pm.slot_name ORDER BY pb.batched_at DESC NULLS LAST))[1] AS slot_name,
@@ -544,15 +561,15 @@ router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("produ
        FROM plant_batch_materials pm
        JOIN plant_batches pb ON pb.id = pm.batch_id
        LEFT JOIN rm_materials m ON m.id = pm.material_id
-       WHERE pb.batch_date >= CURRENT_DATE - ($1::int - 1)
+       WHERE ${rng.sql}
        GROUP BY pm.slot, m.name, pm.material_id
        ORDER BY sum(pm.actual_kg) DESC NULLS LAST`,
-      [days]
+      rng.params
     );
     const { rows: prod } = await query(
       `SELECT COALESCE(sum(batch_qty_m3), 0)::numeric AS m3
-       FROM plant_batches WHERE batch_date >= CURRENT_DATE - ($1::int - 1)`,
-      [days]
+       FROM plant_batches pb WHERE ${rng.sql}`,
+      rng.params
     );
     res.json({ silos: rows, total_m3: Number(prod[0].m3) });
   } catch (err) {
@@ -561,10 +578,85 @@ router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("produ
   }
 });
 
+// Round 167 — Cost/m³ (material). Raw-material cost per m³ over the period:
+// for each material, the quantity the plant CONSUMED (load-cell auto + the
+// operator's manual entries — never the auto figure alone) × the material's
+// weighted-average landed rate, divided by the m³ PRODUCED (batches + manual
+// production). Rates are money, so this is gated like the material module's
+// valuation: Administrator only (material.stock-valuation). No new permission
+// key, so no seeding/REPAIR is needed.
+router.get("/cost-per-m3", requireRole("administrator"), requirePermission("material.stock-valuation", "view"), async (req, res) => {
+  try {
+    const rngB = dateRange(req, "pb.batch_date");     // plant_batch_materials via its batch
+    const rngE = dateRange(req, "e.entry_date");       // plant_manual_entries
+    const [auto, manual, prodAuto, prodManual, rates, mats] = await Promise.all([
+      query(
+        `SELECT pm.material_id, sum(pm.actual_kg)::numeric AS kg
+           FROM plant_batch_materials pm
+           JOIN plant_batches pb ON pb.id = pm.batch_id
+          WHERE ${rngB.sql} AND pm.material_id IS NOT NULL
+          GROUP BY pm.material_id`, rngB.params),
+      query(
+        `SELECT e.material_id, sum(e.qty_kg)::numeric AS kg
+           FROM plant_manual_entries e
+          WHERE ${rngE.sql} AND e.material_id IS NOT NULL
+          GROUP BY e.material_id`, rngE.params),
+      query(`SELECT COALESCE(sum(batch_qty_m3),0)::numeric AS m3 FROM plant_batches pb WHERE ${rngB.sql}`, rngB.params),
+      query(`SELECT COALESCE(sum(e.qty_m3),0)::numeric AS m3 FROM plant_manual_entries e WHERE ${rngE.sql} AND e.material_id IS NULL`, rngE.params),
+      // Weighted-average landed rate per material, across all receipts to date.
+      query(
+        `SELECT o.material_id,
+                CASE WHEN sum(r.accepted_qty_kg) > 0
+                     THEN sum(r.accepted_qty_kg * r.landed_rate_per_kg) / sum(r.accepted_qty_kg)
+                END AS rate
+           FROM rm_receipts_effective r
+           JOIN rm_orders o ON o.id = r.order_id
+          WHERE r.landed_rate_per_kg IS NOT NULL
+          GROUP BY o.material_id`),
+      query(`SELECT id, name, opening_stock_rate_per_kg FROM rm_materials WHERE is_active = true`),
+    ]);
+
+    const producedM3 = Number(prodAuto.rows[0].m3) + Number(prodManual.rows[0].m3);
+    const rateBy = new Map(rates.rows.map((r) => [r.material_id, r.rate == null ? null : Number(r.rate)]));
+    const consumed = new Map();
+    for (const r of auto.rows) consumed.set(r.material_id, Number(r.kg));
+    for (const r of manual.rows) consumed.set(r.material_id, (consumed.get(r.material_id) || 0) + Number(r.kg));
+
+    const rows = [];
+    let totalCostPerM3 = 0;
+    for (const m of mats.rows) {
+      const kg = consumed.get(m.id);
+      if (!kg) continue;                                  // only materials actually consumed
+      const rate = rateBy.get(m.id) ?? (m.opening_stock_rate_per_kg != null ? Number(m.opening_stock_rate_per_kg) : null);
+      const costPerM3 = (rate != null && producedM3 > 0) ? (kg * rate) / producedM3 : null;
+      if (costPerM3 != null) totalCostPerM3 += costPerM3;
+      rows.push({
+        material_id: m.id, material_name: m.name,
+        consumed_kg: Math.round(kg * 100) / 100,
+        rate_per_kg: rate == null ? null : Math.round(rate * 10000) / 10000,
+        has_rate: rate != null,
+        cost_per_m3: costPerM3 == null ? null : Math.round(costPerM3 * 100) / 100,
+      });
+    }
+    rows.sort((a, b) => (b.cost_per_m3 || 0) - (a.cost_per_m3 || 0));
+    for (const r of rows) r.share_pct = totalCostPerM3 > 0 && r.cost_per_m3 != null ? Math.round((r.cost_per_m3 / totalCostPerM3) * 1000) / 10 : null;
+
+    res.json({
+      produced_m3: Math.round(producedM3 * 100) / 100,
+      total_cost_per_m3: Math.round(totalCostPerM3 * 100) / 100,
+      total_material_cost: Math.round(totalCostPerM3 * producedM3 * 100) / 100,
+      rows,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not compute cost per m³." });
+  }
+});
+
 // The recent loads, batches rolled up.
 router.get("/loads", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
-    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 400);
+    const rng = dateRange(req, "batch_date");
     const { rows } = await query(
       `SELECT batch_year, batch_no, plant_no,
               min(batched_at) AS started_at,
@@ -576,11 +668,11 @@ router.get("/loads", requireRole(...PLANT_ROLES), requirePermission("production.
               max(truck_no) AS truck_no, max(truck_driver) AS truck_driver,
               max(batcher_name) AS batcher_name, max(order_no) AS order_no
        FROM plant_batches
-       WHERE batch_date >= CURRENT_DATE - ($1::int - 1)
+       WHERE ${rng.sql}
        GROUP BY batch_year, batch_no, plant_no
        ORDER BY min(batched_at) DESC NULLS LAST
        LIMIT 300`,
-      [days]
+      rng.params
     );
     res.json(rows);
   } catch (err) {
