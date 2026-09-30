@@ -8148,3 +8148,91 @@ All five checkers pass (85 routes, both guards agree); build clean.
 
 Still to come in item 7: Mix Designs page (details/comparison/costing), silo capacity + level graphics, receipt→silo,
 the consumption→material-module unification, plant-vs-billed, and manual-only entry.
+
+## Round 168 — silo inventory: capacity, storage levels, receipt→silo fills (v9.97)
+
+The second slice of the Plant Production redesign, and the first that touches the stock model. A silo now
+has a **capacity**, a live **level**, and its stock rises from the **receipt** that filled it rather than from
+a separate hand-entry.
+
+**Schema (schema.sql + setup.js ALTERs, run on every setup).** `plant_silo_aliases.capacity_kg NUMERIC(14,2)`
+(optional; a silo without one shows a level but no percentage). `rm_receipts.not_in_silo BOOLEAN DEFAULT false`.
+`rm_receipts.silo_slot` already existed as a setup.js ALTER; it now has a handler. Everything is stored in **kg**
+— the unit the fills and the load cells both speak — and the frontend converts to/from MT (cement, fly-ash,
+aggregate) and kL (water, admixture) on the way in and out.
+
+**Receipt → silo fill (7c).** When Store receives a load they choose **which silo** it fills, or mark it
+**"not in silo"** (a drummed admixture bound for the lab or the store, or one of several admixtures not tied to a
+tank). A silo-assigned receipt writes a `plant_silo_fills` row **in the same transaction** as the receipt, so the
+level and — for a refillable silo — its material-at-time timeline both move from one action. `filled_at` keys on
+the arrival date, so a back-dated receipt lands at the right point in the timeline. A load **beyond tolerance**
+posts as `pending` and creates **no** fill; the fill is created later, at the confirmed quantity, when a Manager
+**confirms** it (also transactional). A "not in silo" load records the flag, creates no fill, and shows in its
+own list. `GET /material-module/receipt-silos` feeds the receive-form dropdown, offering the silos that hold the
+order's material first.
+
+**Capacity + storage levels (7d).** `GET /plant/silos` now returns a `levels` array — one card per mapped,
+stocked silo — with `filled_kg` (Σ fills), `used_kg` (Σ load-cell draw since the first fill), `level_kg`,
+`capacity_kg` and `pct`. Counting draw only from the first fill on is deliberate: a silo's load-cell history
+predates the app knowing its opening stock, so subtracting all of it would show a phantom negative. The Silos tab
+renders the approved design — a vertical fill gauge with the **quantity as the highlighted figure**, capacity
+beneath, % small, a low warning under 25%, and a per-type colour (**cement blue, admixture/water violet,
+aggregate tan**). Capacity is entered per row on the mapping table in MT/kL. `POST /plant/silos` takes
+`capacity_kg`; an **absent** field preserves the stored value (so saving a mapping never wipes a capacity set
+elsewhere), a **blank** one clears it, and a non-positive one is refused. A **"not in silo"** section lists those
+receipts by material, and the manual-fill form (opening declarations, unrecorded fills) now covers **all** mapped
+silos, not just the refillable ones.
+
+The `not_in_silo` summary reads raw `rm_receipts` (the column is newer than the `rm_receipts_effective`
+`SELECT *` view, which freezes its columns) with pending filtered explicitly — marked `receipts-raw:` for the
+checker.
+
+Verified live end-to-end on a fresh DB: setup created all three columns; capacity save/preserve/clear/reject;
+a 30 MT cement receipt into CEM created a 30,000 kg fill and a 60%-of-50 MT level; a "not in silo" load created
+no fill and appeared in its own list; 12,000 kg of load-cell draw dropped the level to 38%; an over-tolerance
+load posted pending with no fill, and confirming it created the deferred fill and raised the level to 76%.
+All five checkers pass (86 routes, both guards agree); frontend build clean.
+
+Known limitation: editing a **confirmed** receipt's quantity or silo (admin edit) does not yet adjust its fill —
+delete and re-enter for now. Still to come in item 7: Mix Designs page, the consumption→material-module
+unification, plant-vs-billed, and manual-only entry.
+
+## Round 169 — Mix Designs on the plant side: details, comparison, costing (v9.98)
+
+The third slice of the Plant Production redesign (item 7a). The lab already maintains full mix designs (grade,
+every ingredient, w/c, target strength, per-ingredient specific gravity, admixtures) with its own approval flow
+and PDF. This brings that data onto the plant page as three read-only views. Nothing here writes a design.
+
+**Details.** A design selector (all approved designs, standard first) and two tables: the design parameters
+(f′ck, target-mean strength, max aggregate, workability, density, w/c, status) and the ingredient table
+(cement, fly ash, water, the three aggregates and every admixture, each with its type/source, kg/m³ and specific
+gravity), plus the binder and aggregate totals. `GET /plant/mix-designs` and `/plant/mix-designs/:id`.
+
+**Comparison.** Every grade's standard approved design side by side — cement, fly ash, binder, water, w/c,
+total aggregate and admixture as a percentage of binder. `GET /plant/mix-designs-comparison`.
+
+**Costing.** On its own sub-tab, **design vs actual** per ingredient. Design ₹/m³ = design kg/m³ ×
+the ingredient's **weighted-average landed rate** (from `rm_receipts_effective`, falling back to
+`opening_stock_rate_per_kg`); actual ₹/m³ = **what the plant actually weighed per m³ for this grade** in the
+period × the same rate. The actual side sums `plant_batch_materials.actual_kg` over the batches whose recipe
+resolves to this design's grade — the resolve goes through `plant_recipe_aliases`, matching the batch's
+`recipe_code` normalised (upper-case, alphanumerics only) against the alias key, the same normalisation MixTrack
+uses. A grade with no mapped/poured batches in the period shows the design costing and a note rather than blank
+totals. One rate per ingredient keeps the table to a single readable Rate column (consumption-weighted across a
+component's materials, else a simple average). Money, so **Administrator only** (`material.stock-valuation`, the
+same gate as Cost/m³ — no new key, no REPAIR). Its own date-range control (7/30/90/365-day + custom), independent
+of the page's period selector. `GET /plant/mix-designs/:id/costing`.
+
+The Details and Comparison tabs are visible to anyone who can read plant production (`production.plant-data`);
+the Mix Designs tab sits alongside Production, Consumption, Silos and the rest.
+
+Verified live end-to-end on the test DB: an approved M30 standard design (320 cement / 60 fly ash / 158 water /
+790 sand / 690+460 coarse) rendered in Details and Comparison; costing over 10 m³ of M30 batches priced cement at
+its ₹5.00/kg landed rate (design 320 → ₹1,600/m³, actual 330 → ₹1,650) and sand at its ₹1.20/kg opening-stock
+fallback (design 790 → ₹948, actual 800 → ₹960), design total ₹2,548 vs actual ₹2,610 = +₹62/m³ over-batching;
+ingredients with no mapped material showed no rate and dropped out of the total; a past date range correctly
+returned the design costing with the actual side blank; bad ids gave 400/404. All five checkers pass (90 routes,
+both guards agree); build clean.
+
+Still to come in item 7: the consumption→material-module unification (E), plant-vs-billed (7g), and manual-only
+entry (D6).

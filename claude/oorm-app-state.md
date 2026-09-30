@@ -1,4 +1,44 @@
-# OORM App — Current State (as of Round 167, Ver. 9.96)
+# OORM App — Current State (as of Round 169, Ver. 9.98)
+
+**v9.98 (169) — Plant Production redesign, slice 3: Mix Designs page (item 7a).** Three read-only views of the
+lab's existing mix_designs data, on the plant page (new "Mix Designs" tab, gated on production.plant-data view).
+(1) **Details** — design selector (GET /plant/mix-designs, approved only, standard first) + GET /plant/mix-designs/:id
+(design row + mix_design_admixtures): parameters table + ingredient table (cement/fly ash/water/3 aggregates/admix,
+type-source, kg/m³, sp.gr) + binder/agg totals. (2) **Comparison** — GET /plant/mix-designs-comparison (standard
+approved per grade): cement/fly ash/binder/water/wc/total agg/admix% side by side. (3) **Costing** — GET
+/plant/mix-designs/:id/costing, **Administrator + material.stock-valuation** (money; same gate as Cost/m³, no new
+key). Per ingredient: design ₹/m³ = design kg/m³ × weighted-avg landed rate (rm_receipts_effective, fallback
+opening_stock_rate_per_kg); actual ₹/m³ = plant's weighed actual_kg per m³ **for this grade** ÷ grade m³ × same rate.
+**Grade resolution: plant_batches has NO resolved_mix_grade_id column** (the schema comment is misleading) — join
+plant_batches.recipe_code → plant_recipe_aliases via `upper(regexp_replace(recipe_code,'[^A-Za-z0-9]','','g'))` =
+ra.normalised (matches MixTrack's normaliseRecipe), ra.is_ignored=false, ra.mix_grade_id=grade. Until a recipe is
+mapped there, its batches don't count (has_actual=false → design shows, actual blank + note). One rate per ingredient
+(consumption-weighted else avg). Own date-range control (7/30/90/365/custom), independent of page period. Verified
+live: M30 design, cement ₹5/kg (design 320→₹1600, actual 330→₹1650), sand ₹1.2/kg opening fallback (790→₹948,
+800→₹960), totals ₹2548 vs ₹2610 = +₹62/m³; unmapped ingredients drop out; past range → actual blank; 400/404. 5
+checkers pass (90 routes); build clean. Remaining item-7: consumption→material unification (E/D3), plant-vs-billed
+(7g), manual-only entry (D6).
+
+
+**v9.97 (168) — Plant Production redesign, slice 2: silo inventory (capacity + levels + receipt→silo).** First
+stock-model change. Schema (schema.sql CREATE + setup.js ALTERs, both run every setup): `plant_silo_aliases.capacity_kg`
+(NUMERIC, optional); `rm_receipts.not_in_silo` (BOOLEAN default false); `rm_receipts.silo_slot` (pre-existing ALTER,
+now has a handler). All silo quantities stored in **kg**; frontend converts MT (cement/fly-ash/aggregate) / kL
+(water/admix). (7c) `materialModule` POST /receipts reads `silo_slot`+`not_in_silo`; a silo-assigned load writes a
+`plant_silo_fills` row **in the same transaction** (`pool.connect()` client BEGIN/COMMIT; db.js has no txn helper —
+first txn use). `filled_at`=received_date. A **pending** (over-tolerance) receipt makes **no** fill; the fill is created
+at confirmed qty when POST /receipts/:id/confirm settles it (also transactional — added `o.material_id` to its SELECT).
+`not_in_silo` → flag only, no fill. New `GET /material-module/receipt-silos` feeds the receive dropdown (order's material
+first). (7d) `GET /plant/silos` now returns `levels[]` (per mapped stocked silo: filled_kg=Σfills, used_kg=Σ load-cell
+draw **since first fill**, level_kg, capacity_kg, pct) and `not_in_silo[]` (raw rm_receipts, pending excluded, marked
+`receipts-raw:`). POST /plant/silos takes `capacity_kg`: **absent preserves**, blank clears, non-positive rejected.
+Frontend Silos tab: Capacity column on mapping table (MT/kL per kind); approved level cards (vertical gauge, qty
+highlighted, type colours cement #4E6E8E / admix #7A4BA8 / aggregate #B58A55, low<25%, over-drawn=red); "not in silo"
+section; manual-fill form now covers ALL mapped silos. **Verified live on fresh DB**: columns created; capacity
+preserve/clear/reject; 30 MT→CEM created a 30000kg fill, 60% level; not-in-silo made no fill + own list; 12000kg draw
+→38%; over-tolerance→pending no fill, confirm created deferred fill →76%. 5 checkers pass (86 routes); build clean.
+**Known limitation:** editing a confirmed receipt's qty/silo does NOT yet adjust its fill (delete + re-enter). Remaining
+item-7: Mix Designs page, consumption→material unification (E/D3), plant-vs-billed, manual-only entry (D6).
 
 **v9.96 (167) — Plant Production redesign, slice 1: date range filter + Cost/m³ (material).** Risk-free
 read-only additions. (7b) `dateRange(req,col)` helper in plant.js → from_date+to_date (YYYY-MM-DD) give
@@ -13,8 +53,18 @@ consumption AND production always = load-cell auto + operator manual; never drop
 coming consumption→material unification too.** DESIGN (mockup, approved): mix design page = 3 tabs (Details table /
 Comparison / Costing); silo levels = clean level cards, qty highlighted, colour by TYPE (cement blue / admix violet /
 aggregate tan), % low-warning amber<20 red<8. Remaining item-7: mix design page, silo capacity+levels, receipt→silo,
-consumption unification (E), plant-vs-billed, manual-only entry. Architectural decisions D2/D3/D6 still to confirm
-before building E/D.
+consumption unification (E), plant-vs-billed, manual-only entry.
+
+**ARCHITECTURAL DECISIONS — CONFIRMED by user (30 Sep):**
+- **D2 receipt→silo:** on receiving a material, assign it to a silo. A **"not in silo"** option is required and
+  behaves specially — used for admixtures bought in drums (they buy MULTIPLE admixtures, may not map to a silo) and
+  material taken for the LABORATORY. "Not in silo" → does NOT add to any silo's stock AND is NOT drawn from by plant
+  consumption; must be shown SEPARATELY (its own bucket, not mixed into silo levels).
+- **D3 consumption switch:** CONFIRMED — plant consumption (auto+manual) drives material stock; remove the material
+  module's separate consumption-entry page.
+- **D6 manual-only entry:** for when MCI370 was DOWN and concrete was mixed on manual controls — operator enters both
+  production and consumption manually for that period. Fallback mode, not a second plant.
+- Silo capacity unit MT (cement/aggregate) / kL (admix); costing rate = weighted-avg landed (recommendations accepted).
 
 ## Round 166c — refillable silo save (v9.95)
 
