@@ -57,7 +57,7 @@ const TD = { padding: "9px 12px" };
 
 // ---------------------------------------------------------------------------
 
-function Production({ days }) {
+function Production({ qs }) {
   const [data, setData] = useState(null);
   const [loads, setLoads] = useState([]);
   const [error, setError] = useState("");
@@ -65,13 +65,13 @@ function Production({ days }) {
   useEffect(() => {
     let alive = true;
     Promise.all([
-      apiRequest(`/plant/production?days=${days}`),
-      apiRequest(`/plant/loads?days=${days}`),
+      apiRequest(`/plant/production?${qs}`),
+      apiRequest(`/plant/loads?${qs}`),
     ])
       .then(([p, l]) => { if (alive) { setData(p); setLoads(l); } })
       .catch((e) => { if (alive) setError(e.message); });
     return () => { alive = false; };
-  }, [days]);
+  }, [qs]);
 
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
   // Round 166b — surface a load error instead of a frozen "Loading…": when the
@@ -157,17 +157,17 @@ function Production({ days }) {
 
 // ---------------------------------------------------------------------------
 
-function Consumption({ days }) {
+function Consumption({ qs }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let alive = true;
-    apiRequest(`/plant/consumption?days=${days}`)
+    apiRequest(`/plant/consumption?${qs}`)
       .then((d) => { if (alive) setData(d); })
       .catch((e) => { if (alive) setError(e.message); });
     return () => { alive = false; };
-  }, [days]);
+  }, [qs]);
 
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
   // Round 166b — surface a load error instead of a frozen "Loading…": when the
@@ -273,6 +273,71 @@ function Consumption({ days }) {
 }
 
 // ---------------------------------------------------------------------------
+function fmtINR(n) {
+  if (n == null) return "—";
+  return "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+// ---------------------------------------------------------------------------
+// Round 167 — Cost/m³ (material). Raw-material cost per m³ from the plant's
+// ACTUAL consumption (load-cell auto + operator manual) × each material's
+// weighted-average landed rate. Rates are money, so this tab is Administrator
+// only (gated on material.stock-valuation), like the material module.
+function CostPerM3({ qs }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    apiRequest(`/plant/cost-per-m3?${qs}`).then((d) => { if (alive) setData(d); }).catch((e) => { if (alive) setError(e.message); });
+    return () => { alive = false; };
+  }, [qs]);
+  if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
+  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  const anyMissing = data.rows.some((r) => !r.has_rate);
+  return (
+    <>
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 14 }}>
+        <div><div className="kpi-label">Produced</div><div style={{ fontSize: 22, fontWeight: 700 }}>{fmtM3(data.produced_m3)}</div></div>
+        <div><div className="kpi-label">Material cost</div><div style={{ fontSize: 22, fontWeight: 700 }}>{fmtINR(data.total_material_cost)}</div></div>
+        <div><div className="kpi-label">Cost/m³ – Material</div><div style={{ fontSize: 22, fontWeight: 700 }}>{fmtINR(data.total_cost_per_m3)}</div></div>
+      </div>
+      {data.produced_m3 <= 0 && (
+        <div className="card" style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 12 }}>
+          No production in this period, so a per-m³ cost cannot be computed.
+        </div>
+      )}
+      <div className="card" style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ background: "var(--concrete)" }}>
+            <th style={TH}>Material</th>
+            <th style={{ ...TH, textAlign: "right" }}>Consumed</th>
+            <th style={{ ...TH, textAlign: "right" }}>Rate ₹/kg</th>
+            <th style={{ ...TH, textAlign: "right" }}>₹ / m³</th>
+            <th style={{ ...TH, textAlign: "right" }}>Share</th>
+          </tr></thead>
+          <tbody>
+            {data.rows.map((r) => (
+              <tr key={r.material_id} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={TD}>{r.material_name}</td>
+                <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap" }}>{fmtKg(r.consumed_kg)}</td>
+                <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap", color: r.has_rate ? "inherit" : "var(--amber)" }}>{r.has_rate ? Number(r.rate_per_kg).toFixed(2) : "no rate"}</td>
+                <td style={{ ...TD, textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{r.cost_per_m3 == null ? "—" : fmtINR(r.cost_per_m3)}</td>
+                <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{r.share_pct == null ? "—" : `${r.share_pct}%`}</td>
+              </tr>
+            ))}
+            {!data.rows.length && <tr><td style={TD} colSpan={5}><span style={{ color: "var(--slate)" }}>No consumption in this period.</span></td></tr>}
+          </tbody>
+        </table>
+        <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.55, padding: "10px 12px" }}>
+          <b>Consumed</b> is the plant's load-cell figure <b>plus</b> the operator's manual entries — never the auto
+          figure alone. <b>Rate</b> is the weighted-average landed cost per material from the Material Module{anyMissing
+          ? "; a material shown “no rate” has no priced receipt yet, so it is left out of the total." : "."}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function Silos() {
   const [data, setData] = useState(null);
   const [fills, setFills] = useState([]);
@@ -776,10 +841,13 @@ function QcDelays({ canEdit }) {
 export default function PlantProduction() {
   const { can, ready } = usePermissions();
   const [tab, setTab] = useState("production");
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(30);          // a number, or "custom"
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [summary, setSummary] = useState(null);
 
   const canView = ready && can("production.plant-data", "view");
+  const canCost = ready && can("material.stock-valuation", "view");
   const canMap = ready && can("production.plant-mapping", "view");
   const canManualView = ready && can("production.plant-manual", "view");
   const canManualEdit = ready && can("production.plant-manual", "create");
@@ -813,6 +881,14 @@ export default function PlantProduction() {
   }
 
   const heartbeat = ago(summary?.last_sync_at);
+
+  // The period selector (and custom range) applies to the reporting tabs only.
+  const periodTab = tab === "production" || tab === "consumption" || tab === "cost";
+  // A valid custom range wins; otherwise fall back to the days preset (and to
+  // 30 while a custom range is half-filled).
+  const qs = (days === "custom" && from && to)
+    ? `from_date=${from}&to_date=${to}`
+    : `days=${days === "custom" ? 30 : days}`;
 
   return (
     <>
@@ -866,25 +942,46 @@ export default function PlantProduction() {
           {/* Round 159 — what the plant did not record. Shown to anyone who can
               read the plant data; only the Plant Operator can type into it. */}
           <button type="button" className={`btn-tab ${tab === "manual" ? "active" : ""}`} onClick={() => setTab("manual")}>Manual entry</button>
+          {canCost && (
+            <button type="button" className={`btn-tab ${tab === "cost" ? "active" : ""}`} onClick={() => setTab("cost")}>Cost/m³ – Material</button>
+          )}
           {canQcDelayView && (
             <button type="button" className={`btn-tab ${tab === "qc-delay" ? "active" : ""}`} onClick={() => setTab("qc-delay")}>QC delay</button>
           )}
-          {tab !== "silos" && tab !== "manual" && tab !== "qc-delay" && (
-            <select aria-label="Period" value={days} onChange={(e) => setDays(Number(e.target.value))}
-                    style={{ marginLeft: "auto", fontSize: 13 }}>
-              <option value={1}>Today</option>
-              <option value={7}>Last 7 days</option>
-              <option value={30}>Last 30 days</option>
-              <option value={90}>Last 90 days</option>
-            </select>
+          {periodTab && (
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <select aria-label="Period" value={days}
+                      onChange={(e) => setDays(e.target.value === "custom" ? "custom" : Number(e.target.value))}
+                      style={{ fontSize: 13 }}>
+                <option value={1}>Today</option>
+                <option value={7}>Last 7 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={90}>Last 90 days</option>
+                <option value="custom">Custom range…</option>
+              </select>
+              {days === "custom" && (
+                <>
+                  <input type="date" aria-label="From" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5 }} />
+                  <span style={{ fontSize: 12, color: "var(--slate)" }}>to</span>
+                  <input type="date" aria-label="To" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5 }} />
+                </>
+              )}
+            </div>
           )}
         </div>
+
+        {days === "custom" && periodTab && !(from && to) && (
+          <div className="card" style={{ marginBottom: 16, fontSize: 12.5, color: "var(--slate)" }}>
+            Pick both a From and a To date; showing the last 30 days until then.
+          </div>
+        )}
 
         {tab === "silos" && canMap ? <Silos />
           : tab === "qc-delay" && canQcDelayView ? <QcDelays canEdit={canQcDelayEdit} />
           : tab === "manual" ? <Manual canEdit={canManualEdit} />
-          : tab === "consumption" ? <Consumption days={days} />
-          : <Production days={days} />}
+          : tab === "cost" && canCost ? <CostPerM3 qs={qs} />
+          : tab === "consumption" ? <Consumption qs={qs} />
+          : <Production qs={qs} />}
       </div>
     </>
   );
