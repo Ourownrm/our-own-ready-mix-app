@@ -2773,6 +2773,12 @@ ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS is_refillable BOOLEAN NO
 -- (routes/plant.js selects a.slot_name) failed with 42703 the first time it
 -- was opened. Additive and idempotent.
 ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS slot_name     VARCHAR(60);
+-- Round 168 — the silo's physical capacity in kg, so the Silos screen can show
+-- a filled percentage and a low warning. Optional, so no default and no
+-- back-fill: a silo without a size simply shows a level and no percentage until
+-- somebody enters one. Normalised to kg like the fills and the load-cell
+-- weights; the frontend converts MT/kL on the way in and out.
+ALTER TABLE plant_silo_aliases ADD COLUMN IF NOT EXISTS capacity_kg   NUMERIC(14,2);
 -- Round 166b — the same table, migrated by setup.js from its old name-keyed
 -- shape, still carries the legacy normalised/raw_sample columns as NOT NULL.
 -- The slot-keyed save (POST /plant/silos) never populates them, so the FIRST
@@ -2849,6 +2855,14 @@ CREATE INDEX IF NOT EXISTS idx_plant_manual_date ON plant_manual_entries(entry_d
 
 -- The receipt says which silo it filled, so the fill can be created from it.
 ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS silo_slot VARCHAR(20);
+-- Round 168 — some receipts are deliberately NOT tied to a silo. Admixtures are
+-- bought in drums and several kinds are held at once; a drum may go to the
+-- laboratory or sit in the store rather than into a dosing tank. Such a receipt
+-- must still be recorded (it is stock that was bought and paid for) but must not
+-- add to any silo's level, and it is shown in its own "not in silo" list rather
+-- than against a hopper. The flag is how Store says "this load is not going into
+-- a silo" as distinct from "nobody chose a silo yet".
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS not_in_silo BOOLEAN NOT NULL DEFAULT false;
 
 -- ROUND 159 — Solitaire is called MixTrack now. The plugin row is created once
 -- on first setup, so an installation that already has it keeps the old label

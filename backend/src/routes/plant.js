@@ -653,6 +653,227 @@ router.get("/cost-per-m3", requireRole("administrator"), requirePermission("mate
   }
 });
 
+// ---------------------------------------------------------------------------
+// ROUND 169 — the Mix Designs page (item 7a). Three read-only views of the
+// mix_designs data the lab already maintains, brought onto the plant side:
+// Details (one design in full), Comparison (every grade's standard design side
+// by side) and Costing (design kg/m³ vs what the plant actually weighed, each
+// priced at the material's landed rate). Nothing here writes — a design is
+// created and approved on the lab side; this is the plant's read of it.
+// ---------------------------------------------------------------------------
+
+// The design ingredients that have a fixed column on mix_designs, in the order
+// the page shows them. Admixture is handled separately (a design can carry
+// several, in mix_design_admixtures). material.mix_component ties a material to
+// one of these keys, which is how a design ingredient finds its rate and its
+// weighed-out actual.
+const MIX_COST_COMPONENTS = [
+  { key: "cement",        label: "Cement",             col: "cement_kgm3" },
+  { key: "fly_ash",       label: "Fly ash",            col: "fly_ash_kgm3" },
+  { key: "fine_agg",      label: "Fine aggregate",     col: "fine_agg_kgm3" },
+  { key: "coarse_20mm",   label: "20 mm coarse",       col: "coarse_20mm_kgm3" },
+  { key: "coarse_12_5mm", label: "12.5 mm coarse",     col: "coarse_12_5mm_kgm3" },
+];
+
+router.get("/mix-designs", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+  try {
+    const { rows } = await query(
+      `SELECT d.id, d.design_ref_code, d.revision, d.status, d.is_standard_for_grade,
+              d.fck_28day_mpa, g.id AS grade_id, g.name AS grade
+         FROM mix_designs d
+         JOIN mix_grades g ON g.id = d.mix_grade_id
+        WHERE d.status = 'approved'
+        ORDER BY g.name, d.is_standard_for_grade DESC, d.design_ref_code`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the mix designs." });
+  }
+});
+
+router.get("/mix-designs-comparison", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+  try {
+    const { rows } = await query(
+      `SELECT g.name AS grade, d.design_ref_code, d.is_standard_for_grade,
+              d.cement_kgm3, d.fly_ash_kgm3, d.total_binder_kgm3,
+              d.free_water_kgm3, d.wb_ratio, d.total_aggregate_kgm3,
+              (SELECT COALESCE(sum(a.qty_kgm3), 0) FROM mix_design_admixtures a WHERE a.mix_design_id = d.id) AS admix_kgm3
+         FROM mix_designs d
+         JOIN mix_grades g ON g.id = d.mix_grade_id
+        WHERE d.status = 'approved' AND d.is_standard_for_grade = true
+        ORDER BY d.cement_kgm3 NULLS LAST, g.name`
+    );
+    res.json(rows.map((r) => ({
+      ...r,
+      admix_pct: Number(r.total_binder_kgm3) > 0 ? (Number(r.admix_kgm3) / Number(r.total_binder_kgm3)) * 100 : null,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the comparison." });
+  }
+});
+
+router.get("/mix-designs/:id", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid mix design id." });
+  try {
+    const { rows } = await query(
+      `SELECT d.*, g.name AS grade FROM mix_designs d JOIN mix_grades g ON g.id = d.mix_grade_id WHERE d.id = $1`,
+      [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Mix design not found." });
+    const { rows: adm } = await query(
+      `SELECT type_brand, dosage_pct_of_binder, qty_kgm3, sp_gr FROM mix_design_admixtures WHERE mix_design_id = $1 ORDER BY sort_order, id`,
+      [id]
+    );
+    res.json({ design: rows[0], admixtures: adm });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the mix design." });
+  }
+});
+
+// Costing — money, so Administrator + the same valuation permission as Cost/m³.
+// Design side: design kg/m³ × the ingredient's landed rate. Actual side: what
+// the plant weighed per m³ FOR THIS GRADE'S BATCHES in the period (load-cell
+// actual_kg over batches whose recipe resolved to this design's grade, ÷ this
+// grade's m³), same rate. The gap between the two is the over/under-batching cost.
+router.get("/mix-designs/:id/costing", requireRole("administrator"), requirePermission("material.stock-valuation", "view"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid mix design id." });
+  try {
+    const { rows: dr } = await query(`SELECT * FROM mix_designs d WHERE d.id = $1`, [id]);
+    if (!dr.length) return res.status(404).json({ error: "Mix design not found." });
+    const design = dr[0];
+    const gradeId = design.mix_grade_id;
+    const rng = dateRange(req, "pb.batch_date");
+    const gradeParam = rng.params.length + 1;
+
+    const [actual, gradeM3, admDesign, rates] = await Promise.all([
+      // What the plant weighed out, per material, for this grade's batches in
+      // range. material_id is already resolved against the silo mappings. The
+      // batch's grade comes from plant_recipe_aliases — its recipe code
+      // normalised (upper-case, alphanumerics only, matching normaliseRecipe on
+      // the MixTrack side) against the alias table's key. Until a recipe is
+      // mapped there, its batches simply don't count toward any grade here.
+      query(
+        `SELECT pm.material_id, m.mix_component, sum(pm.actual_kg)::numeric AS kg
+           FROM plant_batch_materials pm
+           JOIN plant_batches pb ON pb.id = pm.batch_id
+           JOIN plant_recipe_aliases ra
+             ON ra.normalised = upper(regexp_replace(coalesce(pb.recipe_code, ''), '[^A-Za-z0-9]', '', 'g'))
+            AND ra.is_ignored = false
+           JOIN rm_materials m ON m.id = pm.material_id
+          WHERE ${rng.sql} AND ra.mix_grade_id = $${gradeParam}
+            AND pm.material_id IS NOT NULL
+          GROUP BY pm.material_id, m.mix_component`,
+        [...rng.params, gradeId]
+      ),
+      query(
+        `SELECT COALESCE(sum(pb.batch_qty_m3), 0)::numeric AS m3
+           FROM plant_batches pb
+           JOIN plant_recipe_aliases ra
+             ON ra.normalised = upper(regexp_replace(coalesce(pb.recipe_code, ''), '[^A-Za-z0-9]', '', 'g'))
+            AND ra.is_ignored = false
+          WHERE ${rng.sql} AND ra.mix_grade_id = $${gradeParam}`,
+        [...rng.params, gradeId]
+      ),
+      query(`SELECT COALESCE(sum(qty_kgm3), 0)::numeric AS kgm3 FROM mix_design_admixtures WHERE mix_design_id = $1`, [id]),
+      // Weighted-average landed rate per material (all receipts to date), with
+      // its mix_component and the opening-stock rate as a fallback.
+      query(
+        `SELECT m.id AS material_id, m.name, m.mix_component, m.opening_stock_rate_per_kg,
+                (SELECT CASE WHEN sum(r.accepted_qty_kg) > 0
+                             THEN sum(r.accepted_qty_kg * r.landed_rate_per_kg) / sum(r.accepted_qty_kg) END
+                   FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
+                  WHERE o.material_id = m.id AND r.landed_rate_per_kg IS NOT NULL) AS rate
+           FROM rm_materials m
+          WHERE m.is_active = true AND m.mix_component IS NOT NULL`
+      ),
+    ]);
+
+    const producedM3 = Number(gradeM3.rows[0].m3);
+    // Per material: its rate (weighted-avg landed, else opening-stock rate) and
+    // consumed kg, grouped so a component can weight several materials' rates.
+    const rateByMat = new Map();
+    for (const r of rates.rows) {
+      const rate = r.rate != null ? Number(r.rate) : (r.opening_stock_rate_per_kg != null ? Number(r.opening_stock_rate_per_kg) : null);
+      rateByMat.set(r.material_id, { rate, component: r.mix_component });
+    }
+    // Consumed kg by component, and by (component → material) for rate weighting.
+    const consumedByComponent = new Map();
+    const consumedByMat = new Map();
+    for (const a of actual.rows) {
+      const kg = Number(a.kg);
+      consumedByComponent.set(a.mix_component, (consumedByComponent.get(a.mix_component) || 0) + kg);
+      consumedByMat.set(a.material_id, kg);
+    }
+    // Materials grouped by component, for choosing/weighting a component's rate.
+    const matsByComponent = new Map();
+    for (const r of rates.rows) {
+      if (!matsByComponent.has(r.mix_component)) matsByComponent.set(r.mix_component, []);
+      matsByComponent.get(r.mix_component).push(r.material_id);
+    }
+
+    // One rate per ingredient: consumption-weighted across that component's
+    // materials where there is consumption, else a simple average of the rates
+    // that exist. Keeps the table to a single readable Rate column.
+    function componentRate(componentKey) {
+      const mats = matsByComponent.get(componentKey) || [];
+      let wSum = 0, wKg = 0, plainSum = 0, plainN = 0;
+      for (const mid of mats) {
+        const info = rateByMat.get(mid);
+        if (!info || info.rate == null) continue;
+        const kg = consumedByMat.get(mid) || 0;
+        if (kg > 0) { wSum += info.rate * kg; wKg += kg; }
+        plainSum += info.rate; plainN += 1;
+      }
+      if (wKg > 0) return wSum / wKg;
+      if (plainN > 0) return plainSum / plainN;
+      return null;
+    }
+
+    const rows = [];
+    let designTotal = 0, actualTotal = 0;
+    const ingredients = [
+      ...MIX_COST_COMPONENTS.map((c) => ({ ...c, designKg: design[c.col] != null ? Number(design[c.col]) : null })),
+      { key: "admixture", label: "Admixture", designKg: Number(admDesign.rows[0].kgm3) || 0 },
+    ];
+    for (const ing of ingredients) {
+      const rate = componentRate(ing.key);
+      const actualKg = consumedByComponent.has(ing.key) && producedM3 > 0
+        ? consumedByComponent.get(ing.key) / producedM3 : null;
+      const designCost = rate != null && ing.designKg != null ? rate * ing.designKg : null;
+      const actualCost = rate != null && actualKg != null ? rate * actualKg : null;
+      if (designCost != null) designTotal += designCost;
+      if (actualCost != null) actualTotal += actualCost;
+      rows.push({
+        key: ing.key, label: ing.label,
+        rate_per_kg: rate == null ? null : Math.round(rate * 10000) / 10000,
+        design_kg_m3: ing.designKg == null ? null : Math.round(ing.designKg * 1000) / 1000,
+        design_cost_m3: designCost == null ? null : Math.round(designCost * 100) / 100,
+        actual_kg_m3: actualKg == null ? null : Math.round(actualKg * 1000) / 1000,
+        actual_cost_m3: actualCost == null ? null : Math.round(actualCost * 100) / 100,
+      });
+    }
+
+    res.json({
+      design_ref_code: design.design_ref_code,
+      revision: design.revision,
+      grade_id: gradeId,
+      produced_m3: Math.round(producedM3 * 100) / 100,
+      has_actual: producedM3 > 0,
+      rows,
+      design_total_cost_m3: Math.round(designTotal * 100) / 100,
+      actual_total_cost_m3: producedM3 > 0 ? Math.round(actualTotal * 100) / 100 : null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not compute the mix design costing." });
+  }
+});
+
 // The recent loads, batches rolled up.
 router.get("/loads", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
@@ -746,7 +967,7 @@ async function reresolveSilos() {
 // ---------------------------------------------------------------------------
 router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "view"), async (req, res) => {
   try {
-    const [seen, aliases, materials, fills] = await Promise.all([
+    const [seen, aliases, materials, fills, notInSilo] = await Promise.all([
       // Keyed on the SLOT. slot_name is the panel's most recent word for it —
       // shown so a rename on the panel is visible rather than silent.
       query(
@@ -762,14 +983,20 @@ router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.
          ORDER BY sum(pm.actual_kg) DESC NULLS LAST`
       ),
       query(`SELECT a.id, a.slot, a.slot_name, a.material_id, a.is_ignored, a.is_refillable,
-                    m.name AS target, u.name AS mapped_by_name, a.mapped_at
+                    a.capacity_kg, m.name AS target, u.name AS mapped_by_name, a.mapped_at
              FROM plant_silo_aliases a
              LEFT JOIN rm_materials m ON m.id = a.material_id
              LEFT JOIN users u ON u.id = a.mapped_by
              ORDER BY a.slot`),
       query(`SELECT id, name FROM rm_materials WHERE is_active = true ORDER BY name`),
-      // Balance per refillable silo: everything put in, less everything the
-      // plant has weighed out since that fill.
+      // Balance per silo that has any fill: everything put in, less everything
+      // the plant has weighed out SINCE the first fill. Counting only
+      // post-first-fill consumption is deliberate — a silo's load-cell history
+      // reaches back long before the app knew its opening stock, and subtracting
+      // all of it would show a large phantom negative. From the first fill on,
+      // in minus out is a real running level. (Round 159 computed this for
+      // refillable silos alone; Round 168 keeps the same query but the frontend
+      // now shows a level for every silo, not just the refillable ones.)
       query(
         `SELECT f.slot,
                 (array_agg(f.material_id ORDER BY f.filled_at DESC))[1] AS current_material_id,
@@ -784,14 +1011,70 @@ router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.
          LEFT JOIN rm_materials m ON m.id = f.material_id
          GROUP BY f.slot`
       ),
+      // ROUND 168 — receipts explicitly NOT put into a silo (admixture drums for
+      // the lab or the store). Read from the raw table, not rm_receipts_effective:
+      // not_in_silo was added after that view was defined, and a SELECT * view
+      // freezes its columns. Pending loads are excluded here to match the silo
+      // level, which only counts confirmed stock.
+      query(
+        `SELECT o.material_id, m.name AS material_name,
+                sum(r.accepted_qty_kg)::numeric AS qty_kg,
+                count(*)::int AS receipts,
+                max(r.received_date) AS last_received
+         FROM rm_receipts r   -- receipts-raw: not_in_silo is newer than rm_receipts_effective (a SELECT * view freezes its columns), and pending is filtered explicitly on the next line
+         JOIN rm_orders o ON o.id = r.order_id
+         JOIN rm_materials m ON m.id = o.material_id
+         WHERE r.not_in_silo = true AND r.confirmation_status <> 'pending'
+         GROUP BY o.material_id, m.name
+         ORDER BY m.name`
+      ),
     ]);
 
     const balance = new Map(fills.rows.map((r) => [r.slot, r]));
+
+    // One level card per mapped silo that is stock (fixed material or refillable
+    // storage). "Not stock at all" hoppers are left out — there is nothing to
+    // level. level_kg is null until a silo has its first fill; pct is null until
+    // it also has a capacity, so the card shows a bare quantity in the meantime.
+    const levels = aliases.rows
+      .filter((a) => !a.is_ignored)
+      .map((a) => {
+        const b = balance.get(a.slot) || null;
+        const kind = SLOT_BY_KEY[a.slot]?.kind || null;
+        const capacity = a.capacity_kg != null ? Number(a.capacity_kg) : null;
+        const levelKg = b ? Number(b.filled_kg) - Number(b.used_kg) : null;
+        const pct = capacity && capacity > 0 && levelKg != null
+          ? Math.max(0, Math.min(100, (levelKg / capacity) * 100)) : null;
+        return {
+          slot: a.slot,
+          slot_name: a.slot_name,
+          label: SLOT_BY_KEY[a.slot]?.label || a.slot,
+          kind,
+          is_refillable: a.is_refillable,
+          material_id: a.is_refillable ? (b?.current_material_id || null) : a.material_id,
+          material_name: a.is_refillable ? (b?.current_material || null) : a.target,
+          capacity_kg: capacity,
+          filled_kg: b ? Number(b.filled_kg) : null,
+          used_kg: b ? Number(b.used_kg) : null,
+          level_kg: levelKg,
+          pct,
+          last_filled_at: b?.last_filled_at || null,
+        };
+      });
+
     res.json({
       seen: seen.rows.map((r) => ({ ...r, balance: balance.get(r.slot) || null })),
       aliases: aliases.rows,
       options: materials.rows,
       slots: PLANT_SLOTS.map((s) => ({ key: s.key, label: s.label, kind: s.kind })),
+      levels,
+      not_in_silo: notInSilo.rows.map((r) => ({
+        material_id: r.material_id,
+        material_name: r.material_name,
+        qty_kg: Number(r.qty_kg),
+        receipts: r.receipts,
+        last_received: r.last_received,
+      })),
     });
   } catch (err) {
     console.error(err);
@@ -815,19 +1098,43 @@ router.post("/silos", requireRole(...PLANT_ADMIN), requirePermission("production
     return res.status(400).json({ error: "Pick a material, mark the silo refillable, or mark it not stock." });
   }
 
+  // ROUND 168 — capacity in kg, optional. A blank value CLEARS it (a silo with
+  // no size shows a level but no percentage); the field being ABSENT from the
+  // request leaves whatever was there, so saving a material mapping from a form
+  // that has no capacity box never wipes a capacity set elsewhere. A "not stock
+  // at all" hopper never carries one — there is nothing to fill. Anything
+  // non-numeric or negative is refused rather than silently stored as garbage.
+  const capacityProvided = Object.prototype.hasOwnProperty.call(req.body || {}, "capacity_kg");
+  let capacityKg = null;
+  if (isIgnored) {
+    capacityKg = null;
+  } else if (capacityProvided) {
+    const rawCap = req.body.capacity_kg;
+    if (rawCap !== null && String(rawCap).trim() !== "") {
+      capacityKg = Number(rawCap);
+      if (!Number.isFinite(capacityKg) || capacityKg <= 0) {
+        return res.status(400).json({ error: "Capacity must be a number greater than zero, or left blank." });
+      }
+    }
+  } else {
+    const { rows: cur } = await query(`SELECT capacity_kg FROM plant_silo_aliases WHERE slot = $1`, [slot]);
+    capacityKg = cur.length && cur[0].capacity_kg != null ? Number(cur[0].capacity_kg) : null;
+  }
+
   try {
     if (targetId) {
       const { rows: ok } = await query(`SELECT 1 FROM rm_materials WHERE id = $1`, [targetId]);
       if (!ok.length) return res.status(400).json({ error: "That material no longer exists." });
     }
     await query(
-      `INSERT INTO plant_silo_aliases (slot, slot_name, material_id, is_ignored, is_refillable, mapped_by)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO plant_silo_aliases (slot, slot_name, material_id, is_ignored, is_refillable, capacity_kg, mapped_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (slot) DO UPDATE SET
          slot_name = EXCLUDED.slot_name, material_id = EXCLUDED.material_id,
          is_ignored = EXCLUDED.is_ignored, is_refillable = EXCLUDED.is_refillable,
+         capacity_kg = EXCLUDED.capacity_kg,
          mapped_by = EXCLUDED.mapped_by, mapped_at = now()`,
-      [slot, String(req.body?.slot_name || "").slice(0, 60) || null, targetId, isIgnored, isRefillable, req.user.id]
+      [slot, String(req.body?.slot_name || "").slice(0, 60) || null, targetId, isIgnored, isRefillable, capacityKg, req.user.id]
     );
     const touched = await reresolveSilos();
     res.json({ ok: true, slot, rows_updated: touched });

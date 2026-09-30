@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { query } from "../db.js";
+import { pool, query } from "../db.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
+import { SLOT_BY_KEY } from "../lib/plantSlots.js";
 // Round 146 — every route below now carries BOTH its original requireRole and
 // a requirePermission. A request must satisfy both, so granting somebody a
 // permission can never let them past a role guard: this can only tighten
@@ -599,9 +600,59 @@ function validateReceivedDate(value, res) {
   return s;
 }
 
+// ROUND 168 — the silos a receipt may be assigned to, for the receive form's
+// dropdown. Every mapped hopper that is stock (a fixed material or refillable
+// storage); the "not stock at all" ones are left out because a receipt would
+// never go into one. material_id lets the form show only the silos that hold
+// the material being received — cement into a cement silo, not a sand gate —
+// while still allowing any as a fallback. Refillable silos carry no material_id
+// of their own (they hold whatever was last put in), so the form matches those
+// on the receipt's material against their most recent fill instead.
+router.get("/receipt-silos", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "view"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT a.slot, a.slot_name, a.material_id, a.is_refillable, m.name AS material_name,
+            (SELECT (array_agg(f.material_id ORDER BY f.filled_at DESC))[1]
+               FROM plant_silo_fills f WHERE f.slot = a.slot) AS last_fill_material_id
+       FROM plant_silo_aliases a
+       LEFT JOIN rm_materials m ON m.id = a.material_id
+      WHERE a.is_ignored = false
+      ORDER BY a.slot`
+  );
+  res.json(rows.map((r) => ({
+    slot: r.slot,
+    slot_name: r.slot_name,
+    label: SLOT_BY_KEY[r.slot]?.label || r.slot,
+    kind: SLOT_BY_KEY[r.slot]?.kind || null,
+    is_refillable: r.is_refillable,
+    // The material this silo effectively holds: its fixed mapping, or for a
+    // refillable silo the material of its most recent fill.
+    material_id: r.material_id || r.last_fill_material_id || null,
+    material_name: r.material_name || null,
+  })));
+});
+
 router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "create"), async (req, res) => {
-  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date } = req.body;
+  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date, silo_slot, not_in_silo } = req.body;
   if (!order_id) return res.status(400).json({ error: "Select the order this receipt is against." });
+
+  // ROUND 168 — where this load goes: into a silo, or explicitly not into one.
+  //
+  // notInSilo wins if set (a drum of admixture bound for the lab, or held in the
+  // store): the receipt is recorded and counts as stock bought, but adds to no
+  // silo and shows in its own "not in silo" list. Otherwise, if a silo is named,
+  // the load fills that hopper and a plant_silo_fills row is written alongside
+  // the receipt so the silo's level and — for a refillable silo — its
+  // material-at-time timeline both move from this one action. A receipt with
+  // neither is left untracked, exactly as before this round: nothing forces a
+  // silo here, so diesel, oil and the like still post cleanly.
+  const notInSilo = not_in_silo === true;
+  let siloSlot = null;
+  if (!notInSilo && silo_slot !== undefined && silo_slot !== null && String(silo_slot).trim() !== "") {
+    siloSlot = String(silo_slot).trim();
+    if (!Object.prototype.hasOwnProperty.call(SLOT_BY_KEY, siloSlot)) {
+      return res.status(400).json({ error: "That is not a silo this plant has." });
+    }
+  }
   if (!supplier_qty || Number(supplier_qty) <= 0) return res.status(400).json({ error: "Enter the supplier's invoice/DC quantity." });
 
   // ROUND 162 — the arrival date. Left blank it is today; a back-dated entry
@@ -717,19 +768,52 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
     }
   }
 
-  const { rows } = await query(
-    `INSERT INTO rm_receipts   -- receipts-raw: the write itself
-       (order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, accepted_qty_kg, transporter_id,
-        freight_rate, freight_basis, vehicle_number, challan_number, short_qty, debit_note_amount,
-        landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason,
-        accepted_basis, variance_qty, variance_pct, confirmation_status, received_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
-    [order_id, supplier_qty, weighbridge_weight_kg || null, finalAcceptedQty, acceptedQtyKg,
-      transporter_id || order.transporter_id || null, useFreightRate || null, useFreightBasis || null,
-      vehicle_number || null, challan_number || null, shortQty, debit_note_amount || null,
-      landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null,
-      acceptedBasis, varianceQty, variancePct, confirmationStatus, receivedDate]
-  );
+  // ROUND 168 — the receipt and (when a silo is named) its fill are written in
+  // ONE transaction. They are two facts about a single event — this load
+  // arrived, and it went into that hopper — and stock would be wrong if one
+  // landed without the other. A pending receipt (beyond tolerance, awaiting a
+  // Manager) does NOT create a fill: it counts for nothing until confirmed, and
+  // the silo level draws from confirmed loads only, matching the effective view.
+  const client = await pool.connect();
+  let rows;
+  try {
+    await client.query("BEGIN");
+    ({ rows } = await client.query(
+      `INSERT INTO rm_receipts   -- receipts-raw: the write itself
+         (order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, accepted_qty_kg, transporter_id,
+          freight_rate, freight_basis, vehicle_number, challan_number, short_qty, debit_note_amount,
+          landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason,
+          accepted_basis, variance_qty, variance_pct, confirmation_status, received_date,
+          silo_slot, not_in_silo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,
+      [order_id, supplier_qty, weighbridge_weight_kg || null, finalAcceptedQty, acceptedQtyKg,
+        transporter_id || order.transporter_id || null, useFreightRate || null, useFreightBasis || null,
+        vehicle_number || null, challan_number || null, shortQty, debit_note_amount || null,
+        landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null,
+        acceptedBasis, varianceQty, variancePct, confirmationStatus, receivedDate,
+        siloSlot, notInSilo]
+    ));
+
+    if (siloSlot && !needsConfirmation) {
+      // filled_at keys on the arrival date, not the typing time, so a back-dated
+      // receipt sits at the right point in the silo's timeline (see
+      // siloMaterialAt in routes/plant.js). Time is left at IST midnight of that
+      // date, which is fine: fills and batches are ordered by day here.
+      await client.query(
+        `INSERT INTO plant_silo_fills
+           (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)
+         VALUES ($1,$2,$3,$4::date::timestamptz,$5,false,NULL,$6,$7)`,
+        [siloSlot, order.material_id, rows[0].id, receivedDate, acceptedQtyKg,
+          "From receipt #" + rows[0].id, req.user.id]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 
   res.status(201).json({
     ...rows[0],
@@ -938,7 +1022,7 @@ router.post("/receipts/:id/confirm", requireRole(...CONFIRM_ROLES), requirePermi
     const { rows: found } = await query(
       // receipts-raw: confirming is what takes a receipt out of 'pending'
       `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.freight_rate AS order_freight_rate,
-              o.freight_basis AS order_freight_basis, m.kg_per_purchase_unit
+              o.freight_basis AS order_freight_basis, o.material_id AS order_material_id, m.kg_per_purchase_unit
        FROM rm_receipts r   -- receipts-raw: confirming is what takes a receipt out of 'pending'
        JOIN rm_orders o ON o.id = r.order_id
        JOIN rm_materials m ON m.id = o.material_id
@@ -983,20 +1067,45 @@ router.post("/receipts/:id/confirm", requireRole(...CONFIRM_ROLES), requirePermi
     const variancePct = Number(r.supplier_qty) > 0
       ? varianceQty / Number(r.supplier_qty) * 100 : 0;
 
-    const { rows } = await query(
-      // receipts-raw: the write itself
-      `UPDATE rm_receipts
-          SET accepted_qty = $2, accepted_qty_kg = $3, landed_rate_per_kg = $4,
-              short_qty = CASE WHEN $5::numeric > 0 THEN $5::numeric ELSE NULL END,
-              variance_qty = $5, variance_pct = $6, accepted_basis = $7,
-              confirmation_status = 'confirmed', confirmed_by = $8, confirmed_at = now(),
-              confirm_note = $9
-        WHERE id = $1 AND confirmation_status = 'pending'
-        RETURNING *`,
-      [id, acceptedQty, acceptedQtyKg, landedRatePerKg, varianceQty,
-       Number(variancePct.toFixed(3)), basis, req.user.id,
-       String(req.body?.note || "").trim() || null]
-    );
+    // ROUND 168 — the fill was deferred while this receipt was pending (a load
+    // beyond tolerance counts for nothing until settled). Confirming it is the
+    // moment it becomes real stock, so if it was assigned to a silo the fill is
+    // created NOW, at the confirmed quantity, in the same transaction as the
+    // settle. not_in_silo receipts never make one.
+    const client = await pool.connect();
+    let rows;
+    try {
+      await client.query("BEGIN");
+      ({ rows } = await client.query(
+        // receipts-raw: the write itself
+        `UPDATE rm_receipts
+            SET accepted_qty = $2, accepted_qty_kg = $3, landed_rate_per_kg = $4,
+                short_qty = CASE WHEN $5::numeric > 0 THEN $5::numeric ELSE NULL END,
+                variance_qty = $5, variance_pct = $6, accepted_basis = $7,
+                confirmation_status = 'confirmed', confirmed_by = $8, confirmed_at = now(),
+                confirm_note = $9
+          WHERE id = $1 AND confirmation_status = 'pending'
+          RETURNING *`,
+        [id, acceptedQty, acceptedQtyKg, landedRatePerKg, varianceQty,
+         Number(variancePct.toFixed(3)), basis, req.user.id,
+         String(req.body?.note || "").trim() || null]
+      ));
+      if (rows.length && r.silo_slot && !r.not_in_silo) {
+        await client.query(
+          `INSERT INTO plant_silo_fills
+             (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)
+           VALUES ($1,$2,$3,$4::date::timestamptz,$5,false,NULL,$6,$7)`,
+          [r.silo_slot, r.order_material_id, id, r.received_date, acceptedQtyKg,
+            "From receipt #" + id + " (confirmed)", req.user.id]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
     if (!rows.length) return res.status(409).json({ error: "Somebody settled this receipt first. Reload the queue." });
     res.json(rows[0]);
   } catch (err) {

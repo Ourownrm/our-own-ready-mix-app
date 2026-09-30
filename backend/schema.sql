@@ -2820,6 +2820,13 @@ CREATE TABLE plant_silo_aliases (
   -- instead of from material_id, because CEM1/2/3 hold whatever was last put
   -- in them. See plant_silo_fills.
   is_refillable BOOLEAN NOT NULL DEFAULT false,
+  -- ROUND 168 — the silo's physical capacity, in kg, so the Silos screen can
+  -- show a filled percentage and warn when a hopper is running low. Optional:
+  -- an unmapped or newly-mapped silo simply shows a level with no percentage
+  -- until somebody enters its size. Cement/fly-ash are bought in MT and water
+  -- in kL, but everything here is normalised to kg (the unit the fills and the
+  -- load cells both speak), so the frontend converts on the way in and out.
+  capacity_kg  NUMERIC(14,2),
   mapped_by    INTEGER REFERENCES users(id),
   mapped_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (is_ignored OR is_refillable OR material_id IS NOT NULL)
