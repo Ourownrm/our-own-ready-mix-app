@@ -1,4 +1,37 @@
-# OORM App — Current State (as of Round 169, Ver. 9.98)
+# OORM App — Current State (as of Round 171, Ver. 10.00)
+
+**v10.00 (171) — Recipe Master READ: MCI370's recipes copied into the app (Stage 2 of QC Recipe Master; see
+claude/mci370-recipe-master.md).** Schema: `plant_recipes` (code UNIQUE, name, mixing_time, mixer_capacity,
+mass_weight, the %s, cost_per_m3_plant, deleted_flag, MCI370 audit cols plant_creater/modifier/dates/user_level,
+source_hash) + `plant_recipe_targets` (recipe_id, slot, target — one per slot in use). `RECIPE_TARGET_COLUMNS` in
+lib/plantSlots.js maps slot key → Recipe_Master `*_Target` column (agent has a hand-kept mirror). **Agent v1.1**:
+reads `SELECT * FROM Recipe_Master` every cycle (before batch flow, independent/try-caught), maps to slot keys,
+POSTs `/plant/recipes/sync`. Endpoints in plant.js: `POST /recipes/sync` (agent auth — **moved ABOVE
+router.use(requireAuth)** with batch /sync; upsert + rewrite targets in one txn; hash dedup via source_hash);
+`GET /recipes` (list + binder/water/wc + cost/m3); `GET /recipes/:id` (recipe + targets in PLANT_SLOTS order, each
+with plant slot_name, mapped material, landed rate, ₹/m³). Cost = target × weighted-avg landed rate (fallback
+opening rate) via slot→material map (`slotMaterialMap` handles refillable→latest fill); unpriced slot →
+cost_incomplete. Reads gated production.plant-data view; cost columns only when material.stock-valuation. Frontend:
+QcMixDesigns.jsx now tabbed **Mix Designs | Recipe Master**; page retitled "Mix Designs & Recipes"; nav labels
+updated. **Verified live vs REAL MCI70_batch.Mdb** (mdbtools): 22 recipes synced (22 ins, re-sync 22 unchanged);
+M30 B = Cement1 250 + Cement3 100 + Gate2/3/4 + Water1 150 + Adm1 1.4 → ₹4051.54/m³ (hand-checked), wc 0.429, water
+unpriced→flagged. 5 checkers pass (92 routes); build clean. **Next: Stage 3** = password-gated edit + write-back to
+MCI370 (agent's first WRITE path; all fields incl code/name/slot on-off; row backup + audit + write MCI370 modifier
+cols; plant-wide edit password resettable by Super Admin; careful Recipe_Code rename).
+
+
+**v9.99 (170) — Mix Designs moved from Plant Production into Quality Control (Stage 1 of the QC Recipe Master work;
+see claude/mci370-recipe-master.md).** New page `QcMixDesigns.jsx` at route `/mix-designs`, roles
+administrator/manager/qc_engineer/lab_technician. Keeps **Details + Costing**, **drops Comparison**. Components
+(MixDesignDetails, MixDesignCosting, MixDesigns) moved out of PlantProduction.jsx (with local TH/TD/fmtINR/fmtRate/
+fmtKgm3); PlantProduction's "Mix Designs" tab + render branch removed. Backend `/plant/mix-designs*` endpoints
+UNCHANGED (same perms: production.plant-data view; Costing = administrator + material.stock-valuation). Nav: added to
+Quality Control module in adminScreens.js ("Mix Designs & Costing", to:/mix-designs) + a link on the QcEngineer page.
+No backend/schema change; 5 checkers pass (90 routes); build clean (309 modules). **Next: Stage 2** = Recipe Master
+READ (agent syncs MCI370 Recipe_Master; list + full recipe view + cost/m³); **Stage 3** = password-gated edit +
+write-back to MCI370 (agent's first write path; all fields incl code/name/slot on-off; row backup + audit + fill
+MCI370 modifier cols; plant-wide edit password resettable by Super Admin).
+
 
 **v9.98 (169) — Plant Production redesign, slice 3: Mix Designs page (item 7a).** Three read-only views of the
 lab's existing mix_designs data, on the plant page (new "Mix Designs" tab, gated on production.plant-data view).

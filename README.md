@@ -8236,3 +8236,64 @@ both guards agree); build clean.
 
 Still to come in item 7: the consumption→material-module unification (E), plant-vs-billed (7g), and manual-only
 entry (D6).
+
+## Round 170 — Mix Designs moves into Quality Control (v9.99)
+
+First slice of the QC Recipe Master work (see `claude/mci370-recipe-master.md`). The Mix Designs page built in
+Round 169 lived as a tab inside Plant Production; a mix design is quality data, so it now has its own page under
+**Quality Control**.
+
+**The move.** New page `QcMixDesigns.jsx` at route **`/mix-designs`**, guarded for
+`administrator, manager, qc_engineer, lab_technician`. It keeps **Details** and **Costing** and **drops the
+Comparison tab** (owner's call). The MixDesignDetails / MixDesignCosting / MixDesigns components moved out of
+`PlantProduction.jsx` into the new file (with their own local `TH/TD/fmtINR/fmtRate/fmtKgm3`); the "Mix Designs" tab
+and its render branch were removed from Plant Production. The `/plant/mix-designs*` backend endpoints are unchanged
+— same data, same permissions (`production.plant-data` view for read; Costing still Administrator +
+`material.stock-valuation`).
+
+**Reaching it.** Added to the Quality Control module in `adminScreens.js` as "Mix Designs & Costing" (`to:
+/mix-designs`) for the admin grid, and a "Mix Designs & Costing →" link on the QC Engineer page so that role gets
+there directly.
+
+No backend change, so no schema/guard impact; all five checkers still pass (90 routes), frontend build clean (309
+modules). This is Stage 1 of three: next is the Recipe Master **read** (agent syncs MCI370's `Recipe_Master` in,
+list + full recipe view + cost/m³), then the password-gated **edit + write-back** to MCI370.
+
+## Round 171 — Recipe Master (read): the plant's recipes, copied into the app (v10.00)
+
+Stage 2 of the QC Recipe Master work (`claude/mci370-recipe-master.md`). MCI370 calls a mix a "Recipe" and keeps
+them in its `Recipe_Master` table; this round copies them into the app so Quality Control can see and cost every
+recipe. Read-only — the password-gated write-back is the next stage.
+
+**Schema.** `plant_recipes` (one row per recipe: code, name, mixing time, mixer capacity, mass, the various
+percentages, MCI370's own `Cost_Per_Mtr_Cube`, and its own audit columns — Creater/Modifier name, dates, user
+level — carried verbatim) and `plant_recipe_targets` (recipe_id, slot, target — one row per weigh-slot in use,
+keyed on our slot keys). `RECIPE_TARGET_COLUMNS` in `lib/plantSlots.js` maps each slot key to its `Recipe_Master`
+`*_Target` column (read out of the real table: Gate1–6, Cement1–4, Filler, Silica, slurry, Water1–2, and the four
+admixture dosing lines; pigment has no target column).
+
+**Agent (v1.1).** `mci370-agent` now reads `Recipe_Master` every cycle (before the batch flow, so it runs on a
+quiet day too), maps each row's target columns to our slots, and POSTs to `POST /plant/recipes/sync`. The sync is
+independent of batch syncing — a recipe failure is logged, never fatal. The app dedupes by a content hash, so an
+unchanged recipe is a no-op.
+
+**Endpoints.** `POST /plant/recipes/sync` (agent-authenticated, declared above `requireAuth` with the batch sync;
+upserts recipes + rewrites their targets in one transaction, hash-dedup). `GET /plant/recipes` (list with computed
+binder/water/**w/c** and **cost/m³**). `GET /plant/recipes/:id` (full recipe + its targets in fixed plant-slot
+order, each with the plant's own slot name, the mapped material, the landed **rate** and the **₹/m³**). Cost =
+target × the material's weighted-average landed rate (fallback opening-stock rate), via the silo→material mapping;
+a slot with no priced material drops out and the recipe is flagged `cost_incomplete`. Reads are gated on
+`production.plant-data` view (same as the rest of plant data); the cost columns render only for users with
+`material.stock-valuation`.
+
+**Frontend.** The Quality Control page (`/mix-designs`, Round 170) gains a top-level **Recipe Master** tab
+alongside Mix Designs: a recipe list (code, w/c, binder, cost/m³) and a detail pane (settings + the target table
+under the plant's own slot names, with rate and ₹/m³ for those who may see money, and MCI370's "last changed"
+line).
+
+Verified live against the **real plant database** (`MCI70_batch.Mdb`, read with mdbtools): the 22 real recipes
+synced (22 inserted, re-sync 22 unchanged — hash dedup works); M30 B came through with Cement1 250 + Cement3 100,
+Gate2/3/4 aggregates, Water1 150 and Adm1 1.4, priced to **₹4,051.54/m³** (matching by hand), w/c 0.429, with the
+unpriced water correctly flagged. All five checkers pass (92 routes); frontend build clean.
+
+Next: Stage 3 — the password-gated **edit + write-back** to MCI370 (the agent's first write path).

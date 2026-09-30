@@ -52,7 +52,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.0";
+const AGENT_VERSION = "1.1";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CONFIG_PATH = process.env.MCI_CONFIG || path.join(__dirname, "config.json");
@@ -335,6 +335,71 @@ async function post(cfg, mixes) {
   return JSON.parse(text);
 }
 
+// ---------------------------------------------------------------------------
+// ROUND 171 — the Recipe Master. MCI370 keeps its mixes in Recipe_Master, one
+// row per recipe with a *_Target weigh-slot column each. We read the table and
+// send it to the app, which keeps its own copy for Quality Control to see and
+// cost. Recipes change rarely, so this runs every cycle and the app dedupes by
+// a content hash — an unchanged recipe costs one comparison.
+// ---------------------------------------------------------------------------
+// The Recipe_Master column that holds each slot's target weight. This mirrors
+// RECIPE_TARGET_COLUMNS in the app's lib/plantSlots.js — kept in step by hand,
+// because the agent is a standalone script that does not import the app.
+const RECIPE_TARGET_COLUMNS = {
+  gate1: "Gate1_Target", gate2: "Gate2_Target", gate3: "Gate3_Target",
+  gate4: "Gate4_Target", gate5: "Gate5_Target", gate6: "Gate6_Target",
+  cement1: "Cement1_Target", cement2: "Cement2_Target", cement3: "Cement3_Target", cement4: "Cement4_Target",
+  filler1: "Filler_Target", silica: "Silica_Target", slurry: "slurry_Target",
+  water1: "Water1_Target", water2: "Water2_Target",
+  adm1a: "Adm1_Target1", adm1b: "Adm1_Target2", adm2a: "Adm2_Target1", adm2b: "Adm2_Target2",
+};
+
+function toRecipe(row) {
+  const targets = {};
+  for (const [slot, col] of Object.entries(RECIPE_TARGET_COLUMNS)) {
+    const t = num(row[col]);
+    if (t !== null && t !== 0) targets[slot] = t;
+  }
+  const join = (d, t) => [str(d), str(t)].filter(Boolean).join(" ") || null;
+  return {
+    recipe_code: str(row.Recipe_Code),
+    recipe_name: str(row.Recipe_Name),
+    strength: num(row.Strength),
+    consistancy: str(row.Consistancy),
+    mixing_time: num(row.Mixing_Time),
+    mixer_capacity: num(row.Mixer_Capacity),
+    mass_weight: num(row.mass_weight),
+    premix_time: num(row.PreMixTime),
+    dry_mix_time: num(row.Dry_Mix_Time),
+    drymix_pct: num(row.DryMix_in_Perc),
+    wetmix_pct: num(row.WetMix_in_perc),
+    water_ice_pct: num(row.water_ice_percent),
+    water_slurry_pct: num(row.water_slurry_percent),
+    cement_water_pct: num(row.cement_water_Percentage),
+    cement_filler_pct: num(row.cement_filler_percentage),
+    cost_per_m3_plant: num(row.Cost_Per_Mtr_Cube),
+    deleted_flag: str(row.Deleted_Rec_Flag),
+    plant_creater_name: str(row.Creater_Name),
+    plant_created_at: join(row.Created_Date, row.Created_Time),
+    plant_modifier_name: str(row.Modifier_Name),
+    plant_modified_at: join(row.Modified_Date, row.Modified_Time),
+    plant_modified_user_level: str(row.Modified_User_Level),
+    targets,
+  };
+}
+
+async function postRecipes(cfg, recipes) {
+  const res = await fetch(new URL("/api/plant/recipes/sync", cfg.appUrl).toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-plant-key": cfg.apiKey },
+    body: JSON.stringify({ agent_version: AGENT_VERSION, recipes }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`app replied ${res.status}: ${text.slice(0, 300)}`);
+  return JSON.parse(text);
+}
+
 // Access wants #mm/dd/yyyy# literals in a WHERE clause, and is unforgiving
 // about it — a plain 'yyyy-mm-dd' string silently matches nothing rather than
 // erroring, which would look exactly like a quiet plant.
@@ -364,6 +429,18 @@ async function cycle(cfg, state) {
     ]);
 
     if (!names) log("note: NameSetUp is empty — silo names will be blank until the plant names its hoppers in MCI370.");
+
+    // Recipe Master sync — every cycle, before the batch flow, so it runs even
+    // on a quiet day with no new batches. A failure here is logged but never
+    // stops batch syncing: the two are independent.
+    try {
+      const recRows = await queryMdb(staged.readPath, "SELECT * FROM Recipe_Master");
+      const recipes = recRows.map(toRecipe).filter((r) => r.recipe_code);
+      const rr = await postRecipes(cfg, recipes);
+      log(`recipes: ${rr.received} sent — +${rr.inserted} new, ${rr.updated} changed, ${rr.unchanged} unchanged.`);
+    } catch (err) {
+      logError("recipe sync failed (batch sync is unaffected):", err.message);
+    }
 
     if (!mixRows.length) {
       const r = await post(cfg, []);
