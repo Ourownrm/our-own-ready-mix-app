@@ -8123,3 +8123,28 @@ had the three-way check `(is_ignored OR is_refillable OR material_id IS NOT NULL
 database never got it. Fixed by dropping and re-adding the constraint (Postgres auto-names a single
 inline CHECK `<table>_check`). Reproduced against the old table shape and verified: refillable, fixed
 material and not-stock all save; v9.94's slot_name/NOT-NULL fixes and this together close the gap.
+
+## Round 167 — date range filter + Cost/m³ (material) (v9.96)
+
+First slice of the Plant Production redesign — the two risk-free, read-only additions, no stock-model change.
+
+**Date from–to filter (7b).** Production, Consumption and the new Cost tab keep the 1/7/30/90-day presets and
+gain a **Custom range**. A new `dateRange(req, col)` helper in `plant.js` returns a WHERE fragment + params:
+`from_date`+`to_date` (both valid YYYY-MM-DD) → `col BETWEEN …`, else the `days` preset as before. Applied to
+`/plant/production`, `/plant/consumption`, `/plant/loads`, `/plant/cost-per-m3`. IST is handled by db.js's
+session timezone, so the day boundaries are the plant's.
+
+**Cost/m³ – Material (7f).** New `GET /plant/cost-per-m3` and a new tab. For the period, each material's
+**consumed kg = load-cell auto (`plant_batch_materials.actual_kg`) + operator manual (`plant_manual_entries`)** —
+never the auto figure alone — × the material's **weighted-average landed rate** (from `rm_receipts_effective` via
+`rm_orders`, falling back to `opening_stock_rate_per_kg`), divided by the **m³ produced (batches + manual
+production)**. Returns per-material ₹/m³, share, and the totals. A material with no priced receipt shows "no rate"
+and is left out of the total. Rates are money, so the endpoint and tab are **Administrator only**
+(`material.stock-valuation` — the same gate as material valuation, so no new permission key and no REPAIR).
+
+Verified live end-to-end: manual-only (produced 5, consumed 2000 → ₹2,400/m³), auto+manual combined (consumed
+32,000 = 30,000 auto + 2,000 manual), custom range on all four endpoints, and a Store token correctly gets 403.
+All five checkers pass (85 routes, both guards agree); build clean.
+
+Still to come in item 7: Mix Designs page (details/comparison/costing), silo capacity + level graphics, receipt→silo,
+the consumption→material-module unification, plant-vs-billed, and manual-only entry.

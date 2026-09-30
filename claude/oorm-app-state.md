@@ -1,4 +1,22 @@
-# OORM App — Current State (as of Round 166c, Ver. 9.95)
+# OORM App — Current State (as of Round 167, Ver. 9.96)
+
+**v9.96 (167) — Plant Production redesign, slice 1: date range filter + Cost/m³ (material).** Risk-free
+read-only additions. (7b) `dateRange(req,col)` helper in plant.js → from_date+to_date (YYYY-MM-DD) give
+`col BETWEEN`, else `days` preset; applied to /production, /consumption, /loads, /cost-per-m3. Frontend: period
+selector gains "Custom range…" + two date inputs; reporting tabs now take a `qs` prop (was `days`). (7f) new
+`GET /plant/cost-per-m3` + "Cost/m³ – Material" tab: per-material consumed = actual_kg (plant_batch_materials) +
+plant_manual_entries.qty_kg — **auto+manual, never auto alone** — × weighted-avg landed rate (rm_receipts_effective
+via rm_orders, fallback opening_stock_rate_per_kg) ÷ produced m³ (batches + manual production m³). Admin-only via
+requireRole("administrator")+requirePermission("material.stock-valuation","view") — no new key/REPAIR. Verified live:
+manual-only, auto+manual (32000=30000+2000), custom range, store→403. **BUILD RULE (user, emphatic): plant
+consumption AND production always = load-cell auto + operator manual; never drop the manual qty. Applies to the
+coming consumption→material unification too.** DESIGN (mockup, approved): mix design page = 3 tabs (Details table /
+Comparison / Costing); silo levels = clean level cards, qty highlighted, colour by TYPE (cement blue / admix violet /
+aggregate tan), % low-warning amber<20 red<8. Remaining item-7: mix design page, silo capacity+levels, receipt→silo,
+consumption unification (E), plant-vs-billed, manual-only entry. Architectural decisions D2/D3/D6 still to confirm
+before building E/D.
+
+## Round 166c — refillable silo save (v9.95)
 
 **v9.95 (166c) — refillable silo save fix (3rd facet of the plant_silo_aliases migration gap):**
 marking a silo "Refillable storage" → 500 "Could not save the silo mapping". Cause: setup.js CREATE
