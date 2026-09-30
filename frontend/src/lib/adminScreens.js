@@ -131,6 +131,9 @@ export const ADMIN_MODULES = [
       { key: "laboratory", label: "Laboratory", icon: "microscope", to: "/lab-technician" },
       { key: "mix-assignments", label: "Approved Mix Designs", icon: "layers", view: "mix-assignments" },
       { key: "mix-designs-approve", label: "Mix Designs (Approve)", icon: "flask", view: "mix-designs" },
+      // Round 170 — the read/costing view of mix designs, moved here from Plant
+      // Production (Details + Costing).
+      { key: "mix-designs-view", label: "Mix Designs & Recipes", icon: "layers", to: "/mix-designs" },
       { key: "cube-test-report", label: "Cube Test Report", icon: "doc", to: "/lab-technician/cube-test-report" },
       { key: "cube-strength-analysis", label: "Cube Strength Analysis", icon: "chart", to: "/cube-qc-dashboard" },
     ],
