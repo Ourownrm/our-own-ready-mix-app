@@ -2924,6 +2924,60 @@ CREATE TABLE plant_recipe_aliases (
   CHECK (is_ignored OR mix_grade_id IS NOT NULL)
 );
 
+-- ---------------------------------------------------------------------------
+-- ROUND 171 — the plant's Recipe Master, copied into the app.
+--
+-- MCI370 calls a mix a "Recipe" and keeps them in its Recipe_Master table (22
+-- on this plant). The agent reads that table and syncs it here so Quality
+-- Control can see, cost and — later — edit a recipe without standing at the
+-- plant PC. One row per recipe; the per-slot target weights live in the child
+-- table below, keyed on our own slot keys (see RECIPE_TARGET_COLUMNS in
+-- lib/plantSlots.js for the Recipe_Master column each one came from).
+--
+-- The plant_* audit columns are MCI370's OWN (Creater_Name, Modified_Date …),
+-- carried verbatim so QC sees who last touched a recipe on the panel. The
+-- write-back round will also WRITE these when QC edits from the app.
+-- ---------------------------------------------------------------------------
+CREATE TABLE plant_recipes (
+  id                  SERIAL PRIMARY KEY,
+  recipe_code         VARCHAR(50) NOT NULL UNIQUE,   -- MCI370's Recipe_Code, the batch key
+  recipe_name         VARCHAR(100),
+  strength            INTEGER,
+  consistancy         VARCHAR(15),                   -- MCI370's spelling; slump/consistency (blank in practice)
+  mixing_time         NUMERIC(10,2),
+  mixer_capacity      NUMERIC(10,3),
+  mass_weight         NUMERIC(12,2),
+  premix_time         NUMERIC(10,2),
+  dry_mix_time        INTEGER,
+  drymix_pct          INTEGER,
+  wetmix_pct          INTEGER,
+  water_ice_pct       INTEGER,
+  water_slurry_pct    INTEGER,
+  cement_water_pct    NUMERIC(8,3),                  -- w/c as MCI370 stores it (0 in practice; app computes)
+  cement_filler_pct   NUMERIC(8,3),
+  cost_per_m3_plant   NUMERIC(12,2),                 -- MCI370's Cost_Per_Mtr_Cube (0 on this plant; app computes its own)
+  deleted_flag        VARCHAR(10),                   -- MCI370's Deleted_Rec_Flag; 'Yes' rows are hidden
+  -- MCI370's own audit trail, verbatim (its date/time columns are free text).
+  plant_creater_name        VARCHAR(100),
+  plant_created_at          VARCHAR(40),
+  plant_modifier_name       VARCHAR(100),
+  plant_modified_at         VARCHAR(60),
+  plant_modified_user_level VARCHAR(50),
+  -- Sync bookkeeping, same pattern as plant_batches.
+  source_hash     CHAR(64),
+  first_synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_synced_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE plant_recipe_targets (
+  id        SERIAL PRIMARY KEY,
+  recipe_id INTEGER NOT NULL REFERENCES plant_recipes(id) ON DELETE CASCADE,
+  slot      VARCHAR(20) NOT NULL,                    -- our slot key (gate2, cement1, adm1a …)
+  target    NUMERIC(14,3) NOT NULL,                  -- the recipe's target weight for that slot
+  UNIQUE (recipe_id, slot)
+);
+CREATE INDEX idx_plant_recipe_targets_recipe ON plant_recipe_targets(recipe_id);
+
 CREATE TABLE plant_sync_log (
   id             SERIAL PRIMARY KEY,
   received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

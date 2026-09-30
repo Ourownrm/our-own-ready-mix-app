@@ -2619,6 +2619,46 @@ CREATE TABLE IF NOT EXISTS plant_sync_log (
   error          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_plant_sync_log_received ON plant_sync_log(received_at DESC);
+
+-- Round 171 — the plant's Recipe Master, copied into the app (see schema.sql
+-- for the full commentary). One row per recipe; per-slot targets in the child
+-- table. plant_* columns are MCI370's own audit fields, carried verbatim.
+CREATE TABLE IF NOT EXISTS plant_recipes (
+  id                  SERIAL PRIMARY KEY,
+  recipe_code         VARCHAR(50) NOT NULL UNIQUE,
+  recipe_name         VARCHAR(100),
+  strength            INTEGER,
+  consistancy         VARCHAR(15),
+  mixing_time         NUMERIC(10,2),
+  mixer_capacity      NUMERIC(10,3),
+  mass_weight         NUMERIC(12,2),
+  premix_time         NUMERIC(10,2),
+  dry_mix_time        INTEGER,
+  drymix_pct          INTEGER,
+  wetmix_pct          INTEGER,
+  water_ice_pct       INTEGER,
+  water_slurry_pct    INTEGER,
+  cement_water_pct    NUMERIC(8,3),
+  cement_filler_pct   NUMERIC(8,3),
+  cost_per_m3_plant   NUMERIC(12,2),
+  deleted_flag        VARCHAR(10),
+  plant_creater_name        VARCHAR(100),
+  plant_created_at          VARCHAR(40),
+  plant_modifier_name       VARCHAR(100),
+  plant_modified_at         VARCHAR(60),
+  plant_modified_user_level VARCHAR(50),
+  source_hash     CHAR(64),
+  first_synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_synced_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS plant_recipe_targets (
+  id        SERIAL PRIMARY KEY,
+  recipe_id INTEGER NOT NULL REFERENCES plant_recipes(id) ON DELETE CASCADE,
+  slot      VARCHAR(20) NOT NULL,
+  target    NUMERIC(14,3) NOT NULL,
+  UNIQUE (recipe_id, slot)
+);
+CREATE INDEX IF NOT EXISTS idx_plant_recipe_targets_recipe ON plant_recipe_targets(recipe_id);
 `);
 
     const { rows: pbCount } = await pool.query(`SELECT count(*)::int AS n FROM plant_batches`);

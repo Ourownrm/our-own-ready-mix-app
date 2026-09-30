@@ -414,6 +414,74 @@ router.post("/sync", async (req, res) => {
 // ============================================================================
 // EVERYTHING BELOW IS A USER SESSION.
 // ============================================================================
+// ROUND 171 — Recipe Master sync is an AGENT endpoint, so it must sit ABOVE
+// router.use(requireAuth) with the batch /sync route, not behind the user
+// login. The read routes (GET /recipes) stay below, gated by permissions.
+router.post("/recipes/sync", async (req, res) => {
+  if (!agentAuthorised(req)) return res.status(401).json({ error: "Not authorised." });
+  const recipes = Array.isArray(req.body?.recipes) ? req.body.recipes : null;
+  if (!recipes) return res.status(400).json({ error: "Send { recipes: [...] }." });
+
+  let inserted = 0, updated = 0, unchanged = 0;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const r of recipes) {
+      const code = String(r.recipe_code || "").trim();
+      if (!code) continue;
+      const hash = crypto.createHash("sha256").update(JSON.stringify(r)).digest("hex");
+      const { rows } = await client.query(
+        `INSERT INTO plant_recipes
+           (recipe_code, recipe_name, strength, consistancy, mixing_time, mixer_capacity, mass_weight,
+            premix_time, dry_mix_time, drymix_pct, wetmix_pct, water_ice_pct, water_slurry_pct,
+            cement_water_pct, cement_filler_pct, cost_per_m3_plant, deleted_flag,
+            plant_creater_name, plant_created_at, plant_modifier_name, plant_modified_at, plant_modified_user_level,
+            source_hash, last_synced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23, now())
+         ON CONFLICT (recipe_code) DO UPDATE SET
+           recipe_name=EXCLUDED.recipe_name, strength=EXCLUDED.strength, consistancy=EXCLUDED.consistancy,
+           mixing_time=EXCLUDED.mixing_time, mixer_capacity=EXCLUDED.mixer_capacity, mass_weight=EXCLUDED.mass_weight,
+           premix_time=EXCLUDED.premix_time, dry_mix_time=EXCLUDED.dry_mix_time, drymix_pct=EXCLUDED.drymix_pct,
+           wetmix_pct=EXCLUDED.wetmix_pct, water_ice_pct=EXCLUDED.water_ice_pct, water_slurry_pct=EXCLUDED.water_slurry_pct,
+           cement_water_pct=EXCLUDED.cement_water_pct, cement_filler_pct=EXCLUDED.cement_filler_pct,
+           cost_per_m3_plant=EXCLUDED.cost_per_m3_plant, deleted_flag=EXCLUDED.deleted_flag,
+           plant_creater_name=EXCLUDED.plant_creater_name, plant_created_at=EXCLUDED.plant_created_at,
+           plant_modifier_name=EXCLUDED.plant_modifier_name, plant_modified_at=EXCLUDED.plant_modified_at,
+           plant_modified_user_level=EXCLUDED.plant_modified_user_level,
+           source_hash=EXCLUDED.source_hash, last_synced_at=now()
+         WHERE plant_recipes.source_hash IS DISTINCT FROM EXCLUDED.source_hash
+         RETURNING id, (xmax = 0) AS was_insert`,
+        [code, r.recipe_name || null, NUM(r.strength), r.consistancy || null, NUM(r.mixing_time), NUM(r.mixer_capacity),
+         NUM(r.mass_weight), NUM(r.premix_time), NUM(r.dry_mix_time), NUM(r.drymix_pct), NUM(r.wetmix_pct),
+         NUM(r.water_ice_pct), NUM(r.water_slurry_pct), NUM(r.cement_water_pct), NUM(r.cement_filler_pct),
+         NUM(r.cost_per_m3_plant), r.deleted_flag || null,
+         r.plant_creater_name || null, r.plant_created_at || null, r.plant_modifier_name || null,
+         r.plant_modified_at || null, r.plant_modified_user_level || null, hash]
+      );
+      if (!rows.length) { unchanged++; continue; }   // hash identical → nothing to do, targets already current
+      const recipeId = rows[0].id;
+      rows[0].was_insert ? inserted++ : updated++;
+      // Rewrite the targets to match exactly what the plant sent (only slots in use).
+      await client.query(`DELETE FROM plant_recipe_targets WHERE recipe_id = $1`, [recipeId]);
+      const targets = r.targets && typeof r.targets === "object" ? r.targets : {};
+      for (const [slot, val] of Object.entries(targets)) {
+        if (!SLOT_BY_KEY[slot]) continue;
+        const t = Number(val);
+        if (!Number.isFinite(t) || t === 0) continue;
+        await client.query(`INSERT INTO plant_recipe_targets (recipe_id, slot, target) VALUES ($1,$2,$3)`, [recipeId, slot, t]);
+      }
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    return res.status(500).json({ error: "Recipe sync failed." });
+  } finally {
+    client.release();
+  }
+  res.json({ ok: true, received: recipes.length, inserted, updated, unchanged });
+});
+
 router.use(requireAuth);
 
 const PLANT_ROLES = ["administrator", "manager", "store", "plant_operator", "qc_engineer", "lab_technician"];
@@ -871,6 +939,153 @@ router.get("/mix-designs/:id/costing", requireRole("administrator"), requirePerm
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not compute the mix design costing." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 171 — the Recipe Master, copied from MCI370 into the app.
+//
+// The agent reads MCI370's Recipe_Master and POSTs it here; QC reads the recipes
+// and their cost per m³. (The password-gated write-back to MCI370 is a later
+// round — this one is read-only, same posture as the rest of the plant sync.)
+// ---------------------------------------------------------------------------
+
+// What material a slot currently holds: its fixed mapping, or for a refillable
+// silo the material of its most recent fill. Used to price a recipe's targets.
+async function slotMaterialMap() {
+  const [{ rows: aliases }, { rows: fills }] = await Promise.all([
+    query(`SELECT slot, material_id, is_refillable, is_ignored FROM plant_silo_aliases`),
+    query(`SELECT DISTINCT ON (slot) slot, material_id FROM plant_silo_fills ORDER BY slot, filled_at DESC`),
+  ]);
+  const fillBySlot = new Map(fills.map((f) => [f.slot, f.material_id]));
+  const map = new Map();
+  for (const a of aliases) {
+    if (a.is_ignored) continue;
+    const mid = a.is_refillable ? (fillBySlot.get(a.slot) || null) : a.material_id;
+    if (mid) map.set(a.slot, mid);
+  }
+  return map;
+}
+
+// Weighted-average landed rate per material, opening-stock rate as a fallback.
+async function materialRateLookup() {
+  const [{ rows }, { rows: mats }] = await Promise.all([
+    query(
+      `SELECT o.material_id,
+              CASE WHEN sum(r.accepted_qty_kg) > 0
+                   THEN sum(r.accepted_qty_kg * r.landed_rate_per_kg) / sum(r.accepted_qty_kg) END AS rate
+         FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
+        WHERE r.landed_rate_per_kg IS NOT NULL GROUP BY o.material_id`),
+    query(`SELECT id, name, opening_stock_rate_per_kg FROM rm_materials`),
+  ]);
+  const landed = new Map();
+  for (const r of rows) if (r.rate != null) landed.set(r.material_id, Number(r.rate));
+  const opening = new Map(mats.map((m) => [m.id, m.opening_stock_rate_per_kg != null ? Number(m.opening_stock_rate_per_kg) : null]));
+  const name = new Map(mats.map((m) => [m.id, m.name]));
+  return {
+    rate: (mid) => (landed.has(mid) ? landed.get(mid) : (opening.get(mid) ?? null)),
+    name: (mid) => name.get(mid) || null,
+  };
+}
+
+// Binder = the cement slots plus the filler slot (this plant carries fly ash on
+// the filler slot). Water = the two water lines. Enough for the list's w/c.
+const BINDER_SLOTS = ["cement1", "cement2", "cement3", "cement4", "filler1"];
+const WATER_SLOTS = ["water1", "water2"];
+
+router.get("/recipes", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+  try {
+    const [{ rows: recipes }, { rows: targets }, slotMat, rateLk] = await Promise.all([
+      query(`SELECT * FROM plant_recipes WHERE COALESCE(deleted_flag, '') <> 'Yes' ORDER BY recipe_code`),
+      query(`SELECT recipe_id, slot, target FROM plant_recipe_targets`),
+      slotMaterialMap(),
+      materialRateLookup(),
+    ]);
+    const byRecipe = new Map();
+    for (const t of targets) {
+      if (!byRecipe.has(t.recipe_id)) byRecipe.set(t.recipe_id, []);
+      byRecipe.get(t.recipe_id).push(t);
+    }
+    res.json(recipes.map((r) => {
+      let cost = 0, binder = 0, water = 0, anyUnpriced = false;
+      for (const t of byRecipe.get(r.id) || []) {
+        const tgt = Number(t.target);
+        if (BINDER_SLOTS.includes(t.slot)) binder += tgt;
+        if (WATER_SLOTS.includes(t.slot)) water += tgt;
+        const mid = slotMat.get(t.slot);
+        const rate = mid ? rateLk.rate(mid) : null;
+        if (rate != null) cost += tgt * rate; else anyUnpriced = true;
+      }
+      return {
+        id: r.id, recipe_code: r.recipe_code, recipe_name: r.recipe_name,
+        mixing_time: r.mixing_time, mixer_capacity: r.mixer_capacity,
+        plant_modifier_name: r.plant_modifier_name, plant_modified_at: r.plant_modified_at,
+        binder_kg: Math.round(binder * 100) / 100,
+        water_kg: Math.round(water * 100) / 100,
+        wc_ratio: binder > 0 ? Math.round((water / binder) * 1000) / 1000 : null,
+        cost_per_m3: Math.round(cost * 100) / 100,
+        cost_incomplete: anyUnpriced,
+      };
+    }));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the recipes." });
+  }
+});
+
+router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid recipe id." });
+  try {
+    const { rows } = await query(`SELECT * FROM plant_recipes WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: "Recipe not found." });
+    const recipe = rows[0];
+    const [{ rows: targets }, { rows: aliases }, slotMat, rateLk] = await Promise.all([
+      query(`SELECT slot, target FROM plant_recipe_targets WHERE recipe_id = $1`, [id]),
+      query(`SELECT slot, slot_name FROM plant_silo_aliases`),
+      slotMaterialMap(),
+      materialRateLookup(),
+    ]);
+    const nameBySlot = new Map(aliases.map((a) => [a.slot, a.slot_name]));
+    let cost = 0, binder = 0, water = 0, anyUnpriced = false;
+    // Present the used slots in the fixed plant order, not insertion order.
+    const order = PLANT_SLOTS.map((s) => s.key);
+    const tgtBySlot = new Map(targets.map((t) => [t.slot, Number(t.target)]));
+    const lines = [];
+    for (const slot of order) {
+      if (!tgtBySlot.has(slot)) continue;
+      const tgt = tgtBySlot.get(slot);
+      const mid = slotMat.get(slot);
+      const rate = mid ? rateLk.rate(mid) : null;
+      const lineCost = rate != null ? tgt * rate : null;
+      if (lineCost != null) cost += lineCost; else anyUnpriced = true;
+      if (BINDER_SLOTS.includes(slot)) binder += tgt;
+      if (WATER_SLOTS.includes(slot)) water += tgt;
+      lines.push({
+        slot,
+        slot_label: SLOT_BY_KEY[slot]?.label || slot,
+        kind: SLOT_BY_KEY[slot]?.kind || null,
+        plant_name: nameBySlot.get(slot) || null,
+        target: tgt,
+        material_name: mid ? rateLk.name(mid) : null,
+        rate_per_kg: rate == null ? null : Math.round(rate * 10000) / 10000,
+        cost_per_m3: lineCost == null ? null : Math.round(lineCost * 100) / 100,
+      });
+    }
+    res.json({
+      recipe: {
+        ...recipe,
+        binder_kg: Math.round(binder * 100) / 100,
+        water_kg: Math.round(water * 100) / 100,
+        wc_ratio: binder > 0 ? Math.round((water / binder) * 1000) / 1000 : null,
+      },
+      targets: lines,
+      cost_per_m3: Math.round(cost * 100) / 100,
+      cost_incomplete: anyUnpriced,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the recipe." });
   }
 });
 

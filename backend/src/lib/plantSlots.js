@@ -83,6 +83,22 @@ export const PLANT_SLOTS = [
 
 export const SLOT_BY_KEY = Object.fromEntries(PLANT_SLOTS.map((s) => [s.key, s]));
 
+// ROUND 171 — the Recipe_Master column that holds each slot's TARGET weight for
+// a recipe. MCI370's Recipe_Master has one *_Target column per weigh-slot; this
+// maps our stable slot key to that column so the agent can read a recipe and the
+// app can store it against the same slots everything else uses. Read out of the
+// real Recipe_Master schema (MCI70_batch.Mdb): admixtures carry two dosing lines
+// each (Adm1_Target1/2, Adm2_Target1/2 → adm1a/adm1b/adm2a/adm2b); pigment has
+// no target column, so it is absent here.
+export const RECIPE_TARGET_COLUMNS = {
+  gate1: "Gate1_Target", gate2: "Gate2_Target", gate3: "Gate3_Target",
+  gate4: "Gate4_Target", gate5: "Gate5_Target", gate6: "Gate6_Target",
+  cement1: "Cement1_Target", cement2: "Cement2_Target", cement3: "Cement3_Target", cement4: "Cement4_Target",
+  filler1: "Filler_Target", silica: "Silica_Target", slurry: "slurry_Target",
+  water1: "Water1_Target", water2: "Water2_Target",
+  adm1a: "Adm1_Target1", adm1b: "Adm1_Target2", adm2a: "Adm2_Target1", adm2b: "Adm2_Target2",
+};
+
 // What a plant writes into NameSetUp for a hopper it does not have. Taken from
 // the real file: the previous customer left Gate5Name as "0", wtr2Name and
 // SilicaName as "-", and Cem4Name blank. "Agg6" is the vendor's own default
