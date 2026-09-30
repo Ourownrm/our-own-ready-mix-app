@@ -1106,7 +1106,7 @@ function MaterialHeading({ name, count, extra }) {
 }
 
 function blankReceiptForm() {
-  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "", received_date: todayStr() };
+  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "", received_date: todayStr(), silo_slot: "", not_in_silo: false };
 }
 
 function receiptEditForm(r) {
@@ -1143,6 +1143,9 @@ function ReceiptsTab({ role }) {
   const [filters, setFilters] = useState({ from_date: "", to_date: "", material_id: "", supplier_id: "" });
   const [materials, setMaterials] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
+  // Round 168 — the silos a receipt can be assigned to. Loaded once; the
+  // receive form narrows them to the material being received.
+  const [silos, setSilos] = useState([]);
 
   async function loadHistory() {
     const qs = new URLSearchParams();
@@ -1165,6 +1168,7 @@ function ReceiptsTab({ role }) {
   useEffect(() => {
     apiRequest("/material-module/materials").then(setMaterials).catch(() => {});
     apiRequest("/material-module/suppliers").then(setSuppliers).catch(() => {});
+    apiRequest("/material-module/receipt-silos").then(setSilos).catch(() => setSilos([]));
   }, []);
 
   function openReceive(o) {
@@ -1499,6 +1503,48 @@ function ReceiptsTab({ role }) {
             <Field label={`Accepted quantity (${outstandingUnit}) — leave blank to derive from the weighbridge weight`}>
               <input type="number" step="0.01" min="0" value={form.accepted_qty} onChange={(e) => setForm({ ...form, accepted_qty: e.target.value })} style={inputStyle} />
             </Field>
+            {/* Round 168 — where this load goes. Silos holding this order's
+                material come first (a cement load offered its cement silos);
+                the rest follow, so an unmapped material can still be placed. A
+                drum bound for the lab or the store, or one of several admixtures
+                not tied to a tank, is marked "not in silo": it is still recorded
+                as stock but adds to no hopper and shows in its own list. */}
+            {(() => {
+              const mine = silos.filter((s) => receiving.material_id && s.material_id === receiving.material_id);
+              const rest = silos.filter((s) => !(receiving.material_id && s.material_id === receiving.material_id));
+              const ordered = [...mine, ...rest];
+              return (
+                <Field label="Which silo does this load fill?">
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 8, cursor: "pointer" }}>
+                    <input type="checkbox" checked={form.not_in_silo}
+                           onChange={(e) => setForm({ ...form, not_in_silo: e.target.checked, silo_slot: e.target.checked ? "" : form.silo_slot })} />
+                    Not going into a silo (laboratory, store, or an admixture not tied to a tank)
+                  </label>
+                  {!form.not_in_silo && (
+                    <select value={form.silo_slot} onChange={(e) => setForm({ ...form, silo_slot: e.target.value })} style={inputStyle}>
+                      <option value="">— select a silo —</option>
+                      {mine.length > 0 && rest.length > 0 ? (
+                        <>
+                          <optgroup label={`Holds ${receiving.material_name}`}>
+                            {mine.map((s) => <option key={s.slot} value={s.slot}>{s.slot_name || s.label}</option>)}
+                          </optgroup>
+                          <optgroup label="Other silos">
+                            {rest.map((s) => <option key={s.slot} value={s.slot}>{s.slot_name || s.label}{s.material_name ? ` · ${s.material_name}` : ""}</option>)}
+                          </optgroup>
+                        </>
+                      ) : (
+                        ordered.map((s) => <option key={s.slot} value={s.slot}>{s.slot_name || s.label}{s.material_name ? ` · ${s.material_name}` : ""}</option>)
+                      )}
+                    </select>
+                  )}
+                  <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 5, lineHeight: 1.5 }}>
+                    {form.not_in_silo
+                      ? "This load will be recorded but will not raise any silo's level."
+                      : "The load raises the chosen silo's level. Leave unselected only for materials that are not silo-stocked (diesel, oil)."}
+                  </div>
+                </Field>
+              );
+            })()}
             <Field label="Vehicle number"><input value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value })} style={inputStyle} /></Field>
             <Field label="Challan number"><input value={form.challan_number} onChange={(e) => setForm({ ...form, challan_number: e.target.value })} style={inputStyle} /></Field>
             <Field label="Debit note amount (optional, ₹ — for short supply)"><input type="number" step="0.01" min="0" value={form.debit_note_amount} onChange={(e) => setForm({ ...form, debit_note_amount: e.target.value })} style={inputStyle} /></Field>

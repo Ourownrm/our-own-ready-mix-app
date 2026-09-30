@@ -55,6 +55,27 @@ function ago(ts) {
 const TH = { padding: "9px 12px", textAlign: "left" };
 const TD = { padding: "9px 12px" };
 
+// Round 168 — the silo level cards. Each material type has its own colour, as
+// the plant asked: cement/powder blue, admixture/water violet, aggregate tan.
+const SILO_STYLE = {
+  powder:    { bar: "#4E6E8E", bg: "#EEF2F6", border: "#4E6E8E", label: "Cement" },
+  liquid:    { bar: "#7A4BA8", bg: "#F1ECF6", border: "#7A4BA8", label: "Admixture / water" },
+  aggregate: { bar: "#B58A55", bg: "#F6F0E7", border: "#B58A55", label: "Aggregate" },
+};
+function siloStyle(kind) { return SILO_STYLE[kind] || SILO_STYLE.powder; }
+// Cement, fly-ash and aggregate are weighed in tonnes; water and admixture in
+// kilolitres (≈ kg at ~unit density, which is all the yard view needs). The
+// stored figure is always kg — this is display only, and the same convention
+// is used for the capacity input so what is typed matches what is shown.
+function siloUnit(kind) { return kind === "liquid" ? "kL" : "MT"; }
+function toSiloUnit(kg) { return kg == null ? null : Number(kg) / 1000; }
+function fromSiloUnit(v) { return v === "" || v == null ? null : Number(v) * 1000; }
+function fmtSiloQty(kg) {
+  if (kg == null) return "—";
+  const v = Number(kg) / 1000;
+  return v.toLocaleString(undefined, { maximumFractionDigits: v >= 10 ? 0 : 1 });
+}
+
 // ---------------------------------------------------------------------------
 
 function Production({ qs }) {
@@ -344,6 +365,7 @@ function Silos() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [draft, setDraft] = useState({});
+  const [capDraft, setCapDraft] = useState({}); // Round 168 — capacity edits, keyed by slot, in MT/kL
   const [fillDraft, setFillDraft] = useState({ slot: "", material_id: "", qty_kg: "", filled_at: "" });
   const [busy, setBusy] = useState(false);
 
@@ -361,16 +383,27 @@ function Silos() {
 
   async function save(slot, slotName) {
     const choice = draft[slot];
-    if (!choice) return;
+    const capTouched = Object.prototype.hasOwnProperty.call(capDraft, slot);
+    if (!choice && !capTouched) return;
     setError(""); setNotice("");
+    // The mapping this row already has, so a capacity-only edit still sends a
+    // valid "holds" (the endpoint requires one of material/refillable/ignore).
+    const a = data?.aliases.find((x) => x.slot === slot);
+    const holds = choice || (a?.is_refillable ? "refill" : a?.is_ignored ? "ignore" : a?.material_id ? String(a.material_id) : "");
+    if (!holds) { setError("Choose what this silo holds before setting its capacity."); return; }
     const body = { slot, slot_name: slotName };
-    if (choice === "ignore") body.is_ignored = true;
-    else if (choice === "refill") body.is_refillable = true;
-    else body.material_id = Number(choice);
+    if (holds === "ignore") body.is_ignored = true;
+    else if (holds === "refill") body.is_refillable = true;
+    else body.material_id = Number(holds);
+    // Capacity is sent only when its box was touched, so saving one row's
+    // mapping never wipes another silo's capacity. Blank clears it. Typed in
+    // MT/kL, stored in kg.
+    if (capTouched) body.capacity_kg = capDraft[slot] === "" ? "" : fromSiloUnit(capDraft[slot]);
     try {
       const r = await apiRequest("/plant/silos", { method: "POST", body });
       setNotice(`Saved. ${r.rows_updated} batch row${r.rows_updated === 1 ? "" : "s"} re-attributed.`);
       setDraft({ ...draft, [slot]: "" });
+      setCapDraft((c) => { const n = { ...c }; delete n[slot]; return n; });
       await load();
     } catch (err) { setError(err.message); }
   }
@@ -415,7 +448,47 @@ function Silos() {
   if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
   const aliasBySlot = new Map(data.aliases.map((a) => [a.slot, a]));
-  const refillable = data.seen.filter((s) => aliasBySlot.get(s.slot)?.is_refillable);
+  const kindBySlot = new Map((data.slots || []).map((s) => [s.key, s.kind]));
+  const levels = data.levels || [];
+  const levelsPowderLiquid = levels.filter((l) => l.kind === "powder" || l.kind === "liquid");
+  const levelsAggregate = levels.filter((l) => l.kind === "aggregate");
+  const notInSilo = data.not_in_silo || [];
+
+  function levelCard(l) {
+    const st = siloStyle(l.kind);
+    const hasLevel = l.level_kg != null;
+    const neg = hasLevel && Number(l.level_kg) < 0;
+    const pct = l.pct; // 0..100, or null when capacity unset
+    const low = pct != null && pct < 25 && !neg;
+    const pctColor = neg ? "var(--alert-red)" : low ? "#9C6B12" : "#1D7A55";
+    const gaugeH = neg ? 0 : (pct != null ? pct : 0);
+    return (
+      <div key={l.slot} style={{ display: "flex", gap: 13, background: st.bg, border: "1px solid var(--border)", borderLeft: `5px solid ${st.border}`, borderRadius: 12, padding: "12px 14px" }}>
+        <div style={{ width: 34, minWidth: 34, height: 104, background: "var(--concrete)", border: "1px solid var(--border)", borderRadius: 9, position: "relative", overflow: "hidden" }}>
+          {l.capacity_kg != null && <div style={{ position: "absolute", left: 0, right: 0, top: 0, borderBottom: "2px dashed rgba(0,0,0,.18)" }} />}
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: `${Math.max(0, Math.min(100, gaugeH))}%`, background: st.bar }} />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
+          <div style={{ fontSize: 10, color: "var(--slate)", textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{l.slot_name || l.label}</div>
+          <div style={{ fontSize: 11.5, color: "var(--slate)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.material_name || "—"}</div>
+          <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.05, marginTop: 3, color: neg ? "var(--alert-red)" : "inherit" }}>
+            {hasLevel
+              ? <>{fmtSiloQty(l.level_kg)} <span style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>{siloUnit(l.kind)}</span></>
+              : <span style={{ fontSize: 13.5, color: "var(--amber)", fontWeight: 600 }}>no fills yet</span>}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>
+            {l.capacity_kg != null ? `of ${fmtSiloQty(l.capacity_kg)} ${siloUnit(l.kind)}` : "capacity not set"}
+          </div>
+          {hasLevel && (
+            <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, color: pctColor }}>
+              {neg ? "over-drawn — fills missing" : pct != null ? `${Math.round(pct)}% full${low ? " · low" : ""}` : "set capacity for %"}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  const LVLGRID = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 };
 
   return (
     <>
@@ -445,7 +518,7 @@ function Silos() {
             <tr style={{ background: "var(--concrete)" }}>
               <th style={TH}>Hopper</th><th style={TH}>Panel calls it</th>
               <th style={{ ...TH, textAlign: "right" }}>Weighed</th>
-              <th style={TH}>Holds</th><th style={TH} />
+              <th style={TH}>Holds</th><th style={TH}>Capacity</th><th style={TH} />
             </tr>
           </thead>
           <tbody>
@@ -478,8 +551,21 @@ function Silos() {
                     </select>
                   </td>
                   <td style={TD}>
+                    {a?.is_ignored ? (
+                      <span style={{ fontSize: 11.5, color: "var(--slate)" }}>—</span>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <input type="number" min="0" step="0.1" style={{ fontSize: 13, width: 74 }}
+                               value={capDraft[s.slot] ?? (a?.capacity_kg != null ? String(toSiloUnit(a.capacity_kg)) : "")}
+                               onChange={(e) => setCapDraft({ ...capDraft, [s.slot]: e.target.value })} />
+                        <span style={{ fontSize: 11, color: "var(--slate)" }}>{siloUnit(kindBySlot.get(s.slot))}</span>
+                      </div>
+                    )}
+                  </td>
+                  <td style={TD}>
                     <button type="button" className="btn-primary" style={{ fontSize: 12 }}
-                            disabled={!draft[s.slot]} onClick={() => save(s.slot, s.slot_name)}>
+                            disabled={!draft[s.slot] && !Object.prototype.hasOwnProperty.call(capDraft, s.slot)}
+                            onClick={() => save(s.slot, s.slot_name)}>
                       Save
                     </button>
                   </td>
@@ -487,7 +573,7 @@ function Silos() {
               );
             })}
             {!data.seen.length && (
-              <tr><td colSpan={5} style={{ ...TD, color: "var(--slate)" }}>
+              <tr><td colSpan={6} style={{ ...TD, color: "var(--slate)" }}>
                 Nothing synced yet — the plant agent has not sent anything.
               </td></tr>
             )}
@@ -495,58 +581,82 @@ function Silos() {
         </table>
       </div>
 
-      <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>What is in the refillable silos</h3>
-      <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 820 }}>
-        A fill takes effect from its own moment onward. A batch made on the 3rd is costed against whatever
-        the silo held on the 3rd, and a fill on the 10th changes nothing behind it. MCI370 cannot tell us any
-        of this — its own stock table has read zero since 2013.
+      <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>Silo storage levels</h3>
+      <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 860 }}>
+        What each hopper holds right now — receipts assigned to a silo raise its level, the plant's load-cell
+        draw lowers it. The highlighted figure is the quantity; capacity, set on the mapping row above, gives
+        the percentage and the low warning. A level appears once a silo has had its first fill (a receipt or an
+        opening declaration below). <b style={{ color: "#4E6E8E" }}>Cement</b>, <b style={{ color: "#7A4BA8" }}>admixture/water</b>{" "}
+        and <b style={{ color: "#B58A55" }}>aggregate</b> each carry their own colour.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14, marginBottom: 18 }}>
-        {refillable.map((s) => {
-          const b = s.balance;
-          const left = b ? Number(b.filled_kg) - Number(b.used_kg) : null;
-          const pct = b && Number(b.filled_kg) > 0 ? Math.max(0, Math.min(100, (left / Number(b.filled_kg)) * 100)) : 0;
-          const colour = left == null ? "var(--slate)" : left <= 0 ? "var(--alert-red)" : pct < 25 ? "var(--amber)" : "var(--signal-green)";
-          return (
-            <div key={s.slot} className="card">
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 700, fontSize: 16 }}>{s.slot_name}</span>
-                <span style={{ fontSize: 11, color: "var(--slate)" }}>{s.slot}</span>
-              </div>
-              <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 3 }}>
-                {b?.current_material || <span style={{ color: "var(--amber)" }}>never filled</span>}
-              </div>
-              <div style={{ fontSize: 11.5, color: "var(--slate)" }}>
-                {b?.last_filled_at ? `filled ${fmtWhen(b.last_filled_at)}` : "no fill recorded"}
-              </div>
-              <div style={{ height: 9, background: "var(--concrete)", borderRadius: 4, margin: "10px 0 6px", overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${pct}%`, background: colour }} />
-              </div>
-              <div style={{ display: "flex", fontSize: 12 }}>
-                <span style={{ color: "var(--slate)" }}>Left</span><span style={{ flexGrow: 1 }} />
-                <span style={{ fontWeight: 700, color: colour }}>{left == null ? "—" : fmtKg(left)}</span>
-              </div>
-              {left != null && left < 0 && (
-                <div style={{ fontSize: 11, color: "var(--alert-red)", marginTop: 5, lineHeight: 1.45 }}>
-                  The plant has weighed out more than was ever recorded going in — fills are missing, not cement.
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {!refillable.length && (
-          <div className="card" style={{ gridColumn: "span 3", fontSize: 13, color: "var(--slate)" }}>
-            No hopper is marked refillable yet. Mark CEM1, CEM2 and CEM3 above and their contents can be tracked.
+      {(levelsPowderLiquid.length > 0 || levelsAggregate.length > 0) ? (
+        <div style={{ marginBottom: 20 }}>
+          {levelsPowderLiquid.length > 0 && (
+            <>
+              <h4 style={{ fontSize: 12.5, margin: "0 0 8px", color: "#4E6E8E" }}>Cement &amp; admixture</h4>
+              <div style={{ ...LVLGRID, marginBottom: levelsAggregate.length ? 16 : 0 }}>{levelsPowderLiquid.map(levelCard)}</div>
+            </>
+          )}
+          {levelsAggregate.length > 0 && (
+            <>
+              <h4 style={{ fontSize: 12.5, margin: "0 0 8px", color: "#B58A55" }}>Aggregate</h4>
+              <div style={LVLGRID}>{levelsAggregate.map(levelCard)}</div>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="card" style={{ marginBottom: 20, fontSize: 13, color: "var(--slate)" }}>
+          No silo is mapped to a material yet. Map the hoppers above and set their capacities, then assign
+          receipts to them (or record an opening declaration below) to see levels here.
+        </div>
+      )}
+
+      {notInSilo.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>Received but not in a silo</h3>
+          <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 860 }}>
+            Loads recorded as going to the laboratory, the store, or a drummed admixture not tied to a tank.
+            They count as stock bought, but raise no silo's level.
+          </p>
+          <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "var(--concrete)" }}>
+                  <th style={TH}>Material</th>
+                  <th style={{ ...TH, textAlign: "right" }}>Quantity</th>
+                  <th style={{ ...TH, textAlign: "right" }}>Receipts</th>
+                  <th style={TH}>Last received</th>
+                </tr>
+              </thead>
+              <tbody>
+                {notInSilo.map((n) => (
+                  <tr key={n.material_id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={TD}>{n.material_name}</td>
+                    <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{fmtKg(n.qty_kg)}</td>
+                    <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{n.receipts}</td>
+                    <td style={{ ...TD, color: "var(--slate)" }}>{fmtDay(n.last_received)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>Opening stock &amp; unrecorded fills</h3>
+      <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 860 }}>
+        A receipt assigned to a silo records its own fill automatically. Use this only for the opening
+        declaration — what is in the silos right now — or a fill nobody entered as a receipt. A fill takes
+        effect from its own moment onward: a batch made on the 3rd is costed against whatever the silo held on
+        the 3rd, and a fill on the 10th changes nothing behind it.
+      </p>
 
       <form onSubmit={addFill} className="card" style={{ marginBottom: 18, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label style={{ fontSize: 11.5, color: "var(--slate)", display: "flex", flexDirection: "column", gap: 3 }}>Silo
           <select required value={fillDraft.slot} onChange={(e) => setFillDraft({ ...fillDraft, slot: e.target.value })} style={{ fontSize: 13 }}>
             <option value="">Choose…</option>
-            {refillable.map((s) => <option key={s.slot} value={s.slot}>{s.slot_name} ({s.slot})</option>)}
+            {levels.map((l) => <option key={l.slot} value={l.slot}>{l.slot_name || l.label} ({l.slot})</option>)}
           </select>
         </label>
         <label style={{ fontSize: 11.5, color: "var(--slate)", display: "flex", flexDirection: "column", gap: 3 }}>Material
@@ -838,6 +948,260 @@ function QcDelays({ canEdit }) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Round 169 — Mix Designs (item 7a). Three read-only views of the lab's mix
+// design data on the plant side: Details, Comparison and Costing.
+// ---------------------------------------------------------------------------
+function fmtRate(n) {
+  return n == null ? "—" : "₹" + Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtKgm3(n) {
+  return n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+function MixDesignDetails({ id }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setData(null); setError("");
+    apiRequest(`/plant/mix-designs/${id}`).then(setData).catch((e) => setError(e.message));
+  }, [id]);
+  if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
+  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  const d = data.design;
+  const ing = [
+    { name: "Cement", src: d.cement_type_source, kg: d.cement_kgm3, sg: d.cement_sp_gr },
+    { name: "Fly ash", src: d.fly_ash_type_source, kg: d.fly_ash_kgm3, sg: d.fly_ash_sp_gr },
+    { name: "Free water", src: "—", kg: d.free_water_kgm3, sg: 1.0 },
+    { name: "Fine aggregate", src: d.fine_agg_type_source, kg: d.fine_agg_kgm3, sg: d.fine_agg_sp_gr },
+    { name: "20 mm coarse", src: d.coarse_20mm_type_source, kg: d.coarse_20mm_kgm3, sg: d.coarse_20mm_sp_gr },
+    { name: "12.5 mm coarse", src: d.coarse_12_5mm_type_source, kg: d.coarse_12_5mm_kgm3, sg: d.coarse_12_5mm_sp_gr },
+    ...data.admixtures.map((a) => ({ name: "Admixture", src: a.type_brand, kg: a.qty_kgm3, sg: a.sp_gr })),
+  ];
+  const param = (label, value) => (
+    <tr style={{ borderTop: "1px solid var(--border)" }}>
+      <td style={{ ...TD, color: "var(--slate)" }}>{label}</td>
+      <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{value}</td>
+    </tr>
+  );
+  return (
+    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+      <div className="card" style={{ flex: 1, minWidth: 290, padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ background: "var(--concrete)" }}><th style={TH} colSpan={2}>Design parameters</th></tr></thead>
+          <tbody>
+            {param("Grade", d.grade)}
+            {param("Design ref / rev", `${d.design_ref_code} · rev ${d.revision}`)}
+            {param("Target strength f′ck", `${fmtKgm3(d.fck_28day_mpa)} MPa`)}
+            {param("Std deviation", `${fmtKgm3(d.std_deviation_mpa)} MPa`)}
+            {param("Target mean strength", `${fmtKgm3(d.target_mean_strength_mpa)} MPa`)}
+            {param("Max aggregate size", d.max_agg_size_mm ? `${d.max_agg_size_mm} mm` : "—")}
+            {param("Target workability", d.target_workability_mm || "—")}
+            {param("Design density", d.design_density_kgm3 ? `${fmtKgm3(d.design_density_kgm3)} kg/m³` : "—")}
+            {param("w/c ratio", d.wb_ratio != null ? Number(d.wb_ratio).toFixed(2) : "—")}
+            {param("Status", d.status)}
+          </tbody>
+        </table>
+      </div>
+      <div className="card" style={{ flex: 1.3, minWidth: 320, padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ background: "var(--concrete)" }}>
+            <th style={TH}>Ingredient</th><th style={TH}>Type / source</th>
+            <th style={{ ...TH, textAlign: "right" }}>kg/m³</th><th style={{ ...TH, textAlign: "right" }}>Sp. gr</th>
+          </tr></thead>
+          <tbody>
+            {ing.map((r, i) => (
+              <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={TD}>{r.name}</td>
+                <td style={{ ...TD, color: "var(--slate)" }}>{r.src || "—"}</td>
+                <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{fmtKgm3(r.kg)}</td>
+                <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{r.sg != null ? Number(r.sg).toFixed(2) : "—"}</td>
+              </tr>
+            ))}
+            <tr style={{ borderTop: "2px solid var(--border)" }}>
+              <td style={{ ...TD, fontWeight: 700 }}>Total binder</td><td style={TD} />
+              <td style={{ ...TD, textAlign: "right", fontWeight: 700 }}>{fmtKgm3(d.total_binder_kgm3)}</td><td style={TD} />
+            </tr>
+            <tr>
+              <td style={{ ...TD, fontWeight: 700 }}>Total aggregate</td><td style={TD} />
+              <td style={{ ...TD, textAlign: "right", fontWeight: 700 }}>{fmtKgm3(d.total_aggregate_kgm3)}</td><td style={TD} />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MixDesignComparison() {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    apiRequest("/plant/mix-designs-comparison").then(setRows).catch((e) => setError(e.message));
+  }, []);
+  if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
+  if (!rows) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  if (!rows.length) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>No standard designs to compare yet.</div>;
+  const R = { ...TD, textAlign: "right" };
+  return (
+    <>
+      <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--slate)", maxWidth: 820, lineHeight: 1.55 }}>
+        Every grade's standard approved design side by side — cement, binder, the water/cement spread and the
+        aggregate total.
+      </p>
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ background: "var(--concrete)" }}>
+            <th style={TH}>Grade</th><th style={R}>Cement</th><th style={R}>Fly ash</th><th style={R}>Binder</th>
+            <th style={R}>Water</th><th style={R}>w/c</th><th style={R}>Total agg</th><th style={R}>Admix %</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={{ ...TD, fontWeight: 700 }}>{r.grade}</td>
+                <td style={R}>{fmtKgm3(r.cement_kgm3)}</td>
+                <td style={R}>{fmtKgm3(r.fly_ash_kgm3)}</td>
+                <td style={R}>{fmtKgm3(r.total_binder_kgm3)}</td>
+                <td style={R}>{fmtKgm3(r.free_water_kgm3)}</td>
+                <td style={R}>{r.wb_ratio != null ? Number(r.wb_ratio).toFixed(2) : "—"}</td>
+                <td style={R}>{fmtKgm3(r.total_aggregate_kgm3)}</td>
+                <td style={R}>{r.admix_pct != null ? `${r.admix_pct.toFixed(1)}%` : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function MixDesignCosting({ id }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [days, setDays] = useState(30);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const qs = days === "custom" && from && to ? `from_date=${from}&to_date=${to}` : `days=${days === "custom" ? 30 : days}`;
+  useEffect(() => {
+    setData(null); setError("");
+    apiRequest(`/plant/mix-designs/${id}/costing?${qs}`).then(setData).catch((e) => setError(e.message));
+  }, [id, qs]);
+  const R = { ...TD, textAlign: "right" };
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <p style={{ margin: 0, fontSize: 12, color: "var(--slate)", maxWidth: 560, lineHeight: 1.55 }}>
+          <b>Design</b> cost (design kg/m³ × landed rate) vs <b>actual</b> cost (what the plant weighed per m³ for
+          this grade in the period × the same rate). The gap is the over/under-batching cost.
+        </p>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <select aria-label="Period" value={days} onChange={(e) => setDays(e.target.value === "custom" ? "custom" : Number(e.target.value))} style={{ fontSize: 13 }}>
+            <option value={7}>Last 7 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+            <option value={365}>Last year</option>
+            <option value="custom">Custom range…</option>
+          </select>
+          {days === "custom" && (
+            <>
+              <input type="date" aria-label="From" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5 }} />
+              <span style={{ fontSize: 12, color: "var(--slate)" }}>to</span>
+              <input type="date" aria-label="To" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5 }} />
+            </>
+          )}
+        </div>
+      </div>
+      {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}
+      {!data && !error && <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>}
+      {data && (
+        <>
+          {!data.has_actual && (
+            <div className="card" style={{ marginBottom: 12, fontSize: 12.5, color: "var(--amber)" }}>
+              No plant batches resolved to this grade in the selected period, so the actual columns are blank. The
+              design costing still shows. (Check the recipe→grade mapping if you expected batches here.)
+            </div>
+          )}
+          <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr style={{ background: "var(--concrete)" }}>
+                <th style={TH}>Ingredient</th><th style={R}>Rate ₹/kg</th>
+                <th style={R}>Design kg/m³</th><th style={R}>Design ₹/m³</th>
+                <th style={R}>Actual kg/m³</th><th style={R}>Actual ₹/m³</th>
+              </tr></thead>
+              <tbody>
+                {data.rows.map((r) => (
+                  <tr key={r.key} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={TD}>{r.label}</td>
+                    <td style={R}>{fmtRate(r.rate_per_kg)}</td>
+                    <td style={R}>{fmtKgm3(r.design_kg_m3)}</td>
+                    <td style={R}>{fmtINR(r.design_cost_m3)}</td>
+                    <td style={R}>{fmtKgm3(r.actual_kg_m3)}</td>
+                    <td style={R}>{fmtINR(r.actual_cost_m3)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: "2px solid var(--border)", background: "var(--concrete)" }}>
+                  <th style={{ ...TH }}>Material cost / m³</th><th style={R} /><th style={R} />
+                  <th style={{ ...R, fontWeight: 800 }}>{fmtINR(data.design_total_cost_m3)}</th>
+                  <th style={R} />
+                  <th style={{ ...R, fontWeight: 800 }}>{data.actual_total_cost_m3 == null ? "—" : fmtINR(data.actual_total_cost_m3)}</th>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          {data.has_actual && data.actual_total_cost_m3 != null && (
+            <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>
+              Over/under-batching vs design:{" "}
+              <b style={{ color: data.actual_total_cost_m3 > data.design_total_cost_m3 ? "var(--alert-red)" : "var(--signal-green)" }}>
+                {data.actual_total_cost_m3 > data.design_total_cost_m3 ? "+" : ""}
+                {fmtINR(data.actual_total_cost_m3 - data.design_total_cost_m3)}/m³
+              </b>{" "}· based on {data.produced_m3} m³ of this grade in the period.
+            </div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function MixDesigns({ canCost }) {
+  const [list, setList] = useState(null);
+  const [sel, setSel] = useState("");
+  const [sub, setSub] = useState("details");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    apiRequest("/plant/mix-designs").then((r) => {
+      setList(r);
+      if (r.length) setSel(String((r.find((d) => d.is_standard_for_grade) || r[0]).id));
+    }).catch((e) => setError(e.message));
+  }, []);
+  if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
+  if (!list) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  if (!list.length) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>No approved mix designs yet. Create and approve one on the Lab side.</div>;
+  return (
+    <>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button type="button" className={`btn-tab ${sub === "details" ? "active" : ""}`} onClick={() => setSub("details")}>Details</button>
+          <button type="button" className={`btn-tab ${sub === "comparison" ? "active" : ""}`} onClick={() => setSub("comparison")}>Comparison</button>
+          {canCost && <button type="button" className={`btn-tab ${sub === "costing" ? "active" : ""}`} onClick={() => setSub("costing")}>Costing</button>}
+        </div>
+        {sub !== "comparison" && (
+          <select value={sel} onChange={(e) => setSel(e.target.value)} style={{ marginLeft: "auto", fontSize: 13, maxWidth: 360 }}>
+            {list.map((d) => (
+              <option key={d.id} value={d.id}>{d.grade} — {d.design_ref_code} rev {d.revision}{d.is_standard_for_grade ? " · standard" : ""}</option>
+            ))}
+          </select>
+        )}
+      </div>
+      {sub === "details" && <MixDesignDetails id={sel} />}
+      {sub === "comparison" && <MixDesignComparison />}
+      {sub === "costing" && canCost && <MixDesignCosting id={sel} />}
+    </>
+  );
+}
+
 export default function PlantProduction() {
   const { can, ready } = usePermissions();
   const [tab, setTab] = useState("production");
@@ -936,6 +1300,9 @@ export default function PlantProduction() {
         <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
           <button type="button" className={`btn-tab ${tab === "production" ? "active" : ""}`} onClick={() => setTab("production")}>Production</button>
           <button type="button" className={`btn-tab ${tab === "consumption" ? "active" : ""}`} onClick={() => setTab("consumption")}>Consumption</button>
+          {canView && (
+            <button type="button" className={`btn-tab ${tab === "mix-designs" ? "active" : ""}`} onClick={() => setTab("mix-designs")}>Mix Designs</button>
+          )}
           {canMap && (
             <button type="button" className={`btn-tab ${tab === "silos" ? "active" : ""}`} onClick={() => setTab("silos")}>Silos</button>
           )}
@@ -977,6 +1344,7 @@ export default function PlantProduction() {
         )}
 
         {tab === "silos" && canMap ? <Silos />
+          : tab === "mix-designs" && canView ? <MixDesigns canCost={canCost} />
           : tab === "qc-delay" && canQcDelayView ? <QcDelays canEdit={canQcDelayEdit} />
           : tab === "manual" ? <Manual canEdit={canManualEdit} />
           : tab === "cost" && canCost ? <CostPerM3 qs={qs} />
