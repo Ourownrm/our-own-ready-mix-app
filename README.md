@@ -8297,3 +8297,22 @@ Gate2/3/4 aggregates, Water1 150 and Adm1 1.4, priced to **₹4,051.54/m³** (ma
 unpriced water correctly flagged. All five checkers pass (92 routes); frontend build clean.
 
 Next: Stage 3 — the password-gated **edit + write-back** to MCI370 (the agent's first write path).
+
+## Round 172 — plant-data screens now reachable when the permission is granted (v10.01)
+
+Bug fix. Granting a role "Plant production & consumption (MCI370)" (`production.plant-data`) let the server allow
+the screen and the route accepted the role, but **no dashboard carried a link to `/plant-production`** — it was
+only reachable from the Administrator grid. So a Lab Technician (or QC Engineer, Plant Operator, Manager, Store)
+given the permission had no way to open it: the grant looked ignored.
+
+Fix: added `IfCan perm="production.plant-data"`-gated links on every non-admin dashboard whose role is in the
+`/plant-production` route guard — so the link appears the moment a Super Admin grants the permission and vanishes
+when revoked, exactly like the other permission-driven links:
+- **Plant Production & Consumption** (`/plant-production`) → Lab Technician, QC Engineer, Plant Operator, Manager,
+  Store dashboards.
+- **Mix Designs & Recipes** (`/mix-designs`) → Lab Technician, QC Engineer, Manager (the roles in that route's
+  guard). The QC Engineer's existing hard-coded Mix Designs link was converted to the same `IfCan` gate so it, too,
+  respects the permission.
+
+Frontend only — no backend, schema, or permission-catalogue change (the permission and routes already existed; only
+the navigation to them was missing). Build clean.

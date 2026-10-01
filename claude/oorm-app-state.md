@@ -1,4 +1,16 @@
-# OORM App — Current State (as of Round 171, Ver. 10.00)
+# OORM App — Current State (as of Round 172, Ver. 10.01)
+
+**v10.01 (172) — fix: plant-data screens were unreachable despite the permission being granted.** Granting
+`production.plant-data` (Super Admin "Plant production & consumption (MCI370)") allowed the server + route but NO
+dashboard linked to `/plant-production` (only the Administrator grid did), so non-admin roles (lab_technician,
+qc_engineer, plant_operator, manager, store) saw nothing. Fix (frontend only): added `IfCan
+perm="production.plant-data"` links — **Plant Production & Consumption** (`/plant-production`) on LabTechnician,
+QcEngineer, PlantOperator, ManagerDashboard, StoreHome; **Mix Designs & Recipes** (`/mix-designs`) on LabTechnician,
+QcEngineer, ManagerDashboard (the roles in that route's guard). QcEngineer's hard-coded Mix Designs link converted
+to IfCan. No backend/schema/permission-catalogue change. Build clean. **Lesson for future rounds:** when adding a
+new route/page, add its IfCan nav link on every role dashboard whose role is in the route guard — the permission
+catalogue + route guard alone don't surface navigation.
+
 
 **v10.00 (171) — Recipe Master READ: MCI370's recipes copied into the app (Stage 2 of QC Recipe Master; see
 claude/mci370-recipe-master.md).** Schema: `plant_recipes` (code UNIQUE, name, mixing_time, mixer_capacity,
