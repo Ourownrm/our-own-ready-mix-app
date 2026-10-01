@@ -107,6 +107,11 @@ export default function LabTechnician() {
           <button className={`btn-tab ${tab === "assignments" ? "active" : ""}`} onClick={() => setTab("assignments")}>Assignments</button>
           <IfCan perm="quality.cube-test-report"><Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link></IfCan>
           <IfCan perm="quality.raw-material-stock"><Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link></IfCan>
+          {/* Round 172 — plant production/consumption and the mix-design/recipe
+              screens are reachable from here too, once a Super Admin grants the
+              plant-data permission. Both gate on production.plant-data. */}
+          <IfCan perm="production.plant-data"><Link to="/plant-production"><button type="button" className="btn-tab">Plant Production &amp; Consumption</button></Link></IfCan>
+          <IfCan perm="production.plant-data"><Link to="/mix-designs"><button type="button" className="btn-tab">Mix Designs &amp; Recipes</button></Link></IfCan>
         </div>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}

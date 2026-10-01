@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import { IfCan } from "../lib/PermissionContext.jsx";
 import TodaysDeliveryNotes from "../lib/TodaysDeliveryNotes.jsx";
 
 export default function QcEngineer() {
@@ -84,10 +85,14 @@ export default function QcEngineer() {
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
 
-        {/* Round 170 — quick link to the Mix Designs page now under Quality Control. */}
-        <Link to="/mix-designs" className="btn-tab" style={{ display: "inline-block", marginBottom: 14, textDecoration: "none" }}>
-          Mix Designs &amp; Recipes →
-        </Link>
+        {/* Round 170/172 — links to the QC mix-design/recipe screen and to plant
+            production & consumption. Both gate on production.plant-data, so they
+            appear only once a Super Admin grants it (Round 172 fix: these were
+            missing, so a granted permission had no way to be reached). */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <IfCan perm="production.plant-data"><Link to="/mix-designs" className="btn-tab" style={{ textDecoration: "none" }}>Mix Designs &amp; Recipes →</Link></IfCan>
+          <IfCan perm="production.plant-data"><Link to="/plant-production" className="btn-tab" style={{ textDecoration: "none" }}>Plant Production &amp; Consumption →</Link></IfCan>
+        </div>
 
         {delayedTrucks.length > 0 && (
           <div className="card" style={{ marginBottom: 16, border: "1px solid var(--alert-red)" }}>

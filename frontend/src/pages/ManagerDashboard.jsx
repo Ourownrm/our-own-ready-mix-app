@@ -288,6 +288,9 @@ export default function ManagerDashboard() {
           <IfCan perm="store.supply-approve" action="edit"><Link to="/supply-approvals"><button type="button">Fuel and lubricant requests</button></Link></IfCan>
           <IfCan perm="fleet.fuel-filling"><Link to="/fuel"><button type="button">Fuel & Lubricant Filling</button></Link></IfCan>
           <IfCan perm="store.items"><Link to="/store-stock"><button type="button">Store stock</button></Link></IfCan>
+          {/* Round 172 — plant production/consumption and the mix-design/recipe screens. */}
+          <IfCan perm="production.plant-data"><Link to="/plant-production"><button type="button">Plant Production &amp; Consumption</button></Link></IfCan>
+          <IfCan perm="production.plant-data"><Link to="/mix-designs"><button type="button">Mix Designs &amp; Recipes</button></Link></IfCan>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>

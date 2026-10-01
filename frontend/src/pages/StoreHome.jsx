@@ -66,6 +66,9 @@ export default function StoreHome() {
               <Link to="/weighbridge"><button type="button" style={{ width: "100%", marginTop: 10 }}>Weighbridge</button></Link>}
             {can("reports.fuel", "view") &&
               <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 10 }}>Fuel and lubricant report</button></Link>}
+            {/* Round 172 — plant production & consumption, once the plant-data permission is granted. */}
+            {can("production.plant-data", "view") &&
+              <Link to="/plant-production"><button type="button" style={{ width: "100%", marginTop: 10 }}>Plant Production &amp; Consumption</button></Link>}
           </>
         )}
       </div>
