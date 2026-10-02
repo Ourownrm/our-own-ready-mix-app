@@ -862,7 +862,7 @@ const MIX_COST_COMPONENTS = [
 router.get("/mix-designs", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
     const { rows } = await query(
-      `SELECT d.id, d.design_ref_code, d.revision, d.status, d.is_standard_for_grade,
+      `SELECT d.id, d.design_ref_code, d.mix_description, d.revision, d.status, d.is_standard_for_grade,
               d.fck_28day_mpa, g.id AS grade_id, g.name AS grade
          FROM mix_designs d
          JOIN mix_grades g ON g.id = d.mix_grade_id
@@ -911,7 +911,14 @@ router.get("/mix-designs/:id", requireRole(...PLANT_ROLES), requirePermission("p
       `SELECT type_brand, dosage_pct_of_binder, qty_kgm3, sp_gr FROM mix_design_admixtures WHERE mix_design_id = $1 ORDER BY sort_order, id`,
       [id]
     );
-    res.json({ design: rows[0], admixtures: adm });
+    // Round 178 — the recipes mapped to this mix design (many-to-many).
+    const { rows: mappedRecipes } = await query(
+      `SELECT r.id AS recipe_id, r.recipe_code, r.recipe_name
+         FROM recipe_mix_design_map map
+         JOIN plant_recipes r ON r.id = map.recipe_id
+        WHERE map.mix_design_id = $1
+        ORDER BY r.recipe_code`, [id]);
+    res.json({ design: rows[0], admixtures: adm, mapped_recipes: mappedRecipes });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load the mix design." });
@@ -1204,6 +1211,14 @@ router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("produ
               e.old_recipe_code, e.new_recipe_code, u.name AS edited_by_name
          FROM plant_recipe_edits e LEFT JOIN users u ON u.id = e.edited_by
         WHERE e.recipe_id = $1 ORDER BY e.edited_at DESC LIMIT 5`, [id]);
+    // Round 178 — the mix designs mapped to this recipe (many-to-many).
+    const { rows: mappedDesigns } = await query(
+      `SELECT d.id AS mix_design_id, d.design_ref_code, d.revision, d.mix_description, g.name AS grade
+         FROM recipe_mix_design_map map
+         JOIN mix_designs d ON d.id = map.mix_design_id
+         JOIN mix_grades g ON g.id = d.mix_grade_id
+        WHERE map.recipe_id = $1
+        ORDER BY g.name, d.design_ref_code`, [id]);
     res.json({
       recipe: {
         ...recipe,
@@ -1217,6 +1232,7 @@ router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("produ
       cost_incomplete: anyUnpriced,
       recent_edits: le,
       pending_write: le.some((e) => e.status === "pending" || e.status === "claimed"),
+      mapped_designs: mappedDesigns,
     });
   } catch (err) {
     console.error(err);
@@ -1225,11 +1241,63 @@ router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("produ
 });
 
 // ---------------------------------------------------------------------------
+// ROUND 178 — Recipe <-> Mix Design mapping (many-to-many). Editable from either
+// side on the Mix Designs & Recipes screen. App-only metadata — nothing is
+// written to MCI370 — so no edit-password gate; gated by the same role/permission
+// that may edit recipes (production.recipe-edit edit).
+// ---------------------------------------------------------------------------
+router.post("/recipe-design-map", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+  const recipeId = Number(req.body.recipe_id);
+  const designId = Number(req.body.mix_design_id);
+  if (!(Number.isInteger(recipeId) && recipeId > 0) || !(Number.isInteger(designId) && designId > 0)) {
+    return res.status(400).json({ error: "A recipe and a mix design are both required." });
+  }
+  try {
+    const [{ rows: r }, { rows: d }] = await Promise.all([
+      query(`SELECT 1 FROM plant_recipes WHERE id = $1`, [recipeId]),
+      query(`SELECT 1 FROM mix_designs WHERE id = $1`, [designId]),
+    ]);
+    if (!r.length) return res.status(404).json({ error: "Recipe not found." });
+    if (!d.length) return res.status(404).json({ error: "Mix design not found." });
+    await query(
+      `INSERT INTO recipe_mix_design_map (recipe_id, mix_design_id, created_by)
+       VALUES ($1,$2,$3) ON CONFLICT (recipe_id, mix_design_id) DO NOTHING`,
+      [recipeId, designId, req.user.id]
+    );
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not map the recipe and mix design." });
+  }
+});
+
+router.delete("/recipe-design-map", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+  const recipeId = Number(req.query.recipe_id);
+  const designId = Number(req.query.mix_design_id);
+  if (!(Number.isInteger(recipeId) && recipeId > 0) || !(Number.isInteger(designId) && designId > 0)) {
+    return res.status(400).json({ error: "A recipe and a mix design are both required." });
+  }
+  try {
+    await query(`DELETE FROM recipe_mix_design_map WHERE recipe_id = $1 AND mix_design_id = $2`, [recipeId, designId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not remove the mapping." });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // ROUND 174 — editing a recipe (writes back to MCI370), the edit password, and
 // undo. The permission says who may reach the editor; the plant-wide edit
 // password (below) is the second key entered on every change.
 // ---------------------------------------------------------------------------
-const RECIPE_EDIT_ROLES = ["administrator", "manager", "qc_engineer"];
+// Round 178 — lab_technician added so a Super Admin can give recipe-master
+// editing to the lab as well as QC. The two-guard design couples the role
+// allow-list with a default grant (check-guards enforces it), so lab is granted
+// by default here and in the catalogue; the Super Admin can revoke it for the
+// whole lab role or per lab user on the Access Control page, and the plant-wide
+// edit password is still required on every change.
+const RECIPE_EDIT_ROLES = ["administrator", "manager", "qc_engineer", "lab_technician"];
 
 // Editable recipe fields → their app column + a coercer. cost_per_m3_plant is
 // NOT here (the app computes cost); Recipe_Code is handled as a rename.

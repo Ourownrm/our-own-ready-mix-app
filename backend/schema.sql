@@ -3020,6 +3020,22 @@ CREATE TABLE plant_recipe_edit_auth (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Round 178 — Recipe <-> Mix Design mapping (many-to-many). One recipe can be
+-- tied to several mix designs and one mix design to several recipes; this is the
+-- link table. App-only metadata (nothing is written to MCI370), editable from
+-- either side on the Mix Designs & Recipes screen. ON DELETE CASCADE on both
+-- sides so a link vanishes with whichever end is removed.
+CREATE TABLE recipe_mix_design_map (
+  id            SERIAL PRIMARY KEY,
+  recipe_id     INTEGER NOT NULL REFERENCES plant_recipes(id) ON DELETE CASCADE,
+  mix_design_id INTEGER NOT NULL REFERENCES mix_designs(id) ON DELETE CASCADE,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (recipe_id, mix_design_id)
+);
+CREATE INDEX idx_recipe_design_map_recipe ON recipe_mix_design_map(recipe_id);
+CREATE INDEX idx_recipe_design_map_design ON recipe_mix_design_map(mix_design_id);
+
 CREATE TABLE plant_sync_log (
   id             SERIAL PRIMARY KEY,
   received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

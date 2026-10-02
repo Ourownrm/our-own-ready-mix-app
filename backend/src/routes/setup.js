@@ -2689,6 +2689,19 @@ CREATE TABLE IF NOT EXISTS plant_recipe_edit_auth (
   updated_by    INTEGER REFERENCES users(id),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Round 178 — Recipe <-> Mix Design mapping (many-to-many). App-only link table,
+-- additive and re-runnable.
+CREATE TABLE IF NOT EXISTS recipe_mix_design_map (
+  id            SERIAL PRIMARY KEY,
+  recipe_id     INTEGER NOT NULL REFERENCES plant_recipes(id) ON DELETE CASCADE,
+  mix_design_id INTEGER NOT NULL REFERENCES mix_designs(id) ON DELETE CASCADE,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (recipe_id, mix_design_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_design_map_recipe ON recipe_mix_design_map(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_design_map_design ON recipe_mix_design_map(mix_design_id);
 `);
 
     const { rows: pbCount } = await pool.query(`SELECT count(*)::int AS n FROM plant_batches`);
@@ -2753,6 +2766,29 @@ CREATE TABLE IF NOT EXISTS plant_recipe_edit_auth (
       recipeEditRepaired.rows.length
         ? `Schema migration applied (Round 174 — recipe-edit access granted to Administrator, Manager, QC Engineer).`
         : `Round 174 — recipe-edit access defaults already in place, nothing to repair.`
+    );
+
+    // ROUND 178 — lab_technician is now an allowed role for recipe-master
+    // editing, so a Super Admin can give it to the lab as well as QC. Same
+    // mechanism as REPAIR_174: seed the new default onto live DBs because the
+    // per-role seeding loop never re-fires for a role that already has rows.
+    // Granted by default (the two-guard design requires it); Super Admin can
+    // revoke it for the lab role or per user on the Access Control page.
+    const REPAIR_178 = [
+      ["lab_technician", "production.recipe-edit", "view"],
+      ["lab_technician", "production.recipe-edit", "edit"],
+    ];
+    const recipeEditLabRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING
+       RETURNING role::text`,
+      [REPAIR_178.map((r) => r[0]), REPAIR_178.map((r) => r[1]), REPAIR_178.map((r) => r[2])]
+    );
+    log.push(
+      recipeEditLabRepaired.rows.length
+        ? `Schema migration applied (Round 178 — recipe-edit access also granted to Lab Technician; Super Admin can revoke).`
+        : `Round 178 — lab recipe-edit default already in place, nothing to repair.`
     );
 
 

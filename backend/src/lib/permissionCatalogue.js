@@ -223,7 +223,7 @@ export const CATALOGUE = [
   // change — the permission says WHO may reach the editor, the password is the
   // deliberate second key the owner holds.
   f("production.recipe-edit", "production", "Edit plant recipes (writes to MCI370)", VE,
-    { administrator: VE, manager: VE, qc_engineer: VE }),
+    { administrator: VE, manager: VE, qc_engineer: VE, lab_technician: VE }),
 
   // ROUND 160 — the QC allowance added to the ticket's finish time, per
   // customer or site.

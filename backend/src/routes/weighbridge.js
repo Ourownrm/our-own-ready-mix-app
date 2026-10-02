@@ -94,9 +94,16 @@ function round2(n) { return Math.round(n * 100) / 100; }
 
 function parseBilledQty(rawText) {
   if (rawText === null || rawText === undefined) return null;
-  const s = String(rawText).trim();
-  // A clean positive number only — no operators, letters or spaces. This is
-  // what keeps '35610+91', 'N/A', 'NONE' and driver names out.
+  // Round 175 — the operator's billed qty was vanishing from the ticket screen
+  // whenever they typed it the natural way: with a unit ("25 MT", "25MT") or a
+  // thousands comma ("1,250"). The old rule accepted only a bare number, so
+  // those parsed to null and the cell showed nothing. Normalise first — drop
+  // thousands commas and a trailing unit label — THEN apply the same strict
+  // "clean positive number" test, so '35610+91', 'N/A', 'NONE' and driver
+  // names are still rejected (a '+' or a letter mid-value never parses).
+  let s = String(rawText).trim();
+  s = s.replace(/,/g, "");                 // 1,250 -> 1250
+  s = s.replace(/\s*[A-Za-z.]+\s*$/, "").trim();  // strip a trailing unit word (25 MT -> 25, 25MT -> 25)
   if (!/^\d{1,9}(\.\d{1,4})?$/.test(s)) return null;
   const n = Number(s);
   return Number.isFinite(n) && n > 0 ? n : null;

@@ -9,6 +9,7 @@ import { SLOT_BY_KEY } from "../lib/plantSlots.js";
 import { requirePermission, can } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
+import { plantConsumptionByMaterial, plantProductionM3, CONSUMPTION_CUTOVER, firstOfNextMonth, nextDay } from "../lib/plantConsumption.js";
 
 // Round 139 — Material Module: Store's raw-material purchase -> receive ->
 // consume -> physical-count workflow (cement, aggregates, admixtures, etc.).
@@ -1120,18 +1121,29 @@ router.post("/receipts/:id/confirm", requireRole(...CONFIRM_ROLES), requirePermi
 // by side for comparison — see schema.sql's comment on rm_daily_consumption
 // for which one book-stock deduction actually uses.
 
+// Round 177 — this is now a READ-ONLY view of the plant's ACTUAL consumption
+// for the day (load-cell auto + operator manual, the single source that draws
+// down stock from the cutover). Entry moved to the Plant Production screen; the
+// hand-keyed rm_daily_consumption is no longer the stock driver. Returns, per
+// material, the auto / manual / total kg for the chosen day, plus that day's
+// production m³ (batched + manual) for context.
 router.get("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "view"), async (req, res) => {
-  const date = req.query.date || istDay();
-  const { rows } = await query(
-    `SELECT m.id AS material_id, m.name, m.purchase_unit, m.kg_per_purchase_unit,
-            c.automatic_qty_kg, c.manual_qty_kg, c.recorded_at
-     FROM rm_materials m
-     LEFT JOIN rm_daily_consumption c ON c.material_id = m.id AND c.consumption_date = $1
-     WHERE m.is_active
-     ORDER BY m.category, m.name`,
-    [date]
-  );
-  res.json({ date, materials: rows });
+  const date = (req.query.date || istDay()).slice(0, 10);
+  const dayEnd = nextDay(date);
+  const [cons, prod, mats] = await Promise.all([
+    plantConsumptionByMaterial({ from: date, toExclusive: dayEnd }),
+    plantProductionM3({ from: date, toExclusive: dayEnd }),
+    query(`SELECT id, name, purchase_unit, kg_per_purchase_unit FROM rm_materials WHERE is_active ORDER BY category, name`),
+  ]);
+  const materials = mats.rows.map((m) => {
+    const c = cons.get(m.id) || { auto_kg: 0, manual_kg: 0, total_kg: 0 };
+    return {
+      material_id: m.id, name: m.name, purchase_unit: m.purchase_unit,
+      kg_per_purchase_unit: Number(m.kg_per_purchase_unit),
+      auto_kg: c.auto_kg || 0, manual_kg: c.manual_kg || 0, total_kg: c.total_kg || 0,
+    };
+  });
+  res.json({ date, readonly: true, source: "plant", materials, production: prod });
 });
 
 router.post("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "create"), async (req, res) => {
@@ -1219,26 +1231,29 @@ function effectiveAvgForMonth(rateMap, yearMonth, openingRate) {
 }
 
 async function bookStockRows() {
+  // Round 177 — consumption draw-down is now the PLANT's actual figure (load
+  // cells + manual) from CONSUMPTION_CUTOVER onward; before the cutover it stays
+  // the hand-keyed rm_daily_consumption, so historical book stock never shifts.
+  // The cutover is a month boundary, so the current month is wholly on one side.
+  const monthStart = `${istMonth()}-01`;
+  const monthEnd = firstOfNextMonth(monthStart);
   const { rows } = await query(`
     SELECT m.*,
            COALESCE(recv.total_kg, 0) AS received_kg,
-           COALESCE(cons.total_kg, 0) AS consumed_kg,
-           COALESCE(monthcons.month_kg, 0) AS month_consumed_kg,
+           COALESCE(cons_pre.total_kg, 0) AS consumed_pre_cutover_kg,
            COALESCE(monthrecv.month_kg, 0) AS month_received_kg
     FROM rm_materials m
     LEFT JOIN LATERAL (
       SELECT SUM(r.accepted_qty_kg) AS total_kg
       FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = m.id
     ) recv ON true
+    -- Consumption BEFORE the cutover only — plant-actual covers everything from
+    -- the cutover on and is added in JS below.
     LEFT JOIN LATERAL (
       SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) AS total_kg
-      FROM rm_daily_consumption c WHERE c.material_id = m.id
-    ) cons ON true
-    LEFT JOIN LATERAL (
-      SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) AS month_kg
       FROM rm_daily_consumption c
-      WHERE c.material_id = m.id AND date_trunc('month', c.consumption_date) = date_trunc('month', CURRENT_DATE)
-    ) monthcons ON true
+      WHERE c.material_id = m.id AND c.consumption_date < $1::date
+    ) cons_pre ON true
     -- Round 142 — this month's receipts, so the Stock tab can show the
     -- mockup's Opening / Received / Consumed / Book stock line for the month
     -- rather than only the running balance.
@@ -1249,7 +1264,31 @@ async function bookStockRows() {
     ) monthrecv ON true
     WHERE m.is_active
     ORDER BY m.category, m.name
-  `);
+  `, [CONSUMPTION_CUTOVER]);
+
+  // Plant-actual consumption: all-time from the cutover (for the running book
+  // stock) and the current month alone (for the month movement line). Both are
+  // load-cell auto + operator manual.
+  const plantSinceCutover = await plantConsumptionByMaterial({ from: CONSUMPTION_CUTOVER });
+  const plantThisMonth = monthStart >= CONSUMPTION_CUTOVER
+    ? await plantConsumptionByMaterial({ from: monthStart, toExclusive: monthEnd })
+    : new Map();
+  const rmMonth = monthStart < CONSUMPTION_CUTOVER
+    ? await query(
+        `SELECT c.material_id, SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) AS kg
+           FROM rm_daily_consumption c
+          WHERE c.consumption_date >= $1::date AND c.consumption_date < $2::date
+          GROUP BY c.material_id`, [monthStart, monthEnd])
+    : { rows: [] };
+  const rmMonthMap = new Map(rmMonth.rows.map((r) => [r.material_id, Number(r.kg) || 0]));
+
+  for (const m of rows) {
+    const sinceCut = plantSinceCutover.get(m.id)?.total_kg || 0;
+    m.consumed_kg = Number(m.consumed_pre_cutover_kg) + sinceCut;
+    m.month_consumed_kg = monthStart >= CONSUMPTION_CUTOVER
+      ? (plantThisMonth.get(m.id)?.total_kg || 0)
+      : (rmMonthMap.get(m.id) || 0);
+  }
   return rows;
 }
 
@@ -1361,30 +1400,47 @@ router.post("/physical-stock", requireRole(...ORDER_ROLES), requirePermission("m
 router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermission("material.physical-stock", "view"), async (req, res) => {
   const month = (req.query.month || istMonth()).slice(0, 7);
   const monthStart = `${month}-01`;
+  const monthEnd = firstOfNextMonth(monthStart);
   const maySeeValuation = await can(req.user, "material.stock-valuation", "view");
+
+  // Round 177 — plant-actual consumption (load cells + manual) from the cutover.
+  // Opening uses plant-actual for the stretch between the cutover and the month
+  // being counted; the month itself uses plant-actual when it is on/after the
+  // cutover, else the old hand-keyed figure. The cutover is a month boundary, so
+  // the counted month is wholly one side or the other.
+  const plantBeforeMonth = await plantConsumptionByMaterial({ from: CONSUMPTION_CUTOVER, toExclusive: monthStart });
+  const plantThisMonth = monthStart >= CONSUMPTION_CUTOVER
+    ? await plantConsumptionByMaterial({ from: monthStart, toExclusive: monthEnd })
+    : new Map();
 
   const { rows: materials } = await query(`SELECT * FROM rm_materials WHERE is_active ORDER BY category, name`);
   const results = [];
   for (const m of materials) {
+    // Opening = opening stock + receipts before the month − consumption before
+    // the month. Consumption before the month = hand-keyed rm BEFORE the cutover
+    // + plant-actual from the cutover up to the month.
     const { rows: openingRows } = await query(
       `SELECT
          $2::numeric + COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = $1 AND r.received_date < $3::date), 0)
-         - COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c WHERE c.material_id = $1 AND c.consumption_date < $3::date), 0)
+         - COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c
+                     WHERE c.material_id = $1 AND c.consumption_date < $3::date AND c.consumption_date < $4::date), 0)
          AS opening_kg`,
-      [m.id, m.opening_stock_kg, monthStart]
+      [m.id, m.opening_stock_kg, monthStart, CONSUMPTION_CUTOVER]
     );
-    const openingKg = Number(openingRows[0].opening_kg);
+    const openingKg = Number(openingRows[0].opening_kg) - (plantBeforeMonth.get(m.id)?.total_kg || 0);
 
     const { rows: monthRows } = await query(
       `SELECT
          COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
                    WHERE o.material_id = $1 AND r.received_date >= $2::date AND r.received_date < $2::date + INTERVAL '1 month'), 0) AS purchase_kg,
          COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c
-                   WHERE c.material_id = $1 AND c.consumption_date >= $2::date AND c.consumption_date < $2::date + INTERVAL '1 month'), 0) AS plant_consumption_kg`,
+                   WHERE c.material_id = $1 AND c.consumption_date >= $2::date AND c.consumption_date < $2::date + INTERVAL '1 month'), 0) AS rm_consumption_kg`,
       [m.id, monthStart]
     );
     const purchaseKg = Number(monthRows[0].purchase_kg);
-    const plantConsumptionKg = Number(monthRows[0].plant_consumption_kg);
+    const plantConsumptionKg = monthStart >= CONSUMPTION_CUTOVER
+      ? (plantThisMonth.get(m.id)?.total_kg || 0)
+      : Number(monthRows[0].rm_consumption_kg);
     const bookStockKg = openingKg + purchaseKg - plantConsumptionKg;
 
     const { rows: countRows } = await query(
