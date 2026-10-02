@@ -744,6 +744,9 @@ function OrdersTab({ role }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState(false);
+  // Round 175, item 1 — closed orders are history; hide them by default and
+  // offer a toggle to bring them back.
+  const [showClosed, setShowClosed] = useState(false);
 
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState(blankOrderForm());
@@ -867,13 +870,24 @@ function OrdersTab({ role }) {
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
 
+  const closedCount = orders.filter((o) => o.status === "closed").length;
+  const visibleOrders = showClosed ? orders : orders.filter((o) => o.status !== "closed");
+
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
         <div style={{ fontSize: 13, fontWeight: 700 }}>{isAdmin ? "All orders" : "My orders"}</div>
-        <button type="button" onClick={openNew} style={{ fontSize: 12, padding: "6px 12px" }}>+ New order</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {closedCount > 0 && (
+            <label style={{ fontSize: 11.5, color: "var(--slate)", display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+              <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} />
+              Show closed ({closedCount})
+            </label>
+          )}
+          <button type="button" onClick={openNew} style={{ fontSize: 12, padding: "6px 12px" }}>+ New order</button>
+        </div>
       </div>
 
       {isAdmin && pending.length > 0 && (
@@ -893,7 +907,7 @@ function OrdersTab({ role }) {
 
       {/* Round 163 — grouped by material, so all the orders for M SAND (which
           may come from several suppliers) sit together. */}
-      {groupByMaterial(orders).map((g) => (
+      {groupByMaterial(visibleOrders).map((g) => (
         <div key={g.material_name}>
           <MaterialHeading name={g.material_name} count={g.items.length} extra={`${fmtNum(g.items.reduce((s, o) => s + Number(o.ordered_qty || 0), 0))} ${g.items[0].purchase_unit} ordered`} />
           {g.items.map((o) => (
@@ -910,6 +924,9 @@ function OrdersTab({ role }) {
         </div>
       ))}
       {orders.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No orders yet.</div>}
+      {orders.length > 0 && visibleOrders.length === 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--slate)" }}>All orders are closed. Tick “Show closed” above to see them.</div>
+      )}
 
       {creating && (
         <Modal title="New material order" onClose={() => setCreating(false)} wide>
@@ -1623,94 +1640,79 @@ function ReceiptsTab({ role }) {
 // (Automatic when present, else Manual).
 
 function ConsumptionTab() {
+  // Round 177 - READ-ONLY. Consumption is now the plant's ACTUAL figure from the
+  // batching system (MCI370 load cells) plus any manual plant entries, and that
+  // is what draws down material stock. Hand-entry here has been retired; to add
+  // or correct figures (including days the plant was down) the operator uses the
+  // Plant Production screen, which keeps both the automatic and the manual path.
   const [date, setDate] = useState(todayStr());
-  const [materials, setMaterials] = useState([]);
-  const [entries, setEntries] = useState({}); // material_id -> { automatic_qty_kg, manual_qty_kg }
-  const [production, setProduction] = useState("");
+  const [data, setData] = useState(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [savingProduction, setSavingProduction] = useState(false);
   const [loading, setLoading] = useState(false);
 
   async function load(d) {
     setLoading(true); setError("");
-    try {
-      const [cons, prod] = await Promise.all([
-        apiRequest(`/material-module/consumption?date=${d}`),
-        apiRequest(`/material-module/production?date=${d}`),
-      ]);
-      setMaterials(cons.materials);
-      const map = {};
-      for (const m of cons.materials) map[m.material_id] = { automatic_qty_kg: m.automatic_qty_kg ?? "", manual_qty_kg: m.manual_qty_kg ?? "" };
-      setEntries(map);
-      setProduction(prod ? prod.concrete_produced_m3 : "");
-    } catch (err) { setError(err.message); } finally { setLoading(false); }
+    try { setData(await apiRequest(`/material-module/consumption?date=${d}`)); }
+    catch (err) { setError(err.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(date); }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function setEntry(materialId, field, value) {
-    setEntries((e) => ({ ...e, [materialId]: { ...e[materialId], [field]: value } }));
-  }
-
-  async function saveConsumption(e) {
-    e.preventDefault();
-    setSaving(true); setError(""); setNotice("");
-    try {
-      const entryList = Object.entries(entries).map(([material_id, v]) => ({ material_id, automatic_qty_kg: v.automatic_qty_kg || null, manual_qty_kg: v.manual_qty_kg || null }));
-      await apiRequest("/material-module/consumption", { method: "POST", body: { date, entries: entryList } });
-      setNotice("Consumption saved.");
-      await load(date);
-    } catch (err) { setError(err.message); } finally { setSaving(false); }
-  }
-
-  async function saveProduction(e) {
-    e.preventDefault();
-    setSavingProduction(true); setError(""); setNotice("");
-    try {
-      await apiRequest("/material-module/production", { method: "POST", body: { date, concrete_produced_m3: production } });
-      setNotice("Production saved.");
-    } catch (err) { setError(err.message); } finally { setSavingProduction(false); }
-  }
+  const materials = data?.materials || [];
+  const withQty = materials.filter((m) => Number(m.total_kg) > 0);
+  const prod = data?.production || null;
 
   return (
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-      {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
+
+      <div className="card" style={{ marginBottom: 14, background: "#FBF6F0", border: "1px solid #EAD9C6", fontSize: 12, color: "var(--charcoal)", lineHeight: 1.55 }}>
+        This is the plant’s <b>actual</b> consumption for the day — the batching system’s load-cell weights plus any
+        manual plant entries — and it is now what draws down material stock. There is nothing to type here.
+        To record or correct figures, including a day the plant software was down, use the{" "}
+        <b>Plant Production</b> screen (its manual entry adds to the plant’s own figure, never replaces it).
+      </div>
 
       <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Concrete produced today</div>
-        <form onSubmit={saveProduction} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input type="number" step="0.01" min="0" value={production} onChange={(e) => setProduction(e.target.value)} placeholder="m³" style={{ flex: 1 }} />
-          <button type="submit" disabled={savingProduction} style={{ fontSize: 12, padding: "8px 14px" }}>{savingProduction ? "Saving..." : "Save"}</button>
-        </form>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Concrete produced</div>
+        <div style={{ fontSize: 20, fontWeight: 700 }}>{prod ? fmtNum(prod.total_m3) : "0"} <span style={{ fontSize: 12, fontWeight: 400, color: "var(--slate)" }}>m³</span></div>
+        {prod && (prod.manual_m3 > 0) && (
+          <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>
+            {fmtNum(prod.auto_m3)} batched + {fmtNum(prod.manual_m3)} manual
+          </div>
+        )}
       </div>
 
-      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Daily material consumption</div>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Material consumption (actual)</div>
       {loading ? (
         <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading...</div>
       ) : (
-        <form onSubmit={saveConsumption}>
-          {materials.map((m) => (
-            <div key={m.material_id} className="card" style={{ marginBottom: 8 }}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
-              <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 10.5, color: "var(--slate)" }}>Automatic (kg)</label>
-                  <input type="number" step="0.01" min="0" value={entries[m.material_id]?.automatic_qty_kg ?? ""} onChange={(e) => setEntry(m.material_id, "automatic_qty_kg", e.target.value)} style={inputStyle} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 10.5, color: "var(--slate)" }}>Manual (kg)</label>
-                  <input type="number" step="0.01" min="0" value={entries[m.material_id]?.manual_qty_kg ?? ""} onChange={(e) => setEntry(m.material_id, "manual_qty_kg", e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-            </div>
-          ))}
-          {materials.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No active materials yet — add some in the Materials tab.</div>}
-          {materials.length > 0 && <button type="submit" disabled={saving} style={{ width: "100%", marginTop: 4 }}>{saving ? "Saving..." : "Save consumption"}</button>}
-        </form>
+        <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "var(--concrete)", textAlign: "left" }}>
+                <th style={{ padding: "8px 12px" }}>Material</th>
+                <th style={{ padding: "8px 12px", textAlign: "right" }}>Automatic (load cell)</th>
+                <th style={{ padding: "8px 12px", textAlign: "right" }}>Manual</th>
+                <th style={{ padding: "8px 12px", textAlign: "right" }}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {withQty.map((m) => (
+                <tr key={m.material_id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "8px 12px", fontWeight: 600 }}>{m.name}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtNum(m.auto_kg)} kg</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", color: Number(m.manual_kg) > 0 ? "var(--charcoal)" : "var(--slate)" }}>{Number(m.manual_kg) > 0 ? `${fmtNum(m.manual_kg)} kg` : "—"}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700 }}>{fmtNum(m.total_kg)} kg</td>
+                </tr>
+              ))}
+              {withQty.length === 0 && (
+                <tr><td colSpan={4} style={{ padding: "10px 12px", color: "var(--slate)" }}>No consumption recorded for this day yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

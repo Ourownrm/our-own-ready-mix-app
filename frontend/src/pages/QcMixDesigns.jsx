@@ -25,13 +25,66 @@ function fmtKgm3(n) {
   return n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 });
 }
 
-function MixDesignDetails({ id }) {
+// Round 178 — Recipe <-> Mix Design mapping, shown on both the recipe side and
+// the mix-design side. Chips for what is linked (with a remove ✕ when the user
+// may edit), and an add dropdown of everything not yet linked. The parent owns
+// the data and the add/remove calls; this is just the control.
+function MappingEditor({ label, hint, emptyText, items, options, canEdit, busy, onAdd, onRemove }) {
+  const [pick, setPick] = useState("");
+  const linkedIds = new Set(items.map((i) => String(i.id)));
+  const available = options.filter((o) => !linkedIds.has(String(o.id)));
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>{label}</div>
+      {hint && <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>{hint}</div>}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: canEdit ? 10 : 0 }}>
+        {items.length === 0 && <span style={{ fontSize: 12, color: "var(--slate)" }}>{emptyText}</span>}
+        {items.map((i) => (
+          <span key={i.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "var(--concrete)", borderRadius: 14, padding: "3px 10px", fontSize: 12 }}>
+            {i.label}
+            {canEdit && (
+              <button type="button" title="Remove" disabled={busy} onClick={() => onRemove(i.id)}
+                      style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--slate)", fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+            )}
+          </span>
+        ))}
+      </div>
+      {canEdit && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ fontSize: 12.5, minWidth: 220, maxWidth: "100%" }} disabled={busy || available.length === 0}>
+            <option value="">{available.length ? "Add…" : "Nothing left to add"}</option>
+            {available.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
+          <button type="button" className="btn-primary" style={{ fontSize: 12.5 }} disabled={busy || !pick}
+                  onClick={() => { const v = pick; setPick(""); onAdd(v); }}>Add</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MixDesignDetails({ id, canEdit }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
-  useEffect(() => {
+  // Round 178 — recipe↔mix-design mapping from the design side.
+  const [allRecipes, setAllRecipes] = useState([]);
+  const [mapBusy, setMapBusy] = useState(false);
+  function load() {
     setData(null); setError("");
     apiRequest(`/plant/mix-designs/${id}`).then(setData).catch((e) => setError(e.message));
-  }, [id]);
+  }
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { apiRequest("/plant/recipes").then(setAllRecipes).catch(() => {}); }, []);
+  async function addRecipe(recipeId) {
+    setMapBusy(true);
+    try { await apiRequest("/plant/recipe-design-map", { method: "POST", body: { recipe_id: Number(recipeId), mix_design_id: id } }); load(); }
+    catch (e) { setError(e.message); } finally { setMapBusy(false); }
+  }
+  async function removeRecipe(recipeId) {
+    setMapBusy(true);
+    try { await apiRequest(`/plant/recipe-design-map?recipe_id=${recipeId}&mix_design_id=${id}`, { method: "DELETE" }); load(); }
+    catch (e) { setError(e.message); } finally { setMapBusy(false); }
+  }
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
   if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
   const d = data.design;
@@ -51,6 +104,7 @@ function MixDesignDetails({ id }) {
     </tr>
   );
   return (
+    <>
     <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
       <div className="card" style={{ flex: 1, minWidth: 290, padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -58,6 +112,7 @@ function MixDesignDetails({ id }) {
           <tbody>
             {param("Grade", d.grade)}
             {param("Design ref / rev", `${d.design_ref_code} · rev ${d.revision}`)}
+            {d.mix_description && param("Description", d.mix_description)}
             {param("Target strength f′ck", `${fmtKgm3(d.fck_28day_mpa)} MPa`)}
             {param("Std deviation", `${fmtKgm3(d.std_deviation_mpa)} MPa`)}
             {param("Target mean strength", `${fmtKgm3(d.target_mean_strength_mpa)} MPa`)}
@@ -96,6 +151,18 @@ function MixDesignDetails({ id }) {
         </table>
       </div>
     </div>
+    <MappingEditor
+      label="Mapped recipes"
+      hint="A mix design can belong to several plant recipes; a recipe can carry several designs."
+      emptyText="No recipe mapped to this mix design yet."
+      items={(data.mapped_recipes || []).map((x) => ({ id: x.recipe_id, label: x.recipe_name ? `${x.recipe_code} — ${x.recipe_name}` : x.recipe_code }))}
+      options={allRecipes.map((x) => ({ id: x.id, label: x.recipe_name ? `${x.recipe_code} — ${x.recipe_name}` : x.recipe_code }))}
+      canEdit={canEdit}
+      busy={mapBusy}
+      onAdd={addRecipe}
+      onRemove={removeRecipe}
+    />
+    </>
   );
 }
 
@@ -189,7 +256,7 @@ function MixDesignCosting({ id }) {
   );
 }
 
-function MixDesigns({ canCost }) {
+function MixDesigns({ canCost, canEdit }) {
   const [list, setList] = useState(null);
   const [sel, setSel] = useState("");
   const [sub, setSub] = useState("details");
@@ -212,11 +279,11 @@ function MixDesigns({ canCost }) {
         </div>
         <select value={sel} onChange={(e) => setSel(e.target.value)} style={{ marginLeft: "auto", fontSize: 13, maxWidth: 360 }}>
           {list.map((d) => (
-            <option key={d.id} value={d.id}>{d.grade} — {d.design_ref_code} rev {d.revision}{d.is_standard_for_grade ? " · standard" : ""}</option>
+            <option key={d.id} value={d.id}>{d.grade} — {d.design_ref_code} rev {d.revision}{d.mix_description ? ` · ${d.mix_description}` : ""}{d.is_standard_for_grade ? " · standard" : ""}</option>
           ))}
         </select>
       </div>
-      {sub === "details" && <MixDesignDetails id={sel} />}
+      {sub === "details" && <MixDesignDetails id={sel} canEdit={canEdit} />}
       {sub === "costing" && canCost && <MixDesignCosting id={sel} />}
     </>
   );
@@ -247,6 +314,21 @@ function RecipeDetail({ id, canCost, canEdit, editPwSet, onChanged }) {
     apiRequest(`/plant/recipes/${id}`).then(setD).catch((e) => setErr(e.message));
   }
   useEffect(() => { load(); setEditing(false); setMsg(""); setEerr(""); }, [id]);
+  // Round 178 — recipe↔mix-design mapping. All designs for the add dropdown; the
+  // linked set comes from the recipe detail (d.mapped_designs).
+  const [allDesigns, setAllDesigns] = useState([]);
+  const [mapBusy, setMapBusy] = useState(false);
+  useEffect(() => { apiRequest("/plant/mix-designs").then(setAllDesigns).catch(() => {}); }, []);
+  async function addDesign(designId) {
+    setMapBusy(true); setEerr("");
+    try { await apiRequest("/plant/recipe-design-map", { method: "POST", body: { recipe_id: id, mix_design_id: Number(designId) } }); load(); }
+    catch (e) { setEerr(e.message); } finally { setMapBusy(false); }
+  }
+  async function removeDesign(designId) {
+    setMapBusy(true); setEerr("");
+    try { await apiRequest(`/plant/recipe-design-map?recipe_id=${id}&mix_design_id=${designId}`, { method: "DELETE" }); load(); }
+    catch (e) { setEerr(e.message); } finally { setMapBusy(false); }
+  }
   function startEdit() {
     const r = d.recipe;
     const targets = {};
@@ -432,6 +514,18 @@ function RecipeDetail({ id, canCost, canEdit, editPwSet, onChanged }) {
         </div>
       )}
 
+      <MappingEditor
+        label="Mapped mix designs"
+        hint="A recipe can be tied to several mix designs; a mix design can belong to several recipes."
+        emptyText="No mix design mapped to this recipe yet."
+        items={(d.mapped_designs || []).map((x) => ({ id: x.mix_design_id, label: `${x.grade} — ${x.design_ref_code}${x.mix_description ? ` · ${x.mix_description}` : ""}` }))}
+        options={allDesigns.map((x) => ({ id: x.id, label: `${x.grade} — ${x.design_ref_code}${x.mix_description ? ` · ${x.mix_description}` : ""}` }))}
+        canEdit={canEdit}
+        busy={mapBusy}
+        onAdd={addDesign}
+        onRemove={removeDesign}
+      />
+
       {canEdit && d.recent_edits && d.recent_edits.length > 0 && (
         <div className="card" style={{ marginTop: 12, padding: 0, overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -509,13 +603,14 @@ function RecipeMaster({ canCost, canEdit, isSuperAdmin }) {
       <div className="card" style={{ flex: "0 1 280px", padding: 0, overflowX: "auto", minWidth: 240 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead><tr style={{ background: "var(--concrete)" }}>
-            <th style={TH}>Recipe</th>{canCost && <th style={{ ...TH, textAlign: "right" }}>₹/m³</th>}
+            <th style={TH}>Recipe / name</th>{canCost && <th style={{ ...TH, textAlign: "right" }}>₹/m³</th>}
           </tr></thead>
           <tbody>
             {list.map((r) => (
               <tr key={r.id} onClick={() => setSelId(r.id)}
                   style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: r.id === selId ? "var(--concrete)" : "transparent" }}>
                 <td style={TD}><span style={{ fontWeight: r.id === selId ? 700 : 500 }}>{r.recipe_code}</span>
+                  <div style={{ fontSize: 11.5, color: r.recipe_name ? "var(--charcoal)" : "var(--amber)" }}>{r.recipe_name || "— no name —"}</div>
                   <div style={{ fontSize: 10.5, color: "var(--slate)" }}>w/c {r.wc_ratio != null ? r.wc_ratio.toFixed(2) : "—"} · binder {r.binder_kg}</div></td>
                 {canCost && <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{fmtINR(r.cost_per_m3)}{r.cost_incomplete ? "*" : ""}</td>}
               </tr>
@@ -553,7 +648,7 @@ export default function QcMixDesigns() {
               <button type="button" className={`btn-tab ${tab === "designs" ? "active" : ""}`} onClick={() => setTab("designs")}>Mix Designs</button>
               <button type="button" className={`btn-tab ${tab === "recipes" ? "active" : ""}`} onClick={() => setTab("recipes")}>Recipe Master</button>
             </div>
-            {tab === "designs" ? <MixDesigns canCost={canCost} /> : <RecipeMaster canCost={canCost} canEdit={canEdit} isSuperAdmin={isSuperAdmin} />}
+            {tab === "designs" ? <MixDesigns canCost={canCost} canEdit={canEdit} /> : <RecipeMaster canCost={canCost} canEdit={canEdit} isSuperAdmin={isSuperAdmin} />}
           </>
         )}
       </div>

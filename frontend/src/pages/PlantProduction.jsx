@@ -495,96 +495,10 @@ function Silos() {
       {error && <div className="card" style={{ marginBottom: 14, color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}
       {notice && <div className="card" style={{ marginBottom: 14, color: "var(--signal-green)", fontSize: 13 }}>{notice}</div>}
 
-      <div className="card" style={{ marginBottom: 16, fontSize: 13, lineHeight: 1.6 }}>
-        <strong>Each hopper is one of three things.</strong> One of your materials, permanently — a sand
-        or aggregate gate. <em>Refillable storage</em>, which holds whatever was last put in it: the cement
-        and fly-ash silos. Or <em>not stock at all</em> — mains water, a spare. Its weights still show in
-        consumption; they simply do not come off anybody's stock.
-        <br />
-        Mappings are held against the <strong>hopper</strong>, not its name, because your plant calls both
-        Gate 1 and Gate 2 "M SAND" — keyed on the name the two could never be told apart.
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <h3 style={{ fontSize: 15, margin: 0 }}>Hoppers the plant has used</h3>
-        <button type="button" style={{ marginLeft: "auto", fontSize: 13 }} disabled={busy} onClick={recheck}>
-          {busy ? "Re-checking…" : "Re-check all"}
-        </button>
-      </div>
-
-      <div className="card" style={{ padding: 0, overflowX: "auto", marginBottom: 24 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: "var(--concrete)" }}>
-              <th style={TH}>Hopper</th><th style={TH}>Panel calls it</th>
-              <th style={{ ...TH, textAlign: "right" }}>Weighed</th>
-              <th style={TH}>Holds</th><th style={TH}>Capacity</th><th style={TH} />
-            </tr>
-          </thead>
-          <tbody>
-            {data.seen.map((s) => {
-              const a = aliasBySlot.get(s.slot);
-              const current = a?.is_refillable ? "— refillable storage —"
-                : a?.is_ignored ? "— not a stock material —"
-                : a?.target ? a.target : null;
-              return (
-                <tr key={s.slot} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ ...TD, color: "var(--slate)", fontFamily: "ui-monospace, monospace" }}>{s.slot}</td>
-                  <td style={{ ...TD, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>
-                    {s.slot_name}
-                    {s.name_count > 1 && (
-                      <div style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "inherit" }}>
-                        renamed on the panel {s.name_count} times
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ ...TD, textAlign: "right" }}>{fmtKg(s.actual_kg)}<div style={{ fontSize: 10.5, color: "var(--slate)" }}>{s.batches} batches</div></td>
-                  <td style={TD}>
-                    <select aria-label={`What ${s.slot_name} holds`}
-                            value={draft[s.slot] || ""}
-                            onChange={(e) => setDraft({ ...draft, [s.slot]: e.target.value })}
-                            style={{ fontSize: 13, minWidth: 214 }}>
-                      <option value="">{current || "Choose…"}</option>
-                      <option value="refill">— refillable storage —</option>
-                      {data.options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                      <option value="ignore">— not a stock material —</option>
-                    </select>
-                  </td>
-                  <td style={TD}>
-                    {a?.is_ignored ? (
-                      <span style={{ fontSize: 11.5, color: "var(--slate)" }}>—</span>
-                    ) : (
-                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        <input type="number" min="0" step="0.1" style={{ fontSize: 13, width: 74 }}
-                               value={capDraft[s.slot] ?? (a?.capacity_kg != null ? String(toSiloUnit(a.capacity_kg)) : "")}
-                               onChange={(e) => setCapDraft({ ...capDraft, [s.slot]: e.target.value })} />
-                        <span style={{ fontSize: 11, color: "var(--slate)" }}>{siloUnit(kindBySlot.get(s.slot))}</span>
-                      </div>
-                    )}
-                  </td>
-                  <td style={TD}>
-                    <button type="button" className="btn-primary" style={{ fontSize: 12 }}
-                            disabled={!draft[s.slot] && !Object.prototype.hasOwnProperty.call(capDraft, s.slot)}
-                            onClick={() => save(s.slot, s.slot_name)}>
-                      Save
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-            {!data.seen.length && (
-              <tr><td colSpan={6} style={{ ...TD, color: "var(--slate)" }}>
-                Nothing synced yet — the plant agent has not sent anything.
-              </td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
       <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>Silo storage levels</h3>
       <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 860 }}>
         What each hopper holds right now — receipts assigned to a silo raise its level, the plant's load-cell
-        draw lowers it. The highlighted figure is the quantity; capacity, set on the mapping row above, gives
+        draw lowers it. The highlighted figure is the quantity; capacity, set on the mapping row below, gives
         the percentage and the low warning. A level appears once a silo has had its first fill (a receipt or an
         opening declaration below). <b style={{ color: "#4E6E8E" }}>Cement</b>, <b style={{ color: "#7A4BA8" }}>admixture/water</b>{" "}
         and <b style={{ color: "#B58A55" }}>aggregate</b> each carry their own colour.
@@ -607,7 +521,7 @@ function Silos() {
         </div>
       ) : (
         <div className="card" style={{ marginBottom: 20, fontSize: 13, color: "var(--slate)" }}>
-          No silo is mapped to a material yet. Map the hoppers above and set their capacities, then assign
+          No silo is mapped to a material yet. Map the hoppers below and set their capacities, then assign
           receipts to them (or record an opening declaration below) to see levels here.
         </div>
       )}
@@ -709,6 +623,92 @@ function Silos() {
               </tr>
             ))}
             {!fills.length && <tr><td colSpan={8} style={{ ...TD, color: "var(--slate)" }}>No fills recorded yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16, fontSize: 13, lineHeight: 1.6 }}>
+        <strong>Each hopper is one of three things.</strong> One of your materials, permanently — a sand
+        or aggregate gate. <em>Refillable storage</em>, which holds whatever was last put in it: the cement
+        and fly-ash silos. Or <em>not stock at all</em> — mains water, a spare. Its weights still show in
+        consumption; they simply do not come off anybody's stock.
+        <br />
+        Mappings are held against the <strong>hopper</strong>, not its name, because your plant calls both
+        Gate 1 and Gate 2 "M SAND" — keyed on the name the two could never be told apart.
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <h3 style={{ fontSize: 15, margin: 0 }}>Hoppers the plant has used</h3>
+        <button type="button" style={{ marginLeft: "auto", fontSize: 13 }} disabled={busy} onClick={recheck}>
+          {busy ? "Re-checking…" : "Re-check all"}
+        </button>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflowX: "auto", marginBottom: 24 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "var(--concrete)" }}>
+              <th style={TH}>Hopper</th><th style={TH}>Panel calls it</th>
+              <th style={{ ...TH, textAlign: "right" }}>Weighed</th>
+              <th style={TH}>Holds</th><th style={TH}>Capacity</th><th style={TH} />
+            </tr>
+          </thead>
+          <tbody>
+            {data.seen.map((s) => {
+              const a = aliasBySlot.get(s.slot);
+              const current = a?.is_refillable ? "— refillable storage —"
+                : a?.is_ignored ? "— not a stock material —"
+                : a?.target ? a.target : null;
+              return (
+                <tr key={s.slot} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ ...TD, color: "var(--slate)", fontFamily: "ui-monospace, monospace" }}>{s.slot}</td>
+                  <td style={{ ...TD, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>
+                    {s.slot_name}
+                    {s.name_count > 1 && (
+                      <div style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "inherit" }}>
+                        renamed on the panel {s.name_count} times
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ ...TD, textAlign: "right" }}>{fmtKg(s.actual_kg)}<div style={{ fontSize: 10.5, color: "var(--slate)" }}>{s.batches} batches</div></td>
+                  <td style={TD}>
+                    <select aria-label={`What ${s.slot_name} holds`}
+                            value={draft[s.slot] || ""}
+                            onChange={(e) => setDraft({ ...draft, [s.slot]: e.target.value })}
+                            style={{ fontSize: 13, minWidth: 214 }}>
+                      <option value="">{current || "Choose…"}</option>
+                      <option value="refill">— refillable storage —</option>
+                      {data.options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                      <option value="ignore">— not a stock material —</option>
+                    </select>
+                  </td>
+                  <td style={TD}>
+                    {a?.is_ignored ? (
+                      <span style={{ fontSize: 11.5, color: "var(--slate)" }}>—</span>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <input type="number" min="0" step="0.1" style={{ fontSize: 13, width: 74 }}
+                               value={capDraft[s.slot] ?? (a?.capacity_kg != null ? String(toSiloUnit(a.capacity_kg)) : "")}
+                               onChange={(e) => setCapDraft({ ...capDraft, [s.slot]: e.target.value })} />
+                        <span style={{ fontSize: 11, color: "var(--slate)" }}>{siloUnit(kindBySlot.get(s.slot))}</span>
+                      </div>
+                    )}
+                  </td>
+                  <td style={TD}>
+                    <button type="button" className="btn-primary" style={{ fontSize: 12 }}
+                            disabled={!draft[s.slot] && !Object.prototype.hasOwnProperty.call(capDraft, s.slot)}
+                            onClick={() => save(s.slot, s.slot_name)}>
+                      Save
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {!data.seen.length && (
+              <tr><td colSpan={6} style={{ ...TD, color: "var(--slate)" }}>
+                Nothing synced yet — the plant agent has not sent anything.
+              </td></tr>
+            )}
           </tbody>
         </table>
       </div>

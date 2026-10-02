@@ -54,9 +54,17 @@ function fmtQty(n, unit) {
 // into the weighbridge's billed-qty field). Colours follow the receipt's own
 // convention: billed for MORE than delivered is the costly direction (red),
 // less is green.
-function VarianceCell({ v }) {
+function VarianceCell({ v, raw }) {
   const sub = { fontSize: 11, color: "var(--slate)", fontWeight: 400 };
-  if (!v) return <span style={{ color: "var(--slate)" }}>—</span>;
+  if (!v) {
+    // Round 175 — the operator typed something into the weighbridge's billed-qty
+    // (actualweight) field but it isn't a clean number we can turn into a
+    // variance. Show it as typed rather than a bare dash, so their entry is
+    // never invisible on this screen.
+    const r = raw == null ? "" : String(raw).trim();
+    if (r) return <div style={sub}>billed “{r}” · <span style={{ color: "var(--amber)" }}>check qty</span></div>;
+    return <span style={{ color: "var(--slate)" }}>—</span>;
+  }
 
   if (v.status === "no_material")
     return <div style={sub}>billed {fmtQty(v.billed_qty, v.unit)} · map material for variance</div>;
@@ -311,7 +319,7 @@ function Receipts({ canEdit }) {
                       </div>
                     </td>
                     <td style={{ padding: "9px 12px" }}>
-                      <VarianceCell v={r.variance} />
+                      <VarianceCell v={r.variance} raw={r.billed_qty_raw} />
                     </td>
                     <td style={{ padding: "9px 12px" }}>
                       <StatusPill status={r.match_status} />
