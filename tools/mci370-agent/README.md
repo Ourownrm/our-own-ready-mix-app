@@ -245,3 +245,40 @@ and fixable mistake, and worth reporting rather than working around.
 
 **Nothing arriving at all** — run `npm run once` by hand and read what it prints. That output
 is far more useful than anything the app can show you.
+
+## Delayed transfers — cold starts (agent v1.2)
+
+If data arrives late and then suddenly flushes, it is almost always the Render
+**free** backend spinning down after ~15 min idle (a 30–60s cold start on the
+next request). Two things address it:
+
+1. **Keep it awake.** A pinger on `/health` every 5–10 min stops the service
+   sleeping. This repo ships `.github/workflows/keepalive.yml` (GitHub Action,
+   every 10 min); UptimeRobot on the same `/health` URL is an even more reliable
+   alternative. The permanent fix is moving the backend off the free tier.
+2. **Ride through it.** Agent v1.2 retries a failed post within the same cycle
+   with backoff spanning a typical cold start (≈65s), instead of failing and
+   waiting a whole poll interval — so the first post after idle wakes the
+   service and the retry lands as soon as it is up.
+
+## Writing recipe edits back to MCI370 (agent v1.3)
+
+QC can edit a recipe in the app; the agent writes the change into MCI370's
+`Recipe_Master`. This is the agent's only WRITE path — everything else is
+read-only.
+
+- **Off by default.** `recipeWriteEnabled` is `false` in config, so the agent
+  only **dry-runs**: it fetches pending edits and logs exactly what it would
+  write, changing nothing. Set `"recipeWriteEnabled": true` in config.json and
+  restart to turn real writes on. Prove the pipeline in dry-run first.
+- **How it writes.** `writeMdb.ps1` (32-bit, same Jet provider + password as
+  reads) runs a **parameterised** `UPDATE Recipe_Master … WHERE Recipe_Code = ?`
+  — the table name is hard-coded, every value is bound, so it can only ever
+  update one recipe row. It writes the **live** database (not the read snapshot).
+- **Safety already in the app:** every edit keeps a full before-snapshot (one-
+  click Undo), a who/when audit row, and the plant's own Modifier columns are
+  stamped. A pending edit is protected from being overwritten by the read-sync
+  until the write lands.
+- **Verify after enabling:** make a tiny edit in the app, watch the agent log
+  `recipe write-back: writing 1 change… wrote <code>: 1 row(s)`, then confirm in
+  MCI370 that the recipe changed.

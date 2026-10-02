@@ -14,5 +14,8 @@
   "trailingDays": 7,
   "batchSize": 200,
   "copyFirst": true,
-  "plantNo": "1"
+  "plantNo": "1",
+
+  "_recipeWriteEnabled": "Round 174 — write QC's recipe edits BACK into MCI370's Recipe_Master. Leave false to DRY-RUN (the agent logs exactly what it would write but changes nothing); set true to turn on real writes to the live plant database.",
+  "recipeWriteEnabled": false
 }

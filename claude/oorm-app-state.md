@@ -1,4 +1,35 @@
-# OORM App — Current State (as of Round 172, Ver. 10.01)
+# OORM App — Current State (as of Round 174, Ver. 10.03)
+
+**v10.03 (174) — Recipe Master EDIT + write-back to MCI370 (Stage 3, final; agent's first WRITE path).** New perm
+`production.recipe-edit` (VE) seeded admin/manager/qc_engineer (REPAIR_174). Plant-wide **edit password**
+(`plant_recipe_edit_auth`, bcrypt, Super-Admin sets via PUT /plant/recipes/edit-password) entered on every change.
+`plant_recipe_edits` = before/after JSON snapshot + audit + write-back job queue + undo source. Endpoints (plant.js):
+PATCH /plant/recipes/:id (verify password → snapshot → apply to app copy → queue, one txn; all fields incl slot
+on/off via targets{slot:0 to turn off} + rename via new_recipe_code); POST /plant/recipes/edits/:id/revert;
+GET /plant/recipes/pending-writes + POST /plant/recipes/write-result (agent auth, ABOVE requireAuth); read-sync in
+/recipes/sync SKIPS recipes with pending/claimed edits (no clobber). RECIPE_FIELD_COLUMNS maps app field→MCI370
+column; pending-writes payload = {where_recipe_code, rename_to, set:{cols incl all *_Target (0=off) + Modifier_Name/
+Date/Time}}. GET /recipes/:id now returns editable_slots + recent_edits + pending_write. **Agent v1.3**: writeMdb.ps1
+(32-bit, parameterised `UPDATE Recipe_Master WHERE Recipe_Code=?`, hard-coded table, writes LIVE db); cycle drains
+pending-writes; **recipeWriteEnabled=false by default → DRY RUN** (logs, writes nothing) until turned on. Frontend
+QcMixDesigns: edit panel (password unlock, fields + per-slot targets, 0=off), status (queued→in sync/failed), history
++ Undo, Super-Admin password set/reset. **BUG fixed in build:** applyRecipeEdit had `er.rows[0]` (er already the
+rows array) → 500-after-commit; now `er[0].id` read before COMMIT. Verified live vs real recipes: password set/gate
+(wrong→403), M30 B CEM1→0 + CEM2 250 applied to app + queued with exact payload, read-sync didn't clobber pending,
+write-result→applied, revert restored+re-queued; clean {ok,edit_id,message}. 5 checkers pass (94 routes); build
+clean. Access write runs on plant PC — enable recipeWriteEnabled after watching a dry-run. **QC Recipe Master work
+(Stages 1-3) COMPLETE.**
+
+
+**v10.02 (173) — agent cold-start resilience + keep-alive (fix: delayed/sudden plant transfers).** Root cause:
+backend on Render **free** tier spins down ~15 min idle (30–60s cold start); agent's post landed on a sleeping
+service, failed, waited a full poll interval → batches delayed then flushed. Fix: **agent v1.2** — shared
+`postJson(cfg,path,payload)` retries in-cycle with backoff [0,5,10,20,30]s, 90s timeout, treating 429/502/503/504 +
+network errors as "service waking"; both post() and postRecipes() route through it. Added
+`.github/workflows/keepalive.yml` (pings /health every 10 min; override host via BACKEND_URL repo var). Agent-only +
+workflow file; no backend/schema change. **Next: Stage 3** (Recipe Master password-gated edit + write-back to
+MCI370 — the agent's first WRITE path).
+
 
 **v10.01 (172) — fix: plant-data screens were unreachable despite the permission being granted.** Granting
 `production.plant-data` (Super Admin "Plant production & consumption (MCI370)") allowed the server + route but NO

@@ -52,7 +52,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.1";
+const AGENT_VERSION = "1.3";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CONFIG_PATH = process.env.MCI_CONFIG || path.join(__dirname, "config.json");
@@ -116,6 +116,12 @@ function loadConfig() {
     batchSize: 200,
     copyFirst: true,
     plantNo: "1",
+    // ROUND 174 — writing recipe edits BACK into MCI370 is off until explicitly
+    // enabled. Left false, the agent still fetches pending edits and logs
+    // exactly what it WOULD write (a dry run), so the pipeline can be proven
+    // before the first real write to the live plant database. Set true in
+    // config.json to turn real writes on.
+    recipeWriteEnabled: false,
     ...cfg,
   };
 }
@@ -323,16 +329,56 @@ function toMix(tr, dat, names, plantNo) {
 
 // ---------------------------------------------------------------------------
 
+// ROUND 173 — ride through the backend's cold start.
+//
+// The app runs on Render's free tier, which spins the service down after ~15
+// minutes idle and takes 30–60s to wake on the next request. A plain POST that
+// lands on a sleeping service gets a 502/503 or times out; the old code then
+// threw, and the whole cycle waited a full poll interval before trying again —
+// so a quiet plant saw its data "stuck" and then flush a minute or two later
+// once something woke the service. This retries within the same cycle, with
+// backoff that spans a typical cold start, so the first post after idle wakes
+// the service and the retry lands as soon as it is up.
+//
+// A keep-alive pinger on /health (see the README) stops the service sleeping in
+// the first place; this is the belt-and-braces for right after a deploy or a
+// genuine blip.
+async function postJson(cfg, path, payload) {
+  const url = new URL(path, cfg.appUrl).toString();
+  const COLD = new Set([429, 502, 503, 504]);        // waking up or briefly overloaded
+  const delays = [0, 5000, 10000, 20000, 30000];     // ~65s of patience across the attempts
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-plant-key": cfg.apiKey },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(90_000),
+      });
+      const text = await res.text();
+      if (res.ok) return JSON.parse(text);
+      // A waking service answers with a gateway error; keep trying. Any other
+      // status is a real rejection (bad key, bad payload) — surface it at once.
+      if (COLD.has(res.status) && i < delays.length - 1) {
+        log(`  app waking (${res.status}); retry in ${delays[i + 1] / 1000}s`);
+        lastErr = new Error(`app replied ${res.status}`);
+        continue;
+      }
+      throw new Error(`app replied ${res.status}: ${text.slice(0, 300)}`);
+    } catch (err) {
+      // Network error or timeout — also consistent with a cold start; retry.
+      lastErr = err;
+      if (i < delays.length - 1) { log(`  post failed (${err.message}); retry in ${delays[i + 1] / 1000}s`); continue; }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 async function post(cfg, mixes) {
-  const res = await fetch(new URL("/api/plant/sync", cfg.appUrl).toString(), {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-plant-key": cfg.apiKey },
-    body: JSON.stringify({ agent_version: AGENT_VERSION, batches: mixes }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`app replied ${res.status}: ${text.slice(0, 300)}`);
-  return JSON.parse(text);
+  return postJson(cfg, "/api/plant/sync", { agent_version: AGENT_VERSION, batches: mixes });
 }
 
 // ---------------------------------------------------------------------------
@@ -389,15 +435,81 @@ function toRecipe(row) {
 }
 
 async function postRecipes(cfg, recipes) {
-  const res = await fetch(new URL("/api/plant/recipes/sync", cfg.appUrl).toString(), {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-plant-key": cfg.apiKey },
-    body: JSON.stringify({ agent_version: AGENT_VERSION, recipes }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`app replied ${res.status}: ${text.slice(0, 300)}`);
-  return JSON.parse(text);
+  return postJson(cfg, "/api/plant/recipes/sync", { agent_version: AGENT_VERSION, recipes });
+}
+
+// ROUND 174 — recipe write-back. GET with the same cold-start patience as postJson.
+async function getJson(cfg, path0) {
+  const url = new URL(path0, cfg.appUrl).toString();
+  const COLD = new Set([429, 502, 503, 504]);
+  const delays = [0, 5000, 10000, 20000, 30000];
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+    try {
+      const res = await fetch(url, { headers: { "x-plant-key": cfg.apiKey }, signal: AbortSignal.timeout(90_000) });
+      const text = await res.text();
+      if (res.ok) return JSON.parse(text);
+      if (COLD.has(res.status) && i < delays.length - 1) { lastErr = new Error(`app replied ${res.status}`); continue; }
+      throw new Error(`app replied ${res.status}: ${text.slice(0, 300)}`);
+    } catch (err) { lastErr = err; if (i < delays.length - 1) continue; throw err; }
+  }
+  throw lastErr;
+}
+
+// Apply ONE recipe edit to the live MCI370 database via writeMdb.ps1. Writes the
+// real file (cfg.mdbPath), not the read snapshot. The payload file carries the
+// column→value set so nothing sensitive rides the command line.
+async function writeMdbRow(cfg, payload) {
+  if (!fs.existsSync(PS32)) throw new Error(`32-bit PowerShell not found at ${PS32}.`);
+  const script = path.join(__dirname, "writeMdb.ps1");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mci370-wr-"));
+  const payloadPath = path.join(dir, "write.json");
+  try {
+    fs.writeFileSync(payloadPath, JSON.stringify(payload));
+    const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+      "-MdbPath", cfg.mdbPath, "-PayloadPath", payloadPath];
+    if (DB_PASSWORD) args.push("-DbPassword", DB_PASSWORD);
+    const { stdout } = await execFileAsync(PS32, args, { maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+    let parsed;
+    try { parsed = JSON.parse(stdout.trim() || "{}"); }
+    catch { throw new Error(`Could not read PowerShell reply: ${stdout.slice(0, 300)}`); }
+    if (parsed.error) throw new Error(parsed.error);
+    return parsed; // { ok, affected }
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// Drain the recipe write-back queue. With recipeWriteEnabled off, it only logs
+// what it WOULD write and reports nothing (the edit stays pending in the app, so
+// nothing is lost); with it on, it writes each change to MCI370 and reports the
+// result. IMPORTANT: a real write opens the LIVE database read/write, so it runs
+// only when the live file is not also staged open — which it isn't here, since
+// staging makes a separate copy for reads.
+async function applyRecipeWrites(cfg) {
+  const resp = await getJson(cfg, "/api/plant/recipes/pending-writes");
+  const writes = resp && resp.writes;
+  if (!writes || !writes.length) return;
+  if (!cfg.recipeWriteEnabled) {
+    log(`recipe write-back: ${writes.length} pending — DRY RUN (recipeWriteEnabled is false; nothing written).`);
+    for (const w of writes) log(`  would write ${w.where_recipe_code}${w.rename_to ? " -> " + w.rename_to : ""} (${Object.keys(w.set).length} columns)`);
+    return; // leave them pending; the edit is preserved in the app
+  }
+  log(`recipe write-back: writing ${writes.length} change(s) to MCI370…`);
+  const results = [];
+  for (const w of writes) {
+    try {
+      const r = await writeMdbRow(cfg, { where_recipe_code: w.where_recipe_code, rename_to: w.rename_to, set: w.set });
+      const ok = Number(r.affected) > 0;
+      log(`  ${w.where_recipe_code}${w.rename_to ? " -> " + w.rename_to : ""}: ${ok ? r.affected + " row(s) written" : "no matching row"}`);
+      results.push({ edit_id: w.edit_id, ok, error: ok ? null : "no row with that Recipe_Code in MCI370" });
+    } catch (err) {
+      log(`  ${w.where_recipe_code}: write FAILED — ${err.message}`);
+      results.push({ edit_id: w.edit_id, ok: false, error: err.message });
+    }
+  }
+  if (results.length) await postJson(cfg, "/api/plant/recipes/write-result", { agent_version: AGENT_VERSION, results });
 }
 
 // Access wants #mm/dd/yyyy# literals in a WHERE clause, and is unforgiving
@@ -440,6 +552,14 @@ async function cycle(cfg, state) {
       log(`recipes: ${rr.received} sent — +${rr.inserted} new, ${rr.updated} changed, ${rr.unchanged} unchanged.`);
     } catch (err) {
       logError("recipe sync failed (batch sync is unaffected):", err.message);
+    }
+
+    // ROUND 174 — write QC's recipe edits back into MCI370 (or dry-run log them).
+    // Separate try/catch: a write-back problem must never stop batch or read sync.
+    try {
+      await applyRecipeWrites(cfg);
+    } catch (err) {
+      logError("recipe write-back failed (other syncs unaffected):", err.message);
     }
 
     if (!mixRows.length) {

@@ -8316,3 +8316,54 @@ when revoked, exactly like the other permission-driven links:
 
 Frontend only — no backend, schema, or permission-catalogue change (the permission and routes already existed; only
 the navigation to them was missing). Build clean.
+
+## Round 173 — agent rides through Render cold starts + keep-alive (v10.02)
+
+Fixes the "data transfers late, then suddenly flushes" report. Root cause: the backend runs on Render's **free**
+tier, which spins the service down after ~15 min idle and takes 30–60s to cold-start. When the plant was quiet, the
+agent's 60s-poll POST landed on a sleeping service, failed, and the old code waited a whole poll interval before
+retrying — so batches sat until something (a retry, or someone opening the app) woke the service, then flushed.
+
+- **Agent v1.2:** both posts (`/plant/sync` and `/plant/recipes/sync`) now go through a shared `postJson` that
+  retries within the same cycle with backoff spanning a cold start (0/5/10/20/30s, 90s timeout each), treating
+  429/502/503/504 and network errors as "service waking" rather than fatal. The first post after idle wakes the
+  service; the retry lands as soon as it is up.
+- **Keep-alive:** `.github/workflows/keepalive.yml` pings `/health` every 10 min so the service rarely sleeps
+  (override the host with a `BACKEND_URL` repo variable). UptimeRobot on the same URL is a more reliable
+  alternative; the permanent fix is moving the backend off the free tier.
+
+Agent-only + a workflow file — no backend/schema change. Deploy the new `agent.js` to the plant PC and restart it;
+the keep-alive activates once the workflow file is on the default branch.
+
+## Round 174 — Recipe Master editing + write-back to MCI370 (v10.03)
+
+Stage 3, the last of the QC Recipe Master work and the agent's first WRITE path. QC can now edit a plant recipe in
+the app — including turning a slot on or off (e.g. CEM1 → 0, bring CEM2 in) and renaming the recipe code — and the
+change is written back into MCI370's `Recipe_Master`.
+
+**Permission + password (two keys).** New `production.recipe-edit` permission (view+edit), seeded by default to
+Administrator, Manager, QC Engineer (REPAIR_174 for live DBs). On top of it, a **plant-wide edit password** a Super
+Admin sets (`plant_recipe_edit_auth`, bcrypt) is entered on every change — the permission says who may reach the
+editor, the password is the deliberate second key.
+
+**Edit + audit + undo.** `PATCH /plant/recipes/:id` verifies the password, snapshots the whole recipe (before),
+applies the change to the app copy, and queues a write-back — all in one transaction. Every edit is a row in
+`plant_recipe_edits` (before/after JSON, who, when, status), which doubles as the agent's job queue and the undo
+source. `POST /plant/recipes/edits/:id/revert` re-applies the before-snapshot. The read-sync skips any recipe with a
+pending/claimed edit so an in-flight change is never clobbered by the plant's old values.
+
+**Write-back (agent v1.3, off by default).** `GET /plant/recipes/pending-writes` hands the agent a ready column→value
+set (targets mapped to `*_Target`, fields to their columns, MCI370's own Modifier_Name/Date/Time stamped);
+`writeMdb.ps1` runs a parameterised `UPDATE Recipe_Master … WHERE Recipe_Code = ?` on the live DB; the agent reports
+back via `POST /plant/recipes/write-result` (applied / failed). `recipeWriteEnabled` is **false** by default — the
+agent dry-runs (logs what it would write, changes nothing) until you enable it.
+
+**Frontend.** Recipe Master detail gains an Edit panel (password unlock, all fields + per-slot targets with 0 = off),
+a live status (queued → in sync with plant / failed), an edit history with one-click **Undo**, and a Super-Admin
+control to set/reset the edit password.
+
+Verified live on the real recipe data: set password; wrong password → 403; edited M30 B to drop CEM1 and bring in
+CEM2 250 — app updated immediately, queued with the exact MCI370 payload (Cement1_Target 0, Cement2_Target 250,
+Modifier stamped); a read-sync carrying the plant's OLD values did **not** clobber it; write-result marked it in
+sync; Undo restored the original and re-queued. All five checkers pass (94 routes); build clean. The Access write
+itself runs on the plant PC — enable `recipeWriteEnabled` once you've watched a dry-run.
