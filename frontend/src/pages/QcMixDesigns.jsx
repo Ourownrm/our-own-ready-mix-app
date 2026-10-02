@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import { useAuth } from "../lib/AuthContext.jsx";
 
 // ---------------------------------------------------------------------------
 // Round 170 — Mix Designs, moved out of Plant Production into Quality Control.
@@ -227,14 +228,69 @@ function MixDesigns({ canCost }) {
 // under the plant's own slot names, and — for those who may see money — the
 // cost per m³ (target × the material's landed rate). Editing is a later round.
 // ---------------------------------------------------------------------------
-function RecipeDetail({ id, canCost }) {
+const EDIT_INPUT = { fontSize: 13, padding: "4px 7px", border: "1px solid var(--rebar)", borderRadius: 6, background: "#FFF9F3", width: 110, textAlign: "right" };
+const STATUS_COLOUR = { pending: "var(--amber)", claimed: "var(--amber)", applied: "var(--signal-green)", failed: "var(--alert-red)" };
+const STATUS_LABEL = { pending: "queued for plant", claimed: "writing to plant", applied: "in sync with plant", failed: "write failed" };
+
+function RecipeDetail({ id, canCost, canEdit, editPwSet, onChanged }) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
-  useEffect(() => {
+  const [editing, setEditing] = useState(false);
+  const [pw, setPw] = useState("");
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [eerr, setEerr] = useState("");
+  function load() {
     if (!id) return;
     setD(null); setErr("");
     apiRequest(`/plant/recipes/${id}`).then(setD).catch((e) => setErr(e.message));
-  }, [id]);
+  }
+  useEffect(() => { load(); setEditing(false); setMsg(""); setEerr(""); }, [id]);
+  function startEdit() {
+    const r = d.recipe;
+    const targets = {};
+    (d.editable_slots || []).forEach((s) => { targets[s.slot] = String(s.target || 0); });
+    setForm({
+      recipe_code: r.recipe_code || "",
+      recipe_name: r.recipe_name || "",
+      consistancy: r.consistancy || "",
+      mixing_time: r.mixing_time ?? "",
+      mixer_capacity: r.mixer_capacity ?? "",
+      mass_weight: r.mass_weight ?? "",
+      targets,
+    });
+    setEditing(true); setMsg(""); setEerr("");
+  }
+  async function save() {
+    setBusy(true); setEerr(""); setMsg("");
+    try {
+      const targets = {};
+      Object.entries(form.targets).forEach(([s, v]) => { targets[s] = v === "" ? 0 : Number(v); });
+      const body = {
+        edit_password: pw,
+        new_recipe_code: form.recipe_code,
+        fields: {
+          recipe_name: form.recipe_name,
+          consistancy: form.consistancy,
+          mixing_time: form.mixing_time === "" ? null : Number(form.mixing_time),
+          mixer_capacity: form.mixer_capacity === "" ? null : Number(form.mixer_capacity),
+          mass_weight: form.mass_weight === "" ? null : Number(form.mass_weight),
+        },
+        targets,
+      };
+      const res = await apiRequest(`/plant/recipes/${id}`, { method: "PATCH", body });
+      setMsg(res.message || "Saved."); setEditing(false); load(); onChanged && onChanged();
+    } catch (e) { setEerr(e.message); } finally { setBusy(false); }
+  }
+  async function revert(editId) {
+    if (!pw) { setEerr("Enter the edit password above, then Revert."); return; }
+    setBusy(true); setEerr(""); setMsg("");
+    try {
+      const res = await apiRequest(`/plant/recipes/edits/${editId}/revert`, { method: "POST", body: { edit_password: pw } });
+      setMsg(res.message || "Reverted."); load(); onChanged && onChanged();
+    } catch (e) { setEerr(e.message); } finally { setBusy(false); }
+  }
   if (err) return <div className="card" style={{ flex: 1, color: "var(--alert-red)", fontSize: 13 }}>{err}</div>;
   if (!d) return <div className="card" style={{ flex: 1, fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
   const r = d.recipe;
@@ -256,7 +312,79 @@ function RecipeDetail({ id, canCost }) {
           </span>
         )}
       </div>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+
+      {d.pending_write && (
+        <div className="card" style={{ marginBottom: 10, fontSize: 12.5, color: "var(--amber)", borderColor: "#E3D2AE" }}>
+          A change to this recipe is queued for the plant — it will show as <b>in sync</b> once the agent writes it to
+          MCI370.
+        </div>
+      )}
+
+      {canEdit && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          {!editPwSet ? (
+            <div style={{ fontSize: 12.5, color: "var(--slate)" }}>
+              Editing is locked until a <b>Super Admin sets the recipe edit password</b> (top of this tab).
+            </div>
+          ) : !editing ? (
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <label style={{ fontSize: 12, color: "var(--slate)" }}>Edit password{" "}
+                <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="to unlock editing"
+                       style={{ fontSize: 13, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: 6, marginLeft: 4 }} />
+              </label>
+              <button type="button" className="btn-primary" style={{ fontSize: 12.5 }} disabled={!pw} onClick={startEdit}>Edit recipe</button>
+              <span style={{ fontSize: 11, color: "var(--slate)" }}>Changes write back into MCI370.</span>
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Editing {r.recipe_code}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 10 }}>
+                <label style={{ fontSize: 11, color: "var(--slate)" }}>Recipe code
+                  <input value={form.recipe_code} onChange={(e) => setForm({ ...form, recipe_code: e.target.value })} style={{ ...EDIT_INPUT, width: "100%", textAlign: "left" }} /></label>
+                <label style={{ fontSize: 11, color: "var(--slate)" }}>Recipe name
+                  <input value={form.recipe_name} onChange={(e) => setForm({ ...form, recipe_name: e.target.value })} style={{ ...EDIT_INPUT, width: "100%", textAlign: "left" }} /></label>
+                <label style={{ fontSize: 11, color: "var(--slate)" }}>Slump / consistency
+                  <input value={form.consistancy} onChange={(e) => setForm({ ...form, consistancy: e.target.value })} style={{ ...EDIT_INPUT, width: "100%", textAlign: "left" }} /></label>
+                <label style={{ fontSize: 11, color: "var(--slate)" }}>Mixing time (s)
+                  <input type="number" value={form.mixing_time} onChange={(e) => setForm({ ...form, mixing_time: e.target.value })} style={{ ...EDIT_INPUT, width: "100%" }} /></label>
+                <label style={{ fontSize: 11, color: "var(--slate)" }}>Mixer capacity (m³)
+                  <input type="number" value={form.mixer_capacity} onChange={(e) => setForm({ ...form, mixer_capacity: e.target.value })} style={{ ...EDIT_INPUT, width: "100%" }} /></label>
+                <label style={{ fontSize: 11, color: "var(--slate)" }}>Mass / batch (kg)
+                  <input type="number" value={form.mass_weight} onChange={(e) => setForm({ ...form, mass_weight: e.target.value })} style={{ ...EDIT_INPUT, width: "100%" }} /></label>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 6 }}>
+                Target weight per slot — set a slot to <b>0</b> to take it out of the mix, or give a weight to bring one
+                in (e.g. CEM1 → 0, CEM2 → 250).
+              </div>
+              <div className="card" style={{ padding: 0, overflowX: "auto", marginBottom: 10 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr style={{ background: "var(--concrete)" }}><th style={TH}>Slot</th><th style={TH}>Plant name</th><th style={{ ...TH, textAlign: "right" }}>Target</th></tr></thead>
+                  <tbody>
+                    {(d.editable_slots || []).map((s) => (
+                      <tr key={s.slot} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td style={TD}>{s.slot_label}</td>
+                        <td style={{ ...TD, color: "var(--slate)" }}>{s.plant_name || "—"}{s.material_name ? ` · ${s.material_name}` : ""}</td>
+                        <td style={{ ...TD, textAlign: "right" }}>
+                          <input type="number" step="0.1" min="0" value={form.targets[s.slot] ?? "0"}
+                                 onChange={(e) => setForm({ ...form, targets: { ...form.targets, [s.slot]: e.target.value } })} style={EDIT_INPUT} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" className="btn-primary" style={{ fontSize: 12.5 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save & write to plant"}</button>
+                <button type="button" style={{ fontSize: 12.5 }} disabled={busy} onClick={() => { setEditing(false); setEerr(""); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+          {msg && <div style={{ fontSize: 12, color: "var(--signal-green)", marginTop: 8 }}>{msg}</div>}
+          {eerr && <div style={{ fontSize: 12, color: "var(--alert-red)", marginTop: 8 }}>{eerr}</div>}
+        </div>
+      )}
+
+      {!editing && (<div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
         <div className="card" style={{ flex: "1 1 220px", padding: 0, overflowX: "auto", minWidth: 200 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead><tr style={{ background: "var(--concrete)" }}><th style={TH} colSpan={2}>Recipe settings</th></tr></thead>
@@ -296,31 +424,87 @@ function RecipeDetail({ id, canCost }) {
             )}
           </table>
         </div>
-      </div>
-      {canCost && d.cost_incomplete && (
+      </div>)}
+      {!editing && canCost && d.cost_incomplete && (
         <div style={{ fontSize: 11.5, color: "var(--amber)", marginTop: 8 }}>
           Some slots have no priced material yet (shown as "not mapped" or a blank rate), so the cost is a partial
           figure. Map the silo to a material, and receive a priced load, to complete it.
+        </div>
+      )}
+
+      {canEdit && d.recent_edits && d.recent_edits.length > 0 && (
+        <div className="card" style={{ marginTop: 12, padding: 0, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead><tr style={{ background: "var(--concrete)" }}>
+              <th style={TH}>Recent changes</th><th style={TH}>By</th><th style={TH}>Status</th><th style={TH} />
+            </tr></thead>
+            <tbody>
+              {d.recent_edits.map((e) => (
+                <tr key={e.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={TD}>
+                    {new Date(e.edited_at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                    {e.is_code_rename && <div style={{ fontSize: 10.5, color: "var(--slate)" }}>renamed {e.old_recipe_code} → {e.new_recipe_code}</div>}
+                    {e.status === "failed" && e.agent_error && <div style={{ fontSize: 10.5, color: "var(--alert-red)" }}>{e.agent_error}</div>}
+                  </td>
+                  <td style={{ ...TD, color: "var(--slate)" }}>{e.edited_by_name || "—"}</td>
+                  <td style={{ ...TD, color: STATUS_COLOUR[e.status] || "var(--slate)", fontWeight: 600 }}>{STATUS_LABEL[e.status] || e.status}</td>
+                  <td style={{ ...TD, textAlign: "right" }}>
+                    {(e.status === "applied" || e.status === "failed") &&
+                      <button type="button" style={{ fontSize: 11.5 }} disabled={busy} onClick={() => revert(e.id)}>Undo</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
   );
 }
 
-function RecipeMaster({ canCost }) {
+function RecipeMaster({ canCost, canEdit, isSuperAdmin }) {
   const [list, setList] = useState(null);
   const [selId, setSelId] = useState(null);
   const [error, setError] = useState("");
-  useEffect(() => {
+  const [pwSet, setPwSet] = useState(null);     // edit-password set?
+  const [newPw, setNewPw] = useState("");
+  const [pwMsg, setPwMsg] = useState("");
+  function reload() {
     apiRequest("/plant/recipes").then((r) => {
       setList(r);
-      if (r.length) setSelId(r[0].id);
+      setSelId((cur) => cur || (r.length ? r[0].id : null));
     }).catch((e) => setError(e.message));
-  }, []);
+  }
+  useEffect(() => { reload(); }, []);
+  useEffect(() => { apiRequest("/plant/recipes/edit-password/status").then((s) => setPwSet(s.is_set)).catch(() => setPwSet(false)); }, []);
+  async function saveEditPassword() {
+    setPwMsg("");
+    try {
+      await apiRequest("/plant/recipes/edit-password", { method: "PUT", body: { password: newPw } });
+      setPwSet(true); setNewPw(""); setPwMsg("Edit password saved.");
+    } catch (e) { setPwMsg(e.message); }
+  }
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
   if (!list) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
-  if (!list.length) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>No recipes synced yet — the plant agent copies them in from MCI370's Recipe Master.</div>;
   return (
+    <>
+      {isSuperAdmin && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Recipe edit password {pwSet ? "— set" : "— not set yet"}</div>
+          <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>
+            The plant-wide key QC enters to edit a recipe. Setting a new value replaces the old one.
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder={pwSet ? "new edit password" : "set an edit password"}
+                   style={{ fontSize: 13, padding: "5px 9px", border: "1px solid var(--border)", borderRadius: 6 }} />
+            <button type="button" className="btn-primary" style={{ fontSize: 12.5 }} disabled={newPw.length < 4} onClick={saveEditPassword}>{pwSet ? "Reset password" : "Set password"}</button>
+            {pwMsg && <span style={{ fontSize: 12, color: "var(--signal-green)" }}>{pwMsg}</span>}
+          </div>
+        </div>
+      )}
+      {!list.length ? (
+        <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>No recipes synced yet — the plant agent copies them in from MCI370's Recipe Master.</div>
+      ) : (
     <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
       <div className="card" style={{ flex: "0 1 280px", padding: 0, overflowX: "auto", minWidth: 240 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -339,16 +523,21 @@ function RecipeMaster({ canCost }) {
           </tbody>
         </table>
       </div>
-      <RecipeDetail id={selId} canCost={canCost} />
+      <RecipeDetail id={selId} canCost={canCost} canEdit={canEdit} editPwSet={pwSet} onChanged={reload} />
     </div>
+      )}
+    </>
   );
 }
 
 export default function QcMixDesigns() {
   const { can, ready } = usePermissions();
+  const { user } = useAuth();
   const [tab, setTab] = useState("designs");
   const canView = ready && can("production.plant-data", "view");
   const canCost = ready && can("material.stock-valuation", "view");
+  const canEdit = ready && can("production.recipe-edit", "edit");
+  const isSuperAdmin = user?.role === "super_admin";
   if (!ready) return null;
   return (
     <>
@@ -364,7 +553,7 @@ export default function QcMixDesigns() {
               <button type="button" className={`btn-tab ${tab === "designs" ? "active" : ""}`} onClick={() => setTab("designs")}>Mix Designs</button>
               <button type="button" className={`btn-tab ${tab === "recipes" ? "active" : ""}`} onClick={() => setTab("recipes")}>Recipe Master</button>
             </div>
-            {tab === "designs" ? <MixDesigns canCost={canCost} /> : <RecipeMaster canCost={canCost} />}
+            {tab === "designs" ? <MixDesigns canCost={canCost} /> : <RecipeMaster canCost={canCost} canEdit={canEdit} isSuperAdmin={isSuperAdmin} />}
           </>
         )}
       </div>
