@@ -12,6 +12,7 @@ export default function Accountant() {
   const [customers, setCustomers] = useState([]);
   const [allowances, setAllowances] = useState([]);
   const [unbilled, setUnbilled] = useState([]);
+  const [creditNotes, setCreditNotes] = useState([]);
   const [payingCustomer, setPayingCustomer] = useState(null);
   const [showRates, setShowRates] = useState(false);
   const [showOpeningBalances, setShowOpeningBalances] = useState(false);
@@ -21,19 +22,26 @@ export default function Accountant() {
 
   async function load() {
     try {
-      const [s, c, a, d] = await Promise.all([
+      const [s, c, a, d, cn] = await Promise.all([
         apiRequest("/accountant/dashboard"),
         apiRequest("/accountant/customers-outstanding"),
         apiRequest("/accountant/trip-allowances"),
         apiRequest("/reports/director-dashboard"),
+        apiRequest("/accountant/credit-notes"),
       ]);
-      setStats(s); setCustomers(c); setAllowances(a); setUnbilled(d.unbilled_deliveries_month || []);
+      setStats(s); setCustomers(c); setAllowances(a); setUnbilled(d.unbilled_deliveries_month || []); setCreditNotes(cn);
     } catch (err) {
       setError(err.message);
     }
   }
 
   useEffect(() => { load(); }, []);
+
+  async function clearCreditNote(ticketId) {
+    setError("");
+    try { await apiRequest(`/accountant/credit-notes/${ticketId}/clear`, { method: "POST" }); load(); }
+    catch (err) { setError(err.message); }
+  }
 
   function inrPdf(value) {
     return `Rs. ${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
@@ -179,6 +187,33 @@ export default function Accountant() {
                   <td>{new Date(u.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
                   <td>{u.qty} m³</td>
                   <td style={{ fontSize: 11 }}>{u.likely_reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {creditNotes.length > 0 && (
+        <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--amber)" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Credit notes due ({creditNotes.length})</div>
+          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
+            Partial rejections at site. The invoice has already been reduced to the accepted m³ — if the full invoice
+            already reached the customer, issue a credit note for the returned concrete, then mark it issued.
+          </div>
+          <table style={{ fontSize: 12 }}>
+            <thead><tr><th>DC No.</th><th>Customer</th><th>Site</th><th>Date</th><th>Returned</th><th>Credit</th><th>Reason</th><th></th></tr></thead>
+            <tbody>
+              {creditNotes.map((n) => (
+                <tr key={n.ticket_id}>
+                  <td>{n.ticket_number}</td>
+                  <td>{n.customer_name}</td>
+                  <td>{n.site_name}</td>
+                  <td>{new Date(n.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
+                  <td>{Number(n.rejected_quantity_m3)} m³</td>
+                  <td style={{ fontWeight: 600 }}>₹{n.credit_note_amount != null ? Number(n.credit_note_amount).toLocaleString("en-IN") : "–"}</td>
+                  <td style={{ fontSize: 11 }}>{n.rejection_reason || n.credit_note_reason || "—"}</td>
+                  <td><button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => clearCreditNote(n.ticket_id)}>Mark issued</button></td>
                 </tr>
               ))}
             </tbody>

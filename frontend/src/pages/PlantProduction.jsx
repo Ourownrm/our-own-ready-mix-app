@@ -78,6 +78,85 @@ function fmtSiloQty(kg) {
 
 // ---------------------------------------------------------------------------
 
+// Round 179 (#4) — plant vs billed production over the selected period.
+function PlantVsBilled({ qs }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    setData(null); setError("");
+    apiRequest(`/plant/production-vs-billed?${qs}`)
+      .then((d) => { if (alive) setData(d); })
+      .catch((e) => { if (alive) setError(e.message); });
+    return () => { alive = false; };
+  }, [qs]);
+  if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
+  if (!data) return <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
+  const t = data.totals;
+  const diff = Number(t.difference_m3);
+  const diffColour = diff > 0 ? "#B58A55" : diff < 0 ? "var(--alert-red)" : "var(--signal-green)";
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 14, display: "flex", gap: 28, flexWrap: "wrap", alignItems: "center" }}>
+        <div>
+          <div className="kpi-label">Plant produced</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtM3(t.plant_m3)}</div>
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>batched + manual, from MCI370</div>
+        </div>
+        <div>
+          <div className="kpi-label">Billed / delivered</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtM3(t.billed_m3)}</div>
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>{t.tickets} delivery challan{t.tickets === 1 ? "" : "s"}</div>
+        </div>
+        <div>
+          <div className="kpi-label">Difference (plant − billed)</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: diffColour }}>
+            {diff > 0 ? "+" : ""}{fmtM3(t.difference_m3)}{t.difference_pct != null ? ` (${diff > 0 ? "+" : ""}${t.difference_pct}%)` : ""}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--slate)" }}>over-batching / wash-out / returns / unbilled</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ fontSize: 12, color: "var(--slate)", lineHeight: 1.55, marginBottom: 14 }}>
+        <b style={{ color: "var(--charcoal)" }}>Plant produced</b> is what the batching plant actually made (every batch in
+        MCI370 plus any manual production entry). <b style={{ color: "var(--charcoal)" }}>Billed</b> is what left on customer
+        delivery challans. A positive difference means more was made than billed — the normal home of wash-out, returned
+        concrete and over-batching; a negative difference means challans exceed recorded production, which is worth a look
+        (a day the plant feed was down, or manual production not yet entered).
+      </div>
+
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "var(--concrete)" }}>
+              <th style={TH}>Day</th>
+              <th style={{ ...TH, textAlign: "right" }}>Plant m³</th>
+              <th style={{ ...TH, textAlign: "right" }}>Billed m³</th>
+              <th style={{ ...TH, textAlign: "right" }}>Difference</th>
+              <th style={{ ...TH, textAlign: "right" }}>Challans</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((r) => {
+              const d = Number(r.difference_m3);
+              return (
+                <tr key={r.day} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={TD}>{r.day}</td>
+                  <td style={{ ...TD, textAlign: "right" }}>{fmtM3(r.plant_m3)}</td>
+                  <td style={{ ...TD, textAlign: "right" }}>{fmtM3(r.billed_m3)}</td>
+                  <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: d > 0 ? "#B58A55" : d < 0 ? "var(--alert-red)" : "var(--slate)" }}>{d > 0 ? "+" : ""}{fmtM3(r.difference_m3)}</td>
+                  <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{r.tickets}</td>
+                </tr>
+              );
+            })}
+            {data.rows.length === 0 && <tr><td colSpan={5} style={{ ...TD, color: "var(--slate)" }}>Nothing in this period.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 function Production({ qs }) {
   const [data, setData] = useState(null);
   const [loads, setLoads] = useState([]);
@@ -992,7 +1071,7 @@ export default function PlantProduction() {
   const heartbeat = ago(summary?.last_sync_at);
 
   // The period selector (and custom range) applies to the reporting tabs only.
-  const periodTab = tab === "production" || tab === "consumption" || tab === "cost";
+  const periodTab = tab === "production" || tab === "consumption" || tab === "cost" || tab === "pvb";
   // A valid custom range wins; otherwise fall back to the days preset (and to
   // 30 while a custom range is half-filled).
   const qs = (days === "custom" && from && to)
@@ -1044,6 +1123,7 @@ export default function PlantProduction() {
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
           <button type="button" className={`btn-tab ${tab === "production" ? "active" : ""}`} onClick={() => setTab("production")}>Production</button>
+          <button type="button" className={`btn-tab ${tab === "pvb" ? "active" : ""}`} onClick={() => setTab("pvb")}>Plant vs billed</button>
           <button type="button" className={`btn-tab ${tab === "consumption" ? "active" : ""}`} onClick={() => setTab("consumption")}>Consumption</button>
           {canMap && (
             <button type="button" className={`btn-tab ${tab === "silos" ? "active" : ""}`} onClick={() => setTab("silos")}>Silos</button>
@@ -1090,6 +1170,7 @@ export default function PlantProduction() {
           : tab === "manual" ? <Manual canEdit={canManualEdit} />
           : tab === "cost" && canCost ? <CostPerM3 qs={qs} />
           : tab === "consumption" ? <Consumption qs={qs} />
+          : tab === "pvb" ? <PlantVsBilled qs={qs} />
           : <Production qs={qs} />}
       </div>
     </>

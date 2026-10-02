@@ -895,7 +895,9 @@ function RejectForm({ trip, onAct, onDone, error }) {
 
         <div className="field-input" style={{ fontSize: 13 }}>
           <div style={{ background: "var(--alert-red-bg, #FBEAEA)", color: "var(--alert-red)", borderRadius: 8, padding: "8px 10px", marginBottom: 12, fontSize: 12 }}>
-            This load will not be added to your trip allowance. The manager is notified automatically.
+            Enter the quantity actually rejected. If it is <b>less than the load</b>, the rest is recorded as delivered
+            and billed, and Accounts raise a credit note for the returned concrete. A <b>full</b> rejection (whole load)
+            is not added to your trip allowance. The manager is notified automatically either way.
           </div>
 
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Reason for rejection</div>

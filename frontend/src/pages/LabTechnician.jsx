@@ -1288,6 +1288,20 @@ function MixDesignsTab({ setError, setNotice }) {
     } catch (err) { setError(err.message); }
   }
 
+  // Round 179 (#5) — Administrator revises an approved design. An approved
+  // design is locked, so this spins up a new DRAFT revision (cloned from it)
+  // and opens it for editing; a second person then approves it, and it can be
+  // made the grade's standard. The original stays untouched for history.
+  async function revise(id) {
+    setError(""); setNotice("");
+    try {
+      const res = await apiRequest(`/lab-technician/mix-designs/${id}/revise`, { method: "POST" });
+      setNotice(`Revision ${res.revision} created as “${res.design_ref_code}” (draft). Edit it, then have it approved.`);
+      await load();
+      startEdit(res.id);
+    } catch (err) { setError(err.message); }
+  }
+
   // Round 132, item 2 — a draft can be edited before it's approved, so a
   // typo doesn't have to be caught only after it's already gone out on a
   // PDF. Fetches the full row (including admixtures — the list endpoint
@@ -1344,7 +1358,12 @@ function MixDesignsTab({ setError, setNotice }) {
               </>
             )}
             {d.status === "approved" && (
-              <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
+              <>
+                <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
+                {isAdminLevel(user?.role) && (
+                  <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => revise(d.id)} title="Create a new draft revision from this approved design">Revise</button>
+                )}
+              </>
             )}
           </div>
         </div>

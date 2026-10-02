@@ -90,11 +90,12 @@ function MaintenanceTab({ setError }) {
   }
   useEffect(() => { load(); }, []);
 
-  function rowKey(r) { return `${r.truck_id}-${r.action_point_id}`; }
+  // Round 179 (#9) — a row is a truck or a piece of equipment; key on whichever.
+  function rowKey(r) { return r.is_equipment ? `e${r.equipment_id}-${r.action_point_id}` : `t${r.truck_id}-${r.action_point_id}`; }
 
   function startLog(r) {
     setLoggingRow(rowKey(r));
-    setLogForm({ done_at: "", hours_at_service: r.current_hours || "", notes: "" });
+    setLogForm({ done_at: "", hours_at_service: r.is_equipment ? "" : (r.current_hours || ""), notes: "" });
   }
 
   async function saveLog(r) {
@@ -102,7 +103,14 @@ function MaintenanceTab({ setError }) {
     try {
       await apiRequest("/maintenance/logs", {
         method: "POST",
-        body: { action_point_id: r.action_point_id, truck_id: r.truck_id, ...logForm },
+        body: {
+          action_point_id: r.action_point_id,
+          truck_id: r.is_equipment ? null : r.truck_id,
+          equipment_id: r.is_equipment ? r.equipment_id : null,
+          done_at: logForm.done_at || undefined,
+          hours_at_service: r.is_equipment ? undefined : logForm.hours_at_service,
+          notes: logForm.notes,
+        },
       });
       setLoggingRow(null);
       load();
@@ -139,7 +147,10 @@ function MaintenanceTab({ setError }) {
               return (
                 <Fragment key={key}>
                   <tr>
-                    <td>{r.truck_number}</td>
+                    <td>
+                      {r.truck_number || r.equipment_name}
+                      {r.is_equipment && <span className="badge badge-neutral" style={{ marginLeft: 6, fontSize: 9.5, padding: "1px 6px" }}>equipment</span>}
+                    </td>
                     <td>{r.action_name}</td>
                     <td>{[r.interval_days ? `${r.interval_days} days` : null, r.interval_hours ? `${r.interval_hours} hrs` : null, r.interval_qty_m3 ? `${r.interval_qty_m3} m³` : null].filter(Boolean).join(" or ")}</td>
                     <td>{fmtDate(r.last_done_at)}</td>
@@ -169,10 +180,12 @@ function MaintenanceTab({ setError }) {
                             <div style={{ color: "var(--slate)" }}>Done on</div>
                             <input type="date" value={logForm.done_at} onChange={(e) => setLogForm({ ...logForm, done_at: e.target.value })} />
                           </div>
-                          <div>
-                            <div style={{ color: "var(--slate)" }}>Hours (odometer/hour-meter)</div>
-                            <input type="number" value={logForm.hours_at_service} onChange={(e) => setLogForm({ ...logForm, hours_at_service: e.target.value })} />
-                          </div>
+                          {r.is_equipment ? <div /> : (
+                            <div>
+                              <div style={{ color: "var(--slate)" }}>Hours (odometer/hour-meter)</div>
+                              <input type="number" value={logForm.hours_at_service} onChange={(e) => setLogForm({ ...logForm, hours_at_service: e.target.value })} />
+                            </div>
+                          )}
                           <div>
                             <div style={{ color: "var(--slate)" }}>Notes</div>
                             <input value={logForm.notes} onChange={(e) => setLogForm({ ...logForm, notes: e.target.value })} />
