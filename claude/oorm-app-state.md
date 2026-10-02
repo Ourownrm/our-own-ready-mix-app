@@ -1,4 +1,59 @@
-# OORM App — Current State (as of Round 178, Ver. 10.07)
+# OORM App — Current State (as of Round 181, Ver. 10.10)
+
+**v10.10 (181) — HOTFIX: backend crashed on boot (Round 179 deploy failed).** Cause: in R178 the
+`/recipe-design-map` POST/DELETE routes were placed ABOVE `const RECIPE_EDIT_ROLES`, which they use via
+`requireRole(...RECIPE_EDIT_ROLES)`. A `const` is in the temporal dead zone until its line runs, so registering
+those routes at import time threw **`ReferenceError: Cannot access 'RECIPE_EDIT_ROLES' before initialization`** and
+`node src/index.js` exited status 1 (Render showed repeated failed deploys). `node --check` (syntax only) and the
+text-based guard checks never execute the module, so they didn't catch it. Fix: moved the `const RECIPE_EDIT_ROLES`
+declaration ABOVE the mapping routes (removed the later duplicate). **NEW: `scripts/check-boot.mjs`** imports every
+module under src/routes + src/lib so any load-time/TDZ error is caught by `npm run check` (now 6 checkers, 63
+modules) before a push — added as the FIRST check. Verified by actually importing plant.js + all touched modules.
+No feature change. Zip: oorm-app-round181-v10.10.zip. **Deploy this to recover; it carries all of 174→180.** Because
+179/180's backend never booted, their `/setup` migrations have not run yet — after this deploy succeeds, run
+`/setup` once.
+
+
+**v10.09 (180) — #10 partial rejection of delivery tickets.** Rejection was all-or-nothing (confirmRejection →
+status 'rejected' + invoice voided). Now `confirmRejection` (lib/deliveryConfirmation.js) branches on the rejected
+qty vs loaded: **qty blank or ≥ loaded = FULL rejection** (unchanged — voided, not billed); **0 < qty < loaded =
+PARTIAL** via new `confirmPartialRejection`: the accepted m³ is a completed, billable delivery (status 'completed',
+site_qc.accepted=true, trip allowance paid), the invoice is **adjusted down to the accepted m³** (rate derived from
+the existing full-qty invoice), and it is **flagged for a credit note** (invoices.credit_note_needed +
+credit_note_amount = returned m³ × rate + credit_note_reason), with the returned m³ recorded on site_qc
+(rejected_quantity_m3 + reason) = the RMC-return record. Manager + accountant notified. **Production figures
+untouched** (per decision). New invoices columns: rejected_quantity_m3, credit_note_needed, credit_note_amount,
+credit_note_reason, credit_note_cleared (schema.sql + setup.js ALTERs). Accountant: GET /accountant/credit-notes +
+POST /accountant/credit-notes/:ticketId/clear; **"Credit notes due" card** on the Accountant dashboard (returned
+qty, credit amount, reason, "Mark issued"). DriverDuty reject-form copy updated to explain partial vs full. Order
+fulfilment already netted rejected qty, so balances were already correct. No new permission key → **run `/setup`
+once** (invoice columns). 5 checkers pass (97 routes); build clean. Zip: oorm-app-round180-v10.09.zip.
+**ALL 13 worklist items + 3 backlog items now COMPLETE.**
+
+
+**v10.08 (179) — #4 plant-vs-billed, #5 revise approved mix design, #9 maintenance for equipment.**
+*#4 Plant vs billed:* new GET `/plant/production-vs-billed?days|from_date&to_date` (gated production.plant-data
+view) — plant produced (plant_batches batch_qty_m3 + manual plant_manual_entries qty_m3) vs billed
+(delivery_tickets.loaded_quantity_m3), per day + totals + difference/%. One date filter applied to all three
+source date columns (shared params). New **"Plant vs billed" tab** in PlantProduction (periodTab, uses the period
+selector) → `PlantVsBilled` component: 3 KPI cards + per-day table. No schema change.
+*#5 Revise approved mix design:* approved designs stay locked (PATCH is draft-only, protects orders/PDFs/cube
+refs); new **POST `/lab-technician/mix-designs/:id/revise`** (Administrator) clones the approved design + its
+admixtures into a fresh DRAFT with the revision bumped (00→01) and a unique ref (`<ref> R<rev>`). Admin edits the
+draft (existing draft edit), a second person approves, then it can be made the grade standard (existing
+`/administrator/mix-designs/:id/standard`, which supersedes the old). Frontend: **"Revise" button** on approved
+designs in LabTechnician → MixDesignsTab (admin only) → opens the new draft in the edit form.
+*#9 Maintenance for equipment:* maintenance_logs now truck OR equipment (added `equipment_id`, dropped truck_id
+NOT NULL; schema.sql + ALTERs in setup.js). Due list (`/maintenance/dashboard`) now evaluates EQUIPMENT too via a
+second query — **day interval only** (equipment has no hour-meter/m³), and **explicit scope only** (equipment is
+opt-in: an action point must list it in maintenance_action_point_scope). Rows tagged `is_equipment`. POST
+`/maintenance/logs` accepts truck_id OR equipment_id (exactly one; hours ignored for equipment). Frontend
+Maintenance due list shows equipment rows (name + "equipment" badge, hours input hidden when logging). Add the
+batching plant under **Master Data → Fuel Stations & Equipment** (type "Batching plant"), then add it to an action
+point's scope (Administrator → Masters → Maintenance Action Points).
+**Deploy: push→Render, then run `/setup` once** (maintenance_logs migration). 5 checkers pass (97 routes); build
+clean. Zip: oorm-app-round179-v10.08.zip. (#10 partial rejection is the next round.)
+
 
 **v10.07 (178) — Recipe↔Mix-Design mapping (#8) + recipe-edit access fix.**
 *Access fix (reported R174 bug):* QC was already granted recipe-edit by default (REPAIR_174), but
@@ -1604,16 +1659,12 @@ User's combined worklist (3 deferred item-7 backlog + 10 numbered). Status after
 **TO BUILD (bigger / needs decisions):**
 - Backlog "consumption→material unification": DONE (R177, v10.06). Plant-actual drives stock from 2026-09-01;
   material Consumption tab is read-only; lib/plantConsumption.js is the single source.
-- #4 / backlog "plant-vs-billed": a comparison of plant production (batched m³, load cells) vs billed production
-  (delivery challans / customer-billed m³). New read-only page/section. Mockup-first.
-- #5 Admin edit/revise an APPROVED mix design (today a design is created/approved lab-side; add a revise path
-  that supersedes with a new revision + audit, mirroring the order revise pattern).
+- #4 plant-vs-billed — DONE (R179, v10.08): PlantProduction → Plant vs billed tab.
+- #5 revise approved mix design — DONE (R179, v10.08): Administrator "Revise" clones to a new draft revision.
 - #8 Recipe ↔ Mix Design many-to-many mapping (new join table `recipe_mix_design_map`; one recipe ↔ many designs,
   one design ↔ many recipes). Drives #4's recipe→grade resolution. Needs UI decision (map from recipe side,
   design side, or both).
-- #9 (real gap) maintenance due list only evaluates trucks (maintenance.js ~line 132). Extend to evaluate
-  equipment (date-interval at least; hours/qty may not apply to a fixed plant) + allow logging maintenance against
-  equipment + surface the equipment master-data panel under Maintenance for discoverability.
+- #9 maintenance for equipment — DONE (R179, v10.08).
 - #3 Weighbridge billed qty — DONE (R176, v10.05): tolerant parser + raw fallback on the ticket screen.
 
 OPEN QUESTIONS for the user (asked end of Round 175): exact screen for #3; mapping-UI side for #8; scope of
@@ -1623,7 +1674,5 @@ OPEN QUESTIONS for the user (asked end of Round 175): exact screen for #3; mappi
 - #3 location = **Weighbridge ticket screen itself** — the billed-qty field/column there isn't reflecting the
   actual weighed (net) weight. Fix on that screen.
 - #8 mapping UI = **both sides** (edit the recipe↔design link from a recipe or from a design).
-- #10 "handle partial rejection" = **adjust billed qty + record RMC return + flag for credit note**, and
-  **keep the existing production-qty adjustment logic as-is** (do not change how rejected qty already adjusts
-  production).
+- #10 partial rejection — DONE (R180, v10.09): partial path bills accepted m³, flags credit note, records return; production untouched.
 - **Next big feature chosen = Consumption→material-module unification.**
