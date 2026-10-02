@@ -1,4 +1,73 @@
-# OORM App — Current State (as of Round 174, Ver. 10.03)
+# OORM App — Current State (as of Round 178, Ver. 10.07)
+
+**v10.07 (178) — Recipe↔Mix-Design mapping (#8) + recipe-edit access fix.**
+*Access fix (reported R174 bug):* QC was already granted recipe-edit by default (REPAIR_174), but
+**lab_technician could never be granted it** — the route guard `RECIPE_EDIT_ROLES` excluded it, and the two-guard
+design (check-guards) couples an allowed role with a default grant. Added `lab_technician` to `RECIPE_EDIT_ROLES`
+(plant.js), to the `production.recipe-edit` catalogue default (VE), and a **REPAIR_178** seeding lab's view+edit on
+live DBs. Lab is now granted by default; a Super Admin can revoke it for the lab role (Roles tab) or per user
+(People tab) on the Access Control page. The option lives under **Production & plant → "Edit plant recipes (writes
+to MCI370)"**. The plant-wide edit password is still required on every actual recipe change.
+*#8 mapping (many-to-many):* new table `recipe_mix_design_map` (recipe_id, mix_design_id, UNIQUE pair, ON DELETE
+CASCADE both sides) in schema.sql + CREATE TABLE IF NOT EXISTS in setup.js. Endpoints (plant.js, gated
+requireRole(...RECIPE_EDIT_ROLES)+requirePermission recipe-edit edit; app-only, NO edit-password since nothing goes
+to MCI370): POST/DELETE `/plant/recipe-design-map`; GET `/plant/recipes/:id` now returns `mapped_designs`, GET
+`/plant/mix-designs/:id` returns `mapped_recipes`. Frontend QcMixDesigns: shared `MappingEditor` (chips + add
+dropdown + ✕ remove, edit-gated by canEdit), shown on the recipe side (RecipeDetail → mapped mix designs) and the
+design side (MixDesignDetails → mapped recipes); reads the full lists from /mix-designs and /recipes for the add
+pickers. **Deploy: push→Render, then run `/setup` once** (new table + REPAIR_178). 5 checkers pass (96 routes);
+build clean. Zip: oorm-app-round178-v10.07.zip.
+
+
+**v10.06 (177) — consumption → material-module unification.** Material book stock is now drawn down by the
+PLANT's ACTUAL consumption (MCI370 load-cell `plant_batch_materials.actual_kg` + operator manual
+`plant_manual_entries.qty_kg` — auto + manual, never auto alone) instead of the hand-keyed
+`rm_daily_consumption`. **Cutover `CONSUMPTION_CUTOVER = '2026-09-01'`** (user decision, a month boundary so no
+month is split): before it, stock keeps the old rm figures so historical months never shift; from it on, stock
+follows plant-actual. New lib `backend/src/lib/plantConsumption.js`: `plantConsumptionByMaterial({from,toExclusive})`
+→ Map(material_id→{auto_kg,manual_kg,total_kg}); `plantProductionM3(...)`; `firstOfNextMonth`, `nextDay` (both
+ist-ok UTC date-string math). Rewired: materialModule `bookStockRows` (consumed_kg = rm<cutover + plant≥cutover;
+month_consumed = plant for current month) and the `/physical-stock` report (opening subtracts plant-actual for the
+cutover→month stretch; the counted month uses plant-actual when ≥ cutover). **Material module Consumption tab is now
+READ-ONLY**: GET `/material-module/consumption?date=` returns plant-actual per-material (auto/manual/total) + that
+day's production m³; the tab shows a table + a banner pointing to Plant Production for entry (which keeps both the
+automatic and manual path). The old hand-entry POST routes remain server-side but are unreachable from the UI and
+their writes (to rm_daily_consumption) are ignored from the cutover on, so no double counting. No schema change, no
+new permission key → **no /setup needed**. 5 checkers pass; build clean. Zip: oorm-app-round177-v10.06.zip.
+Design doc: claude/consumption-unification-design.md.
+
+
+**v10.05 (176) — #3 weighbridge billed qty fix.** Root cause: the operator types the supplier's billed qty into
+SmartWeigh's spare `actualweight` field (→ agent → `billed_qty_raw`), but `parseBilledQty` accepted ONLY a bare
+number, so a natural entry with a unit ("25 MT", "25MT") or a thousands comma ("1,250") parsed to null and the
+ticket screen's "Billed vs net" cell showed nothing — the operator's entry vanished. Fix: (a) weighbridge.js
+`parseBilledQty` now normalises first — strips thousands commas and a trailing unit label — then applies the same
+strict clean-number test (still rejects 'N/A','NONE', driver names, '35610+91', negatives, 0, >4dp). (b)
+Weighbridge.jsx `VarianceCell` now takes `raw={r.billed_qty_raw}` and, when the value still can't be parsed, shows
+it as typed (billed "<raw>" · check qty) instead of a bare dash, so nothing the operator keyed is ever invisible.
+Unit-tested the parser across real inputs. No schema change, no /setup. 5 checkers pass; build clean.
+Zip: oorm-app-round176-v10.05.zip.
+
+
+**v10.04 (175) — material-module + mix/recipe quick wins (first batch of the 13-item worklist).** Four low-risk,
+verified fixes, no schema change:
+(1) **Hide closed orders** — OrdersTab (MaterialModule.jsx) hides `status==="closed"` orders by default; a
+"Show closed (N)" checkbox (only when closedCount>0) reveals them; filtered empty-state added. `visibleOrders`/
+`closedCount` derived from `orders`.
+(2) **Silos tab reordered** (PlantProduction.jsx, Silos tab) — "Silo storage levels" (store silos) moved to the TOP;
+"Hoppers the plant has used" mapping table + Re-check all moved to the BOTTOM (after Fill history). Cross-reference
+text flipped "above"→"below" ("mapping row below", "Map the hoppers below").
+(3) **Mix description shown** — GET /plant/mix-designs list query now selects `d.mix_description`; QcMixDesigns
+Details adds a "Description" param row (when present) and the selector option appends `· <mix_description>`.
+(4) **Recipe name in Recipe Master list** — QcMixDesigns RecipeMaster left list now shows `recipe_name` under the
+code (amber "— no name —" when blank); header → "Recipe / name". (API already returned recipe_name.)
+5 checkers pass (94 routes); frontend build clean. Zip: oorm-app-round175-v10.04.zip. **Deploy: push→Render; no
+/setup needed (no new catalogue keys/tables). Hard-refresh PWA to v10.04.**
+Backlog findings this round: manual-only production/consumption entry **already exists** (PlantProduction `Manual()`
+component + POST /plant/manual). Partial rejection **already partly built** (DriverDuty `rejected_quantity_m3` field).
+Batching plant **already an equipment type** (EQUIPMENT_TYPES incl `batching_plant`; add via Master Data → Fuel
+Stations & Equipment) — the real gap is the maintenance **due list only evaluates trucks, not equipment** (see
+maintenance.js note) + discoverability. See worklist triage at bottom.
 
 **v10.03 (174) — Recipe Master EDIT + write-back to MCI370 (Stage 3, final; agent's first WRITE path).** New perm
 `production.recipe-edit` (VE) seeded admin/manager/qc_engineer (REPAIR_174). Plant-wide **edit password**
@@ -1511,3 +1580,50 @@ full detail — still blocked on the user's updated Excel workbook (for the real
 the current app zip (to wire in the two integration points: `App.jsx` routes and an Administrator
 "Solitaire Access" panel). Nothing about it touches or depends on the main app's Round 136 line —
 the next session can pick up either thread independently.
+
+---
+
+## Worklist triage (the 13-item batch, started Round 175)
+
+User's combined worklist (3 deferred item-7 backlog + 10 numbered). Status after Round 175:
+
+**DONE (R175, v10.04):**
+- #1 Hide closed orders in material module ✓
+- #2 Silos page: store silos up, hopper settings to bottom ✓
+- #6 Mix description shown in Mix Design (Details + selector) ✓
+- #7 Recipe Name shown in Recipe Master list ✓
+
+**ALREADY EXISTED (confirmed R175, no build needed):**
+- Backlog "manual-only entry": PlantProduction `Manual()` + POST /plant/manual already lets operator add
+  production (m³) and per-material consumption manually for periods MCI370 was down (adds to the plant's own
+  figure, never replaces it).
+- #10 partial rejection: DriverDuty already captures `rejected_quantity_m3`. Needs a design decision on what
+  "handle" means end-to-end (billed qty adjustment, stock return, credit note) — see OPEN QUESTIONS.
+- #9 batching plant: already an equipment_type; added via Master Data → Fuel Stations & Equipment panel.
+
+**TO BUILD (bigger / needs decisions):**
+- Backlog "consumption→material unification": DONE (R177, v10.06). Plant-actual drives stock from 2026-09-01;
+  material Consumption tab is read-only; lib/plantConsumption.js is the single source.
+- #4 / backlog "plant-vs-billed": a comparison of plant production (batched m³, load cells) vs billed production
+  (delivery challans / customer-billed m³). New read-only page/section. Mockup-first.
+- #5 Admin edit/revise an APPROVED mix design (today a design is created/approved lab-side; add a revise path
+  that supersedes with a new revision + audit, mirroring the order revise pattern).
+- #8 Recipe ↔ Mix Design many-to-many mapping (new join table `recipe_mix_design_map`; one recipe ↔ many designs,
+  one design ↔ many recipes). Drives #4's recipe→grade resolution. Needs UI decision (map from recipe side,
+  design side, or both).
+- #9 (real gap) maintenance due list only evaluates trucks (maintenance.js ~line 132). Extend to evaluate
+  equipment (date-interval at least; hours/qty may not apply to a fixed plant) + allow logging maintenance against
+  equipment + surface the equipment master-data panel under Maintenance for discoverability.
+- #3 Weighbridge billed qty — DONE (R176, v10.05): tolerant parser + raw fallback on the ticket screen.
+
+OPEN QUESTIONS for the user (asked end of Round 175): exact screen for #3; mapping-UI side for #8; scope of
+"handle partial rejection" for #10.
+
+### Decisions (user, end of Round 175)
+- #3 location = **Weighbridge ticket screen itself** — the billed-qty field/column there isn't reflecting the
+  actual weighed (net) weight. Fix on that screen.
+- #8 mapping UI = **both sides** (edit the recipe↔design link from a recipe or from a design).
+- #10 "handle partial rejection" = **adjust billed qty + record RMC return + flag for credit note**, and
+  **keep the existing production-qty adjustment logic as-is** (do not change how rejected qty already adjusts
+  production).
+- **Next big feature chosen = Consumption→material-module unification.**
