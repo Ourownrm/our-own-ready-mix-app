@@ -2659,6 +2659,36 @@ CREATE TABLE IF NOT EXISTS plant_recipe_targets (
   UNIQUE (recipe_id, slot)
 );
 CREATE INDEX IF NOT EXISTS idx_plant_recipe_targets_recipe ON plant_recipe_targets(recipe_id);
+
+-- Round 174 — recipe edit log / write-back queue, and the edit-password store.
+CREATE TABLE IF NOT EXISTS plant_recipe_edits (
+  id             SERIAL PRIMARY KEY,
+  recipe_id      INTEGER REFERENCES plant_recipes(id) ON DELETE SET NULL,
+  recipe_code    VARCHAR(50) NOT NULL,
+  before_json    JSONB NOT NULL,
+  after_json     JSONB NOT NULL,
+  is_code_rename BOOLEAN NOT NULL DEFAULT false,
+  old_recipe_code VARCHAR(50),
+  new_recipe_code VARCHAR(50),
+  status         VARCHAR(12) NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'claimed', 'applied', 'failed')),
+  note           TEXT,
+  edited_by      INTEGER REFERENCES users(id),
+  edited_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at     TIMESTAMPTZ,
+  applied_at     TIMESTAMPTZ,
+  agent_error    TEXT,
+  reverts_edit_id INTEGER REFERENCES plant_recipe_edits(id)
+);
+CREATE INDEX IF NOT EXISTS idx_plant_recipe_edits_pending ON plant_recipe_edits(edited_at) WHERE status IN ('pending', 'claimed');
+CREATE INDEX IF NOT EXISTS idx_plant_recipe_edits_recipe  ON plant_recipe_edits(recipe_id, edited_at DESC);
+
+CREATE TABLE IF NOT EXISTS plant_recipe_edit_auth (
+  id            INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  password_hash TEXT NOT NULL,
+  updated_by    INTEGER REFERENCES users(id),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `);
 
     const { rows: pbCount } = await pool.query(`SELECT count(*)::int AS n FROM plant_batches`);
@@ -2697,6 +2727,32 @@ CREATE INDEX IF NOT EXISTS idx_plant_recipe_targets_recipe ON plant_recipe_targe
         ? `Schema migration applied (Round 157 — plant production access granted to ` +
           `${plantRepaired.rows.map((r) => r.role).join(", ")}). Super Admin can revoke any of it.`
         : `Round 157 — plant production access defaults already in place, nothing to repair.`
+    );
+
+    // ROUND 174 — the new production.recipe-edit catalogue KEY needs its default
+    // grants seeded onto live installations, same reasoning as REPAIR_157: the
+    // per-role seeding loop only fires for a role with NO rows, so a brand new
+    // key never reaches an existing database. Administrator/Manager/QC Engineer
+    // get view+edit; everyone else is left out (Super Admin can grant more).
+    const REPAIR_174 = [
+      ["administrator", "production.recipe-edit", "view"],
+      ["administrator", "production.recipe-edit", "edit"],
+      ["manager", "production.recipe-edit", "view"],
+      ["manager", "production.recipe-edit", "edit"],
+      ["qc_engineer", "production.recipe-edit", "view"],
+      ["qc_engineer", "production.recipe-edit", "edit"],
+    ];
+    const recipeEditRepaired = await pool.query(
+      `INSERT INTO role_default_permissions (role, permission_key, action)
+       SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+       ON CONFLICT DO NOTHING
+       RETURNING role::text`,
+      [REPAIR_174.map((r) => r[0]), REPAIR_174.map((r) => r[1]), REPAIR_174.map((r) => r[2])]
+    );
+    log.push(
+      recipeEditRepaired.rows.length
+        ? `Schema migration applied (Round 174 — recipe-edit access granted to Administrator, Manager, QC Engineer).`
+        : `Round 174 — recipe-edit access defaults already in place, nothing to repair.`
     );
 
 

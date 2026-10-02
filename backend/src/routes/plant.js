@@ -25,10 +25,11 @@
 // sixths of the plant's consumption.
 import { Router } from "express";
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import { pool, query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
-import { PLANT_SLOTS, SLOT_BY_KEY, normaliseSlot, isPlaceholderName } from "../lib/plantSlots.js";
+import { PLANT_SLOTS, SLOT_BY_KEY, RECIPE_TARGET_COLUMNS, normaliseSlot, isPlaceholderName } from "../lib/plantSlots.js";
 import { istDay } from "../lib/istDate.js";
 
 const router = Router();
@@ -429,6 +430,15 @@ router.post("/recipes/sync", async (req, res) => {
     for (const r of recipes) {
       const code = String(r.recipe_code || "").trim();
       if (!code) continue;
+      // ROUND 174 — don't let an incoming read-sync overwrite a recipe that has
+      // an edit waiting to be written to the plant. The app copy already holds
+      // the edited values; until the agent applies the change to MCI370 and the
+      // next sync carries the new values back, the plant still reports the OLD
+      // numbers, which would otherwise clobber the edit. Skip it this cycle.
+      const { rows: pend } = await client.query(
+        `SELECT 1 FROM plant_recipe_edits e JOIN plant_recipes p ON p.id = e.recipe_id
+          WHERE p.recipe_code = $1 AND e.status IN ('pending','claimed') LIMIT 1`, [code]);
+      if (pend.length) { unchanged++; continue; }
       const hash = crypto.createHash("sha256").update(JSON.stringify(r)).digest("hex");
       const { rows } = await client.query(
         `INSERT INTO plant_recipes
@@ -480,6 +490,112 @@ router.post("/recipes/sync", async (req, res) => {
     client.release();
   }
   res.json({ ok: true, received: recipes.length, inserted, updated, unchanged });
+});
+
+// ROUND 174 — the write-back queue the agent drains. An editable recipe FIELD
+// maps to its MCI370 Recipe_Master column here; targets map via
+// RECIPE_TARGET_COLUMNS. cost/w-c are computed, and Recipe_Code is handled as a
+// rename, so none of those are in this set.
+const RECIPE_FIELD_COLUMNS = {
+  recipe_name: "Recipe_Name",
+  strength: "Strength",
+  consistancy: "Consistancy",
+  mixing_time: "Mixing_Time",
+  mixer_capacity: "Mixer_Capacity",
+  mass_weight: "mass_weight",
+  premix_time: "PreMixTime",
+  dry_mix_time: "Dry_Mix_Time",
+  drymix_pct: "DryMix_in_Perc",
+  wetmix_pct: "WetMix_in_perc",
+  water_ice_pct: "water_ice_percent",
+  water_slurry_pct: "water_slurry_percent",
+  cement_water_pct: "cement_water_Percentage",
+  cement_filler_pct: "cement_filler_percentage",
+};
+
+// MCI370 stores its modify date/time as free text; match its own format so its
+// screens read naturally (e.g. "10/1/2026", "2:05:11 PM"), in IST.
+function mci370Now() {
+  const d = new Date();
+  const date = d.toLocaleDateString("en-US", { timeZone: "Asia/Kolkata", day: "numeric", month: "numeric", year: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
+  return { date, time };
+}
+
+// The agent claims pending edits here (and re-claims any stuck >10 min), gets a
+// ready-to-write column→value set, applies them to MCI370, then reports via
+// /recipes/write-result. Agent-authenticated, like /sync.
+router.get("/recipes/pending-writes", async (req, res) => {
+  if (!agentAuthorised(req)) return res.status(401).json({ error: "Not authorised." });
+  try {
+    const { rows: claimed } = await query(
+      `UPDATE plant_recipe_edits
+          SET status = 'claimed', claimed_at = now()
+        WHERE id IN (
+          SELECT id FROM plant_recipe_edits
+           WHERE status = 'pending' OR (status = 'claimed' AND claimed_at < now() - interval '10 minutes')
+           ORDER BY edited_at
+           LIMIT 25 FOR UPDATE SKIP LOCKED)
+        RETURNING id, recipe_code, after_json, is_code_rename, old_recipe_code, new_recipe_code, edited_by`
+    );
+    if (!claimed.length) return res.json({ writes: [] });
+    const userIds = [...new Set(claimed.map((e) => e.edited_by).filter(Boolean))];
+    const names = new Map();
+    if (userIds.length) {
+      const { rows: us } = await query(`SELECT id, name FROM users WHERE id = ANY($1)`, [userIds]);
+      for (const u of us) names.set(u.id, u.name);
+    }
+    const stamp = mci370Now();
+    const writes = claimed.map((e) => {
+      const after = e.after_json || {};
+      const set = {};
+      for (const [f, col] of Object.entries(RECIPE_FIELD_COLUMNS)) {
+        if (after.fields && Object.prototype.hasOwnProperty.call(after.fields, f) && after.fields[f] != null) {
+          set[col] = after.fields[f];
+        }
+      }
+      // Every target column, 0 for a slot turned off, so the plant mirrors the app exactly.
+      for (const [slot, col] of Object.entries(RECIPE_TARGET_COLUMNS)) {
+        set[col] = after.targets && after.targets[slot] != null ? Number(after.targets[slot]) : 0;
+      }
+      set.Modifier_Name = (e.edited_by && names.get(e.edited_by)) || "App";
+      set.Modified_User_Level = "App (QC)";
+      set.Modified_Date = stamp.date;
+      set.Modified_Time = stamp.time;
+      return {
+        edit_id: e.id,
+        where_recipe_code: e.is_code_rename ? e.old_recipe_code : e.recipe_code,
+        rename_to: e.is_code_rename ? e.new_recipe_code : null,
+        set,
+      };
+    });
+    res.json({ writes });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load pending recipe writes." });
+  }
+});
+
+router.post("/recipes/write-result", async (req, res) => {
+  if (!agentAuthorised(req)) return res.status(401).json({ error: "Not authorised." });
+  const results = Array.isArray(req.body?.results) ? req.body.results : null;
+  if (!results) return res.status(400).json({ error: "Send { results: [{edit_id, ok, error}] }." });
+  try {
+    for (const r of results) {
+      const id = Number(r.edit_id);
+      if (!Number.isInteger(id)) continue;
+      if (r.ok) {
+        await query(`UPDATE plant_recipe_edits SET status='applied', applied_at=now(), agent_error=NULL WHERE id=$1 AND status IN ('pending','claimed')`, [id]);
+      } else {
+        await query(`UPDATE plant_recipe_edits SET status='failed', agent_error=$2 WHERE id=$1 AND status IN ('pending','claimed')`,
+          [id, String(r.error || "write failed").slice(0, 500)]);
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not record write results." });
+  }
 });
 
 router.use(requireAuth);
@@ -1072,6 +1188,22 @@ router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("produ
         cost_per_m3: lineCost == null ? null : Math.round(lineCost * 100) / 100,
       });
     }
+    // Every slot a recipe CAN carry (not just the ones in use), so the edit
+    // form can switch a slot on by giving it a weight. Current target is 0 when
+    // the slot is off. Only slots with a Recipe_Master target column appear.
+    const editableSlots = Object.keys(RECIPE_TARGET_COLUMNS).map((slot) => ({
+      slot,
+      slot_label: SLOT_BY_KEY[slot]?.label || slot,
+      kind: SLOT_BY_KEY[slot]?.kind || null,
+      plant_name: nameBySlot.get(slot) || null,
+      target: tgtBySlot.get(slot) || 0,
+      material_name: slotMat.get(slot) ? rateLk.name(slotMat.get(slot)) : null,
+    }));
+    const { rows: le } = await query(
+      `SELECT e.id, e.status, e.edited_at, e.applied_at, e.agent_error, e.is_code_rename,
+              e.old_recipe_code, e.new_recipe_code, u.name AS edited_by_name
+         FROM plant_recipe_edits e LEFT JOIN users u ON u.id = e.edited_by
+        WHERE e.recipe_id = $1 ORDER BY e.edited_at DESC LIMIT 5`, [id]);
     res.json({
       recipe: {
         ...recipe,
@@ -1080,12 +1212,205 @@ router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("produ
         wc_ratio: binder > 0 ? Math.round((water / binder) * 1000) / 1000 : null,
       },
       targets: lines,
+      editable_slots: editableSlots,
       cost_per_m3: Math.round(cost * 100) / 100,
       cost_incomplete: anyUnpriced,
+      recent_edits: le,
+      pending_write: le.some((e) => e.status === "pending" || e.status === "claimed"),
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load the recipe." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 174 — editing a recipe (writes back to MCI370), the edit password, and
+// undo. The permission says who may reach the editor; the plant-wide edit
+// password (below) is the second key entered on every change.
+// ---------------------------------------------------------------------------
+const RECIPE_EDIT_ROLES = ["administrator", "manager", "qc_engineer"];
+
+// Editable recipe fields → their app column + a coercer. cost_per_m3_plant is
+// NOT here (the app computes cost); Recipe_Code is handled as a rename.
+const RECIPE_EDIT_FIELDS = {
+  recipe_name: (v) => (v == null ? null : String(v).slice(0, 100)),
+  strength: (v) => NUM(v),
+  consistancy: (v) => (v == null || v === "" ? null : String(v).slice(0, 15)),
+  mixing_time: (v) => NUM(v),
+  mixer_capacity: (v) => NUM(v),
+  mass_weight: (v) => NUM(v),
+  premix_time: (v) => NUM(v),
+  dry_mix_time: (v) => NUM(v),
+  drymix_pct: (v) => NUM(v),
+  wetmix_pct: (v) => NUM(v),
+  water_ice_pct: (v) => NUM(v),
+  water_slurry_pct: (v) => NUM(v),
+  cement_water_pct: (v) => NUM(v),
+  cement_filler_pct: (v) => NUM(v),
+};
+
+// Whether a plant-wide edit password has been set. No auth beyond login: the UI
+// uses it to show "ask a Super Admin to set the edit password" rather than a
+// dead password box.
+router.get("/recipes/edit-password/status", async (req, res) => {
+  try {
+    const { rows } = await query(`SELECT 1 FROM plant_recipe_edit_auth WHERE id = 1`);
+    res.json({ is_set: rows.length > 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not check the edit password." });
+  }
+});
+
+// Set / reset the plant-wide edit password — Super Admin only.
+router.put("/recipes/edit-password", requireRole("super_admin"), async (req, res) => {
+  const pw = String(req.body?.password || "");
+  if (pw.length < 4) return res.status(400).json({ error: "Choose an edit password of at least 4 characters." });
+  try {
+    const hash = await bcrypt.hash(pw, 10);
+    await query(
+      `INSERT INTO plant_recipe_edit_auth (id, password_hash, updated_by, updated_at)
+       VALUES (1, $1, $2, now())
+       ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [hash, req.user.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not set the edit password." });
+  }
+});
+
+async function checkEditPassword(given) {
+  const { rows } = await query(`SELECT password_hash FROM plant_recipe_edit_auth WHERE id = 1`);
+  if (!rows.length) return { ok: false, status: 400, error: "No edit password is set. Ask a Super Admin to set it first." };
+  const match = await bcrypt.compare(String(given || ""), rows[0].password_hash);
+  if (!match) return { ok: false, status: 403, error: "That edit password is not correct." };
+  return { ok: true };
+}
+
+// Snapshot a recipe's current fields + targets, for the undo record.
+async function snapshotRecipe(recipeId) {
+  const { rows } = await query(`SELECT * FROM plant_recipes WHERE id = $1`, [recipeId]);
+  if (!rows.length) return null;
+  const { rows: tg } = await query(`SELECT slot, target FROM plant_recipe_targets WHERE recipe_id = $1`, [recipeId]);
+  const fields = {};
+  for (const f of Object.keys(RECIPE_EDIT_FIELDS)) fields[f] = rows[0][f];
+  const targets = {};
+  for (const t of tg) targets[t.slot] = Number(t.target);
+  return { recipe_code: rows[0].recipe_code, fields, targets };
+}
+
+// Apply an after-snapshot (fields + targets [+ optional new code]) to the app
+// copy and queue the write-back. Shared by edit and revert.
+async function applyRecipeEdit({ recipeId, after, note, userId, revertsEditId }) {
+  const before = await snapshotRecipe(recipeId);
+  if (!before) throw new Error("recipe gone");
+  const isRename = !!(after.new_recipe_code && after.new_recipe_code !== before.recipe_code);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Fields
+    const sets = [], vals = [];
+    let i = 1;
+    for (const [f, coerce] of Object.entries(RECIPE_EDIT_FIELDS)) {
+      if (after.fields && Object.prototype.hasOwnProperty.call(after.fields, f)) {
+        sets.push(`${f} = $${i++}`); vals.push(coerce(after.fields[f]));
+      }
+    }
+    if (isRename) { sets.push(`recipe_code = $${i++}`); vals.push(after.new_recipe_code); }
+    if (sets.length) {
+      vals.push(recipeId);
+      await client.query(`UPDATE plant_recipes SET ${sets.join(", ")} WHERE id = $${i}`, vals);
+    }
+    // Targets — replace with the non-zero set from `after.targets`.
+    await client.query(`DELETE FROM plant_recipe_targets WHERE recipe_id = $1`, [recipeId]);
+    for (const [slot, v] of Object.entries(after.targets || {})) {
+      if (!SLOT_BY_KEY[slot]) continue;
+      const t = Number(v);
+      if (!Number.isFinite(t) || t <= 0) continue;
+      await client.query(`INSERT INTO plant_recipe_targets (recipe_id, slot, target) VALUES ($1,$2,$3)`, [recipeId, slot, t]);
+    }
+    const { rows: er } = await client.query(
+      `INSERT INTO plant_recipe_edits
+         (recipe_id, recipe_code, before_json, after_json, is_code_rename, old_recipe_code, new_recipe_code,
+          status, note, edited_by, reverts_edit_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10) RETURNING id`,
+      [recipeId, before.recipe_code, JSON.stringify(before),
+       JSON.stringify({ fields: after.fields || {}, targets: after.targets || {}, new_recipe_code: isRename ? after.new_recipe_code : null }),
+       isRename, isRename ? before.recipe_code : null, isRename ? after.new_recipe_code : null,
+       note || null, userId || null, revertsEditId || null]
+    );
+    const newEditId = er[0].id;
+    await client.query("COMMIT");
+    return newEditId;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+router.patch("/recipes/:id", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid recipe id." });
+  const pw = await checkEditPassword(req.body?.edit_password);
+  if (!pw.ok) return res.status(pw.status).json({ error: pw.error });
+  try {
+    const { rows } = await query(`SELECT id, recipe_code FROM plant_recipes WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: "Recipe not found." });
+
+    // A rename must land on a code no other recipe already uses.
+    const newCode = req.body?.new_recipe_code ? String(req.body.new_recipe_code).trim() : null;
+    if (newCode && newCode !== rows[0].recipe_code) {
+      const { rows: clash } = await query(`SELECT 1 FROM plant_recipes WHERE recipe_code = $1 AND id <> $2`, [newCode, id]);
+      if (clash.length) return res.status(400).json({ error: `Recipe code "${newCode}" is already in use.` });
+    }
+    // Validate target values up front.
+    const targets = req.body?.targets && typeof req.body.targets === "object" ? req.body.targets : {};
+    for (const [slot, v] of Object.entries(targets)) {
+      if (!SLOT_BY_KEY[slot]) return res.status(400).json({ error: `Unknown slot "${slot}".` });
+      if (v !== "" && v != null && !(Number(v) >= 0)) return res.status(400).json({ error: `Target for ${slot} must be zero or more.` });
+    }
+    const fields = req.body?.fields && typeof req.body.fields === "object" ? req.body.fields : {};
+    const editId = await applyRecipeEdit({
+      recipeId: id,
+      after: { fields, targets, new_recipe_code: newCode },
+      note: req.body?.note,
+      userId: req.user.id,
+    });
+    res.json({ ok: true, edit_id: editId, message: "Saved. Queued to write to the plant — it will show as applied once the agent confirms." });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not save the recipe edit." });
+  }
+});
+
+// Undo an edit: re-apply its before-snapshot (and queue that to the plant too).
+router.post("/recipes/edits/:editId/revert", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+  const editId = Number(req.params.editId);
+  if (!(Number.isInteger(editId) && editId > 0)) return res.status(400).json({ error: "Invalid edit id." });
+  const pw = await checkEditPassword(req.body?.edit_password);
+  if (!pw.ok) return res.status(pw.status).json({ error: pw.error });
+  try {
+    const { rows } = await query(`SELECT * FROM plant_recipe_edits WHERE id = $1`, [editId]);
+    if (!rows.length) return res.status(404).json({ error: "Edit not found." });
+    const e = rows[0];
+    if (!e.recipe_id) return res.status(400).json({ error: "That recipe no longer exists." });
+    const before = e.before_json;
+    const newEdit = await applyRecipeEdit({
+      recipeId: e.recipe_id,
+      after: { fields: before.fields || {}, targets: before.targets || {}, new_recipe_code: e.is_code_rename ? e.old_recipe_code : null },
+      note: `Undo of edit #${editId}`,
+      userId: req.user.id,
+      revertsEditId: editId,
+    });
+    res.json({ ok: true, edit_id: newEdit, message: "Reverted. Queued to restore on the plant." });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not revert that edit." });
   }
 });
 

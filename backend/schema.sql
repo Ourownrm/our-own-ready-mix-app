@@ -2978,6 +2978,48 @@ CREATE TABLE plant_recipe_targets (
 );
 CREATE INDEX idx_plant_recipe_targets_recipe ON plant_recipe_targets(recipe_id);
 
+-- ---------------------------------------------------------------------------
+-- ROUND 174 — editing a recipe and writing it back to MCI370.
+--
+-- Every edit is one row here: a full before-snapshot (for one-click undo), the
+-- requested after-state, who/when, and the status of writing it back to the
+-- plant. The row doubles as the agent's write-back job queue — the agent claims
+-- pending rows, applies them to MCI370's Recipe_Master, and reports the result —
+-- exactly like mixtrack_print_jobs. The app copy is updated immediately so QC
+-- sees the change; the plant catches up on the agent's next cycle.
+-- ---------------------------------------------------------------------------
+CREATE TABLE plant_recipe_edits (
+  id             SERIAL PRIMARY KEY,
+  recipe_id      INTEGER REFERENCES plant_recipes(id) ON DELETE SET NULL,
+  recipe_code    VARCHAR(50) NOT NULL,       -- captured so the log survives a rename/delete
+  before_json    JSONB NOT NULL,             -- full recipe + targets before the edit (undo source)
+  after_json     JSONB NOT NULL,             -- the recipe + targets as requested
+  is_code_rename BOOLEAN NOT NULL DEFAULT false,
+  old_recipe_code VARCHAR(50),
+  new_recipe_code VARCHAR(50),
+  status         VARCHAR(12) NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'claimed', 'applied', 'failed')),
+  note           TEXT,
+  edited_by      INTEGER REFERENCES users(id),
+  edited_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at     TIMESTAMPTZ,
+  applied_at     TIMESTAMPTZ,
+  agent_error    TEXT,
+  reverts_edit_id INTEGER REFERENCES plant_recipe_edits(id)
+);
+CREATE INDEX idx_plant_recipe_edits_pending ON plant_recipe_edits(edited_at) WHERE status IN ('pending', 'claimed');
+CREATE INDEX idx_plant_recipe_edits_recipe  ON plant_recipe_edits(recipe_id, edited_at DESC);
+
+-- The plant-wide edit password (a single row), hashed. A Super Admin sets and
+-- resets it; QC enters it to unlock editing. Separate from any user's login —
+-- the deliberate second key the owner holds, per the Stage 3 decision.
+CREATE TABLE plant_recipe_edit_auth (
+  id            INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  password_hash TEXT NOT NULL,
+  updated_by    INTEGER REFERENCES users(id),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE plant_sync_log (
   id             SERIAL PRIMARY KEY,
   received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

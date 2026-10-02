@@ -216,6 +216,14 @@ export const CATALOGUE = [
     { administrator: VCE, plant_operator: VCE }),
   f("production.plant-mapping", "production", "Plant silo mapping", VCE,
     { administrator: VCE }),
+  // ROUND 174 — editing a plant Recipe (Recipe Master) and writing the change
+  // back into MCI370. A QC function, so Administrator/Manager/QC Engineer by
+  // default. The "edit" action gates the write endpoints; on top of it, a
+  // plant-wide edit password (set by a Super Admin) must be entered for each
+  // change — the permission says WHO may reach the editor, the password is the
+  // deliberate second key the owner holds.
+  f("production.recipe-edit", "production", "Edit plant recipes (writes to MCI370)", VE,
+    { administrator: VE, manager: VE, qc_engineer: VE }),
 
   // ROUND 160 — the QC allowance added to the ticket's finish time, per
   // customer or site.
