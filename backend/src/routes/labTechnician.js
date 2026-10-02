@@ -1269,6 +1269,62 @@ router.post("/mix-designs/:id/approve", requireRole("lab_technician", "qc_engine
   res.json({ ok: true });
 });
 
+// Round 179 (#5) — Administrator revises an APPROVED design. An approved design
+// is deliberately locked (PATCH above is draft-only) because orders, PDFs and
+// cube results reference it; the correct way to change one is a NEW REVISION.
+// This clones the approved design (and its admixtures) into a fresh DRAFT with
+// the revision bumped and a unique ref code. The admin then edits the draft with
+// the normal draft edit, a second person approves it, and it can be marked the
+// grade's standard (which supersedes the old one) — nothing historical is touched.
+router.post("/mix-designs/:id/revise", requireRole("administrator"), async (req, res) => {
+  const { rows } = await query("SELECT * FROM mix_designs WHERE id = $1", [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: "Mix design not found." });
+  const src = rows[0];
+
+  // Next revision: numeric string bumps (00 -> 01), otherwise append -1.
+  const curRev = String(src.revision || "00").trim();
+  const newRev = /^\d+$/.test(curRev) ? String(Number(curRev) + 1).padStart(curRev.length || 2, "0") : `${curRev}-1`;
+
+  // A unique ref code for the new revision.
+  let candidate = `${src.design_ref_code} R${newRev}`;
+  for (let n = 2; ; n += 1) {
+    const { rows: ex } = await query("SELECT 1 FROM mix_designs WHERE design_ref_code = $1", [candidate]);
+    if (!ex.length) break;
+    candidate = `${src.design_ref_code} R${newRev}-${n}`;
+  }
+
+  const { rows: ins } = await query(
+    `INSERT INTO mix_designs
+      (mix_grade_id, design_ref_code, mix_description, fck_28day_mpa, std_deviation_mpa, max_agg_size_mm,
+       target_workability_mm, design_density_kgm3, cement_kgm3, fly_ash_kgm3, free_water_kgm3,
+       fine_agg_kgm3, coarse_20mm_kgm3, coarse_12_5mm_kgm3,
+       cement_type_source, cement_sp_gr, fly_ash_type_source, fly_ash_sp_gr,
+       fine_agg_type_source, fine_agg_sp_gr, coarse_20mm_type_source, coarse_20mm_sp_gr,
+       coarse_12_5mm_type_source, coarse_12_5mm_sp_gr,
+       fine_moisture_pct, fine_absorption_pct, coarse_20mm_moisture_pct, coarse_20mm_absorption_pct,
+       coarse_12_5mm_moisture_pct, coarse_12_5mm_absorption_pct, revision, notes, created_by, status)
+     SELECT mix_grade_id, $1, mix_description, fck_28day_mpa, std_deviation_mpa, max_agg_size_mm,
+       target_workability_mm, design_density_kgm3, cement_kgm3, fly_ash_kgm3, free_water_kgm3,
+       fine_agg_kgm3, coarse_20mm_kgm3, coarse_12_5mm_kgm3,
+       cement_type_source, cement_sp_gr, fly_ash_type_source, fly_ash_sp_gr,
+       fine_agg_type_source, fine_agg_sp_gr, coarse_20mm_type_source, coarse_20mm_sp_gr,
+       coarse_12_5mm_type_source, coarse_12_5mm_sp_gr,
+       fine_moisture_pct, fine_absorption_pct, coarse_20mm_moisture_pct, coarse_20mm_absorption_pct,
+       coarse_12_5mm_moisture_pct, coarse_12_5mm_absorption_pct, $2, $3, $4, 'draft'
+     FROM mix_designs WHERE id = $5
+     RETURNING id`,
+    [candidate, newRev, src.notes || null, req.user.id, req.params.id]
+  );
+  const newId = ins[0].id;
+  await query(
+    `INSERT INTO mix_design_admixtures (mix_design_id, type_brand, dosage_pct_of_binder, qty_kgm3, sp_gr, sort_order)
+     SELECT $1, type_brand, dosage_pct_of_binder, qty_kgm3, sp_gr, sort_order
+       FROM mix_design_admixtures WHERE mix_design_id = $2`,
+    [newId, req.params.id]
+  );
+  res.status(201).json({ id: newId, design_ref_code: candidate, revision: newRev });
+});
+
 // Flat JSON for the client-side mix design PDF generator.
 router.get("/mix-designs/:id/pdf-data", async (req, res) => {
   const { rows } = await query(

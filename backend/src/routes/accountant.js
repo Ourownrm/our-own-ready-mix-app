@@ -5,6 +5,41 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 const router = Router();
 router.use(requireAuth, requireRole("accountant", "administrator"));
 
+// Round 180 (#10) — credit notes due. Each is a partial rejection: the invoice
+// has already been adjusted down to the accepted m³, and this flags the returned
+// portion so Accounts can issue a formal credit note to the customer if the full
+// invoice already went out. "Mark issued" clears the flag.
+router.get("/credit-notes", async (req, res) => {
+  const { rows } = await query(
+    `SELECT i.ticket_id, dt.ticket_number, dt.ticket_date, c.name AS customer_name,
+            s.name AS site_name, m.name AS grade_name,
+            dt.loaded_quantity_m3, i.rejected_quantity_m3, i.credit_note_amount,
+            i.credit_note_reason, i.concrete_amount, i.total_amount,
+            rr.reason AS rejection_reason
+       FROM invoices i
+       JOIN delivery_tickets dt ON dt.id = i.ticket_id
+       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN customers c ON c.id = co.customer_id
+       JOIN sites s ON s.id = co.site_id
+       JOIN mix_grades m ON m.id = co.mix_grade_id
+       LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
+       LEFT JOIN rejection_reasons rr ON rr.id = sq.rejection_reason_id
+      WHERE i.credit_note_needed = true AND COALESCE(i.credit_note_cleared, false) = false
+      ORDER BY dt.ticket_date DESC, dt.id DESC`
+  );
+  res.json(rows);
+});
+
+router.post("/credit-notes/:ticketId/clear", async (req, res) => {
+  const { rows } = await query(
+    `UPDATE invoices SET credit_note_cleared = true
+      WHERE ticket_id = $1 AND credit_note_needed = true RETURNING ticket_id`,
+    [req.params.ticketId]
+  );
+  if (!rows.length) return res.status(404).json({ error: "No credit note is flagged for that delivery." });
+  res.json({ ok: true });
+});
+
 // Dashboard KPIs: outstanding, collected today, pumping/waiting charges due, trip allowance this month
 router.get("/dashboard", async (req, res) => {
   const [outstanding, collectedToday, pumping, allowance] = await Promise.all([

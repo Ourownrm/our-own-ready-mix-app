@@ -129,12 +129,15 @@ router.patch("/action-points/:id", requireRole(...STAFF_ROLES), async (req, res)
 // snapshot what can drift, recompute live in SQL" pattern used everywhere
 // else in this codebase (e.g. the cube-test due-date math), rather than a
 // stored "quantity at last service" column that could fall out of sync.
-// Equipment scoping is stored (see maintenance_action_point_scope's own
-// comment) but this due list still only evaluates trucks — equipment has
-// no hours/quantity usage tracking of its own yet, so there's nothing to
-// classify it against.
+// Round 179 (#9) — equipment (e.g. the batching plant) is now evaluated too, in
+// a second query below. Equipment has no hour-meter or m³ usage of its own, so
+// it is classified on the DAY interval alone; and, unlike trucks (where an
+// action point with no scope rows means "every truck"), a piece of equipment is
+// only due for an action point that EXPLICITLY lists it in its scope — equipment
+// is opt-in, so adding the batching plant to an action point's scope is what
+// starts tracking it.
 router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
-  const [dueRows, inWorkshop, turnaround] = await Promise.all([
+  const [dueRows, equipDueRows, inWorkshop, turnaround] = await Promise.all([
     query(`
       SELECT
         t.id AS truck_id, t.truck_number,
@@ -182,6 +185,30 @@ router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
         )
       ORDER BY t.truck_number, ap.name
     `),
+    // Equipment due list — day interval only, explicit scope only.
+    query(`
+      SELECT
+        e.id AS equipment_id, e.name AS equipment_name, e.equipment_type::text AS equipment_type,
+        ap.id AS action_point_id, ap.name AS action_name,
+        ap.interval_days, ap.interval_hours, ap.interval_qty_m3,
+        ml.done_at AS last_done_at,
+        CASE WHEN ap.interval_days IS NOT NULL AND ml.done_at IS NOT NULL
+             THEN (ml.done_at + (ap.interval_days || ' days')::interval)::date
+             ELSE NULL END AS due_date,
+        CASE WHEN ap.interval_days IS NOT NULL AND ml.done_at IS NOT NULL
+             THEN ((ml.done_at + (ap.interval_days || ' days')::interval)::date - CURRENT_DATE)
+             ELSE NULL END AS days_remaining
+      FROM equipment e
+      CROSS JOIN maintenance_action_points ap
+      LEFT JOIN LATERAL (
+        SELECT done_at FROM maintenance_logs
+        WHERE equipment_id = e.id AND action_point_id = ap.id
+        ORDER BY done_at DESC, id DESC LIMIT 1
+      ) ml ON true
+      WHERE e.is_active AND ap.is_active
+        AND EXISTS (SELECT 1 FROM maintenance_action_point_scope sc WHERE sc.action_point_id = ap.id AND sc.equipment_id = e.id)
+      ORDER BY e.name, ap.name
+    `),
     query(`
       SELECT er.id, er.truck_id, t.truck_number, er.sent_out_at, er.workshop_name
       FROM external_repairs er JOIN trucks t ON t.id = er.truck_id
@@ -211,6 +238,18 @@ router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
   }
 
   const dueList = dueRows.rows.map((r) => ({ ...r, status: classify(r) }));
+  // Equipment rows carry no truck, no hours and no m³ — only the day interval —
+  // so classify() keys on days_remaining alone for them. Tagged is_equipment so
+  // the UI shows the equipment name and hides the truck-only columns.
+  const equipList = equipDueRows.rows.map((r) => ({
+    ...r,
+    is_equipment: true,
+    truck_id: null, truck_number: null,
+    last_hours: null, current_hours: null, qty_since_service: null,
+    hours_remaining: null, qty_remaining_m3: null,
+    status: classify(r),
+  }));
+  const fullDueList = [...dueList, ...equipList];
   const workshopList = inWorkshop.rows.map((r) => ({
     truck_id: r.truck_id, truck_number: r.truck_number, status: "in_workshop",
     workshop_name: r.workshop_name, sent_out_at: r.sent_out_at,
@@ -218,28 +257,32 @@ router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
 
   res.json({
     kpis: {
-      overdue: dueList.filter((r) => r.status === "overdue").length,
-      due_soon: dueList.filter((r) => r.status === "due_soon").length,
+      overdue: fullDueList.filter((r) => r.status === "overdue").length,
+      due_soon: fullDueList.filter((r) => r.status === "due_soon").length,
       in_workshop: workshopList.length,
       avg_turnaround_days: turnaround.rows[0].avg_days != null ? Math.round(Number(turnaround.rows[0].avg_days) * 10) / 10 : null,
     },
-    due_list: dueList,
+    due_list: fullDueList,
     in_workshop: workshopList,
   });
 });
 
 // Log a completed maintenance action — resets the due clock for that
-// truck+action point (the due-list query above always reads the most
-// recent log).
+// truck/equipment + action point (the due-list query above always reads the
+// most recent log). Round 179 (#9) — a log is for a truck OR a piece of
+// equipment (e.g. the batching plant); exactly one is required.
 router.post("/logs", requireRole(...STAFF_ROLES), async (req, res) => {
-  const { action_point_id, truck_id, done_at, hours_at_service, notes } = req.body;
-  if (!action_point_id || !truck_id) {
-    return res.status(400).json({ error: "Action point and truck are required." });
+  const { action_point_id, truck_id, equipment_id, done_at, hours_at_service, notes } = req.body;
+  if (!action_point_id) return res.status(400).json({ error: "Action point is required." });
+  if ((truck_id && equipment_id) || (!truck_id && !equipment_id)) {
+    return res.status(400).json({ error: "Pick exactly one — a truck or a piece of equipment." });
   }
   const { rows } = await query(
-    `INSERT INTO maintenance_logs (action_point_id, truck_id, done_at, hours_at_service, performed_by, notes)
-     VALUES ($1,$2,COALESCE($3, CURRENT_DATE),$4,$5,$6) RETURNING *`,
-    [action_point_id, truck_id, done_at || null, hours_at_service || null, req.user.id, notes || null]
+    `INSERT INTO maintenance_logs (action_point_id, truck_id, equipment_id, done_at, hours_at_service, performed_by, notes)
+     VALUES ($1,$2,$3,COALESCE($4, CURRENT_DATE),$5,$6,$7) RETURNING *`,
+    [action_point_id, truck_id || null, equipment_id || null, done_at || null,
+     // hours only make sense for a truck; ignore any hours sent with an equipment log
+     equipment_id ? null : (hours_at_service || null), req.user.id, notes || null]
   );
   res.status(201).json(rows[0]);
 });

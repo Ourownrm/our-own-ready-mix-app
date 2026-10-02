@@ -839,6 +839,71 @@ router.get("/cost-per-m3", requireRole("administrator"), requirePermission("mate
 
 // ---------------------------------------------------------------------------
 // ROUND 169 — the Mix Designs page (item 7a). Three read-only views of the
+// ---------------------------------------------------------------------------
+// ROUND 179 (#4) — Plant vs billed production. What the batching plant actually
+// MADE (plant_batches batched m³ + manual production entries) against what was
+// BILLED/DELIVERED on customer challans (delivery_tickets.loaded_quantity_m3),
+// over the selected period, per day and in total. Read-only; m³ only (no money),
+// so the same plant-data audience may see it. The gap is over-batching / wash-out
+// / returns / unbilled or unrecorded loads — a figure worth watching, not a
+// reconciliation that must zero.
+// ---------------------------------------------------------------------------
+router.get("/production-vs-billed", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+  try {
+    // One date filter, applied to each source's own date column so the three
+    // share a single param set (dateRange() can't, since each call restarts $1).
+    const from = ISO_DATE.test(req.query.from_date || "") ? req.query.from_date : null;
+    const to = ISO_DATE.test(req.query.to_date || "") ? req.query.to_date : null;
+    let params, cond;
+    if (from && to) { params = [from, to]; cond = (col) => `${col} BETWEEN $1::date AND $2::date`; }
+    else { const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 400); params = [days]; cond = (col) => `${col} >= CURRENT_DATE - ($1::int - 1)`; }
+
+    const { rows } = await query(
+      `WITH p AS (
+         SELECT pb.batch_date AS d, sum(pb.batch_qty_m3) AS m3
+           FROM plant_batches pb WHERE ${cond("pb.batch_date")} GROUP BY pb.batch_date
+       ), pm AS (
+         SELECT e.entry_date AS d, sum(e.qty_m3) AS m3
+           FROM plant_manual_entries e WHERE ${cond("e.entry_date")} AND e.material_id IS NULL GROUP BY e.entry_date
+       ), b AS (
+         SELECT dt.ticket_date AS d, sum(dt.loaded_quantity_m3) AS m3, count(*) AS n
+           FROM delivery_tickets dt WHERE ${cond("dt.ticket_date")} GROUP BY dt.ticket_date
+       ), days AS (SELECT d FROM p UNION SELECT d FROM pm UNION SELECT d FROM b)
+       SELECT to_char(days.d, 'YYYY-MM-DD') AS day,
+              COALESCE(p.m3, 0) + COALESCE(pm.m3, 0) AS plant_m3,
+              COALESCE(b.m3, 0) AS billed_m3,
+              COALESCE(b.n, 0)::int AS tickets
+         FROM days
+         LEFT JOIN p  ON p.d  = days.d
+         LEFT JOIN pm ON pm.d = days.d
+         LEFT JOIN b  ON b.d  = days.d
+        ORDER BY days.d DESC`,
+      params
+    );
+
+    let plantM3 = 0, billedM3 = 0, tickets = 0;
+    const byDay = rows.map((r) => {
+      const plant = Number(r.plant_m3) || 0, billed = Number(r.billed_m3) || 0;
+      plantM3 += plant; billedM3 += billed; tickets += Number(r.tickets) || 0;
+      return { day: r.day, plant_m3: Math.round(plant * 100) / 100, billed_m3: Math.round(billed * 100) / 100, difference_m3: Math.round((plant - billed) * 100) / 100, tickets: Number(r.tickets) || 0 };
+    });
+    plantM3 = Math.round(plantM3 * 100) / 100; billedM3 = Math.round(billedM3 * 100) / 100;
+    res.json({
+      rows: byDay,
+      totals: {
+        plant_m3: plantM3,
+        billed_m3: billedM3,
+        difference_m3: Math.round((plantM3 - billedM3) * 100) / 100,
+        difference_pct: billedM3 > 0 ? Math.round(((plantM3 - billedM3) / billedM3) * 1000) / 10 : null,
+        tickets,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the plant-vs-billed comparison." });
+  }
+});
+
 // mix_designs data the lab already maintains, brought onto the plant side:
 // Details (one design in full), Comparison (every grade's standard design side
 // by side) and Costing (design kg/m³ vs what the plant actually weighed, each
@@ -1240,6 +1305,18 @@ router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("produ
   }
 });
 
+// Round 178 — lab_technician added so a Super Admin can give recipe-master
+// editing to the lab as well as QC. The two-guard design couples the role
+// allow-list with a default grant (check-guards enforces it), so lab is granted
+// by default here and in the catalogue; the Super Admin can revoke it for the
+// whole lab role or per lab user on the Access Control page, and the plant-wide
+// edit password is still required on every change.
+// NOTE (Round 181 hotfix): this const MUST be declared before the routes that
+// use it below — a `const` sits in the temporal dead zone until this line runs,
+// so registering a route with `...RECIPE_EDIT_ROLES` above it throws at startup
+// ("Cannot access 'RECIPE_EDIT_ROLES' before initialization").
+const RECIPE_EDIT_ROLES = ["administrator", "manager", "qc_engineer", "lab_technician"];
+
 // ---------------------------------------------------------------------------
 // ROUND 178 — Recipe <-> Mix Design mapping (many-to-many). Editable from either
 // side on the Mix Designs & Recipes screen. App-only metadata — nothing is
@@ -1290,14 +1367,8 @@ router.delete("/recipe-design-map", requireRole(...RECIPE_EDIT_ROLES), requirePe
 // ROUND 174 — editing a recipe (writes back to MCI370), the edit password, and
 // undo. The permission says who may reach the editor; the plant-wide edit
 // password (below) is the second key entered on every change.
+// (RECIPE_EDIT_ROLES is declared above, before the mapping routes that use it.)
 // ---------------------------------------------------------------------------
-// Round 178 — lab_technician added so a Super Admin can give recipe-master
-// editing to the lab as well as QC. The two-guard design couples the role
-// allow-list with a default grant (check-guards enforces it), so lab is granted
-// by default here and in the catalogue; the Super Admin can revoke it for the
-// whole lab role or per lab user on the Access Control page, and the plant-wide
-// edit password is still required on every change.
-const RECIPE_EDIT_ROLES = ["administrator", "manager", "qc_engineer", "lab_technician"];
 
 // Editable recipe fields → their app column + a coercer. cost_per_m3_plant is
 // NOT here (the app computes cost); Recipe_Code is handled as a rename.

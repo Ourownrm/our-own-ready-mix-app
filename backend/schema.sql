@@ -1597,7 +1597,11 @@ CREATE TABLE maintenance_action_point_scope (
 CREATE TABLE maintenance_logs (
   id SERIAL PRIMARY KEY,
   action_point_id INTEGER NOT NULL REFERENCES maintenance_action_points(id),
-  truck_id INTEGER NOT NULL REFERENCES trucks(id),
+  -- Round 179 (#9) — a log is for a truck OR a piece of equipment (e.g. the
+  -- batching plant). Mirrors the truck_id/equipment_id split fuel_logs and
+  -- breakdown_reports already use; exactly one is set (enforced in the API).
+  truck_id INTEGER REFERENCES trucks(id),
+  equipment_id INTEGER REFERENCES equipment(id),
   done_at DATE NOT NULL DEFAULT CURRENT_DATE,
   hours_at_service NUMERIC(10,2),
   performed_by INTEGER REFERENCES users(id),
@@ -1729,7 +1733,17 @@ CREATE TABLE invoices (
   -- billing_gstin in that case -- the legacy fields never had one).
   billing_name VARCHAR(200),
   billing_address TEXT,
-  billing_gstin VARCHAR(20)
+  billing_gstin VARCHAR(20),
+  -- Round 180 (#10) — partial rejection. When part of a load is returned at
+  -- site, the invoice is adjusted down to the ACCEPTED m³ and flagged so
+  -- Accounts can issue a credit note for the returned portion (in case the
+  -- full invoice already went to the customer). rejected_quantity_m3 is the
+  -- returned m³, credit_note_amount its value at the billed rate.
+  rejected_quantity_m3 NUMERIC(8,2) DEFAULT 0,
+  credit_note_needed BOOLEAN DEFAULT FALSE,
+  credit_note_amount NUMERIC(12,2),
+  credit_note_reason TEXT,
+  credit_note_cleared BOOLEAN DEFAULT FALSE
 );
 
 -- Supports multiple receipts against the same invoice (Additional Recommendations)

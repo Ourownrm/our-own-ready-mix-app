@@ -282,6 +282,23 @@ export async function confirmUnloadingComplete(ticketId, userId, { site_slump_mm
 }
 
 export async function confirmRejection(ticketId, userId, { rejection_reason_id, rejected_quantity_m3, remarks, site_slump_mm }) {
+  // Round 180 (#10) — partial vs full. If the rejected quantity is less than
+  // what was loaded, the rest WAS placed: it's a PARTIAL rejection, so the
+  // accepted m³ stays a completed, billable delivery and only the returned m³
+  // is handled as a credit note. A blank quantity, or one >= the load, is a
+  // FULL rejection — the original all-or-nothing behaviour, untouched.
+  const { rows: tk } = await query(
+    "SELECT loaded_quantity_m3, order_id FROM delivery_tickets WHERE id = $1", [ticketId]
+  );
+  const loaded = Number(tk[0]?.loaded_quantity_m3) || 0;
+  const rej = Number(rejected_quantity_m3) || 0;
+  const isPartial = rej > 0 && loaded > 0 && rej < loaded;
+
+  if (isPartial) {
+    await confirmPartialRejection(ticketId, userId, { rejection_reason_id, rejected_quantity_m3: rej, remarks, site_slump_mm, loaded, orderId: tk[0]?.order_id });
+    return;
+  }
+
   await query(
     `INSERT INTO site_qc (ticket_id, arrival_slump_mm, accepted, rejected_quantity_m3,
        rejection_reason_id, remarks, entered_by)
@@ -308,6 +325,89 @@ export async function confirmRejection(ticketId, userId, { rejection_reason_id, 
 
   const { rows: ticketRows } = await query("SELECT order_id FROM delivery_tickets WHERE id = $1", [ticketId]);
   await syncOrderCompletionStatus(ticketRows[0]?.order_id);
+}
+
+// Round 180 (#10) — a load partly rejected at site. The accepted m³ is a normal
+// completed delivery (billed, counts toward the order, pays the trip allowance);
+// the returned m³ is recorded on site_qc and the invoice is adjusted down to the
+// accepted m³ and flagged for a credit note, so Accounts can issue one for the
+// returned portion if the full invoice already reached the customer. Production
+// figures (what the plant batched) are deliberately NOT touched.
+export async function confirmPartialRejection(ticketId, userId, { rejection_reason_id, rejected_quantity_m3, remarks, site_slump_mm, loaded, orderId }) {
+  const rej = Number(rejected_quantity_m3) || 0;
+  await query(
+    `INSERT INTO site_qc (ticket_id, arrival_slump_mm, accepted, rejected_quantity_m3,
+       rejection_reason_id, remarks, entered_by, unload_finish_time)
+     VALUES ($1, $2, true, $3, $4, $5, $6, now())
+     ON CONFLICT (ticket_id) DO UPDATE SET
+       accepted = true, rejected_quantity_m3 = $3, rejection_reason_id = $4, remarks = $5,
+       unload_finish_time = COALESCE(site_qc.unload_finish_time, now())`,
+    [ticketId, site_slump_mm || null, rej, rejection_reason_id || null, remarks, userId]
+  );
+  // The accepted portion was delivered — a completed delivery, not a rejection.
+  await query("UPDATE delivery_tickets SET status = 'completed' WHERE id = $1", [ticketId]);
+  await logTripEvent(ticketId, "unloading_completed", userId);
+
+  // Trip allowance — the trip happened, so pay it like any completed delivery.
+  const { rows: allow } = await query(
+    `SELECT dt.driver_id, tac.amount
+       FROM delivery_tickets dt
+       JOIN customer_orders co ON co.id = dt.order_id
+       JOIN sites s ON s.id = co.site_id
+       JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
+      WHERE dt.id = $1`,
+    [ticketId]
+  );
+  if (allow[0]) {
+    await query(
+      `INSERT INTO trip_allowance_payouts (ticket_id, driver_id, amount)
+       VALUES ($1, $2, $3) ON CONFLICT (ticket_id) DO NOTHING`,
+      [ticketId, allow[0].driver_id, allow[0].amount]
+    );
+  }
+
+  // Make sure an invoice exists (normally created at ticket creation at the full
+  // loaded qty), then adjust it down to the accepted m³ and flag the credit note.
+  await generateInvoiceForTicket(ticketId);
+  const { rows: inv } = await query(
+    "SELECT id, concrete_amount, pumping_charge, part_load_charge, waiting_charge FROM invoices WHERE ticket_id = $1",
+    [ticketId]
+  );
+  if (inv.length) {
+    const i = inv[0];
+    const rate = loaded > 0 ? Number(i.concrete_amount) / loaded : 0; // per-m³ it was billed at
+    const accepted = loaded - rej;
+    const newConcrete = Math.round(accepted * rate * 100) / 100;
+    const creditAmount = Math.round(rej * rate * 100) / 100;
+    const newTotal = newConcrete + Number(i.pumping_charge || 0) + Number(i.part_load_charge || 0) + Number(i.waiting_charge || 0);
+    await query(
+      `UPDATE invoices SET concrete_amount = $1, total_amount = $2,
+         rejected_quantity_m3 = $3, credit_note_needed = true, credit_note_amount = $4,
+         credit_note_reason = $5, credit_note_cleared = false
+       WHERE ticket_id = $6`,
+      [newConcrete, newTotal, rej, creditAmount,
+       `Partial rejection — ${rej} m³ returned of ${loaded} m³`, ticketId]
+    );
+  }
+
+  await query(
+    `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+     VALUES ('manager', $1, 'concrete_rejected', $2)`,
+    [ticketId, `Partial rejection at site — ${rej} m³ returned; accepted portion billed, credit note due`]
+  );
+  await query(
+    `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+     VALUES ('accountant', $1, 'credit_note_due', $2)`,
+    [ticketId, `Credit note due — ${rej} m³ returned on a partial rejection`]
+  );
+  const { rows: t } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
+  await pushToRole("manager", {
+    title: "Partial rejection at site",
+    body: `${t[0]?.ticket_number || "A delivery"} — ${rej} m³ returned`,
+    url: "/manager",
+  });
+
+  await syncOrderCompletionStatus(orderId);
 }
 
 // A ticket can be confirmed by the Driver directly only when its order has no

@@ -925,7 +925,8 @@ router.get("/setup", async (req, res) => {
       CREATE TABLE IF NOT EXISTS maintenance_logs (
         id SERIAL PRIMARY KEY,
         action_point_id INTEGER NOT NULL REFERENCES maintenance_action_points(id),
-        truck_id INTEGER NOT NULL REFERENCES trucks(id),
+        truck_id INTEGER REFERENCES trucks(id),
+        equipment_id INTEGER REFERENCES equipment(id),
         done_at DATE NOT NULL DEFAULT CURRENT_DATE,
         hours_at_service NUMERIC(10,2),
         performed_by INTEGER REFERENCES users(id),
@@ -1763,6 +1764,25 @@ router.get("/setup", async (req, res) => {
     await query(`ALTER TABLE external_repairs ADD COLUMN IF NOT EXISTS equipment_id INTEGER REFERENCES equipment(id);`);
     await query(`ALTER TABLE external_repairs ALTER COLUMN truck_id DROP NOT NULL;`);
     log.push("Schema migration applied (breakdown_reports/external_repairs now also cover loader/equipment, not just trucks — Loader Operator can report breakdowns and request outside repairs).");
+
+    // Round 179 (#9) — maintenance logs can now be for a piece of equipment
+    // (e.g. the batching plant), not only a truck. Same truck_id/equipment_id
+    // split as above; the due list evaluates equipment-scoped action points on
+    // their day interval. Additive + re-runnable.
+    await query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS equipment_id INTEGER REFERENCES equipment(id);`);
+    await query(`ALTER TABLE maintenance_logs ALTER COLUMN truck_id DROP NOT NULL;`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_maintenance_logs_equipment_action ON maintenance_logs(equipment_id, action_point_id, done_at DESC);`);
+    log.push("Schema migration applied (Round 179 — maintenance logs/due list now cover equipment such as the batching plant, not just trucks).");
+
+    // Round 180 (#10) — partial rejection: invoice carries the returned m³ and a
+    // credit-note flag so Accounts can issue a credit note for the returned
+    // portion. Additive + re-runnable.
+    await query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS rejected_quantity_m3 NUMERIC(8,2) DEFAULT 0;`);
+    await query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS credit_note_needed BOOLEAN DEFAULT FALSE;`);
+    await query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS credit_note_amount NUMERIC(12,2);`);
+    await query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS credit_note_reason TEXT;`);
+    await query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS credit_note_cleared BOOLEAN DEFAULT FALSE;`);
+    log.push("Schema migration applied (Round 180 — partial rejection: invoices carry returned m³ + credit-note flag).");
 
     // Round 134, item 3 — Odometer and Hour Meter reading fields on the
     // weekly Truck Inspection Checklist, alongside the existing per-item
