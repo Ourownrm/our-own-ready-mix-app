@@ -1,4 +1,4 @@
-# Round 174 — write ONE recipe row back into MCI370's Recipe_Master.
+# Round 174 - write ONE recipe row back into MCI370's Recipe_Master.
 #
 # THIS SCRIPT MUST RUN IN 32-BIT POWERSHELL, same reason as readMdb.ps1: the
 # Microsoft.Jet.OLEDB.4.0 provider that opens MCI370's Jet 4.0 .mdb ships with
@@ -6,7 +6,7 @@
 #   C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe
 # explicitly.
 #
-# SAFETY — this script can only ever UPDATE Recipe_Master:
+# SAFETY - this script can only ever UPDATE Recipe_Master:
 #   * the table name is hard-coded here, never taken from input;
 #   * every value is bound as an ADODB parameter, so a recipe name with a quote
 #     cannot change the statement;
@@ -55,7 +55,7 @@ try {
     [void]$params.Add(@{ value = $v; isText = $isText })
   }
   if ($setCols.Count -eq 0) {
-    Write-Output (@{ error = "payload.set is empty — nothing to write" } | ConvertTo-Json -Compress); exit 0
+    Write-Output (@{ error = "payload.set is empty - nothing to write" } | ConvertTo-Json -Compress); exit 0
   }
   # Optional rename: change the key itself, still matching on the old code.
   if ($payload.rename_to -and [string]$payload.rename_to -ne "") {

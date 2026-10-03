@@ -1,4 +1,33 @@
-# OORM App — Current State (as of Round 181, Ver. 10.10)
+# OORM App — Current State (as of Round 183, Ver. 10.12)
+
+**v10.12 (183) — HOTFIX: writeMdb.ps1 broke the FIRST real recipe write-back (non-ASCII).** User enabled
+recipeWriteEnabled=true; all 3 queued writes FAILED with a PowerShell ParserError. Root cause: `writeMdb.ps1` had
+em-dashes (U+2014) — one on line 58 INSIDE a quoted string (`"payload.set is empty — nothing to write"`). 32-bit
+Windows PowerShell reads .ps1 in the local codepage, mangled the multi-byte char to `�?`, which broke the string
+terminator and cascaded into "hash literal incomplete / missing )" errors so the script never parsed. (readMdb.ps1
+has em-dashes too but only in COMMENTS, which tolerate it — that's why reads always worked.) **MCI370 was never
+touched — every write failed at parse time.** Fix: `writeMdb.ps1` is now pure ASCII (em/en dashes→-, curly
+quotes→straight, ellipsis→...); verified 0 non-ASCII bytes. **User action: replace ONLY writeMdb.ps1 on the plant
+PC** (C:\oorm-plant\mci370-agent\), no app redeploy needed for that. Also extended the R182 **Discard** to cover
+`failed` edits (not just pending/claimed) so the 3 failed test edits can be tidied — Undo now shows only for
+`applied`, Discard for pending/claimed/failed (plant.js + QcMixDesigns.jsx). The 3 failed edits are harmless (not
+re-queued; read-sync already restored app M10A to match MCI370). 6 checkers pass; build clean.
+Zip: oorm-app-round183-v10.12.zip. LESSON: .ps1 files must be pure ASCII (or UTF-8 BOM) — the boot check can't see
+PowerShell; consider a check that greps tools/**/*.ps1 for non-ASCII in future.
+
+
+**v10.11 (182) — discard a QUEUED recipe edit (before write-back).** Gap found while the user enabled recipe
+write-back: a dry run surfaced 3 pending edits (incl. two Recipe_Code renames M10A↔OR10F406, stale from R174
+testing), and the app had NO way to cancel a queued edit — the Undo button only shows for `applied`/`failed`, so
+pending edits just sat in the queue and enabling write-back would flush them all to the live MCI370. Added POST
+`/plant/recipes/edits/:editId/discard` (gated recipe-edit edit + edit-password; only status pending/claimed; clears
+any `reverts_edit_id` self-FK reference then DELETEs the row — no schema change, so **no /setup needed**). Frontend
+QcMixDesigns RecipeDetail: **Discard** button on pending/claimed rows in the edit history (needs the edit password,
+same as Undo). Agent pending-writes query already ignores anything not pending/claimed, so a discarded edit never
+reaches the plant. 6 checkers pass (98 routes); build clean. Zip: oorm-app-round182-v10.11.zip.
+Deploy guidance: user should discard the 2 stale rename edits (open recipe M10A → edit history → Discard), confirm
+the next dry run shows a clean/single queue, THEN set recipeWriteEnabled=true in the plant config.json.
+
 
 **v10.10 (181) — HOTFIX: backend crashed on boot (Round 179 deploy failed).** Cause: in R178 the
 `/recipe-design-map` POST/DELETE routes were placed ABOVE `const RECIPE_EDIT_ROLES`, which they use via
