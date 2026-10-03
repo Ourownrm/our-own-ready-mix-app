@@ -60,6 +60,33 @@ export async function plantConsumptionByMaterial({ from = null, toExclusive = nu
   return out;
 }
 
+// Round 185 (#1) — plant consumption per material, bucketed BY MONTH, from a
+// start date. Returns Map(material_id -> Map('YYYY-MM' -> kg)). Used by the
+// book-stock calc to sum only the months on/after a material's approved physical
+// anchor without needing a per-material date in the query.
+export async function plantConsumptionByMaterialMonth({ from = null } = {}) {
+  const p = [];
+  let where = "pm.material_id IS NOT NULL";
+  let whereE = "e.material_id IS NOT NULL";
+  if (from) { p.push(from); where += ` AND pb.batch_date >= $1::date`; whereE += ` AND e.entry_date >= $1::date`; }
+  const { rows } = await query(
+    `SELECT material_id, ym, sum(kg)::numeric AS kg FROM (
+        SELECT pm.material_id, to_char(pb.batch_date, 'YYYY-MM') AS ym, pm.actual_kg AS kg
+          FROM plant_batch_materials pm JOIN plant_batches pb ON pb.id = pm.batch_id
+         WHERE ${where}
+        UNION ALL
+        SELECT e.material_id, to_char(e.entry_date, 'YYYY-MM') AS ym, e.qty_kg AS kg
+          FROM plant_manual_entries e
+         WHERE ${whereE}
+     ) t GROUP BY material_id, ym`, p);
+  const out = new Map();
+  for (const r of rows) {
+    if (!out.has(r.material_id)) out.set(r.material_id, new Map());
+    out.get(r.material_id).set(r.ym, Number(r.kg) || 0);
+  }
+  return out;
+}
+
 // Plant production (m³) over [from, toExclusive): batched m³ (plant_batches)
 // plus manual production entries (plant_manual_entries, material_id IS NULL).
 export async function plantProductionM3({ from = null, toExclusive = null } = {}) {

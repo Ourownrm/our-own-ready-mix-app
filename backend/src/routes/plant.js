@@ -682,7 +682,8 @@ router.get("/summary", requireRole(...PLANT_ROLES), requirePermission("productio
 router.get("/production", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
     const rng = dateRange(req, "batch_date");
-    const [byDay, byRecipe] = await Promise.all([
+    const rngE = dateRange(req, "entry_date");   // plant_manual_entries
+    const [byDay, byRecipe, manualDay, manualTot] = await Promise.all([
       query(
         // to_char, not the bare date: node-postgres turns a DATE into a JS
         // Date at the session timezone, and the browser then has to turn it
@@ -707,8 +708,42 @@ router.get("/production", requireRole(...PLANT_ROLES), requirePermission("produc
          GROUP BY 1 ORDER BY m3 DESC NULLS LAST`,
         rng.params
       ),
+      // Round 184 (#5) — operator-entered manual production (material_id IS NULL),
+      // so manual m³ shows in Production, not just in cost calculations.
+      query(
+        `SELECT to_char(entry_date, 'YYYY-MM-DD') AS batch_date, sum(qty_m3)::numeric AS m3
+           FROM plant_manual_entries
+          WHERE ${rngE.sql} AND material_id IS NULL
+          GROUP BY entry_date`,
+        rngE.params
+      ),
+      query(
+        `SELECT COALESCE(sum(qty_m3), 0)::numeric AS m3 FROM plant_manual_entries
+          WHERE ${rngE.sql} AND material_id IS NULL`,
+        rngE.params
+      ),
     ]);
-    res.json({ by_day: byDay.rows, by_recipe: byRecipe.rows });
+
+    // Fold manual production into the per-day totals (and add days that had only
+    // a manual entry). m3 is the combined figure; manual_m3 is kept for the note.
+    const dayMap = new Map();
+    for (const r of byDay.rows) {
+      dayMap.set(r.batch_date, { batch_date: r.batch_date, auto_m3: Number(r.m3) || 0, manual_m3: 0, batches: r.batches, loads: r.loads });
+    }
+    for (const r of manualDay.rows) {
+      const cur = dayMap.get(r.batch_date) || { batch_date: r.batch_date, auto_m3: 0, manual_m3: 0, batches: 0, loads: 0 };
+      cur.manual_m3 += Number(r.m3) || 0;
+      dayMap.set(r.batch_date, cur);
+    }
+    const by_day = [...dayMap.values()]
+      .map((d) => ({ ...d, m3: Math.round((d.auto_m3 + d.manual_m3) * 1000) / 1000 }))
+      .sort((a, b) => (a.batch_date < b.batch_date ? 1 : -1));
+
+    const manualM3 = Math.round((Number(manualTot.rows[0].m3) || 0) * 1000) / 1000;
+    const by_recipe = byRecipe.rows.slice();
+    if (manualM3 > 0) by_recipe.push({ recipe_code: "(manual entry)", recipe_name: "operator-entered", m3: manualM3, loads: 0 });
+
+    res.json({ by_day, by_recipe, manual_m3: manualM3 });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load production." });
@@ -750,12 +785,35 @@ router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("produ
        ORDER BY sum(pm.actual_kg) DESC NULLS LAST`,
       rng.params
     );
-    const { rows: prod } = await query(
-      `SELECT COALESCE(sum(batch_qty_m3), 0)::numeric AS m3
-       FROM plant_batches pb WHERE ${rng.sql}`,
-      rng.params
-    );
-    res.json({ silos: rows, total_m3: Number(prod[0].m3) });
+    const rngE = dateRange(req, "e.entry_date");   // plant_manual_entries
+    const [{ rows: prod }, { rows: prodManual }, { rows: manualCons }] = await Promise.all([
+      query(
+        `SELECT COALESCE(sum(batch_qty_m3), 0)::numeric AS m3
+         FROM plant_batches pb WHERE ${rng.sql}`,
+        rng.params
+      ),
+      // Round 184 (#5) — manual production m³ (so total m³ matches Production).
+      query(
+        `SELECT COALESCE(sum(e.qty_m3), 0)::numeric AS m3 FROM plant_manual_entries e
+          WHERE ${rngE.sql} AND e.material_id IS NULL`,
+        rngE.params
+      ),
+      // Operator-entered manual consumption, per material (no silo), so it shows
+      // in Consumption too — not only in cost calculations.
+      query(
+        `SELECT e.material_id, m.name AS material_name, sum(e.qty_kg)::numeric AS actual_kg
+           FROM plant_manual_entries e JOIN rm_materials m ON m.id = e.material_id
+          WHERE ${rngE.sql} AND e.material_id IS NOT NULL
+          GROUP BY e.material_id, m.name
+          ORDER BY sum(e.qty_kg) DESC`,
+        rngE.params
+      ),
+    ]);
+    res.json({
+      silos: rows,
+      manual: manualCons,
+      total_m3: Math.round((Number(prod[0].m3) + Number(prodManual[0].m3)) * 1000) / 1000,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load consumption." });
@@ -866,8 +924,13 @@ router.get("/production-vs-billed", requireRole(...PLANT_ROLES), requirePermissi
          SELECT e.entry_date AS d, sum(e.qty_m3) AS m3
            FROM plant_manual_entries e WHERE ${cond("e.entry_date")} AND e.material_id IS NULL GROUP BY e.entry_date
        ), b AS (
+         -- Billed = delivery challans created, INCLUDING rejected, EXCLUDING
+         -- cancelled — same rule as the daily production report (dt.status !=
+         -- 'cancelled'), so the two figures agree.
          SELECT dt.ticket_date AS d, sum(dt.loaded_quantity_m3) AS m3, count(*) AS n
-           FROM delivery_tickets dt WHERE ${cond("dt.ticket_date")} GROUP BY dt.ticket_date
+           FROM delivery_tickets dt
+          WHERE ${cond("dt.ticket_date")} AND dt.status <> 'cancelled'
+          GROUP BY dt.ticket_date
        ), days AS (SELECT d FROM p UNION SELECT d FROM pm UNION SELECT d FROM b)
        SELECT to_char(days.d, 'YYYY-MM-DD') AS day,
               COALESCE(p.m3, 0) + COALESCE(pm.m3, 0) AS plant_m3,

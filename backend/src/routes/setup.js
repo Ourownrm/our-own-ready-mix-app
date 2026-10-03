@@ -2041,6 +2041,13 @@ router.get("/setup", async (req, res) => {
     `);
     log.push("Schema migration applied (Material Module — rm_materials, rm_material_units, rm_suppliers, rm_supplier_rates, rm_transporters, rm_supplier_transporters, rm_orders, rm_receipts, rm_daily_consumption, rm_daily_production, rm_monthly_physical_stock).");
 
+    // Round 185 (#1) — approve a month's physical count so it becomes next
+    // month's opening. Additive + re-runnable.
+    await query(`ALTER TABLE rm_monthly_physical_stock ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await query(`ALTER TABLE rm_monthly_physical_stock ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id);`);
+    await query(`ALTER TABLE rm_monthly_physical_stock ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;`);
+    log.push("Schema migration applied (Round 185 — physical-stock approval: approved physical becomes next month's opening).");
+
     // Round 140 additive columns/indexes for databases that already had these
     // tables from round 139 (CREATE TABLE IF NOT EXISTS above is a no-op on
     // those, so the new columns/index need their own ADD-if-missing step).

@@ -1231,65 +1231,82 @@ function effectiveAvgForMonth(rateMap, yearMonth, openingRate) {
 }
 
 async function bookStockRows() {
-  // Round 177 — consumption draw-down is now the PLANT's actual figure (load
-  // cells + manual) from CONSUMPTION_CUTOVER onward; before the cutover it stays
-  // the hand-keyed rm_daily_consumption, so historical book stock never shifts.
-  // The cutover is a month boundary, so the current month is wholly on one side.
-  const monthStart = `${istMonth()}-01`;
-  const monthEnd = firstOfNextMonth(monthStart);
-  const { rows } = await query(`
-    SELECT m.*,
-           COALESCE(recv.total_kg, 0) AS received_kg,
-           COALESCE(cons_pre.total_kg, 0) AS consumed_pre_cutover_kg,
-           COALESCE(monthrecv.month_kg, 0) AS month_received_kg
-    FROM rm_materials m
-    LEFT JOIN LATERAL (
-      SELECT SUM(r.accepted_qty_kg) AS total_kg
-      FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = m.id
-    ) recv ON true
-    -- Consumption BEFORE the cutover only — plant-actual covers everything from
-    -- the cutover on and is added in JS below.
-    LEFT JOIN LATERAL (
-      SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) AS total_kg
-      FROM rm_daily_consumption c
-      WHERE c.material_id = m.id AND c.consumption_date < $1::date
-    ) cons_pre ON true
-    -- Round 142 — this month's receipts, so the Stock tab can show the
-    -- mockup's Opening / Received / Consumed / Book stock line for the month
-    -- rather than only the running balance.
-    LEFT JOIN LATERAL (
-      SELECT SUM(r.accepted_qty_kg) AS month_kg
-      FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
-      WHERE o.material_id = m.id AND date_trunc('month', r.received_date) = date_trunc('month', CURRENT_DATE)
-    ) monthrecv ON true
-    WHERE m.is_active
-    ORDER BY m.category, m.name
-  `, [CONSUMPTION_CUTOVER]);
+  // Round 185 (#1) — book stock is anchored to the latest APPROVED physical
+  // count per material: once a month is approved, that counted figure is the
+  // opening for the NEXT month, and book stock is derived forward from there
+  // (receipts − consumption since the anchor). A material with no approved count
+  // falls back to its opening_stock_kg + all history. Everything is bucketed by
+  // month and summed in JS, which also carries the Round 177 consumption cutover:
+  // a month before CONSUMPTION_CUTOVER draws from the hand-keyed rm_daily_consumption,
+  // a month on/after it from the PLANT's actual (load cell + manual) figure.
+  const cutoverMonth = CONSUMPTION_CUTOVER.slice(0, 7);   // 'YYYY-MM'
+  const curMonth = istMonth();                            // 'YYYY-MM'
 
-  // Plant-actual consumption: all-time from the cutover (for the running book
-  // stock) and the current month alone (for the month movement line). Both are
-  // load-cell auto + operator manual.
-  const plantSinceCutover = await plantConsumptionByMaterial({ from: CONSUMPTION_CUTOVER });
-  const plantThisMonth = monthStart >= CONSUMPTION_CUTOVER
-    ? await plantConsumptionByMaterial({ from: monthStart, toExclusive: monthEnd })
-    : new Map();
-  const rmMonth = monthStart < CONSUMPTION_CUTOVER
-    ? await query(
-        `SELECT c.material_id, SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) AS kg
-           FROM rm_daily_consumption c
-          WHERE c.consumption_date >= $1::date AND c.consumption_date < $2::date
-          GROUP BY c.material_id`, [monthStart, monthEnd])
-    : { rows: [] };
-  const rmMonthMap = new Map(rmMonth.rows.map((r) => [r.material_id, Number(r.kg) || 0]));
+  const [materials, recvByMonth, rmByMonth, plantByMonth, anchors] = await Promise.all([
+    query(`SELECT * FROM rm_materials WHERE is_active ORDER BY category, name`),
+    query(
+      `SELECT o.material_id, to_char(r.received_date, 'YYYY-MM') AS ym, SUM(r.accepted_qty_kg)::numeric AS kg
+         FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
+        GROUP BY o.material_id, ym`),
+    query(
+      `SELECT c.material_id, to_char(c.consumption_date, 'YYYY-MM') AS ym,
+              SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0))::numeric AS kg
+         FROM rm_daily_consumption c GROUP BY c.material_id, ym`),
+    plantConsumptionByMaterialMonth({ from: CONSUMPTION_CUTOVER }),
+    // Latest APPROVED physical count per material → its anchor month (the month
+    // the counted figure becomes the opening for = the month AFTER the count).
+    query(
+      `SELECT DISTINCT ON (material_id) material_id, physical_stock_kg,
+              to_char((date_trunc('month', stock_month) + interval '1 month'), 'YYYY-MM') AS anchor_month
+         FROM rm_monthly_physical_stock WHERE approved = true
+        ORDER BY material_id, stock_month DESC`),
+  ]);
 
-  for (const m of rows) {
-    const sinceCut = plantSinceCutover.get(m.id)?.total_kg || 0;
-    m.consumed_kg = Number(m.consumed_pre_cutover_kg) + sinceCut;
-    m.month_consumed_kg = monthStart >= CONSUMPTION_CUTOVER
-      ? (plantThisMonth.get(m.id)?.total_kg || 0)
-      : (rmMonthMap.get(m.id) || 0);
-  }
+  const recvMap = bucketMap(recvByMonth.rows);
+  const rmMap = bucketMap(rmByMonth.rows);
+  const anchorBy = new Map(anchors.rows.map((a) => [a.material_id, { kg: Number(a.physical_stock_kg) || 0, month: a.anchor_month }]));
+
+  // Consumption for one month, from the right source given the cutover.
+  const consumedIn = (mid, ym) => (ym < cutoverMonth
+    ? (rmMap.get(mid)?.get(ym) || 0)
+    : (plantByMonth.get(mid)?.get(ym) || 0));
+
+  const rows = materials.rows.map((m) => {
+    const anchor = anchorBy.get(m.id) || null;
+    const baseKg = anchor ? anchor.kg : Number(m.opening_stock_kg) || 0;
+    const startMonth = anchor ? anchor.month : null;   // null = from the beginning
+
+    // Every month we have any receipt or consumption for this material.
+    const months = new Set([...(recvMap.get(m.id)?.keys() || []), ...(rmMap.get(m.id)?.keys() || []), ...(plantByMonth.get(m.id)?.keys() || [])]);
+
+    let received = 0, consumed = 0;
+    for (const ym of months) {
+      if (startMonth && ym < startMonth) continue;      // before the anchor — folded into baseKg
+      received += recvMap.get(m.id)?.get(ym) || 0;
+      consumed += consumedIn(m.id, ym);
+    }
+    return {
+      ...m,
+      base_kg: baseKg,                                   // anchor physical, else opening_stock_kg
+      received_kg: Math.round(received * 100) / 100,
+      consumed_kg: Math.round(consumed * 100) / 100,
+      month_received_kg: Math.round((recvMap.get(m.id)?.get(curMonth) || 0) * 100) / 100,
+      month_consumed_kg: Math.round(consumedIn(m.id, curMonth) * 100) / 100,
+      stock_anchor_month: anchor ? anchor.month : null,
+      stock_anchor_kg: anchor ? anchor.kg : null,
+    };
+  });
   return rows;
+}
+
+// Rows of { material_id, ym, kg } → Map(material_id -> Map(ym -> kg)).
+function bucketMap(rows) {
+  const out = new Map();
+  for (const r of rows) {
+    if (!out.has(r.material_id)) out.set(r.material_id, new Map());
+    out.get(r.material_id).set(r.ym, Number(r.kg) || 0);
+  }
+  return out;
 }
 
 router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("material.stock", "view"), async (req, res) => {
@@ -1309,7 +1326,10 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("materi
   const materials = await bookStockRows();
   const results = [];
   for (const m of materials) {
-    const bookStockKg = Number(m.opening_stock_kg) + Number(m.received_kg) - Number(m.consumed_kg);
+    // Round 185 — base is the approved physical anchor when there is one, else
+    // the material's opening_stock_kg; received_kg/consumed_kg are already
+    // counted only since that anchor.
+    const bookStockKg = Number(m.base_kg) + Number(m.received_kg) - Number(m.consumed_kg);
     const avgDailyThisMonth = Number(m.month_consumed_kg) / daysElapsedThisMonth;
     const row = {
       material_id: m.id, name: m.name, category: m.category, sub_category: m.sub_category,
@@ -1325,6 +1345,9 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("materi
       month_received_kg: Number(m.month_received_kg),
       month_consumed_kg: Number(m.month_consumed_kg),
       month_opening_kg: bookStockKg - Number(m.month_received_kg) + Number(m.month_consumed_kg),
+      // Round 185 — when book stock is anchored to an approved physical count,
+      // say which month's count it was reset from (null otherwise).
+      anchored_from: m.stock_anchor_month || null,
     };
     // Round 155 — this used to read `if (req.user.role !== "store")`, which
     // excluded exactly one role by name and therefore handed rates and stock
@@ -1397,6 +1420,29 @@ router.post("/physical-stock", requireRole(...ORDER_ROLES), requirePermission("m
   res.status(201).json(rows[0]);
 });
 
+// Round 185 (#1) — Administrator approves (or un-approves) a material's monthly
+// physical count. An approved count becomes the OPENING for the next month: book
+// stock re-anchors to the counted figure, absorbing the variance. Admin only,
+// since it moves stock valuation. Editing the count again (POST above) does not
+// clear approval on its own, so re-approve after a correction if needed.
+router.post("/physical-stock/approve", requireRole("administrator"), requirePermission("material.physical-stock", "create"), async (req, res) => {
+  const { material_id, stock_month } = req.body;
+  if (!material_id || !stock_month) return res.status(400).json({ error: "material_id and stock_month are required." });
+  const monthDate = `${String(stock_month).slice(0, 7)}-01`;
+  const setApproved = req.body.approved !== false;   // default true; pass approved:false to un-approve
+  const { rows } = await query(
+    `UPDATE rm_monthly_physical_stock
+        SET approved    = $3,
+            approved_by = CASE WHEN $3 THEN $4 ELSE NULL END,
+            approved_at = CASE WHEN $3 THEN now() ELSE NULL END
+      WHERE material_id = $1 AND stock_month = $2
+      RETURNING id, approved`,
+    [material_id, monthDate, setApproved, req.user.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "No physical count on file for that material and month — enter the count first." });
+  res.json({ ok: true, approved: rows[0].approved });
+});
+
 router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermission("material.physical-stock", "view"), async (req, res) => {
   const month = (req.query.month || istMonth()).slice(0, 7);
   const monthStart = `${month}-01`;
@@ -1413,21 +1459,44 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
     ? await plantConsumptionByMaterial({ from: monthStart, toExclusive: monthEnd })
     : new Map();
 
+  // Round 185 (#1) — the opening of the counted month chains from the latest
+  // APPROVED physical count strictly before it: once a month is approved, that
+  // figure IS the opening going forward. anchor_date = first day of the month
+  // after the approved count.
+  const { rows: anchorRows } = await query(
+    `SELECT DISTINCT ON (material_id) material_id, physical_stock_kg,
+            to_char((date_trunc('month', stock_month) + interval '1 month'), 'YYYY-MM-DD') AS anchor_date
+       FROM rm_monthly_physical_stock
+      WHERE approved = true AND stock_month < $1::date
+      ORDER BY material_id, stock_month DESC`, [monthStart]);
+  const anchorBy = new Map(anchorRows.map((a) => [a.material_id, { kg: Number(a.physical_stock_kg) || 0, date: a.anchor_date }]));
+
   const { rows: materials } = await query(`SELECT * FROM rm_materials WHERE is_active ORDER BY category, name`);
   const results = [];
   for (const m of materials) {
-    // Opening = opening stock + receipts before the month − consumption before
-    // the month. Consumption before the month = hand-keyed rm BEFORE the cutover
-    // + plant-actual from the cutover up to the month.
+    // Opening = base + receipts before the month − consumption before the month.
+    // Base/start depend on whether an earlier month has an APPROVED physical count:
+    //   anchored → base = that physical, counting movement only from its anchor date;
+    //   not      → base = opening_stock_kg, counting from the beginning.
+    // Consumption splits at the cutover: hand-keyed rm before it, plant-actual after.
+    const anchor = anchorBy.get(m.id) || null;
+    const baseKg = anchor ? anchor.kg : Number(m.opening_stock_kg) || 0;
+    const sinceDate = anchor ? anchor.date : "1900-01-01";
     const { rows: openingRows } = await query(
       `SELECT
-         $2::numeric + COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id WHERE o.material_id = $1 AND r.received_date < $3::date), 0)
+         COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
+                    WHERE o.material_id = $1 AND r.received_date >= $5::date AND r.received_date < $3::date), 0)
          - COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c
-                     WHERE c.material_id = $1 AND c.consumption_date < $3::date AND c.consumption_date < $4::date), 0)
-         AS opening_kg`,
-      [m.id, m.opening_stock_kg, monthStart, CONSUMPTION_CUTOVER]
+                     WHERE c.material_id = $1 AND c.consumption_date >= $5::date AND c.consumption_date < $3::date AND c.consumption_date < $4::date), 0)
+         AS movement_kg`,
+      [m.id, null, monthStart, CONSUMPTION_CUTOVER, sinceDate]
     );
-    const openingKg = Number(openingRows[0].opening_kg) - (plantBeforeMonth.get(m.id)?.total_kg || 0);
+    // Plant-actual consumed between max(anchor, cutover) and the month start.
+    const plantFrom = (anchor && anchor.date > CONSUMPTION_CUTOVER) ? anchor.date : CONSUMPTION_CUTOVER;
+    const plantBefore = (anchor && anchor.date > CONSUMPTION_CUTOVER)
+      ? (await plantConsumptionByMaterial({ from: plantFrom, toExclusive: monthStart })).get(m.id)?.total_kg || 0
+      : (plantBeforeMonth.get(m.id)?.total_kg || 0);
+    const openingKg = baseKg + Number(openingRows[0].movement_kg) - plantBefore;
 
     const { rows: monthRows } = await query(
       `SELECT
@@ -1461,6 +1530,13 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
       stock_taken_by_name: null,
       notes: count ? count.notes : null,
       taken_at: count ? count.taken_at : null,
+      // Round 185 — approval: a count that is approved becomes next month's
+      // opening. anchored_opening flags that THIS month's opening was itself
+      // reset from an earlier approved count.
+      approved: count ? !!count.approved : false,
+      approved_at: count ? count.approved_at : null,
+      approved_by_name: null,
+      anchored_opening: !!anchor,
     };
     // Round 142 — the rate is resolved for EVERY material, not only the
     // counted ones. The report's "cost as per plant consumption" card needs
@@ -1491,14 +1567,21 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
     results.push(row);
   }
 
-  // Fill in stock_taken_by_name in one batch rather than a query per row.
+  // Fill in stock_taken_by_name + approved_by_name in one batch rather than a query per row.
   if (results.some((r) => r.taken_at)) {
     const { rows: counts } = await query(
-      `SELECT mps.material_id, u.name FROM rm_monthly_physical_stock mps JOIN users u ON u.id = mps.stock_taken_by WHERE mps.stock_month = $1`,
+      `SELECT mps.material_id, u.name, au.name AS approved_by_name
+         FROM rm_monthly_physical_stock mps
+         JOIN users u ON u.id = mps.stock_taken_by
+         LEFT JOIN users au ON au.id = mps.approved_by
+        WHERE mps.stock_month = $1`,
       [monthStart]
     );
-    const nameByMaterial = new Map(counts.map((c) => [c.material_id, c.name]));
-    for (const r of results) if (nameByMaterial.has(r.material_id)) r.stock_taken_by_name = nameByMaterial.get(r.material_id);
+    const byMaterial = new Map(counts.map((c) => [c.material_id, c]));
+    for (const r of results) {
+      const c = byMaterial.get(r.material_id);
+      if (c) { r.stock_taken_by_name = c.name; r.approved_by_name = c.approved_by_name; }
+    }
   }
 
   // The month's production, so the report can show cost per m³ beside the

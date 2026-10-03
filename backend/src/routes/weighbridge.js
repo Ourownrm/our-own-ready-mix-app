@@ -616,6 +616,21 @@ router.patch("/tickets/:id", requireRole(...WB_EDIT_ROLES), requirePermission("m
     return res.status(400).json({ error: "A ticket can only be set to needs_review or ignored." });
   }
   try {
+    // Round 184 (#3) — pulling a ticket back from "set aside" used to drop it
+    // straight into "needs review" with no way out, even when the ticket was
+    // fully resolved before it was set aside. So when the request is
+    // needs_review, re-evaluate: a ticket with NOTHING unresolved goes back to
+    // 'matched' on its own; only one still carrying unresolved names stays in
+    // needs_review (those genuinely need mapping). 'ignored' is unchanged.
+    let effective = wanted;
+    if (wanted === "needs_review") {
+      const { rows: cur } = await query(
+        `SELECT material_id, unresolved FROM weighbridge_tickets WHERE ticket_number = $1`, [ticketNumber]
+      );
+      if (!cur.length) return res.status(404).json({ error: "Ticket not found." });
+      const unresolved = Array.isArray(cur[0].unresolved) ? cur[0].unresolved : [];
+      if (unresolved.length === 0 && cur[0].material_id) effective = "matched";
+    }
     const { rows } = await query(
       `UPDATE weighbridge_tickets
           SET match_status = $2::wb_match_status,
@@ -624,7 +639,7 @@ router.patch("/tickets/:id", requireRole(...WB_EDIT_ROLES), requirePermission("m
               reviewed_at  = now()
         WHERE ticket_number = $1
         RETURNING ticket_number, match_status::text`,
-      [ticketNumber, wanted, req.body?.review_note?.slice(0, 500) || null, req.user.id]
+      [ticketNumber, effective, req.body?.review_note?.slice(0, 500) || null, req.user.id]
     );
     if (!rows.length) return res.status(404).json({ error: "Ticket not found." });
     res.json(rows[0]);

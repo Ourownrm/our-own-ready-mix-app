@@ -2094,6 +2094,13 @@ CREATE TABLE rm_monthly_physical_stock (
   stock_taken_by INTEGER NOT NULL REFERENCES users(id),
   taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   notes TEXT,
+  -- Round 185 (#1) — Administrator approves a month's counted figure; once
+  -- approved it becomes the OPENING for the next month (book stock is re-anchored
+  -- to the physical count, absorbing the variance), instead of carrying the
+  -- previous book stock forward.
+  approved BOOLEAN NOT NULL DEFAULT FALSE,
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TIMESTAMPTZ,
   UNIQUE (material_id, stock_month)
 );
 
