@@ -2933,6 +2933,9 @@ CREATE TABLE plant_manual_entries (
 );
 
 CREATE INDEX idx_plant_manual_date ON plant_manual_entries(entry_date DESC);
+-- Round 187 — material_id is NULL on production rows, and NULLs never collide in
+-- the UNIQUE above, so this partial index is what keeps it to one per day.
+CREATE UNIQUE INDEX uq_plant_manual_production_day ON plant_manual_entries(entry_date) WHERE material_id IS NULL;
 
 CREATE TABLE plant_recipe_aliases (
   id            SERIAL PRIMARY KEY,
