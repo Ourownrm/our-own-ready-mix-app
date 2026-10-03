@@ -2499,6 +2499,19 @@ export function MixDesignsPanel({ setError }) {
     } catch (err) { setError(err.message); } finally { setBusyId(null); }
   }
 
+  // Round 184 (#6) — revise an APPROVED design. Approved designs are locked, so
+  // this clones it into a new DRAFT revision (the original stays, for history).
+  // Edit the draft on the Lab Technician -> Mix Designs screen, then approve it
+  // back here. (This is the button that was previously only on the Lab screen.)
+  async function revise(d) {
+    setBusyId(d.id); setError(""); setNotice("");
+    try {
+      const res = await apiRequest(`/lab-technician/mix-designs/${d.id}/revise`, { method: "POST" });
+      setNotice(`Revision ${res.revision} created as a draft (“${res.design_ref_code}”). Edit it on the Lab Technician → Mix Designs screen, then approve it here.`);
+      load();
+    } catch (err) { setError(err.message); } finally { setBusyId(null); }
+  }
+
   return (
     <div>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 12, lineHeight: 1.5 }}>
@@ -2550,6 +2563,16 @@ export function MixDesignsPanel({ setError }) {
                       </button>
                     )}
                     <button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
+                    {d.status === "approved" && isAdminLevel(user?.role) && (
+                      <button
+                        style={{ fontSize: 12, padding: "4px 10px" }}
+                        disabled={busyId === d.id}
+                        title="Create a new draft revision from this approved design"
+                        onClick={() => revise(d)}
+                      >
+                        {busyId === d.id ? "..." : "Revise"}
+                      </button>
+                    )}
                     {isAdminLevel(user?.role) && (
                       <button
                         style={{ fontSize: 12, padding: "4px 10px", color: "var(--alert-red)" }}
