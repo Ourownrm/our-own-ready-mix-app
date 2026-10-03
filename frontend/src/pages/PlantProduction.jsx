@@ -63,17 +63,22 @@ const SILO_STYLE = {
   aggregate: { bar: "#B58A55", bg: "#F6F0E7", border: "#B58A55", label: "Aggregate" },
 };
 function siloStyle(kind) { return SILO_STYLE[kind] || SILO_STYLE.powder; }
-// Cement, fly-ash and aggregate are weighed in tonnes; water and admixture in
-// kilolitres (≈ kg at ~unit density, which is all the yard view needs). The
-// stored figure is always kg — this is display only, and the same convention
-// is used for the capacity input so what is typed matches what is shown.
-function siloUnit(kind) { return kind === "liquid" ? "kL" : "MT"; }
-function toSiloUnit(kg) { return kg == null ? null : Number(kg) / 1000; }
-function fromSiloUnit(v) { return v === "" || v == null ? null : Number(v) * 1000; }
-function fmtSiloQty(kg) {
+// Cement, fly-ash and aggregate are weighed in tonnes (MT); water and admixture
+// in LITRES (≈ kg at ~unit density, which is all the yard view needs). Round 184
+// (#2): liquid was shown in kilolitres, which read oddly for admixture — the
+// plant thinks in litres — so liquid now shows L (1 L ≈ 1 kg). The stored figure
+// is always kg; this is display only, and the capacity input uses the same
+// convention so what is typed matches what is shown.
+function siloUnit(kind) { return kind === "liquid" ? "L" : "MT"; }
+// kg per one display unit: litre ≈ 1 kg, tonne = 1000 kg.
+function siloDivisor(kind) { return kind === "liquid" ? 1 : 1000; }
+function toSiloUnit(kg, kind) { return kg == null ? null : Number(kg) / siloDivisor(kind); }
+function fromSiloUnit(v, kind) { return v === "" || v == null ? null : Number(v) * siloDivisor(kind); }
+function fmtSiloQty(kg, kind) {
   if (kg == null) return "—";
-  const v = Number(kg) / 1000;
-  return v.toLocaleString(undefined, { maximumFractionDigits: v >= 10 ? 0 : 1 });
+  const v = Number(kg) / siloDivisor(kind);
+  const maxFrac = kind === "liquid" ? 0 : (v >= 10 ? 0 : 1);
+  return v.toLocaleString(undefined, { maximumFractionDigits: maxFrac });
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +202,9 @@ function Production({ qs }) {
                 <span style={{ display: "block", height: "100%", width: `${(Number(d.m3) / maxDay) * 100}%`, background: "var(--rebar)" }} />
               </span>
               <span style={{ fontSize: 12.5, width: 74, textAlign: "right", fontWeight: 600 }}>{fmtM3(d.m3)}</span>
-              <span style={{ fontSize: 11.5, width: 62, textAlign: "right", color: "var(--slate)" }}>{d.loads} loads</span>
+              <span style={{ fontSize: 11.5, width: 96, textAlign: "right", color: "var(--slate)" }}>
+                {d.loads} loads{Number(d.manual_m3) > 0 ? ` · +${fmtM3(d.manual_m3)} man.` : ""}
+              </span>
             </div>
           ))}
         </div>
@@ -276,7 +283,9 @@ function Consumption({ qs }) {
   if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
   const m3 = Number(data.total_m3) || 0;
-  const totalKg = data.silos.reduce((a, s) => a + Number(s.actual_kg || 0), 0);
+  const manual = data.manual || [];
+  const manualKg = manual.reduce((a, mm) => a + Number(mm.actual_kg || 0), 0);
+  const totalKg = data.silos.reduce((a, s) => a + Number(s.actual_kg || 0), 0) + manualKg;
 
   return (
     <>
@@ -296,8 +305,9 @@ function Consumption({ qs }) {
           </div>
         </div>
         <p style={{ margin: 0, marginLeft: "auto", maxWidth: 380, fontSize: 11.5, color: "var(--slate)", lineHeight: 1.5 }}>
-          Every figure is what the plant's own load cells weighed, summed across the batches that made
-          up each load. Nothing here is derived from a mix design.
+          Silo figures are what the plant's own load cells weighed, summed across the batches in each load;
+          any operator-entered manual consumption is listed separately below and included in the totals.
+          Nothing here is derived from a mix design.
         </p>
       </div>
 
@@ -356,11 +366,41 @@ function Consumption({ qs }) {
               );
             })}
             {!data.silos.length && (
-              <tr><td colSpan={7} style={{ ...TD, color: "var(--slate)" }}>Nothing consumed in this period.</td></tr>
+              <tr><td colSpan={7} style={{ ...TD, color: "var(--slate)" }}>Nothing weighed in this period.</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {manual.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 15, margin: "18px 0 6px" }}>Manual consumption (operator-entered)</h3>
+          <p style={{ fontSize: 11.5, color: "var(--slate)", margin: "0 0 10px", maxWidth: 820, lineHeight: 1.5 }}>
+            Entered on the Manual entry tab for periods the batching system did not record — counted in the
+            totals above and drawn from material stock, exactly like the load-cell figures.
+          </p>
+          <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "var(--concrete)" }}>
+                  <th style={TH}>Material</th>
+                  <th style={{ ...TH, textAlign: "right" }}>Weighed (manual)</th>
+                  <th style={{ ...TH, textAlign: "right" }}>Per m³</th>
+                </tr>
+              </thead>
+              <tbody>
+                {manual.map((mm) => (
+                  <tr key={mm.material_id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={TD}>{mm.material_name}</td>
+                    <td style={{ ...TD, textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtKg(mm.actual_kg)}</td>
+                    <td style={{ ...TD, textAlign: "right", color: "var(--slate)", whiteSpace: "nowrap" }}>{m3 ? `${Math.round(Number(mm.actual_kg) / m3).toLocaleString()} kg` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       <p style={{ fontSize: 12, color: "var(--slate)", marginTop: 14, lineHeight: 1.6 }}>
         Moisture is the plant's own aggregate reading, and it is the only trustworthy moisture figure
@@ -476,8 +516,8 @@ function Silos() {
     else body.material_id = Number(holds);
     // Capacity is sent only when its box was touched, so saving one row's
     // mapping never wipes another silo's capacity. Blank clears it. Typed in
-    // MT/kL, stored in kg.
-    if (capTouched) body.capacity_kg = capDraft[slot] === "" ? "" : fromSiloUnit(capDraft[slot]);
+    // MT (solids) or L (liquids), stored in kg.
+    if (capTouched) body.capacity_kg = capDraft[slot] === "" ? "" : fromSiloUnit(capDraft[slot], kindBySlot.get(slot));
     try {
       const r = await apiRequest("/plant/silos", { method: "POST", body });
       setNotice(`Saved. ${r.rows_updated} batch row${r.rows_updated === 1 ? "" : "s"} re-attributed.`);
@@ -552,11 +592,11 @@ function Silos() {
           <div style={{ fontSize: 11.5, color: "var(--slate)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.material_name || "—"}</div>
           <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.05, marginTop: 3, color: neg ? "var(--alert-red)" : "inherit" }}>
             {hasLevel
-              ? <>{fmtSiloQty(l.level_kg)} <span style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>{siloUnit(l.kind)}</span></>
+              ? <>{fmtSiloQty(l.level_kg, l.kind)} <span style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>{siloUnit(l.kind)}</span></>
               : <span style={{ fontSize: 13.5, color: "var(--amber)", fontWeight: 600 }}>no fills yet</span>}
           </div>
           <div style={{ fontSize: 11, color: "var(--slate)" }}>
-            {l.capacity_kg != null ? `of ${fmtSiloQty(l.capacity_kg)} ${siloUnit(l.kind)}` : "capacity not set"}
+            {l.capacity_kg != null ? `of ${fmtSiloQty(l.capacity_kg, l.kind)} ${siloUnit(l.kind)}` : "capacity not set"}
           </div>
           {hasLevel && (
             <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, color: pctColor }}>
@@ -767,7 +807,7 @@ function Silos() {
                     ) : (
                       <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                         <input type="number" min="0" step="0.1" style={{ fontSize: 13, width: 74 }}
-                               value={capDraft[s.slot] ?? (a?.capacity_kg != null ? String(toSiloUnit(a.capacity_kg)) : "")}
+                               value={capDraft[s.slot] ?? (a?.capacity_kg != null ? String(toSiloUnit(a.capacity_kg, kindBySlot.get(s.slot))) : "")}
                                onChange={(e) => setCapDraft({ ...capDraft, [s.slot]: e.target.value })} />
                         <span style={{ fontSize: 11, color: "var(--slate)" }}>{siloUnit(kindBySlot.get(s.slot))}</span>
                       </div>

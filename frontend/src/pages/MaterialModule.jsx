@@ -1956,6 +1956,7 @@ function PhysicalStockTab({ role }) {
   const { user } = useAuth();
   const showValuation = role !== "store";
   const canEnter = role === "store" || isAdminLevel(role);
+  const isAdmin = isAdminLevel(role);   // Round 185 — only admin approves a month
   const [month, setMonth] = useState(thisMonthStr());
   const [materials, setMaterials] = useState([]);
   const [error, setError] = useState("");
@@ -2012,6 +2013,19 @@ function PhysicalStockTab({ role }) {
         });
       }
       setNotice(`Saved ${entries.length} count${entries.length === 1 ? "" : "s"}.`);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  // Round 185 (#1) — approve a counted figure so it becomes next month's opening.
+  async function approveCount(m, approved) {
+    setSaving(true); setError(""); setNotice("");
+    try {
+      await apiRequest("/material-module/physical-stock/approve", {
+        method: "POST",
+        body: { material_id: m.material_id, stock_month: month, approved },
+      });
+      setNotice(approved ? `${m.name} approved — this figure becomes next month's opening.` : `${m.name} approval removed.`);
       await load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
@@ -2097,6 +2111,7 @@ function PhysicalStockTab({ role }) {
                   <th style={{ textAlign: "right" }}>Physical stock</th>
                   <th style={{ textAlign: "right" }}>Actual consumption</th>
                   <th style={{ textAlign: "right" }}>Difference</th>
+                  {isAdmin && <th style={{ textAlign: "center" }}>Approve</th>}
                 </tr>
               </thead>
               <tbody>
@@ -2109,7 +2124,10 @@ function PhysicalStockTab({ role }) {
                   return (
                     <tr key={m.material_id}>
                       <td><b>{m.name}</b>{m.physical_stock_kg != null && draftKg(m) == null && <div style={{ fontSize: 10, color: "var(--signal-green)" }}>saved</div>}</td>
-                      <td style={{ textAlign: "right" }}>{fmtMass(m.opening_kg)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {fmtMass(m.opening_kg)}
+                        {m.anchored_opening && <div style={{ fontSize: 9.5, color: "var(--signal-green)" }}>from approved count</div>}
+                      </td>
                       <td style={{ textAlign: "right" }}>{fmtMass(m.purchase_kg)}</td>
                       <td style={{ textAlign: "right" }}>{fmtMass(m.plant_consumption_kg)}</td>
                       <td style={{ textAlign: "right" }}>{fmtMass(m.book_stock_kg)}</td>
@@ -2144,6 +2162,22 @@ function PhysicalStockTab({ role }) {
                       <td style={{ textAlign: "right", color: diff != null && diff < 0 ? "var(--alert-red)" : undefined, fontWeight: diff != null && diff < 0 ? 600 : 400 }}>
                         {diff != null ? `${fmtNum(diff, 0)} kg${diffPct != null ? ` · ${fmtNum(diffPct, 2)}%` : ""}` : "–"}
                       </td>
+                      {isAdmin && (
+                        <td style={{ textAlign: "center", whiteSpace: "nowrap" }}>
+                          {m.physical_stock_kg == null ? (
+                            <span style={{ color: "var(--slate)", fontSize: 11 }}>—</span>
+                          ) : m.approved ? (
+                            <span style={{ fontSize: 10.5, color: "var(--signal-green)" }}>
+                              ✓ Approved{m.approved_by_name ? `· ${m.approved_by_name}` : ""}
+                              <button type="button" onClick={() => approveCount(m, false)} disabled={saving} style={{ fontSize: 10, marginLeft: 6, padding: "1px 5px" }}>undo</button>
+                            </span>
+                          ) : (
+                            <button type="button" onClick={() => approveCount(m, true)} disabled={saving || draftKg(m) != null}
+                                    title={draftKg(m) != null ? "Save the count first, then approve" : "Approve — this figure becomes next month's opening stock"}
+                                    style={{ fontSize: 11, padding: "3px 8px" }}>Approve</button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -2155,6 +2189,7 @@ function PhysicalStockTab({ role }) {
               <b style={{ color: "var(--charcoal)" }}>Actual consumption</b> = opening + purchase − physical stock.{" "}
               <b style={{ color: "var(--charcoal)" }}>Difference</b> = plant consumption − actual consumption; a minus means more was used than the plant reported.
               A count entered in the purchase unit is converted to kg using the material master.
+              {isAdmin && " Approving a count locks that physical figure in as the opening stock for the next month onward — later months then build on the counted stock, not the book stock. Approve only after the count is checked; use undo to reopen it."}
               {!showValuation && " The cost columns are on the Administrator's version of this page."}
             </div>
           </div>
