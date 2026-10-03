@@ -9,7 +9,11 @@ import { SLOT_BY_KEY } from "../lib/plantSlots.js";
 import { requirePermission, can } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
-import { plantConsumptionByMaterial, plantProductionM3, CONSUMPTION_CUTOVER, firstOfNextMonth, nextDay } from "../lib/plantConsumption.js";
+// Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
+// 185's bookStockRows() called it without importing it, so every caller (Stock
+// tab, stock-summary KPIs, Cost Dashboard) threw a ReferenceError at request
+// time. check-boot only imports modules, it never runs a handler, so it passed.
+import { plantConsumptionByMaterial, plantConsumptionByMaterialMonth, plantProductionM3, CONSUMPTION_CUTOVER, firstOfNextMonth, nextDay } from "../lib/plantConsumption.js";
 
 // Round 139 — Material Module: Store's raw-material purchase -> receive ->
 // consume -> physical-count workflow (cement, aggregates, admixtures, etc.).
@@ -1430,12 +1434,16 @@ router.post("/physical-stock/approve", requireRole("administrator"), requirePerm
   if (!material_id || !stock_month) return res.status(400).json({ error: "material_id and stock_month are required." });
   const monthDate = `${String(stock_month).slice(0, 7)}-01`;
   const setApproved = req.body.approved !== false;   // default true; pass approved:false to un-approve
+  // Round 186 (v10.15 hotfix) — explicit casts. Inside a CASE, Postgres cannot
+  // infer $4's type from the column it is assigned to, so it defaulted to text
+  // and the UPDATE failed (42804 "approved_by is of type integer but expression
+  // is of type text") — the Approve button 500'd on every click.
   const { rows } = await query(
     `UPDATE rm_monthly_physical_stock
-        SET approved    = $3,
-            approved_by = CASE WHEN $3 THEN $4 ELSE NULL END,
-            approved_at = CASE WHEN $3 THEN now() ELSE NULL END
-      WHERE material_id = $1 AND stock_month = $2
+        SET approved    = $3::boolean,
+            approved_by = CASE WHEN $3::boolean THEN $4::integer ELSE NULL END,
+            approved_at = CASE WHEN $3::boolean THEN now() ELSE NULL END
+      WHERE material_id = $1 AND stock_month = $2::date
       RETURNING id, approved`,
     [material_id, monthDate, setApproved, req.user.id]
   );
@@ -1482,14 +1490,20 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
     const anchor = anchorBy.get(m.id) || null;
     const baseKg = anchor ? anchor.kg : Number(m.opening_stock_kg) || 0;
     const sinceDate = anchor ? anchor.date : "1900-01-01";
+    // Round 186 (v10.15 hotfix) — Round 185 passed a leftover `null` as $2 that
+    // the SQL never referenced. Postgres cannot infer a type for an unused
+    // parameter and refuses the whole query (42P18 "could not determine data
+    // type of parameter $2"), so this endpoint 500'd for every month and the
+    // Physical Stock tab showed "Something went wrong" + "No active materials".
+    // Parameters renumbered: $1 material, $2 month start, $3 cutover, $4 since.
     const { rows: openingRows } = await query(
       `SELECT
          COALESCE((SELECT SUM(r.accepted_qty_kg) FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
-                    WHERE o.material_id = $1 AND r.received_date >= $5::date AND r.received_date < $3::date), 0)
+                    WHERE o.material_id = $1 AND r.received_date >= $4::date AND r.received_date < $2::date), 0)
          - COALESCE((SELECT SUM(COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0)) FROM rm_daily_consumption c
-                     WHERE c.material_id = $1 AND c.consumption_date >= $5::date AND c.consumption_date < $3::date AND c.consumption_date < $4::date), 0)
+                     WHERE c.material_id = $1 AND c.consumption_date >= $4::date AND c.consumption_date < $2::date AND c.consumption_date < $3::date), 0)
          AS movement_kg`,
-      [m.id, null, monthStart, CONSUMPTION_CUTOVER, sinceDate]
+      [m.id, monthStart, CONSUMPTION_CUTOVER, sinceDate]
     );
     // Plant-actual consumed between max(anchor, cutover) and the month start.
     const plantFrom = (anchor && anchor.date > CONSUMPTION_CUTOVER) ? anchor.date : CONSUMPTION_CUTOVER;
@@ -2102,11 +2116,14 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
   perMaterial.sort((a, b) => (b.cost || 0) - (a.cost || 0));
 
   // Stock value as of today (same computation as GET /stock).
+  // Round 186 — base_kg, not opening_stock_kg: since Round 185 received/consumed
+  // only count from a material's approved-count anchor, so adding them to the
+  // original opening would mis-state stock value once any count is approved.
   const stockRows = await bookStockRows();
   const nowMonth = istMonth();
   let stockValue = 0;
   for (const m of stockRows) {
-    const bookStockKg = Number(m.opening_stock_kg) + Number(m.received_kg) - Number(m.consumed_kg);
+    const bookStockKg = Number(m.base_kg) + Number(m.received_kg) - Number(m.consumed_kg);
     const rate = effectiveAvgForMonth(rateMapByMaterial.get(m.id) || new Map(), nowMonth, m.opening_stock_rate_per_kg);
     if (rate != null) stockValue += rate * bookStockKg;
   }
@@ -2202,10 +2219,12 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
 router.get("/reports/stock-summary", requireRole(...ADMIN), requirePermission("material.stock-valuation", "view"), async (req, res) => {
   const month = istMonth();
 
+  // Round 186 — base_kg, not opening_stock_kg (same reason as the Cost
+  // Dashboard above): it must match GET /stock's book stock exactly.
   const stockRows = await bookStockRows();
   let stockValue = 0;
   for (const m of stockRows) {
-    const bookStockKg = Number(m.opening_stock_kg) + Number(m.received_kg) - Number(m.consumed_kg);
+    const bookStockKg = Number(m.base_kg) + Number(m.received_kg) - Number(m.consumed_kg);
     const rateMap = await monthlyWeightedAvgRates(m.id);
     const rate = effectiveAvgForMonth(rateMap, month, m.opening_stock_rate_per_kg);
     if (rate != null) stockValue += rate * bookStockKg;
