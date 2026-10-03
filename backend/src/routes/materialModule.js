@@ -2,6 +2,8 @@ import { Router } from "express";
 import { pool, query } from "../db.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { SLOT_BY_KEY } from "../lib/plantSlots.js";
+// Round 187 — re-attribute refillable-silo batches after a receipt's fill moves.
+import { reresolveSilos } from "./plant.js";
 // Round 146 — every route below now carries BOTH its original requireRole and
 // a requirePermission. A request must satisfy both, so granting somebody a
 // permission can never let them past a role guard: this can only tighten
@@ -842,7 +844,8 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
 // simply reflects the corrected data.
 router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material.receipts", "edit"), async (req, res) => {
   const { rows: existingRows } = await query(
-    `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct
+    `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.material_id AS order_material_id,
+            to_char(r.received_date, 'YYYY-MM-DD') AS received_date_str
      FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: editing a receipt must be able to load a pending one
      WHERE r.id = $1`,
     [req.params.id]
@@ -867,7 +870,7 @@ router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material
 
   // ROUND 162 — the arrival date can be corrected too. Omitted, the existing
   // date is kept; a bad or future date is refused by the shared validator.
-  let receivedDate = existing.received_date;
+  let receivedDate = existing.received_date_str || existing.received_date;
   if (req.body.received_date !== undefined) {
     const d = validateReceivedDate(req.body.received_date, res);
     if (d === undefined) return;
@@ -914,26 +917,76 @@ router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material
   const landedRatePerKg = (baseCost + taxAmount) / acceptedQtyKg;
   const shortQty = supplierQty - acceptedQty;
 
-  const { rows } = await query(
-    `UPDATE rm_receipts SET   -- receipts-raw: the write itself
-       supplier_qty = $1, weighbridge_weight_kg = $2, accepted_qty = $3, accepted_qty_kg = $4,
-       transporter_id = $5, freight_rate = $6, freight_basis = $7, vehicle_number = $8, challan_number = $9,
-       short_qty = $10, debit_note_amount = $11, landed_rate_per_kg = $12, notes = $13,
-       received_date = $15, weighbridge_ticket_id = $16
-     WHERE id = $14 RETURNING *`,
-    [supplierQty, merged.weighbridge_weight_kg || null, acceptedQty, acceptedQtyKg,
-      merged.transporter_id || null, merged.freight_rate || null, merged.freight_basis || null,
-      merged.vehicle_number || null, merged.challan_number || null, shortQty,
-      merged.debit_note_amount || null, landedRatePerKg, merged.notes || null, req.params.id,
-      receivedDate, ticketId]
-  );
-  res.json({ ...rows[0], received_date: receivedDate });
+  // ROUND 187 (v10.16) — the silo can be corrected too: a silo slot, "not in a
+  // silo", or neither. Omitted, the existing assignment is kept.
+  let siloSlot = existing.silo_slot || null;
+  let notInSilo = !!existing.not_in_silo;
+  if (req.body.not_in_silo !== undefined || req.body.silo_slot !== undefined) {
+    notInSilo = req.body.not_in_silo === true;
+    const raw = req.body.silo_slot;
+    siloSlot = (!notInSilo && raw !== undefined && raw !== null && String(raw).trim() !== "") ? String(raw).trim() : null;
+    if (siloSlot && !Object.prototype.hasOwnProperty.call(SLOT_BY_KEY, siloSlot)) {
+      return res.status(400).json({ error: "That is not a silo this plant has." });
+    }
+  }
+  // The receipt's own silo fill must follow the receipt — its silo, its
+  // quantity and its date. Rebuilt whenever the receipt has or had a silo, so a
+  // corrected quantity or arrival date also corrects the silo level (Round 168's
+  // noted limitation). A pending receipt never has a fill until it is confirmed.
+  const touchesSilo = !!(existing.silo_slot || siloSlot);
+  const siloChanged = (existing.silo_slot || null) !== siloSlot || !!existing.not_in_silo !== notInSilo;
+
+  const client = await pool.connect();
+  let rows;
+  try {
+    await client.query("BEGIN");
+    ({ rows } = await client.query(
+      `UPDATE rm_receipts SET   -- receipts-raw: the write itself
+         supplier_qty = $1, weighbridge_weight_kg = $2, accepted_qty = $3, accepted_qty_kg = $4,
+         transporter_id = $5, freight_rate = $6, freight_basis = $7, vehicle_number = $8, challan_number = $9,
+         short_qty = $10, debit_note_amount = $11, landed_rate_per_kg = $12, notes = $13,
+         received_date = $15, weighbridge_ticket_id = $16, silo_slot = $17, not_in_silo = $18
+       WHERE id = $14 RETURNING *`,
+      [supplierQty, merged.weighbridge_weight_kg || null, acceptedQty, acceptedQtyKg,
+        merged.transporter_id || null, merged.freight_rate || null, merged.freight_basis || null,
+        merged.vehicle_number || null, merged.challan_number || null, shortQty,
+        merged.debit_note_amount || null, landedRatePerKg, merged.notes || null, req.params.id,
+        receivedDate, ticketId, siloSlot, notInSilo]
+    ));
+    if (touchesSilo) {
+      await client.query(`DELETE FROM plant_silo_fills WHERE receipt_id = $1`, [req.params.id]);
+      if (siloSlot && existing.confirmation_status !== "pending") {
+        await client.query(
+          `INSERT INTO plant_silo_fills
+             (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)
+           VALUES ($1,$2,$3,$4::date::timestamptz,$5,false,NULL,$6,$7)`,
+          [siloSlot, existing.order_material_id, req.params.id, receivedDate, acceptedQtyKg,
+            "From receipt #" + req.params.id + " (edited)", req.user.id]
+        );
+      }
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+  // A refillable silo's contents are a timeline, so moving a fill changes what
+  // the batches after it were made from. Best effort: the receipt is saved.
+  if (touchesSilo) await reresolveSilos().catch((e) => console.error("reresolve after receipt edit", e));
+  res.json({ ...rows[0], received_date: receivedDate, silo_changed: siloChanged });
 });
 
 router.delete("/receipts/:id", requireRole(...ADMIN), requirePermission("material.receipts", "delete"), async (req, res) => {
+  // Round 187 — remove the receipt's own silo fill with it. The fills FK is
+  // ON DELETE SET NULL, so without this a deleted receipt left its fill behind
+  // still raising the silo's level.
+  const { rowCount: fillsRemoved } = await query(`DELETE FROM plant_silo_fills WHERE receipt_id = $1`, [req.params.id]);
   // receipts-raw: the write itself
   const { rows } = await query(`DELETE FROM rm_receipts WHERE id = $1 RETURNING id`, [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: "Receipt not found." });
+  if (fillsRemoved) await reresolveSilos().catch((e) => console.error("reresolve after receipt delete", e));
   res.json({ deleted: true });
 });
 

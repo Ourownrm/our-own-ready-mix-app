@@ -907,6 +907,12 @@ router.get("/cost-per-m3", requireRole("administrator"), requirePermission("mate
 // reconciliation that must zero.
 // ---------------------------------------------------------------------------
 router.get("/production-vs-billed", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+  // Round 187 — not for the Plant Operator (user decision). Checked inside the
+  // handler rather than by narrowing requireRole, so the role guard keeps
+  // matching the production.plant-data catalogue default (check-guards).
+  if (req.user.role === "plant_operator") {
+    return res.status(403).json({ error: "Plant vs billed is not available to the Plant Operator." });
+  }
   try {
     // One date filter, applied to each source's own date column so the three
     // share a single param set (dateRange() can't, since each call restarts $1).
@@ -1681,7 +1687,7 @@ router.get("/loads", requireRole(...PLANT_ROLES), requirePermission("production.
 // reason the weighbridge needed it: adding a material to the masters, or
 // recording a fill, must reach rows that have already synced.
 // ---------------------------------------------------------------------------
-async function reresolveSilos() {
+export async function reresolveSilos() {
   const resolver = await loadSiloResolver();
   let touched = 0;
 
@@ -2076,15 +2082,110 @@ router.get("/manual", requireRole(...PLANT_READ), requirePermission("production.
         [day]
       ),
     ]);
+    // Round 187 — every active material, so manual consumption can be entered
+    // for a material the plant did not weigh that day (including a whole day
+    // the plant was down, when the auto list above is empty).
+    const { rows: materials } = await query(
+      `SELECT id, name, category FROM rm_materials WHERE is_active = true ORDER BY category NULLS LAST, name`
+    );
     res.json({
       date: day,
       consumption: auto.rows,
       production: autoProd.rows[0],
       entries: entries.rows,
+      materials,
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load the day's entries." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 187 (v10.16) — save a whole day's manual entry in one go.
+//
+// The screen used to save each box on blur. Its boxes were uncontrolled, so
+// when the day changed they kept what was typed for the previous day, and the
+// next blur saved those figures against the NEW day. Now the screen holds a
+// draft and sends the complete day here when the operator presses Save: the
+// day's manual rows are replaced as a set, in one transaction, so what is on
+// the screen after saving is exactly what is stored. A blank or zero clears.
+// ---------------------------------------------------------------------------
+router.post("/manual/day", requireRole(...PLANT_MANUAL), requirePermission("production.plant-manual", "create"), async (req, res) => {
+  const day = String(req.body?.entry_date || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: "Give the date as YYYY-MM-DD." });
+  if (day > istDay()) return res.status(400).json({ error: "Manual entries cannot be made for a future date." });
+  const reason = String(req.body?.reason || "").trim() || null;
+
+  const m3Raw = req.body?.production_m3;
+  const m3 = m3Raw === null || m3Raw === undefined || m3Raw === "" ? 0 : Number(m3Raw);
+  if (!Number.isFinite(m3) || m3 < 0) return res.status(400).json({ error: "Manual production must be zero or more m³." });
+
+  const list = Array.isArray(req.body?.materials) ? req.body.materials : [];
+  const mats = new Map();
+  for (const it of list) {
+    const id = Number(it?.material_id);
+    if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid material in the list." });
+    const raw = it?.qty_kg;
+    const kg = raw === null || raw === undefined || raw === "" ? 0 : Number(raw);
+    if (!Number.isFinite(kg) || kg < 0) return res.status(400).json({ error: "Manual consumption must be zero or more." });
+    if (kg > 0) mats.set(id, kg);
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM plant_manual_entries WHERE entry_date = $1::date`, [day]);
+    if (m3 > 0) {
+      await client.query(
+        `INSERT INTO plant_manual_entries (entry_date, material_id, qty_m3, reason, entered_by)
+         VALUES ($1::date, NULL, $2, $3, $4)`,
+        [day, m3, reason, req.user.id]
+      );
+    }
+    for (const [id, kg] of mats) {
+      await client.query(
+        `INSERT INTO plant_manual_entries (entry_date, material_id, qty_kg, reason, entered_by)
+         VALUES ($1::date, $2, $3, $4, $5)`,
+        [day, id, kg, reason, req.user.id]
+      );
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true, entry_date: day, production_m3: m3, materials_saved: mats.size, cleared: m3 === 0 && mats.size === 0 });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error(err);
+    if (err.code === "23503") return res.status(400).json({ error: "One of those materials no longer exists." });
+    res.status(500).json({ error: "Could not save the day's manual entry." });
+  } finally {
+    client.release();
+  }
+});
+
+// Round 187 — the days that have any manual entry, newest first, so a saved
+// day can be found again and edited.
+router.get("/manual/days", requireRole(...PLANT_READ), requirePermission("production.plant-data", "view"), async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 120, 1), 800);
+    const { rows } = await query(
+      `SELECT to_char(e.entry_date, 'YYYY-MM-DD') AS entry_date,
+              COALESCE(sum(e.qty_m3) FILTER (WHERE e.material_id IS NULL), 0)::numeric AS production_m3,
+              count(*) FILTER (WHERE e.material_id IS NOT NULL)::int AS materials,
+              COALESCE(sum(e.qty_kg), 0)::numeric AS consumption_kg,
+              max(e.reason) AS reason,
+              max(e.entered_at) AS entered_at,
+              (array_agg(u.name ORDER BY e.entered_at DESC))[1] AS entered_by_name
+         FROM plant_manual_entries e
+         LEFT JOIN users u ON u.id = e.entered_by
+        WHERE e.entry_date >= CURRENT_DATE - ($1::int - 1)
+        GROUP BY e.entry_date
+        ORDER BY e.entry_date DESC`,
+      [days]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the saved manual entries." });
   }
 });
 
@@ -2105,12 +2206,12 @@ router.post("/manual", requireRole(...PLANT_MANUAL), requirePermission("producti
         await query(`DELETE FROM plant_manual_entries WHERE entry_date = $1::date AND material_id IS NULL`, [day]);
         return res.json({ ok: true, cleared: true });
       }
+      // Round 187 — material_id is NULL here, so ON CONFLICT (entry_date,
+      // material_id) never matched and each save ADDED a row. Replace instead.
+      await query(`DELETE FROM plant_manual_entries WHERE entry_date = $1::date AND material_id IS NULL`, [day]);
       const { rows } = await query(
         `INSERT INTO plant_manual_entries (entry_date, material_id, qty_m3, reason, entered_by)
          VALUES ($1::date, NULL, $2, $3, $4)
-         ON CONFLICT (entry_date, material_id) DO UPDATE SET
-           qty_m3 = EXCLUDED.qty_m3, reason = EXCLUDED.reason,
-           entered_by = EXCLUDED.entered_by, entered_at = now()
          RETURNING id, to_char(entry_date,'YYYY-MM-DD') AS entry_date, qty_m3, reason`,
         [day, m3, reason, req.user.id]
       );

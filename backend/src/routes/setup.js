@@ -3011,6 +3011,19 @@ CREATE TABLE IF NOT EXISTS plant_manual_entries (
       OR (material_id IS NULL     AND qty_m3 IS NOT NULL AND qty_kg IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_plant_manual_date ON plant_manual_entries(entry_date DESC);
+-- Round 187 (v10.16) - the UNIQUE (entry_date, material_id) above never stopped a
+-- second PRODUCTION row for a day, because production rows have material_id NULL
+-- and NULLs never collide in a unique index. Every save of the manual m3 box
+-- therefore ADDED a row instead of replacing it, inflating that day's manual m3.
+-- Keep only the most recently entered production row per day, then enforce one
+-- per day with a partial unique index. Idempotent.
+DELETE FROM plant_manual_entries e
+ USING plant_manual_entries newer
+ WHERE e.material_id IS NULL AND newer.material_id IS NULL
+   AND e.entry_date = newer.entry_date
+   AND (newer.entered_at, newer.id) > (e.entered_at, e.id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_plant_manual_production_day
+  ON plant_manual_entries(entry_date) WHERE material_id IS NULL;
 
 -- The receipt says which silo it filled, so the fill can be created from it.
 ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS silo_slot VARCHAR(20);
