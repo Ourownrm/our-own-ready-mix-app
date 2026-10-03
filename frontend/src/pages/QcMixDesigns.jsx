@@ -373,6 +373,15 @@ function RecipeDetail({ id, canCost, canEdit, editPwSet, onChanged }) {
       setMsg(res.message || "Reverted."); load(); onChanged && onChanged();
     } catch (e) { setEerr(e.message); } finally { setBusy(false); }
   }
+  // Round 182 — cancel a queued edit before the agent writes it to the plant.
+  async function discard(editId) {
+    if (!pw) { setEerr("Enter the edit password above, then Discard."); return; }
+    setBusy(true); setEerr(""); setMsg("");
+    try {
+      const res = await apiRequest(`/plant/recipes/edits/${editId}/discard`, { method: "POST", body: { edit_password: pw } });
+      setMsg(res.message || "Discarded."); load(); onChanged && onChanged();
+    } catch (e) { setEerr(e.message); } finally { setBusy(false); }
+  }
   if (err) return <div className="card" style={{ flex: 1, color: "var(--alert-red)", fontSize: 13 }}>{err}</div>;
   if (!d) return <div className="card" style={{ flex: 1, fontSize: 13, color: "var(--slate)" }}>Loading…</div>;
   const r = d.recipe;
@@ -543,8 +552,10 @@ function RecipeDetail({ id, canCost, canEdit, editPwSet, onChanged }) {
                   <td style={{ ...TD, color: "var(--slate)" }}>{e.edited_by_name || "—"}</td>
                   <td style={{ ...TD, color: STATUS_COLOUR[e.status] || "var(--slate)", fontWeight: 600 }}>{STATUS_LABEL[e.status] || e.status}</td>
                   <td style={{ ...TD, textAlign: "right" }}>
-                    {(e.status === "applied" || e.status === "failed") &&
+                    {e.status === "applied" &&
                       <button type="button" style={{ fontSize: 11.5 }} disabled={busy} onClick={() => revert(e.id)}>Undo</button>}
+                    {(e.status === "pending" || e.status === "claimed" || e.status === "failed") &&
+                      <button type="button" style={{ fontSize: 11.5 }} disabled={busy} onClick={() => discard(e.id)} title="Remove this change — it has not been written to the plant">Discard</button>}
                   </td>
                 </tr>
               ))}
