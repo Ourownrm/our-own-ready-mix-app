@@ -1,4 +1,30 @@
-# OORM App — Current State (as of Round 183, Ver. 10.12)
+# OORM App — Current State (as of Round 184, Ver. 10.13)
+
+**v10.13 (184) — 5 of a new 6-item batch (before MixTrack).** No schema change → **no /setup**.
+- **#2 Admix/liquid silo qty in Litres** (was kilolitres). PlantProduction silo helpers now kind-aware:
+  siloUnit(liquid)="L", siloDivisor(liquid)=1 (1 L ≈ 1 kg), solids still MT (÷1000). fmtSiloQty/toSiloUnit/
+  fromSiloUnit take `kind`; all call sites (level cards, capacity input + save) pass l.kind / kindBySlot.
+- **#3 Weighbridge "Put back" no longer strands a ticket in Needs review.** weighbridge.js PATCH /tickets/:id:
+  when the request is needs_review, re-evaluate — a ticket with empty `unresolved` AND a material_id flips to
+  'matched'; only genuinely unresolved ones stay needs_review (those need mapping, by design 'matched' isn't
+  hand-settable). 
+- **#4 Billed production now matches the daily production report.** plant-vs-billed billed CTE adds
+  `dt.status <> 'cancelled'` (includes rejected, excludes cancelled — same rule as productionReport buildFilters).
+- **#5 Manual production + consumption now show in Production/Consumption, not just cost.** GET /plant/production
+  folds manual m³ (plant_manual_entries material_id NULL) into by_day totals (+manual_m3 note, +"(manual entry)"
+  recipe row); GET /plant/consumption returns a `manual` array (per-material qty_kg) + manual m³ in total_m3.
+  Frontend Production shows "+Xm³ man." per day; Consumption adds a "Manual consumption (operator-entered)"
+  table and counts manual kg in Materials used.
+- **#6 Revise button added to the admin MixDesignsPanel** (MasterDataPanels.jsx — Administrator/Manager →
+  "Mix Designs (Approve)"). It was only on the Lab Technician screen before, which is why the admin couldn't find
+  it. Admin-only, on approved designs; clones to a draft via POST /lab-technician/mix-designs/:id/revise, with a
+  note to edit it on the Lab screen then approve back here.
+6 checkers pass; build clean. Zip: oorm-app-round184-v10.13.zip.
+**STILL PENDING: #1** — Physical Stock month-close: admin approves last month's book-vs-physical variance, then the
+approved PHYSICAL becomes next month's OPENING (instead of carrying book stock forward). Needs the stored
+"approved opening per material per month" baseline + stock calc change; design/decision pending. Then MixTrack agent
+setup.
+
 
 **v10.12 (183) — HOTFIX: writeMdb.ps1 broke the FIRST real recipe write-back (non-ASCII).** User enabled
 recipeWriteEnabled=true; all 3 queued writes FAILED with a PowerShell ParserError. Root cause: `writeMdb.ps1` had
