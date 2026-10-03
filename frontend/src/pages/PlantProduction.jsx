@@ -3,6 +3,7 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { todayStr } from "../lib/istDate.js";
+import { useAuth } from "../lib/AuthContext.jsx";
 
 // Round 157 — what the batching plant actually made, and what it actually ate.
 //
@@ -837,41 +838,131 @@ function Silos() {
 
 // ---------------------------------------------------------------------------
 
+// ROUND 187 (v10.16) — rebuilt. The old screen saved each box on blur, and its
+// boxes were uncontrolled (defaultValue), so when the day changed they kept the
+// figures typed for the previous day and the next blur saved them against the
+// new day. Now: the screen holds a DRAFT for the chosen day, built fresh from the
+// server every time the day changes; nothing is stored until Save is pressed;
+// Save sends the whole day at once (POST /plant/manual/day) so the stored day is
+// exactly what is on screen; Discard throws the draft away. Saved days are listed
+// underneath with an Edit button. Consumption can be typed in tonnes or kg — the
+// table shows tonnes, and typing kg into a tonnes-looking table was how 0.71 kg
+// got saved where 0.71 t was meant.
+function fmtQty(kg, unit) {
+  if (kg == null || kg === "" || Number(kg) === 0) return "";
+  const v = unit === "t" ? Number(kg) / 1000 : Number(kg);
+  return String(Math.round(v * 1000) / 1000);
+}
+function toKg(v, unit) {
+  if (v === "" || v == null) return 0;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return NaN;
+  return unit === "t" ? n * 1000 : n;
+}
+
 function Manual({ canEdit }) {
   const [date, setDate] = useState(todayStr());
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [draft, setDraft] = useState({});
+  const [unit, setUnit] = useState("t");           // consumption entry unit
+  const [draft, setDraft] = useState(null);        // { m3, reason, qty: { [materialId]: string in `unit` } }
+  const [saving, setSaving] = useState(false);
+  const [days, setDays] = useState([]);
+  const [addId, setAddId] = useState("");
+  const [extra, setExtra] = useState([]);          // material ids added by hand for this day
+
+  function draftFrom(d, u) {
+    const qty = {};
+    for (const e of d.entries) if (e.material_id != null) qty[e.material_id] = fmtQty(e.qty_kg, u);
+    const prod = d.entries.find((e) => e.material_id == null);
+    return { m3: prod ? String(Number(prod.qty_m3)) : "", reason: (d.entries.find((e) => e.reason)?.reason) || "", qty };
+  }
 
   async function load(d) {
-    setError("");
-    try { setData(await apiRequest(`/plant/manual?date=${d}`)); }
-    catch (err) { setError(err.message || "Could not load the day."); }
-  }
-  useEffect(() => { load(date); setDraft({}); }, [date]);
-
-  async function save(materialId, value) {
-    setError(""); setNotice("");
+    setError(""); setData(null); setDraft(null); setExtra([]); setAddId("");
     try {
-      const body = { entry_date: date, reason: (draft.reason ?? data?.reason ?? "") || undefined };
-      if (materialId == null) body.qty_m3 = Number(value || 0);
-      else { body.material_id = materialId; body.qty_kg = Number(value || 0); }
-      await apiRequest("/plant/manual", { method: "POST", body });
-      setNotice("Saved. The plant's own figure is untouched — this is added to it.");
-      await load(date);
-    } catch (err) { setError(err.message); }
+      const res = await apiRequest(`/plant/manual?date=${d}`);
+      setData(res);
+      setDraft(draftFrom(res, unit));
+    } catch (err) { setError(err.message || "Could not load the day."); }
+  }
+  async function loadDays() {
+    try { setDays(await apiRequest("/plant/manual/days?days=180")); } catch { /* list is a convenience */ }
+  }
+  useEffect(() => { load(date); }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadDays(); }, []);
+
+  // Switching the entry unit converts what is already typed, so a figure never
+  // silently changes meaning.
+  function switchUnit(u) {
+    if (u === unit || !draft) return;
+    const qty = {};
+    for (const [k, v] of Object.entries(draft.qty)) qty[k] = v === "" ? "" : fmtQty(toKg(v, unit), u);
+    setDraft({ ...draft, qty });
+    setUnit(u);
   }
 
-  // Round 166b — surface a load error instead of a frozen "Loading…": when the
-  // fetch throws, `data` stays null, so without this the screen never leaves the
-  // loading state and the real reason is invisible (exactly the Silos 42703 bug).
-  if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
+  if (!data || !draft) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
-  const manualByMaterial = new Map(data.entries.filter((e) => e.material_id != null).map((e) => [e.material_id, e]));
-  const prodManual = data.entries.find((e) => e.material_id == null);
+  const savedQty = {};
+  for (const e of data.entries) if (e.material_id != null) savedQty[e.material_id] = Number(e.qty_kg);
+  const savedProd = data.entries.find((e) => e.material_id == null);
+  const savedM3 = savedProd ? Number(savedProd.qty_m3) : 0;
+  const savedReason = (data.entries.find((e) => e.reason)?.reason) || "";
+
+  // Rows: what the plant weighed that day, plus any material with a saved
+  // manual figure, plus any the operator added for this day. Unmapped hoppers
+  // are shown (their weight is real) but cannot take a manual figure.
+  const nameById = new Map((data.materials || []).map((m) => [m.id, m.name]));
+  const rows = data.consumption.map((c) => ({ key: c.material_id ?? `x-${c.slot}`, material_id: c.material_id, name: c.material_name, slot: c.slot, auto: Number(c.auto_kg || 0) }));
+  const inRows = new Set(rows.filter((r) => r.material_id != null).map((r) => r.material_id));
+  for (const id of [...Object.keys(savedQty).map(Number), ...extra]) {
+    if (!inRows.has(id)) { rows.push({ key: id, material_id: id, name: nameById.get(id) || `Material #${id}`, slot: null, auto: 0 }); inRows.add(id); }
+  }
+  const addable = (data.materials || []).filter((m) => !inRows.has(m.id));
+
+  const draftM3 = draft.m3 === "" ? 0 : Number(draft.m3);
   const autoM3 = Number(data.production?.auto_m3 || 0);
-  const manM3 = Number(prodManual?.qty_m3 || 0);
+  let invalid = !Number.isFinite(draftM3) || draftM3 < 0;
+  const draftKg = {};
+  for (const r of rows) {
+    if (r.material_id == null) continue;
+    const kg = toKg(draft.qty[r.material_id] ?? "", unit);
+    if (!Number.isFinite(kg) || kg < 0) invalid = true;
+    draftKg[r.material_id] = Number.isFinite(kg) ? kg : 0;
+  }
+  const close = (a, b) => Math.abs((a || 0) - (b || 0)) < 0.005;
+  const dirty = !close(draftM3, savedM3)
+    || (draft.reason || "") !== savedReason
+    || rows.some((r) => r.material_id != null && !close(draftKg[r.material_id], savedQty[r.material_id] || 0));
+
+  function setQty(id, v) { setDraft({ ...draft, qty: { ...draft.qty, [id]: v } }); setNotice(""); }
+
+  async function saveDay() {
+    if (invalid) { setError("Every figure must be a number of zero or more."); return; }
+    setSaving(true); setError(""); setNotice("");
+    try {
+      const materials = rows.filter((r) => r.material_id != null).map((r) => ({ material_id: r.material_id, qty_kg: draftKg[r.material_id] || 0 }));
+      const r = await apiRequest("/plant/manual/day", {
+        method: "POST",
+        body: { entry_date: date, production_m3: draftM3 || 0, reason: draft.reason || null, materials },
+      });
+      setNotice(r.cleared
+        ? `Manual entry for ${fmtDay(date)} cleared — only the plant's own figures remain.`
+        : `Saved for ${fmtDay(date)}. The plant's own figures are untouched — this is added to them.`);
+      await load(date);
+      await loadDays();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+
+  function changeDate(d) {
+    if (!d || d === date) return;
+    setNotice("");
+    setDate(d);   // the draft is rebuilt from the server for the new day; nothing carries over
+  }
+
+  const inputStyle = { width: 110, textAlign: "right", fontSize: 13 };
 
   return (
     <>
@@ -880,13 +971,13 @@ function Manual({ canEdit }) {
 
       <div className="card" style={{ marginBottom: 16, display: "flex", gap: 16, alignItems: "flex-end", flexWrap: "wrap" }}>
         <label style={{ fontSize: 11.5, color: "var(--slate)", display: "flex", flexDirection: "column", gap: 3 }}>Day
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ fontSize: 13 }} />
+          <input type="date" value={date} max={todayStr()} onChange={(e) => changeDate(e.target.value)} style={{ fontSize: 13 }} />
         </label>
         <p style={{ margin: 0, fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 720 }}>
-          The plant's column cannot be edited — it is what the load cells weighed, and if it looks wrong that
-          is a finding, not a typo. Enter <strong style={{ color: "var(--charcoal)" }}>only what the plant did
-          not record</strong>: a hand mix, a load batched while the agent was offline, material taken for
-          something else. The two are added.
+          The plant's column cannot be edited — it is what the load cells weighed. Enter <strong style={{ color: "var(--charcoal)" }}>only
+          what the plant did not record</strong> (a hand mix, a load batched while the agent was offline), then press
+          <strong style={{ color: "var(--charcoal)" }}> Save</strong>. Nothing is stored until you do, and changing the day
+          discards anything not saved.
         </p>
       </div>
 
@@ -897,67 +988,145 @@ function Manual({ canEdit }) {
           <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{data.production?.loads ?? 0} loads · {data.production?.batches ?? 0} batches</div>
         </div>
         <div className="card" style={{ background: "var(--amber-bg)" }}>
-          <label htmlFor="manm3" className="kpi-label">Production — manual</label>
+          <label htmlFor="manm3" className="kpi-label">Production — manual (m³)</label>
           <input id="manm3" type="number" step="0.5" min="0" disabled={!canEdit}
-                 defaultValue={manM3 || ""} placeholder="0"
-                 onBlur={(e) => canEdit && save(null, e.target.value)}
+                 value={draft.m3} placeholder="0"
+                 onChange={(e) => { setDraft({ ...draft, m3: e.target.value }); setNotice(""); }}
                  style={{ width: "100%", fontSize: 22, fontWeight: 700, padding: "2px 6px" }} />
-          <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 3 }}>m³ the plant did not record</div>
+          <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 3 }}>
+            m³ the plant did not record{savedProd ? ` · saved: ${savedM3} m³` : ""}
+          </div>
         </div>
         <div className="card" style={{ background: "var(--signal-green-bg)" }}>
-          <div className="kpi-label">Total today</div>
-          <div style={{ fontSize: 26, fontWeight: 700 }}>{(autoM3 + manM3).toFixed(1)} <span style={{ fontSize: 15, color: "var(--slate)" }}>m³</span></div>
-          <div style={{ fontSize: 11.5, color: "var(--signal-green)" }}>this is what cost per m³ divides by</div>
+          <div className="kpi-label">Total for the day</div>
+          <div style={{ fontSize: 26, fontWeight: 700 }}>{(autoM3 + (Number.isFinite(draftM3) ? draftM3 : 0)).toFixed(1)} <span style={{ fontSize: 15, color: "var(--slate)" }}>m³</span></div>
+          <div style={{ fontSize: 11.5, color: "var(--signal-green)" }}>{dirty ? "includes unsaved changes" : "this is what cost per m³ divides by"}</div>
         </div>
       </div>
 
-      <h3 style={{ fontSize: 15, margin: "0 0 10px" }}>Consumption</h3>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "0 0 10px", flexWrap: "wrap" }}>
+        <h3 style={{ fontSize: 15, margin: 0 }}>Consumption</h3>
+        <label style={{ fontSize: 12, color: "var(--slate)", marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+          Enter manual figures in
+          <select value={unit} onChange={(e) => switchUnit(e.target.value)} style={{ fontSize: 12.5 }}>
+            <option value="t">tonnes (t)</option>
+            <option value="kg">kilograms (kg)</option>
+          </select>
+        </label>
+      </div>
       <div className="card" style={{ padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "var(--concrete)" }}>
               <th style={TH}>Material</th>
               <th style={{ ...TH, textAlign: "right" }}>From the plant</th>
-              <th style={{ ...TH, textAlign: "right" }}>Manual</th>
+              <th style={{ ...TH, textAlign: "right" }}>Manual ({unit})</th>
               <th style={{ ...TH, textAlign: "right" }}>Total</th>
             </tr>
           </thead>
           <tbody>
-            {data.consumption.map((c) => {
-              const auto = Number(c.auto_kg || 0);
-              const man = Number(manualByMaterial.get(c.material_id)?.qty_kg || 0);
+            {rows.map((r) => {
+              const man = r.material_id != null ? (draftKg[r.material_id] || 0) : 0;
+              const changed = r.material_id != null && !close(man, savedQty[r.material_id] || 0);
               return (
-                <tr key={c.material_id ?? "unmapped"} style={{ borderTop: "1px solid var(--border)" }}>
+                <tr key={r.key} style={{ borderTop: "1px solid var(--border)", background: changed ? "#FFFCF2" : undefined }}>
                   <td style={TD}>
-                    {c.material_name || <span style={{ color: "var(--amber)" }}>not mapped yet</span>}
-                    <div style={{ fontSize: 10.5, color: "var(--slate)", fontFamily: "ui-monospace, monospace" }}>{c.slot}</div>
+                    {r.name || <span style={{ color: "var(--amber)" }}>not mapped yet</span>}
+                    {r.slot && <div style={{ fontSize: 10.5, color: "var(--slate)", fontFamily: "ui-monospace, monospace" }}>{r.slot}</div>}
                   </td>
-                  <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{fmtKg(auto)}</td>
+                  <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{r.auto ? fmtKg(r.auto) : "—"}</td>
                   <td style={{ ...TD, textAlign: "right" }}>
-                    {c.material_id ? (
-                      <input type="number" step="1" min="0" disabled={!canEdit}
-                             defaultValue={man || ""} placeholder="0"
-                             aria-label={`Manual consumption of ${c.material_name}`}
-                             onBlur={(e) => canEdit && save(c.material_id, e.target.value)}
-                             style={{ width: 96, textAlign: "right", fontSize: 13 }} />
-                    ) : <span style={{ color: "var(--slate)" }}>—</span>}
+                    {r.material_id != null ? (
+                      <input type="number" step={unit === "t" ? "0.01" : "1"} min="0" disabled={!canEdit}
+                             value={draft.qty[r.material_id] ?? ""} placeholder="0"
+                             aria-label={`Manual consumption of ${r.name} in ${unit}`}
+                             onChange={(e) => setQty(r.material_id, e.target.value)}
+                             style={inputStyle} />
+                    ) : <span style={{ color: "var(--slate)" }} title="Map this hopper on the Silos tab first">—</span>}
+                    {changed && <div style={{ fontSize: 10, color: "var(--amber)" }}>unsaved</div>}
                   </td>
-                  <td style={{ ...TD, textAlign: "right", fontWeight: 700 }}>{fmtKg(auto + man)}</td>
+                  <td style={{ ...TD, textAlign: "right", fontWeight: 700 }}>{fmtKg(r.auto + man)}</td>
                 </tr>
               );
             })}
-            {!data.consumption.length && (
-              <tr><td colSpan={4} style={{ ...TD, color: "var(--slate)" }}>The plant batched nothing on this day.</td></tr>
+            {!rows.length && (
+              <tr><td colSpan={4} style={{ ...TD, color: "var(--slate)" }}>The plant batched nothing on this day. Add a material below to enter what was used.</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {canEdit && (
+        <>
+          {addable.length > 0 && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+              <select value={addId} onChange={(e) => setAddId(e.target.value)} style={{ fontSize: 12.5 }}>
+                <option value="">Add a material the plant did not weigh…</option>
+                {addable.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+              <button type="button" style={{ fontSize: 12 }} disabled={!addId}
+                      onClick={() => { setExtra([...extra, Number(addId)]); setAddId(""); }}>Add row</button>
+            </div>
+          )}
+
+          <div className="card" style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+            <label style={{ fontSize: 11.5, color: "var(--slate)", display: "flex", flexDirection: "column", gap: 3, flex: "1 1 280px" }}>
+              Reason (why the plant did not record this)
+              <input value={draft.reason} onChange={(e) => setDraft({ ...draft, reason: e.target.value })}
+                     placeholder="e.g. agent offline 10:00–12:30, hand mix for site repair" style={{ fontSize: 13 }} />
+            </label>
+            <button type="button" className="btn-primary" disabled={!dirty || saving || invalid} onClick={saveDay} style={{ fontSize: 13 }}>
+              {saving ? "Saving…" : `Save ${fmtDay(date)}`}
+            </button>
+            <button type="button" disabled={!dirty || saving} onClick={() => { setDraft(draftFrom(data, unit)); setExtra([]); setError(""); }} style={{ fontSize: 13 }}>
+              Discard changes
+            </button>
+            <span style={{ fontSize: 11.5, color: dirty ? "var(--amber)" : "var(--slate)", flexBasis: "100%" }}>
+              {dirty ? "You have unsaved changes for this day." : "Saved figures are shown. Change any box and press Save to edit; clear a box (or 0) to remove it."}
+            </span>
+          </div>
+        </>
+      )}
 
       {!canEdit && (
         <p style={{ fontSize: 12, color: "var(--slate)", marginTop: 12 }}>
           You can see these figures but not add to them. That is the Plant Operator's entry.
         </p>
       )}
+
+      <h3 style={{ fontSize: 15, margin: "22px 0 8px" }}>Saved manual entries</h3>
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "var(--concrete)" }}>
+              <th style={TH}>Day</th>
+              <th style={{ ...TH, textAlign: "right" }}>Production</th>
+              <th style={{ ...TH, textAlign: "right" }}>Consumption</th>
+              <th style={TH}>Reason</th>
+              <th style={TH}>Entered by</th>
+              <th style={TH} />
+            </tr>
+          </thead>
+          <tbody>
+            {days.map((d) => (
+              <tr key={d.entry_date} style={{ borderTop: "1px solid var(--border)", background: d.entry_date === date ? "var(--concrete)" : undefined }}>
+                <td style={{ ...TD, fontWeight: 600, whiteSpace: "nowrap" }}>{fmtDay(d.entry_date)} {d.entry_date.slice(0, 4)}</td>
+                <td style={{ ...TD, textAlign: "right" }}>{Number(d.production_m3) > 0 ? fmtM3(d.production_m3) : "—"}</td>
+                <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap" }}>{d.materials ? `${fmtKg(d.consumption_kg)} · ${d.materials} material${d.materials === 1 ? "" : "s"}` : "—"}</td>
+                <td style={{ ...TD, color: "var(--slate)", fontSize: 12 }}>{d.reason || "—"}</td>
+                <td style={{ ...TD, color: "var(--slate)", fontSize: 12, whiteSpace: "nowrap" }}>{d.entered_by_name || "—"} · {fmtWhen(d.entered_at)}</td>
+                <td style={{ ...TD, textAlign: "right" }}>
+                  <button type="button" style={{ fontSize: 12 }} disabled={d.entry_date === date}
+                          onClick={() => { changeDate(d.entry_date); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
+                    {canEdit ? "Edit" : "View"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!days.length && <tr><td colSpan={6} style={{ ...TD, color: "var(--slate)" }}>No manual entries in the last 180 days.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
@@ -1068,6 +1237,9 @@ function QcDelays({ canEdit }) {
 
 export default function PlantProduction() {
   const { can, ready } = usePermissions();
+  const { user } = useAuth();
+  // Round 187 — Plant vs billed is not shown to the Plant Operator (user decision).
+  const canPvb = user?.role !== "plant_operator";
   const [tab, setTab] = useState("production");
   const [days, setDays] = useState(30);          // a number, or "custom"
   const [from, setFrom] = useState("");
@@ -1163,7 +1335,9 @@ export default function PlantProduction() {
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
           <button type="button" className={`btn-tab ${tab === "production" ? "active" : ""}`} onClick={() => setTab("production")}>Production</button>
-          <button type="button" className={`btn-tab ${tab === "pvb" ? "active" : ""}`} onClick={() => setTab("pvb")}>Plant vs billed</button>
+          {canPvb && (
+            <button type="button" className={`btn-tab ${tab === "pvb" ? "active" : ""}`} onClick={() => setTab("pvb")}>Plant vs billed</button>
+          )}
           <button type="button" className={`btn-tab ${tab === "consumption" ? "active" : ""}`} onClick={() => setTab("consumption")}>Consumption</button>
           {canMap && (
             <button type="button" className={`btn-tab ${tab === "silos" ? "active" : ""}`} onClick={() => setTab("silos")}>Silos</button>
@@ -1210,7 +1384,7 @@ export default function PlantProduction() {
           : tab === "manual" ? <Manual canEdit={canManualEdit} />
           : tab === "cost" && canCost ? <CostPerM3 qs={qs} />
           : tab === "consumption" ? <Consumption qs={qs} />
-          : tab === "pvb" ? <PlantVsBilled qs={qs} />
+          : tab === "pvb" && canPvb ? <PlantVsBilled qs={qs} />
           : <Production qs={qs} />}
       </div>
     </>
