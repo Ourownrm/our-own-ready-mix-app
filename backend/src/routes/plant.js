@@ -1553,6 +1553,34 @@ router.post("/recipes/edits/:editId/revert", requireRole(...RECIPE_EDIT_ROLES), 
   }
 });
 
+// Round 182 — discard a QUEUED recipe edit before the agent writes it to MCI370.
+// Only an edit still pending (or dry-run-claimed) can be discarded; once applied
+// it must be undone with Revert instead. This removes it from the write-back
+// queue so turning write-back on never flushes a stale or unwanted edit to the
+// live plant database. reverts_edit_id is a self-FK, so any reference to this
+// row is cleared first.
+router.post("/recipes/edits/:editId/discard", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+  const editId = Number(req.params.editId);
+  if (!(Number.isInteger(editId) && editId > 0)) return res.status(400).json({ error: "Invalid edit id." });
+  const pw = await checkEditPassword(req.body?.edit_password);
+  if (!pw.ok) return res.status(pw.status).json({ error: pw.error });
+  try {
+    const { rows } = await query(`SELECT id, status FROM plant_recipe_edits WHERE id = $1`, [editId]);
+    if (!rows.length) return res.status(404).json({ error: "Edit not found." });
+    // A queued edit (pending/claimed) or one whose write FAILED can be discarded
+    // — neither reached MCI370. One already applied must be undone with Revert.
+    if (!["pending", "claimed", "failed"].includes(rows[0].status)) {
+      return res.status(400).json({ error: "Only a queued or failed edit (never written to the plant) can be discarded — one already applied must be undone with Revert." });
+    }
+    await query(`UPDATE plant_recipe_edits SET reverts_edit_id = NULL WHERE reverts_edit_id = $1`, [editId]);
+    await query(`DELETE FROM plant_recipe_edits WHERE id = $1 AND status IN ('pending','claimed','failed')`, [editId]);
+    res.json({ ok: true, message: "Discarded — removed from the plant write queue." });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not discard that edit." });
+  }
+});
+
 // The recent loads, batches rolled up.
 router.get("/loads", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
   try {
