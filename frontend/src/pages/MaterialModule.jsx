@@ -1996,12 +1996,14 @@ function PhysicalStockTab({ role }) {
   // page and leaving can't overwrite last week's count with a blank.
   const [draft, setDraft] = useState({});
   const [remarks, setRemarks] = useState("");
+  const [prod, setProd] = useState(null); // Round 188 — the month's production, plant + manual
 
   async function load() {
     setLoading(true); setError("");
     try {
       const data = await apiRequest(`/material-module/physical-stock?month=${month}`);
       setMaterials(data.materials);
+      setProd(data);
       setDraft({});
       setRemarks(data.materials.find((m) => m.notes)?.notes || "");
     } catch (err) { setError(err.message); } finally { setLoading(false); }
@@ -2113,6 +2115,7 @@ function PhysicalStockTab({ role }) {
       </div>
 
       <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
+      <ProductionLine data={prod} />
 
       {!loading && materials.length > 0 && (
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
@@ -2155,7 +2158,10 @@ function PhysicalStockTab({ role }) {
                         {m.anchored_opening && <div style={{ fontSize: 9.5, color: "var(--signal-green)" }}>from approved count</div>}
                       </td>
                       <td style={{ textAlign: "right" }}>{fmtMass(m.purchase_kg)}</td>
-                      <td style={{ textAlign: "right" }}>{fmtMass(m.plant_consumption_kg)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {fmtMass(m.plant_consumption_kg)}
+                        <ConsumptionSplit m={m} />
+                      </td>
                       <td style={{ textAlign: "right" }}>{fmtMass(m.book_stock_kg)}</td>
                       <td style={{ textAlign: "right" }}>
                         {canEnter ? (
@@ -2585,10 +2591,36 @@ function MonthlyConsumptionReport() {
 // average rate and cost-of-actual-consumption columns, a total row, and the
 // four summary cards. Cost per m³ uses the Plant Operator's production for
 // the month, never the challan total.
+// Round 188 (v10.17 #7) — plant consumption split into what the load cells
+// weighed (auto) and what the operator entered by hand (manual). Only from the
+// cutover month on; before it the figure is the old hand-keyed consumption.
+function ConsumptionSplit({ m }) {
+  if (m.plant_consumption_auto_kg == null) return null;
+  return (
+    <div style={{ fontSize: 10, color: "var(--slate)", whiteSpace: "nowrap" }}>
+      auto {fmtMass(m.plant_consumption_auto_kg)} · manual {fmtMass(m.plant_consumption_manual_kg)}
+    </div>
+  );
+}
+
+// Round 188 (v10.17 #4) — the month's production as the plant actually made it.
+function ProductionLine({ data }) {
+  if (!data || data.production_m3 == null) return null;
+  return (
+    <div style={{ fontSize: 12.5, margin: "0 0 10px", color: "var(--charcoal)" }}>
+      Production this month: <b>{fmtNum(data.production_m3)} m³</b>
+      {data.plant_actual
+        ? <span style={{ color: "var(--slate)" }}> — plant {fmtNum(data.production_auto_m3)} m³ + manual {fmtNum(data.production_manual_m3)} m³</span>
+        : <span style={{ color: "var(--slate)" }}> — hand-keyed (before the plant-data cutover)</span>}
+    </div>
+  );
+}
+
 function MonthlyPhysicalStockReport() {
   const [month, setMonth] = useState(thisMonthStr());
   const [rows, setRows] = useState([]);
   const [productionM3, setProductionM3] = useState(null);
+  const [prodData, setProdData] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -2598,6 +2630,7 @@ function MonthlyPhysicalStockReport() {
       const data = await apiRequest(`/material-module/reports/monthly-physical-stock?month=${month}`);
       setRows(data.materials);
       setProductionM3(data.production_m3);
+      setProdData(data);
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2618,6 +2651,7 @@ function MonthlyPhysicalStockReport() {
   return (
     <div>
       <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
+      <ProductionLine data={prodData} />
       <ReportShell error={error} loading={loading} empty={!loading && rows.length === 0}>
         <table>
           <thead>
@@ -2645,7 +2679,10 @@ function MonthlyPhysicalStockReport() {
                   <td><b>{m.name}</b></td>
                   <td style={{ textAlign: "right" }}>{fmtMass(m.opening_kg)}</td>
                   <td style={{ textAlign: "right" }}>{fmtMass(m.purchase_kg)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtMass(m.plant_consumption_kg)}</td>
+                  <td style={{ textAlign: "right" }}>
+                    {fmtMass(m.plant_consumption_kg)}
+                    <ConsumptionSplit m={m} />
+                  </td>
                   <td style={{ textAlign: "right" }}>{fmtMass(m.book_stock_kg)}</td>
                   <td style={{ textAlign: "right" }}>{m.physical_stock_kg != null ? fmtMass(m.physical_stock_kg) : "–"}</td>
                   <td style={{ textAlign: "right" }}>{m.actual_consumption_kg != null ? fmtMass(m.actual_consumption_kg) : "–"}</td>

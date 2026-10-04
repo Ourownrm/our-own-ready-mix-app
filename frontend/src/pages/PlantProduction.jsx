@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
@@ -75,6 +75,17 @@ function siloUnit(kind) { return kind === "liquid" ? "L" : "MT"; }
 function siloDivisor(kind) { return kind === "liquid" ? 1 : 1000; }
 function toSiloUnit(kg, kind) { return kg == null ? null : Number(kg) / siloDivisor(kind); }
 function fromSiloUnit(v, kind) { return v === "" || v == null ? null : Number(v) * siloDivisor(kind); }
+// Round 188 (v10.17 #6) — a silo level is shown in the unit its material is
+// BOUGHT in (aggregate in CFT, cement in MT, admixture in L…), using the
+// material's own kg-per-unit from the Material Module. A silo whose material
+// has no purchase unit set falls back to MT / L as before.
+function purchaseQty(kg, l) {
+  if (kg == null) return "—";
+  const v = Number(kg) / Number(l.kg_per_purchase_unit);
+  return v.toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) >= 100 ? 0 : 1 });
+}
+function levelQty(kg, l) { return l.purchase_unit && l.kg_per_purchase_unit ? purchaseQty(kg, l) : fmtSiloQty(kg, l.kind); }
+function levelUnit(l) { return l.purchase_unit && l.kg_per_purchase_unit ? l.purchase_unit : siloUnit(l.kind); }
 function fmtSiloQty(kg, kind) {
   if (kg == null) return "—";
   const v = Number(kg) / siloDivisor(kind);
@@ -186,41 +197,67 @@ function Production({ qs }) {
   if (!data) return <div className="card" style={{ fontSize: 13, color: error ? "var(--alert-red)" : "var(--slate)" }}>{error || "Loading…"}</div>;
 
   const maxDay = Math.max(...data.by_day.map((d) => Number(d.m3)), 1);
+  const num = (v) => (v == null ? "—" : Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+  const t = data.totals || {};
 
   return (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+      {/* Round 188 (v10.17 #3) — the total for the selected range. */}
+      <div className="card" style={{ marginBottom: 16, display: "flex", gap: 28, flexWrap: "wrap", alignItems: "baseline" }}>
+        <div>
+          <div className="kpi-label">Total production — selected range</div>
+          <div style={{ fontSize: 26, fontWeight: 800 }}>{num(t.total_m3)} <span style={{ fontSize: 14, color: "var(--slate)" }}>m³</span></div>
+        </div>
+        <div style={{ fontSize: 13 }}>
+          <div><b>{num(t.auto_m3)}</b> m³ from the plant <span style={{ color: "var(--slate)" }}>· {t.loads ?? 0} loads · {t.batches ?? 0} batches</span></div>
+          <div><b>{num(t.manual_m3)}</b> m³ manual entry</div>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--slate)", marginLeft: "auto" }}>{t.days ?? 0} day{t.days === 1 ? "" : "s"} with production</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.7fr) minmax(0, 1fr)", gap: 16, marginBottom: 16 }}>
         <div className="card">
-          <h3 style={{ fontSize: 14, margin: "0 0 12px" }}>By day</h3>
+          <h3 style={{ fontSize: 14, margin: "0 0 12px" }}>By Day in m³</h3>
           {!data.by_day.length && <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing batched in this period.</div>}
+          {data.by_day.length > 0 && (
+            <div style={{ display: "flex", gap: 10, fontSize: 10.5, color: "var(--slate)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".04em" }}>
+              <span style={{ width: 62 }}>Day</span><span style={{ flexGrow: 1 }} />
+              <span style={{ width: 64, textAlign: "right" }}>Plant</span>
+              <span style={{ width: 64, textAlign: "right" }}>Manual</span>
+              <span style={{ width: 70, textAlign: "right" }}>Total</span>
+              <span style={{ width: 58, textAlign: "right" }}>Loads</span>
+            </div>
+          )}
           {data.by_day.map((d) => (
             <div key={d.batch_date} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 7 }}>
               <span style={{ fontSize: 12.5, width: 62, color: "var(--slate)" }}>{fmtDay(d.batch_date)}</span>
-              {/* A plain proportional bar rather than a chart library — one
-                  series, one dimension, and it has to be readable on the plant
-                  office screen at a glance. */}
-              <span style={{ flexGrow: 1, height: 16, background: "var(--concrete)", borderRadius: 3, overflow: "hidden" }}>
-                <span style={{ display: "block", height: "100%", width: `${(Number(d.m3) / maxDay) * 100}%`, background: "var(--rebar)" }} />
+              {/* A plain proportional bar rather than a chart library: plant
+                  part solid, manual part lighter on the end of it. */}
+              <span style={{ flexGrow: 1, height: 16, background: "var(--concrete)", borderRadius: 3, overflow: "hidden", display: "flex" }}>
+                <span style={{ display: "block", height: "100%", width: `${(Number(d.auto_m3) / maxDay) * 100}%`, background: "var(--rebar)" }} />
+                <span style={{ display: "block", height: "100%", width: `${(Number(d.manual_m3) / maxDay) * 100}%`, background: "var(--amber)", opacity: 0.75 }} />
               </span>
-              <span style={{ fontSize: 12.5, width: 74, textAlign: "right", fontWeight: 600 }}>{fmtM3(d.m3)}</span>
-              <span style={{ fontSize: 11.5, width: 96, textAlign: "right", color: "var(--slate)" }}>
-                {d.loads} loads{Number(d.manual_m3) > 0 ? ` · +${fmtM3(d.manual_m3)} man.` : ""}
-              </span>
+              <span style={{ fontSize: 12.5, width: 64, textAlign: "right" }}>{num(d.auto_m3)}</span>
+              <span style={{ fontSize: 12.5, width: 64, textAlign: "right", color: Number(d.manual_m3) > 0 ? "var(--amber)" : "var(--slate)" }}>{Number(d.manual_m3) > 0 ? num(d.manual_m3) : "—"}</span>
+              <span style={{ fontSize: 12.5, width: 70, textAlign: "right", fontWeight: 700 }}>{num(d.m3)}</span>
+              <span style={{ fontSize: 11.5, width: 58, textAlign: "right", color: "var(--slate)" }}>{d.loads}</span>
             </div>
           ))}
         </div>
 
         <div className="card">
-          <h3 style={{ fontSize: 14, margin: "0 0 12px" }}>By recipe</h3>
+          <h3 style={{ fontSize: 14, margin: "0 0 12px" }}>By recipe in m³</h3>
           {!data.by_recipe.length && <div style={{ fontSize: 13, color: "var(--slate)" }}>—</div>}
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <tbody>
               {data.by_recipe.map((r) => (
                 <tr key={r.recipe_code} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ ...TD, fontWeight: 600 }}>{r.recipe_code}</td>
-                  <td style={{ ...TD, color: "var(--slate)", fontSize: 12 }}>{r.recipe_name || ""}</td>
-                  <td style={{ ...TD, textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtM3(r.m3)}</td>
-                  <td style={{ ...TD, textAlign: "right", color: "var(--slate)", fontSize: 12 }}>{r.loads} loads</td>
+                  <td style={{ padding: "6px 8px", fontWeight: 600 }} title={r.recipe_name || ""}>{r.recipe_code}</td>
+                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>
+                    {num(r.m3)}
+                    {Number(r.manual_m3) > 0 && <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--amber)" }}>incl. {num(r.manual_m3)} man.</div>}
+                  </td>
+                  <td style={{ padding: "6px 8px", textAlign: "right", color: "var(--slate)", fontSize: 12 }}>{r.loads ? `${r.loads} load${r.loads === 1 ? "" : "s"}` : ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -593,11 +630,11 @@ function Silos() {
           <div style={{ fontSize: 11.5, color: "var(--slate)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.material_name || "—"}</div>
           <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.05, marginTop: 3, color: neg ? "var(--alert-red)" : "inherit" }}>
             {hasLevel
-              ? <>{fmtSiloQty(l.level_kg, l.kind)} <span style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>{siloUnit(l.kind)}</span></>
+              ? <>{levelQty(l.level_kg, l)} <span style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>{levelUnit(l)}</span></>
               : <span style={{ fontSize: 13.5, color: "var(--amber)", fontWeight: 600 }}>no fills yet</span>}
           </div>
           <div style={{ fontSize: 11, color: "var(--slate)" }}>
-            {l.capacity_kg != null ? `of ${fmtSiloQty(l.capacity_kg, l.kind)} ${siloUnit(l.kind)}` : "capacity not set"}
+            {l.capacity_kg != null ? `of ${levelQty(l.capacity_kg, l)} ${levelUnit(l)}` : "capacity not set"}
           </div>
           {hasLevel && (
             <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, color: pctColor }}>
@@ -667,7 +704,7 @@ function Silos() {
                 {notInSilo.map((n) => (
                   <tr key={n.material_id} style={{ borderTop: "1px solid var(--border)" }}>
                     <td style={TD}>{n.material_name}</td>
-                    <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{fmtKg(n.qty_kg)}</td>
+                    <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{n.purchase_unit && n.kg_per_purchase_unit ? `${purchaseQty(n.qty_kg, n)} ${n.purchase_unit}` : fmtKg(n.qty_kg)}</td>
                     <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{n.receipts}</td>
                     <td style={{ ...TD, color: "var(--slate)" }}>{fmtDay(n.last_received)}</td>
                   </tr>
@@ -871,16 +908,56 @@ function Manual({ canEdit }) {
   const [days, setDays] = useState([]);
   const [addId, setAddId] = useState("");
   const [extra, setExtra] = useState([]);          // material ids added by hand for this day
+  // Round 188 (v10.17 #8) — manual production by recipe; consumption is worked
+  // out from each recipe's targets. calcIds = materials the last calculation
+  // filled, so removing a recipe line also removes what it contributed.
+  const [calcIds, setCalcIds] = useState([]);
+  const [calcNote, setCalcNote] = useState("");
+  const calcTimer = useRef(null);
 
+  function linesFrom(d) {
+    const prod = d.entries.find((e) => e.material_id == null);
+    const ls = Array.isArray(prod?.recipe_lines) ? prod.recipe_lines : [];
+    return ls.map((l) => ({ recipe_code: l.recipe_code, m3: String(Number(l.m3)) }));
+  }
   function draftFrom(d, u) {
     const qty = {};
     for (const e of d.entries) if (e.material_id != null) qty[e.material_id] = fmtQty(e.qty_kg, u);
     const prod = d.entries.find((e) => e.material_id == null);
-    return { m3: prod ? String(Number(prod.qty_m3)) : "", reason: (d.entries.find((e) => e.reason)?.reason) || "", qty };
+    return { m3: prod ? String(Number(prod.qty_m3)) : "", reason: (d.entries.find((e) => e.reason)?.reason) || "", qty, lines: linesFrom(d) };
+  }
+
+  async function recalc(lines) {
+    const clean = lines.filter((l) => l.recipe_code && Number(l.m3) > 0).map((l) => ({ recipe_code: l.recipe_code, m3: Number(l.m3) }));
+    setCalcNote("");
+    try {
+      const r = await apiRequest("/plant/manual/calc", { method: "POST", body: { recipe_lines: clean } });
+      setDraft((dr) => {
+        if (!dr) return dr;
+        const qty = { ...dr.qty };
+        for (const id of calcIds) qty[id] = "";
+        for (const m of r.materials) qty[m.material_id] = fmtQty(m.kg, unit);
+        return { ...dr, qty };
+      });
+      setExtra((ex) => [...new Set([...ex, ...r.materials.map((m) => m.material_id)])]);
+      setCalcIds(r.materials.map((m) => m.material_id));
+      const warn = [];
+      if (r.unknown_recipes.length) warn.push(`no targets for ${r.unknown_recipes.join(", ")}`);
+      if (r.unmapped_slots.length) warn.push(`hopper${r.unmapped_slots.length === 1 ? "" : "s"} ${r.unmapped_slots.join(", ")} not mapped to a material (Silos tab)`);
+      setCalcNote(clean.length
+        ? `Consumption worked out from ${clean.length} recipe line${clean.length === 1 ? "" : "s"}${warn.length ? ` — ${warn.join("; ")}` : ""}. You can still correct any figure.`
+        : "");
+    } catch (err) { setCalcNote(err.message); }
+  }
+  function setLines(lines) {
+    setDraft({ ...draft, lines });
+    setNotice("");
+    clearTimeout(calcTimer.current);
+    calcTimer.current = setTimeout(() => recalc(lines), 450);
   }
 
   async function load(d) {
-    setError(""); setData(null); setDraft(null); setExtra([]); setAddId("");
+    setError(""); setData(null); setDraft(null); setExtra([]); setAddId(""); setCalcIds([]); setCalcNote("");
     try {
       const res = await apiRequest(`/plant/manual?date=${d}`);
       setData(res);
@@ -922,7 +999,10 @@ function Manual({ canEdit }) {
   }
   const addable = (data.materials || []).filter((m) => !inRows.has(m.id));
 
-  const draftM3 = draft.m3 === "" ? 0 : Number(draft.m3);
+  const lineTotal = (draft.lines || []).reduce((t, l) => t + (Number(l.m3) > 0 ? Number(l.m3) : 0), 0);
+  const byRecipe = (draft.lines || []).length > 0;
+  const draftM3 = byRecipe ? Math.round(lineTotal * 1000) / 1000 : (draft.m3 === "" ? 0 : Number(draft.m3));
+  const linesKey = (ls) => JSON.stringify((ls || []).map((l) => [l.recipe_code, Number(l.m3) || 0]));
   const autoM3 = Number(data.production?.auto_m3 || 0);
   let invalid = !Number.isFinite(draftM3) || draftM3 < 0;
   const draftKg = {};
@@ -934,6 +1014,7 @@ function Manual({ canEdit }) {
   }
   const close = (a, b) => Math.abs((a || 0) - (b || 0)) < 0.005;
   const dirty = !close(draftM3, savedM3)
+    || linesKey(draft.lines) !== linesKey(linesFrom(data))
     || (draft.reason || "") !== savedReason
     || rows.some((r) => r.material_id != null && !close(draftKg[r.material_id], savedQty[r.material_id] || 0));
 
@@ -941,12 +1022,18 @@ function Manual({ canEdit }) {
 
   async function saveDay() {
     if (invalid) { setError("Every figure must be a number of zero or more."); return; }
+    if ((draft.lines || []).some((l) => (l.recipe_code && !(Number(l.m3) > 0)) || (!l.recipe_code && Number(l.m3) > 0))) {
+      setError("Every recipe line needs a recipe and its m³."); return;
+    }
     setSaving(true); setError(""); setNotice("");
     try {
       const materials = rows.filter((r) => r.material_id != null).map((r) => ({ material_id: r.material_id, qty_kg: draftKg[r.material_id] || 0 }));
       const r = await apiRequest("/plant/manual/day", {
         method: "POST",
-        body: { entry_date: date, production_m3: draftM3 || 0, reason: draft.reason || null, materials },
+        body: {
+          entry_date: date, production_m3: draftM3 || 0, reason: draft.reason || null, materials,
+          recipe_lines: (draft.lines || []).filter((l) => l.recipe_code && Number(l.m3) > 0).map((l) => ({ recipe_code: l.recipe_code, m3: Number(l.m3) })),
+        },
       });
       setNotice(r.cleared
         ? `Manual entry for ${fmtDay(date)} cleared — only the plant's own figures remain.`
@@ -989,12 +1076,12 @@ function Manual({ canEdit }) {
         </div>
         <div className="card" style={{ background: "var(--amber-bg)" }}>
           <label htmlFor="manm3" className="kpi-label">Production — manual (m³)</label>
-          <input id="manm3" type="number" step="0.5" min="0" disabled={!canEdit}
-                 value={draft.m3} placeholder="0"
+          <input id="manm3" type="number" step="0.5" min="0" disabled={!canEdit || byRecipe}
+                 value={byRecipe ? String(draftM3) : draft.m3} placeholder="0"
                  onChange={(e) => { setDraft({ ...draft, m3: e.target.value }); setNotice(""); }}
                  style={{ width: "100%", fontSize: 22, fontWeight: 700, padding: "2px 6px" }} />
           <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 3 }}>
-            m³ the plant did not record{savedProd ? ` · saved: ${savedM3} m³` : ""}
+            {byRecipe ? "total of the recipe lines below" : "m³ the plant did not record — or enter it by recipe below"}{savedProd ? ` · saved: ${savedM3} m³` : ""}
           </div>
         </div>
         <div className="card" style={{ background: "var(--signal-green-bg)" }}>
@@ -1002,6 +1089,48 @@ function Manual({ canEdit }) {
           <div style={{ fontSize: 26, fontWeight: 700 }}>{(autoM3 + (Number.isFinite(draftM3) ? draftM3 : 0)).toFixed(1)} <span style={{ fontSize: 15, color: "var(--slate)" }}>m³</span></div>
           <div style={{ fontSize: 11.5, color: "var(--signal-green)" }}>{dirty ? "includes unsaved changes" : "this is what cost per m³ divides by"}</div>
         </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Manual production by recipe</h3>
+          <span style={{ fontSize: 12, color: "var(--slate)" }}>
+            Each line's consumption is worked out from that recipe's targets (MCI370 Recipe Master) and filled into the
+            Manual column below — correct any figure before saving if what was really used differed.
+          </span>
+        </div>
+        <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
+          <tbody>
+            {(draft.lines || []).map((l, i) => (
+              <tr key={i}>
+                <td style={{ padding: "3px 8px 3px 0" }}>
+                  <select value={l.recipe_code} disabled={!canEdit} aria-label="Recipe"
+                          onChange={(e) => setLines(draft.lines.map((x, j) => (j === i ? { ...x, recipe_code: e.target.value } : x)))}
+                          style={{ fontSize: 13, minWidth: 150 }}>
+                    <option value="">Recipe…</option>
+                    {(data.recipes || []).map((r) => <option key={r.recipe_code} value={r.recipe_code}>{r.recipe_code}{r.recipe_name && r.recipe_name !== r.recipe_code ? ` — ${r.recipe_name}` : ""}</option>)}
+                    {l.recipe_code && !(data.recipes || []).some((r) => r.recipe_code === l.recipe_code) && <option value={l.recipe_code}>{l.recipe_code}</option>}
+                  </select>
+                </td>
+                <td style={{ padding: "3px 8px" }}>
+                  <input type="number" step="0.5" min="0" disabled={!canEdit} value={l.m3} placeholder="m³" aria-label="m³"
+                         onChange={(e) => setLines(draft.lines.map((x, j) => (j === i ? { ...x, m3: e.target.value } : x)))}
+                         style={{ width: 90, textAlign: "right", fontSize: 13 }} /> m³
+                </td>
+                <td>
+                  {canEdit && <button type="button" style={{ fontSize: 12 }} onClick={() => setLines(draft.lines.filter((_, j) => j !== i))}>Remove</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {canEdit && (
+          <button type="button" style={{ fontSize: 12, marginTop: 6 }}
+                  onClick={() => setDraft({ ...draft, lines: [...(draft.lines || []), { recipe_code: "", m3: "" }] })}>
+            ＋ Add recipe line
+          </button>
+        )}
+        {calcNote && <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>{calcNote}</div>}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "0 0 10px", flexWrap: "wrap" }}>
@@ -1078,7 +1207,7 @@ function Manual({ canEdit }) {
             <button type="button" className="btn-primary" disabled={!dirty || saving || invalid} onClick={saveDay} style={{ fontSize: 13 }}>
               {saving ? "Saving…" : `Save ${fmtDay(date)}`}
             </button>
-            <button type="button" disabled={!dirty || saving} onClick={() => { setDraft(draftFrom(data, unit)); setExtra([]); setError(""); }} style={{ fontSize: 13 }}>
+            <button type="button" disabled={!dirty || saving} onClick={() => { setDraft(draftFrom(data, unit)); setExtra([]); setCalcIds([]); setCalcNote(""); setError(""); }} style={{ fontSize: 13 }}>
               Discard changes
             </button>
             <span style={{ fontSize: 11.5, color: dirty ? "var(--amber)" : "var(--slate)", flexBasis: "100%" }}>
@@ -1142,60 +1271,65 @@ function Manual({ canEdit }) {
 // Site beats customer. The delay belongs to the pour, not to who is paying.
 function QcDelays({ canEdit }) {
   const [rows, setRows] = useState([]);
-  const [customers, setCustomers] = useState([]);
-  const [sites, setSites] = useState([]);
+  // Round 188 (v10.17 #5) — the plant's own customer and site names (what a
+  // MixTrack docket carries), not the app's customer master. The old screen
+  // asked "/customers" and "/sites", which do not exist, so its lists were empty.
+  const [targets, setTargets] = useState({ customers: [], sites: [] });
   const [scope, setScope] = useState("site");
-  const [targetId, setTargetId] = useState("");
+  const [target, setTarget] = useState("");
   const [minutes, setMinutes] = useState("");
   const [note, setNote] = useState("");
   const [msg, setMsg] = useState("");
 
-  const load = () => apiRequest("/plant/qc-delays").then(setRows).catch(() => {});
+  const load = () => apiRequest("/plant/qc-delays").then(setRows).catch((e) => setMsg(e.message));
   useEffect(() => {
     load();
-    apiRequest("/customers").then((c) => setCustomers(c || [])).catch(() => {});
-    apiRequest("/sites").then((s) => setSites(s || [])).catch(() => {});
+    apiRequest("/plant/qc-delays/targets").then((t) => setTargets(t || { customers: [], sites: [] })).catch((e) => setMsg(e.message));
   }, []);
 
   async function save(e) {
     e.preventDefault();
     setMsg("");
     const body = { delay_minutes: Number(minutes), note: note || null };
-    if (scope === "site") body.site_id = Number(targetId) || null;
-    else if (scope === "customer") body.customer_id = Number(targetId) || null;
+    if (scope === "site") body.site_text = target;
+    else if (scope === "customer") body.customer_text = target;
     try {
       await apiRequest("/plant/qc-delays", { method: "POST", body });
-      setMinutes(""); setNote(""); setTargetId("");
+      setMinutes(""); setNote(""); setTarget("");
       load();
     } catch (err) { setMsg(err.message); }
   }
 
-  const targets = scope === "site" ? sites : scope === "customer" ? customers : [];
+  const list = scope === "site" ? targets.sites : scope === "customer" ? targets.customers : [];
 
   return (
     <div className="card">
       <h3 style={{ marginTop: 0 }}>QC delay allowance</h3>
-      <p style={{ fontSize: 13, color: "var(--muted)", maxWidth: 680 }}>
-        Added to the plant's own finish time before it is printed on the ticket, so the
-        time shown is when the load was released rather than when the last batch dropped.
-        A rule for a site beats a rule for that site's customer; a rule with neither
-        applies to every load that has no more specific rule.
+      <p style={{ fontSize: 13, color: "var(--muted)", maxWidth: 720 }}>
+        Added to the plant's own finish time before it is printed on the MixTrack ticket, so the time shown is
+        when the load was released rather than when the last batch dropped. Customers and sites are listed exactly as
+        the plant (MCI370) records them — that is what a ticket carries. A rule for a site beats a rule for a customer;
+        a rule with neither applies to every load that has no more specific rule.
       </p>
 
       {canEdit && (
         <form onSubmit={save} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
           <label style={{ fontSize: 13 }}>Applies to<br />
-            <select value={scope} onChange={(e) => { setScope(e.target.value); setTargetId(""); }}>
+            <select value={scope} onChange={(e) => { setScope(e.target.value); setTarget(""); }}>
               <option value="site">A site</option>
               <option value="customer">A customer</option>
               <option value="default">Every load (default)</option>
             </select>
           </label>
           {scope !== "default" && (
-            <label style={{ fontSize: 13 }}>{scope === "site" ? "Site" : "Customer"}<br />
-              <select value={targetId} onChange={(e) => setTargetId(e.target.value)} required>
-                <option value="">Choose…</option>
-                {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            <label style={{ fontSize: 13 }}>{scope === "site" ? "Site (as the plant records it)" : "Customer (as the plant records it)"}<br />
+              <select value={target} onChange={(e) => setTarget(e.target.value)} required style={{ maxWidth: 360 }}>
+                <option value="">Choose… ({list.length})</option>
+                {list.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.name}{scope === "site" && t.customer ? ` — ${t.customer}` : ""} · {t.loads} load{t.loads === 1 ? "" : "s"}
+                  </option>
+                ))}
               </select>
             </label>
           )}
@@ -1217,7 +1351,12 @@ function QcDelays({ canEdit }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.id}>
-              <td>{r.site_name ? `Site — ${r.site_name}` : r.customer_name ? `Customer — ${r.customer_name}` : "Every load"}</td>
+              <td>
+                {r.site_name ? `Site — ${r.site_name}` : r.customer_name ? `Customer — ${r.customer_name}` : "Every load"}
+                {(r.site_id || r.customer_id) && !r.site_text && !r.customer_text && (
+                  <div style={{ fontSize: 11, color: "var(--amber)" }}>older rule set against the app customer list — new MixTrack tickets carry the plant’s names, so re-create it above with the plant’s name</div>
+                )}
+              </td>
               <td style={{ textAlign: "right" }}>{r.delay_minutes}</td>
               <td style={{ color: "var(--muted)" }}>{r.note || "—"}</td>
               <td style={{ color: "var(--muted)", fontSize: 12 }}>{r.updated_at}{r.updated_by_name ? ` · ${r.updated_by_name}` : ""}</td>
@@ -1299,6 +1438,9 @@ export default function PlantProduction() {
           <div>
             <div className="kpi-label">Made today</div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>{summary ? fmtM3(summary.today_m3) : "—"}</div>
+            {Number(summary?.today_manual_m3) > 0 && (
+              <div style={{ fontSize: 11, color: "var(--slate)" }}>incl. {fmtM3(summary.today_manual_m3)} manual</div>
+            )}
           </div>
           <div>
             <div className="kpi-label">Loads today</div>
