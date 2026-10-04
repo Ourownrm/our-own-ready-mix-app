@@ -3355,3 +3355,66 @@ CREATE INDEX IF NOT EXISTS idx_rm_receipts_received_date ON rm_receipts(received
 -- untouched.
 ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_by INTEGER REFERENCES users(id);
 ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_at TIMESTAMPTZ;
+-- ============================================================================
+-- ROUND 188 (v10.17) - MixTrack raises a docket from a plant batch number
+-- ============================================================================
+-- The docket now carries the plant's OWN text for customer, site and truck
+-- (exactly what MCI370 recorded), not a match to the app's masters. The three
+-- id columns stay for dockets raised before this round and become optional.
+ALTER TABLE solitaire_dockets ALTER COLUMN customer_id DROP NOT NULL;
+ALTER TABLE solitaire_dockets ALTER COLUMN site_id DROP NOT NULL;
+ALTER TABLE solitaire_dockets ALTER COLUMN truck_id DROP NOT NULL;
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS customer_text VARCHAR(175);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS site_text     VARCHAR(175);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS truck_text    VARCHAR(50);
+ALTER TABLE solitaire_dockets ADD COLUMN IF NOT EXISTS edited_at     TIMESTAMPTZ;
+
+-- Every correction Admin or QC makes to a saved docket: who, when, why, and the
+-- docket's fields before and after. Edits change the docket only - never the
+-- plant's own copy of the batch (Store 1).
+CREATE TABLE IF NOT EXISTS mixtrack_docket_edits (
+  id          SERIAL PRIMARY KEY,
+  docket_id   INTEGER NOT NULL REFERENCES solitaire_dockets(id) ON DELETE CASCADE,
+  changed_by  INTEGER REFERENCES solitaire_accounts(id),
+  changed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reason      TEXT NOT NULL,
+  before_json JSONB,
+  after_json  JSONB,
+  reprinted   BOOLEAN NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS idx_mixtrack_docket_edits ON mixtrack_docket_edits(docket_id, changed_at DESC);
+
+-- Store 2 - what the ticket actually printed, read back from the workbook by the
+-- print agent straight after it prints. One row per successful print job.
+CREATE TABLE IF NOT EXISTS mixtrack_printed_tickets (
+  id             SERIAL PRIMARY KEY,
+  docket_id      INTEGER NOT NULL REFERENCES solitaire_dockets(id) ON DELETE CASCADE,
+  job_id         INTEGER REFERENCES mixtrack_print_jobs(id) ON DELETE SET NULL,
+  sheet_number   INTEGER,
+  header_json    JSONB,
+  materials_json JSONB,
+  batches_json   JSONB,
+  totals_json    JSONB,
+  printed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mixtrack_printed_tickets_at ON mixtrack_printed_tickets(printed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mixtrack_printed_tickets_docket ON mixtrack_printed_tickets(docket_id);
+
+-- QC delay rules keyed on the PLANT's customer / site text, because that is what
+-- a docket now carries. The old plant-wide default index treated a text rule
+-- (both ids NULL) as a second default; it is replaced by one that also requires
+-- both texts to be NULL.
+ALTER TABLE mixtrack_qc_delays ADD COLUMN IF NOT EXISTS customer_text VARCHAR(175);
+ALTER TABLE mixtrack_qc_delays ADD COLUMN IF NOT EXISTS site_text     VARCHAR(175);
+DROP INDEX IF EXISTS uq_mixtrack_qc_delay_default;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_default2
+  ON mixtrack_qc_delays((true))
+  WHERE site_id IS NULL AND customer_id IS NULL AND site_text IS NULL AND customer_text IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_site_text
+  ON mixtrack_qc_delays(upper(btrim(site_text))) WHERE site_text IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_customer_text
+  ON mixtrack_qc_delays(upper(btrim(customer_text))) WHERE customer_text IS NOT NULL AND site_text IS NULL;
+
+-- Manual production entered BY RECIPE: [{recipe_code, m3}] on the day's
+-- production row, so consumption can be worked out from each recipe's targets.
+ALTER TABLE plant_manual_entries ADD COLUMN IF NOT EXISTS recipe_lines JSONB;
