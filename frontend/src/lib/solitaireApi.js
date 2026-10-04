@@ -95,10 +95,21 @@ export const solitaireApi = {
   deleteRecipeMap: (id) => request(`/recipe-map/${id}`, { method: "DELETE" }),
   seedMixDesigns: () => request("/mix-designs/seed-from-plant", { method: "POST" }),
   mixDesignHistory: (id) => request(`/mix-designs/${id}/history`),
-  pendingLoads: () => request("/pending-loads"),
-  printLoad: (data) => request("/pending-loads/print", { method: "POST", body: JSON.stringify(data) }),
   printJobs: () => request("/print-jobs"),
   retryPrintJob: (id) => request(`/print-jobs/${id}/retry`, { method: "POST" }),
+
+  // Round 188 (v10.17) — docket from a plant batch number; saved dockets
+  // (edit / reprint, Admin & QC); the two data stores (Admin & QC).
+  openLoads: () => request("/loads/open"),
+  saveAndPrint: (data) => request("/loads/save-print", { method: "POST", body: JSON.stringify(data) }),
+  savedDockets: (show, q) => request(`/dockets?show=${encodeURIComponent(show || "today")}&q=${encodeURIComponent(q || "")}`),
+  docketEdits: (id) => request(`/dockets/${id}/edits`),
+  editDocket: (id, data) => request(`/dockets/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  reprintDocket: (id) => request(`/dockets/${id}/reprint`, { method: "POST" }),
+  plantBatches: (from, to, q) => request(`/store/plant-batches?from=${from || ""}&to=${to || ""}&q=${encodeURIComponent(q || "")}`),
+  plantBatchDetail: (l) => request(`/store/plant-batches/detail?plant_no=${encodeURIComponent(l.plant_no)}&batch_year=${l.batch_year}&batch_no=${l.batch_no}`),
+  printedTickets: (from, to, q) => request(`/store/printed-tickets?from=${from || ""}&to=${to || ""}&q=${encodeURIComponent(q || "")}`),
+  printedTicket: (id) => request(`/store/printed-tickets/${id}`),
 };
 
 export { SolitaireApiError };
