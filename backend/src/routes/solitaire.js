@@ -30,6 +30,7 @@ import { pool, query } from "../db.js";
 import {
   sheetNumberForLoad, batchEndWithDelay, buildLoadSheetValues, LOAD_SHEET_CELLS,
   buildMixDesignRows, mixDesignRowsToClear, MIX_DESIGN_SHEET_COLUMNS, SAVE_FOLDER_CELL,
+  ticketReadbackSpec, parseTicketReadback,
 } from "../lib/mixtrackWorkbook.js";
 import {
   signSolitaireSession, generateDeviceToken, cookieOptions, requireSolitaireConfigured,
@@ -866,83 +867,113 @@ router.delete("/recipe-map/:id", requireSolitaireAuth, requireSolitaireRole(...R
 });
 
 /* =========================================================================
- * ROUND 161 — LOADS WAITING FOR A TICKET
+ * ROUND 188 (v10.17) — A DOCKET IS RAISED FROM A PLANT BATCH NUMBER
  *
- * One row per LOAD the plant has batched (not per batch — the vocabulary
- * matters: a load is the truckful, a batch is one drop of the mixer, ~7.4 to
- * a load here). A load appears here once MCI370 has it and leaves once its
- * ticket is printed.
+ * Replaces Round 161's "Loads waiting" table. The MixTrack screen now has a
+ * Batch / Docket Number dropdown listing the plant's loads that have no docket
+ * yet — the number only. Picking one fills every green box with the plant's
+ * OWN text (customer, site, recipe, truck, driver…), exactly as MCI370 recorded
+ * it: nothing is matched to the app's customer / site / truck masters any more.
+ * The operator types two figures — Production Qty, and With This Load (in the
+ * "Elapsed Batch Counter" box) — and Save & Print saves the docket and queues
+ * the print in one transaction.
  *
- * `blocker` is the whole point of the screen. A load whose recipe has no
- * mapping, or whose mapped design is gone, CANNOT print a correct ticket —
- * the workbook's VLOOKUP would return #N/A and the weight columns would come
- * out blank. The user's decision is that such a load is HELD and named, not
- * printed: a ticket with empty weights goes to a customer, whereas nothing
- * printing is merely a job for QC.
+ * The held-load rule from Round 161 stands: a recipe with no mapping to a Mix
+ * Design row would print a ticket with empty weight columns, so it is refused
+ * and named rather than printed.
  * ===================================================================== */
 
-router.get("/pending-loads", requireSolitaireAuth, async (req, res) => {
+const DOCKET_ADMIN_ROLES = ["qc", "admin"];
+
+// The QC allowance for a docket. The most specific rule wins: a site rule
+// before a customer rule, and either before the plant-wide default. Rules set
+// against the PLANT's text (this round) and the older rules set against the
+// app's own customer / site ids are both honoured.
+async function qcDelayFor({ siteText = null, siteId = null, customerText = null, customerId = null }, q = query) {
+  const { rows } = await q(
+    `SELECT delay_minutes
+       FROM mixtrack_qc_delays
+      WHERE ($1::text IS NOT NULL AND site_text IS NOT NULL AND upper(btrim(site_text)) = upper(btrim($1::text)))
+         OR ($2::int  IS NOT NULL AND site_id = $2::int)
+         OR ($3::text IS NOT NULL AND site_text IS NULL AND customer_text IS NOT NULL
+             AND upper(btrim(customer_text)) = upper(btrim($3::text)))
+         OR ($4::int  IS NOT NULL AND site_id IS NULL AND customer_id = $4::int)
+         OR (site_id IS NULL AND customer_id IS NULL AND site_text IS NULL AND customer_text IS NULL)
+      ORDER BY (site_text IS NOT NULL OR site_id IS NOT NULL) DESC,
+               (customer_text IS NOT NULL OR customer_id IS NOT NULL) DESC
+      LIMIT 1`,
+    [siteText || null, siteId || null, customerText || null, customerId || null]
+  );
+  return rows.length ? Number(rows[0].delay_minutes) || 0 : 0;
+}
+
+// One row per LOAD (a truckful; several batches of the mixer make one load)
+// that has no docket yet, newest first. Looks back 45 days: older loads are
+// history, and the dropdown has to stay short enough to use under a truck.
+router.get("/loads/open", requireSolitaireAuth, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 80, 1), 300);
   const { rows } = await query(
     `WITH loads AS (
        SELECT p.plant_no, p.batch_year, p.batch_no,
               max(p.recipe_code)  AS recipe_code,
               max(p.recipe_name)  AS recipe_name,
-              max(p.customer_code) AS customer_code,
+              max(p.customer_code) AS customer,
               max(p.order_no)     AS order_no,
-              max(p.site_name)    AS site_name,
+              max(p.site_name)    AS site,
               max(p.truck_no)     AS truck_no,
-              max(p.truck_driver) AS truck_driver,
-              max(p.load_qty_m3)  AS load_qty_m3,
-              max(p.ordered_qty_m3) AS ordered_qty_m3,
+              max(p.truck_driver) AS driver,
+              max(p.ordered_qty_m3)    AS ordered_qty_m3,
               max(p.with_this_load_m3) AS with_this_load_m3,
               max(p.mixer_capacity_m3) AS mixer_capacity_m3,
-              max(p.load_started_at) AS load_started_at,
-              max(p.load_ended_at)   AS load_ended_at,
-              to_char(max(p.batch_date), 'YYYY-MM-DD') AS batch_date,
-              count(*) AS batches
+              max(p.load_qty_m3)       AS load_qty_m3,
+              sum(p.batch_qty_m3)      AS made_m3,
+              max(p.load_started_at)   AS load_started_at,
+              count(*)::int AS batches
          FROM plant_batches p
+        WHERE p.batch_date >= CURRENT_DATE - 45
         GROUP BY p.plant_no, p.batch_year, p.batch_no
+     ), open AS (
+       SELECT l.* FROM loads l
+        WHERE NOT EXISTS (
+                SELECT 1 FROM solitaire_dockets k
+                 WHERE k.plant_no = l.plant_no AND k.plant_batch_year = l.batch_year
+                   AND k.plant_batch_no = l.batch_no)
+        ORDER BY l.load_started_at DESC NULLS LAST
+        LIMIT $1
      )
-     SELECT l.*,
-            to_char(l.load_started_at AT TIME ZONE 'Asia/Kolkata', 'HH12:MI:SS AM') AS started_time,
-            to_char(l.load_ended_at   AT TIME ZONE 'Asia/Kolkata', 'HH12:MI:SS AM') AS ended_time,
-            m.mix_design_id,
+     SELECT o.*,
+            to_char(o.load_started_at AT TIME ZONE 'Asia/Kolkata', 'DD-Mon HH24:MI') AS started_label,
+            mo.moisture_pct,
             d.code AS lookup_code,
-            CASE
-              WHEN m.id IS NULL THEN 'no-mapping'
-              WHEN d.id IS NULL OR NOT d.is_active THEN 'design-inactive'
-              ELSE NULL
-            END AS blocker
-       FROM loads l
-       LEFT JOIN mixtrack_recipe_map m ON m.mci370_code = l.recipe_code
+            CASE WHEN m.id IS NULL THEN 'no-mapping'
+                 WHEN d.id IS NULL OR NOT d.is_active THEN 'design-inactive'
+                 ELSE NULL END AS blocker
+       FROM open o
+       LEFT JOIN LATERAL (
+         SELECT avg(NULLIF(pm.moisture_pct, 0)) AS moisture_pct
+           FROM plant_batch_materials pm
+           JOIN plant_batches p2 ON p2.id = pm.batch_id
+          WHERE p2.plant_no = o.plant_no AND p2.batch_year = o.batch_year AND p2.batch_no = o.batch_no
+            AND pm.slot = 'gate2' AND pm.moisture_pct IS NOT NULL
+       ) mo ON true
+       LEFT JOIN mixtrack_recipe_map m ON m.mci370_code = o.recipe_code
        LEFT JOIN solitaire_mix_designs d ON d.id = m.mix_design_id
-      WHERE NOT EXISTS (
-              SELECT 1 FROM solitaire_dockets k
-               WHERE k.plant_no = l.plant_no
-                 AND k.plant_batch_year = l.batch_year
-                 AND k.plant_batch_no = l.batch_no)
-      ORDER BY l.load_started_at DESC NULLS LAST
-      LIMIT 200`
+      ORDER BY o.load_started_at DESC NULLS LAST`,
+    [limit]
   );
-  res.json(rows.map((r) => ({ ...r, batches: Number(r.batches) })));
+  res.json(rows.map((r) => ({
+    ...r,
+    key: `${r.plant_no}|${r.batch_year}|${r.batch_no}`,
+    moisture_pct: r.moisture_pct == null ? null : Math.round(Number(r.moisture_pct) * 10) / 10,
+  })));
 });
 
-/* =========================================================================
- * ROUND 161 — PRODUCTION QTY, WHICH IS WHAT MAKES THE TICKET
- *
- * The operator types one figure. Everything else on the ticket came from
- * MCI370. Saving it creates the docket and queues the print job, in one
- * transaction — the user's decision was that printing fires as soon as the
- * quantity is saved rather than needing a second action.
- *
- * Nothing can print before this, because `Load!I40` derives which of sheets
- * 1-10 to print from `AO29`, the production quantity itself.
- * ===================================================================== */
-
-// The snapshot the agent will write. Taken HERE, at print time, and stored on
-// the job — so a retry tomorrow, or a reprint next year, reproduces the paper
-// that was handed over rather than picking up a mix design QC has edited since.
-async function buildPrintPayload(client, docketId) {
+// The snapshot the agent writes. Taken at print time and stored on the job, so
+// a retry tomorrow reproduces the paper that was handed over. `mixFrom` is an
+// earlier payload whose Mix Design rows are reused for a reprint or an edited
+// reprint: the corrected ticket keeps the mix that was in force when it was
+// first printed, rather than whatever QC has changed since.
+async function buildPrintPayload(client, docketId, mixFrom = null) {
   const { rows } = await client.query(
     `SELECT d.batch_number, d.lookup_code, d.order_no, d.recipe_name, d.driver_name,
             d.production_qty_m3, d.mixer_capacity_m3, d.moisture_pct,
@@ -950,67 +981,82 @@ async function buildPrintPayload(client, docketId) {
             to_char(d.batch_started_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')     AS batch_date,
             to_char(d.batch_started_at AT TIME ZONE 'Asia/Kolkata', 'HH12:MI:SS AM')  AS batch_start_time,
             to_char(d.batch_ended_at   AT TIME ZONE 'Asia/Kolkata', 'HH12:MI:SS AM')  AS batch_end_time,
-            c.name AS customer_name, s.name AS site_name,
+            -- Round 188: the plant's own text first; the old master-matched
+            -- names only for dockets raised before this round.
+            COALESCE(d.customer_text, c.name) AS customer_name,
+            COALESCE(d.site_text, s.name)     AS site_name,
             -- recipe_code is MCI370's OWN, because M29 is what the ticket
             -- PRINTS. The mix design's code is lookup_code and goes to H45.
-            -- Reading the code off the design here printed the workbook's
-            -- spelling on the ticket, which defeated splitting the two cells.
-            d.recipe_code, t.truck_number AS truck_number
+            d.recipe_code,
+            COALESCE(d.truck_text, t.truck_number) AS truck_number
        FROM solitaire_dockets d
-       JOIN customers c ON c.id = d.customer_id
-       JOIN sites s ON s.id = d.site_id
-       JOIN trucks t ON t.id = d.truck_id
+       LEFT JOIN customers c ON c.id = d.customer_id
+       LEFT JOIN sites s ON s.id = d.site_id
+       LEFT JOIN trucks t ON t.id = d.truck_id
       WHERE d.id = $1`,
     [docketId]
   );
   const d = rows[0];
-  const { rows: designs } = await client.query(
-    `SELECT * FROM solitaire_mix_designs WHERE is_active ORDER BY code`
-  );
+  let mixRows, clearRows;
+  if (mixFrom && Array.isArray(mixFrom.mix_design_rows)) {
+    mixRows = mixFrom.mix_design_rows;
+    clearRows = mixFrom.clear_rows || [];
+  } else {
+    const { rows: designs } = await client.query(
+      `SELECT * FROM solitaire_mix_designs WHERE is_active ORDER BY code`
+    );
+    mixRows = buildMixDesignRows(designs);
+    clearRows = mixDesignRowsToClear(designs.length);
+  }
   return {
     docket_id: docketId,
     sheet_number: d.sheet_number,
     load_cells: buildLoadSheetValues(d),
-    mix_design_rows: buildMixDesignRows(designs),
-    clear_rows: mixDesignRowsToClear(designs.length),
+    mix_design_rows: mixRows,
+    clear_rows: clearRows,
     mix_design_columns: MIX_DESIGN_SHEET_COLUMNS,
     save_folder_cell: SAVE_FOLDER_CELL,
+    // Round 188 — which cells of the printed sheet the agent reads back (Store 2).
+    readback: ticketReadbackSpec(d.sheet_number),
   };
 }
 
-router.post("/pending-loads/print", requireSolitaireAuth, async (req, res) => {
-  const { plant_no, batch_year, batch_no, production_qty_m3,
-          customer_id, site_id, truck_id, driver_user_id } = req.body || {};
-  const qty = Number(production_qty_m3);
-  if (!Number.isFinite(qty) || qty <= 0) {
-    return res.status(400).json({ error: "Enter the production quantity for this load." });
-  }
-  if (!customer_id || !site_id || !truck_id) {
-    return res.status(400).json({ error: "Customer, site and truck must all be matched before printing." });
-  }
+async function queuePrint(client, docketId, mixFrom = null) {
+  const payload = await buildPrintPayload(client, docketId, mixFrom);
+  const { rows } = await client.query(
+    `INSERT INTO mixtrack_print_jobs (docket_id, payload_json) VALUES ($1, $2) RETURNING id`,
+    [docketId, payload]
+  );
+  return rows[0].id;
+}
+
+function positiveQty(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : NaN;
+}
+
+router.post("/loads/save-print", requireSolitaireAuth, async (req, res) => {
+  const { plant_no, batch_year, batch_no } = req.body || {};
+  const qty = positiveQty(req.body?.production_qty_m3);
+  if (!qty) return res.status(400).json({ error: "Enter the Production Qty for this load." });
+  if (qty > 20) return res.status(400).json({ error: "Production Qty looks wrong — one load cannot be more than 20 m³." });
+  const wtlTyped = positiveQty(req.body?.with_this_load_m3);
+  if (Number.isNaN(wtlTyped)) return res.status(400).json({ error: "With This Load must be a number above zero." });
+  if (!plant_no || !batch_year || !batch_no) return res.status(400).json({ error: "Pick the batch number first." });
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-
     const { rows: loadRows } = await client.query(
       `SELECT max(recipe_code) AS recipe_code, max(recipe_name) AS recipe_name,
+              max(customer_code) AS customer, max(site_name) AS site, max(truck_no) AS truck_no,
               max(order_no) AS order_no, max(truck_driver) AS truck_driver,
               max(ordered_qty_m3) AS ordered_qty_m3, max(with_this_load_m3) AS with_this_load_m3,
               max(mixer_capacity_m3) AS mixer_capacity_m3,
               max(load_started_at) AS load_started_at, max(load_ended_at) AS load_ended_at,
-              -- Moisture is per SLOT, not per load, and AO34 on the ticket is
-              -- ONE number — so which slot's?
-              --
-              -- The SAND's. Averaging every gate that reported a figure was the
-              -- first attempt and it is wrong: on a real load that gave sand
-              -- 6.04%, 12mm 0.8% and 20mm 0.5%, the mean is 2.45%, a number
-              -- describing nothing. Sand carries nearly all the free water in a
-              -- mix and is the figure a batcher means by "the moisture".
-              --
-              -- gate2 is this plant's working sand; gate1 is a spare that has
-              -- fired 23 times in 18,505 batches, so it is the fallback rather
-              -- than an equal.
+              -- Moisture is the SAND's (gate2), not an average of every gate —
+              -- see Round 161: sand carries nearly all the free water.
               (SELECT avg(NULLIF(pm.moisture_pct, 0))
                  FROM plant_batch_materials pm
                  JOIN plant_batches p2 ON p2.id = pm.batch_id
@@ -1018,19 +1064,14 @@ router.post("/pending-loads/print", requireSolitaireAuth, async (req, res) => {
                   AND pm.slot = 'gate2' AND pm.moisture_pct IS NOT NULL) AS moisture_pct
          FROM plant_batches
         WHERE plant_no = $1 AND batch_year = $2 AND batch_no = $3`,
-      [plant_no, batch_year, batch_no]
+      [String(plant_no), Number(batch_year), Number(batch_no)]
     );
     if (!loadRows.length || !loadRows[0].recipe_code) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ error: "That load is not in the plant data." });
+      return res.status(404).json({ error: "That batch number is not in the plant data." });
     }
     const load = loadRows[0];
 
-    // THE HELD-LOAD RULE. No mapping, or a mapping pointing at a design that
-    // has been deactivated, means the workbook's VLOOKUP returns #N/A and the
-    // ticket prints with empty weight columns. That document goes to a
-    // customer, so it is refused rather than printed — and the reply names the
-    // recipe, because "it didn't print" is useless on its own.
     const { rows: mapRows } = await client.query(
       `SELECT m.mix_design_id, d.code, d.is_active
          FROM mixtrack_recipe_map m
@@ -1041,7 +1082,7 @@ router.post("/pending-loads/print", requireSolitaireAuth, async (req, res) => {
     if (!mapRows.length) {
       await client.query("ROLLBACK");
       return res.status(409).json({
-        error: `Recipe "${load.recipe_code}" is not mapped to a mix design yet, so the ticket would print with no quantities. QC needs to map or add it first.`,
+        error: `Recipe "${load.recipe_code}" is not mapped to a mix design yet, so the ticket would print with no quantities. QC needs to map it first (Recipe map).`,
         code: "NO_MAPPING", recipe_code: load.recipe_code,
       });
     }
@@ -1053,58 +1094,361 @@ router.post("/pending-loads/print", requireSolitaireAuth, async (req, res) => {
       });
     }
 
-    const qcDelay = await (async () => {
-      const { rows } = await client.query(
-        `SELECT delay_minutes FROM mixtrack_qc_delays
-          WHERE (site_id = $1) OR (site_id IS NULL AND customer_id = $2)
-             OR (site_id IS NULL AND customer_id IS NULL)
-          ORDER BY (site_id IS NOT NULL) DESC, (customer_id IS NOT NULL) DESC LIMIT 1`,
-        [site_id, customer_id]
-      );
-      return rows.length ? Number(rows[0].delay_minutes) || 0 : 0;
-    })();
+    const qcDelay = await qcDelayFor(
+      { siteText: load.site, customerText: load.customer },
+      (sql, p) => client.query(sql, p)
+    );
+    const wtl = wtlTyped || (load.with_this_load_m3 != null ? Number(load.with_this_load_m3) : null);
 
     const { rows: docketRows } = await client.query(
       `INSERT INTO solitaire_dockets
-        (batch_number, customer_id, site_id, mix_design_id, truck_id, driver_name, driver_user_id,
+        (batch_number, customer_text, site_text, truck_text, mix_design_id, driver_name,
          production_qty_m3, mixer_capacity_m3, moisture_pct, order_qty_m3, with_this_load_m3,
          sheet_number, order_no, recipe_name, recipe_code, lookup_code,
          batch_started_at, batch_ended_at, qc_delay_minutes,
          plant_no, plant_batch_no, plant_batch_year,
          pdf_filename, pdf_data, is_placeholder_pdf, printed_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NULL,NULL,false,$24)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NULL,NULL,false,$23)
        RETURNING id, batch_number, sheet_number`,
-      [String(batch_no), customer_id, site_id, mapRows[0].mix_design_id, truck_id,
-       load.truck_driver || null, driver_user_id || null,
-       qty, load.mixer_capacity_m3 || null, load.moisture_pct || null,
-       load.ordered_qty_m3 || null, load.with_this_load_m3 || null,
+      [String(batch_no), load.customer || null, load.site || null, load.truck_no || null,
+       mapRows[0].mix_design_id, load.truck_driver || null,
+       qty, load.mixer_capacity_m3 || null,
+       load.moisture_pct == null ? null : Math.round(Number(load.moisture_pct) * 100) / 100,
+       load.ordered_qty_m3 || null, wtl,
        sheetNumberForLoad(qty), load.order_no || null, load.recipe_name || null,
        load.recipe_code, mapRows[0].code,
        load.load_started_at || null, batchEndWithDelay(load.load_ended_at, qcDelay), qcDelay,
-       plant_no, batch_no, batch_year, req.solitaireAccount.id]
+       String(plant_no), Number(batch_no), Number(batch_year), req.solitaireAccount.id]
     );
     const docket = docketRows[0];
-
-    const payload = await buildPrintPayload(client, docket.id);
-    const { rows: jobRows } = await client.query(
-      `INSERT INTO mixtrack_print_jobs (docket_id, payload_json) VALUES ($1, $2) RETURNING id`,
-      [docket.id, payload]
-    );
-
+    const jobId = await queuePrint(client, docket.id);
     await client.query("COMMIT");
-    res.status(201).json({ ...docket, print_job_id: jobRows[0].id, qc_delay_minutes: qcDelay });
+    res.status(201).json({ ...docket, print_job_id: jobId, qc_delay_minutes: qcDelay });
   } catch (err) {
-    await client.query("ROLLBACK");
-    // The partial unique index is the guard against two operators ticketing
-    // the same load from two screens.
-    if (err.code === "23505") {
-      return res.status(409).json({ error: "That load already has a ticket." });
-    }
+    await client.query("ROLLBACK").catch(() => {});
+    // The partial unique index stops two screens ticketing the same load.
+    if (err.code === "23505") return res.status(409).json({ error: "That batch already has a docket." });
     throw err;
   } finally {
     client.release();
   }
 });
+
+/* =========================================================================
+ * ROUND 188 — SAVED DOCKETS (Admin & QC): list, edit, reprint.
+ *
+ * Edit corrects a mistake on the docket — driver, vehicle, customer, site,
+ * order no, With This Load, Production Qty. A reason is required and every
+ * change is kept (who, when, before, after). The plant's own copy of the batch
+ * (Store 1) is never touched.
+ * ===================================================================== */
+
+const DOCKET_STATUS_SQL = `
+  CASE WHEN j.id IS NULL THEN 'saved'
+       WHEN j.status IN ('pending', 'claimed') THEN 'printing'
+       WHEN j.status = 'done' THEN 'printed'
+       ELSE 'failed' END`;
+
+router.get("/dockets", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const show = ["today", "failed", "all"].includes(req.query.show) ? req.query.show : "today";
+  const { rows } = await query(
+    `SELECT d.id, d.batch_number, d.production_qty_m3, d.with_this_load_m3, d.order_qty_m3,
+            d.sheet_number, d.is_placeholder_pdf, d.order_no, d.driver_name,
+            (d.pdf_data IS NOT NULL) AS has_pdf, d.pdf_filename, d.pdf_purged_at,
+            to_char(d.printed_at AT TIME ZONE 'Asia/Kolkata', 'DD-Mon HH24:MI') AS saved_label,
+            to_char(d.edited_at  AT TIME ZONE 'Asia/Kolkata', 'DD-Mon HH24:MI') AS edited_label,
+            COALESCE(d.customer_text, c.name) AS customer_name,
+            COALESCE(d.site_text, s.name)     AS site_name,
+            COALESCE(d.truck_text, t.truck_number) AS truck_number,
+            COALESCE(d.recipe_code, m.code)   AS recipe_code,
+            j.id AS job_id, j.error AS job_error, ${DOCKET_STATUS_SQL} AS status,
+            (SELECT count(*)::int FROM mixtrack_docket_edits e WHERE e.docket_id = d.id) AS edits
+       FROM solitaire_dockets d
+       LEFT JOIN customers c ON c.id = d.customer_id
+       LEFT JOIN sites s ON s.id = d.site_id
+       LEFT JOIN trucks t ON t.id = d.truck_id
+       LEFT JOIN solitaire_mix_designs m ON m.id = d.mix_design_id
+       LEFT JOIN LATERAL (
+         SELECT id, status, error FROM mixtrack_print_jobs WHERE docket_id = d.id ORDER BY id DESC LIMIT 1
+       ) j ON true
+      WHERE ($1 = '' OR d.batch_number ILIKE '%'||$1||'%' OR COALESCE(d.customer_text, c.name) ILIKE '%'||$1||'%'
+             OR COALESCE(d.truck_text, t.truck_number) ILIKE '%'||$1||'%' OR COALESCE(d.site_text, s.name) ILIKE '%'||$1||'%'
+             OR d.driver_name ILIKE '%'||$1||'%')
+        AND ($2 <> 'today' OR (d.printed_at AT TIME ZONE 'Asia/Kolkata')::date = CURRENT_DATE)
+        AND ($2 <> 'failed' OR j.status = 'failed')
+      ORDER BY d.printed_at DESC LIMIT 300`,
+    [q, show]
+  );
+  res.json(rows);
+});
+
+router.get("/dockets/:id/edits", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const { rows } = await query(
+    `SELECT e.id, e.reason, e.before_json, e.after_json, e.reprinted,
+            to_char(e.changed_at AT TIME ZONE 'Asia/Kolkata', 'DD-Mon-YYYY HH24:MI') AS changed_at,
+            a.display_name AS changed_by_name
+       FROM mixtrack_docket_edits e
+       LEFT JOIN solitaire_accounts a ON a.id = e.changed_by
+      WHERE e.docket_id = $1 ORDER BY e.changed_at DESC`,
+    [req.params.id]
+  );
+  res.json(rows);
+});
+
+const DOCKET_EDIT_FIELDS = {
+  customer_text: "text", site_text: "text", truck_text: "text", driver_name: "text", order_no: "text",
+  with_this_load_m3: "qty", production_qty_m3: "qty",
+};
+
+async function latestPayload(client, docketId) {
+  const { rows } = await client.query(
+    `SELECT payload_json FROM mixtrack_print_jobs WHERE docket_id = $1 ORDER BY id DESC LIMIT 1`, [docketId]
+  );
+  return rows[0]?.payload_json || null;
+}
+
+router.patch("/dockets/:id", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body || {};
+  const reason = String(body.reason || "").trim();
+  if (!reason) return res.status(400).json({ error: "Say why the docket is being changed." });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: cur } = await client.query(
+      `SELECT d.*, COALESCE(d.customer_text, c.name) AS cur_customer, COALESCE(d.site_text, s.name) AS cur_site,
+              COALESCE(d.truck_text, t.truck_number) AS cur_truck
+         FROM solitaire_dockets d
+         LEFT JOIN customers c ON c.id = d.customer_id
+         LEFT JOIN sites s ON s.id = d.site_id
+         LEFT JOIN trucks t ON t.id = d.truck_id
+        WHERE d.id = $1 FOR UPDATE OF d`, [id]
+    );
+    if (!cur.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "No such docket." }); }
+    const d = cur[0];
+    const currentValue = {
+      customer_text: d.cur_customer, site_text: d.cur_site, truck_text: d.cur_truck,
+      driver_name: d.driver_name, order_no: d.order_no,
+      with_this_load_m3: d.with_this_load_m3 == null ? null : Number(d.with_this_load_m3),
+      production_qty_m3: d.production_qty_m3 == null ? null : Number(d.production_qty_m3),
+    };
+    const before = {}, after = {};
+    for (const [f, kind] of Object.entries(DOCKET_EDIT_FIELDS)) {
+      if (!Object.prototype.hasOwnProperty.call(body, f)) continue;
+      let v = body[f];
+      if (kind === "text") {
+        v = String(v ?? "").trim();
+        if (f !== "order_no" && f !== "driver_name" && !v) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "Customer, site and truck cannot be left blank." });
+        }
+        v = v || null;
+      } else {
+        v = positiveQty(v);
+        if (!v || (f === "production_qty_m3" && v > 20)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: f === "production_qty_m3" ? "Production Qty must be above zero and at most 20 m³." : "With This Load must be above zero." });
+        }
+      }
+      const old = currentValue[f];
+      if ((old ?? null) === (v ?? null) || (kind === "qty" && Number(old) === Number(v))) continue;
+      before[f] = old; after[f] = v;
+    }
+    const reprint = !!body.reprint;
+    if (!Object.keys(after).length && !reprint) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Nothing was changed." });
+    }
+
+    if (Object.keys(after).length) {
+      const sets = [], params = [id];
+      for (const [f, v] of Object.entries(after)) { params.push(v); sets.push(`${f} = $${params.length}`); }
+      if (after.production_qty_m3 != null) { params.push(sheetNumberForLoad(after.production_qty_m3)); sets.push(`sheet_number = $${params.length}`); }
+      sets.push("edited_at = now()");
+      await client.query(`UPDATE solitaire_dockets SET ${sets.join(", ")} WHERE id = $1`, params);
+      await client.query(
+        `INSERT INTO mixtrack_docket_edits (docket_id, changed_by, reason, before_json, after_json, reprinted)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [id, req.solitaireAccount.id, reason, JSON.stringify(before), JSON.stringify(after), reprint]
+      );
+    }
+    let jobId = null;
+    if (reprint) jobId = await queuePrint(client, id, await latestPayload(client, id));
+    await client.query("COMMIT");
+    res.json({ ok: true, changed: Object.keys(after), print_job_id: jobId });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// Reprint = a fresh print job built from the docket as it stands now (so an
+// edit saved earlier is printed), with the Mix Design rows of the docket's
+// last print, so the mix on the paper does not drift with later QC changes.
+router.post("/dockets/:id/reprint", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const id = Number(req.params.id);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT id, mix_design_id FROM solitaire_dockets WHERE id = $1`, [id]);
+    if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "No such docket." }); }
+    const { rows: busy } = await client.query(
+      `SELECT 1 FROM mixtrack_print_jobs WHERE docket_id = $1 AND status IN ('pending', 'claimed')`, [id]
+    );
+    if (busy.length) { await client.query("ROLLBACK"); return res.status(409).json({ error: "That docket is already waiting to print." }); }
+    const jobId = await queuePrint(client, id, await latestPayload(client, id));
+    await client.query("COMMIT");
+    res.json({ ok: true, print_job_id: jobId });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+/* =========================================================================
+ * ROUND 188 — THE TWO DATA STORES (Admin & QC, read-only)
+ *
+ * Store 1 — the plant's own record: plant_batches / plant_batch_materials, as
+ *           the MCI370 agent copied them. One row per load; open it for every
+ *           batch's actual / target kg per hopper and the moisture.
+ * Store 2 — what the ticket printed, read back from the workbook after each
+ *           print (mixtrack_printed_tickets).
+ * ===================================================================== */
+
+function dayParam(v, fallbackSql) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : fallbackSql;
+}
+
+router.get("/store/plant-batches", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const from = dayParam(req.query.from, null);
+  const to = dayParam(req.query.to, null);
+  const q = String(req.query.q || "").trim();
+  const { rows } = await query(
+    `WITH loads AS (
+       SELECT p.plant_no, p.batch_year, p.batch_no,
+              max(p.recipe_code) AS recipe_code, max(p.customer_code) AS customer, max(p.site_name) AS site,
+              max(p.truck_no) AS truck_no, max(p.truck_driver) AS driver, max(p.order_no) AS order_no,
+              sum(p.batch_qty_m3)::numeric AS made_m3, count(*)::int AS batches,
+              min(p.batched_at) AS first_at, max(p.batched_at) AS last_at,
+              max(p.load_started_at) AS started_at, max(p.load_ended_at) AS ended_at,
+              min(p.batch_date) AS batch_date
+         FROM plant_batches p
+        WHERE p.batch_date BETWEEN COALESCE($1::date, CURRENT_DATE) AND COALESCE($2::date, CURRENT_DATE)
+        GROUP BY p.plant_no, p.batch_year, p.batch_no
+     )
+     SELECT l.plant_no, l.batch_year, l.batch_no, l.recipe_code, l.customer, l.site, l.truck_no, l.driver, l.order_no,
+            l.made_m3, l.batches, to_char(l.batch_date, 'YYYY-MM-DD') AS batch_date,
+            to_char(COALESCE(l.started_at, l.first_at) AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS start_time,
+            to_char(COALESCE(l.ended_at, l.last_at) AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS end_time,
+            k.id AS docket_id, CASE WHEN k.id IS NULL THEN 'none' WHEN j.id IS NULL THEN 'saved'
+                 WHEN j.status IN ('pending', 'claimed') THEN 'printing'
+                 WHEN j.status = 'done' THEN 'printed' ELSE 'failed' END AS docket_status
+       FROM loads l
+       LEFT JOIN solitaire_dockets k ON k.plant_no = l.plant_no AND k.plant_batch_year = l.batch_year AND k.plant_batch_no = l.batch_no
+       LEFT JOIN LATERAL (
+         SELECT id, status FROM mixtrack_print_jobs WHERE docket_id = k.id ORDER BY id DESC LIMIT 1
+       ) j ON true
+      WHERE ($3 = '' OR l.batch_no::text ILIKE '%'||$3||'%' OR l.customer ILIKE '%'||$3||'%'
+             OR l.truck_no ILIKE '%'||$3||'%' OR l.recipe_code ILIKE '%'||$3||'%' OR l.site ILIKE '%'||$3||'%')
+      ORDER BY COALESCE(l.started_at, l.first_at) DESC NULLS LAST
+      LIMIT 500`,
+    [from, to, q]
+  );
+  const totals = rows.reduce((t, r) => ({ loads: t.loads + 1, m3: t.m3 + Number(r.made_m3 || 0), batches: t.batches + r.batches }), { loads: 0, m3: 0, batches: 0 });
+  res.json({ loads: rows, totals: { ...totals, m3: Math.round(totals.m3 * 1000) / 1000 } });
+});
+
+router.get("/store/plant-batches/detail", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const { plant_no, batch_year, batch_no } = req.query;
+  const { rows: batches } = await query(
+    `SELECT id, batch_index, batch_qty_m3,
+            to_char(batched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS time
+       FROM plant_batches
+      WHERE plant_no = $1 AND batch_year = $2 AND batch_no = $3
+      ORDER BY batch_index`,
+    [String(plant_no || ""), Number(batch_year) || 0, Number(batch_no) || 0]
+  );
+  if (!batches.length) return res.status(404).json({ error: "No such load." });
+  const { rows: mats } = await query(
+    `SELECT pm.batch_id, pm.slot, pm.slot_name, pm.actual_kg, pm.target_kg, pm.moisture_pct
+       FROM plant_batch_materials pm WHERE pm.batch_id = ANY($1::int[])`,
+    [batches.map((b) => b.id)]
+  );
+  // Columns in the plant's slot order, named as the panel named them, and only
+  // slots that actually dispensed something on this load.
+  const ORDER = ["gate1", "gate2", "gate3", "gate4", "gate5", "gate6", "cement1", "cement2", "cement3", "cement4", "filler1", "water1", "water2"];
+  const slotRank = (s) => { const i = ORDER.indexOf(s); return i < 0 ? 100 + s.charCodeAt(0) : i; };
+  const used = new Map();
+  for (const m of mats) {
+    if (Number(m.actual_kg) > 0 || Number(m.target_kg) > 0) {
+      if (!used.has(m.slot) || (m.slot_name && !used.get(m.slot))) used.set(m.slot, m.slot_name || m.slot);
+    }
+  }
+  const columns = [...used.entries()].sort((a, b) => slotRank(a[0]) - slotRank(b[0])).map(([slot, name]) => ({ slot, name }));
+  const bySlot = new Map();
+  for (const m of mats) bySlot.set(`${m.batch_id}|${m.slot}`, m);
+  const sandMoist = (bid) => {
+    const g = bySlot.get(`${bid}|gate2`) || bySlot.get(`${bid}|gate1`);
+    return g?.moisture_pct != null ? Number(g.moisture_pct) : null;
+  };
+  res.json({
+    columns,
+    batches: batches.map((b) => ({
+      batch: b.batch_index, time: b.time, m3: b.batch_qty_m3 == null ? null : Number(b.batch_qty_m3),
+      sand_moisture_pct: sandMoist(b.id),
+      values: columns.map((c) => {
+        const m = bySlot.get(`${b.id}|${c.slot}`);
+        return { slot: c.slot, actual_kg: m?.actual_kg == null ? null : Number(m.actual_kg), target_kg: m?.target_kg == null ? null : Number(m.target_kg) };
+      }),
+    })),
+    totals: columns.map((c) => ({
+      slot: c.slot,
+      actual_kg: mats.filter((m) => m.slot === c.slot).reduce((s, m) => s + Number(m.actual_kg || 0), 0),
+      target_kg: mats.filter((m) => m.slot === c.slot).reduce((s, m) => s + Number(m.target_kg || 0), 0),
+    })),
+  });
+});
+
+router.get("/store/printed-tickets", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const from = dayParam(req.query.from, null);
+  const to = dayParam(req.query.to, null);
+  const q = String(req.query.q || "").trim();
+  const { rows } = await query(
+    `SELECT pt.id, pt.docket_id, pt.sheet_number,
+            to_char(pt.printed_at AT TIME ZONE 'Asia/Kolkata', 'DD-Mon HH24:MI:SS') AS printed_label,
+            pt.header_json->>'customer' AS customer, pt.header_json->>'site' AS site,
+            pt.header_json->>'recipe_code' AS recipe_code, pt.header_json->>'truck' AS truck,
+            pt.header_json->>'driver' AS driver, pt.header_json->>'production_qty' AS production_qty,
+            COALESCE(pt.header_json->>'docket_no', d.batch_number) AS docket_no,
+            d.pdf_filename, (d.pdf_data IS NOT NULL) AS has_pdf
+       FROM mixtrack_printed_tickets pt
+       JOIN solitaire_dockets d ON d.id = pt.docket_id
+      WHERE (pt.printed_at AT TIME ZONE 'Asia/Kolkata')::date
+            BETWEEN COALESCE($1::date, CURRENT_DATE) AND COALESCE($2::date, CURRENT_DATE)
+        AND ($3 = '' OR d.batch_number ILIKE '%'||$3||'%' OR pt.header_json->>'customer' ILIKE '%'||$3||'%'
+             OR pt.header_json->>'truck' ILIKE '%'||$3||'%' OR pt.header_json->>'recipe_code' ILIKE '%'||$3||'%')
+      ORDER BY pt.printed_at DESC LIMIT 500`,
+    [from, to, q]
+  );
+  const totals = rows.reduce((t, r) => ({ tickets: t.tickets + 1, m3: t.m3 + (Number(r.production_qty) || 0), batches: t.batches + (r.sheet_number || 0) }), { tickets: 0, m3: 0, batches: 0 });
+  res.json({ tickets: rows, totals });
+});
+
+router.get("/store/printed-tickets/:id", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, docket_id, sheet_number, header_json, materials_json, batches_json, totals_json
+       FROM mixtrack_printed_tickets WHERE id = $1`, [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Not found." });
+  res.json(rows[0]);
+});
+
 
 router.get("/print-jobs", requireSolitaireAuth, async (req, res) => {
   const { rows } = await query(
@@ -1183,7 +1527,7 @@ printRouter.post("/claim", async (req, res) => {
 
 printRouter.post("/result", async (req, res) => {
   if (!printAgentAuthorised(req)) return res.status(401).json({ error: "Not authorised." });
-  const { job_id, ok, error, pdf_filename, pdf_base64 } = req.body || {};
+  const { job_id, ok, error, pdf_filename, pdf_base64, readback } = req.body || {};
   if (!job_id) return res.status(400).json({ error: "Which job?" });
 
   const { rows: jobs } = await query(`SELECT docket_id FROM mixtrack_print_jobs WHERE id = $1`, [job_id]);
@@ -1212,7 +1556,27 @@ printRouter.post("/result", async (req, res) => {
     `UPDATE mixtrack_print_jobs SET status = 'done', error = NULL, pdf_filename = $2, completed_at = now() WHERE id = $1`,
     [job_id, pdf_filename || null]
   );
-  res.json({ ok: true, status: "done" });
+
+  // Round 188 — Store 2. Agent 1.1.0+ reads the printed sheet back and sends
+  // {sheet, values: {address: text}}. Older agents send nothing; the print
+  // still counts as done, there is just no Store 2 row for it. A parse failure
+  // must never turn a printed ticket into a "failed" job.
+  let stored = false;
+  if (readback && readback.values && typeof readback.values === "object") {
+    try {
+      const parsed = parseTicketReadback(readback.sheet, readback.values);
+      await query(
+        `INSERT INTO mixtrack_printed_tickets (docket_id, job_id, sheet_number, header_json, materials_json, batches_json, totals_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [jobs[0].docket_id, job_id, Number(readback.sheet) || null, JSON.stringify(parsed.header),
+         JSON.stringify(parsed.materials), JSON.stringify(parsed.batches), JSON.stringify(parsed.totals)]
+      );
+      stored = true;
+    } catch (err) {
+      console.error("printed-ticket read-back not stored", err.message);
+    }
+  }
+  res.json({ ok: true, status: "done", readback_stored: stored });
 });
 
 /* =========================================================================
@@ -1252,24 +1616,6 @@ printRouter.post("/purge", async (req, res) => {
   res.json(await purgeOldDocketPdfs());
 });
 
-router.get("/dockets", requireSolitaireAuth, async (req, res) => {
-  const q = (req.query.q || "").trim();
-  const { rows } = await query(
-    `SELECT d.id, d.batch_number, d.printed_at, d.production_qty_m3, d.sheet_number, d.is_placeholder_pdf,
-            c.name AS customer_name, s.name AS site_name, m.code AS recipe_code, t.truck_number AS truck_number
-     FROM solitaire_dockets d
-     JOIN customers c ON c.id = d.customer_id
-     JOIN sites s ON s.id = d.site_id
-     JOIN solitaire_mix_designs m ON m.id = d.mix_design_id
-     JOIN trucks t ON t.id = d.truck_id
-     WHERE $1 = '' OR d.batch_number ILIKE '%'||$1||'%' OR c.name ILIKE '%'||$1||'%'
-        OR t.truck_number ILIKE '%'||$1||'%' OR s.name ILIKE '%'||$1||'%'
-     ORDER BY d.printed_at DESC LIMIT 200`,
-    [q]
-  );
-  res.json(rows);
-});
-
 // ROUND 160 — the exact cell map for one docket.
 //
 // This is the input the Excel fill step consumes, and until that step exists
@@ -1291,13 +1637,13 @@ router.get("/dockets/:id/cells", requireSolitaireAuth, async (req, res) => {
             d.order_no, d.recipe_name, d.recipe_code, d.driver_name,
             d.production_qty_m3, d.mixer_capacity_m3, d.moisture_pct,
             d.order_qty_m3, d.with_this_load_m3, d.sheet_number,
-            c.name AS customer_name, s.name AS site_name,
-            COALESCE(d.lookup_code, m.code) AS lookup_code, t.truck_number AS truck_number
+            COALESCE(d.customer_text, c.name) AS customer_name, COALESCE(d.site_text, s.name) AS site_name,
+            COALESCE(d.lookup_code, m.code) AS lookup_code, COALESCE(d.truck_text, t.truck_number) AS truck_number
        FROM solitaire_dockets d
-       JOIN customers c ON c.id = d.customer_id
-       JOIN sites s ON s.id = d.site_id
-       JOIN solitaire_mix_designs m ON m.id = d.mix_design_id
-       JOIN trucks t ON t.id = d.truck_id
+       LEFT JOIN customers c ON c.id = d.customer_id
+       LEFT JOIN sites s ON s.id = d.site_id
+       LEFT JOIN solitaire_mix_designs m ON m.id = d.mix_design_id
+       LEFT JOIN trucks t ON t.id = d.truck_id
       WHERE d.id = $1`,
     [req.params.id]
   );

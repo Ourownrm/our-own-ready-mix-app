@@ -631,7 +631,7 @@ router.get("/summary", requireRole(...PLANT_ROLES), requirePermission("productio
     // CURRENT_DATE is the IST day — db.js pins every connection to
     // Asia/Kolkata. Doing this in JavaScript would give the UTC day and be
     // wrong between midnight and 05:30 every morning.
-    const [today, last, unmapped] = await Promise.all([
+    const [today, last, unmapped, manualToday] = await Promise.all([
       query(
         `SELECT COALESCE(sum(batch_qty_m3), 0)::numeric AS m3,
                 count(*)::int AS batches,
@@ -661,9 +661,19 @@ router.get("/summary", requireRole(...PLANT_ROLES), requirePermission("productio
                NOT IN ('', '0', '1', 'NA', 'NONE', 'NIL', 'AGG6', 'XXX', 'DUMMY', 'SPARE')
            AND NOT EXISTS (SELECT 1 FROM plant_silo_aliases a WHERE a.slot = n.slot)`
       ),
+      // Round 188 (v10.17 #1) — "Made today" includes what the operator
+      // entered by hand for today, as every other production figure does.
+      query(
+        `SELECT COALESCE(sum(qty_m3), 0)::numeric AS m3 FROM plant_manual_entries
+          WHERE entry_date = CURRENT_DATE AND material_id IS NULL`
+      ),
     ]);
+    const autoToday = Number(today.rows[0].m3) || 0;
+    const manualTodayM3 = Number(manualToday.rows[0].m3) || 0;
     res.json({
-      today_m3: Number(today.rows[0].m3),
+      today_m3: Math.round((autoToday + manualTodayM3) * 1000) / 1000,
+      today_auto_m3: autoToday,
+      today_manual_m3: manualTodayM3,
       today_batches: today.rows[0].batches,
       today_loads: today.rows[0].loads,
       today_recipes: today.rows[0].recipes,
@@ -717,8 +727,10 @@ router.get("/production", requireRole(...PLANT_ROLES), requirePermission("produc
           GROUP BY entry_date`,
         rngE.params
       ),
+      // Round 188 — the manual rows themselves, with their per-recipe split
+      // (recipe_lines), so manual m3 lands on its recipe in "By recipe".
       query(
-        `SELECT COALESCE(sum(qty_m3), 0)::numeric AS m3 FROM plant_manual_entries
+        `SELECT qty_m3, recipe_lines FROM plant_manual_entries
           WHERE ${rngE.sql} AND material_id IS NULL`,
         rngE.params
       ),
@@ -739,11 +751,46 @@ router.get("/production", requireRole(...PLANT_ROLES), requirePermission("produc
       .map((d) => ({ ...d, m3: Math.round((d.auto_m3 + d.manual_m3) * 1000) / 1000 }))
       .sort((a, b) => (a.batch_date < b.batch_date ? 1 : -1));
 
-    const manualM3 = Math.round((Number(manualTot.rows[0].m3) || 0) * 1000) / 1000;
-    const by_recipe = byRecipe.rows.slice();
-    if (manualM3 > 0) by_recipe.push({ recipe_code: "(manual entry)", recipe_name: "operator-entered", m3: manualM3, loads: 0 });
+    // Round 188 (v10.17 #2/#3) — manual m3 is split onto its recipe where the
+    // operator entered it by recipe; whatever was entered without a recipe
+    // stays on one "(manual, no recipe)" line. Each recipe row carries its
+    // auto and manual parts so the card can show both.
+    const recipeMap = new Map();
+    for (const r of byRecipe.rows) {
+      recipeMap.set(r.recipe_code, { recipe_code: r.recipe_code, recipe_name: r.recipe_name, auto_m3: Number(r.m3) || 0, manual_m3: 0, loads: r.loads });
+    }
+    let manualM3 = 0, unassigned = 0;
+    for (const e of manualTot.rows) {
+      const m3 = Number(e.qty_m3) || 0;
+      manualM3 += m3;
+      let assigned = 0;
+      for (const ln of Array.isArray(e.recipe_lines) ? e.recipe_lines : []) {
+        const code = String(ln?.recipe_code || "").trim();
+        const q = Number(ln?.m3) || 0;
+        if (!code || q <= 0) continue;
+        const cur = recipeMap.get(code) || { recipe_code: code, recipe_name: null, auto_m3: 0, manual_m3: 0, loads: 0 };
+        cur.manual_m3 += q;
+        recipeMap.set(code, cur);
+        assigned += q;
+      }
+      unassigned += Math.max(0, m3 - assigned);
+    }
+    if (unassigned > 0.0005) recipeMap.set("(manual)", { recipe_code: "(manual)", recipe_name: "no recipe given", auto_m3: 0, manual_m3: unassigned, loads: 0 });
+    const r3 = (v) => Math.round(v * 1000) / 1000;
+    const by_recipe = [...recipeMap.values()]
+      .map((r) => ({ ...r, auto_m3: r3(r.auto_m3), manual_m3: r3(r.manual_m3), m3: r3(r.auto_m3 + r.manual_m3) }))
+      .sort((a, b) => b.m3 - a.m3);
+    manualM3 = r3(manualM3);
 
-    res.json({ by_day, by_recipe, manual_m3: manualM3 });
+    const autoM3 = r3(by_day.reduce((t, d) => t + d.auto_m3, 0));
+    const totals = {
+      auto_m3: autoM3, manual_m3: manualM3, total_m3: r3(autoM3 + manualM3),
+      loads: by_day.reduce((t, d) => t + (d.loads || 0), 0),
+      batches: by_day.reduce((t, d) => t + (d.batches || 0), 0),
+      days: by_day.length,
+    };
+
+    res.json({ by_day, by_recipe, manual_m3: manualM3, totals });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load production." });
@@ -1743,7 +1790,7 @@ export async function reresolveSilos() {
 // ---------------------------------------------------------------------------
 router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "view"), async (req, res) => {
   try {
-    const [seen, aliases, materials, fills, notInSilo] = await Promise.all([
+    const [seen, aliases, materials, fills, notInSilo, units] = await Promise.all([
       // Keyed on the SLOT. slot_name is the panel's most recent word for it —
       // shown so a rename on the panel is visible rather than silent.
       query(
@@ -1804,7 +1851,16 @@ router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.
          GROUP BY o.material_id, m.name
          ORDER BY m.name`
       ),
+      // Round 188 (v10.17 #6) — each material's purchase unit, so a level is
+      // shown the way the material is bought (aggregate in CFT, cement in MT…).
+      query(`SELECT id, purchase_unit, kg_per_purchase_unit FROM rm_materials`),
     ]);
+    const unitBy = new Map(units.rows.map((u) => [u.id, u]));
+    const unitOf = (mid) => {
+      const u = mid ? unitBy.get(mid) : null;
+      const k = u ? Number(u.kg_per_purchase_unit) : 0;
+      return u && u.purchase_unit && k > 0 ? { purchase_unit: u.purchase_unit, kg_per_purchase_unit: k } : { purchase_unit: null, kg_per_purchase_unit: null };
+    };
 
     const balance = new Map(fills.rows.map((r) => [r.slot, r]));
 
@@ -1829,6 +1885,7 @@ router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.
           is_refillable: a.is_refillable,
           material_id: a.is_refillable ? (b?.current_material_id || null) : a.material_id,
           material_name: a.is_refillable ? (b?.current_material || null) : a.target,
+          ...unitOf(a.is_refillable ? (b?.current_material_id || null) : a.material_id),
           capacity_kg: capacity,
           filled_kg: b ? Number(b.filled_kg) : null,
           used_kg: b ? Number(b.used_kg) : null,
@@ -1848,6 +1905,7 @@ router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.
         material_id: r.material_id,
         material_name: r.material_name,
         qty_kg: Number(r.qty_kg),
+        ...unitOf(r.material_id),
         receipts: r.receipts,
         last_received: r.last_received,
       })),
@@ -2054,7 +2112,7 @@ router.get("/manual", requireRole(...PLANT_READ), requirePermission("production.
         // every time it has appeared. Round 158 fixed the same thing on the
         // production-by-day query.
         `SELECT e.id, to_char(e.entry_date, 'YYYY-MM-DD') AS entry_date,
-                e.material_id, e.qty_kg, e.qty_m3, e.reason, e.entered_at,
+                e.material_id, e.qty_kg, e.qty_m3, e.reason, e.entered_at, e.recipe_lines,
                 m.name AS material_name, m.purchase_unit, u.name AS entered_by_name
            FROM plant_manual_entries e
            LEFT JOIN rm_materials m ON m.id = e.material_id
@@ -2088,16 +2146,97 @@ router.get("/manual", requireRole(...PLANT_READ), requirePermission("production.
     const { rows: materials } = await query(
       `SELECT id, name, category FROM rm_materials WHERE is_active = true ORDER BY category NULLS LAST, name`
     );
+    // Round 188 (v10.17 #8) — the plant's recipes, so manual production can be
+    // entered by recipe and its consumption worked out from the recipe targets.
+    const { rows: recipes } = await query(
+      `SELECT recipe_code, recipe_name FROM plant_recipes WHERE COALESCE(deleted_flag, '') <> 'Yes' ORDER BY recipe_code`
+    );
     res.json({
       date: day,
       consumption: auto.rows,
       production: autoProd.rows[0],
       entries: entries.rows,
       materials,
+      recipes,
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load the day's entries." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 188 (v10.17 #8) — consumption worked out from manual production.
+//
+// The operator enters what the plant made by hand as recipe + m3 lines. Each
+// recipe's per-m3 targets (MCI370's Recipe_Master, synced into plant_recipes /
+// plant_recipe_targets) times the m3 gives kg per hopper; each hopper is turned
+// into a material the same way the plant's own batches are (the silo mapping,
+// or the latest fill for a refillable silo). The result pre-fills the manual
+// consumption boxes; the operator can still correct any figure before saving.
+// ---------------------------------------------------------------------------
+function cleanRecipeLines(list) {
+  const out = [];
+  for (const it of Array.isArray(list) ? list : []) {
+    const code = String(it?.recipe_code || "").trim().slice(0, 50);
+    const m3 = Number(it?.m3);
+    if (!code && (it?.m3 === "" || it?.m3 == null)) continue;
+    if (!code) throw new Error("Choose the recipe for every manual line.");
+    if (!Number.isFinite(m3) || m3 <= 0) throw new Error(`Enter the m³ for ${code}.`);
+    out.push({ recipe_code: code, m3: Math.round(m3 * 1000) / 1000 });
+  }
+  return out;
+}
+
+async function consumptionFromRecipes(lines) {
+  if (!lines.length) return { materials: [], unknown_recipes: [], unmapped_slots: [] };
+  const codes = [...new Set(lines.map((l) => l.recipe_code))];
+  const [{ rows: targets }, slotMat, { rows: mats }] = await Promise.all([
+    query(
+      `SELECT r.recipe_code, t.slot, t.target
+         FROM plant_recipes r JOIN plant_recipe_targets t ON t.recipe_id = r.id
+        WHERE r.recipe_code = ANY($1::text[])`,
+      [codes]
+    ),
+    slotMaterialMap(),
+    query(`SELECT id, name FROM rm_materials`),
+  ]);
+  const nameOf = new Map(mats.map((m) => [m.id, m.name]));
+  const byRecipe = new Map();
+  for (const t of targets) {
+    if (!byRecipe.has(t.recipe_code)) byRecipe.set(t.recipe_code, []);
+    byRecipe.get(t.recipe_code).push(t);
+  }
+  const kg = new Map();
+  const unknown = new Set(), unmapped = new Set();
+  for (const l of lines) {
+    const ts = byRecipe.get(l.recipe_code);
+    if (!ts) { unknown.add(l.recipe_code); continue; }
+    for (const t of ts) {
+      const tgt = Number(t.target) || 0;
+      if (tgt <= 0) continue;
+      const mid = slotMat.get(t.slot);
+      if (!mid) { unmapped.add(t.slot); continue; }
+      kg.set(mid, (kg.get(mid) || 0) + tgt * l.m3);
+    }
+  }
+  return {
+    materials: [...kg.entries()]
+      .map(([material_id, v]) => ({ material_id, name: nameOf.get(material_id) || `#${material_id}`, kg: Math.round(v * 100) / 100 }))
+      .sort((a, b) => b.kg - a.kg),
+    unknown_recipes: [...unknown],
+    unmapped_slots: [...unmapped],
+  };
+}
+
+router.post("/manual/calc", requireRole(...PLANT_READ), requirePermission("production.plant-data", "view"), async (req, res) => {
+  try {
+    const lines = cleanRecipeLines(req.body?.recipe_lines);
+    res.json({ ...(await consumptionFromRecipes(lines)), production_m3: Math.round(lines.reduce((t, l) => t + l.m3, 0) * 1000) / 1000 });
+  } catch (err) {
+    if (err.message && !err.code) return res.status(400).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: "Could not work out the consumption." });
   }
 });
 
@@ -2117,8 +2256,14 @@ router.post("/manual/day", requireRole(...PLANT_MANUAL), requirePermission("prod
   if (day > istDay()) return res.status(400).json({ error: "Manual entries cannot be made for a future date." });
   const reason = String(req.body?.reason || "").trim() || null;
 
+  // Round 188 — manual production may come as recipe lines; then the day's
+  // manual m3 IS their total, so the two can never disagree.
+  let recipeLines;
+  try { recipeLines = cleanRecipeLines(req.body?.recipe_lines); }
+  catch (err) { return res.status(400).json({ error: err.message }); }
   const m3Raw = req.body?.production_m3;
-  const m3 = m3Raw === null || m3Raw === undefined || m3Raw === "" ? 0 : Number(m3Raw);
+  let m3 = m3Raw === null || m3Raw === undefined || m3Raw === "" ? 0 : Number(m3Raw);
+  if (recipeLines.length) m3 = Math.round(recipeLines.reduce((t, l) => t + l.m3, 0) * 1000) / 1000;
   if (!Number.isFinite(m3) || m3 < 0) return res.status(400).json({ error: "Manual production must be zero or more m³." });
 
   const list = Array.isArray(req.body?.materials) ? req.body.materials : [];
@@ -2138,9 +2283,9 @@ router.post("/manual/day", requireRole(...PLANT_MANUAL), requirePermission("prod
     await client.query(`DELETE FROM plant_manual_entries WHERE entry_date = $1::date`, [day]);
     if (m3 > 0) {
       await client.query(
-        `INSERT INTO plant_manual_entries (entry_date, material_id, qty_m3, reason, entered_by)
-         VALUES ($1::date, NULL, $2, $3, $4)`,
-        [day, m3, reason, req.user.id]
+        `INSERT INTO plant_manual_entries (entry_date, material_id, qty_m3, reason, entered_by, recipe_lines)
+         VALUES ($1::date, NULL, $2, $3, $4, $5)`,
+        [day, m3, reason, req.user.id, recipeLines.length ? JSON.stringify(recipeLines) : null]
       );
     }
     for (const [id, kg] of mats) {
@@ -2263,52 +2408,89 @@ router.post("/manual", requireRole(...PLANT_MANUAL), requirePermission("producti
 
 const QC_DELAY_READ = ["administrator", "manager"];
 
+// Round 188 (v10.17 #5) — the rule's target is now the PLANT's text, because a
+// MixTrack docket carries the customer and site exactly as MCI370 recorded
+// them. The pickers list what the plant has actually used (last 12 months),
+// which is also why the old screen showed no customers: it asked the wrong
+// endpoint, and even the right one would have offered names a docket never
+// carries. Rules made earlier against the app's own customers / sites are
+// still listed, still applied to older dockets, and can be removed.
 router.get("/qc-delays", requireRole(...QC_DELAY_READ), requirePermission("production.mixtrack-qc-delay", "view"), async (req, res) => {
   const { rows } = await query(
-    `SELECT q.id, q.customer_id, q.site_id, q.delay_minutes, q.note,
+    `SELECT q.id, q.customer_id, q.site_id, q.customer_text, q.site_text, q.delay_minutes, q.note,
             to_char(q.updated_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS updated_at,
-            c.name AS customer_name, s.name AS site_name, u.name AS updated_by_name
+            COALESCE(q.customer_text, c.name) AS customer_name, COALESCE(q.site_text, s.name) AS site_name,
+            u.name AS updated_by_name
        FROM mixtrack_qc_delays q
        LEFT JOIN customers c ON c.id = q.customer_id
        LEFT JOIN sites s ON s.id = q.site_id
        LEFT JOIN users u ON u.id = q.updated_by
-      ORDER BY (q.site_id IS NULL AND q.customer_id IS NULL), s.name NULLS LAST, c.name NULLS LAST`
+      ORDER BY (q.site_id IS NULL AND q.customer_id IS NULL AND q.site_text IS NULL AND q.customer_text IS NULL),
+               COALESCE(q.site_text, s.name) NULLS LAST, COALESCE(q.customer_text, c.name) NULLS LAST`
   );
   res.json(rows);
 });
 
+router.get("/qc-delays/targets", requireRole(...QC_DELAY_READ), requirePermission("production.mixtrack-qc-delay", "view"), async (req, res) => {
+  const [cust, site] = await Promise.all([
+    query(
+      `SELECT btrim(customer_code) AS name, count(DISTINCT (batch_year, batch_no))::int AS loads
+         FROM plant_batches
+        WHERE batch_date >= CURRENT_DATE - 365 AND btrim(COALESCE(customer_code, '')) <> ''
+        GROUP BY btrim(customer_code) ORDER BY 1`
+    ),
+    query(
+      `SELECT btrim(site_name) AS name, (array_agg(btrim(customer_code) ORDER BY batched_at DESC NULLS LAST))[1] AS customer,
+              count(DISTINCT (batch_year, batch_no))::int AS loads
+         FROM plant_batches
+        WHERE batch_date >= CURRENT_DATE - 365 AND btrim(COALESCE(site_name, '')) <> ''
+        GROUP BY btrim(site_name) ORDER BY 1`
+    ),
+  ]);
+  res.json({ customers: cust.rows, sites: site.rows });
+});
+
 router.post("/qc-delays", requireRole(...PLANT_ADMIN), requirePermission("production.mixtrack-qc-delay", "create"), async (req, res) => {
-  const { customer_id, site_id, delay_minutes, note } = req.body || {};
+  const { delay_minutes, note } = req.body || {};
+  const customerText = String(req.body?.customer_text || "").trim() || null;
+  const siteText = String(req.body?.site_text || "").trim() || null;
   const mins = Number(delay_minutes);
   if (!Number.isFinite(mins) || mins < 0 || mins > 240) {
     return res.status(400).json({ error: "The allowance must be between 0 and 240 minutes." });
   }
-  // Both set is refused rather than silently resolved. A row that names a
+  // Both set is refused rather than silently resolved: a rule naming a
   // customer AND a site reads as "this customer at this site", which is not
-  // what the lookup does, and a rule that does not mean what it says is worse
-  // than no rule.
-  if (customer_id && site_id) {
+  // what the lookup does.
+  if (customerText && siteText) {
     return res.status(400).json({ error: "Set the allowance against a site or a customer, not both." });
   }
-  const { rows } = await query(
-    `INSERT INTO mixtrack_qc_delays (customer_id, site_id, delay_minutes, note, updated_by)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT DO NOTHING
-     RETURNING id, customer_id, site_id, delay_minutes`,
-    [customer_id || null, site_id || null, Math.round(mins), note || null, req.user.id]
+  const m = Math.round(mins);
+  // Find the existing rule for the same target (case-insensitive), so saving
+  // again edits it instead of tripping the unique index.
+  const { rows: existing } = await query(
+    `SELECT id FROM mixtrack_qc_delays
+      WHERE ($1::text IS NOT NULL AND site_text IS NOT NULL AND upper(btrim(site_text)) = upper($1::text))
+         OR ($1::text IS NULL AND $2::text IS NOT NULL AND site_text IS NULL AND customer_text IS NOT NULL
+             AND upper(btrim(customer_text)) = upper($2::text))
+         OR ($1::text IS NULL AND $2::text IS NULL AND site_id IS NULL AND customer_id IS NULL
+             AND site_text IS NULL AND customer_text IS NULL)
+      LIMIT 1`,
+    [siteText, customerText]
   );
-  if (!rows.length) {
-    // The unique indexes caught an existing rule for the same target, so this
-    // is an edit rather than a new rule.
-    const { rows: updated } = await query(
-      `UPDATE mixtrack_qc_delays
-          SET delay_minutes = $3, note = $4, updated_by = $5, updated_at = now()
-        WHERE (site_id IS NOT DISTINCT FROM $2) AND (customer_id IS NOT DISTINCT FROM $1)
-        RETURNING id, customer_id, site_id, delay_minutes`,
-      [customer_id || null, site_id || null, Math.round(mins), note || null, req.user.id]
+  if (existing.length) {
+    const { rows } = await query(
+      `UPDATE mixtrack_qc_delays SET delay_minutes = $2, note = $3, updated_by = $4, updated_at = now()
+        WHERE id = $1 RETURNING id, customer_text, site_text, delay_minutes`,
+      [existing[0].id, m, note || null, req.user.id]
     );
-    return res.json(updated[0] || null);
+    return res.json(rows[0]);
   }
+  const { rows } = await query(
+    `INSERT INTO mixtrack_qc_delays (customer_text, site_text, delay_minutes, note, updated_by)
+     VALUES ($1,$2,$3,$4,$5)
+     RETURNING id, customer_text, site_text, delay_minutes`,
+    [customerText, siteText, m, note || null, req.user.id]
+  );
   res.status(201).json(rows[0]);
 });
 

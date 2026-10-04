@@ -15,7 +15,7 @@ import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 // 185's bookStockRows() called it without importing it, so every caller (Stock
 // tab, stock-summary KPIs, Cost Dashboard) threw a ReferenceError at request
 // time. check-boot only imports modules, it never runs a handler, so it passed.
-import { plantConsumptionByMaterial, plantConsumptionByMaterialMonth, plantProductionM3, CONSUMPTION_CUTOVER, firstOfNextMonth, nextDay } from "../lib/plantConsumption.js";
+import { plantConsumptionByMaterial, plantConsumptionByMaterialMonth, plantProductionM3, CONSUMPTION_CUTOVER, firstOfNextMonth, nextDay, productionM3Range, consumptionByMaterialMonthRange } from "../lib/plantConsumption.js";
 
 // Round 139 — Material Module: Store's raw-material purchase -> receive ->
 // consume -> physical-count workflow (cement, aggregates, admixtures, etc.).
@@ -1592,6 +1592,11 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
       // needs the conversion; kg stays the only thing stored.
       kg_per_purchase_unit: Number(m.kg_per_purchase_unit),
       opening_kg: openingKg, purchase_kg: purchaseKg, plant_consumption_kg: plantConsumptionKg,
+      // Round 188 (v10.17 #7) — the plant consumption split into what the load
+      // cells weighed (auto) and what the operator entered by hand (manual).
+      // Null before the cutover, when the month's figure is the hand-keyed one.
+      plant_consumption_auto_kg: monthStart >= CONSUMPTION_CUTOVER ? (plantThisMonth.get(m.id)?.auto_kg || 0) : null,
+      plant_consumption_manual_kg: monthStart >= CONSUMPTION_CUTOVER ? (plantThisMonth.get(m.id)?.manual_kg || 0) : null,
       book_stock_kg: bookStockKg,
       physical_stock_kg: count ? Number(count.physical_stock_kg) : null,
       stock_taken_by_name: null,
@@ -1655,14 +1660,19 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
   // month's total material cost. The Plant Operator's own figure is the
   // basis here, same as everywhere else cost/m³ is computed — never the
   // challan total (see this file's header note on the two volume bases).
-  const { rows: prodRows } = await query(
-    `SELECT COALESCE(SUM(concrete_produced_m3), 0) AS m3 FROM rm_daily_production
-     WHERE production_date >= $1::date AND production_date < $1::date + INTERVAL '1 month'`,
-    [monthStart]
-  );
-  const productionM3 = Number(prodRows[0].m3);
+  // Round 188 (v10.17 #4) — the plant's actual production (auto + manual) from
+  // the cutover; the hand-keyed figure only for months before it.
+  const prod = await productionM3Range({ from: monthStart, toExclusive: monthEnd });
 
-  res.json({ month, production_m3: productionM3, materials: results });
+  res.json({
+    month,
+    production_m3: prod.total_m3,
+    production_auto_m3: prod.auto_m3,
+    production_manual_m3: prod.manual_m3,
+    production_hand_keyed_m3: prod.hand_keyed_m3,
+    plant_actual: monthStart >= CONSUMPTION_CUTOVER,
+    materials: results,
+  });
 });
 
 // ===================== Reports (Administrator only) =====================
@@ -1821,8 +1831,9 @@ router.get("/reports/daily-consumption", requireRole(...ADMIN), requirePermissio
     [date]
   );
 
-  const { rows: production } = await query(`SELECT concrete_produced_m3 FROM rm_daily_production WHERE production_date = $1`, [date]);
-  const operatorM3 = production[0] ? Number(production[0].concrete_produced_m3) : null;
+  // Round 188 (v10.17 #4) — from the cutover, the plant's actual (auto + manual).
+  const dayProd = await productionM3Range({ from: date, toExclusive: nextDay(date) });
+  const operatorM3 = dayProd.total_m3 > 0 ? dayProd.total_m3 : null;
 
   const { rows: challanByGrade } = await query(
     `SELECT g.name AS grade, SUM(dt.loaded_quantity_m3) AS m3
@@ -1925,9 +1936,8 @@ router.get("/reports/mix-vs-actual", requireRole(...ADMIN), requirePermission("m
     [date]
   );
 
-  const { rows: production } = await query(
-    `SELECT concrete_produced_m3 FROM rm_daily_production WHERE production_date = $1`, [date]
-  );
+  // Round 188 (v10.17 #4) — from the cutover, the plant's actual (auto + manual).
+  const dayProd = await productionM3Range({ from: date, toExclusive: nextDay(date) });
 
   const challanM3 = volumes.reduce((sum, v) => sum + Number(v.m3 || 0), 0);
   const gradesMissingDesign = volumes.filter((v) => !v.mix_design_id).map((v) => v.grade);
@@ -1967,7 +1977,7 @@ router.get("/reports/mix-vs-actual", requireRole(...ADMIN), requirePermission("m
   res.json({
     date,
     challan_production_m3: challanM3,
-    operator_production_m3: production[0] ? Number(production[0].concrete_produced_m3) : null,
+    operator_production_m3: dayProd.total_m3 > 0 ? dayProd.total_m3 : null,
     grades: volumes.map((v) => ({
       grade: v.grade, m3: Number(v.m3 || 0), design_ref_code: v.design_ref_code, has_design: !!v.mix_design_id,
     })),
@@ -2074,30 +2084,24 @@ router.get("/reports/cost-per-m3", requireRole(...ADMIN), requirePermission("mat
   const toDate = req.query.to_date;
   if (!fromDate || !toDate) return res.status(400).json({ error: "from_date and to_date are required." });
 
-  const { rows: dailyConsumption } = await query(
-    `SELECT c.material_id, c.consumption_date, COALESCE(c.automatic_qty_kg, c.manual_qty_kg, 0) AS consumed_kg
-     FROM rm_daily_consumption c
-     WHERE c.consumption_date >= $1::date AND c.consumption_date <= $2::date`,
-    [fromDate, toDate]
-  );
+  // Round 188 (v10.17 #4) — consumption and production split at the cutover:
+  // hand-keyed before it, the plant's actual (load cells + manual) from it.
+  const rangeEnd = nextDay(toDate);
+  const consumptionRows = await consumptionByMaterialMonthRange({ from: fromDate, toExclusive: rangeEnd });
   const { rows: materials } = await query(`SELECT id, opening_stock_rate_per_kg FROM rm_materials`);
   const materialById = new Map(materials.map((m) => [m.id, m]));
   const rateMapByMaterial = new Map();
   for (const m of materials) rateMapByMaterial.set(m.id, await monthlyWeightedAvgRates(m.id));
 
   let totalCost = 0;
-  for (const row of dailyConsumption) {
-    const ym = istMonth(row.consumption_date);
+  for (const row of consumptionRows) {
     const material = materialById.get(row.material_id);
-    const rate = effectiveAvgForMonth(rateMapByMaterial.get(row.material_id) || new Map(), ym, material?.opening_stock_rate_per_kg);
-    if (rate != null) totalCost += Number(row.consumed_kg) * rate;
+    const rate = effectiveAvgForMonth(rateMapByMaterial.get(row.material_id) || new Map(), row.ym, material?.opening_stock_rate_per_kg);
+    if (rate != null) totalCost += Number(row.kg) * rate;
   }
 
-  const { rows: productionRows } = await query(
-    `SELECT COALESCE(SUM(concrete_produced_m3), 0) AS total_m3 FROM rm_daily_production WHERE production_date >= $1::date AND production_date <= $2::date`,
-    [fromDate, toDate]
-  );
-  const operatorTotalM3 = Number(productionRows[0].total_m3);
+  const rangeProd = await productionM3Range({ from: fromDate, toExclusive: rangeEnd });
+  const operatorTotalM3 = rangeProd.total_m3;
 
   const { rows: challanByGrade } = await query(
     `SELECT g.name AS grade, SUM(dt.loaded_quantity_m3) AS m3
@@ -2143,11 +2147,11 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
   for (const m of materials) rateMapByMaterial.set(m.id, await monthlyWeightedAvgRates(m.id));
 
   // Per-material breakdown + this month's total material cost.
-  const { rows: monthConsumption } = await query(
-    `SELECT material_id, SUM(COALESCE(automatic_qty_kg, manual_qty_kg, 0)) AS consumed_kg
-     FROM rm_daily_consumption WHERE to_char(consumption_date, 'YYYY-MM') = $1 GROUP BY material_id`,
-    [month]
-  );
+  // Round 188 (v10.17 #4) — the month's consumption and production from the
+  // plant's actual once past the cutover (hand-keyed before it).
+  const monthEndEx = firstOfNextMonth(monthStart);
+  const monthConsumption = (await consumptionByMaterialMonthRange({ from: monthStart, toExclusive: monthEndEx }))
+    .map((r) => ({ material_id: r.material_id, consumed_kg: r.kg }));
   let monthMaterialCost = 0;
   const perMaterial = [];
   for (const row of monthConsumption) {
@@ -2159,11 +2163,8 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
     perMaterial.push({ material_id: row.material_id, name: material.name, consumed_kg: Number(row.consumed_kg), rate_per_kg: rate, cost });
   }
 
-  const { rows: productionRows } = await query(
-    `SELECT COALESCE(SUM(concrete_produced_m3), 0) AS total_m3 FROM rm_daily_production WHERE to_char(production_date, 'YYYY-MM') = $1`,
-    [month]
-  );
-  const monthM3 = Number(productionRows[0].total_m3);
+  const monthProd = await productionM3Range({ from: monthStart, toExclusive: monthEndEx });
+  const monthM3 = monthProd.total_m3;
   const costPerM3 = monthM3 > 0 ? monthMaterialCost / monthM3 : null;
   for (const p of perMaterial) p.cost_per_m3 = p.cost != null && monthM3 > 0 ? p.cost / monthM3 : null;
   perMaterial.sort((a, b) => (b.cost || 0) - (a.cost || 0));
@@ -2237,8 +2238,10 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
     const d = new Date(`${monthStart}T00:00:00Z`);
     d.setUTCMonth(d.getUTCMonth() - i);
     const ym = istMonth(d);
-    const { rows: prod } = await query(`SELECT COALESCE(SUM(concrete_produced_m3), 0) AS m3 FROM rm_daily_production WHERE to_char(production_date, 'YYYY-MM') = $1`, [ym]);
-    const { rows: cons } = await query(`SELECT material_id, SUM(COALESCE(automatic_qty_kg, manual_qty_kg, 0)) AS kg FROM rm_daily_consumption WHERE to_char(consumption_date, 'YYYY-MM') = $1 GROUP BY material_id`, [ym]);
+    const ymStart = `${ym}-01`;
+    const ymEnd = firstOfNextMonth(ymStart);
+    const prod = [{ m3: (await productionM3Range({ from: ymStart, toExclusive: ymEnd })).total_m3 }];
+    const cons = await consumptionByMaterialMonthRange({ from: ymStart, toExclusive: ymEnd });
     let cost = 0;
     for (const row of cons) {
       const material = materialById.get(row.material_id);
@@ -2255,6 +2258,9 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
     kpis: {
       cost_per_m3: costPerM3,
       month_m3: monthM3,
+      month_m3_auto: monthProd.auto_m3,
+      month_m3_manual: monthProd.manual_m3,
+      month_m3_hand_keyed: monthProd.hand_keyed_m3,
       stock_value: stockValue,
       month_purchase_value: monthPurchaseValue,
       debit_notes_due: debitNotesDue,
