@@ -82,3 +82,16 @@ So do not clear out `pdfFolder` on a schedule. It is the long-term archive.
 
 `agent.log` beside `agent.js`, rotating to `agent.log.1` at 1 MB. Under Task Scheduler there is
 no console, so this file is the only record — check it first when something has not printed.
+
+## Agent 1.1.0 (app v10.17) — printed-ticket read-back
+
+Replace `agent.js`, `fillAndPrint.ps1` and `package.json` with the 1.1.0 files and restart the
+scheduled task. Nothing in `config.json` changes.
+
+After filling the workbook and recalculating, the agent now **freezes calculation** (manual, and no
+recalculation on save), reads the batch figures off the sheet that is about to print, then runs
+`PrintOrderandAsPDF`. Because calculation is frozen, the RAND()-based "actual" weights cannot change
+between the read and the print, so what the app stores under **Printed tickets** is exactly what is on
+the customer's paper. The cells to read come from the app in each job, so a layout change on the server
+needs no agent update. An older agent still prints normally; its tickets simply do not appear in
+Printed tickets.

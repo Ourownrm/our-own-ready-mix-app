@@ -41,7 +41,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const AGENT_VERSION = "1.0.0";
+const AGENT_VERSION = "1.1.0";
 
 /* ---------------------------------------------------------------- config */
 
@@ -122,14 +122,30 @@ async function fillAndPrint(cfg, job) {
     "-PdfFolder", cfg.pdfFolder,
   ], { maxBuffer: 32 * 1024 * 1024, timeout: 5 * 60 * 1000 });
 
-  // PowerShell writes one JSON object on the last non-empty line. Anything
-  // before it is noise from the host and is ignored rather than allowed to
-  // break the parse.
-  const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const last = lines[lines.length - 1] || "";
+  // PowerShell writes one JSON object at the end. Anything before it is noise
+  // from the host and is ignored rather than allowed to break the parse.
+  // When PowerShell runs with no console (Task Scheduler), it can wrap a long
+  // line at the host's width, splitting the JSON across lines. So take
+  // everything from the last line that STARTS the JSON object and re-join it.
+  const raw = stdout.split(/\r?\n/);
+  let start = -1;
+  for (let i = raw.length - 1; i >= 0; i--) { if (raw[i].trimStart().startsWith("{")) { start = i; break; } }
   let out;
-  try { out = JSON.parse(last); }
+  try { out = JSON.parse(start >= 0 ? raw.slice(start).join("") : ""); }
   catch { throw new Error(`could not read the PowerShell result: ${stdout.slice(-400)}`); }
+
+  // agent 1.1.0 (Round 188) - the printed figures, read back from the sheet
+  // that printed. Written to a file by PowerShell (it can be ~600 cells).
+  // PowerShell 5 writes UTF-8 with a BOM, which JSON.parse refuses - strip it.
+  if (out.readback_file) {
+    try {
+      const txt = fs.readFileSync(out.readback_file, "utf8").replace(/^\uFEFF/, "");
+      out.readback = JSON.parse(txt);
+    } catch (err) {
+      log(`job ${job.id}: printed, but the read-back could not be read (${err.message})`);
+    }
+    try { fs.unlinkSync(out.readback_file); } catch { /* harmless */ }
+  }
 
   try { fs.unlinkSync(jobFile); } catch { /* a leftover job file is harmless */ }
   return out;
@@ -176,6 +192,7 @@ async function runOnce(cfg) {
     job_id: job.id, ok: true,
     pdf_filename: result.pdf_filename || null,
     pdf_base64,
+    readback: result.readback || null,
   });
   log(`job ${job.id} done — sheet ${result.sheet}, ${result.pdf_filename || "no PDF"}`);
   return true;
