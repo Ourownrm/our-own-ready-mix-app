@@ -7,14 +7,15 @@
 // Translated from the approved 06_mockup_v7.html's own JS 1:1 for behavior
 // (role gating, sheet-number formula, validation, popups), wired to the
 // real backend (lib/solitaireApi.js) instead of the mock's in-memory arrays.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { solitaireApi } from "../../lib/solitaireApi.js";
 // ROUND 161 — the plant-driven half of MixTrack. Kept in its own file: these
 // are ordinary working screens, while this file is the MCI370 panel replica
 // and mixing the two would make both harder to change.
-import { PendingLoads, RecipeMap, PrintQueue } from "./MixTrackLoads.jsx";
-import { generateSolitaireDocketPdf, computeSheetNumber } from "../../lib/solitaireDocketPdf.js";
+import { RecipeMap, PrintQueue } from "./MixTrackLoads.jsx";
+// ROUND 188 — saved dockets and the two data stores, Admin & QC only.
+import { SavedDockets, PlantBatchData, PrintedTickets } from "./MixTrackAdmin.jsx";
 import "./solitaire.css";
 
 // Percentage coordinates lifted verbatim from 04_field_coordinates.json —
@@ -58,76 +59,67 @@ function pct(box) {
   return { left: `${box.left}%`, top: `${box.top}%`, width: `${box.width}%`, height: `${box.height}%` };
 }
 
-const MASTERS_ROLES = ["operator", "qc", "admin"];
+// Round 188 — two more measured boxes from the same 1366x721 screenshot: the
+// bottom status-bar strip that carries Save & Print, and the empty band above
+// it that carries the "saved and sent to the printer" message.
+const STATUS_BAR = { left: 38.873, top: 93.897, width: 61.054, height: 5.964 };
+const SAVED_STRIP = { left: 7.028, top: 83.633, width: 83.455, height: 2.774 };
+
 const MIX_DESIGN_ROLES = ["qc", "admin"];
+const DOCKET_ADMIN_ROLES = ["qc", "admin"];
+
+function fmtNum(v, dp = 2) {
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(dp) : String(v);
+}
 
 export default function SolitaireApp() {
   const navigate = useNavigate();
   const [account, setAccount] = useState(null);
   const [loadError, setLoadError] = useState("");
-
-  const [customers, setCustomers] = useState([]);
-  const [trucks, setTrucks] = useState([]);
-  // Round 152 — drivers are main-app user accounts now, not a column on the truck.
-  const [drivers, setDrivers] = useState([]);
   // If the panel image cannot load, fall back to visible controls rather than
   // leaving the menus as invisible rectangles — the Round 149 failure mode.
   const [imgFailed, setImgFailed] = useState(false);
   const [mixDesigns, setMixDesigns] = useState([]);
 
-  const [customerId, setCustomerId] = useState("");
-  const [siteId, setSiteId] = useState("");
-  const [recipeCode, setRecipeCode] = useState("");
-  const [truckReg, setTruckReg] = useState("");
-  const [driverName, setDriverName] = useState("");
-  const [batchNumber, setBatchNumber] = useState("");
+  // ROUND 188 (v10.17) — the screen is driven by the plant's batch number.
+  // Picking a number fills every green box with the plant's OWN text; the
+  // operator types Production Qty and With This Load, then Save & Print.
+  const [loads, setLoads] = useState([]);
+  const [selKey, setSelKey] = useState("");
   const [prodQty, setProdQty] = useState("");
-  const [mixerCap, setMixerCap] = useState("1");
-  const [moisture, setMoisture] = useState("");
-  const [orderQty, setOrderQty] = useState("");
   const [withThisLoad, setWithThisLoad] = useState("");
-  const [orderDateTime, setOrderDateTime] = useState("");
-  // ROUND 160 — the three the ticket workbook no longer works out for itself,
-  // plus the plant's own clock. BPR107a.xlsm's M32, AZ32 and AZ34 were
-  // formulas; the user removed them, so these values are sent and written.
-  // Empty is allowed: the plant fills them when a load is synced, and a docket
-  // raised by hand before that carries what the operator typed.
-  const [orderNo, setOrderNo] = useState("");
-  const [recipeName, setRecipeName] = useState("");
-  const [batchStartedAt, setBatchStartedAt] = useState("");
-  const [batchEndedAt, setBatchEndedAt] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(null); // { batch_number, sheet_number }
+  const [stripMsg, setStripMsg] = useState("");
 
-  const [validationMsg, setValidationMsg] = useState("");
-  const [fieldErrors, setFieldErrors] = useState({});
   const [openMenu, setOpenMenu] = useState(null); // 'master' | 'options' | null
-  const [overlay, setOverlay] = useState(null); // 'order' | 'confirm' | 'search' | 'settings' | 'master:<kind>' | null
-  const [masterKind, setMasterKind] = useState(null); // 'customer' | 'truck' | 'mix'
+  const [overlay, setOverlay] = useState(null); // 'dockets' | 'store1' | 'store2' | 'plant' | 'settings' | 'master' | null
+  const [masterKind, setMasterKind] = useState(null);
   const [banner, setBanner] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
   const [settings, setSettings] = useState({ save_folder_path: "", default_printer: "" });
-  const [printing, setPrinting] = useState(false);
   const [devices, setDevices] = useState([]);
-  const [plantTab, setPlantTab] = useState("loads");
+  const [plantTab, setPlantTab] = useState("map");
 
   useEffect(() => {
     solitaireApi.me().then(setAccount).catch(() => navigate("/solitaire/login", { replace: true }));
     reloadMasters();
-    solitaireApi.nextBatchNumber().then((r) => setBatchNumber(r.next_batch_number)).catch(() => {});
+    reloadLoads();
+    // The plant agent sends batches as they finish; refresh the dropdown so a
+    // truck that has just loaded appears without anybody reloading the page.
+    const t = setInterval(reloadLoads, 30000);
+    return () => clearInterval(t);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function reloadMasters() {
-    solitaireApi.customers().then(setCustomers).catch((e) => setLoadError(e.message));
-    solitaireApi.trucks().then(setTrucks).catch((e) => setLoadError(e.message));
-    solitaireApi.drivers().then(setDrivers).catch(() => setDrivers([]));
     solitaireApi.mixDesigns().then(setMixDesigns).catch((e) => setLoadError(e.message));
   }
+  function reloadLoads() {
+    return solitaireApi.openLoads().then(setLoads).catch((e) => setStripMsg(`✕ ${e.message}`));
+  }
 
-  const customer = customers.find((c) => c.id === Number(customerId));
-  const sites = customer?.sites || [];
-  const mixDesign = mixDesigns.find((m) => m.code === recipeCode);
-  const truck = trucks.find((t) => t.registration_number === truckReg);
-  const sheetNumber = useMemo(() => computeSheetNumber(prodQty, mixerCap), [prodQty, mixerCap]);
+  const sel = loads.find((l) => l.key === selKey) || null;
 
   function toast(msg) {
     setBanner(msg);
@@ -140,96 +132,68 @@ export default function SolitaireApp() {
     navigate("/solitaire/login", { replace: true });
   }
 
-  // Round 152 — picking a truck no longer decides the driver. The workbook
-  // derives one from the other by lookup (one fixed driver per vehicle), but
-  // the main app knows drivers change trip to trip, so the driver is chosen
-  // separately and the docket records who actually drove.
-  function onTruckChange(reg) {
-    setTruckReg(reg);
-  }
-
-  const canEditMasters = MASTERS_ROLES.includes(account?.role);
   const canEditMixDesign = MIX_DESIGN_ROLES.includes(account?.role);
   const canSeeSettings = account?.role === "admin";
+  const isDocketAdmin = DOCKET_ADMIN_ROLES.includes(account?.role);
 
-  function validateRequired() {
-    const errs = {};
-    if (!customerId) errs.customer = true;
-    if (!siteId) errs.site = true;
-    if (!recipeCode) errs.recipeCode = true;
-    if (!truckReg) errs.truckReg = true;
-    if (!prodQty) errs.prodQty = true;
-    setFieldErrors(errs);
-    const ok = Object.keys(errs).length === 0;
-    setValidationMsg(ok ? "" : "⚠ Please complete all mandatory fields (Customer, Site, Recipe Code, Truck Registration Number, Production Qty) before printing.");
-    return ok;
+  function pick(key) {
+    setSelKey(key);
+    setProdQty("");
+    setWithThisLoad("");
+    setSaved(null);
+    const l = loads.find((x) => x.key === key);
+    setStripMsg(l?.blocker === "no-mapping"
+      ? `✕ Recipe ${l.recipe_code} is not mapped to a mix design — QC must map it before this docket can print.`
+      : l?.blocker === "design-inactive"
+        ? `✕ Recipe ${l.recipe_code} is mapped to a deactivated mix design — QC must re-map it.`
+        : "");
   }
 
-  function startPrintFlow() {
-    if (!validateRequired()) return;
-    setOverlay("confirm");
-  }
-
-  async function confirmPrint() {
-    setPrinting(true);
+  async function saveAndPrint() {
+    if (!sel) { setStripMsg("✕ Pick the Batch / Docket Number first."); return; }
+    const q = Number(prodQty);
+    if (!prodQty || !Number.isFinite(q) || q <= 0) { setStripMsg("✕ Enter the Production Qty."); return; }
+    if (withThisLoad !== "" && !(Number(withThisLoad) > 0)) { setStripMsg("✕ With This Load must be a number above zero."); return; }
+    setSaving(true);
+    setStripMsg("");
     try {
-      const site = sites.find((s) => s.id === Number(siteId));
-      const { filename, base64 } = await generateSolitaireDocketPdf({
-        batchNumber, orderQty: Number(orderQty) || 0, withThisLoad: Number(withThisLoad) || 0,
-        customer, site, mixDesign, truck, driverName,
-        prodQty: Number(prodQty) || 0, mixerCap: Number(mixerCap) || 0,
+      const r = await solitaireApi.saveAndPrint({
+        plant_no: sel.plant_no, batch_year: sel.batch_year, batch_no: sel.batch_no,
+        production_qty_m3: q,
+        with_this_load_m3: withThisLoad === "" ? null : Number(withThisLoad),
       });
-      const result = await solitaireApi.createDocket({
-        batch_number: batchNumber,
-        order_date_time: orderDateTime || null,
-        order_qty_m3: Number(orderQty) || null,
-        with_this_load_m3: Number(withThisLoad) || null,
-        customer_id: Number(customerId), site_id: Number(siteId), mix_design_id: mixDesign?.id,
-        truck_id: truck?.id, driver_name: driverName,
-        production_qty_m3: Number(prodQty), mixer_capacity_m3: Number(mixerCap), moisture_pct: Number(moisture) || null,
-        // ROUND 160 — cells AZ34, M32, K19 and K21. recipe_name falls back to
-        // the mix design's own name only when the plant has not given one:
-        // the ticket should print what the PLANT called the recipe on the day.
-        order_no: orderNo || null,
-        recipe_name: recipeName || mixDesign?.name || null,
-        batch_started_at: batchStartedAt || null,
-        batch_ended_at: batchEndedAt || null,
-        pdf_base64: base64, pdf_filename: filename,
-      });
-      setOverlay(null);
-      toast(`✔ Order completed. Report printed and saved as PDF:<br><b>${result.save_folder_path || ""}${filename}</b><br><span style="font-size:10.5px;color:#7a5b00;">Temporary format — pending the real Excel-based print pipeline.</span>`);
-      solitaireApi.nextBatchNumber().then((r) => setBatchNumber(r.next_batch_number)).catch(() => {});
+      setSaved(r);
+      setSelKey("");
+      setProdQty("");
+      setWithThisLoad("");
+      reloadLoads();
     } catch (err) {
-      toast(`✕ ${err.message}`);
+      setStripMsg(`✕ ${err.message}`);
     } finally {
-      setPrinting(false);
+      setSaving(false);
     }
   }
 
-  async function runSearch(q) {
-    setSearchQuery(q);
-    const rows = await solitaireApi.searchDockets(q).catch(() => []);
-    setSearchResults(rows);
-  }
-
-  if (loadError) return <div className="solitaire-root sol-screen">Error loading Solitaire: {loadError}</div>;
+  if (loadError) return <div className="solitaire-root sol-screen">Error loading MixTrack: {loadError}</div>;
   if (!account) return <div className="solitaire-root sol-screen">Loading…</div>;
+
+  const green = (box, value, align = "left") => (
+    <div className={`sol-ov sol-ov-green${align === "right" ? " right" : ""}`} style={pct(box)}>{value ?? ""}</div>
+  );
+
+  const adminButtons = isDocketAdmin ? (
+    <>
+      <button className="sol-icon-btn" title="Saved dockets — edit, reprint, retry" onClick={() => setOverlay("dockets")}>📋</button>
+      <button className="sol-icon-btn" title="Plant batch data (MCI370 copy)" onClick={() => setOverlay("store1")}>🗄</button>
+      <button className="sol-icon-btn" title="Printed tickets (read back from the workbook)" onClick={() => setOverlay("store2")}>🧾</button>
+      <button className="sol-icon-btn" title="Recipe map and print queue" onClick={() => setOverlay("plant")}>⚙</button>
+    </>
+  ) : null;
 
   return (
     <div className="solitaire-root">
       <div className="sol-app-shell">
         <div className="sol-screen">
-          {/* Round 152 (revised) — back to the real panel photograph, at the
-              user's request, now that the image actually exists. The picture
-              is `public/solitaire/screen-reference.png`, shipped in the repo,
-              so the Round 149 failure — an overlay calibrated against an image
-              nobody had — cannot repeat.
-
-              What IS kept from that lesson: if the image fails to load for any
-              reason, `imgFailed` swaps in a visible toolbar, so the module
-              stays usable instead of becoming a white page with invisible
-              menus. The hotspots also highlight on hover and carry tooltips,
-              so the menu bar behaves like a menu bar rather than a secret. */}
           {imgFailed && (
             <div className="sol-toolbar">
               <span className="sol-tb-warn">Panel image missing — plain controls shown</span>
@@ -238,10 +202,10 @@ export default function SolitaireApp() {
               <button type="button" className={`sol-tb-btn${openMenu === "options" ? " open" : ""}`}
                       onClick={() => setOpenMenu(openMenu === "options" ? null : "options")}>Options</button>
               <span className="sol-tb-gap" />
-              <button type="button" className="sol-tb-btn" onClick={() => setOverlay("order")}>New Order</button>
-              <button type="button" className="sol-tb-btn" onClick={() => setOverlay("plant")}>Plant loads</button>
-              <button type="button" className="sol-tb-btn" onClick={() => { setOverlay("search"); runSearch(""); }}>Search / Reprint</button>
-              <button type="button" className="sol-tb-btn primary" onClick={startPrintFlow}>Print Docket</button>
+              {isDocketAdmin && <button type="button" className="sol-tb-btn" onClick={() => setOverlay("dockets")}>Saved dockets</button>}
+              {isDocketAdmin && <button type="button" className="sol-tb-btn" onClick={() => setOverlay("store1")}>Plant batch data</button>}
+              {isDocketAdmin && <button type="button" className="sol-tb-btn" onClick={() => setOverlay("store2")}>Printed tickets</button>}
+              <button type="button" className="sol-tb-btn primary" onClick={saveAndPrint} disabled={saving}>Save &amp; Print</button>
             </div>
           )}
 
@@ -257,16 +221,9 @@ export default function SolitaireApp() {
                 Signed in as <b>{account.displayName}</b> <span style={{ color: "#666" }}>({account.role})</span>{" "}
                 <span className="sol-logout-link" onClick={doLogout}>Sign out</span>
               </span>
-              <button className="sol-icon-btn" title="New Order" onClick={() => setOverlay("order")}>＋</button>
-              <button className="sol-icon-btn" title="Loads waiting for a ticket" onClick={() => setOverlay("plant")}>🚚</button>
-              <button className="sol-icon-btn" title="Search / Reprint" onClick={() => { setOverlay("search"); runSearch(""); }}>🔍</button>
-              <button className="sol-icon-btn primary" title="Print Docket" onClick={startPrintFlow}>🖨</button>
+              {adminButtons}
             </div>
 
-            {/* All eight menu words are clickable. Master and Options open the
-                real menus; the other six are plant-control functions that live
-                on the MCI370 itself and have no equivalent here, so they say so
-                rather than doing nothing when clicked. */}
             {MENU_BAR.map((m) => (
               <button
                 key={m.key}
@@ -281,15 +238,19 @@ export default function SolitaireApp() {
               />
             ))}
 
-{openMenu === "master" && (
+            {openMenu === "master" && (
               <div className="sol-menu-dropdown" style={{ left: `${MENU_BAR[0].left}%`, top: "5.9%" }}>
-                <a className="disabled" title="Maintained in the main app">Customer &amp; Site &mdash; in the main app</a>
-                <a className="disabled" title="Maintained in the main app">Truck &amp; Driver &mdash; in the main app</a>
                 <a
                   className={!canEditMixDesign ? "disabled" : ""}
                   onClick={() => { if (canEditMixDesign) { setOpenMenu(null); setMasterKind("mix"); setOverlay("master"); } }}
                 >
                   Mix Design Master <span className="badge">QC</span>
+                </a>
+                <a
+                  className={!isDocketAdmin ? "disabled" : ""}
+                  onClick={() => { if (isDocketAdmin) { setOpenMenu(null); setPlantTab("map"); setOverlay("plant"); } }}
+                >
+                  Recipe Map <span className="badge">QC</span>
                 </a>
               </div>
             )}
@@ -311,174 +272,91 @@ export default function SolitaireApp() {
               </div>
             )}
 
-            <select className="sol-ov sol-ov-select" style={pct(COORDS.customer)} value={customerId}
-              onChange={(e) => { setCustomerId(e.target.value); setSiteId(""); }}>
-              <option value="">-- select --</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.name}</option>)}
+            {/* ---- the plant's own text, read-only, in the green boxes ---- */}
+            {green(COORDS.customer, sel?.customer)}
+            {green(COORDS.recipeCode, sel?.recipe_code)}
+            {green(COORDS.recipeName, sel?.recipe_name)}
+            {green(COORDS.site, sel?.site)}
+            {green(COORDS.mixerCap, sel ? fmtNum(sel.mixer_capacity_m3) : "", "right")}
+            {green(COORDS.moisture, sel ? fmtNum(sel.moisture_pct, 1) : "", "right")}
+            {green(COORDS.totalBatch, sel ? sel.batches : "")}
+            {green(COORDS.truckReg, sel?.truck_no)}
+            {green(COORDS.driverName, sel?.driver)}
+            {green(COORDS.truckId, sel?.truck_no)}
+
+            {/* ---- Batch / Docket Number: the number only ---- */}
+            <select className="sol-ov sol-ov-req" style={pct(COORDS.batchNumber)} value={selKey}
+                    aria-label="Batch / Docket Number" onChange={(e) => pick(e.target.value)}>
+              <option value="">—</option>
+              {loads.map((l) => <option key={l.key} value={l.key}>{l.batch_no}</option>)}
             </select>
 
-            <input className="sol-ov sol-ov-input" style={pct(COORDS.batchNumber)} value={batchNumber} onChange={(e) => setBatchNumber(e.target.value)} />
-            <input className="sol-ov sol-ov-input ro" style={pct(COORDS.elapsedBatch)} value="0" readOnly />
-            <input className="sol-ov sol-ov-input ro" style={pct(COORDS.totalBatch)} value={sheetNumber} readOnly />
+            {/* ---- the two figures the operator types ---- */}
+            <input className="sol-ov sol-ov-req" style={pct(COORDS.prodQty)} type="number" step="0.5" min="0"
+                   aria-label="Production Qty M³" placeholder="0" value={prodQty}
+                   onChange={(e) => { setProdQty(e.target.value); setStripMsg(""); }} disabled={!sel} />
+            {/* With This Load lives in the "Elapsed Batch Counter" green box —
+                the label printed on the screenshot is left exactly as it is. */}
+            <input className="sol-ov sol-ov-req" style={pct(COORDS.elapsedBatch)} type="number" step="0.5" min="0"
+                   aria-label="With This Load M³" placeholder={sel?.with_this_load_m3 != null ? fmtNum(sel.with_this_load_m3, 0) : "0"}
+                   value={withThisLoad} onChange={(e) => { setWithThisLoad(e.target.value); setStripMsg(""); }} disabled={!sel} />
 
-            <select className={`sol-ov sol-ov-select${fieldErrors.recipeCode ? " error" : ""}`} style={pct(COORDS.recipeCode)} value={recipeCode}
-              onChange={(e) => setRecipeCode(e.target.value)}>
-              <option value="">-- select --</option>
-              {mixDesigns.map((m) => <option key={m.id} value={m.code}>{m.code}</option>)}
-            </select>
-            <input className="sol-ov sol-ov-input" style={pct(COORDS.prodQty)} type="number" step="0.1" value={prodQty} onChange={(e) => setProdQty(e.target.value)} />
-            <select className={`sol-ov sol-ov-select${fieldErrors.truckReg ? " error" : ""}`} style={pct(COORDS.truckReg)} value={truckReg}
-              onChange={(e) => onTruckChange(e.target.value)}>
-              <option value="">-- select --</option>
-              {trucks.map((t) => <option key={t.id} value={t.registration_number}>{t.registration_number}</option>)}
-            </select>
+            {saved && (
+              <div className="sol-saved-strip" style={pct(SAVED_STRIP)}>
+                Docket {saved.batch_number} saved and sent to the plant printer — Report No.{saved.batch_number} (sheet {saved.sheet_number}) will print in a few seconds.
+              </div>
+            )}
 
-            <input className="sol-ov sol-ov-input ro left" style={pct(COORDS.recipeName)} value={mixDesign?.name || ""} readOnly />
-            <input className="sol-ov sol-ov-input" style={pct(COORDS.mixerCap)} type="number" step="0.1" value={mixerCap} onChange={(e) => setMixerCap(e.target.value)} />
-            {/* Round 152 — drivers are main-app accounts; the truck no longer
-                decides who is driving. */}
-            <select className="sol-ov sol-ov-select" style={pct(COORDS.driverName)} value={driverName} onChange={(e) => setDriverName(e.target.value)}>
-              <option value="">-- select --</option>
-              {drivers.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
-            </select>
-
-            <select className={`sol-ov sol-ov-select${fieldErrors.site ? " error" : ""}`} style={pct(COORDS.site)} value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-              <option value="">-- select --</option>
-              {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-            <input className="sol-ov sol-ov-input" style={pct(COORDS.moisture)} type="number" step="0.1" value={moisture} onChange={(e) => setMoisture(e.target.value)} />
-            <input className="sol-ov sol-ov-input ro left" style={pct(COORDS.truckId)} value={truck?.truck_code || ""} readOnly />
+            <div className="sol-statusbar" style={pct(STATUS_BAR)}>
+              <span className={`sol-statusbar-msg${stripMsg.startsWith("✕") ? " err" : ""}`}>
+                {stripMsg || (sel
+                  ? <>Enter <b>Production Qty</b> and <b>With This Load</b> (Elapsed Batch Counter box)
+                      {sel.with_this_load_m3 != null ? <> · plant reported With This Load {fmtNum(sel.with_this_load_m3)}</> : null}</>
+                  : <>Pick the <b>Batch / Docket Number</b> — {loads.length} plant batch{loads.length === 1 ? "" : "es"} without a docket</>)}
+              </span>
+              <button type="button" className="sol-statusbar-btn" onClick={saveAndPrint}
+                      disabled={saving || !sel || !!sel?.blocker}>
+                {saving ? "Saving…" : "Save & Print"}
+              </button>
+            </div>
           </div>
-          {validationMsg && <div className="sol-error-msg">{validationMsg}</div>}
         </div>
       </div>
 
-      {/* ============ New Order popup ============ */}
-      {overlay === "order" && (
-        <div className="sol-overlay" onClick={() => setOverlay(null)}>
-          <div className="sol-popup" onClick={(e) => e.stopPropagation()}>
-            <div className="sol-popup-title"><span>New Order</span><span style={{ cursor: "pointer" }} onClick={() => setOverlay(null)}>✕</span></div>
-            <div className="sol-popup-body">
-              <div><label>Order Date &amp; Time</label><input type="datetime-local" value={orderDateTime} onChange={(e) => setOrderDateTime(e.target.value)} /></div>
-              <div><label>Order Qty (M³)</label><input type="number" step="0.1" value={orderQty} onChange={(e) => setOrderQty(e.target.value)} placeholder="e.g. 20" /></div>
-              <div><label>With This Load (M³)</label><input type="number" step="0.1" value={withThisLoad} onChange={(e) => setWithThisLoad(e.target.value)} placeholder="e.g. 20" /></div>
-            </div>
-            <div className="sol-popup-actions">
-              <button onClick={() => setOverlay(null)}>Cancel</button>
-              <button className="primary" onClick={() => { setOverlay(null); toast("Order details saved for this docket."); }}>Save</button>
-            </div>
-          </div>
-        </div>
+      {/* ============ Saved dockets / the two stores (Admin & QC) ============ */}
+      {overlay === "dockets" && isDocketAdmin && (
+        <AdminOverlay title="Saved dockets" onClose={() => setOverlay(null)}>
+          <SavedDockets toast={toast} />
+        </AdminOverlay>
+      )}
+      {overlay === "store1" && isDocketAdmin && (
+        <AdminOverlay title="Plant batch data" onClose={() => setOverlay(null)}>
+          <PlantBatchData />
+        </AdminOverlay>
+      )}
+      {overlay === "store2" && isDocketAdmin && (
+        <AdminOverlay title="Printed tickets" onClose={() => setOverlay(null)}>
+          <PrintedTickets />
+        </AdminOverlay>
       )}
 
-      {/* ============ Print confirmation — mirrors PrintOrderandAsPDF() §7 step 3 ============ */}
-      {overlay === "confirm" && (
-        <div className="sol-overlay">
-          <div className="sol-popup">
-            <div className="sol-popup-title"><span>Confirm Order</span><span style={{ cursor: "pointer" }} onClick={() => setOverlay(null)}>✕</span></div>
-            <div className="sol-popup-body">
-              <div style={{ fontSize: 12 }}>Do you want to proceed with this Order with the following details?</div>
-              <div className="sol-confirm-lines">
-                <div className="l"><span className="k">Report No.</span><span>: {batchNumber}</span></div>
-                <div className="l"><span className="k">Customer</span><span>: {customer?.name || "—"}</span></div>
-                <div className="l"><span className="k">Site</span><span>: {sites.find((s) => s.id === Number(siteId))?.name || "—"}</span></div>
-                <div className="l"><span className="k">Mix</span><span>: {mixDesign?.code || "—"}</span></div>
-                <div className="l"><span className="k">Quantity</span><span>: {prodQty} m³ &nbsp;&nbsp; With this Load: {withThisLoad || 0} m³</span></div>
-                <div className="l"><span className="k">Date</span><span>: {new Date().toLocaleDateString()} &nbsp;&nbsp; Time: {new Date().toLocaleTimeString()}</span></div>
-                <div className="l"><span className="k">Vehicle</span><span>: {truckReg || "—"} &nbsp;&nbsp; Driver: {driverName || "—"}</span></div>
-                <div className="l" style={{ marginTop: 6, borderTop: "1px dashed #ccc", paddingTop: 6 }}>
-                  <span className="k">Sheet to print</span><span>: Sheet {sheetNumber} (Qty {prodQty} ÷ Capacity {mixerCap})</span>
-                </div>
-              </div>
-
-              {/* Round 155 — say plainly what this screen is and is not.
-                  This module writes only its own docket record. It does NOT
-                  create a delivery note in the main app, so nothing printed
-                  here reaches Plant QC, no cubes are recorded against it, and
-                  it never appears in the Lab Technician's testing queue. That
-                  split was invisible until the lab reported missing batches
-                  in September, and the plant confirmed the two systems should
-                  stay separate — so the separation has to be visible at the
-                  moment somebody prints, not buried in a document. */}
-              <div style={{
-                marginTop: 10, padding: "8px 10px", borderRadius: 6,
-                background: "#FFF6E5", border: "1px solid #E0C48A",
-                fontSize: 11.5, lineHeight: 1.5, color: "#6B4E00",
-              }}>
-                <b>This prints the batching docket only.</b> It does not raise a Delivery Note,
-                and no QC or cube sample is recorded against it. If this load needs a Delivery
-                Note or cube testing, it must also be raised in the main app by the Plant Operator.
-              </div>
-            </div>
-            <div className="sol-popup-actions">
-              <button onClick={() => setOverlay(null)} disabled={printing}>No</button>
-              <button className="primary" onClick={confirmPrint} disabled={printing}>{printing ? "Printing…" : "Yes — Print & Save PDF"}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ============ Search & Reprint ============ */}
-      {/* ROUND 161 — the plant-driven flow. Three tabs rather than three menu
-          entries, because an operator moves between "what is waiting" and "why
-          is that one held" constantly while a truck is under the plant. */}
-      {overlay === "plant" && (
+      {overlay === "plant" && isDocketAdmin && (
         <div className="sol-overlay" onClick={() => setOverlay(null)}>
           <div className="sol-popup wide" style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
             <div className="sol-popup-title">
-              <span>Plant loads</span>
+              <span>Recipe map &amp; print queue</span>
               <span style={{ cursor: "pointer" }} onClick={() => setOverlay(null)}>✕</span>
             </div>
             <div className="sol-popup-body">
               <div style={{ display: "flex", gap: 6 }}>
-                {[["loads", "Loads waiting"], ["map", "Recipe map"], ["queue", "Print queue"]].map(([k, label]) => (
+                {[["map", "Recipe map"], ["queue", "Print queue"]].map(([k, label]) => (
                   <button key={k} type="button" className={`sol-tb-btn${plantTab === k ? " open" : ""}`}
                           onClick={() => setPlantTab(k)}>{label}</button>
                 ))}
               </div>
-              {plantTab === "loads" && (
-                <PendingLoads account={account} customers={customers} trucks={trucks} toast={toast}
-                              onPrinted={() => solitaireApi.nextBatchNumber().then((r) => setBatchNumber(r.next_batch_number)).catch(() => {})} />
-              )}
               {plantTab === "map" && <RecipeMap account={account} toast={toast} />}
               {plantTab === "queue" && <PrintQueue toast={toast} />}
             </div>
-          </div>
-        </div>
-      )}
-
-      {overlay === "search" && (
-        <div className="sol-overlay" onClick={() => setOverlay(null)}>
-          <div className="sol-popup wide" onClick={(e) => e.stopPropagation()}>
-            <div className="sol-popup-title"><span>Search &amp; Reprint</span><span style={{ cursor: "pointer" }} onClick={() => setOverlay(null)}>✕</span></div>
-            <div className="sol-popup-body">
-              <div style={{ display: "flex", gap: 8 }}>
-                <input placeholder="Search by Docket No / Truck / Customer / Date" value={searchQuery} onChange={(e) => runSearch(e.target.value)} style={{ flex: 1 }} />
-              </div>
-              <table className="sol-search-table">
-                <thead><tr><th>Docket No</th><th>Date</th><th>Customer</th><th>Site</th><th>Recipe</th><th>Truck</th><th>Qty (M³)</th><th>PDF</th></tr></thead>
-                <tbody>
-                  {searchResults.map((r) => (
-                    <tr key={r.id}>
-                      <td>{r.batch_number}</td>
-                      <td>{new Date(r.printed_at).toLocaleDateString()}</td>
-                      <td>{r.customer_name}</td>
-                      <td>{r.site_name}</td>
-                      <td>{r.recipe_code}</td>
-                      <td>{r.truck_number}</td>
-                      <td>{r.production_qty_m3}</td>
-                      <td>
-                        <a href={solitaireApi.docketPdfUrl(r.id)} target="_blank" rel="noreferrer">📄 View / Reprint</a>
-                        {r.is_placeholder_pdf && <span className="sol-placeholder-badge">temp format</span>}
-                      </td>
-                    </tr>
-                  ))}
-                  {!searchResults.length && <tr><td colSpan={8} style={{ textAlign: "center", color: "#888" }}>No dockets found.</td></tr>}
-                </tbody>
-              </table>
-              <div style={{ fontSize: 11, color: "#666" }}>PDF copies live in the admin-configured save folder and are indexed here.</div>
-            </div>
-            <div className="sol-popup-actions"><button onClick={() => setOverlay(null)}>Close</button></div>
           </div>
         </div>
       )}
@@ -528,11 +406,8 @@ export default function SolitaireApp() {
                 >
                   ＋ Authorize this browser
                 </button>
-                {/* Round 150 — authorizing a DIFFERENT machine. The button
-                    above only ever registers the browser it is clicked in,
-                    which is why a new terminal could never join: it cannot
-                    sign in to reach this screen in the first place. A code
-                    carried to that machine breaks the circle. */}
+                {/* Round 150 — authorizing a DIFFERENT machine: a code carried
+                    to that machine breaks the sign-in circle. */}
                 <button
                   className="sol-mtable-add"
                   onClick={async () => {
@@ -565,8 +440,8 @@ export default function SolitaireApp() {
       {overlay === "master" && (
         <MasterEditor
           kind={masterKind}
-          customers={customers}
-          trucks={trucks}
+          customers={[]}
+          trucks={[]}
           mixDesigns={mixDesigns}
           onClose={() => setOverlay(null)}
           onChanged={() => { reloadMasters(); toast("✔ Master data updated."); }}
@@ -574,6 +449,20 @@ export default function SolitaireApp() {
       )}
 
       {banner && <div className="sol-save-banner" dangerouslySetInnerHTML={{ __html: banner }} />}
+    </div>
+  );
+}
+
+function AdminOverlay({ title, onClose, children }) {
+  return (
+    <div className="sol-overlay" onClick={onClose}>
+      <div className="sol-popup wide sol-admin-popup" onClick={(e) => e.stopPropagation()}>
+        <div className="sol-popup-title">
+          <span>{title} <span className="sol-admin-badge">Admin &amp; QC only</span></span>
+          <span style={{ cursor: "pointer" }} onClick={onClose}>✕</span>
+        </div>
+        <div className="sol-popup-body">{children}</div>
+      </div>
     </div>
   );
 }
