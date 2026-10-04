@@ -202,3 +202,88 @@ export function mixDesignRowsToClear(count) {
   return first > MIX_DESIGN_LAST_ROW ? [] :
     Array.from({ length: MIX_DESIGN_LAST_ROW - first + 1 }, (_, i) => first + i);
 }
+
+// ===========================================================================
+// ROUND 188 (v10.17) — Store 2: reading the printed ticket back.
+//
+// After the agent has filled the workbook and recalculated it, it freezes
+// calculation and reads these cells off the numbered sheet that is about to be
+// printed, then prints. The "actual" weights on the ticket are worked out inside
+// the workbook (RAND() around the target), so the only way to know exactly what
+// the customer's paper says is to read it back — nothing here recomputes them.
+//
+// Layout of sheets 1-10 (measured from BPR107a.xlsm): material names row 21 and
+// recipe targets row 23 across the columns below; then one 4-row block per
+// batch from row 25 (water absorption %, moisture %, set weight, actual), so
+// sheet N has N blocks; then "Total Set Weight" on the label row and its
+// figures on the next, then "Total Actual" likewise.
+// ===========================================================================
+export const TICKET_MATERIAL_COLUMNS = ["B", "D", "E", "H", "I", "K", "L", "M", "N", "O", "Q", "R", "T"];
+export const TICKET_HEADER_CELLS = {
+  G8: "batch_date", G9: "start_time", G10: "end_time",
+  J11: "docket_no", J12: "customer", J13: "site", J14: "recipe_code", J15: "recipe_name",
+  J16: "truck", J17: "driver", J18: "order_no",
+  T11: "ordered_qty", T12: "production_qty", T14: "with_this_load", T15: "mixer_capacity", T16: "batch_size",
+};
+
+function blockRow(k) { return 25 + 4 * (k - 1); }
+
+// The list of addresses the agent reads. Sent in the job payload so the agent
+// stays generic: if the workbook layout moves, only this file changes.
+export function ticketReadbackSpec(sheetNumber) {
+  const n = Math.max(1, Math.min(10, Number(sheetNumber) || 1));
+  const cells = Object.keys(TICKET_HEADER_CELLS);
+  const rows = [21, 23];
+  for (let k = 1; k <= n; k++) { const r = blockRow(k); rows.push(r, r + 1, r + 2, r + 3); }
+  const totalSet = blockRow(n + 1) + 1;
+  rows.push(totalSet, totalSet + 2);
+  for (const r of rows) for (const c of TICKET_MATERIAL_COLUMNS) cells.push(`${c}${r}`);
+  return { sheet: String(n), cells };
+}
+
+function num(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/,/g, "").trim();
+  if (s === "" || s === "-") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Turns the agent's {address: text} map into the stored shape. Columns whose
+// name is blank AND which carry no figure anywhere are dropped (the empty
+// MS / ICE column, unused admixture lines).
+export function parseTicketReadback(sheetNumber, values) {
+  const v = values || {};
+  const n = Math.max(1, Math.min(10, Number(sheetNumber) || 1));
+  const header = {};
+  for (const [cell, key] of Object.entries(TICKET_HEADER_CELLS)) {
+    header[key] = v[cell] === undefined || v[cell] === null ? null : String(v[cell]).trim();
+  }
+  const totalSet = blockRow(n + 1) + 1;
+  const cols = TICKET_MATERIAL_COLUMNS.map((c) => {
+    const name = String(v[`${c}21`] ?? "").trim();
+    const batches = [];
+    for (let k = 1; k <= n; k++) {
+      const r = blockRow(k);
+      batches.push({
+        absorption_pct: num(v[`${c}${r}`]), moisture_pct: num(v[`${c}${r + 1}`]),
+        set_kg: num(v[`${c}${r + 2}`]), actual_kg: num(v[`${c}${r + 3}`]),
+      });
+    }
+    return {
+      col: c, name: name === "-" ? "" : name, target_kg_m3: num(v[`${c}23`]), batches,
+      total_set_kg: num(v[`${c}${totalSet}`]), total_actual_kg: num(v[`${c}${totalSet + 2}`]),
+    };
+  }).filter((c) => c.name || c.total_actual_kg || c.total_set_kg || c.batches.some((b) => b.actual_kg));
+
+  const materials = cols.map((c) => ({ col: c.col, name: c.name || c.col, target_kg_m3: c.target_kg_m3 }));
+  const batches = [];
+  for (let k = 0; k < n; k++) {
+    batches.push({
+      batch: k + 1,
+      values: cols.map((c) => ({ col: c.col, ...c.batches[k] })),
+    });
+  }
+  const totals = cols.map((c) => ({ col: c.col, set_kg: c.total_set_kg, actual_kg: c.total_actual_kg }));
+  return { header, materials, batches, totals };
+}

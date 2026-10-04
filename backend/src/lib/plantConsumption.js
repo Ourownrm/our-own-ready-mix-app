@@ -119,3 +119,66 @@ export function nextDay(ymd) {
   const [y, m, d] = ymd.slice(0, 10).split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10); // ist-ok: pure UTC day arithmetic on a date-only string, read back as UTC date — no clock/tz involved
 }
+
+// ===========================================================================
+// Round 188 (v10.17 #4) — production and consumption for a DATE RANGE, split at
+// the cutover, for the material module's reports. Before CONSUMPTION_CUTOVER
+// the hand-keyed figures (rm_daily_production / rm_daily_consumption) are the
+// record; from it, the plant's actual (load cells + operator manual entries).
+// The material module used rm_daily_production for every month, so September
+// showed only what somebody had typed into that old form, not what the plant
+// made. Ranges are [from, toExclusive) of IST calendar dates ('YYYY-MM-DD').
+// ===========================================================================
+export async function productionM3Range({ from, toExclusive }) {
+  const cut = CONSUMPTION_CUTOVER;
+  let handKeyed = 0;
+  let plant = { auto_m3: 0, manual_m3: 0 };
+  if (from < cut) {
+    const end = toExclusive < cut ? toExclusive : cut;
+    const { rows } = await query(
+      `SELECT COALESCE(sum(concrete_produced_m3), 0)::numeric AS m3 FROM rm_daily_production
+        WHERE production_date >= $1::date AND production_date < $2::date`, [from, end]);
+    handKeyed = Number(rows[0].m3) || 0;
+  }
+  if (toExclusive > cut) {
+    plant = await plantProductionM3({ from: from > cut ? from : cut, toExclusive });
+  }
+  const total = handKeyed + plant.auto_m3 + plant.manual_m3;
+  return {
+    hand_keyed_m3: Math.round(handKeyed * 1000) / 1000,
+    auto_m3: Math.round(plant.auto_m3 * 1000) / 1000,
+    manual_m3: Math.round(plant.manual_m3 * 1000) / 1000,
+    total_m3: Math.round(total * 1000) / 1000,
+  };
+}
+
+// Per material per month over [from, toExclusive): [{ material_id, ym, kg }].
+export async function consumptionByMaterialMonthRange({ from, toExclusive }) {
+  const cut = CONSUMPTION_CUTOVER;
+  const out = [];
+  if (from < cut) {
+    const end = toExclusive < cut ? toExclusive : cut;
+    const { rows } = await query(
+      `SELECT material_id, to_char(consumption_date, 'YYYY-MM') AS ym,
+              sum(COALESCE(automatic_qty_kg, manual_qty_kg, 0))::numeric AS kg
+         FROM rm_daily_consumption
+        WHERE consumption_date >= $1::date AND consumption_date < $2::date
+        GROUP BY material_id, 2`, [from, end]);
+    for (const r of rows) out.push({ material_id: r.material_id, ym: r.ym, kg: Number(r.kg) || 0 });
+  }
+  if (toExclusive > cut) {
+    const pf = from > cut ? from : cut;
+    const { rows } = await query(
+      `SELECT material_id, ym, sum(kg)::numeric AS kg FROM (
+          SELECT pm.material_id, to_char(pb.batch_date, 'YYYY-MM') AS ym, pm.actual_kg AS kg
+            FROM plant_batch_materials pm JOIN plant_batches pb ON pb.id = pm.batch_id
+           WHERE pm.material_id IS NOT NULL AND pb.batch_date >= $1::date AND pb.batch_date < $2::date
+          UNION ALL
+          SELECT e.material_id, to_char(e.entry_date, 'YYYY-MM') AS ym, e.qty_kg AS kg
+            FROM plant_manual_entries e
+           WHERE e.material_id IS NOT NULL AND e.entry_date >= $1::date AND e.entry_date < $2::date
+       ) t GROUP BY material_id, ym`, [pf, toExclusive]);
+    for (const r of rows) out.push({ material_id: r.material_id, ym: r.ym, kg: Number(r.kg) || 0 });
+  }
+  return out;
+}
