@@ -380,6 +380,16 @@ router.post("/sync", async (req, res) => {
     }
     await client.query("COMMIT");
 
+    // Round 189 — new or changed batches on a refillable silo are re-charged
+    // first-in-first-out (insert time used the latest fill, the old rule).
+    // Best effort: a failure here must not fail the sync, the next one redoes it.
+    if (inserted + updated > 0) {
+      try {
+        const { rows: refill } = await query(`SELECT slot FROM plant_silo_aliases WHERE is_refillable`);
+        for (const r of refill) await fifoResolveSlot(r.slot);
+      } catch (e) { console.error("FIFO re-attribution after sync failed", e.message); }
+    }
+
     const { rows: hw } = await query(
       `SELECT max(batch_no) AS highest, max(batch_year) AS yr FROM plant_batches`
     );
@@ -833,7 +843,8 @@ router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("produ
       rng.params
     );
     const rngE = dateRange(req, "e.entry_date");   // plant_manual_entries
-    const [{ rows: prod }, { rows: prodManual }, { rows: manualCons }] = await Promise.all([
+    const rngT = dateRange(req, "t.transfer_date"); // plant_consumption_transfers
+    const [{ rows: prod }, { rows: prodManual }, { rows: manualCons }, { rows: transfers }] = await Promise.all([
       query(
         `SELECT COALESCE(sum(batch_qty_m3), 0)::numeric AS m3
          FROM plant_batches pb WHERE ${rng.sql}`,
@@ -855,10 +866,23 @@ router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("produ
           ORDER BY sum(e.qty_kg) DESC`,
         rngE.params
       ),
+      // Round 189 — Admin's consumption transfers in the period, so the screen
+      // shows "transferred in / out" beside what the plant weighed.
+      query(
+        `SELECT t.id, to_char(t.transfer_date, 'YYYY-MM-DD') AS transfer_date, t.qty_kg, t.reason,
+                fm.name AS from_name, tm.name AS to_name
+           FROM plant_consumption_transfers t
+           JOIN rm_materials fm ON fm.id = t.from_material_id
+           JOIN rm_materials tm ON tm.id = t.to_material_id
+          WHERE ${rngT.sql}
+          ORDER BY t.transfer_date DESC, t.id DESC`,
+        rngT.params
+      ),
     ]);
     res.json({
       silos: rows,
       manual: manualCons,
+      transfers,
       total_m3: Math.round((Number(prod[0].m3) + Number(prodManual[0].m3)) * 1000) / 1000,
     });
   } catch (err) {
@@ -878,7 +902,8 @@ router.get("/cost-per-m3", requireRole("administrator"), requirePermission("mate
   try {
     const rngB = dateRange(req, "pb.batch_date");     // plant_batch_materials via its batch
     const rngE = dateRange(req, "e.entry_date");       // plant_manual_entries
-    const [auto, manual, prodAuto, prodManual, rates, mats] = await Promise.all([
+    const rngT = dateRange(req, "t.transfer_date");    // plant_consumption_transfers (Round 189)
+    const [auto, manual, prodAuto, prodManual, rates, mats, transfers] = await Promise.all([
       query(
         `SELECT pm.material_id, sum(pm.actual_kg)::numeric AS kg
            FROM plant_batch_materials pm
@@ -903,6 +928,12 @@ router.get("/cost-per-m3", requireRole("administrator"), requirePermission("mate
           WHERE r.landed_rate_per_kg IS NOT NULL
           GROUP BY o.material_id`),
       query(`SELECT id, name, opening_stock_rate_per_kg FROM rm_materials WHERE is_active = true`),
+      query(
+        `SELECT material_id, sum(kg)::numeric AS kg FROM (
+            SELECT t.from_material_id AS material_id, -t.qty_kg AS kg FROM plant_consumption_transfers t WHERE ${rngT.sql}
+            UNION ALL
+            SELECT t.to_material_id, t.qty_kg FROM plant_consumption_transfers t WHERE ${rngT.sql}
+         ) x GROUP BY material_id`, rngT.params),
     ]);
 
     const producedM3 = Number(prodAuto.rows[0].m3) + Number(prodManual.rows[0].m3);
@@ -910,6 +941,7 @@ router.get("/cost-per-m3", requireRole("administrator"), requirePermission("mate
     const consumed = new Map();
     for (const r of auto.rows) consumed.set(r.material_id, Number(r.kg));
     for (const r of manual.rows) consumed.set(r.material_id, (consumed.get(r.material_id) || 0) + Number(r.kg));
+    for (const r of transfers.rows) consumed.set(r.material_id, (consumed.get(r.material_id) || 0) + Number(r.kg));
 
     const rows = [];
     let totalCostPerM3 = 0;
@@ -1734,6 +1766,68 @@ router.get("/loads", requireRole(...PLANT_ROLES), requirePermission("production.
 // reason the weighbridge needed it: adding a material to the masters, or
 // recording a fill, must reach rows that have already synced.
 // ---------------------------------------------------------------------------
+// ROUND 189 (v10.18) — first-in-first-out attribution for ONE refillable silo.
+//
+// Walks the silo's fills and its load-cell draws in time order. Each fill adds
+// a layer (its material, its kg); each draw is charged to the material of the
+// oldest layer that still has something left, and its kg come off the layers
+// from the oldest up. A fill marked "silo was empty" discards whatever the
+// layers still held. A draw before any fill has no material (as before); a
+// draw after every layer is used up — the silo was under-recorded — takes the
+// latest fill's material, which is what the old rule did, so nothing goes
+// unattributed.
+//
+// One plant_batch_materials row carries one material, so a draw that straddles
+// two layers is charged whole to the older one. The error is at most one
+// batch's weight at each changeover, which is far smaller than the old rule's
+// error and is what the month-end consumption transfer is for.
+export async function fifoResolveSlot(slot, q = query) {
+  const { rows: fills } = await q(
+    `SELECT material_id, qty_kg, filled_at, COALESCE(was_empty, false) AS was_empty
+       FROM plant_silo_fills WHERE slot = $1 ORDER BY filled_at, id`,
+    [slot]
+  );
+  const { rows: draws } = await q(
+    `SELECT pm.id, pm.actual_kg, pm.material_id,
+            COALESCE(pb.batched_at, pb.batch_date::timestamptz) AS at
+       FROM plant_batch_materials pm
+       JOIN plant_batches pb ON pb.id = pm.batch_id
+      WHERE pm.slot = $1
+      ORDER BY COALESCE(pb.batched_at, pb.batch_date::timestamptz), pm.id`,
+    [slot]
+  );
+  const layers = [];   // { mid, left }
+  let fi = 0, lastMid = null;
+  const ids = [], mids = [];
+  for (const d of draws) {
+    const at = new Date(d.at).getTime();
+    while (fi < fills.length && new Date(fills[fi].filled_at).getTime() <= at) {
+      const f = fills[fi++];
+      if (f.was_empty) layers.length = 0;
+      layers.push({ mid: f.material_id, left: Number(f.qty_kg) || 0 });
+      lastMid = f.material_id;
+    }
+    while (layers.length && layers[0].left <= 0.0005) layers.shift();
+    const want = layers.length ? layers[0].mid : lastMid;
+    let kg = Number(d.actual_kg) || 0;
+    while (kg > 0 && layers.length) {
+      const take = Math.min(kg, layers[0].left);
+      layers[0].left -= take;
+      kg -= take;
+      if (layers[0].left <= 0.0005) layers.shift();
+    }
+    if ((d.material_id ?? null) !== (want ?? null)) { ids.push(d.id); mids.push(want); }
+  }
+  if (!ids.length) return 0;
+  const { rowCount } = await q(
+    `UPDATE plant_batch_materials pm SET material_id = u.mid
+       FROM unnest($1::int[], $2::int[]) AS u(id, mid)
+      WHERE pm.id = u.id`,
+    [ids, mids]
+  );
+  return rowCount;
+}
+
 export async function reresolveSilos() {
   const resolver = await loadSiloResolver();
   let touched = 0;
@@ -1755,30 +1849,17 @@ export async function reresolveSilos() {
     touched += rowCount;
   }
 
-  // Refillable silos: the answer depends on WHEN, so each row takes the fill
-  // that was in force at its own batch's moment.
+  // Refillable silos — Round 189 (v10.18): FIRST IN, FIRST OUT.
   //
-  // A CTE rather than a LATERAL because Postgres will not let a LATERAL in the
-  // FROM clause reference the UPDATE's own target table. Computing the wanted
-  // material first also means the NULL case — a batch older than any fill —
-  // falls out of the same statement instead of needing a second one to clear
-  // stale values.
-  const { rowCount: refilled } = await query(
-    `WITH want AS (
-       SELECT pm.id,
-              (SELECT sf.material_id FROM plant_silo_fills sf
-                WHERE sf.slot = pm.slot
-                  AND sf.filled_at <= COALESCE(pb.batched_at, pb.batch_date::timestamptz)
-                ORDER BY sf.filled_at DESC LIMIT 1) AS mid
-         FROM plant_batch_materials pm
-         JOIN plant_batches pb ON pb.id = pm.batch_id
-        WHERE pm.slot IN (SELECT slot FROM plant_silo_aliases WHERE is_refillable)
-     )
-     UPDATE plant_batch_materials pm
-        SET material_id = w.mid
-       FROM want w
-      WHERE w.id = pm.id AND pm.material_id IS DISTINCT FROM w.mid`
-  );
+  // Until now each batch was charged to the silo's LATEST fill before it. A silo
+  // holding several brands (fly ash JSW / Thoothukudi / Udupi, three cement
+  // brands) then booked every draw to whichever load arrived last, so the brand
+  // that went in first showed almost no consumption and the last one far too
+  // much. Now each draw comes off the OLDEST load still in the silo; when that
+  // load is used up the next one starts. See fifoResolveSlot().
+  const { rows: refill } = await query(`SELECT slot FROM plant_silo_aliases WHERE is_refillable`);
+  let refilled = 0;
+  for (const r of refill) refilled += await fifoResolveSlot(r.slot);
   touched += refilled;
 
   return touched;

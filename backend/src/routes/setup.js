@@ -2061,7 +2061,15 @@ router.get("/setup", async (req, res) => {
       ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS revised_by INTEGER REFERENCES users(id);
       ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS revised_at TIMESTAMPTZ;
     `);
-    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rm_supplier_rates_current ON rm_supplier_rates(supplier_id, material_id, scope) WHERE valid_to IS NULL;`);
+    // Round 189 — once rates are per SOURCE (idx_rm_supplier_rates_current_src),
+    // the old per-material index must not come back: one supplier may now hold a
+    // current rate for two sources of the same material, and re-creating it
+    // would fail and stop /setup. So it is only created before Round 189 ran.
+    await pool.query(`DO $$ BEGIN
+      IF to_regclass('public.idx_rm_supplier_rates_current_src') IS NULL THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_rm_supplier_rates_current ON rm_supplier_rates(supplier_id, material_id, scope) WHERE valid_to IS NULL;
+      END IF;
+    END $$;`);
     // Backfill: a material created before round 140 has no rm_material_units
     // row at all (that table didn't exist yet), so its Units panel would
     // otherwise show empty even though it has a perfectly good purchase unit
@@ -3689,6 +3697,76 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_customer_text
 ALTER TABLE plant_manual_entries ADD COLUMN IF NOT EXISTS recipe_lines JSONB;
 `);
     log.push("Schema migration applied (Round 188 — MixTrack plant-text dockets, docket edit log, printed tickets, QC delay by plant text, manual production by recipe).");
+
+    // Round 189 (v10.18) — plant consumption transfers; material sources with
+    // an "Existing" source per material and rates/orders pointed at it.
+    // Additive and re-runnable; mirrored at the end of schema.sql.
+    await pool.query(`
+-- ============================================================================
+-- ROUND 189 (v10.18) - plant consumption transfers, material sources
+-- ============================================================================
+-- Admin moves plant consumption from the material the plant booked to the one
+-- really used (several materials through one bin). The plant's own batch rows
+-- are never changed; every consumption figure adds these in (minus on "from",
+-- plus on "to"). Dated the last day of the month they correct.
+CREATE TABLE IF NOT EXISTS plant_consumption_transfers (
+  id               SERIAL PRIMARY KEY,
+  transfer_date    DATE NOT NULL,
+  from_material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  to_material_id   INTEGER NOT NULL REFERENCES rm_materials(id),
+  qty_kg           NUMERIC(14,2) NOT NULL CHECK (qty_kg > 0),
+  reason           TEXT NOT NULL,
+  created_by       INTEGER NOT NULL REFERENCES users(id),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (from_material_id <> to_material_id)
+);
+CREATE INDEX IF NOT EXISTS idx_plant_consumption_transfers_date ON plant_consumption_transfers(transfer_date);
+
+-- Material sources: the source (quarry) decides kg per purchase unit; the
+-- supplier decides the price. Stock stays per material.
+CREATE TABLE IF NOT EXISTS rm_material_sources (
+  id                   SERIAL PRIMARY KEY,
+  material_id          INTEGER NOT NULL REFERENCES rm_materials(id),
+  name                 VARCHAR(120) NOT NULL,
+  place                VARCHAR(120),
+  purchase_unit        VARCHAR(20) NOT NULL,
+  kg_per_purchase_unit NUMERIC(12,4) NOT NULL CHECK (kg_per_purchase_unit > 0),
+  is_default           BOOLEAN NOT NULL DEFAULT false,
+  is_active            BOOLEAN NOT NULL DEFAULT true,
+  created_by           INTEGER REFERENCES users(id),
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (material_id, name)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rm_material_source_default
+  ON rm_material_sources(material_id) WHERE is_default;
+
+-- Every existing material gets one source, "Existing", carrying its present
+-- conversion, so nothing already booked changes. Only for materials with none.
+INSERT INTO rm_material_sources (material_id, name, purchase_unit, kg_per_purchase_unit, is_default)
+SELECT m.id, 'Existing', m.purchase_unit, m.kg_per_purchase_unit, true
+  FROM rm_materials m
+ WHERE NOT EXISTS (SELECT 1 FROM rm_material_sources s WHERE s.material_id = m.id);
+
+ALTER TABLE rm_supplier_rates ADD COLUMN IF NOT EXISTS source_id INTEGER REFERENCES rm_material_sources(id);
+ALTER TABLE rm_orders         ADD COLUMN IF NOT EXISTS source_id INTEGER REFERENCES rm_material_sources(id);
+
+-- Existing rates and orders point at their material's default source.
+UPDATE rm_supplier_rates r SET source_id = s.id
+  FROM rm_material_sources s
+ WHERE r.source_id IS NULL AND s.material_id = r.material_id AND s.is_default;
+UPDATE rm_orders o SET source_id = s.id
+  FROM rm_material_sources s
+ WHERE o.source_id IS NULL AND s.material_id = o.material_id AND s.is_default;
+
+-- One CURRENT rate per supplier + material + SOURCE + scope (was per supplier +
+-- material + scope, which refused a second source's rate from the same supplier).
+-- The earlier setup step re-creates the old index on every run, so it is dropped
+-- here every run too.
+DROP INDEX IF EXISTS idx_rm_supplier_rates_current;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rm_supplier_rates_current_src
+  ON rm_supplier_rates(supplier_id, material_id, (COALESCE(source_id, 0)), scope) WHERE valid_to IS NULL;
+`);
+    log.push("Schema migration applied (Round 189 — plant consumption transfers; material sources, existing rates and orders on each material's 'Existing' source).");
 
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 

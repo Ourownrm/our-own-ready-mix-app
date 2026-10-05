@@ -109,6 +109,52 @@ function parseBilledQty(rawText) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+// ROUND 190 (v10.19) — which SOURCE's conversion a ticket is compared at.
+//
+// Since Round 189 the kg in one purchase unit depends on the material's source
+// (quarry), not the material alone, and the weighbridge records no source. So
+// the app works it out, most certain first:
+//   1 'receipt'     — the ticket is claimed by a receipt: its order's source.
+//   2 'open orders' — the supplier's approved orders for this material all
+//                     name one source.
+//   3 'rate card'   — the supplier's current rates for this material name one
+//                     source.
+//   4 'assumed'     — the material's default source; flagged on screen so the
+//                     figure is not read as confirmed.
+// Needs `r` (the claiming receipt) joined before it. Shared by the ticket list
+// and the records report so the two cannot convert differently.
+const WB_SOURCE_JOIN = `
+       LEFT JOIN rm_orders ro ON ro.id = r.order_id
+       LEFT JOIN LATERAL (
+         SELECT x.name, x.purchase_unit, x.kg_per_purchase_unit, x.how FROM (
+           SELECT s1.name, s1.purchase_unit, s1.kg_per_purchase_unit, 'receipt' AS how, 1 AS pri
+             FROM rm_material_sources s1 WHERE s1.id = ro.source_id
+           UNION ALL
+           SELECT s2.name, s2.purchase_unit, s2.kg_per_purchase_unit, 'open orders', 2
+             FROM rm_material_sources s2
+            WHERE wb.supplier_id IS NOT NULL AND s2.id = (
+                  SELECT CASE WHEN count(DISTINCT o2.source_id) = 1 THEN max(o2.source_id) END
+                    FROM rm_orders o2
+                   WHERE o2.material_id = wb.material_id AND o2.supplier_id = wb.supplier_id
+                     AND o2.status = 'approved' AND o2.source_id IS NOT NULL)
+           UNION ALL
+           SELECT s3.name, s3.purchase_unit, s3.kg_per_purchase_unit, 'rate card', 3
+             FROM rm_material_sources s3
+            WHERE wb.supplier_id IS NOT NULL AND s3.id = (
+                  SELECT CASE WHEN count(DISTINCT sr.source_id) = 1 THEN max(sr.source_id) END
+                    FROM rm_supplier_rates sr
+                   WHERE sr.material_id = wb.material_id AND sr.supplier_id = wb.supplier_id
+                     AND sr.valid_to IS NULL AND sr.is_active AND sr.source_id IS NOT NULL)
+           UNION ALL
+           SELECT s4.name, s4.purchase_unit, s4.kg_per_purchase_unit, 'assumed', 4
+             FROM rm_material_sources s4 WHERE s4.material_id = wb.material_id AND s4.is_default
+         ) x ORDER BY x.pri LIMIT 1
+       ) cs ON true`;
+const WB_SOURCE_COLS = `
+              COALESCE(cs.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit,
+              COALESCE(cs.purchase_unit, m.purchase_unit) AS purchase_unit,
+              cs.name AS conv_source_name, cs.how AS conv_source_basis,`;
+
 // row must carry: billed_qty_raw, net_weight_kg, material_id,
 // kg_per_purchase_unit, purchase_unit, tolerance_pct. Returns null when the
 // operator typed nothing usable, or a variance object otherwise.
@@ -146,6 +192,10 @@ function wbVariance(row) {
     variance_qty: round2(variance),
     variance_pct: Math.round(pct * 100) / 100,
     tolerance_pct: tol,
+    // Round 190 — which source's kg-per-unit the comparison used, and how sure.
+    source_name: row.conv_source_name || null,
+    source_basis: row.conv_source_basis || null,
+    kg_per_unit: kgPer,
   };
 }
 
@@ -441,8 +491,8 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
       `SELECT wb.ticket_number, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
               wb.challan_number, wb.driver_name, wb.remarks, wb.charges,
               wb.empty_weight_kg, wb.loaded_weight_kg, wb.net_weight_kg,
-              wb.billed_qty_raw, wb.material_id,
-              m.kg_per_purchase_unit, m.purchase_unit, m.tolerance_pct,
+              wb.billed_qty_raw, wb.material_id,${WB_SOURCE_COLS}
+              m.tolerance_pct,
               wb.ticket_date, wb.weighed_at, wb.match_status, wb.unresolved,
               wb.review_note, wb.revision, wb.last_synced_at,
               m.name AS material_name, s.name AS supplier_name, t.truck_number,
@@ -460,6 +510,7 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
        LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
        LEFT JOIN rm_suppliers vs ON vs.id = v.supplier_id
        LEFT JOIN rm_receipts r  ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a pending receipt still claims its ticket, so this must see them
+       ${WB_SOURCE_JOIN}
        WHERE ($1::text IS NULL OR wb.match_status = $1::wb_match_status)
          AND (wb.weighed_at IS NULL OR wb.weighed_at >= now() - ($2 || ' days')::interval)
        ORDER BY wb.weighed_at DESC NULLS LAST, wb.ticket_number DESC
@@ -515,8 +566,8 @@ router.get("/report", requireRole(...WB_ROLES), requirePermission("material.weig
     const { rows } = await query(
       `SELECT wb.ticket_number, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
               wb.challan_number, wb.driver_name, wb.net_weight_kg, wb.empty_weight_kg, wb.loaded_weight_kg,
-              wb.billed_qty_raw, wb.material_id,
-              m.kg_per_purchase_unit, m.purchase_unit, m.tolerance_pct,
+              wb.billed_qty_raw, wb.material_id,${WB_SOURCE_COLS}
+              m.tolerance_pct,
               wb.ticket_date, wb.weighed_at, wb.match_status,
               m.name AS material_name, s.name AS supplier_name,
               v.registration AS vehicle_registration,
@@ -526,6 +577,7 @@ router.get("/report", requireRole(...WB_ROLES), requirePermission("material.weig
          LEFT JOIN rm_suppliers s ON s.id = wb.supplier_id
          LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
          LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a pending receipt still claims its ticket
+         ${WB_SOURCE_JOIN}
         WHERE ${where}
         ORDER BY wb.weighed_at DESC NULLS LAST, wb.ticket_number DESC
         LIMIT 1000`,

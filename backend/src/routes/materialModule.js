@@ -88,8 +88,147 @@ router.post("/materials", requireRole(...ADMIN), requirePermission("material.mat
     `INSERT INTO rm_material_units (material_id, unit_name, kg_per_unit, is_default) VALUES ($1,$2,$3,true)`,
     [rows[0].id, purchase_unit.trim(), kg_per_purchase_unit]
   );
+  // Round 189 — every material has at least one source, so an order can always
+  // name one. Materials bought by weight never need another.
+  await query(
+    `INSERT INTO rm_material_sources (material_id, name, purchase_unit, kg_per_purchase_unit, is_default, created_by)
+     VALUES ($1, 'Standard', $2, $3, true, $4)`,
+    [rows[0].id, purchase_unit.trim(), kg_per_purchase_unit, req.user.id]
+  );
   res.status(201).json(rows[0]);
 });
+
+// ===================== Material sources (Round 189, v10.18) =====================
+// Where a material is quarried or made. The SOURCE decides how many kg one
+// purchase unit weighs (20 MM from one quarry weighs differently per CFT than
+// from another); the SUPPLIER decides the price. Stock, silos, consumption and
+// the physical count stay per MATERIAL — the yard holds one pile of 20 MM
+// whichever quarry it came from. A changed conversion applies to new receipts
+// only; a receipt keeps the kg it was booked at.
+router.get("/material-sources", requireRole(...MATERIALS_READ_ROLES), requirePermission("material.materials", "view"), async (req, res) => {
+  const params = [];
+  let where = "true";
+  if (req.query.material_id) { params.push(Number(req.query.material_id)); where = `s.material_id = $1`; }
+  const { rows } = await query(
+    `SELECT s.*, m.name AS material_name,
+            (SELECT string_agg(DISTINCT sp.name, ', ' ORDER BY sp.name)
+               FROM rm_supplier_rates sr JOIN rm_suppliers sp ON sp.id = sr.supplier_id
+              WHERE sr.source_id = s.id AND sr.valid_to IS NULL AND sr.is_active) AS suppliers
+       FROM rm_material_sources s JOIN rm_materials m ON m.id = s.material_id
+      WHERE ${where}
+      ORDER BY m.name, s.is_default DESC, s.name`,
+    params
+  );
+  res.json(rows);
+});
+
+function cleanSource(body) {
+  const out = {};
+  if (body.name !== undefined) {
+    const n = String(body.name || "").trim();
+    if (!n) throw new Error("Give the source a name.");
+    out.name = n.slice(0, 120);
+  }
+  if (body.place !== undefined) out.place = String(body.place || "").trim().slice(0, 120) || null;
+  if (body.purchase_unit !== undefined) {
+    const u = String(body.purchase_unit || "").trim();
+    if (!u) throw new Error("Purchase unit is required (e.g. CFT, MT).");
+    out.purchase_unit = u.slice(0, 20);
+  }
+  if (body.kg_per_purchase_unit !== undefined) {
+    const k = Number(body.kg_per_purchase_unit);
+    if (!Number.isFinite(k) || k <= 0) throw new Error("Enter how many kg one unit weighs from this source.");
+    out.kg_per_purchase_unit = k;
+  }
+  if (body.is_active !== undefined) out.is_active = !!body.is_active;
+  return out;
+}
+
+router.post("/materials/:id/sources", requireRole(...ADMIN), requirePermission("material.materials", "create"), async (req, res) => {
+  let v;
+  try { v = cleanSource({ name: "", purchase_unit: "", kg_per_purchase_unit: 0, ...req.body }); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  const materialId = Number(req.params.id);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (req.body.is_default) await client.query(`UPDATE rm_material_sources SET is_default = false WHERE material_id = $1`, [materialId]);
+    const { rows } = await client.query(
+      `INSERT INTO rm_material_sources (material_id, name, place, purchase_unit, kg_per_purchase_unit, is_default, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [materialId, v.name, v.place ?? null, v.purchase_unit, v.kg_per_purchase_unit, !!req.body.is_default, req.user.id]
+    );
+    await client.query("COMMIT");
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.code === "23505") return res.status(409).json({ error: "This material already has a source with that name." });
+    if (err.code === "23503") return res.status(404).json({ error: "No such material." });
+    throw err;
+  } finally { client.release(); }
+});
+
+router.patch("/material-sources/:id", requireRole(...ADMIN), requirePermission("material.materials", "edit"), async (req, res) => {
+  let v;
+  try { v = cleanSource(req.body || {}); } catch (e) { return res.status(400).json({ error: e.message }); }
+  const id = Number(req.params.id);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: cur } = await client.query(`SELECT * FROM rm_material_sources WHERE id = $1 FOR UPDATE`, [id]);
+    if (!cur.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "No such source." }); }
+    if (v.is_active === false && cur[0].is_default && !req.body.is_default) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Make another source the default before switching this one off." });
+    }
+    if (req.body.is_default === true) {
+      await client.query(`UPDATE rm_material_sources SET is_default = false WHERE material_id = $1 AND id <> $2`, [cur[0].material_id, id]);
+      v.is_default = true;
+      v.is_active = true;
+    }
+    const keys = Object.keys(v);
+    if (keys.length) {
+      const sets = keys.map((k, i) => `${k} = $${i + 2}`);
+      await client.query(`UPDATE rm_material_sources SET ${sets.join(", ")} WHERE id = $1`, [id, ...keys.map((k) => v[k])]);
+    }
+    await client.query("COMMIT");
+    const { rows } = await query(`SELECT * FROM rm_material_sources WHERE id = $1`, [id]);
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.code === "23505") return res.status(409).json({ error: "This material already has a source with that name." });
+    throw err;
+  } finally { client.release(); }
+});
+
+// The current rate card for one source: which suppliers bring it, at what
+// rate and scope. Feeds the order form's supplier list.
+router.get("/material-sources/:id/rates", requireRole(...ORDER_ROLES), requirePermission("material.supplier-rates", "view"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT sr.id, sr.supplier_id, sp.name AS supplier_name, sr.scope, sr.rate,
+            to_char(sr.valid_from, 'YYYY-MM-DD') AS valid_from
+       FROM rm_supplier_rates sr JOIN rm_suppliers sp ON sp.id = sr.supplier_id
+      WHERE sr.source_id = $1 AND sr.valid_to IS NULL AND sr.is_active AND sp.is_active
+      ORDER BY sr.rate, sp.name`,
+    [req.params.id]
+  );
+  res.json(rows);
+});
+
+async function defaultSourceId(materialId, q = query) {
+  const { rows } = await q(
+    `SELECT id FROM rm_material_sources WHERE material_id = $1 AND is_active ORDER BY is_default DESC, id LIMIT 1`,
+    [materialId]
+  );
+  return rows[0]?.id || null;
+}
+
+async function checkSource(sourceId, materialId) {
+  const { rows } = await query(`SELECT id, is_active FROM rm_material_sources WHERE id = $1 AND material_id = $2`, [sourceId, materialId]);
+  if (!rows.length) return "That source does not belong to this material.";
+  if (!rows[0].is_active) return "That source is switched off.";
+  return null;
+}
 
 // ===================== Purchase units per material (item 4, round 140) =====================
 // rm_materials.purchase_unit/kg_per_purchase_unit stay the single live
@@ -242,10 +381,12 @@ router.patch("/suppliers/:id", requireRole(...ADMIN), requirePermission("materia
 // rate card. Full history is GET .../rates/history below.
 router.get("/suppliers/:supplierId/rates", requireRole(...ORDER_ROLES), requirePermission("material.supplier-rates", "view"), async (req, res) => {
   const { rows } = await query(
-    `SELECT sr.*, m.name AS material_name, m.purchase_unit
+    `SELECT sr.*, m.name AS material_name, COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
+            src.name AS source_name, src.kg_per_purchase_unit AS source_kg_per_unit
      FROM rm_supplier_rates sr JOIN rm_materials m ON m.id = sr.material_id
+     LEFT JOIN rm_material_sources src ON src.id = sr.source_id
      WHERE sr.supplier_id = $1 AND sr.is_active AND sr.valid_to IS NULL
-     ORDER BY m.name, sr.scope`,
+     ORDER BY m.name, src.name NULLS FIRST, sr.scope`,
     [req.params.supplierId]
   );
   res.json(rows);
@@ -259,12 +400,14 @@ router.get("/suppliers/:supplierId/rates/history", requireRole(...ORDER_ROLES), 
   let where = "sr.supplier_id = $1";
   if (req.query.material_id) { params.push(req.query.material_id); where += ` AND sr.material_id = $${params.length}`; }
   const { rows } = await query(
-    `SELECT sr.*, m.name AS material_name, m.purchase_unit, u.name AS updated_by_name
+    `SELECT sr.*, m.name AS material_name, COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
+            src.name AS source_name, u.name AS updated_by_name
      FROM rm_supplier_rates sr
      JOIN rm_materials m ON m.id = sr.material_id
+     LEFT JOIN rm_material_sources src ON src.id = sr.source_id
      LEFT JOIN users u ON u.id = sr.updated_by
      WHERE ${where}
-     ORDER BY m.name, sr.scope, sr.valid_from`,
+     ORDER BY m.name, src.name NULLS FIRST, sr.scope, sr.valid_from`,
     params
   );
   res.json(rows);
@@ -280,13 +423,17 @@ router.post("/suppliers/:supplierId/rates", requireRole(...ADMIN), requirePermis
   if (!material_id) return res.status(400).json({ error: "Select a material." });
   if (!["delivered", "ex_factory"].includes(scope)) return res.status(400).json({ error: "Scope must be delivered or ex_factory." });
   if (!rate || Number(rate) <= 0) return res.status(400).json({ error: "Enter a valid rate." });
+  // Round 189 — a rate is for supplier + material + SOURCE + scope.
+  const sourceId = req.body.source_id ? Number(req.body.source_id) : await defaultSourceId(material_id);
+  if (sourceId) { const bad = await checkSource(sourceId, material_id); if (bad) return res.status(400).json({ error: bad }); }
 
   const effectiveFrom = valid_from || istDay();
   const { rows } = await query(
     `UPDATE rm_supplier_rates SET valid_to = $1::date - INTERVAL '1 day'
      WHERE supplier_id = $2 AND material_id = $3 AND scope = $4 AND valid_to IS NULL
+       AND source_id IS NOT DISTINCT FROM $5::int
      RETURNING id`,
-    [effectiveFrom, req.params.supplierId, material_id, scope]
+    [effectiveFrom, req.params.supplierId, material_id, scope, sourceId]
   );
   // No-op if this exact rate already IS the current one — avoids a
   // zero-day-long history row when the admin just re-saves the same rate.
@@ -300,9 +447,9 @@ router.post("/suppliers/:supplierId/rates", requireRole(...ADMIN), requirePermis
   }
 
   const { rows: created } = await query(
-    `INSERT INTO rm_supplier_rates (supplier_id, material_id, scope, rate, valid_from, valid_to, is_active, updated_by)
-     VALUES ($1,$2,$3,$4,$5,NULL,true,$6) RETURNING *`,
-    [req.params.supplierId, material_id, scope, rate, effectiveFrom, req.user.id]
+    `INSERT INTO rm_supplier_rates (supplier_id, material_id, scope, rate, valid_from, valid_to, is_active, updated_by, source_id)
+     VALUES ($1,$2,$3,$4,$5,NULL,true,$6,$7) RETURNING *`,
+    [req.params.supplierId, material_id, scope, rate, effectiveFrom, req.user.id, sourceId]
   );
   res.status(201).json(created[0]);
 });
@@ -384,13 +531,17 @@ router.post("/orders", requireRole(...ORDER_ROLES), requirePermission("material.
   if (scope === "ex_factory" && !transporter_id) return res.status(400).json({ error: "Select a transporter for an ex-factory order." });
   if (!ordered_qty || Number(ordered_qty) <= 0) return res.status(400).json({ error: "Enter the quantity to order." });
   if (!rate || Number(rate) <= 0) return res.status(400).json({ error: "Enter the rate." });
+  // Round 189 — the order names the SOURCE, which fixes the kg-per-unit its
+  // receipts are converted at. No source given = the material's default.
+  const sourceId = req.body.source_id ? Number(req.body.source_id) : await defaultSourceId(material_id);
+  if (sourceId) { const bad = await checkSource(sourceId, material_id); if (bad) return res.status(400).json({ error: bad }); }
 
   const { rows } = await query(
     `INSERT INTO rm_orders
-       (material_id, supplier_id, scope, transporter_id, ordered_qty, rate, freight_rate, freight_basis, tax_pct, gst_treatment, requested_by, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+       (material_id, supplier_id, scope, transporter_id, ordered_qty, rate, freight_rate, freight_basis, tax_pct, gst_treatment, requested_by, notes, source_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [material_id, supplier_id, scope, transporter_id || null, ordered_qty, rate, freight_rate || null,
-      freight_basis || null, tax_pct || 0, gst_treatment || "excluded", req.user.id, notes || null]
+      freight_basis || null, tax_pct || 0, gst_treatment || "excluded", req.user.id, notes || null, sourceId]
   );
 
   const { rows: m } = await query(`SELECT name FROM rm_materials WHERE id = $1`, [material_id]);
@@ -404,7 +555,10 @@ router.post("/orders", requireRole(...ORDER_ROLES), requirePermission("material.
 });
 
 const ORDER_LIST_COLUMNS = `
-  o.*, m.name AS material_name, m.purchase_unit, m.kg_per_purchase_unit,
+  o.*, m.name AS material_name,
+  COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
+  COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit,
+  src.name AS source_name, src.place AS source_place,
   s.name AS supplier_name, t.name AS transporter_name,
   ru.name AS requested_by_name, au.name AS approved_by_name,
   COALESCE(recv.received_qty, 0) AS received_qty
@@ -412,6 +566,7 @@ const ORDER_LIST_COLUMNS = `
 const ORDER_LIST_FROM = `
   FROM rm_orders o
   JOIN rm_materials m ON m.id = o.material_id
+  LEFT JOIN rm_material_sources src ON src.id = o.source_id
   JOIN rm_suppliers s ON s.id = o.supplier_id
   LEFT JOIN rm_transporters t ON t.id = o.transporter_id
   JOIN users ru ON ru.id = o.requested_by
@@ -558,14 +713,16 @@ router.get("/orders/:id/weighbridge-tickets", requireRole(...ORDER_ROLES), requi
       `SELECT wb.ticket_number, wb.weighed_at, wb.net_weight_kg, wb.empty_weight_kg, wb.loaded_weight_kg,
               wb.raw_vehicle, wb.challan_number, wb.purpose,
               COALESCE(v.registration, wb.raw_vehicle) AS vehicle_registration,
-              m.kg_per_purchase_unit,
+              COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit,
               -- Offered in the order's own purchase unit, because that is what
               -- Store types into the accepted-quantity box. Doing it here keeps
-              -- the conversion in one place rather than in the screen.
-              ROUND((wb.net_weight_kg / NULLIF(m.kg_per_purchase_unit, 0))::numeric, 2) AS net_purchase_units
+              -- the conversion in one place rather than in the screen. Round
+              -- 189: the ORDER's source decides the kg per unit.
+              ROUND((wb.net_weight_kg / NULLIF(COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit), 0))::numeric, 2) AS net_purchase_units
        FROM weighbridge_tickets wb
        JOIN rm_orders o ON o.id = $1
        JOIN rm_materials m ON m.id = o.material_id
+       LEFT JOIN rm_material_sources src ON src.id = o.source_id
        LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
        LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: claim check must see pending receipts, or a ticket could be claimed twice
        WHERE wb.match_status = 'matched'
@@ -672,8 +829,9 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
   if (receivedDate === undefined) return; // validator already answered
 
   const { rows: orders } = await query(
-    `SELECT o.*, m.kg_per_purchase_unit, m.tolerance_pct
+    `SELECT o.*, COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit, m.tolerance_pct
      FROM rm_orders o JOIN rm_materials m ON m.id = o.material_id
+     LEFT JOIN rm_material_sources src ON src.id = o.source_id
      WHERE o.id = $1 AND o.status = 'approved'`,
     [order_id]
   );
@@ -1045,8 +1203,8 @@ router.get("/receipts/pending", requireRole(...CONFIRM_ROLES), requirePermission
               r.variance_qty, r.variance_pct, r.short_reason, r.notes, r.challan_number,
               r.vehicle_number, r.accepted_basis,
               o.id AS order_id, o.rate AS order_rate,
-              m.id AS material_id, m.name AS material_name, m.purchase_unit,
-              m.kg_per_purchase_unit, m.tolerance_pct,
+              m.id AS material_id, m.name AS material_name, COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
+              COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit, m.tolerance_pct, src.name AS source_name,
               s.name AS supplier_name, ru.name AS received_by_name,
               -- What accepting each figure would actually mean in money, so the
               -- decision is not taken on quantities alone.
@@ -1055,6 +1213,7 @@ router.get("/receipts/pending", requireRole(...CONFIRM_ROLES), requirePermission
        FROM rm_receipts r   -- receipts-raw: this queue exists to show exactly the pending ones
        JOIN rm_orders o ON o.id = r.order_id
        JOIN rm_materials m ON m.id = o.material_id
+       LEFT JOIN rm_material_sources src ON src.id = o.source_id
        JOIN rm_suppliers s ON s.id = o.supplier_id
        JOIN users ru ON ru.id = r.received_by
        WHERE r.confirmation_status = 'pending'
@@ -1080,10 +1239,12 @@ router.post("/receipts/:id/confirm", requireRole(...CONFIRM_ROLES), requirePermi
     const { rows: found } = await query(
       // receipts-raw: confirming is what takes a receipt out of 'pending'
       `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.freight_rate AS order_freight_rate,
-              o.freight_basis AS order_freight_basis, o.material_id AS order_material_id, m.kg_per_purchase_unit
+              o.freight_basis AS order_freight_basis, o.material_id AS order_material_id,
+              COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit
        FROM rm_receipts r   -- receipts-raw: confirming is what takes a receipt out of 'pending'
        JOIN rm_orders o ON o.id = r.order_id
        JOIN rm_materials m ON m.id = o.material_id
+       LEFT JOIN rm_material_sources src ON src.id = o.source_id
        WHERE r.id = $1`,
       [id]
     );
@@ -1431,16 +1592,17 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("materi
   // has cover coming (or does not).
   const { rows: openOrders } = await query(
     `SELECT o.id, o.ordered_qty, m.id AS material_id, m.name AS material_name, m.purchase_unit,
-            (o.ordered_qty * m.kg_per_purchase_unit) AS ordered_qty_kg,
+            (o.ordered_qty * COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit)) AS ordered_qty_kg,
             s.name AS supplier_name, o.scope::text AS scope,
             COALESCE(SUM(r.accepted_qty_kg), 0) AS received_kg,
             COALESCE(SUM(r.accepted_qty), 0) AS received_qty
      FROM rm_orders o
      JOIN rm_materials m ON m.id = o.material_id
+     LEFT JOIN rm_material_sources src ON src.id = o.source_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
      LEFT JOIN rm_receipts_effective r ON r.order_id = o.id
      WHERE o.status = 'approved'
-     GROUP BY o.id, o.ordered_qty, m.id, m.name, m.purchase_unit, m.kg_per_purchase_unit, s.name, o.scope
+     GROUP BY o.id, o.ordered_qty, m.id, m.name, m.purchase_unit, m.kg_per_purchase_unit, src.kg_per_purchase_unit, s.name, o.scope
      HAVING COALESCE(SUM(r.accepted_qty), 0) < o.ordered_qty
      ORDER BY o.id DESC
      LIMIT 12`
@@ -1597,6 +1759,8 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
       // Null before the cutover, when the month's figure is the hand-keyed one.
       plant_consumption_auto_kg: monthStart >= CONSUMPTION_CUTOVER ? (plantThisMonth.get(m.id)?.auto_kg || 0) : null,
       plant_consumption_manual_kg: monthStart >= CONSUMPTION_CUTOVER ? (plantThisMonth.get(m.id)?.manual_kg || 0) : null,
+      // Round 189 — net consumption transfer (+ in / − out) for the month.
+      plant_consumption_transfer_kg: monthStart >= CONSUMPTION_CUTOVER ? (plantThisMonth.get(m.id)?.transfer_kg || 0) : null,
       book_stock_kg: bookStockKg,
       physical_stock_kg: count ? Number(count.physical_stock_kg) : null,
       stock_taken_by_name: null,
@@ -1675,6 +1839,124 @@ router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermissio
   });
 });
 
+// ===================== Plant consumption transfer (Round 189, v10.18) =====================
+// When several materials go through one bin (M SAND-DRY fed into the M SAND
+// bin, three fly ash brands in one silo, admixtures in one tank) the plant
+// books the whole draw to one of them. The physical count shows it: one
+// material over-used, another apparently untouched. An Administrator moves the
+// quantity from the material the plant booked to the one really used.
+//
+// The plant's own record (plant_batch_materials) is never changed: a transfer
+// is its own row, minus on "from" and plus on "to", and every consumption
+// figure — book stock, physical stock, cost per m3, reports — adds it in. One
+// month at a time, dated the month's last day (today for the month in
+// progress), and only from the cutover on
+// (before it the month's consumption is the old hand-keyed figure).
+function monthBounds(ym) {
+  if (!/^\d{4}-\d{2}$/.test(String(ym || ""))) return null;
+  const start = `${ym}-01`;
+  const next = firstOfNextMonth(start);
+  const [y, m] = ym.split("-").map(Number);
+  const last = `${ym}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`; // ist-ok: calendar arithmetic on a month string
+  return { start, next, last };
+}
+
+router.get("/consumption-transfers", requireRole(...ADMIN), requirePermission("material.consumption-transfer", "view"), async (req, res) => {
+  const b = monthBounds(req.query.month || istMonth());
+  if (!b) return res.status(400).json({ error: "Give the month as YYYY-MM." });
+  const { rows } = await query(
+    `SELECT t.id, to_char(t.transfer_date, 'YYYY-MM-DD') AS transfer_date, t.qty_kg, t.reason,
+            t.from_material_id, fm.name AS from_name, fm.purchase_unit AS from_unit, fm.kg_per_purchase_unit AS from_kg_per_unit,
+            t.to_material_id, tm.name AS to_name, tm.purchase_unit AS to_unit, tm.kg_per_purchase_unit AS to_kg_per_unit,
+            u.name AS created_by_name,
+            to_char(t.created_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon YYYY HH24:MI') AS created_at
+       FROM plant_consumption_transfers t
+       JOIN rm_materials fm ON fm.id = t.from_material_id
+       JOIN rm_materials tm ON tm.id = t.to_material_id
+       LEFT JOIN users u ON u.id = t.created_by
+      WHERE t.transfer_date >= $1::date AND t.transfer_date < $2::date
+      ORDER BY t.created_at DESC`,
+    [b.start, b.next]
+  );
+  res.json({ month: b.start.slice(0, 7), cutover: CONSUMPTION_CUTOVER, transfers: rows });
+});
+
+router.post("/consumption-transfers", requireRole(...ADMIN), requirePermission("material.consumption-transfer", "create"), async (req, res) => {
+  const body = req.body || {};
+  const b = monthBounds(body.month);
+  if (!b) return res.status(400).json({ error: "Give the month as YYYY-MM." });
+  if (b.start < CONSUMPTION_CUTOVER) {
+    return res.status(400).json({ error: `Transfers start from ${CONSUMPTION_CUTOVER.slice(0, 7)}: earlier months use the hand-keyed consumption.` });
+  }
+  if (b.start > istMonth() + "-01") return res.status(400).json({ error: "That month has not started yet." });
+  const qty = Number(body.qty_kg);
+  if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: "Enter the quantity to move." });
+  const reason = String(body.reason || "").trim();
+  if (!reason) return res.status(400).json({ error: "Say why this is being moved." });
+  const fromId = Number(body.from_material_id);
+  if (!(Number.isInteger(fromId) && fromId > 0)) return res.status(400).json({ error: "Choose the material the plant booked it to." });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    let toId = Number(body.to_material_id);
+    let created = null;
+    // "+ New material" — created in the same transaction as the transfer, so a
+    // refused transfer never leaves a stray material behind.
+    if (body.new_material) {
+      const nm = body.new_material;
+      const name = String(nm.name || "").trim();
+      const unit = String(nm.purchase_unit || "").trim();
+      const kg = Number(nm.kg_per_purchase_unit);
+      if (!name) throw Object.assign(new Error("Name the new material."), { status: 400 });
+      if (!unit) throw Object.assign(new Error("Give the new material's purchase unit."), { status: 400 });
+      if (!Number.isFinite(kg) || kg <= 0) throw Object.assign(new Error("Give the new material's kg per unit."), { status: 400 });
+      const { rows: mrows } = await client.query(
+        `INSERT INTO rm_materials (name, category, purchase_unit, kg_per_purchase_unit, created_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id, name`,
+        [name, String(nm.category || "").trim() || null, unit, kg, req.user.id]
+      );
+      created = mrows[0];
+      toId = created.id;
+      await client.query(
+        `INSERT INTO rm_material_units (material_id, unit_name, kg_per_unit, is_default) VALUES ($1,$2,$3,true)`,
+        [toId, unit, kg]
+      );
+      await client.query(
+        `INSERT INTO rm_material_sources (material_id, name, purchase_unit, kg_per_purchase_unit, is_default, created_by)
+         VALUES ($1,'Standard',$2,$3,true,$4)`,
+        [toId, unit, kg, req.user.id]
+      );
+    }
+    if (!(Number.isInteger(toId) && toId > 0)) throw Object.assign(new Error("Choose the material that was really used."), { status: 400 });
+    if (toId === fromId) throw Object.assign(new Error("From and To must be different materials."), { status: 400 });
+    const { rows } = await client.query(
+      `INSERT INTO plant_consumption_transfers (transfer_date, from_material_id, to_material_id, qty_kg, reason, created_by)
+       VALUES ($1::date, $2, $3, $4, $5, $6) RETURNING id`,
+      // The month's last day — or today, for the month in progress, so a
+      // transfer is never dated in the future (period views ending today would
+      // otherwise count it before its day).
+      [b.last > istDay() ? istDay() : b.last, fromId, toId, Math.round(qty * 100) / 100, reason, req.user.id]
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ ok: true, id: rows[0].id, created_material: created });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    if (err.code === "23505") return res.status(409).json({ error: "A material with that name already exists — pick it from the list." });
+    if (err.code === "23503") return res.status(400).json({ error: "One of those materials no longer exists." });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+router.delete("/consumption-transfers/:id", requireRole(...ADMIN), requirePermission("material.consumption-transfer", "delete"), async (req, res) => {
+  const { rowCount } = await query(`DELETE FROM plant_consumption_transfers WHERE id = $1`, [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "No such transfer." });
+  res.json({ ok: true });
+});
+
 // ===================== Reports (Administrator only) =====================
 // "Raw material stock" is GET /stock above (also used as the live stock
 // view for the Store role) — not duplicated here. "Receipts register" is
@@ -1703,12 +1985,15 @@ router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePerm
   if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
   if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
   const { rows } = await query(
-    `SELECT r.id, r.received_at, to_char(r.received_date,'YYYY-MM-DD') AS received_date, m.name AS material_name, m.purchase_unit, m.tolerance_pct,
+    `SELECT r.id, r.received_at, to_char(r.received_date,'YYYY-MM-DD') AS received_date, m.name AS material_name,
+            COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit, m.tolerance_pct,
+            src.name AS source_name, src.kg_per_purchase_unit AS source_kg_per_unit,
             s.name AS supplier_name, r.supplier_qty, r.weighbridge_weight_kg, r.accepted_qty,
             r.short_qty, r.debit_note_amount, r.vehicle_number, r.challan_number
      FROM rm_receipts_effective r
      JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_materials m ON m.id = o.material_id
+     LEFT JOIN rm_material_sources src ON src.id = o.source_id
      JOIN rm_suppliers s ON s.id = o.supplier_id
      WHERE ${where}
      ORDER BY r.received_date DESC, r.received_at DESC
