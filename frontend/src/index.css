@@ -434,3 +434,24 @@ a { color: var(--rebar); }
   display:inline-flex; align-items:center; gap:5px; font-weight:600;
 }
 .topbar-link.solitaire-link svg{ flex:0 0 auto; }
+
+/* Round 189 (v10.18) — Plant Production on a phone. Desktop is unchanged; below
+   640px the summary becomes a 2x2 grid, the section tabs scroll sideways in one
+   row, the period picker takes its own full-width row, the two production cards
+   stack, each day's bar drops under its figures, and recent loads become cards. */
+.pp-only-narrow { display: none; }
+@media (max-width: 640px) {
+  .pp-kpis { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px !important; }
+  .pp-kpis > .pp-agent { grid-column: 1 / -1; margin-left: 0 !important; text-align: left !important; }
+  .pp-tabs { flex-wrap: nowrap !important; overflow-x: auto; margin-left: -16px; margin-right: -16px; padding: 0 16px 4px; -webkit-overflow-scrolling: touch; }
+  .pp-tabs > .btn-tab { flex: none; min-height: 40px; }
+  .pp-period { margin: 0 0 16px !important; width: 100%; }
+  .pp-period select { flex: 1; font-size: 15px !important; min-height: 42px; }
+  .pp-period input[type=date] { flex: 1; min-height: 40px; }
+  .pp-two { grid-template-columns: minmax(0, 1fr) !important; }
+  .pp-day-row { flex-wrap: wrap; row-gap: 4px !important; }
+  .pp-day-row > .pp-bar { order: 10; flex-basis: 100%; }
+  .pp-day-head { display: none !important; }
+  .pp-only-wide { display: none !important; }
+  .pp-only-narrow { display: block; }
+}
