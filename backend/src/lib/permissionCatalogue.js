@@ -171,6 +171,10 @@ export const CATALOGUE = [
     { administrator: V }),
   f("material.physical-stock", "material", "Monthly physical stock count", VCE,
     { administrator: VCE, store: VCE, plant_operator: V }),
+  // Round 189 — moving plant consumption from the material the plant booked to
+  // the one really used (several materials through one bin). Administrator only.
+  f("material.consumption-transfer", "material", "Plant consumption transfer", VCED,
+    { administrator: VCED }),
   f("material.reports", "material", "Material reports", V,
     { administrator: V }),
   f("material.cost-dashboard", "material", "Material cost dashboard", V,

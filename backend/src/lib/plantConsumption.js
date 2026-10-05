@@ -35,7 +35,15 @@ export async function plantConsumptionByMaterial({ from = null, toExclusive = nu
   if (from)        { manP.push(from);        manWh.push(`e.entry_date >= $${manP.length}::date`); }
   if (toExclusive) { manP.push(toExclusive); manWh.push(`e.entry_date <  $${manP.length}::date`); }
 
-  const [auto, manual] = await Promise.all([
+  // Round 189 — consumption transfers (Admin moving plant consumption from the
+  // material the plant booked to the one really used). Signed: minus on the
+  // "from" material, plus on the "to". Same date bounds as the manual rows.
+  const trWh = [], trP = [];
+  if (from)        { trP.push(from);        trWh.push(`t.transfer_date >= $${trP.length}::date`); }
+  if (toExclusive) { trP.push(toExclusive); trWh.push(`t.transfer_date <  $${trP.length}::date`); }
+  const trWhere = trWh.length ? "WHERE " + trWh.join(" AND ") : "";
+
+  const [auto, manual, transfers] = await Promise.all([
     query(
       `SELECT pm.material_id, sum(pm.actual_kg)::numeric AS kg
          FROM plant_batch_materials pm
@@ -47,16 +55,27 @@ export async function plantConsumptionByMaterial({ from = null, toExclusive = nu
          FROM plant_manual_entries e
         WHERE ${manWh.join(" AND ")}
         GROUP BY e.material_id`, manP),
+    query(
+      `SELECT material_id, sum(kg)::numeric AS kg FROM (
+          SELECT t.from_material_id AS material_id, -t.qty_kg AS kg FROM plant_consumption_transfers t ${trWhere}
+          UNION ALL
+          SELECT t.to_material_id, t.qty_kg FROM plant_consumption_transfers t ${trWhere}
+       ) x GROUP BY material_id`, trP),
   ]);
 
   const out = new Map();
-  for (const r of auto.rows) out.set(r.material_id, { auto_kg: Number(r.kg) || 0, manual_kg: 0 });
+  for (const r of auto.rows) out.set(r.material_id, { auto_kg: Number(r.kg) || 0, manual_kg: 0, transfer_kg: 0 });
   for (const r of manual.rows) {
-    const cur = out.get(r.material_id) || { auto_kg: 0, manual_kg: 0 };
+    const cur = out.get(r.material_id) || { auto_kg: 0, manual_kg: 0, transfer_kg: 0 };
     cur.manual_kg += Number(r.kg) || 0;
     out.set(r.material_id, cur);
   }
-  for (const v of out.values()) v.total_kg = Math.round((v.auto_kg + v.manual_kg) * 1000) / 1000;
+  for (const r of transfers.rows) {
+    const cur = out.get(r.material_id) || { auto_kg: 0, manual_kg: 0, transfer_kg: 0 };
+    cur.transfer_kg += Number(r.kg) || 0;
+    out.set(r.material_id, cur);
+  }
+  for (const v of out.values()) v.total_kg = Math.round((v.auto_kg + v.manual_kg + v.transfer_kg) * 1000) / 1000;
   return out;
 }
 
@@ -68,7 +87,8 @@ export async function plantConsumptionByMaterialMonth({ from = null } = {}) {
   const p = [];
   let where = "pm.material_id IS NOT NULL";
   let whereE = "e.material_id IS NOT NULL";
-  if (from) { p.push(from); where += ` AND pb.batch_date >= $1::date`; whereE += ` AND e.entry_date >= $1::date`; }
+  let whereT = "true";
+  if (from) { p.push(from); where += ` AND pb.batch_date >= $1::date`; whereE += ` AND e.entry_date >= $1::date`; whereT = `t.transfer_date >= $1::date`; }
   const { rows } = await query(
     `SELECT material_id, ym, sum(kg)::numeric AS kg FROM (
         SELECT pm.material_id, to_char(pb.batch_date, 'YYYY-MM') AS ym, pm.actual_kg AS kg
@@ -78,6 +98,10 @@ export async function plantConsumptionByMaterialMonth({ from = null } = {}) {
         SELECT e.material_id, to_char(e.entry_date, 'YYYY-MM') AS ym, e.qty_kg AS kg
           FROM plant_manual_entries e
          WHERE ${whereE}
+        UNION ALL
+        SELECT t.from_material_id, to_char(t.transfer_date, 'YYYY-MM'), -t.qty_kg FROM plant_consumption_transfers t WHERE ${whereT}
+        UNION ALL
+        SELECT t.to_material_id, to_char(t.transfer_date, 'YYYY-MM'), t.qty_kg FROM plant_consumption_transfers t WHERE ${whereT}
      ) t GROUP BY material_id, ym`, p);
   const out = new Map();
   for (const r of rows) {
@@ -177,6 +201,12 @@ export async function consumptionByMaterialMonthRange({ from, toExclusive }) {
           SELECT e.material_id, to_char(e.entry_date, 'YYYY-MM') AS ym, e.qty_kg AS kg
             FROM plant_manual_entries e
            WHERE e.material_id IS NOT NULL AND e.entry_date >= $1::date AND e.entry_date < $2::date
+          UNION ALL
+          SELECT t.from_material_id, to_char(t.transfer_date, 'YYYY-MM'), -t.qty_kg
+            FROM plant_consumption_transfers t WHERE t.transfer_date >= $1::date AND t.transfer_date < $2::date
+          UNION ALL
+          SELECT t.to_material_id, to_char(t.transfer_date, 'YYYY-MM'), t.qty_kg
+            FROM plant_consumption_transfers t WHERE t.transfer_date >= $1::date AND t.transfer_date < $2::date
        ) t GROUP BY material_id, ym`, [pf, toExclusive]);
     for (const r of rows) out.push({ material_id: r.material_id, ym: r.ym, kg: Number(r.kg) || 0 });
   }
