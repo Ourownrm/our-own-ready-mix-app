@@ -75,6 +75,7 @@ function VarianceCell({ v, raw }) {
       <div>
         <div style={{ color: "var(--amber)", fontWeight: 600 }}>Check billed qty</div>
         <div style={sub}>billed {fmtQty(v.billed_qty, v.unit)} vs weighed {fmtQty(v.weighed_qty, v.unit)} — wrong unit?</div>
+        <SourceNote v={v} />
       </div>
     );
 
@@ -91,6 +92,29 @@ function VarianceCell({ v, raw }) {
         {v.status === "beyond" ? " ⚠" : " ✓"}
       </div>
       <div style={sub}>billed {fmtQty(v.billed_qty, v.unit)} · weighed {fmtQty(v.weighed_qty, v.unit)}</div>
+      <SourceNote v={v} />
+    </div>
+  );
+}
+
+// Round 190 — which source's kg-per-unit the comparison used. The weighbridge
+// records no source, so the app works it out (receipt's order → the supplier's
+// open orders → the supplier's rate card → the material's default). An
+// assumed source is flagged so the figure is not taken as confirmed.
+const SOURCE_BASIS_TEXT = {
+  receipt: "from the receipt's order",
+  "open orders": "from the supplier's open orders",
+  "rate card": "from the supplier's rate card",
+  assumed: "source assumed (default)",
+};
+function SourceNote({ v }) {
+  if (!v || !v.source_name) return null;
+  const assumed = v.source_basis === "assumed";
+  return (
+    <div style={{ fontSize: 10.5, color: assumed ? "var(--amber)" : "var(--slate)" }}
+         title={SOURCE_BASIS_TEXT[v.source_basis] || ""}>
+      {v.source_name} · {Number(v.kg_per_unit).toLocaleString(undefined, { maximumFractionDigits: 2 })} kg/{v.unit}
+      {assumed ? " · source assumed" : ""}
     </div>
   );
 }

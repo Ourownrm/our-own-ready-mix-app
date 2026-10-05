@@ -215,12 +215,12 @@ function Production({ qs }) {
         <div style={{ fontSize: 12, color: "var(--slate)", marginLeft: "auto" }}>{t.days ?? 0} day{t.days === 1 ? "" : "s"} with production</div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.7fr) minmax(0, 1fr)", gap: 16, marginBottom: 16 }}>
+      <div className="pp-two" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.7fr) minmax(0, 1fr)", gap: 16, marginBottom: 16 }}>
         <div className="card">
           <h3 style={{ fontSize: 14, margin: "0 0 12px" }}>By Day in m³</h3>
           {!data.by_day.length && <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing batched in this period.</div>}
           {data.by_day.length > 0 && (
-            <div style={{ display: "flex", gap: 10, fontSize: 10.5, color: "var(--slate)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".04em" }}>
+            <div className="pp-day-head" style={{ display: "flex", gap: 10, fontSize: 10.5, color: "var(--slate)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".04em" }}>
               <span style={{ width: 62 }}>Day</span><span style={{ flexGrow: 1 }} />
               <span style={{ width: 64, textAlign: "right" }}>Plant</span>
               <span style={{ width: 64, textAlign: "right" }}>Manual</span>
@@ -229,11 +229,11 @@ function Production({ qs }) {
             </div>
           )}
           {data.by_day.map((d) => (
-            <div key={d.batch_date} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 7 }}>
+            <div key={d.batch_date} className="pp-day-row" style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 7 }}>
               <span style={{ fontSize: 12.5, width: 62, color: "var(--slate)" }}>{fmtDay(d.batch_date)}</span>
               {/* A plain proportional bar rather than a chart library: plant
                   part solid, manual part lighter on the end of it. */}
-              <span style={{ flexGrow: 1, height: 16, background: "var(--concrete)", borderRadius: 3, overflow: "hidden", display: "flex" }}>
+              <span className="pp-bar" style={{ flexGrow: 1, height: 16, background: "var(--concrete)", borderRadius: 3, overflow: "hidden", display: "flex" }}>
                 <span style={{ display: "block", height: "100%", width: `${(Number(d.auto_m3) / maxDay) * 100}%`, background: "var(--rebar)" }} />
                 <span style={{ display: "block", height: "100%", width: `${(Number(d.manual_m3) / maxDay) * 100}%`, background: "var(--amber)", opacity: 0.75 }} />
               </span>
@@ -266,7 +266,22 @@ function Production({ qs }) {
       </div>
 
       <h3 style={{ fontSize: 15, margin: "0 0 10px" }}>Recent loads</h3>
-      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+      {/* Round 189 — on a phone each load is a small card instead of an 8-column table. */}
+      <div className="pp-only-narrow">
+        {loads.map((l) => (
+          <div key={`n-${l.batch_year}-${l.batch_no}-${l.plant_no}`} className="card" style={{ marginBottom: 8, padding: "10px 12px", fontSize: 13 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <b>#{l.batch_no} · {l.recipe_code}</b><b>{fmtM3(l.m3)}</b>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "var(--slate)", fontSize: 12 }}>
+              <span>{fmtWhen(l.started_at)} · {l.batches} mixes</span><span>{l.truck_no || "—"}</span>
+            </div>
+            {l.site_name && <div style={{ color: "var(--slate)", fontSize: 12 }}>{l.site_name}</div>}
+          </div>
+        ))}
+        {!loads.length && <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>No loads in this period.</div>}
+      </div>
+      <div className="card pp-only-wide" style={{ padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "var(--concrete)" }}>
@@ -432,6 +447,37 @@ function Consumption({ qs }) {
                     <td style={TD}>{mm.material_name}</td>
                     <td style={{ ...TD, textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtKg(mm.actual_kg)}</td>
                     <td style={{ ...TD, textAlign: "right", color: "var(--slate)", whiteSpace: "nowrap" }}>{m3 ? `${Math.round(Number(mm.actual_kg) / m3).toLocaleString()} kg` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {(data.transfers || []).length > 0 && (
+        <>
+          <h3 style={{ fontSize: 15, margin: "18px 0 6px" }}>Consumption transfers (Administrator)</h3>
+          <p style={{ fontSize: 11.5, color: "var(--slate)", margin: "0 0 10px", maxWidth: 820, lineHeight: 1.5 }}>
+            Quantities moved from the material the plant booked to the one really used (several materials through one bin).
+            The plant's weights above are unchanged; book stock and cost use the figures after these transfers.
+          </p>
+          <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 560 }}>
+              <thead>
+                <tr style={{ background: "var(--concrete)" }}>
+                  <th style={TH}>Month</th><th style={TH}>Transferred out of</th><th style={TH}>Into</th>
+                  <th style={{ ...TH, textAlign: "right" }}>Quantity</th><th style={TH}>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.transfers.map((t) => (
+                  <tr key={t.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtDay(t.transfer_date)}</td>
+                    <td style={TD}>{t.from_name}</td>
+                    <td style={TD}>{t.to_name}</td>
+                    <td style={{ ...TD, textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtKg(t.qty_kg)}</td>
+                    <td style={{ ...TD, color: "var(--slate)" }}>{t.reason}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1068,7 +1114,7 @@ function Manual({ canEdit }) {
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 20 }}>
         <div className="card">
           <div className="kpi-label">Production — from the plant</div>
           <div style={{ fontSize: 26, fontWeight: 700 }}>{autoM3.toFixed(1)} <span style={{ fontSize: 15, color: "var(--slate)" }}>m³</span></div>
@@ -1429,12 +1475,35 @@ export default function PlantProduction() {
     ? `from_date=${from}&to_date=${to}`
     : `days=${days === "custom" ? 30 : days}`;
 
+  // Round 189 — one picker, placed beside the tabs on a desk and on its own
+  // full-width row on a phone (pp-only-wide / pp-only-narrow in index.css).
+  const periodPicker = (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <select aria-label="Period" value={days}
+              onChange={(e) => setDays(e.target.value === "custom" ? "custom" : Number(e.target.value))}
+              style={{ fontSize: 13 }}>
+        <option value={1}>Today</option>
+        <option value={7}>Last 7 days</option>
+        <option value={30}>Last 30 days</option>
+        <option value={90}>Last 90 days</option>
+        <option value="custom">Custom range…</option>
+      </select>
+      {days === "custom" && (
+        <>
+          <input type="date" aria-label="From" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5 }} />
+          <span style={{ fontSize: 12, color: "var(--slate)" }}>to</span>
+          <input type="date" aria-label="To" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5 }} />
+        </>
+      )}
+    </div>
+  );
+
   return (
     <>
       <TopBar title="Plant Production" />
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 16px 32px" }}>
 
-        <div className="card" style={{ marginBottom: 16, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+        <div className="card pp-kpis" style={{ marginBottom: 16, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
           <div>
             <div className="kpi-label">Made today</div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>{summary ? fmtM3(summary.today_m3) : "—"}</div>
@@ -1457,7 +1526,7 @@ export default function PlantProduction() {
               <div style={{ fontSize: 22, fontWeight: 700, color: "var(--amber)" }}>{summary.unmapped_silos}</div>
             </div>
           )}
-          <div style={{ marginLeft: "auto", textAlign: "right" }}>
+          <div className="pp-agent" style={{ marginLeft: "auto", textAlign: "right" }}>
             <div className="kpi-label">Plant agent</div>
             <div style={{ fontSize: 13, fontWeight: 600, color: heartbeat.stale ? "var(--alert-red)" : "var(--signal-green)" }}>
               {heartbeat.stale ? "Last seen " : "Live · "}{heartbeat.text}
@@ -1475,7 +1544,7 @@ export default function PlantProduction() {
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+        <div className="pp-tabs" style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
           <button type="button" className={`btn-tab ${tab === "production" ? "active" : ""}`} onClick={() => setTab("production")}>Production</button>
           {canPvb && (
             <button type="button" className={`btn-tab ${tab === "pvb" ? "active" : ""}`} onClick={() => setTab("pvb")}>Plant vs billed</button>
@@ -1494,26 +1563,10 @@ export default function PlantProduction() {
             <button type="button" className={`btn-tab ${tab === "qc-delay" ? "active" : ""}`} onClick={() => setTab("qc-delay")}>QC delay</button>
           )}
           {periodTab && (
-            <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-              <select aria-label="Period" value={days}
-                      onChange={(e) => setDays(e.target.value === "custom" ? "custom" : Number(e.target.value))}
-                      style={{ fontSize: 13 }}>
-                <option value={1}>Today</option>
-                <option value={7}>Last 7 days</option>
-                <option value={30}>Last 30 days</option>
-                <option value={90}>Last 90 days</option>
-                <option value="custom">Custom range…</option>
-              </select>
-              {days === "custom" && (
-                <>
-                  <input type="date" aria-label="From" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5 }} />
-                  <span style={{ fontSize: 12, color: "var(--slate)" }}>to</span>
-                  <input type="date" aria-label="To" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5 }} />
-                </>
-              )}
-            </div>
+            <div className="pp-only-wide" style={{ marginLeft: "auto" }}>{periodPicker}</div>
           )}
         </div>
+        {periodTab && <div className="pp-only-narrow pp-period">{periodPicker}</div>}
 
         {days === "custom" && periodTab && !(from && to) && (
           <div className="card" style={{ marginBottom: 16, fontSize: 12.5, color: "var(--slate)" }}>

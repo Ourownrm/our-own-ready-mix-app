@@ -175,6 +175,7 @@ const ALL_TABS = [
   { key: "receipts", label: "Receipts", perm: "material.receipts", action: "view" },
   { key: "consumption", label: "Consumption", perm: "material.consumption", action: "view" },
   { key: "physical-stock", label: "Physical Stock", perm: "material.physical-stock", action: "view" },
+  { key: "consumption-transfer", label: "Consumption transfer", perm: "material.consumption-transfer", action: "view" },
   { key: "reports", label: "Reports", perm: "material.reports", action: "view" },
   { key: "cost-dashboard", label: "Cost Dashboard", perm: "material.cost-dashboard", action: "view" },
   { key: "materials", label: "Materials", perm: "material.materials", action: "create" },
@@ -189,6 +190,12 @@ export default function MaterialModule() {
   const requestedTab = searchParams.get("tab");
   const initialTab = tabs.some((t) => t.key === requestedTab) ? requestedTab : (tabs[0]?.key || "");
   const [tab, setTab] = useState(initialTab);
+  // Round 189 — the permissions arrive after the first render, when no tab can
+  // be chosen yet; pick the requested (or first) tab once they are in, so a
+  // ?tab= link opens on that tab instead of a blank page.
+  useEffect(() => {
+    if (ready && !tabs.some((t) => t.key === tab) && initialTab) setTab(initialTab);
+  }, [ready, initialTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function changeTab(key) {
     setTab(key);
@@ -226,6 +233,7 @@ export default function MaterialModule() {
         {tab === "consumption" && <ConsumptionTab />}
         {tab === "stock" && <StockTab role={user.role} onGoTab={changeTab} />}
         {tab === "physical-stock" && <PhysicalStockTab role={user.role} />}
+        {tab === "consumption-transfer" && <ConsumptionTransferTab />}
         {tab === "reports" && <ReportsTab />}
         {tab === "cost-dashboard" && <CostDashboardTab />}
       </div>
@@ -248,6 +256,7 @@ function MaterialsTab() {
   const [units, setUnits] = useState([]);
   const [addingUnit, setAddingUnit] = useState(false);
   const [unitForm, setUnitForm] = useState({ unit_name: "", kg_per_unit: "", is_default: false });
+  const [expandedSources, setExpandedSources] = useState(null); // Round 189 — material id whose sources are shown
 
   async function load() {
     try {
@@ -373,9 +382,15 @@ function MaterialsTab() {
                   <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => toggleActive(m)}>{m.is_active ? "Deactivate" : "Reactivate"}</button>
                 </div>
               </div>
-              <button type="button" onClick={() => toggleUnits(m)} style={{ fontSize: 10.5, padding: "3px 0", marginTop: 8, background: "none", border: "none", color: "var(--rebar)", textAlign: "left" }}>
-                {expandedUnits === m.id ? "Hide purchase units ↑" : "Purchase units →"}
-              </button>
+              <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+                <button type="button" onClick={() => setExpandedSources(expandedSources === m.id ? null : m.id)} style={{ fontSize: 10.5, padding: "3px 0", background: "none", border: "none", color: "var(--rebar)", textAlign: "left" }}>
+                  {expandedSources === m.id ? "Hide sources ↑" : "Sources →"}
+                </button>
+                <button type="button" onClick={() => toggleUnits(m)} style={{ fontSize: 10.5, padding: "3px 0", background: "none", border: "none", color: "var(--rebar)", textAlign: "left" }}>
+                  {expandedUnits === m.id ? "Hide purchase units ↑" : "Purchase units →"}
+                </button>
+              </div>
+              {expandedSources === m.id && <SourcesPanel material={m} />}
               {expandedUnits === m.id && (
                 <div style={{ marginTop: 10, borderTop: "1px solid var(--border, #DEDAD1)", paddingTop: 10 }}>
                   <div style={{ fontSize: 10.5, color: "var(--slate)", marginBottom: 6 }}>
@@ -439,6 +454,96 @@ function MaterialsTab() {
   );
 }
 
+// ===================== Material sources (Round 189, v10.18) =====================
+// The source (quarry / plant) decides how many kg one purchase unit weighs; the
+// supplier decides the price. Stock stays per material. A changed conversion
+// applies to new receipts only.
+function SourcesPanel({ material }) {
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // null | {} new | source row
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try { setRows(await apiRequest(`/material-module/material-sources?material_id=${material.id}`)); }
+    catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, [material.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function openNew() {
+    setForm({ name: "", place: "", purchase_unit: material.purchase_unit, kg_per_purchase_unit: "", is_default: false });
+    setEditing({}); setError("");
+  }
+  function openEdit(r) {
+    setForm({ name: r.name, place: r.place || "", purchase_unit: r.purchase_unit, kg_per_purchase_unit: r.kg_per_purchase_unit });
+    setEditing(r); setError("");
+  }
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError("");
+    try {
+      if (editing.id) await apiRequest(`/material-module/material-sources/${editing.id}`, { method: "PATCH", body: form });
+      else await apiRequest(`/material-module/materials/${material.id}/sources`, { method: "POST", body: form });
+      setEditing(null);
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+  async function patch(r, body) {
+    setError("");
+    try { await apiRequest(`/material-module/material-sources/${r.id}`, { method: "PATCH", body }); await load(); }
+    catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div style={{ marginTop: 10, borderTop: "1px solid var(--border, #DEDAD1)", paddingTop: 10 }}>
+      <div style={{ fontSize: 10.5, color: "var(--slate)", marginBottom: 6 }}>
+        Where this material comes from. Each source has its own kg per unit — orders pick a source, and its receipts are
+        converted at that figure. Stock stays one figure for the material.
+      </div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{error}</div>}
+      {rows.map((r) => (
+        <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12, padding: "6px 0", borderBottom: "1px solid #EFECE6", opacity: r.is_active ? 1 : 0.55 }}>
+          <div>
+            <b>{r.name}</b>{r.place ? <span style={{ color: "var(--slate)" }}> · {r.place}</span> : null}
+            {r.is_default && <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 9.5, padding: "1px 6px" }}>Default</span>}
+            {!r.is_active && <span className="badge badge-neutral" style={{ marginLeft: 6, fontSize: 9.5, padding: "1px 6px" }}>Off</span>}
+            <div style={{ fontSize: 11, color: "var(--slate)" }}>
+              1 {r.purchase_unit} = {fmtNum(r.kg_per_purchase_unit, 2)} kg{r.suppliers ? ` · ${r.suppliers}` : " · no supplier rate yet"}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button type="button" style={{ fontSize: 10.5, padding: "3px 8px" }} onClick={() => openEdit(r)}>Edit</button>
+            {!r.is_default && r.is_active && <button type="button" style={{ fontSize: 10.5, padding: "3px 8px" }} onClick={() => patch(r, { is_default: true })}>Make default</button>}
+            {!r.is_default && <button type="button" style={{ fontSize: 10.5, padding: "3px 8px" }} onClick={() => patch(r, { is_active: !r.is_active })}>{r.is_active ? "Switch off" : "Switch on"}</button>}
+          </div>
+        </div>
+      ))}
+      {!editing ? (
+        <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 6 }} onClick={openNew}>+ Add source</button>
+      ) : (
+        <form onSubmit={submit} style={{ marginTop: 6, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
+          <Field label="Source (quarry / plant)"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={inputStyle} /></Field>
+          <Field label="Place (optional)"><input value={form.place} onChange={(e) => setForm({ ...form, place: e.target.value })} style={inputStyle} /></Field>
+          <Field label="Purchase unit"><input required value={form.purchase_unit} onChange={(e) => setForm({ ...form, purchase_unit: e.target.value })} style={inputStyle} placeholder="CFT, MT" /></Field>
+          <Field label="Kg per unit from this source"><input required type="number" step="0.0001" min="0" value={form.kg_per_purchase_unit} onChange={(e) => setForm({ ...form, kg_per_purchase_unit: e.target.value })} style={inputStyle} /></Field>
+          {!editing.id && (
+            <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+              <input type="checkbox" checked={!!form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
+              Make this the default source
+            </label>
+          )}
+          {editing.id && <div style={{ fontSize: 10.5, color: "var(--amber)", marginBottom: 8 }}>A changed kg figure applies to receipts from now on; receipts already booked keep theirs.</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="submit" disabled={saving} style={{ flex: 1 }}>{saving ? "Saving..." : "Save source"}</button>
+            <button type="button" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 // ===================== Suppliers, rates & transporters tab (Administrator) =====================
 // A supplier may quote a material at both scopes (delivered / ex-factory) —
 // one rate row per scope. Ex-factory orders additionally need a transporter
@@ -463,6 +568,17 @@ function SuppliersTab() {
 
   const [addingRate, setAddingRate] = useState(false);
   const [rateForm, setRateForm] = useState({ material_id: "", scope: "delivered", rate: "" });
+  const [rateSources, setRateSources] = useState([]); // Round 189 — sources of the rate form's material
+  useEffect(() => {
+    if (!rateForm.material_id) { setRateSources([]); return; }
+    apiRequest(`/material-module/material-sources?material_id=${rateForm.material_id}`)
+      .then((list) => {
+        const active = list.filter((x) => x.is_active);
+        setRateSources(active);
+        setRateForm((f) => (active.some((x) => String(x.id) === String(f.source_id)) ? f : { ...f, source_id: String((active.find((x) => x.is_default) || active[0])?.id || "") }));
+      })
+      .catch(() => setRateSources([]));
+  }, [rateForm.material_id]);
 
   // Round 140, item 2 — effective-dated rate history.
   const [showingHistory, setShowingHistory] = useState(false);
@@ -613,7 +729,7 @@ function SuppliersTab() {
               {rates.length === 0 && <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 6 }}>No rates on file yet.</div>}
               {rates.map((r) => (
                 <div key={r.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, padding: "4px 0" }}>
-                  <span>{r.material_name} · {SCOPE_LABEL[r.scope]} <span style={{ color: "var(--slate)", fontSize: 10.5 }}>since {fmtDate(r.valid_from)}</span></span>
+                  <span>{r.material_name}{r.source_name ? ` · ${r.source_name}` : ""} · {SCOPE_LABEL[r.scope]} <span style={{ color: "var(--slate)", fontSize: 10.5 }}>since {fmtDate(r.valid_from)}</span></span>
                   <span style={{ fontWeight: 600 }}>{fmtMoney(r.rate)} / {r.purchase_unit}</span>
                 </div>
               ))}
@@ -624,7 +740,7 @@ function SuppliersTab() {
                   {rateHistory.length === 0 && <div style={{ fontSize: 11, color: "var(--slate)" }}>No history yet.</div>}
                   {rateHistory.map((r) => (
                     <div key={r.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0", opacity: r.valid_to ? 0.7 : 1 }}>
-                      <span>{r.material_name} · {SCOPE_LABEL[r.scope]} · {fmtDate(r.valid_from)}{r.valid_to ? ` – ${fmtDate(r.valid_to)}` : " – current"}</span>
+                      <span>{r.material_name}{r.source_name ? ` · ${r.source_name}` : ""} · {SCOPE_LABEL[r.scope]} · {fmtDate(r.valid_from)}{r.valid_to ? ` – ${fmtDate(r.valid_to)}` : " – current"}</span>
                       <span style={{ fontWeight: 600 }}>{fmtMoney(r.rate)} / {r.purchase_unit}</span>
                     </div>
                   ))}
@@ -641,6 +757,13 @@ function SuppliersTab() {
                       {materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </Field>
+                  {rateSources.length > 0 && (
+                    <Field label="Source (decides kg per unit)">
+                      <select required value={rateForm.source_id || ""} onChange={(e) => setRateForm({ ...rateForm, source_id: e.target.value })} style={inputStyle}>
+                        {rateSources.map((x) => <option key={x.id} value={x.id}>{x.name} — 1 {x.purchase_unit} = {fmtNum(x.kg_per_purchase_unit, 2)} kg</option>)}
+                      </select>
+                    </Field>
+                  )}
                   <Field label="Scope">
                     <select value={rateForm.scope} onChange={(e) => setRateForm({ ...rateForm, scope: e.target.value })} style={inputStyle}>
                       <option value="delivered">Delivered</option>
@@ -732,7 +855,7 @@ function SuppliersTab() {
 // approves it (see backend's header comment on this route).
 
 function blankOrderForm() {
-  return { material_id: "", supplier_id: "", scope: "delivered", transporter_id: "", ordered_qty: "", rate: "", freight_rate: "", freight_basis: "per_purchase_unit", tax_pct: "0", gst_treatment: "excluded", notes: "" };
+  return { material_id: "", source_id: "", supplier_id: "", scope: "delivered", transporter_id: "", ordered_qty: "", rate: "", freight_rate: "", freight_basis: "per_purchase_unit", tax_pct: "0", gst_treatment: "excluded", notes: "" };
 }
 
 function OrdersTab({ role }) {
@@ -752,6 +875,9 @@ function OrdersTab({ role }) {
   const [form, setForm] = useState(blankOrderForm());
   const [supplierRates, setSupplierRates] = useState([]);
   const [supplierTransporters, setSupplierTransporters] = useState([]);
+  // Round 189 — order by material → source → supplier → rate.
+  const [orderSources, setOrderSources] = useState([]);
+  const [sourceRates, setSourceRates] = useState([]);
 
   const [rejecting, setRejecting] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
@@ -775,6 +901,24 @@ function OrdersTab({ role }) {
   }
   useEffect(() => { load(); }, []);
 
+  // Round 189 — the material's sources; the default is pre-selected.
+  useEffect(() => {
+    if (!creating || !form.material_id) { setOrderSources([]); return; }
+    apiRequest(`/material-module/material-sources?material_id=${form.material_id}`)
+      .then((list) => {
+        const active = list.filter((x) => x.is_active);
+        setOrderSources(active);
+        setForm((f) => (active.some((x) => String(x.id) === String(f.source_id)) ? f
+          : { ...f, source_id: String((active.find((x) => x.is_default) || active[0])?.id || "") }));
+      })
+      .catch(() => setOrderSources([]));
+  }, [creating, form.material_id]);
+  // …and which suppliers quote that source, at what rate.
+  useEffect(() => {
+    if (!creating || !form.source_id) { setSourceRates([]); return; }
+    apiRequest(`/material-module/material-sources/${form.source_id}/rates`).then(setSourceRates).catch(() => setSourceRates([]));
+  }, [creating, form.source_id]);
+
   // Rate card for the chosen supplier, fetched once a supplier is picked.
   useEffect(() => {
     if (!creating || !form.supplier_id) { setSupplierRates([]); return; }
@@ -791,9 +935,10 @@ function OrdersTab({ role }) {
   // still empty, so it never overwrites something the user already typed.
   useEffect(() => {
     if (!creating) return;
-    const match = supplierRates.find((r) => String(r.material_id) === String(form.material_id) && r.scope === form.scope);
+    const match = supplierRates.find((r) => String(r.material_id) === String(form.material_id) && r.scope === form.scope
+      && (!form.source_id || !r.source_id || String(r.source_id) === String(form.source_id)));
     if (match && !form.rate) setForm((f) => ({ ...f, rate: match.rate }));
-  }, [supplierRates]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [supplierRates, form.source_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Prefill the default transporter + freight, same "don't overwrite" rule.
   useEffect(() => {
@@ -932,15 +1077,37 @@ function OrdersTab({ role }) {
         <Modal title="New material order" onClose={() => setCreating(false)} wide>
           <form onSubmit={submitOrder}>
             <Field label="Material">
-              <select required value={form.material_id} onChange={(e) => setForm({ ...form, material_id: e.target.value })} style={inputStyle}>
+              <select required value={form.material_id} onChange={(e) => setForm({ ...form, material_id: e.target.value, source_id: "", supplier_id: "", rate: "" })} style={inputStyle}>
                 <option value="">Select material</option>
                 {materials.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.purchase_unit})</option>)}
               </select>
             </Field>
+            {orderSources.length > 0 && (() => {
+              const src = orderSources.find((x) => String(x.id) === String(form.source_id));
+              return (
+                <Field label="Source (decides kg per unit)">
+                  <select required value={form.source_id} onChange={(e) => setForm({ ...form, source_id: e.target.value, supplier_id: "", rate: "" })} style={inputStyle}>
+                    {orderSources.map((x) => <option key={x.id} value={x.id}>{x.name}{x.place ? ` · ${x.place}` : ""}</option>)}
+                  </select>
+                  {src && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 3 }}>1 {src.purchase_unit} = {fmtNum(src.kg_per_purchase_unit, 2)} kg from this source</div>}
+                </Field>
+              );
+            })()}
             <Field label="Supplier">
               <select required value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value, transporter_id: "", rate: "", freight_rate: "" })} style={inputStyle}>
                 <option value="">Select supplier</option>
-                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {sourceRates.length > 0 && (
+                  <optgroup label="Quote this source">
+                    {[...new Map(sourceRates.map((r) => [r.supplier_id, r])).values()].map((r) => (
+                      <option key={`q${r.supplier_id}`} value={r.supplier_id}>
+                        {r.supplier_name} — {sourceRates.filter((x) => x.supplier_id === r.supplier_id).map((x) => `${fmtMoney(x.rate)} ${SCOPE_LABEL[x.scope].toLowerCase()}`).join(", ")}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label={sourceRates.length ? "Other suppliers (no rate for this source)" : "Suppliers"}>
+                  {suppliers.filter((s) => !sourceRates.some((r) => r.supplier_id === s.id)).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </optgroup>
               </select>
             </Field>
             <Field label="Scope">
@@ -1056,7 +1223,8 @@ function OrderSummary({ o }) {
             {o.material_name}
           </div>
           <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
-            {o.supplier_name} · {SCOPE_LABEL[o.scope]}{o.transporter_name ? ` via ${o.transporter_name}` : ""}
+            {o.source_name ? `${o.source_name} · ` : ""}{o.supplier_name} · {SCOPE_LABEL[o.scope]}{o.transporter_name ? ` via ${o.transporter_name}` : ""}
+            {o.kg_per_purchase_unit ? ` · 1 ${o.purchase_unit} = ${fmtNum(o.kg_per_purchase_unit, 2)} kg` : ""}
           </div>
         </div>
         <span style={{ fontSize: 11, fontWeight: 700, color: ORDER_STATUS_COLOR[o.status] }}>{ORDER_STATUS_LABEL[o.status]}</span>
@@ -2377,7 +2545,9 @@ function WeighbridgeComparisonReport() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} style={r.tolerance_exceeded ? { background: "var(--alert-red-bg)" } : undefined}>
-                <td>{fmtDate(r.received_at)}</td><td>{r.material_name}</td><td>{r.supplier_name}</td>
+                <td>{fmtDate(r.received_at)}</td>
+                <td>{r.material_name}{r.source_name ? <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{r.source_name} · {fmtNum(r.source_kg_per_unit, 2)} kg/{r.purchase_unit}</div> : null}</td>
+                <td>{r.supplier_name}</td>
                 <td>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td><td>{r.weighbridge_weight_kg != null ? fmtNum(r.weighbridge_weight_kg) : "–"}</td>
                 <td>{fmtNum(r.accepted_qty)}</td>
                 <td>{Number(r.short_qty) !== 0 ? fmtNum(r.short_qty) : "–"}</td>
@@ -2599,6 +2769,9 @@ function ConsumptionSplit({ m }) {
   return (
     <div style={{ fontSize: 10, color: "var(--slate)", whiteSpace: "nowrap" }}>
       auto {fmtMass(m.plant_consumption_auto_kg)} · manual {fmtMass(m.plant_consumption_manual_kg)}
+      {Number(m.plant_consumption_transfer_kg) ? (
+        <span style={{ color: "var(--amber)" }}> · transfer {Number(m.plant_consumption_transfer_kg) > 0 ? "+" : "−"}{fmtMass(Math.abs(Number(m.plant_consumption_transfer_kg)))}</span>
+      ) : null}
     </div>
   );
 }
@@ -3011,6 +3184,206 @@ function CostDashboardTab() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ===================== Plant consumption transfer (Round 189, v10.18) =====================
+// When several materials go through one bin, the plant books the whole draw to
+// one of them. After the month's physical count, the Administrator moves the
+// quantity from the material the plant booked to the one really used. The
+// plant's own record is never changed; the transfer is its own line and every
+// consumption figure adds it in.
+function ConsumptionTransferTab() {
+  const [month, setMonth] = useState(addMonths(thisMonthStr(), -1));
+  const [stock, setStock] = useState([]);
+  const [transfers, setTransfers] = useState([]);
+  const [cutover, setCutover] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ from: "", to: "", qty: "", unit: "MT", reason: "" });
+  const [newMat, setNewMat] = useState({ name: "", category: "", purchase_unit: "MT", kg_per_purchase_unit: "1000" });
+
+  async function load() {
+    setError("");
+    try {
+      const [ps, tr] = await Promise.all([
+        apiRequest(`/material-module/physical-stock?month=${month}`),
+        apiRequest(`/material-module/consumption-transfers?month=${month}`),
+      ]);
+      setStock(ps.materials || []);
+      setTransfers(tr.transfers || []);
+      setCutover(tr.cutover || "");
+    } catch (err) { setError(err.message); }
+  }
+  useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const byId = new Map(stock.map((m) => [String(m.material_id), m]));
+  const isNew = form.to === "__new";
+  const qtyKg = (Number(form.qty) || 0) * (form.unit === "MT" ? 1000 : 1);
+  const beforeCutover = cutover && `${month}-01` < cutover;
+
+  // Book vs physical, to point at what needs moving: physical HIGHER than book
+  // means the plant booked too much to that material; LOWER means too little.
+  const counted = stock.filter((m) => m.physical_stock_kg != null);
+  const gaps = counted.map((m) => ({ ...m, gap: Number(m.physical_stock_kg) - Number(m.book_stock_kg) }))
+    .filter((m) => Math.abs(m.gap) >= Math.max(1, Math.abs(Number(m.plant_consumption_kg) || 0) * 0.01));
+  const over = gaps.filter((m) => m.gap > 0).sort((a, b) => b.gap - a.gap);
+  const under = gaps.filter((m) => m.gap < 0).sort((a, b) => a.gap - b.gap);
+
+  function side(id, sign) {
+    const m = byId.get(String(id));
+    if (!m) return null;
+    const plant = Number(m.plant_consumption_kg) || 0;
+    const after = plant + sign * qtyKg;
+    const base = Number(m.opening_kg) + Number(m.purchase_kg);
+    return { name: m.name, plant, after, book: base - plant, bookAfter: base - after, physical: m.physical_stock_kg };
+  }
+  const from = side(form.from, -1);
+  const to = isNew ? null : side(form.to, +1);
+
+  function pick(fromId, toId, kg) {
+    setForm((f) => ({ ...f, from: String(fromId), to: String(toId), qty: kg >= 10000 ? (kg / 1000).toFixed(1) : String(Math.round(kg)), unit: kg >= 10000 ? "MT" : "kg" }));
+    setNotice("");
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      const body = { month, from_material_id: Number(form.from), qty_kg: qtyKg, reason: form.reason };
+      if (isNew) body.new_material = newMat; else body.to_material_id = Number(form.to);
+      const r = await apiRequest("/material-module/consumption-transfers", { method: "POST", body });
+      setNotice(`Moved ${fmtMass(qtyKg)} from ${from?.name || "—"} to ${isNew ? r.created_material?.name : to?.name}.`);
+      setForm({ from: "", to: "", qty: "", unit: form.unit, reason: "" });
+      setNewMat({ name: "", category: "", purchase_unit: "MT", kg_per_purchase_unit: "1000" });
+      await load();
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+  async function undo(t) {
+    setError(""); setNotice("");
+    try { await apiRequest(`/material-module/consumption-transfers/${t.id}`, { method: "DELETE" }); await load(); setNotice("Transfer undone."); }
+    catch (err) { setError(err.message); }
+  }
+
+  const sideCard = (label, x) => (
+    <div className="card" style={{ background: "var(--surface-2, #F7F5F0)", fontSize: 12.5, flex: "1 1 260px" }}>
+      <div style={{ fontSize: 11, color: "var(--slate)", textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
+      {x ? (
+        <>
+          <div style={{ fontWeight: 700, marginTop: 2 }}>{x.name}</div>
+          <div>Plant consumption {fmtMass(x.plant)} → <b>{fmtMass(x.after)}</b></div>
+          <div style={{ color: "var(--slate)" }}>Book stock {fmtMass(x.book)} → <b style={{ color: "var(--charcoal, #1F2328)" }}>{fmtMass(x.bookAfter)}</b> · physical {x.physical != null ? fmtMass(x.physical) : "not counted"}</div>
+        </>
+      ) : <div style={{ color: "var(--slate)", marginTop: 4 }}>{label === "To" && isNew ? "New material — starts at this quantity." : "Choose a material."}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 700 }}>Plant consumption transfer</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", margin: "2px 0 10px", maxWidth: 760, lineHeight: 1.5 }}>
+        Move consumption the plant booked to one material onto the material really used — e.g. M SAND-DRY fed through the
+        M SAND bin. It comes off the first and goes onto the second. The plant's own batch record is not changed.
+      </div>
+      <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={{ ...inputStyle, maxWidth: 220 }} /></Field>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+      {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
+      {beforeCutover && <div className="card" style={{ background: "var(--amber-bg)", fontSize: 12.5, marginBottom: 12 }}>Months before {cutover.slice(0, 7)} use the hand-keyed consumption, so they cannot take a transfer.</div>}
+
+      {(over.length > 0 || under.length > 0) && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>From the physical count</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 12 }}>
+            <div style={{ flex: "1 1 260px" }}>
+              <div style={{ color: "var(--slate)", marginBottom: 4 }}>Plant booked <b>too much</b> (physical higher than book)</div>
+              {over.map((m) => <div key={m.material_id}>{m.name} — <b>{fmtMass(m.gap)}</b></div>)}
+              {!over.length && <div style={{ color: "var(--slate)" }}>—</div>}
+            </div>
+            <div style={{ flex: "1 1 260px" }}>
+              <div style={{ color: "var(--slate)", marginBottom: 4 }}>Plant booked <b>too little</b> (physical lower than book)</div>
+              {under.map((m) => <div key={m.material_id}>{m.name} — <b>{fmtMass(-m.gap)}</b></div>)}
+              {!under.length && <div style={{ color: "var(--slate)" }}>—</div>}
+            </div>
+          </div>
+          {over.length > 0 && under.length > 0 && (
+            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {over.slice(0, 4).flatMap((o) => under.slice(0, 3).map((u) => (
+                <button key={`${o.material_id}-${u.material_id}`} type="button" style={{ fontSize: 11, padding: "4px 9px" }}
+                        onClick={() => pick(o.material_id, u.material_id, Math.min(o.gap, -u.gap))}>
+                  {o.name} → {u.name} · {fmtMass(Math.min(o.gap, -u.gap))}
+                </button>
+              )))}
+            </div>
+          )}
+          <div style={{ fontSize: 10.5, color: "var(--slate)", marginTop: 6 }}>Suggestions only — pick materials that really share a bin.</div>
+        </div>
+      )}
+
+      <form onSubmit={save} className="card" style={{ marginBottom: 16, border: "2px solid var(--rebar)" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>New transfer</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+          <Field label="From (plant booked it here)">
+            <select required value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value, to: form.to === e.target.value ? "" : form.to })} style={inputStyle}>
+              <option value="">Choose…</option>
+              {stock.map((m) => <option key={m.material_id} value={m.material_id}>{m.name}</option>)}
+            </select>
+          </Field>
+          <Field label="To (really used)">
+            <select required value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} style={inputStyle}>
+              <option value="">Choose…</option>
+              {stock.filter((m) => String(m.material_id) !== form.from).map((m) => <option key={m.material_id} value={m.material_id}>{m.name}</option>)}
+              <option value="__new">+ New material…</option>
+            </select>
+          </Field>
+          <Field label="Quantity">
+            <div style={{ display: "flex", gap: 6 }}>
+              <input required type="number" step="0.01" min="0" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} style={{ ...inputStyle, textAlign: "right" }} />
+              <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} aria-label="Unit"><option value="MT">MT</option><option value="kg">kg</option></select>
+            </div>
+          </Field>
+        </div>
+        {isNew && (
+          <div style={{ background: "var(--amber-bg)", padding: 10, borderRadius: 8, marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>New material — created with this transfer</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
+              <Field label="Name"><input required value={newMat.name} onChange={(e) => setNewMat({ ...newMat, name: e.target.value })} style={inputStyle} /></Field>
+              <Field label="Category"><input value={newMat.category} onChange={(e) => setNewMat({ ...newMat, category: e.target.value })} style={inputStyle} placeholder="Aggregate, Admixture…" /></Field>
+              <Field label="Purchase unit"><input required value={newMat.purchase_unit} onChange={(e) => setNewMat({ ...newMat, purchase_unit: e.target.value })} style={inputStyle} /></Field>
+              <Field label="Kg per unit"><input required type="number" step="0.0001" min="0" value={newMat.kg_per_purchase_unit} onChange={(e) => setNewMat({ ...newMat, kg_per_purchase_unit: e.target.value })} style={inputStyle} /></Field>
+            </div>
+          </div>
+        )}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+          {sideCard("From", from)}
+          {sideCard("To", to)}
+        </div>
+        <Field label="Reason"><input required value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} style={inputStyle} placeholder="e.g. M SAND-DRY used in the M SAND bin" /></Field>
+        <button type="submit" disabled={saving || beforeCutover || !qtyKg} style={{ width: "100%" }}>{saving ? "Saving..." : "Save transfer"}</button>
+      </form>
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Transfers — {monthLabel(month)}</div>
+      <div className="card" style={{ overflowX: "auto", padding: 0 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 640 }}>
+          <thead><tr style={{ background: "var(--concrete, #F2F0EB)" }}>
+            <th style={thCell}>From</th><th style={thCell}>To</th><th style={{ ...thCell, textAlign: "right" }}>Quantity</th><th style={thCell}>Reason</th><th style={thCell}>By</th><th style={thCell} />
+          </tr></thead>
+          <tbody>
+            {transfers.map((t) => (
+              <tr key={t.id} style={{ borderTop: "1px solid var(--border, #DEDAD1)" }}>
+                <td style={tdCell}><b>{t.from_name}</b></td>
+                <td style={tdCell}><b>{t.to_name}</b></td>
+                <td style={{ ...tdCell, textAlign: "right" }}>{fmtMass(t.qty_kg)}</td>
+                <td style={{ ...tdCell, color: "var(--slate)" }}>{t.reason}</td>
+                <td style={{ ...tdCell, color: "var(--slate)", whiteSpace: "nowrap" }}>{t.created_by_name} · {t.created_at}</td>
+                <td style={{ ...tdCell, textAlign: "right" }}><button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => undo(t)}>Undo</button></td>
+              </tr>
+            ))}
+            {!transfers.length && <tr><td colSpan={6} style={{ ...tdCell, color: "var(--slate)", textAlign: "center", padding: 14 }}>No transfers for this month yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
