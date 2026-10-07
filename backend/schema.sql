@@ -3194,8 +3194,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_site
   ON mixtrack_qc_delays(site_id) WHERE site_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_customer
   ON mixtrack_qc_delays(customer_id) WHERE site_id IS NULL AND customer_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_default
-  ON mixtrack_qc_delays((true)) WHERE site_id IS NULL AND customer_id IS NULL;
+-- ROUND 191: only while the Round 188 replacement (…_default2) does not exist.
+-- Once text-keyed delays are saved there can be several rows with both ids
+-- NULL, and re-creating this older index on a re-run of /setup failed.
+DO $$
+BEGIN
+  IF to_regclass('public.uq_mixtrack_qc_delay_default2') IS NULL THEN
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_mixtrack_qc_delay_default
+      ON mixtrack_qc_delays((true)) WHERE site_id IS NULL AND customer_id IS NULL;
+  END IF;
+END $$;
 
 -- order_no, recipe_name and truck_driver already exist on plant_batches and
 -- the agent already sends all three — Round 157 stored them without having a
