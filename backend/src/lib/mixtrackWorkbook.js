@@ -287,3 +287,150 @@ export function parseTicketReadback(sheetNumber, values) {
   const totals = cols.map((c) => ({ col: c.col, set_kg: c.total_set_kg, actual_kg: c.total_actual_kg }));
   return { header, materials, batches, totals };
 }
+
+// ===========================================================================
+// ROUND 191 (v10.20) — the BATCH REPORT view: one table for both stores.
+//
+// Store 1 (the plant's MCI370 record) and Store 2 (the printed ticket) are
+// shown in exactly the same table — the printed docket's own layout — so a
+// load can be read the same way whichever store it came from.
+//
+// The columns are the ticket's material columns, in the ticket's order and
+// with the ticket's names (row 21 of sheets 1-10 reads them from the Mix Design
+// header). Each column also names the MCI370 weigh slot that feeds the same
+// Mix Design field (the Round 158 seed-from-plant mapping), which is how a
+// plant batch lands in the same column the ticket prints it in:
+//
+//   ticket B <- Mix Design C (M SAND)   <- plant gate2
+//   ticket D <- Mix Design D (M SAND)   <- plant gate1
+//   ticket E <- Mix Design E (12 MM)    <- plant gate3
+//   ticket H <- Mix Design F (20 MM)    <- plant gate4
+//   ticket I <- Mix Design G ("0")      <- plant gate5
+//   ticket K/L/M <- CEM 1/2/3           <- plant cement1/2/3
+//   ticket O <- WATER                   <- plant water1
+//   ticket Q <- MS / ICE                <- plant water2
+//   ticket R/T <- ADMIX1/ADMIX2         <- plant adm1a / adm2a
+//
+// Column N is the ticket's "Bal. Wtr" label column, never carries a figure, and
+// is left out. All twelve columns always show, in both stores, exactly as the
+// docket prints them (an unused one reads 0 / —), so the two tables have the
+// same columns for every load. A plant slot outside this list that weighed something (cement4, filler,
+// silica, a second admixture line…) is added after the ticket's columns under
+// "Other", so nothing the plant weighed is hidden.
+// ===========================================================================
+export const BATCH_REPORT_COLUMNS = [
+  { key: "B", group: "Aggregate", name: "M SAND",    slot: "gate2" },
+  { key: "D", group: "Aggregate", name: "M SAND 2",  slot: "gate1" },
+  { key: "E", group: "Aggregate", name: "12 MM",     slot: "gate3" },
+  { key: "H", group: "Aggregate", name: "20 MM",     slot: "gate4" },
+  { key: "I", group: "Aggregate", name: "AGG 5",     slot: "gate5" },
+  { key: "K", group: "Cement",    name: "CEM 1",     slot: "cement1" },
+  { key: "L", group: "Cement",    name: "CEM 2",     slot: "cement2" },
+  { key: "M", group: "Cement",    name: "CEM 3",     slot: "cement3" },
+  { key: "O", group: "Water",     name: "WATER",     slot: "water1" },
+  { key: "Q", group: "MS / ICE",  name: "MS / ICE",  slot: "water2" },
+  { key: "R", group: "Admixture", name: "ADMIX1",    slot: "adm1a" },
+  { key: "T", group: "Admixture", name: "ADMIX2",    slot: "adm2a" },
+];
+
+function hasFigure(v) { return v != null && Number(v) !== 0; }
+
+function round3(v) { return v == null ? null : Math.round(Number(v) * 1000) / 1000; }
+
+// The common shape:
+//   { source, header{...}, columns[{key,group,name}], targets[kg/m3],
+//     batches[{batch, time, m3, cells[{absorption_pct, moisture_pct, set_kg, actual_kg}]}],
+//     totals[{set_kg, actual_kg}] }
+// "set" is the corrected target for that batch — the ticket's "Corr. Target"
+// row, the plant's own per-batch Target (already moisture-corrected by MCI370).
+export function batchReportFromTicket(row) {
+  const header = row.header_json || {};
+  const mats = row.materials_json || [];
+  const byCol = new Map(mats.map((m, i) => [m.col, i]));
+  const cols = BATCH_REPORT_COLUMNS;
+  const pick = (arr, c) => { const i = byCol.get(c.key); return i == null ? null : arr?.[i] ?? null; };
+  const report = {
+    source: "ticket",
+    header: {
+      docket_no: header.docket_no ?? null, batch_date: header.batch_date ?? null,
+      start_time: header.start_time ?? null, end_time: header.end_time ?? null,
+      customer: header.customer ?? null, site: header.site ?? null,
+      recipe_code: header.recipe_code ?? null, recipe_name: header.recipe_name ?? null,
+      truck: header.truck ?? null, driver: header.driver ?? null, order_no: header.order_no ?? null,
+      ordered_qty: header.ordered_qty ?? null, production_qty: header.production_qty ?? null,
+      with_this_load: header.with_this_load ?? null, mixer_capacity: header.mixer_capacity ?? null,
+      batch_size: header.batch_size ?? null, batches: (row.batches_json || []).length,
+    },
+    columns: cols.map(({ key, group, name }) => ({ key, group, name })),
+    targets: cols.map((c) => pick(mats, c)?.target_kg_m3 ?? null),
+    batches: (row.batches_json || []).map((b) => ({
+      batch: b.batch, time: null, m3: null,
+      cells: cols.map((c) => {
+        const v = pick(b.values || [], c);
+        return v ? { absorption_pct: v.absorption_pct ?? null, moisture_pct: v.moisture_pct ?? null,
+                     set_kg: v.set_kg ?? null, actual_kg: v.actual_kg ?? null }
+                 : { absorption_pct: null, moisture_pct: null, set_kg: null, actual_kg: null };
+      }),
+    })),
+    totals: cols.map((c) => {
+      const t = pick(row.totals_json || [], c);
+      return { set_kg: t?.set_kg ?? null, actual_kg: t?.actual_kg ?? null };
+    }),
+  };
+  return report;
+}
+
+// load: one plant_batches row's load-level fields (first batch is fine — they
+// repeat on every batch of the load); batches: [{id, batch_index, batch_qty_m3,
+// time}]; mats: plant_batch_materials rows for those batches.
+export function batchReportFromPlant(load, batches, mats, slotNames = {}) {
+  const mapped = new Set(BATCH_REPORT_COLUMNS.map((c) => c.slot).filter(Boolean));
+  const extraOrder = ["gate6", "cement4", "filler1", "silica", "slurry", "adm1b", "adm2b", "pigment"];
+  const extras = [...new Set(mats.filter((m) => !mapped.has(m.slot) && (hasFigure(m.actual_kg) || hasFigure(m.target_kg))).map((m) => m.slot))]
+    .sort((a, b) => { const r = (s) => { const i = extraOrder.indexOf(s); return i < 0 ? 99 : i; }; return r(a) - r(b); });
+  const cols = [
+    ...BATCH_REPORT_COLUMNS,
+    ...extras.map((s) => ({ key: s, group: "Other", name: String(slotNames[s] || s).trim() || s, slot: s })),
+  ];
+  const at = new Map(mats.map((m) => [`${m.batch_id}|${m.slot}`, m]));
+  const firstDesign = (slot) => {
+    for (const b of batches) { const m = at.get(`${b.id}|${slot}`); if (m?.design_kg_per_m3 != null) return Number(m.design_kg_per_m3); }
+    return null;
+  };
+  const sum = (slot, f) => {
+    let s = null;
+    for (const b of batches) { const m = at.get(`${b.id}|${slot}`); if (m?.[f] != null) s = (s || 0) + Number(m[f]); }
+    return round3(s);
+  };
+  const madeM3 = batches.reduce((s, b) => s + Number(b.batch_qty_m3 || 0), 0);
+  const report = {
+    source: "plant",
+    header: {
+      docket_no: load.batch_no == null ? null : String(load.batch_no), batch_date: load.batch_date ?? null,
+      start_time: load.start_time ?? null, end_time: load.end_time ?? null,
+      customer: load.customer ?? null, site: load.site ?? null,
+      recipe_code: load.recipe_code ?? null, recipe_name: load.recipe_name ?? null,
+      truck: load.truck_no ?? null, driver: load.driver ?? null, order_no: load.order_no ?? null,
+      ordered_qty: load.ordered_qty_m3 ?? null,
+      production_qty: load.load_qty_m3 != null ? load.load_qty_m3 : round3(madeM3),
+      with_this_load: load.with_this_load_m3 ?? null, mixer_capacity: load.mixer_capacity_m3 ?? null,
+      batch_size: batches[0]?.batch_qty_m3 ?? null, batches: batches.length,
+    },
+    columns: cols.map(({ key, group, name }) => ({ key, group, name })),
+    targets: cols.map((c) => (c.slot ? firstDesign(c.slot) : null)),
+    batches: batches.map((b) => ({
+      batch: b.batch_index, time: b.time ?? null, m3: b.batch_qty_m3 == null ? null : Number(b.batch_qty_m3),
+      cells: cols.map((c) => {
+        const m = c.slot ? at.get(`${b.id}|${c.slot}`) : null;
+        return {
+          absorption_pct: null,
+          moisture_pct: m?.moisture_pct == null ? null : Number(m.moisture_pct),
+          set_kg: m?.target_kg == null ? null : Number(m.target_kg),
+          actual_kg: m?.actual_kg == null ? null : Number(m.actual_kg),
+        };
+      }),
+    })),
+    totals: cols.map((c) => (c.slot ? { set_kg: sum(c.slot, "target_kg"), actual_kg: sum(c.slot, "actual_kg") } : { set_kg: null, actual_kg: null })),
+  };
+  return report;
+}
