@@ -7,8 +7,9 @@
 //                    the plant agent. One row per load; open it for every
 //                    batch's actual / target kg and the moisture. Read-only.
 // Printed tickets  — Store 2: what the ticket actually printed, read back from
-//                    the workbook after each print. Same layout as Store 1 so
-//                    the two can be compared row for row. Read-only.
+//                    the workbook after each print. Read-only.
+// ROUND 191: both stores share one list table and one batch-report table
+// (BatchReport), drawn in the printed docket's layout.
 //
 // The operator never sees these; the server refuses them for the operator role
 // as well, so hiding the buttons is presentation, not the guard.
@@ -236,107 +237,220 @@ function RangeFilters({ r, onGo, placeholder, summary }) {
   );
 }
 
+/* ------------------------------------------------- the batch report table */
+
+// ROUND 191 (v10.20) — ONE table for both stores. The server turns a plant load
+// (Store 1) and a printed ticket (Store 2) into the same shape — the printed
+// docket's own layout: the ticket's material columns in the ticket's order,
+// recipe targets, then per batch moisture / set (corrected target) / actual,
+// then totals (lib/mixtrackWorkbook.js batchReportFromPlant/FromTicket). This
+// component draws that shape and nothing else, so the two stores cannot drift
+// apart.
+
+const HEADER_LEFT = [
+  ["batch_date", "Batch Date"], ["start_time", "Batch Start Time"], ["end_time", "Batch End Time"],
+  ["docket_no", "Batch / Docket Number"], ["customer", "Customer"], ["site", "Site"],
+  ["recipe_code", "Recipe Code"], ["recipe_name", "Recipe Name"], ["truck", "Truck Number"],
+  ["driver", "Truck Driver"], ["order_no", "Order Number"],
+];
+const HEADER_RIGHT = [
+  ["ordered_qty", "Ordered Quantity", "m³"], ["production_qty", "Production Quantity", "m³"],
+  ["with_this_load", "With This Load", "m³"], ["mixer_capacity", "Mixer Capacity", "m³"],
+  ["batch_size", "Batch Size", "m³"], ["batches", "Batches", ""],
+];
+
+function hv(v, unit) {
+  if (v === null || v === undefined || String(v).trim() === "") return "—";
+  if (!unit) return String(v);
+  const n = Number(String(v).replace(/,/g, ""));
+  return Number.isFinite(n) ? `${n.toFixed(2)} ${unit}` : `${v} ${unit}`;
+}
+// Both stores show dates as the docket prints them: 04-Oct-2026.
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function docketDate(v) {
+  const t = String(v || "").trim();
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if (m) return `${m[3]}-${MON[Number(m[2]) - 1]}-${m[1]}`;
+  m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(t); // the ticket's own 04-10-2026
+  if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) return `${m[1].padStart(2, "0")}-${MON[Number(m[2]) - 1]}-${m[3]}`;
+  return v;
+}
+function pct(v) { return v === null || v === undefined ? "—" : n2(v); }
+
+export function BatchReport({ report }) {
+  if (!report) return null;
+  const { header = {}, columns = [], targets = [], batches = [], totals = [] } = report;
+  // Group header spans, in column order (Aggregate | Cement | Water | …).
+  const groups = [];
+  for (const c of columns) {
+    const g = groups[groups.length - 1];
+    if (g && g.name === c.group) g.span += 1; else groups.push({ name: c.group, span: 1 });
+  }
+  const showMoist = batches.some((b) => b.cells.some((x) => x.moisture_pct != null || x.absorption_pct != null));
+  const rowsPerBatch = showMoist ? 3 : 2;
+  return (
+    <div className="mt-report">
+      <div className="mt-report-head">
+        <dl>{HEADER_LEFT.map(([k, label]) => <Fragment key={k}><dt>{label}</dt><dd>{hv(k === "batch_date" ? docketDate(header[k]) : header[k])}</dd></Fragment>)}</dl>
+        <dl>{HEADER_RIGHT.map(([k, label, unit]) => <Fragment key={k}><dt>{label}</dt><dd>{hv(header[k], unit)}</dd></Fragment>)}</dl>
+      </div>
+      {!columns.length ? <div className="mt-sub">No material figures on this load.</div> : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="mt-grid mt-report-grid">
+            <thead>
+              <tr className="grp">
+                <th colSpan={2} />
+                {groups.map((g, i) => <th key={i} colSpan={g.span}>{g.name}</th>)}
+              </tr>
+              <tr>
+                <th colSpan={2} />
+                {columns.map((c) => <th key={c.key}>{c.name}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="tgt">
+                <td className="lbl" colSpan={2}>Recipe Targets kg/m³</td>
+                {targets.map((v, i) => <td key={i}>{kg(v)}</td>)}
+              </tr>
+              {batches.map((b) => (
+                <Fragment key={b.batch}>
+                  {showMoist && (
+                    <tr className="blk">
+                      <td className="lbl" rowSpan={rowsPerBatch}>
+                        Batch {b.batch}
+                        {(b.time || b.m3 != null) && <div className="mt-sub">{[b.time, b.m3 != null ? `${n2(b.m3)} m³` : null].filter(Boolean).join(" · ")}</div>}
+                      </td>
+                      <td className="lbl2">Abs / Moist %</td>
+                      {b.cells.map((x, i) => (
+                        <td key={i}>{x.absorption_pct == null && x.moisture_pct == null ? "" : `${pct(x.absorption_pct)} / ${pct(x.moisture_pct)}`}</td>
+                      ))}
+                    </tr>
+                  )}
+                  <tr className={showMoist ? "" : "blk"}>
+                    {!showMoist && (
+                      <td className="lbl" rowSpan={rowsPerBatch}>
+                        Batch {b.batch}
+                        {(b.time || b.m3 != null) && <div className="mt-sub">{[b.time, b.m3 != null ? `${n2(b.m3)} m³` : null].filter(Boolean).join(" · ")}</div>}
+                      </td>
+                    )}
+                    <td className="lbl2">Set kg</td>
+                    {b.cells.map((x, i) => <td key={i}>{kg(x.set_kg)}</td>)}
+                  </tr>
+                  <tr>
+                    <td className="lbl2">Actual kg</td>
+                    {b.cells.map((x, i) => <td key={i} className="act">{kg(x.actual_kg)}</td>)}
+                  </tr>
+                </Fragment>
+              ))}
+              <tr className="total">
+                <td className="lbl" rowSpan={2}>Total</td>
+                <td className="lbl2">Set kg</td>
+                {totals.map((t, i) => <td key={i}>{kg(t.set_kg)}</td>)}
+              </tr>
+              <tr className="total2">
+                <td className="lbl2">Actual kg</td>
+                {totals.map((t, i) => <td key={i} className="act">{kg(t.actual_kg)}</td>)}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------- the list table shared by both stores */
+
+// Same columns for both stores; only the last column differs (the plant load's
+// docket status, the printed ticket's PDF).
+function StoreList({ rows, rowKey, cells, lastHead, last, load, empty }) {
+  const [open, setOpen] = useState({}); // key -> {report} | "loading" | {error}
+  function toggle(row) {
+    const k = rowKey(row);
+    if (open[k]) { const n = { ...open }; delete n[k]; setOpen(n); return; }
+    setOpen((o) => ({ ...o, [k]: "loading" }));
+    load(row)
+      .then((d) => setOpen((o) => ({ ...o, [k]: d })))
+      .catch((e) => setOpen((o) => ({ ...o, [k]: { error: e.message } })));
+  }
+  return (
+    <table className="mt-table">
+      <thead>
+        <tr>
+          <th /><th>Batch / docket no</th><th>Date · start → end</th><th>Customer / site</th><th>Recipe</th><th>Truck</th><th>Driver</th>
+          <th className="num">Prod. m³</th><th className="num">Batches</th><th>{lastHead}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {(rows || []).map((row) => {
+          const k = rowKey(row);
+          const det = open[k];
+          const c = cells(row);
+          return (
+            <Fragment key={k}>
+              <tr className={det ? "mt-detail" : ""} style={{ cursor: "pointer" }} onClick={() => toggle(row)}>
+                <td style={{ fontWeight: 700 }}>{det ? "▾" : "▸"}</td>
+                <td className="mono"><b>{c.no || "—"}</b></td>
+                <td className="mono" style={{ whiteSpace: "nowrap" }}>{c.start || "—"} → {c.end || "—"}<div className="mt-sub">{c.date || ""}</div></td>
+                <td>{c.customer || "—"}<div className="mt-sub">{c.site || ""}</div></td>
+                <td className="mono">{c.recipe || "—"}</td>
+                <td className="mono">{c.truck || "—"}</td>
+                <td>{c.driver || "—"}</td>
+                <td className="num">{c.m3 == null || c.m3 === "" ? "—" : n2(c.m3)}</td>
+                <td className="num">{c.batches ?? "—"}</td>
+                <td onClick={(e) => e.stopPropagation()}>{last(row)}</td>
+              </tr>
+              {det && (
+                <tr className="mt-detail">
+                  <td />
+                  <td colSpan={9}>
+                    {det === "loading" ? "Loading…" : det.error ? <span className="sol-error-msg">{det.error}</span> : <BatchReport report={det.report} />}
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        })}
+        {rows && !rows.length && <tr><td colSpan={10} style={{ textAlign: "center", color: "#777", padding: 18 }}>{empty}</td></tr>}
+        {!rows && <tr><td colSpan={10} style={{ textAlign: "center", color: "#777", padding: 18 }}>Loading…</td></tr>}
+      </tbody>
+    </table>
+  );
+}
+
 /* ------------------------------------------------- Store 1: plant batch data */
 
 export function PlantBatchData() {
   const r = useRange();
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
-  const [open, setOpen] = useState({}); // key -> detail | "loading"
 
   const load = () => solitaireApi.plantBatches(r.from, r.to, r.q).then((d) => { setData(d); setErr(""); }).catch((e) => setErr(e.message));
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function toggle(l) {
-    const k = `${l.plant_no}|${l.batch_year}|${l.batch_no}`;
-    if (open[k]) { const n = { ...open }; delete n[k]; setOpen(n); return; }
-    setOpen((o) => ({ ...o, [k]: "loading" }));
-    solitaireApi.plantBatchDetail(l)
-      .then((d) => setOpen((o) => ({ ...o, [k]: d })))
-      .catch((e) => setOpen((o) => ({ ...o, [k]: { error: e.message } })));
-  }
 
   const t = data?.totals;
   return (
     <div>
       <div className="mt-sub" style={{ marginBottom: 8 }}>
-        Store 1 — a copy of MCI370's batch records, sent by the plant agent as each batch completes. Read-only.
+        Store 1 — a copy of MCI370's batch records, sent by the plant agent as each batch completes. Open a load for its batch report. Read-only.
       </div>
       <RangeFilters r={r} onGo={load} placeholder="batch no, customer, truck, recipe"
                     summary={t ? <b>{t.loads} loads · {n2(t.m3, 1)} m³ · {t.batches} batches</b> : null} />
       {err && <div className="sol-error-msg">{err}</div>}
-      <table className="mt-table">
-        <thead>
-          <tr>
-            <th /><th>Batch no</th><th>Start → end</th><th>Customer / site</th><th>Recipe</th><th>Truck</th><th>Driver</th>
-            <th className="num">Made m³</th><th className="num">Batches</th><th>Docket</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.loads || []).map((l) => {
-            const k = `${l.plant_no}|${l.batch_year}|${l.batch_no}`;
-            const det = open[k];
-            return (
-              <Fragment key={k}>
-                <tr className={det ? "mt-detail" : ""} style={{ cursor: "pointer" }} onClick={() => toggle(l)}>
-                  <td style={{ fontWeight: 700 }}>{det ? "▾" : "▸"}</td>
-                  <td className="mono"><b>{l.batch_no}</b></td>
-                  <td className="mono" style={{ whiteSpace: "nowrap" }}>{l.start_time || "—"} → {l.end_time || "—"}<div className="mt-sub">{l.batch_date}</div></td>
-                  <td>{l.customer || "—"}<div className="mt-sub">{l.site || ""}</div></td>
-                  <td className="mono">{l.recipe_code || "—"}</td>
-                  <td className="mono">{l.truck_no || "—"}</td>
-                  <td>{l.driver || "—"}</td>
-                  <td className="num">{n2(l.made_m3)}</td>
-                  <td className="num">{l.batches}</td>
-                  <td><span className={`mt-badge ${l.docket_status}`}>{STATUS_LABEL[l.docket_status] || l.docket_status}</span></td>
-                </tr>
-                {det && (
-                  <tr className="mt-detail">
-                    <td />
-                    <td colSpan={9}>
-                      {det === "loading" ? "Loading…" : det.error ? <span className="sol-error-msg">{det.error}</span> : (
-                        <>
-                          <div style={{ overflowX: "auto" }}>
-                            <table className="mt-grid">
-                              <thead>
-                                <tr>
-                                  <th style={{ textAlign: "left" }}>Batch</th>
-                                  {det.columns.map((c) => <th key={c.slot}>{c.name}</th>)}
-                                  <th>Sand moist.</th><th>m³</th><th>Time</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {det.batches.map((b) => (
-                                  <tr key={b.batch}>
-                                    <td style={{ textAlign: "left" }}>{b.batch}</td>
-                                    {b.values.map((v) => <td key={v.slot}>{kg(v.actual_kg)} / {kg(v.target_kg)}</td>)}
-                                    <td>{b.sand_moisture_pct == null ? "—" : `${n2(b.sand_moisture_pct, 1)} %`}</td>
-                                    <td>{n2(b.m3)}</td>
-                                    <td>{b.time || "—"}</td>
-                                  </tr>
-                                ))}
-                                <tr className="total">
-                                  <td style={{ textAlign: "left" }}>Total</td>
-                                  {det.totals.map((v) => <td key={v.slot}>{kg(v.actual_kg)} / {kg(v.target_kg)}</td>)}
-                                  <td /><td>{n2(det.batches.reduce((s, b) => s + (b.m3 || 0), 0))}</td><td />
-                                </tr>
-                              </tbody>
-                            </table>
-                          </div>
-                          <div className="mt-sub" style={{ paddingTop: 4 }}>Figures are <b>actual / target kg</b>, exactly as the load cells weighed them.</div>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            );
-          })}
-          {data && !data.loads.length && <tr><td colSpan={10} style={{ textAlign: "center", color: "#777", padding: 18 }}>No plant batches in this period.</td></tr>}
-          {!data && !err && <tr><td colSpan={10} style={{ textAlign: "center", color: "#777", padding: 18 }}>Loading…</td></tr>}
-        </tbody>
-      </table>
-      <div className="mt-sub" style={{ marginTop: 8 }}>A report-format view of a load is held for a later version.</div>
+      <StoreList
+        rows={err ? [] : data?.loads}
+        rowKey={(l) => `${l.plant_no}|${l.batch_year}|${l.batch_no}`}
+        cells={(l) => ({ no: l.batch_no, date: docketDate(l.batch_date), start: l.start_time, end: l.end_time, customer: l.customer, site: l.site,
+                         recipe: l.recipe_code, truck: l.truck_no, driver: l.driver, m3: l.made_m3, batches: l.batches })}
+        lastHead="Docket"
+        last={(l) => <span className={`mt-badge ${l.docket_status}`}>{STATUS_LABEL[l.docket_status] || l.docket_status}</span>}
+        load={(l) => solitaireApi.plantBatchDetail(l)}
+        empty="No plant batches in this period."
+      />
+      <div className="mt-sub" style={{ marginTop: 8, maxWidth: 1000 }}>
+        Set kg = the plant's own target for that batch (moisture-corrected by MCI370); actual kg = what the load cells weighed.
+        The plant records no water absorption, so that figure shows "—".
+      </div>
     </div>
   );
 }
@@ -347,112 +461,39 @@ export function PrintedTickets() {
   const r = useRange();
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
-  const [open, setOpen] = useState({});
 
   const load = () => solitaireApi.printedTickets(r.from, r.to, r.q).then((d) => { setData(d); setErr(""); }).catch((e) => setErr(e.message));
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function toggle(t) {
-    if (open[t.id]) { const n = { ...open }; delete n[t.id]; setOpen(n); return; }
-    setOpen((o) => ({ ...o, [t.id]: "loading" }));
-    solitaireApi.printedTicket(t.id)
-      .then((d) => setOpen((o) => ({ ...o, [t.id]: d })))
-      .catch((e) => setOpen((o) => ({ ...o, [t.id]: { error: e.message } })));
-  }
 
   const tot = data?.totals;
   return (
     <div>
       <div className="mt-sub" style={{ marginBottom: 8 }}>
-        Store 2 — what the ticket printed, read back from the workbook straight after each print. Read-only.
+        Store 2 — what the ticket printed, read back from the workbook straight after each print. Open a ticket for its batch report. Read-only.
       </div>
       <RangeFilters r={r} onGo={load} placeholder="docket no, customer, truck, recipe"
                     summary={tot ? <b>{tot.tickets} tickets · {n2(tot.m3, 1)} m³ · {tot.batches} batches</b> : null} />
       {err && <div className="sol-error-msg">{err}</div>}
-      <table className="mt-table">
-        <thead>
-          <tr>
-            <th /><th>Docket</th><th>Printed</th><th>Customer / site</th><th>Recipe</th><th>Truck</th><th>Driver</th>
-            <th className="num">Prod. m³</th><th className="num">Sheet</th><th>PDF</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.tickets || []).map((t) => {
-            const det = open[t.id];
-            return (
-              <Fragment key={t.id}>
-                <tr className={det ? "mt-detail" : ""} style={{ cursor: "pointer" }} onClick={() => toggle(t)}>
-                  <td style={{ fontWeight: 700 }}>{det ? "▾" : "▸"}</td>
-                  <td className="mono"><b>{t.docket_no}</b></td>
-                  <td>{t.printed_label}</td>
-                  <td>{t.customer || "—"}<div className="mt-sub">{t.site || ""}</div></td>
-                  <td className="mono">{t.recipe_code || "—"}</td>
-                  <td className="mono">{t.truck || "—"}</td>
-                  <td>{t.driver || "—"}</td>
-                  <td className="num">{t.production_qty || "—"}</td>
-                  <td className="num">{t.sheet_number ?? "—"}</td>
-                  <td onClick={(e) => e.stopPropagation()}>
-                    {t.has_pdf
-                      ? <a href={solitaireApi.docketPdfUrl(t.docket_id)} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>{t.pdf_filename || "PDF"}</a>
-                      : <span className="mt-sub">{t.pdf_filename ? "on the plant PC" : "—"}</span>}
-                  </td>
-                </tr>
-                {det && (
-                  <tr className="mt-detail">
-                    <td />
-                    <td colSpan={9}>
-                      {det === "loading" ? "Loading…" : det.error ? <span className="sol-error-msg">{det.error}</span> : (
-                        <>
-                          <div style={{ overflowX: "auto" }}>
-                            <table className="mt-grid">
-                              <thead>
-                                <tr>
-                                  <th style={{ textAlign: "left" }}>Batch</th>
-                                  {(det.materials_json || []).map((m) => <th key={m.col}>{m.name}</th>)}
-                                  <th>Moisture</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {(det.batches_json || []).map((b) => {
-                                  const sand = b.values?.[0];
-                                  return (
-                                    <tr key={b.batch}>
-                                      <td style={{ textAlign: "left" }}>{b.batch}</td>
-                                      {b.values.map((v) => <td key={v.col}>{kg(v.actual_kg)} / {kg(v.set_kg)}</td>)}
-                                      <td>{sand?.moisture_pct == null ? "—" : `${n2(sand.moisture_pct)} %`}</td>
-                                    </tr>
-                                  );
-                                })}
-                                <tr className="total">
-                                  <td style={{ textAlign: "left" }}>Total</td>
-                                  {(det.totals_json || []).map((v) => <td key={v.col}>{kg(v.actual_kg)} / {kg(v.set_kg)}</td>)}
-                                  <td />
-                                </tr>
-                              </tbody>
-                            </table>
-                          </div>
-                          <div className="mt-sub" style={{ paddingTop: 4 }}>
-                            Figures are <b>printed actual / set weight kg</b>, exactly as on the customer's ticket.
-                          </div>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            );
-          })}
-          {data && !data.tickets.length && (
-            <tr><td colSpan={10} style={{ textAlign: "center", color: "#777", padding: 18 }}>
-              No printed tickets in this period. (Tickets appear here once the plant PC runs print agent 1.1.0 or later.)
-            </td></tr>
-          )}
-          {!data && !err && <tr><td colSpan={10} style={{ textAlign: "center", color: "#777", padding: 18 }}>Loading…</td></tr>}
-        </tbody>
-      </table>
+      <StoreList
+        rows={err ? [] : data?.tickets}
+        rowKey={(t) => t.id}
+        cells={(t) => ({ no: t.docket_no, date: docketDate(t.batch_date), start: t.start_time, end: t.end_time, customer: t.customer, site: t.site,
+                         recipe: t.recipe_code, truck: t.truck, driver: t.driver, m3: t.production_qty, batches: t.batches || t.sheet_number })}
+        lastHead="Printed · PDF"
+        last={(t) => (
+          <>
+            <div className="mt-sub">{t.printed_label}</div>
+            {t.has_pdf
+              ? <a href={solitaireApi.docketPdfUrl(t.docket_id)} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>{t.pdf_filename || "PDF"}</a>
+              : <span className="mt-sub">{t.pdf_filename ? "PDF on the plant PC" : "—"}</span>}
+          </>
+        )}
+        load={(t) => solitaireApi.printedTicket(t.id)}
+        empty="No printed tickets in this period. (Tickets appear here once the plant PC runs print agent 1.1.0 or later.)"
+      />
       <div className="mt-sub" style={{ marginTop: 8, maxWidth: 1000 }}>
-        Same layout as Plant batch data, so the two can be compared row for row. The printed "actual" weights are generated
-        inside the ticket workbook from the target, so they will not equal the load-cell figures in Plant batch data.
+        Same table as Plant batch data. The printed "actual" weights are generated inside the ticket workbook from the set weight,
+        so they will not equal the load-cell figures in Plant batch data.
       </div>
     </div>
   );

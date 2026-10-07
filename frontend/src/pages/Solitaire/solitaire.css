@@ -219,3 +219,22 @@ select.sol-ov-req{ text-align:left; cursor:pointer; }
 .mt-edit-grid input{ font-size:12.5px; padding:6px; }
 .sol-ov-req::-webkit-outer-spin-button, .sol-ov-req::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
 .sol-ov-req[type=number]{ -moz-appearance:textfield; }
+
+/* ROUND 191 — batch report table shared by Store 1 and Store 2 */
+.mt-report{ padding:4px 0 6px; }
+.mt-report-head{ display:grid; grid-template-columns:minmax(280px,1.4fr) minmax(220px,1fr); gap:4px 28px; margin-bottom:10px; font-size:12px; }
+.mt-report-head dl{ display:grid; grid-template-columns:max-content 1fr; gap:2px 10px; margin:0; align-content:start; }
+.mt-report-head dt{ color:#555; }
+.mt-report-head dt::after{ content:" :"; }
+.mt-report-head dd{ margin:0; font-weight:600; font-family:Consolas,monospace; }
+.mt-report-grid{ border:1px solid #d4d2cc; background:#fff; }
+.mt-report-grid thead th{ background:#efede8; text-align:center; border-left:1px solid #e0ded8; }
+.mt-report-grid tr.grp th{ font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:#555; }
+.mt-report-grid td{ border-left:1px solid #eeece7; }
+.mt-report-grid td.lbl{ text-align:left; font-weight:700; vertical-align:top; font-family:inherit; }
+.mt-report-grid td.lbl2{ text-align:left; color:#555; }
+.mt-report-grid tr.tgt td{ background:#f6f5f1; font-weight:600; }
+.mt-report-grid tr.blk td{ border-top:1px solid #d4d2cc; }
+.mt-report-grid td.act{ font-weight:600; }
+.mt-report-grid tr.total2 td{ font-weight:700; }
+@media (max-width:640px){ .mt-report-head{ grid-template-columns:1fr; } }
