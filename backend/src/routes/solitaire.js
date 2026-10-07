@@ -30,7 +30,7 @@ import { pool, query } from "../db.js";
 import {
   sheetNumberForLoad, batchEndWithDelay, buildLoadSheetValues, LOAD_SHEET_CELLS,
   buildMixDesignRows, mixDesignRowsToClear, MIX_DESIGN_SHEET_COLUMNS, SAVE_FOLDER_CELL,
-  ticketReadbackSpec, parseTicketReadback,
+  ticketReadbackSpec, parseTicketReadback, batchReportFromPlant, batchReportFromTicket,
 } from "../lib/mixtrackWorkbook.js";
 import {
   signSolitaireSession, generateDeviceToken, cookieOptions, requireSolitaireConfigured,
@@ -1366,9 +1366,17 @@ router.get("/store/plant-batches", requireSolitaireAuth, requireSolitaireRole(..
 
 router.get("/store/plant-batches/detail", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
   const { plant_no, batch_year, batch_no } = req.query;
+  // ROUND 191 — returns the load in the batch-report shape shared with Store 2
+  // (lib/mixtrackWorkbook.js batchReportFromPlant), so both stores render the
+  // same table.
   const { rows: batches } = await query(
-    `SELECT id, batch_index, batch_qty_m3,
-            to_char(batched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS time
+    `SELECT id, batch_index, batch_qty_m3, batch_no, recipe_code, recipe_name, customer_code AS customer,
+            site_name AS site, truck_no, truck_driver AS driver, order_no, ordered_qty_m3, load_qty_m3,
+            with_this_load_m3, mixer_capacity_m3,
+            to_char(batch_date, 'DD-Mon-YYYY') AS batch_date,
+            to_char(batched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS time,
+            to_char(load_started_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS load_start,
+            to_char(load_ended_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS load_end
        FROM plant_batches
       WHERE plant_no = $1 AND batch_year = $2 AND batch_no = $3
       ORDER BY batch_index`,
@@ -1376,43 +1384,19 @@ router.get("/store/plant-batches/detail", requireSolitaireAuth, requireSolitaire
   );
   if (!batches.length) return res.status(404).json({ error: "No such load." });
   const { rows: mats } = await query(
-    `SELECT pm.batch_id, pm.slot, pm.slot_name, pm.actual_kg, pm.target_kg, pm.moisture_pct
+    `SELECT pm.batch_id, pm.slot, pm.slot_name, pm.design_kg_per_m3, pm.actual_kg, pm.target_kg, pm.moisture_pct
        FROM plant_batch_materials pm WHERE pm.batch_id = ANY($1::int[])`,
     [batches.map((b) => b.id)]
   );
-  // Columns in the plant's slot order, named as the panel named them, and only
-  // slots that actually dispensed something on this load.
-  const ORDER = ["gate1", "gate2", "gate3", "gate4", "gate5", "gate6", "cement1", "cement2", "cement3", "cement4", "filler1", "water1", "water2"];
-  const slotRank = (s) => { const i = ORDER.indexOf(s); return i < 0 ? 100 + s.charCodeAt(0) : i; };
-  const used = new Map();
-  for (const m of mats) {
-    if (Number(m.actual_kg) > 0 || Number(m.target_kg) > 0) {
-      if (!used.has(m.slot) || (m.slot_name && !used.get(m.slot))) used.set(m.slot, m.slot_name || m.slot);
-    }
-  }
-  const columns = [...used.entries()].sort((a, b) => slotRank(a[0]) - slotRank(b[0])).map(([slot, name]) => ({ slot, name }));
-  const bySlot = new Map();
-  for (const m of mats) bySlot.set(`${m.batch_id}|${m.slot}`, m);
-  const sandMoist = (bid) => {
-    const g = bySlot.get(`${bid}|gate2`) || bySlot.get(`${bid}|gate1`);
-    return g?.moisture_pct != null ? Number(g.moisture_pct) : null;
+  const slotNames = {};
+  for (const m of mats) if (m.slot_name && !slotNames[m.slot]) slotNames[m.slot] = m.slot_name;
+  const first = batches[0];
+  const load = {
+    ...first,
+    start_time: first.load_start || first.time,
+    end_time: batches[batches.length - 1].load_end || batches[batches.length - 1].time,
   };
-  res.json({
-    columns,
-    batches: batches.map((b) => ({
-      batch: b.batch_index, time: b.time, m3: b.batch_qty_m3 == null ? null : Number(b.batch_qty_m3),
-      sand_moisture_pct: sandMoist(b.id),
-      values: columns.map((c) => {
-        const m = bySlot.get(`${b.id}|${c.slot}`);
-        return { slot: c.slot, actual_kg: m?.actual_kg == null ? null : Number(m.actual_kg), target_kg: m?.target_kg == null ? null : Number(m.target_kg) };
-      }),
-    })),
-    totals: columns.map((c) => ({
-      slot: c.slot,
-      actual_kg: mats.filter((m) => m.slot === c.slot).reduce((s, m) => s + Number(m.actual_kg || 0), 0),
-      target_kg: mats.filter((m) => m.slot === c.slot).reduce((s, m) => s + Number(m.target_kg || 0), 0),
-    })),
-  });
+  res.json({ report: batchReportFromPlant(load, batches, mats, slotNames) });
 });
 
 router.get("/store/printed-tickets", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
@@ -1425,6 +1409,8 @@ router.get("/store/printed-tickets", requireSolitaireAuth, requireSolitaireRole(
             pt.header_json->>'customer' AS customer, pt.header_json->>'site' AS site,
             pt.header_json->>'recipe_code' AS recipe_code, pt.header_json->>'truck' AS truck,
             pt.header_json->>'driver' AS driver, pt.header_json->>'production_qty' AS production_qty,
+            pt.header_json->>'batch_date' AS batch_date, pt.header_json->>'start_time' AS start_time,
+            pt.header_json->>'end_time' AS end_time, jsonb_array_length(COALESCE(pt.batches_json, '[]'::jsonb)) AS batches,
             COALESCE(pt.header_json->>'docket_no', d.batch_number) AS docket_no,
             d.pdf_filename, (d.pdf_data IS NOT NULL) AS has_pdf
        FROM mixtrack_printed_tickets pt
@@ -1436,8 +1422,8 @@ router.get("/store/printed-tickets", requireSolitaireAuth, requireSolitaireRole(
       ORDER BY pt.printed_at DESC LIMIT 500`,
     [from, to, q]
   );
-  const totals = rows.reduce((t, r) => ({ tickets: t.tickets + 1, m3: t.m3 + (Number(r.production_qty) || 0), batches: t.batches + (r.sheet_number || 0) }), { tickets: 0, m3: 0, batches: 0 });
-  res.json({ tickets: rows, totals });
+  const totals = rows.reduce((t, r) => ({ tickets: t.tickets + 1, m3: t.m3 + (Number(r.production_qty) || 0), batches: t.batches + (r.batches || r.sheet_number || 0) }), { tickets: 0, m3: 0, batches: 0 });
+  res.json({ tickets: rows, totals: { ...totals, m3: Math.round(totals.m3 * 1000) / 1000 } });
 });
 
 router.get("/store/printed-tickets/:id", requireSolitaireAuth, requireSolitaireRole(...DOCKET_ADMIN_ROLES), async (req, res) => {
@@ -1446,7 +1432,7 @@ router.get("/store/printed-tickets/:id", requireSolitaireAuth, requireSolitaireR
        FROM mixtrack_printed_tickets WHERE id = $1`, [req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Not found." });
-  res.json(rows[0]);
+  res.json({ report: batchReportFromTicket(rows[0]) });
 });
 
 
