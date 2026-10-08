@@ -6,6 +6,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import { pool, query } from "../db.js";
+// Round 194 — raw material lab tests: tables + one-time standard test plans.
+import { migrateRmLabTests } from "../lib/rmTestCards.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4059,6 +4061,12 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     } else {
       log.push("Round 192 — module access already set up, left as the Super Admin has it.");
     }
+
+    // ROUND 194 — raw material lab tests. The tables, and (once per
+    // installation) the standard test plan on every material that has none.
+    // Lives in lib/rmTestCards.js beside the code that uses it; the same
+    // CREATE statements are in schema.sql for a fresh database.
+    await migrateRmLabTests(pool, log);
 
     // (2) seed any catalogue function this installation has never seen.
     const { rows: seededKeys } = await pool.query(`SELECT permission_key FROM permission_key_seeds`);

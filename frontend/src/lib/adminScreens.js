@@ -136,6 +136,10 @@ export const ADMIN_MODULES = [
       { key: "mix-designs-view", label: "Mix Designs & Recipes", icon: "layers", to: "/mix-designs" },
       { key: "cube-test-report", label: "Cube Test Report", icon: "doc", to: "/lab-technician/cube-test-report" },
       { key: "cube-strength-analysis", label: "Cube Strength Analysis", icon: "chart", to: "/cube-qc-dashboard" },
+      // Round 194 — raw material lab tests: cards from a GRN, Administrator approval.
+      { key: "rm-tests", label: "Raw Material Tests", icon: "microscope", to: "/rm-tests" },
+      { key: "rm-test-register", label: "Raw Material Test Register", icon: "doc", to: "/rm-tests?tab=done" },
+      { key: "rm-test-plans", label: "Raw Material Test Plans", icon: "wrench", to: "/rm-tests?tab=plans" },
     ],
   },
   {
@@ -275,6 +279,9 @@ export const HUB = [
       { key: "mix-designs-view", perm: "quality.mix-designs-view" },
       { key: "cube-test-report", perm: "quality.cube-test-report" },
       { key: "cube-strength-analysis", perm: "quality.cube-qc-dashboard" },
+      { key: "rm-tests", perm: "quality.rm-tests" },
+      { key: "rm-test-register", perm: "quality.rm-test-register" },
+      { key: "rm-test-plans", perm: "quality.rm-test-plans" },
     ],
   },
   {

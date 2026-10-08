@@ -17,6 +17,8 @@ import RawMaterialStockEntry from "./pages/RawMaterialStockEntry.jsx";
 import LabTechnician from "./pages/LabTechnician.jsx";
 import LabDueToday from "./pages/LabDueToday.jsx";
 import CubeTestReport from "./pages/CubeTestReport.jsx";
+// Round 194 — raw material lab tests (cards from a GRN, Administrator approval).
+import RawMaterialTests from "./pages/RawMaterialTests.jsx";
 import Accountant from "./pages/Accountant.jsx";
 import Administrator from "./pages/Administrator.jsx";
 import OrdersSchedule from "./pages/OrdersSchedule.jsx";
@@ -252,6 +254,11 @@ export default function App() {
           } />
           <Route path="/super-admin" element={
             <ProtectedRoute roles={["super_admin"]}><SuperAdmin /></ProtectedRoute>
+          } />
+          {/* Round 194 — opens for anyone holding View on any of its four
+              functions; each tab inside checks its own. */}
+          <Route path="/rm-tests" element={
+            <ProtectedRoute perm={["quality.rm-tests", "quality.rm-test-register", "quality.rm-test-plans"]}><RawMaterialTests /></ProtectedRoute>
           } />
           <Route path="/cube-qc-dashboard" element={
             <ProtectedRoute perm="quality.cube-qc-dashboard"><CubeQcDashboard /></ProtectedRoute>

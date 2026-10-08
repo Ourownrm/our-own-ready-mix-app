@@ -159,6 +159,21 @@ export const CATALOGUE = [
     { administrator: E, manager: E }),
   f("quality.mix-assignments", "quality", "Approved Mix Designs (assignments)", ["view", "create", "delete"],
     { administrator: ["view", "create", "delete"], manager: ["view", "create", "delete"] }, { screen: "mix-assignments" }),
+  // Round 194 — raw material lab tests. Cards are issued from a GRN to the
+  // Lab Technician; an ADMINISTRATOR approves (the user's decision, 8 Oct
+  // 2026 — "instead of QC Engineer, make admin the approving authority"), and
+  // the approving Administrator's own name prints as "Approved by". The
+  // approve key is edit-only and defaults to Administrator alone; a Super
+  // Admin can hand it to someone else from Access Control if that ever
+  // changes.
+  f("quality.rm-tests", "quality", "Raw Material Tests (test cards & entry)", VCE,
+    { administrator: VCE, lab_technician: VCE }, { screen: "rm-tests" }),
+  f("quality.rm-test-approve", "quality", "Approve a raw material test (signs the report)", E,
+    { administrator: E }),
+  f("quality.rm-test-register", "quality", "Raw Material Test Register (filed reports)", V,
+    { administrator: V, lab_technician: V, manager: V }, { screen: "rm-test-register" }),
+  f("quality.rm-test-plans", "quality", "Raw material test plans (setup)", VCED,
+    { administrator: VCED }, { screen: "rm-test-plans" }),
   f("quality.raw-material-stock", "quality", "Raw material stock (lab 9-bin)", VCE,
     { administrator: V, lab_technician: VCE }),
 
@@ -598,9 +613,13 @@ export const MODULES = [
       { key: "quality.mix-designs-view", label: "Mix Designs & Recipes" },
       { key: "quality.cube-test-report", label: "Cube Test Report" },
       { key: "quality.cube-qc-dashboard", label: "Cube Strength Analysis" },
+      // Round 194
+      { key: "quality.rm-tests", label: "Raw Material Tests" },
+      { key: "quality.rm-test-register", label: "Raw Material Test Register" },
+      { key: "quality.rm-test-plans", label: "Raw Material Test Plans" },
     ],
     support: ["quality.cube-tests", "quality.lab-due-today", "quality.raw-material-stock",
-      "quality.mix-design-approve", "production.recipe-edit"],
+      "quality.mix-design-approve", "production.recipe-edit", "quality.rm-test-approve"],
   },
 ];
 

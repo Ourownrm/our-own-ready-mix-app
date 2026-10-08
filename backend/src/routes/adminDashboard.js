@@ -39,7 +39,7 @@ router.get("/summary", async (req, res) => {
   const [
     kpis,
     monthTarget,
-    materialOrders, mixDesigns, breakdowns, bookings, leads, compliance,
+    materialOrders, mixDesigns, breakdowns, bookings, leads, compliance, rmApprovals,
   ] = await Promise.all([
     dashboardKpis(),
     query(
@@ -55,6 +55,10 @@ router.get("/summary", async (req, res) => {
       `SELECT COUNT(*)::int AS n FROM compliance_documents
        WHERE expiry_date <= CURRENT_DATE + INTERVAL '30 days'`
     ),
+    // Round 194 — lab tests waiting for an Administrator's approval. Caught so
+    // the dashboard still loads on a database where /setup has not yet made
+    // the table.
+    query(`SELECT COUNT(*)::int AS n FROM rm_test_cards WHERE status = 'submitted'`).catch(() => ({ rows: [{ n: 0 }] })),
   ]);
 
   const target = monthTarget.rows[0] ? Number(monthTarget.rows[0].target_m3) : null;
@@ -103,6 +107,7 @@ router.get("/summary", async (req, res) => {
       "assign-lead": leads.rows[0].n,
       "statutory-compliance": compliance.rows[0].n,
       "outstanding-collection": overdue.rows[0].n,
+      "rm-tests": rmApprovals.rows[0].n,
     },
   });
 });

@@ -3572,3 +3572,91 @@ CREATE TABLE IF NOT EXISTS rm_supplier_ledger_log (
 -- expanded when a view is made, so it is refreshed to carry them.
 CREATE OR REPLACE VIEW rm_receipts_effective AS
   SELECT * FROM rm_receipts WHERE confirmation_status <> 'pending';
+
+
+-- =====================================================================
+-- ROUND 194 — raw material lab tests. A material's test plan (rm_test_plans)
+-- decides which tests a GRN hands the Lab Technician as cards
+-- (rm_test_cards); an Administrator approves each result and is printed as
+-- "Approved by". Same statements as RM_TEST_SCHEMA_SQL in
+-- backend/src/lib/rmTestCards.js, which /setup runs on an existing database.
+-- See that file and routes/rmTests.js for the rules.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS rm_test_plans (
+  id          SERIAL PRIMARY KEY,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  test_code   VARCHAR(40) NOT NULL,
+  params      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  form_no     VARCHAR(30),
+  trigger     VARCHAR(16) NOT NULL DEFAULT 'period'
+              CHECK (trigger IN ('every_grn', 'period', 'scheduled', 'off')),
+  high_days   INTEGER CHECK (high_days IS NULL OR high_days > 0),
+  low_days    INTEGER CHECK (low_days IS NULL OR low_days > 0),
+  low_after   INTEGER CHECK (low_after IS NULL OR low_after > 0),
+  hold_stock  BOOLEAN NOT NULL DEFAULT false,
+  due_hours   INTEGER NOT NULL DEFAULT 24 CHECK (due_hours > 0),
+  is_active   BOOLEAN NOT NULL DEFAULT true,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_by  INTEGER REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by  INTEGER REFERENCES users(id),
+  updated_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_rm_test_plans_material ON rm_test_plans(material_id);
+
+CREATE TABLE IF NOT EXISTS rm_test_cards (
+  id               SERIAL PRIMARY KEY,
+  plan_id          INTEGER REFERENCES rm_test_plans(id) ON DELETE SET NULL,
+  test_code        VARCHAR(40) NOT NULL,
+  params           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  form_no          VARCHAR(30),
+  material_id      INTEGER NOT NULL REFERENCES rm_materials(id),
+  supplier_id      INTEGER REFERENCES rm_suppliers(id),
+  receipt_id       INTEGER REFERENCES rm_receipts(id) ON DELETE SET NULL,
+  source           VARCHAR(12) NOT NULL DEFAULT 'grn' CHECK (source IN ('grn', 'scheduled', 'manual')),
+  reason           TEXT,
+  rate             VARCHAR(6),
+  vehicle_number   VARCHAR(20),
+  received_date    DATE,
+  hold_stock       BOOLEAN NOT NULL DEFAULT false,
+  due_at           TIMESTAMPTZ,
+  status           VARCHAR(16) NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'in_progress', 'submitted', 'approved', 'closed')),
+  readings         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  result           JSONB,
+  verdict          VARCHAR(16),
+  summary          TEXT,
+  sampled_by       VARCHAR(80),
+  sampled_at       TIMESTAMPTZ,
+  tested_on        DATE,
+  equipment        TEXT,
+  remarks          TEXT,
+  started_by       INTEGER REFERENCES users(id),
+  started_at       TIMESTAMPTZ,
+  updated_by       INTEGER REFERENCES users(id),
+  updated_at       TIMESTAMPTZ,
+  submitted_by     INTEGER REFERENCES users(id),
+  submitted_at     TIMESTAMPTZ,
+  approved_by      INTEGER REFERENCES users(id),
+  approved_at      TIMESTAMPTZ,
+  sent_back_by     INTEGER REFERENCES users(id),
+  sent_back_at     TIMESTAMPTZ,
+  sent_back_reason TEXT,
+  closed_by        INTEGER REFERENCES users(id),
+  closed_at        TIMESTAMPTZ,
+  closed_reason    TEXT,
+  created_by       INTEGER REFERENCES users(id),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_rm_test_cards_status  ON rm_test_cards(status);
+CREATE INDEX IF NOT EXISTS idx_rm_test_cards_window  ON rm_test_cards(material_id, supplier_id, test_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rm_test_cards_receipt ON rm_test_cards(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_rm_test_cards_plan    ON rm_test_cards(plan_id, created_at DESC);
+
+-- One row per material that has been given the standard plan once. A material
+-- added later gets it on its first GRN; one the Administrator has emptied on
+-- purpose is never refilled behind their back.
+CREATE TABLE IF NOT EXISTS rm_test_plan_seeds (
+  material_id INTEGER PRIMARY KEY REFERENCES rm_materials(id),
+  seeded_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);

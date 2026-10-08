@@ -10,6 +10,8 @@ import { reresolveSilos } from "./plant.js";
 // access, never loosen it.
 import { requirePermission, requireAnyPermission, can } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
+// Round 194 — a GRN hands the lab its test cards.
+import { issueCardsForReceipt } from "../lib/rmTestCards.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 import { buildLedgers, creditCheck, receiptBillAmount, addDays } from "../lib/supplierLedger.js";
 // Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
@@ -1255,8 +1257,21 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
     client.release();
   }
 
+  // ROUND 194 — the lab's test cards for this load, from the material's test
+  // plan (lib/rmTestCards.js). AFTER the commit and outside it on purpose: the
+  // receipt is the record of a lorry that has arrived and must never fail
+  // because card issuing did. A disputed (pending) load still gets its cards —
+  // the material is in the yard either way.
+  let testCards = [];
+  try {
+    testCards = await issueCardsForReceipt(rows[0].id, req.user.id);
+  } catch (err) {
+    console.error("Lab test cards for receipt", rows[0].id, "failed:", err.message);
+  }
+
   res.status(201).json({
     ...rows[0],
+    test_cards_issued: testCards.length,
     received_date: receivedDate,   // the validated string, not the pg Date
     tolerance_exceeded: toleranceExceeded,
     // The screen needs to say what just happened, and the two outcomes are

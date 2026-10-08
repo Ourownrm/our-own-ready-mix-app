@@ -93,6 +93,7 @@ export default function LabTechnician() {
             together, the poured/cast date, and a "Close — not testing"
             action right on each card. */}
         <IfCan perm="quality.lab-due-today"><DueTestingCard setError={setError} /></IfCan>
+        <IfCan perm="quality.rm-tests"><RmTestsDueCard /></IfCan>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <button className={`btn-tab ${tab === "batches" ? "active" : ""}`} onClick={() => setTab("batches")}>Cube Testing</button>
@@ -106,6 +107,8 @@ export default function LabTechnician() {
               Administrator/Manager action (Masters → Mix Design Assignments). */}
           <button className={`btn-tab ${tab === "assignments" ? "active" : ""}`} onClick={() => setTab("assignments")}>Assignments</button>
           <IfCan perm="quality.cube-test-report"><Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link></IfCan>
+          {/* Round 194 — raw material test cards, issued when Store books a material in. */}
+          <IfCan perm="quality.rm-tests"><Link to="/rm-tests"><button type="button" className="btn-tab">Raw Material Tests</button></Link></IfCan>
           <IfCan perm="quality.raw-material-stock"><Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link></IfCan>
           {/* Round 172 — plant production/consumption and the mix-design/recipe
               screens are reachable from here too, once a Super Admin grants the
@@ -1591,5 +1594,27 @@ function MixDesignForm({ setError, setNotice, onDone, onCancel, editingDesign })
         {isEditing ? "Still a draft until a second person approves it." : "Draft designs show \"Pending approval\" until a second person approves them."}
       </div>
     </form>
+  );
+}
+
+// Round 194 — the raw material tests waiting for the lab, as one strip under
+// the cube-test one. Counts only; the list lives on its own page (/rm-tests).
+// Renders nothing when there is nothing to do, so a clear inbox stays quiet.
+function RmTestsDueCard() {
+  const navigate = useNavigate();
+  const [s, setS] = useState(null);
+  useEffect(() => { apiRequest("/rm-tests/summary").then(setS).catch(() => {}); }, []);
+  if (!s || !s.todo) return null;
+  return (
+    <button type="button" onClick={() => navigate("/rm-tests")}
+      style={{ display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14, padding: "12px 14px",
+        background: "var(--surface)", borderLeft: `4px solid ${s.overdue ? "var(--alert-red)" : "var(--amber)"}`, textAlign: "left" }}>
+      <span>
+        <span style={{ fontWeight: 700 }}>{s.todo} raw material test{s.todo === 1 ? "" : "s"} to do</span>
+        {s.overdue > 0 && <span style={{ color: "var(--alert-red)", fontWeight: 600 }}> · {s.overdue} overdue</span>}
+        {s.on_hold > 0 && <span style={{ color: "var(--slate)" }}> · {s.on_hold} holding stock</span>}
+      </span>
+      <span style={{ color: "var(--rebar)", fontWeight: 600 }}>Open →</span>
+    </button>
   );
 }

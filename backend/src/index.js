@@ -43,6 +43,8 @@ import homeScreenPhotosRoutes from "./routes/homeScreenPhotos.js";
 import loaderOperatorRoutes from "./routes/loaderOperator.js";
 import materialModuleRoutes from "./routes/materialModule.js";
 import qcDashboardRoutes from "./routes/qcDashboard.js";
+// Round 194 — raw material lab tests (cards issued from a GRN, Administrator approval).
+import rmTestsRoutes from "./routes/rmTests.js";
 // Round 143 — the Administrator dashboard's icon view (KPIs, badges, pins).
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 // Round 146 — Super Admin per-user access control.
@@ -195,6 +197,7 @@ app.use("/api/material-module", materialModuleRoutes);
 // Round 141 — Cube Strength QC dashboard. Administrator-only at the router
 // level (see routes/qcDashboard.js); read-only, adds no tables.
 app.use("/api/qc-dashboard", qcDashboardRoutes);
+app.use("/api/rm-tests", rmTestsRoutes);
 app.use("/api/admin-dashboard", adminDashboardRoutes);
 app.use("/api/super-admin", superAdminRoutes);
 // The delivery-challan plugin. Both routers gate themselves on the plugin

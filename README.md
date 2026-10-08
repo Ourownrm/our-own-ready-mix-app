@@ -8439,3 +8439,57 @@ endpoints × 9 users; denied a module, a sub-menu, granted a screen to a role th
 - **Monthly Physical Stock** report: Print (PDF).
 - Access (Permissions → Raw Material): Supplier ledger view = Administrator, Accountant, Manager; Record payment = Administrator, Accountant; Cancel payment = Administrator.
 - PDFs print "Rs." instead of ₹ (the PDF font has no rupee glyph).
+
+## Round 194 — Raw material lab tests, Administrator approval (v10.23)
+
+**Deploy:** upload the changed files, let Render redeploy, then visit `/setup?key=…` once (creates the two test tables and
+loads the standard test plan onto every existing material — see below).
+
+Built from the "OORM Lab Tests Module" mock-up, with the user's one change: **an Administrator approves the tests (not
+QC Engineer / QC In-charge), and the approving Administrator's own name prints as "Approved by" on the report.**
+
+- **A GRN hands the lab its test cards.** `POST /material-module/receipts` now calls `issueCardsForReceipt()`
+  (`lib/rmTestCards.js`) after the receipt commits — outside the transaction, so a receipt can never fail because of
+  cards. The material's **test plan** decides which tests:
+  - *Every GRN* (cement, admixture), or *first GRN per supplier in the period* (aggregates — IS 4926:2003 Annex B
+    frequencies): ten lorries of 20 mm in a week make one weekly grading card. A supplier with no result on record gets
+    its cards on its first load (that is the new-source rule).
+  - **High / low rate (IS 4926 B-1.1)** worked out live from approved history: after N results in a row in tolerance a
+    supplier drops to the low-rate period; one non-conforming result puts it back on the high rate.
+  - *Scheduled* cards (M-Sand moisture daily) are created when the lab list is opened — no timer.
+  - An advisory lock per plan stops two simultaneous GRNs issuing the same card twice (tested with three at once).
+- **Test plans** (`rm_test_plans`): per material, set by an Administrator under Quality Control → Raw Material Test
+  Plans. `/setup` loads the standard plan once onto every material by its mix component (cement / 20 mm / 12.5 mm /
+  fine aggregate / admixture / fly ash, else a name guess); a material created later gets it on its first GRN
+  (`rm_test_plan_seeds`). A plan the Administrator removes is never put back.
+- **15 tests** in `lib/rmTestDefs.js`, including all nine of the plant's OORM-QC forms (fineness of cement QC-02,
+  elongation QC-03, flakiness QC-04, sieve coarse QC-07, SG fine QC-10, water absorption QC-11, moisture QC-14, impact
+  QC-15, bulk density QC-18) plus fine-aggregate grading zone + FM, finer than 75 µm, cement setting time / soundness /
+  mortar-cube strength, admixture uniformity, and external-lab certificates (LA abrasion, soundness, water…). New tests
+  have **no form number** until the plant gives one (Test plans → form no. comes from the plan).
+- **The server decides the result.** The screen calculates live; every save recomputes from the raw readings with the
+  same file and stores the server's answer. `rmTestDefs.js` exists byte-for-byte in backend and frontend;
+  **`scripts/check-rm-test-defs.mjs`** (7th checker in `npm run check`) fails if they differ and re-runs 8 known
+  answers from the plant's own signed sheets.
+- **Flow:** To test → Lab Technician enters readings, Save draft / Submit → **Administrator** approves or sends back
+  (with a reason) → filed in the Register with a PDF (`lib/rmTestPdf.js`, cube-test report family, form number +
+  R00/21-03-2025 + REV. 0 in the footer). Approve can be withdrawn by an Administrator (goes back to awaiting approval).
+  A failed test, once approved, notifies Manager, Store and Administrator. Lab gets a push/notification for new cards;
+  Administrators for submissions. Unapproved PDFs print "DRAFT — NOT APPROVED".
+- **Access** (Super Admin → Quality Control): `quality.rm-tests` (lab enters: Administrator + Lab Technician),
+  `quality.rm-test-approve` (edit, **Administrator only**), `quality.rm-test-register` (view: Admin, Lab, Manager),
+  `quality.rm-test-plans` (Administrator). Manager and QC Engineer get view through the module table, never approve.
+- **Screens:** `/rm-tests` (RawMaterialTests.jsx — To test / Awaiting approval / Register / Closed / Test plans and the
+  test card), a "Raw material tests to do" strip + tab link on the Lab Technician screen, three tiles in the Quality
+  Control module, and an approvals badge on the Administrator's Raw Material Tests tile.
+
+**Verified.** v10.22 database upgraded through /setup ×2 and a fresh database: plans loaded, 4 new keys seeded,
+approve held by no role but Administrator. 35 API checks (cards per GRN/period/supplier, simultaneous GRNs, scheduled
+card once a day, Store/QC/Manager/Lab all refused approval, send back, approve prints the admin's name, non-conforming
+verdict, close needs a reason, plan validation) + rate switching both ways + a material added after setup. Screens
+driven headless at 1280 px and 390 px (no horizontal overflow), PDFs rendered for conforming, non-conforming,
+three-trial and draft cards. `npm run check` (7 checkers) green; vite build clean.
+
+**Limits to know:** IS 383 Table 7 limits for sizes other than 12.5 mm single-sized were written from the standard as
+recalled — check them against the licensed copy. "Hold stock" is a flag on the card and the GRN's cards, it does not
+block the plant from batching. No 90-day cement retest card yet.
