@@ -8420,3 +8420,22 @@ Manual entry view for the plant roles, mix-design approve for the four roles the
 after — **nothing lost**; Super Admin removals survive /setup re-runs; fresh DB equals the catalogue. Probed 27
 endpoints × 9 users; denied a module, a sub-menu, granted a screen to a role that never had it — all as expected.
 `npm run check` green; vite build clean; screenshots of Module access, Modules page, no-access page, gated tabs.
+
+## Round 193 — Supplier ledger, payments & credit terms (v10.22)
+
+**Deploy:** upload the changed files, let Render redeploy, then visit `/setup?key=…` once (adds the new columns/tables and backfills bill amounts on existing receipts).
+
+- **Material Module → Supplier Ledger** (new tab). What we owe each supplier = opening balance + bills − payments.
+  - A receipt's bill = **accepted qty** × order rate (+ freight on a delivered order) + GST. Short supply is never billed, so the debit note field is now paperwork only.
+  - Bill date = supplier invoice date (falls back to received date); due date = bill date + supplier credit days.
+  - **Received, not billed**: pending receipts plus weighbridge loads with no receipt yet, valued at the order rate. Shown as a warning banner and counted toward the credit limit.
+  - Opening balance per supplier (one total or bill by bill; payable or advance). Locked once a payment is allocated against it.
+  - Record payment (NEFT/RTGS/cheque/UPI/cash, TDS, bill-wise allocation or "Oldest first"); anything unallocated settles the oldest bills. Cancel needs a reason (Administrator only).
+  - Statement per supplier with brought-forward, unpaid bills, ageing, not-billed loads; Print PDF for the overview and statement.
+- **Suppliers**: new Credit days and Credit limit fields.
+- **Orders**: over the credit limit (balance + not billed + this order) shows a **warning only** — the order still goes through.
+- **Receipts**: "Challan no." is now **Supplier invoice no.**, plus an Invoice date. Pending receipts show "Pending — not accepted yet" under the Accepted qty too.
+- **Plant Production cost/m³** grouped into Cement / Aggregate / Admixture / Water / Other with subtotals.
+- **Monthly Physical Stock** report: Print (PDF).
+- Access (Permissions → Raw Material): Supplier ledger view = Administrator, Accountant, Manager; Record payment = Administrator, Accountant; Cancel payment = Administrator.
+- PDFs print "Rs." instead of ₹ (the PDF font has no rupee glyph).

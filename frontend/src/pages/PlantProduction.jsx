@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, Fragment } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
@@ -539,21 +539,45 @@ function CostPerM3({ qs }) {
             <th style={{ ...TH, textAlign: "right" }}>Share</th>
           </tr></thead>
           <tbody>
-            {data.rows.map((r) => (
-              <tr key={r.material_id} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={TD}>{r.material_name}</td>
-                <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap" }}>{fmtKg(r.consumed_kg)}</td>
-                <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap", color: r.has_rate ? "inherit" : "var(--amber)" }}>{r.has_rate ? Number(r.rate_per_kg).toFixed(2) : "no rate"}</td>
-                <td style={{ ...TD, textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{r.cost_per_m3 == null ? "—" : fmtINR(r.cost_per_m3)}</td>
-                <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{r.share_pct == null ? "—" : `${r.share_pct}%`}</td>
-              </tr>
+            {/* Round 193 — grouped: Cement, Aggregate, Admixture (then Water,
+                Other), each group's subtotal on its heading row. */}
+            {(data.groups || [{ group: null, rows: data.rows }]).map((g) => (
+              <Fragment key={g.group || "all"}>
+                {g.group && (
+                  <tr style={{ borderTop: "1px solid var(--border-strong)", background: "#F7F5F0" }}>
+                    <td style={{ ...TD, fontWeight: 700 }}>{g.group} <span style={{ fontWeight: 400, color: "var(--slate)", fontSize: 11.5 }}>· {g.rows.length} material{g.rows.length === 1 ? "" : "s"}</span></td>
+                    <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap", fontWeight: 600 }}>{fmtKg(g.consumed_kg)}</td>
+                    <td style={TD}></td>
+                    <td style={{ ...TD, textAlign: "right", fontWeight: 700, whiteSpace: "nowrap" }}>{fmtINR(g.cost_per_m3)}</td>
+                    <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{g.share_pct == null ? "—" : `${g.share_pct}%`}</td>
+                  </tr>
+                )}
+                {g.rows.map((r) => (
+                  <tr key={r.material_id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ ...TD, paddingLeft: g.group ? 22 : undefined }}>{r.material_name}</td>
+                    <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap" }}>{fmtKg(r.consumed_kg)}</td>
+                    <td style={{ ...TD, textAlign: "right", whiteSpace: "nowrap", color: r.has_rate ? "inherit" : "var(--amber)" }}>{r.has_rate ? Number(r.rate_per_kg).toFixed(2) : "no rate"}</td>
+                    <td style={{ ...TD, textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{r.cost_per_m3 == null ? "—" : fmtINR(r.cost_per_m3)}</td>
+                    <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{r.share_pct == null ? "—" : `${r.share_pct}%`}</td>
+                  </tr>
+                ))}
+              </Fragment>
             ))}
+            {data.rows.length > 0 && (
+              <tr style={{ borderTop: "2px solid var(--border-strong)" }}>
+                <td style={{ ...TD, fontWeight: 700 }}>Total</td>
+                <td style={TD}></td><td style={TD}></td>
+                <td style={{ ...TD, textAlign: "right", fontWeight: 700, whiteSpace: "nowrap" }}>{fmtINR(data.total_cost_per_m3)}</td>
+                <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>100%</td>
+              </tr>
+            )}
             {!data.rows.length && <tr><td style={TD} colSpan={5}><span style={{ color: "var(--slate)" }}>No consumption in this period.</span></td></tr>}
           </tbody>
         </table>
         <div style={{ fontSize: 10.5, color: "var(--slate)", lineHeight: 1.55, padding: "10px 12px" }}>
           <b>Consumed</b> is the plant's load-cell figure <b>plus</b> the operator's manual entries — never the auto
-          figure alone. <b>Rate</b> is the weighted-average landed cost per material from the Material Module{anyMissing
+          figure alone. Groups follow each material's mix component (Materials master), else its category or name.
+          <b> Rate</b> is the weighted-average landed cost per material from the Material Module{anyMissing
           ? "; a material shown “no rate” has no priced receipt yet, so it is left out of the total." : "."}
         </div>
       </div>

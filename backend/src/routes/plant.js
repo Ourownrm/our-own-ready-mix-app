@@ -902,6 +902,23 @@ router.get("/consumption", requirePermission("plant.consumption", "view"), async
 // production). Rates are money, so this is gated like the material module's
 // valuation: Administrator only (material.stock-valuation). No new permission
 // key, so no seeding/REPAIR is needed.
+// Round 193 — the cost groups the owner asked for. A material's mix component
+// (set on the Materials master, used by the mix-vs-actual report) decides it;
+// without one, its category and then its name are read for the usual words.
+const COST_GROUPS = ["Cement", "Aggregate", "Admixture", "Water", "Other"];
+function costGroupOf(m) {
+  const mc = String(m.mix_component || "");
+  if (mc === "cement" || mc === "fly_ash") return "Cement";
+  if (mc === "fine_agg" || mc.startsWith("coarse")) return "Aggregate";
+  if (mc === "admixture") return "Admixture";
+  const text = `${m.category || ""} ${m.name || ""}`.toLowerCase();
+  if (/cement|opc|ppc|psc|fly\s*ash|ggbs|binder|micro\s*silica/.test(text)) return "Cement";
+  if (/admix|chemical|plasticiser|plasticizer|retarder|accelerator/.test(text)) return "Admixture";
+  if (/aggregate|sand|m\s*sand|\d+\s*mm|gsb|metal|stone|chips|dust/.test(text)) return "Aggregate";
+  if (/water/.test(text)) return "Water";
+  return "Other";
+}
+
 router.get("/cost-per-m3", requirePermission("plant.cost", "view"), async (req, res) => {
   try {
     const rngB = dateRange(req, "pb.batch_date");     // plant_batch_materials via its batch
@@ -931,7 +948,7 @@ router.get("/cost-per-m3", requirePermission("plant.cost", "view"), async (req, 
            JOIN rm_orders o ON o.id = r.order_id
           WHERE r.landed_rate_per_kg IS NOT NULL
           GROUP BY o.material_id`),
-      query(`SELECT id, name, opening_stock_rate_per_kg FROM rm_materials WHERE is_active = true`),
+      query(`SELECT id, name, opening_stock_rate_per_kg, category, mix_component FROM rm_materials WHERE is_active = true`),
       query(
         `SELECT material_id, sum(kg)::numeric AS kg FROM (
             SELECT t.from_material_id AS material_id, -t.qty_kg AS kg FROM plant_consumption_transfers t WHERE ${rngT.sql}
@@ -961,16 +978,30 @@ router.get("/cost-per-m3", requirePermission("plant.cost", "view"), async (req, 
         rate_per_kg: rate == null ? null : Math.round(rate * 10000) / 10000,
         has_rate: rate != null,
         cost_per_m3: costPerM3 == null ? null : Math.round(costPerM3 * 100) / 100,
+        group: costGroupOf(m),
       });
     }
     rows.sort((a, b) => (b.cost_per_m3 || 0) - (a.cost_per_m3 || 0));
     for (const r of rows) r.share_pct = totalCostPerM3 > 0 && r.cost_per_m3 != null ? Math.round((r.cost_per_m3 / totalCostPerM3) * 1000) / 10 : null;
+    // Round 193 — grouped into Cement / Aggregate / Admixture (then Water and
+    // Other), each with its subtotal, in that fixed order.
+    const groups = COST_GROUPS.map((g) => {
+      const items = rows.filter((r) => r.group === g);
+      const cost = items.reduce((t, r) => t + (r.cost_per_m3 || 0), 0);
+      return {
+        group: g, rows: items,
+        consumed_kg: Math.round(items.reduce((t, r) => t + r.consumed_kg, 0) * 100) / 100,
+        cost_per_m3: Math.round(cost * 100) / 100,
+        share_pct: totalCostPerM3 > 0 ? Math.round((cost / totalCostPerM3) * 1000) / 10 : null,
+      };
+    }).filter((g) => g.rows.length);
 
     res.json({
       produced_m3: Math.round(producedM3 * 100) / 100,
       total_cost_per_m3: Math.round(totalCostPerM3 * 100) / 100,
       total_material_cost: Math.round(totalCostPerM3 * producedM3 * 100) / 100,
       rows,
+      groups,
     });
   } catch (err) {
     console.error(err);

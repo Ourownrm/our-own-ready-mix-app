@@ -29,6 +29,7 @@ import { usePermissions } from "../lib/PermissionContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { monthStartStr, todayStr } from "../lib/istDate.js";
 import { printMaterialReport } from "../lib/materialReportPdf.js";
+import SupplierLedgerTab from "./SupplierLedger.jsx";
 
 // ===================== Shared helpers =====================
 
@@ -178,6 +179,8 @@ const ALL_TABS = [
   { key: "consumption-transfer", label: "Consumption transfer", perm: "material.consumption-transfer", action: "view" },
   { key: "reports", label: "Reports", perm: "material.reports", action: "view" },
   { key: "cost-dashboard", label: "Cost Dashboard", perm: "material.cost-dashboard", action: "view" },
+  // Round 193 — what we owe each supplier, payments and opening balances.
+  { key: "supplier-ledger", label: "Supplier Ledger", perm: "material.supplier-ledger", action: "view" },
   // Round 192 — the Materials and Suppliers tabs have their own view keys
   // (Raw Material module sub-menus), so a Super Admin can show the masters
   // read-only. Editing inside still needs create/edit on the master itself.
@@ -239,6 +242,7 @@ export default function MaterialModule() {
         {tab === "consumption-transfer" && <ConsumptionTransferTab />}
         {tab === "reports" && <ReportsTab />}
         {tab === "cost-dashboard" && <CostDashboardTab />}
+        {tab === "supplier-ledger" && <SupplierLedgerTab />}
       </div>
     </>
   );
@@ -643,12 +647,13 @@ function SuppliersTab() {
   }
 
   function openNewSupplier() {
-    setSupplierForm({ name: "", contact_person: "", phone: "", address: "", gstin: "" });
+    setSupplierForm({ name: "", contact_person: "", phone: "", address: "", gstin: "", credit_days: "", credit_limit: "" });
     setEditingSupplier({});
     setError(""); setNotice("");
   }
   function openEditSupplier(s) {
-    setSupplierForm({ name: s.name, contact_person: s.contact_person || "", phone: s.phone || "", address: s.address || "", gstin: s.gstin || "" });
+    setSupplierForm({ name: s.name, contact_person: s.contact_person || "", phone: s.phone || "", address: s.address || "", gstin: s.gstin || "",
+      credit_days: s.credit_days ?? "", credit_limit: s.credit_limit ?? "" });
     setEditingSupplier(s);
     setError(""); setNotice("");
   }
@@ -726,6 +731,9 @@ function SuppliersTab() {
               <div style={{ fontWeight: 600, fontSize: 13.5 }}>{s.name}{!s.is_active && <span className="badge badge-neutral" style={{ marginLeft: 6 }}>Inactive</span>}</div>
               <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 3 }}>
                 {s.contact_person ? `${s.contact_person} · ` : ""}{s.phone || "no phone on file"}{s.gstin ? ` · GSTIN ${s.gstin}` : ""}
+                {(s.credit_days != null || s.credit_limit != null) && (
+                  <span>{" · "}{s.credit_days != null ? `${s.credit_days} days credit` : "no credit days"}{s.credit_limit != null ? ` · limit ${fmtMoney(s.credit_limit)}` : ""}</span>
+                )}
               </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -859,6 +867,14 @@ function SuppliersTab() {
             <Field label="Phone"><input value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })} style={inputStyle} /></Field>
             <Field label="Address"><textarea rows={2} value={supplierForm.address} onChange={(e) => setSupplierForm({ ...supplierForm, address: e.target.value })} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
             <Field label="GSTIN (optional)"><input value={supplierForm.gstin} onChange={(e) => setSupplierForm({ ...supplierForm, gstin: e.target.value })} style={inputStyle} /></Field>
+            {/* Round 193 — credit terms, used by the Supplier Ledger: a bill
+                falls due this many days after its invoice date, and the limit
+                is the most we let ourselves owe (balance + loads received but
+                not billed yet). Going over it only warns. */}
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ flex: 1 }}><Field label="Credit days"><input type="number" min="0" step="1" value={supplierForm.credit_days} onChange={(e) => setSupplierForm({ ...supplierForm, credit_days: e.target.value })} style={inputStyle} placeholder="e.g. 30" /></Field></div>
+              <div style={{ flex: 1 }}><Field label="Credit limit (₹)"><input type="number" min="0" step="1" value={supplierForm.credit_limit} onChange={(e) => setSupplierForm({ ...supplierForm, credit_limit: e.target.value })} style={inputStyle} placeholder="blank = no limit" /></Field></div>
+            </div>
             <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Save supplier"}</button>
           </form>
         </Modal>
@@ -952,6 +968,20 @@ function OrdersTab({ role }) {
     apiRequest(`/material-module/suppliers/${form.supplier_id}/transporters?material_id=${form.material_id}`).then(setSupplierTransporters).catch(() => setSupplierTransporters([]));
   }, [creating, form.supplier_id, form.material_id, form.scope]);
 
+  // Round 193 — the supplier's credit position, shown while the order is being
+  // filled in: balance + loads received but not billed + this order, against
+  // the limit. Over it only WARNS; the order can still be sent.
+  const [credit, setCredit] = useState(null);
+  const orderValue = (Number(form.ordered_qty) || 0) * (Number(form.rate) || 0) * (1 + (Number(form.tax_pct) || 0) / 100);
+  useEffect(() => {
+    if (!creating || !form.supplier_id) { setCredit(null); return; }
+    const t = setTimeout(() => {
+      apiRequest(`/material-module/supplier-ledger/${form.supplier_id}/credit-status?order_value=${orderValue.toFixed(2)}`)
+        .then(setCredit).catch(() => setCredit(null));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [creating, form.supplier_id, orderValue]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Prefill the rate from the supplier's rate card — only while the field is
   // still empty, so it never overwrites something the user already typed.
   useEffect(() => {
@@ -981,8 +1011,11 @@ function OrdersTab({ role }) {
     e.preventDefault();
     setSaving(true); setError(""); setNotice("");
     try {
-      await apiRequest("/material-module/orders", { method: "POST", body: form });
-      setNotice("Order sent to Administrator for approval.");
+      const created = await apiRequest("/material-module/orders", { method: "POST", body: form });
+      const cw = created && created.credit_warning;
+      setNotice("Order sent to Administrator for approval." + (cw
+        ? ` Note: ${cw.supplier_name} is over its credit limit by ${fmtMoney(cw.over_by)} with this order.`
+        : ""));
       setCreating(false);
       await load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
@@ -1170,6 +1203,19 @@ function OrdersTab({ role }) {
               </select>
             </Field>
             <Field label="Notes (optional)"><textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
+            {credit && credit.credit_limit != null && (
+              <div style={{
+                fontSize: 12, lineHeight: 1.5, borderRadius: 8, padding: "8px 10px", marginBottom: 10,
+                background: credit.over_limit ? "var(--alert-red-bg)" : "var(--concrete)",
+                color: credit.over_limit ? "var(--alert-red)" : "var(--slate)",
+              }}>
+                {credit.over_limit ? <b>{credit.supplier_name} will be over its credit limit. </b> : <b>Credit position. </b>}
+                Balance {fmtMoney(credit.balance)} + received not billed {fmtMoney(credit.not_billed)} + this order {fmtMoney(credit.order_value)}
+                {" = "}<b>{fmtMoney(credit.exposure_after)}</b> against a limit of {fmtMoney(credit.credit_limit)}.
+                {Number(credit.overdue) > 0 && <> {fmtMoney(credit.overdue)} is overdue.</>}
+                {credit.over_limit && " You can still send the order."}
+              </div>
+            )}
             <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Sending..." : "Send for approval"}</button>
           </form>
         </Modal>
@@ -1312,13 +1358,14 @@ function MaterialHeading({ name, count, extra }) {
 }
 
 function blankReceiptForm() {
-  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "", received_date: todayStr(), silo_slot: "", not_in_silo: false };
+  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", invoice_date: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "", received_date: todayStr(), silo_slot: "", not_in_silo: false };
 }
 
 function receiptEditForm(r) {
   return {
     supplier_qty: r.supplier_qty, weighbridge_weight_kg: r.weighbridge_weight_kg ?? "",
     accepted_qty: r.accepted_qty, vehicle_number: r.vehicle_number || "", challan_number: r.challan_number || "",
+    invoice_date: (r.invoice_date || "").slice(0, 10),
     debit_note_amount: r.debit_note_amount ?? "", notes: r.notes || "",
     // Round 162 — arrival date, and the weighbridge link so admin can unlink.
     received_date: (r.received_date || "").slice(0, 10),
@@ -1536,7 +1583,7 @@ function ReceiptsTab({ role }) {
         r.supplier_name || "—",
         r.vehicle_number || "—",
         `${fmtNum(r.supplier_qty)} ${r.purchase_unit}`,
-        `${fmtNum(r.accepted_qty)} ${r.purchase_unit}`,
+        `${fmtNum(r.accepted_qty)} ${r.purchase_unit}` + (r.confirmation_status === "pending" ? " (pending)" : ""),
         short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`,
         wb,
         fmtNum(r.landed_rate_per_kg, 4),
@@ -1668,7 +1715,13 @@ function ReceiptsTab({ role }) {
                       </div>
                     </td>
                     <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
-                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.accepted_qty)} {r.purchase_unit}</td>
+                    {/* Round 193 — a pending receipt's figure is NOT accepted yet: it counts
+                        for nothing until a Manager confirms which quantity stands, so the
+                        Accepted cell says so instead of showing the number as settled. */}
+                    <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", color: pending ? "var(--slate)" : undefined }}>
+                      {fmtNum(r.accepted_qty)} {r.purchase_unit}
+                      {pending && <div><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>Pending — not accepted yet</span></div>}
+                    </td>
                     <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", color: short > 0 ? "var(--alert-red)" : short < 0 ? "var(--info)" : "var(--slate)" }}>
                       {short === 0 ? "—" : `${short > 0 ? "−" : "+"}${fmtNum(Math.abs(short))}`}
                     </td>
@@ -1771,8 +1824,18 @@ function ReceiptsTab({ role }) {
                         value={form.silo_slot} notInSilo={form.not_in_silo}
                         onChange={(patch) => setForm({ ...form, ...patch })} />
             <Field label="Vehicle number"><input value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value })} style={inputStyle} /></Field>
-            <Field label="Challan number"><input value={form.challan_number} onChange={(e) => setForm({ ...form, challan_number: e.target.value })} style={inputStyle} /></Field>
-            <Field label="Debit note amount (optional, ₹ — for short supply)"><input type="number" step="0.01" min="0" value={form.debit_note_amount} onChange={(e) => setForm({ ...form, debit_note_amount: e.target.value })} style={inputStyle} /></Field>
+            {/* Round 193 — the supplier's INVOICE number and date (the field
+                was "Challan number"; same column). The supplier ledger books
+                this receipt as a bill under that number, dated on the invoice
+                date (the arrival date if left blank), on the ACCEPTED quantity. */}
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ flex: 1 }}><Field label="Supplier invoice no."><input value={form.challan_number} onChange={(e) => setForm({ ...form, challan_number: e.target.value })} style={inputStyle} /></Field></div>
+              <div style={{ flex: 1 }}><Field label="Invoice date"><input type="date" value={form.invoice_date} max={todayStr()} onChange={(e) => setForm({ ...form, invoice_date: e.target.value })} style={inputStyle} /></Field></div>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--slate)", marginTop: -4, marginBottom: 10 }}>
+              The supplier is owed for the <b>accepted</b> quantity, whatever the invoice says.
+            </div>
+            <Field label="Debit note amount (optional, ₹ — paperwork only; the bill already uses the accepted qty)"><input type="number" step="0.01" min="0" value={form.debit_note_amount} onChange={(e) => setForm({ ...form, debit_note_amount: e.target.value })} style={inputStyle} /></Field>
             {/* Round 156 — required by the backend only when the shortfall is
                 beyond the material's tolerance. Always shown, because asking
                 for it after a rejected save is a worse experience than a box
@@ -1827,7 +1890,10 @@ function ReceiptsTab({ role }) {
               </div>
             )}
             <Field label="Vehicle number"><input value={editForm.vehicle_number} onChange={(e) => setEditForm({ ...editForm, vehicle_number: e.target.value })} style={inputStyle} /></Field>
-            <Field label="Challan number"><input value={editForm.challan_number} onChange={(e) => setEditForm({ ...editForm, challan_number: e.target.value })} style={inputStyle} /></Field>
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ flex: 1 }}><Field label="Supplier invoice no."><input value={editForm.challan_number} onChange={(e) => setEditForm({ ...editForm, challan_number: e.target.value })} style={inputStyle} /></Field></div>
+              <div style={{ flex: 1 }}><Field label="Invoice date"><input type="date" value={editForm.invoice_date} max={todayStr()} onChange={(e) => setEditForm({ ...editForm, invoice_date: e.target.value })} style={inputStyle} /></Field></div>
+            </div>
             <Field label="Debit note amount (optional, ₹)"><input type="number" step="0.01" min="0" value={editForm.debit_note_amount} onChange={(e) => setEditForm({ ...editForm, debit_note_amount: e.target.value })} style={inputStyle} /></Field>
             <Field label="Notes (optional)"><textarea rows={2} value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} style={{ ...inputStyle, fontFamily: "inherit" }} /></Field>
             <button type="submit" disabled={saving} style={{ width: "100%" }}>{saving ? "Saving..." : "Save changes"}</button>
@@ -2856,9 +2922,55 @@ function MonthlyPhysicalStockReport() {
     .reduce((a, b) => (a == null || Math.abs(b.diff_kg) > Math.abs(a.diff_kg) ? b : a), null);
   const perM3 = (total) => (productionM3 ? `${fmtMoney(total / productionM3)} per m³` : "no production recorded");
 
+  // Round 193 — print the report exactly as shown, landscape (12 columns).
+  function printReport() {
+    const columns = [
+      { header: "Raw material" },
+      { header: "Opening", align: "right" },
+      { header: "Purchase", align: "right" },
+      { header: "Plant consumption", align: "right" },
+      { header: "Book stock", align: "right" },
+      { header: "Physical stock", align: "right" },
+      { header: "Actual consumption", align: "right" },
+      { header: "Diff (kg)", align: "right" },
+      { header: "Diff %", align: "right" },
+      { header: "Avg rate /kg", align: "right" },
+      { header: "Cost - actual", align: "right" },
+      { header: "Cost of diff", align: "right" },
+    ];
+    const body = rows.map((m) => [
+      m.name, fmtMass(m.opening_kg), fmtMass(m.purchase_kg), fmtMass(m.plant_consumption_kg), fmtMass(m.book_stock_kg),
+      m.physical_stock_kg != null ? fmtMass(m.physical_stock_kg) : "–",
+      m.actual_consumption_kg != null ? fmtMass(m.actual_consumption_kg) : "–",
+      m.diff_kg != null ? fmtNum(m.diff_kg, 0) : "–",
+      m.diff_pct != null ? `${fmtNum(m.diff_pct, 2)}%` : "–",
+      m.rate_per_kg != null ? fmtMoney(m.rate_per_kg) : "–",
+      m.cost_actual_consumption != null ? fmtMoney(m.cost_actual_consumption) : "–",
+      m.cost_of_diff != null ? fmtMoney(m.cost_of_diff) : "–",
+    ]);
+    const foot = costActualRows.length
+      ? [[`Total (${costActualRows.length} counted & valued)`, "", "", "", "", "", "", "", "", "", fmtMoney(costActual), fmtMoney(costDiff)]]
+      : [];
+    printMaterialReport({
+      title: "Monthly Physical Stock Report",
+      landscape: true,
+      meta: [
+        `Month: ${monthLabel(month)}`,
+        `Production: ${productionM3 ? `${fmtNum(productionM3)} m³` : "not recorded"}`,
+        `Cost as per plant consumption: ${fmtMoney(costPlant)} (${perM3(costPlant)})`,
+        costActualRows.length ? `Cost as per actual consumption: ${fmtMoney(costActual)} (${perM3(costActual)})` : "Nothing counted yet",
+      ],
+      columns, rows: body, foot,
+      filename: `monthly-physical-stock-${month}.pdf`,
+    }).catch((e) => setError(e.message));
+  }
+
   return (
     <div>
-      <Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <div style={{ flex: "0 1 220px" }}><Field label="Month"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field></div>
+        <button type="button" style={{ fontSize: 12, marginBottom: 10 }} disabled={loading || !rows.length} onClick={printReport}>Print (PDF)</button>
+      </div>
       <ProductionLine data={prodData} />
       <ReportShell error={error} loading={loading} empty={!loading && rows.length === 0}>
         <table>

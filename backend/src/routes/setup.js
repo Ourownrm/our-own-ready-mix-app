@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { receiptBillAmount } from "../lib/supplierLedger.js";
 import { CATALOGUE as PERM_CATALOGUE, ROLES as PERM_ROLES, MODULES as PERM_MODULES, MATRIX_GRANTS as PERM_MATRIX_GRANTS, functionsOfModule as permFunctionsOfModule } from "../lib/permissionCatalogue.js";
 import fs from "fs";
 import path from "path";
@@ -3798,6 +3799,102 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rm_supplier_rates_current_src
   ON rm_supplier_rates(supplier_id, material_id, (COALESCE(source_id, 0)), scope) WHERE valid_to IS NULL;
 `);
     log.push("Schema migration applied (Round 189 — plant consumption transfers; material sources, existing rates and orders on each material's 'Existing' source).");
+
+    // =====================================================================
+    // Round 193 — supplier ledger & payments. Additive: credit terms on the
+    // supplier, invoice date + bill amount on the receipt, and the opening /
+    // payment tables. See lib/supplierLedger.js for the rules.
+    // =====================================================================
+    await pool.query(`
+-- Round 193 — supplier ledger & payments (Material Module).
+-- Credit terms on the supplier: days until a bill falls due, and the most we
+-- let ourselves owe (balance + loads received but not yet billed).
+ALTER TABLE rm_suppliers ADD COLUMN IF NOT EXISTS credit_days INTEGER CHECK (credit_days IS NULL OR credit_days >= 0);
+ALTER TABLE rm_suppliers ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(14,2) CHECK (credit_limit IS NULL OR credit_limit >= 0);
+-- The receipt is the supplier's bill. challan_number now holds the supplier's
+-- INVOICE number (relabelled on screen); invoice_date dates the bill (arrival
+-- date when blank). bill_amount = accepted qty x order rate (+ freight on a
+-- delivered order) + GST at the order's tax %, fixed when the receipt is saved
+-- so a later order revision never rewrites a past bill.
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS invoice_date DATE;
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS bill_amount NUMERIC(14,2);
+-- What stood with each supplier on the day the ledger starts.
+CREATE TABLE IF NOT EXISTS rm_supplier_openings (
+  supplier_id INTEGER PRIMARY KEY REFERENCES rm_suppliers(id),
+  as_on DATE NOT NULL,
+  direction VARCHAR(10) NOT NULL CHECK (direction IN ('payable', 'advance')),
+  remarks TEXT,
+  set_by INTEGER REFERENCES users(id),
+  set_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS rm_supplier_opening_bills (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  bill_no VARCHAR(60),
+  bill_date DATE NOT NULL,
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_rm_supplier_opening_bills_supplier ON rm_supplier_opening_bills(supplier_id);
+CREATE TABLE IF NOT EXISTS rm_supplier_payments (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  paid_on DATE NOT NULL,
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  tds_amount NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (tds_amount >= 0),
+  mode VARCHAR(10) NOT NULL CHECK (mode IN ('neft', 'rtgs', 'cheque', 'upi', 'cash', 'other')),
+  reference VARCHAR(80),
+  bank_account VARCHAR(80),
+  notes TEXT,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- a payment is never deleted, only cancelled, so the ledger keeps its history
+  cancelled_at TIMESTAMPTZ,
+  cancelled_by INTEGER REFERENCES users(id),
+  cancel_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rm_supplier_payments_supplier ON rm_supplier_payments(supplier_id, paid_on);
+-- Which bills a payment settled. A part of a payment not allocated here is
+-- applied to the supplier's oldest open bills when the ledger is read.
+CREATE TABLE IF NOT EXISTS rm_payment_allocations (
+  id SERIAL PRIMARY KEY,
+  payment_id INTEGER NOT NULL REFERENCES rm_supplier_payments(id) ON DELETE CASCADE,
+  receipt_id INTEGER REFERENCES rm_receipts(id),
+  opening_bill_id INTEGER REFERENCES rm_supplier_opening_bills(id),
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  CHECK ((receipt_id IS NULL) <> (opening_bill_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_rm_payment_allocations_payment ON rm_payment_allocations(payment_id);
+-- Every change to an opening balance or payment, for the audit trail.
+CREATE TABLE IF NOT EXISTS rm_supplier_ledger_log (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  action VARCHAR(30) NOT NULL,
+  detail JSONB,
+  changed_by INTEGER REFERENCES users(id),
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE VIEW rm_receipts_effective AS
+  SELECT * FROM rm_receipts WHERE confirmation_status <> 'pending';
+`);
+    // Every receipt already in the books becomes a bill on its ACCEPTED
+    // quantity at its order's rate and tax (only rows not yet priced, so this
+    // is a no-op on every later visit).
+    {
+      const { rows: unpriced } = await pool.query(
+        `SELECT r.id, r.accepted_qty, r.accepted_qty_kg, r.freight_rate, r.freight_basis,
+                o.scope, o.rate, o.tax_pct, o.freight_rate AS order_freight_rate, o.freight_basis AS order_freight_basis
+           FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: pricing every receipt, pending included
+          WHERE r.bill_amount IS NULL`
+      );
+      for (const x of unpriced) {
+        const amount = receiptBillAmount({ scope: x.scope, rate: x.rate, taxPct: x.tax_pct, acceptedQty: x.accepted_qty,
+          acceptedQtyKg: x.accepted_qty_kg, freightRate: x.freight_rate ?? x.order_freight_rate,
+          freightBasis: x.freight_basis ?? x.order_freight_basis });
+        await pool.query(`UPDATE rm_receipts SET bill_amount = $2 WHERE id = $1 AND bill_amount IS NULL`, [x.id, amount]);
+      }
+      log.push(`Schema migration applied (Round 193 — supplier ledger & payments; ${unpriced.length} existing receipt(s) priced as bills on their accepted quantity).`);
+    }
 
     // =====================================================================
     // Round 192 — module access control (the user's role × module table).

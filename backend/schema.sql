@@ -3500,3 +3500,75 @@ UPDATE rm_orders o SET source_id = s.id
 DROP INDEX IF EXISTS idx_rm_supplier_rates_current;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rm_supplier_rates_current_src
   ON rm_supplier_rates(supplier_id, material_id, (COALESCE(source_id, 0)), scope) WHERE valid_to IS NULL;
+-- Round 193 — supplier ledger & payments (Material Module).
+-- Credit terms on the supplier: days until a bill falls due, and the most we
+-- let ourselves owe (balance + loads received but not yet billed).
+ALTER TABLE rm_suppliers ADD COLUMN IF NOT EXISTS credit_days INTEGER CHECK (credit_days IS NULL OR credit_days >= 0);
+ALTER TABLE rm_suppliers ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(14,2) CHECK (credit_limit IS NULL OR credit_limit >= 0);
+-- The receipt is the supplier's bill. challan_number now holds the supplier's
+-- INVOICE number (relabelled on screen); invoice_date dates the bill (arrival
+-- date when blank). bill_amount = accepted qty x order rate (+ freight on a
+-- delivered order) + GST at the order's tax %, fixed when the receipt is saved
+-- so a later order revision never rewrites a past bill.
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS invoice_date DATE;
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS bill_amount NUMERIC(14,2);
+-- What stood with each supplier on the day the ledger starts.
+CREATE TABLE IF NOT EXISTS rm_supplier_openings (
+  supplier_id INTEGER PRIMARY KEY REFERENCES rm_suppliers(id),
+  as_on DATE NOT NULL,
+  direction VARCHAR(10) NOT NULL CHECK (direction IN ('payable', 'advance')),
+  remarks TEXT,
+  set_by INTEGER REFERENCES users(id),
+  set_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS rm_supplier_opening_bills (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  bill_no VARCHAR(60),
+  bill_date DATE NOT NULL,
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_rm_supplier_opening_bills_supplier ON rm_supplier_opening_bills(supplier_id);
+CREATE TABLE IF NOT EXISTS rm_supplier_payments (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  paid_on DATE NOT NULL,
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  tds_amount NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (tds_amount >= 0),
+  mode VARCHAR(10) NOT NULL CHECK (mode IN ('neft', 'rtgs', 'cheque', 'upi', 'cash', 'other')),
+  reference VARCHAR(80),
+  bank_account VARCHAR(80),
+  notes TEXT,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- a payment is never deleted, only cancelled, so the ledger keeps its history
+  cancelled_at TIMESTAMPTZ,
+  cancelled_by INTEGER REFERENCES users(id),
+  cancel_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rm_supplier_payments_supplier ON rm_supplier_payments(supplier_id, paid_on);
+-- Which bills a payment settled. A part of a payment not allocated here is
+-- applied to the supplier's oldest open bills when the ledger is read.
+CREATE TABLE IF NOT EXISTS rm_payment_allocations (
+  id SERIAL PRIMARY KEY,
+  payment_id INTEGER NOT NULL REFERENCES rm_supplier_payments(id) ON DELETE CASCADE,
+  receipt_id INTEGER REFERENCES rm_receipts(id),
+  opening_bill_id INTEGER REFERENCES rm_supplier_opening_bills(id),
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  CHECK ((receipt_id IS NULL) <> (opening_bill_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_rm_payment_allocations_payment ON rm_payment_allocations(payment_id);
+-- Every change to an opening balance or payment, for the audit trail.
+CREATE TABLE IF NOT EXISTS rm_supplier_ledger_log (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL REFERENCES rm_suppliers(id),
+  action VARCHAR(30) NOT NULL,
+  detail JSONB,
+  changed_by INTEGER REFERENCES users(id),
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The view was created before the Round 193 columns existed; SELECT * is
+-- expanded when a view is made, so it is refreshed to carry them.
+CREATE OR REPLACE VIEW rm_receipts_effective AS
+  SELECT * FROM rm_receipts WHERE confirmation_status <> 'pending';

@@ -26,7 +26,20 @@ function nowStamp() {
   });
 }
 
-export async function printMaterialReport({ title, meta = [], columns, rows, foot = [], landscape = false, filename }) {
+// Round 193 — jsPDF's built-in Helvetica has no rupee glyph (₹ printed as a
+// stray character) and no Unicode minus. Every string drawn goes through this,
+// so all the Material Module prints read "Rs." instead.
+function pdfText(v) {
+  if (v === null || v === undefined) return "";
+  return String(v).replace(/₹\s?/g, "Rs. ").replace(/\u2212/g, "-");
+}
+const clean = (table) => table.map((row) => row.map(pdfText));
+
+// `extraTables` (Round 193): more tables drawn after the main one, each with
+// its own heading — [{ title, columns, rows, foot }] — for a statement that has
+// more than one list on it (the supplier ledger: entries, open bills, loads
+// not yet billed).
+export async function printMaterialReport({ title, meta = [], columns, rows, foot = [], landscape = false, filename, extraTables = [] }) {
   const { jsPDF } = await import("jspdf");
   // jspdf-autotable registers `doc.autoTable(...)` on the jsPDF prototype when
   // imported. Its default export shape differs across builds (function vs a
@@ -63,7 +76,7 @@ export async function printMaterialReport({ title, meta = [], columns, rows, foo
   y += 5.5;
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text(title, MARGIN_X, y);
+  doc.text(pdfText(title), MARGIN_X, y);
   // generated-on, right aligned on the same line
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
@@ -74,17 +87,29 @@ export async function printMaterialReport({ title, meta = [], columns, rows, foo
   if (meta.length) {
     doc.setFontSize(9);
     doc.setTextColor(90);
-    doc.text(meta.join("      "), MARGIN_X, y);
+    const metaLines = doc.splitTextToSize(pdfText(meta.join("      ")), PAGE_W - 2 * MARGIN_X);
+    doc.text(metaLines, MARGIN_X, y);
+    y += (metaLines.length - 1) * 4;
     doc.setTextColor(0);
     y += 4.5;
   }
 
   // ---- table ----
+  const drawFooter = () => {
+    const h = doc.internal.pageSize.getHeight();
+    const page = doc.internal.getNumberOfPages();
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(120);
+    doc.text("Our Own Ready Mix - operations app", MARGIN_X, h - 6);
+    doc.text(`Page ${page}`, PAGE_W - MARGIN_X, h - 6, { align: "right" });
+    doc.setTextColor(0);
+  };
   doc.autoTable({
     startY: y + 1,
-    head: [columns.map((c) => c.header)],
-    body: rows,
-    foot: foot.length ? foot : undefined,
+    head: [columns.map((c) => pdfText(c.header))],
+    body: clean(rows),
+    foot: foot.length ? clean(foot) : undefined,
     margin: { left: MARGIN_X, right: MARGIN_X },
     styles: { font: "helvetica", fontSize: 8.5, cellPadding: 1.8, overflow: "linebreak", lineColor: [222, 218, 209], lineWidth: 0.1 },
     headStyles: { fillColor: [34, 38, 43], textColor: 255, fontStyle: "bold", fontSize: 8.5 },
@@ -93,18 +118,29 @@ export async function printMaterialReport({ title, meta = [], columns, rows, foo
     columnStyles: Object.fromEntries(
       columns.map((c, i) => [i, { halign: c.align || "left", ...(c.width ? { cellWidth: c.width } : {}) }])
     ),
-    didDrawPage: () => {
-      // page footer
-      const h = doc.internal.pageSize.getHeight();
-      const page = doc.internal.getNumberOfPages();
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.5);
-      doc.setTextColor(120);
-      doc.text("Our Own Ready Mix — operations app", MARGIN_X, h - 6);
-      doc.text(`Page ${page}`, PAGE_W - MARGIN_X, h - 6, { align: "right" });
-      doc.setTextColor(0);
-    },
+    didDrawPage: drawFooter,
   });
+
+  for (const t of extraTables) {
+    if (!t || !t.rows || !t.rows.length) continue;
+    let ty = doc.lastAutoTable.finalY + 8;
+    if (ty > doc.internal.pageSize.getHeight() - 30) { doc.addPage(); ty = 16; }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.text(pdfText(t.title), MARGIN_X, ty);
+    doc.autoTable({
+      startY: ty + 2,
+      head: [t.columns.map((c) => pdfText(c.header))],
+      body: clean(t.rows),
+      foot: t.foot && t.foot.length ? clean(t.foot) : undefined,
+      margin: { left: MARGIN_X, right: MARGIN_X, bottom: 14 },
+      styles: { font: "helvetica", fontSize: 8, cellPadding: 1.6, overflow: "linebreak", lineColor: [222, 218, 209], lineWidth: 0.1 },
+      headStyles: { fillColor: [91, 100, 112], textColor: 255, fontStyle: "bold", fontSize: 8 },
+      footStyles: { fillColor: [243, 241, 236], textColor: [34, 38, 43], fontStyle: "bold" },
+      columnStyles: Object.fromEntries(t.columns.map((c, i) => [i, { halign: c.align || "left", ...(c.width ? { cellWidth: c.width } : {}) }])),
+      didDrawPage: drawFooter,
+    });
+  }
 
   doc.save(filename || `${title.replace(/[^\w]+/g, "-").toLowerCase()}.pdf`);
 }

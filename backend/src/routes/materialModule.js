@@ -11,6 +11,7 @@ import { reresolveSilos } from "./plant.js";
 import { requirePermission, requireAnyPermission, can } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
+import { buildLedgers, creditCheck, receiptBillAmount, addDays } from "../lib/supplierLedger.js";
 // Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
 // 185's bookStockRows() called it without importing it, so every caller (Stock
 // tab, stock-summary KPIs, Cost Dashboard) threw a ReferenceError at request
@@ -356,12 +357,34 @@ router.get("/suppliers", requireAnyPermission(SUPPLIERS_LIST_KEYS, "view"), asyn
   res.json(rows);
 });
 
+// Round 193 — credit terms. Blank clears; anything else must be a whole number
+// of days / a non-negative amount. Returns undefined after answering a 400.
+function creditTerms(body, res) {
+  const out = {};
+  for (const [f, label, whole] of [["credit_days", "Credit days", true], ["credit_limit", "Credit limit", false]]) {
+    if (body[f] === undefined) continue;
+    const raw = body[f];
+    if (raw === null || String(raw).trim() === "") { out[f] = null; continue; }
+    const n = Number(String(raw).replace(/,/g, ""));
+    if (!Number.isFinite(n) || n < 0 || (whole && !Number.isInteger(n))) {
+      res.status(400).json({ error: `${label} must be ${whole ? "a whole number of days" : "an amount"} of 0 or more.` });
+      return undefined;
+    }
+    out[f] = n;
+  }
+  return out;
+}
+
 router.post("/suppliers", requirePermission("material.suppliers", "create"), async (req, res) => {
   const { name, contact_person, phone, address, gstin } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "Supplier name is required." });
+  const terms = creditTerms(req.body, res);
+  if (terms === undefined) return;
   const { rows } = await query(
-    `INSERT INTO rm_suppliers (name, contact_person, phone, address, gstin, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [name.trim(), contact_person || null, phone || null, address || null, gstin || null, req.user.id]
+    `INSERT INTO rm_suppliers (name, contact_person, phone, address, gstin, created_by, credit_days, credit_limit)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [name.trim(), contact_person || null, phone || null, address || null, gstin || null, req.user.id,
+      terms.credit_days ?? null, terms.credit_limit ?? null]
   );
   res.status(201).json(rows[0]);
 });
@@ -373,11 +396,227 @@ router.patch("/suppliers/:id", requirePermission("material.suppliers", "edit"), 
   for (const f of fields) {
     if (req.body[f] !== undefined) { params.push(req.body[f]); sets.push(`${f} = $${params.length}`); }
   }
+  const terms = creditTerms(req.body, res);
+  if (terms === undefined) return;
+  for (const [f, v] of Object.entries(terms)) { params.push(v); sets.push(`${f} = $${params.length}`); }
   if (!sets.length) return res.status(400).json({ error: "Nothing to update." });
   params.push(req.params.id);
   const { rows } = await query(`UPDATE rm_suppliers SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING *`, params);
   if (!rows.length) return res.status(404).json({ error: "Supplier not found." });
   res.json(rows[0]);
+});
+
+// ===================== Supplier ledger & payments (Round 193) =====================
+// Built by lib/supplierLedger.js — see its header for the rules. Read access is
+// material.supplier-ledger; recording a payment or an opening balance is
+// material.supplier-payments create, cancelling a payment its delete.
+
+function ledgerDate(v, fallback) {
+  const s = String(v || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : fallback;
+}
+
+router.get("/supplier-ledger", requirePermission("material.supplier-ledger", "view"), async (req, res) => {
+  const asOn = ledgerDate(req.query.as_on, istDay());
+  const all = await buildLedgers({ asOn });
+  const suppliers = all
+    .filter((l) => l.supplier.is_active || l.balance !== 0 || l.not_billed_count)
+    .map((l) => ({ ...l, lines: undefined, open_bills: undefined,
+      not_billed: undefined, open_bill_count: l.open_bills.length }));
+  const sum = (f) => Math.round(suppliers.reduce((t, x) => t + f(x), 0) * 100) / 100;
+  const pendingLoads = all.flatMap((l) => l.not_billed.map((n) => ({ ...n, supplier_id: l.supplier.id, supplier_name: l.supplier.name })));
+  const oldest = pendingLoads.reduce((m, n) => Math.max(m, n.days_waiting || 0), 0);
+  const { rows: month } = await query(
+    `SELECT COALESCE(SUM(amount + tds_amount), 0) AS paid, COUNT(*)::int AS n FROM rm_supplier_payments
+      WHERE cancelled_at IS NULL AND to_char(paid_on, 'YYYY-MM') = $1 AND paid_on <= $2::date`,
+    [asOn.slice(0, 7), asOn]
+  );
+  res.json({
+    as_on: asOn,
+    suppliers,
+    totals: {
+      opening: sum((x) => x.opening_signed), purchases: sum((x) => x.purchases), paid: sum((x) => x.paid),
+      balance: sum((x) => x.balance), payable: sum((x) => Math.max(x.balance, 0)), advance: sum((x) => Math.max(-x.balance, 0)),
+      overdue: sum((x) => x.overdue), due_7_days: sum((x) => x.due_7_days), not_billed: sum((x) => x.not_billed_value),
+      not_billed_count: pendingLoads.length, oldest_not_billed_days: oldest,
+      paid_this_month: Number(month[0].paid), payments_this_month: month[0].n,
+    },
+    pending_loads: pendingLoads,
+  });
+});
+
+router.get("/supplier-ledger/:supplierId", requirePermission("material.supplier-ledger", "view"), async (req, res) => {
+  const supplierId = Number(req.params.supplierId);
+  if (!Number.isInteger(supplierId)) return res.status(400).json({ error: "Invalid supplier." });
+  const to = ledgerDate(req.query.to, istDay());
+  const [l] = await buildLedgers({ supplierIds: [supplierId], asOn: to });
+  if (!l) return res.status(404).json({ error: "Supplier not found." });
+  const from = ledgerDate(req.query.from, l.lines[0]?.date || to);
+  // Lines before the period fold into one "brought forward" figure.
+  const before = l.lines.filter((x) => x.date < from);
+  const inPeriod = l.lines.filter((x) => x.date >= from);
+  const bf = before.length ? before[before.length - 1].balance : 0;
+  const periodDebit = inPeriod.reduce((t, x) => t + x.debit, 0);
+  const periodCredit = inPeriod.reduce((t, x) => t + x.credit, 0);
+  res.json({
+    ...l, from, to,
+    brought_forward: before.length ? bf : null,
+    lines: inPeriod,
+    period_debit: Math.round(periodDebit * 100) / 100,
+    period_credit: Math.round(periodCredit * 100) / 100,
+  });
+});
+
+// The figures behind the credit-limit warning on a new order.
+router.get("/supplier-ledger/:supplierId/credit-status", requireAnyPermission(["material.orders", "material.supplier-ledger"], "view"), async (req, res) => {
+  const c = await creditCheck(req.params.supplierId, istDay(), Number(req.query.order_value || 0));
+  if (!c) return res.status(404).json({ error: "Supplier not found." });
+  res.json(c);
+});
+
+router.post("/supplier-ledger/:supplierId/payments", requirePermission("material.supplier-payments", "create"), async (req, res) => {
+  const supplierId = Number(req.params.supplierId);
+  const b = req.body || {};
+  const amount = Number(String(b.amount ?? "").replace(/,/g, ""));
+  const tds = b.tds_amount === undefined || b.tds_amount === "" ? 0 : Number(String(b.tds_amount).replace(/,/g, ""));
+  const mode = String(b.mode || "").toLowerCase();
+  const paidOn = ledgerDate(b.paid_on, null);
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: "Enter the amount paid." });
+  if (!Number.isFinite(tds) || tds < 0) return res.status(400).json({ error: "TDS must be 0 or more." });
+  if (!["neft", "rtgs", "cheque", "upi", "cash", "other"].includes(mode)) return res.status(400).json({ error: "Choose how it was paid." });
+  if (!paidOn) return res.status(400).json({ error: "Enter the payment date." });
+  if (paidOn > istDay()) return res.status(400).json({ error: "The payment date can't be in the future." });
+  if (["neft", "rtgs", "cheque", "upi"].includes(mode) && !String(b.reference || "").trim()) {
+    return res.status(400).json({ error: "Enter the UTR / cheque / UPI reference." });
+  }
+
+  // Allocations must name this supplier's own open bills, and cannot settle
+  // more than a bill still owes or more than the payment itself.
+  const [l] = await buildLedgers({ supplierIds: [supplierId], asOn: istDay() });
+  if (!l) return res.status(404).json({ error: "Supplier not found." });
+  const allocations = [];
+  let allocTotal = 0;
+  for (const a of Array.isArray(b.allocations) ? b.allocations : []) {
+    const amt = Number(String(a.amount ?? "").replace(/,/g, ""));
+    if (!amt) continue;
+    const bill = l.open_bills.find((x) => x.kind === a.kind && Number(x.id) === Number(a.id));
+    if (!bill) return res.status(400).json({ error: "One of the bills is not open for this supplier any more — reload and try again." });
+    if (amt < 0 || amt > bill.outstanding + 0.005) return res.status(400).json({ error: `${bill.no} only has ₹${bill.outstanding.toLocaleString("en-IN")} left to settle.` });
+    allocTotal += amt;
+    allocations.push({ kind: a.kind, id: Number(a.id), amount: amt });
+  }
+  if (allocTotal > amount + tds + 0.005) return res.status(400).json({ error: "The bills settled add up to more than the payment." });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO rm_supplier_payments (supplier_id, paid_on, amount, tds_amount, mode, reference, bank_account, notes, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [supplierId, paidOn, amount, tds, mode, String(b.reference || "").trim() || null,
+        String(b.bank_account || "").trim() || null, String(b.notes || "").trim() || null, req.user.id]
+    );
+    for (const a of allocations) {
+      await client.query(
+        `INSERT INTO rm_payment_allocations (payment_id, receipt_id, opening_bill_id, amount) VALUES ($1,$2,$3,$4)`,
+        [rows[0].id, a.kind === "receipt" ? a.id : null, a.kind === "opening" ? a.id : null, a.amount]
+      );
+    }
+    await client.query(
+      `INSERT INTO rm_supplier_ledger_log (supplier_id, action, detail, changed_by) VALUES ($1,'payment',$2,$3)`,
+      [supplierId, JSON.stringify({ payment_id: rows[0].id, amount, tds, mode, paid_on: paidOn, allocations }), req.user.id]
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ ...rows[0], allocations });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/supplier-payments/:id/cancel", requirePermission("material.supplier-payments", "delete"), async (req, res) => {
+  const reason = String(req.body?.reason || "").trim();
+  if (!reason) return res.status(400).json({ error: "Say why the payment is being cancelled." });
+  const { rows } = await query(
+    `UPDATE rm_supplier_payments SET cancelled_at = now(), cancelled_by = $2, cancel_reason = $3
+      WHERE id = $1 AND cancelled_at IS NULL RETURNING *`,
+    [req.params.id, req.user.id, reason]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Payment not found, or already cancelled." });
+  await query(
+    `INSERT INTO rm_supplier_ledger_log (supplier_id, action, detail, changed_by) VALUES ($1,'payment_cancelled',$2,$3)`,
+    [rows[0].supplier_id, JSON.stringify({ payment_id: rows[0].id, amount: rows[0].amount, reason }), req.user.id]
+  );
+  res.json({ ok: true });
+});
+
+// Set (or replace) a supplier's opening balance: one total, or bill by bill.
+router.put("/supplier-ledger/:supplierId/opening", requirePermission("material.supplier-payments", "create"), async (req, res) => {
+  const supplierId = Number(req.params.supplierId);
+  const b = req.body || {};
+  const asOn = ledgerDate(b.as_on, null);
+  const direction = b.direction === "advance" ? "advance" : b.direction === "payable" ? "payable" : null;
+  if (!asOn) return res.status(400).json({ error: "Enter the as-on date." });
+  if (!direction) return res.status(400).json({ error: "Say whether we owe the supplier or paid an advance." });
+  const bills = [];
+  for (const x of Array.isArray(b.bills) ? b.bills : []) {
+    const amt = Number(String(x.amount ?? "").replace(/,/g, ""));
+    if (!amt) continue;
+    if (!Number.isFinite(amt) || amt < 0) return res.status(400).json({ error: "Each amount must be more than 0." });
+    const billDate = ledgerDate(x.bill_date, asOn);
+    if (billDate > asOn) return res.status(400).json({ error: "A bill in the opening balance can't be dated after the as-on date." });
+    bills.push({ bill_no: String(x.bill_no || "").trim() || null, bill_date: billDate, amount: amt });
+  }
+  if (!bills.length) return res.status(400).json({ error: "Enter the opening amount." });
+
+  const { rows: supplier } = await query(`SELECT id FROM rm_suppliers WHERE id = $1`, [supplierId]);
+  if (!supplier.length) return res.status(404).json({ error: "Supplier not found." });
+  // Bills already settled by a payment can't be replaced underneath it.
+  const { rows: used } = await query(
+    `SELECT 1 FROM rm_payment_allocations a JOIN rm_supplier_opening_bills ob ON ob.id = a.opening_bill_id
+       JOIN rm_supplier_payments pm ON pm.id = a.payment_id
+      WHERE ob.supplier_id = $1 AND pm.cancelled_at IS NULL LIMIT 1`, [supplierId]
+  );
+  if (used.length) {
+    return res.status(400).json({ error: "A payment has been settled against this opening balance. Cancel that payment first, then change the opening balance." });
+  }
+  const { rows: before } = await query(
+    `SELECT o.as_on, o.direction, (SELECT json_agg(ob) FROM rm_supplier_opening_bills ob WHERE ob.supplier_id = o.supplier_id) AS bills
+       FROM rm_supplier_openings o WHERE o.supplier_id = $1`, [supplierId]
+  );
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM rm_payment_allocations WHERE opening_bill_id IN (SELECT id FROM rm_supplier_opening_bills WHERE supplier_id = $1)`, [supplierId]);
+    await client.query(`DELETE FROM rm_supplier_opening_bills WHERE supplier_id = $1`, [supplierId]);
+    await client.query(
+      `INSERT INTO rm_supplier_openings (supplier_id, as_on, direction, remarks, set_by, set_at)
+       VALUES ($1,$2,$3,$4,$5, now())
+       ON CONFLICT (supplier_id) DO UPDATE SET as_on = EXCLUDED.as_on, direction = EXCLUDED.direction,
+         remarks = EXCLUDED.remarks, set_by = EXCLUDED.set_by, set_at = now()`,
+      [supplierId, asOn, direction, String(b.remarks || "").trim() || null, req.user.id]
+    );
+    for (const x of bills) {
+      await client.query(
+        `INSERT INTO rm_supplier_opening_bills (supplier_id, bill_no, bill_date, amount) VALUES ($1,$2,$3,$4)`,
+        [supplierId, x.bill_no, x.bill_date, x.amount]
+      );
+    }
+    await client.query(
+      `INSERT INTO rm_supplier_ledger_log (supplier_id, action, detail, changed_by) VALUES ($1,'opening',$2,$3)`,
+      [supplierId, JSON.stringify({ before: before[0] || null, after: { as_on: asOn, direction, bills } }), req.user.id]
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.json({ ok: true });
 });
 
 // A supplier may quote a material at both scopes (delivered / ex-factory),
@@ -557,7 +796,16 @@ router.post("/orders", requirePermission("material.orders", "create"), async (re
     url: "/material-module?tab=orders",
   });
 
-  res.status(201).json(rows[0]);
+  // Round 193 — over the supplier's credit limit only WARNS (owner's decision):
+  // the order is saved either way and the screen shows the figures.
+  let creditWarning = null;
+  try {
+    const value = Number(ordered_qty) * Number(rate) * (1 + Number(tax_pct || 0) / 100);
+    const c = await creditCheck(supplier_id, istDay(), value);
+    if (c && c.over_limit) creditWarning = c;
+  } catch (err) { console.error("credit check", err); }
+
+  res.status(201).json({ ...rows[0], credit_warning: creditWarning });
 });
 
 const ORDER_LIST_COLUMNS = `
@@ -750,6 +998,17 @@ router.get("/orders/:id/weighbridge-tickets", requirePermission("material.receip
   }
 });
 
+// Round 193 — the supplier's invoice date. Optional (the bill is dated on the
+// arrival date when it is blank); a future date is refused like the arrival
+// date. Returns the date string or null, or undefined after answering a 400.
+function validateInvoiceDate(value, res) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const v = String(value).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { res.status(400).json({ error: "Invoice date must be a date." }); return undefined; }
+  if (v > istDay()) { res.status(400).json({ error: "The invoice date can't be in the future." }); return undefined; }
+  return v;
+}
+
 // ROUND 162 — the arrival date, validated in one place because both the create
 // and the admin edit take it. Returns a YYYY-MM-DD string, or today when blank;
 // answers the response itself and returns undefined when the date is bad, so
@@ -805,7 +1064,7 @@ router.get("/receipt-silos", requirePermission("material.receipts", "view"), asy
 });
 
 router.post("/receipts", requirePermission("material.receipts", "create"), async (req, res) => {
-  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date, silo_slot, not_in_silo } = req.body;
+  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date, silo_slot, not_in_silo, invoice_date } = req.body;
   if (!order_id) return res.status(400).json({ error: "Select the order this receipt is against." });
 
   // ROUND 168 — where this load goes: into a silo, or explicitly not into one.
@@ -872,6 +1131,13 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
   const landedRatePerKg = (baseCost + taxAmount) / acceptedQtyKg;
 
   const shortQty = Number(supplier_qty) - finalAcceptedQty;
+  // Round 193 — what the supplier is owed for this load: the ACCEPTED quantity,
+  // never the invoice's (owner's rule). Fixed here so a later order revision
+  // never rewrites a bill already in the ledger.
+  const billAmount = receiptBillAmount({ scope: order.scope, rate: order.rate, taxPct: order.tax_pct,
+    acceptedQty: finalAcceptedQty, acceptedQtyKg, freightRate: useFreightRate, freightBasis: useFreightBasis });
+  const invoiceDate = validateInvoiceDate(invoice_date, res);
+  if (invoiceDate === undefined) return;
 
   // ROUND 156 — a short load beyond tolerance needs a REASON, not a block.
   //
@@ -958,14 +1224,14 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
           freight_rate, freight_basis, vehicle_number, challan_number, short_qty, debit_note_amount,
           landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason,
           accepted_basis, variance_qty, variance_pct, confirmation_status, received_date,
-          silo_slot, not_in_silo)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,
+          silo_slot, not_in_silo, bill_amount, invoice_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING *`,
       [order_id, supplier_qty, weighbridge_weight_kg || null, finalAcceptedQty, acceptedQtyKg,
         transporter_id || order.transporter_id || null, useFreightRate || null, useFreightBasis || null,
         vehicle_number || null, challan_number || null, shortQty, debit_note_amount || null,
         landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null,
         acceptedBasis, varianceQty, variancePct, confirmationStatus, receivedDate,
-        siloSlot, notInSilo]
+        siloSlot, notInSilo, billAmount, invoiceDate]
     ));
 
     if (siloSlot && !needsConfirmation) {
@@ -1011,8 +1277,9 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
 // simply reflects the corrected data.
 router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), async (req, res) => {
   const { rows: existingRows } = await query(
-    `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.material_id AS order_material_id,
-            to_char(r.received_date, 'YYYY-MM-DD') AS received_date_str
+    `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.material_id AS order_material_id, o.scope AS order_scope,
+            to_char(r.received_date, 'YYYY-MM-DD') AS received_date_str,
+            to_char(r.invoice_date, 'YYYY-MM-DD') AS invoice_date_str
      FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: editing a receipt must be able to load a pending one
      WHERE r.id = $1`,
     [req.params.id]
@@ -1083,6 +1350,14 @@ router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), as
   const taxAmount = existing.gst_treatment === "included" ? baseCost * (Number(existing.tax_pct) / 100) : 0;
   const landedRatePerKg = (baseCost + taxAmount) / acceptedQtyKg;
   const shortQty = supplierQty - acceptedQty;
+  // Round 193 — the bill follows a corrected accepted quantity.
+  const billAmount = receiptBillAmount({ scope: existing.order_scope, rate: existing.order_rate, taxPct: existing.tax_pct,
+    acceptedQty, acceptedQtyKg, freightRate: merged.freight_rate, freightBasis: merged.freight_basis });
+  let invoiceDate = existing.invoice_date_str || null;
+  if (req.body.invoice_date !== undefined) {
+    invoiceDate = validateInvoiceDate(req.body.invoice_date, res);
+    if (invoiceDate === undefined) return;
+  }
 
   // ROUND 187 (v10.16) — the silo can be corrected too: a silo slot, "not in a
   // silo", or neither. Omitted, the existing assignment is kept.
@@ -1112,13 +1387,14 @@ router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), as
          supplier_qty = $1, weighbridge_weight_kg = $2, accepted_qty = $3, accepted_qty_kg = $4,
          transporter_id = $5, freight_rate = $6, freight_basis = $7, vehicle_number = $8, challan_number = $9,
          short_qty = $10, debit_note_amount = $11, landed_rate_per_kg = $12, notes = $13,
-         received_date = $15, weighbridge_ticket_id = $16, silo_slot = $17, not_in_silo = $18
+         received_date = $15, weighbridge_ticket_id = $16, silo_slot = $17, not_in_silo = $18,
+         bill_amount = $19, invoice_date = $20
        WHERE id = $14 RETURNING *`,
       [supplierQty, merged.weighbridge_weight_kg || null, acceptedQty, acceptedQtyKg,
         merged.transporter_id || null, merged.freight_rate || null, merged.freight_basis || null,
         merged.vehicle_number || null, merged.challan_number || null, shortQty,
         merged.debit_note_amount || null, landedRatePerKg, merged.notes || null, req.params.id,
-        receivedDate, ticketId, siloSlot, notInSilo]
+        receivedDate, ticketId, siloSlot, notInSilo, billAmount, invoiceDate]
     ));
     if (touchesSilo) {
       await client.query(`DELETE FROM plant_silo_fills WHERE receipt_id = $1`, [req.params.id]);
@@ -1171,6 +1447,7 @@ router.get("/receipts", requirePermission("material.receipts", "view"), async (r
 
   const { rows } = await query(
     `SELECT r.*, to_char(r.received_date,'YYYY-MM-DD') AS received_date,
+            to_char(r.invoice_date,'YYYY-MM-DD') AS invoice_date,
             o.material_id, o.supplier_id, m.name AS material_name, m.purchase_unit,
             s.name AS supplier_name, t.name AS transporter_name, ru.name AS received_by_name,
             -- ROUND 162 — the weighbridge ticket this receipt was weighed on, so
@@ -1247,7 +1524,7 @@ router.post("/receipts/:id/confirm", requirePermission("material.receipt-confirm
   try {
     const { rows: found } = await query(
       // receipts-raw: confirming is what takes a receipt out of 'pending'
-      `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.freight_rate AS order_freight_rate,
+      `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.scope AS order_scope, o.freight_rate AS order_freight_rate,
               o.freight_basis AS order_freight_basis, o.material_id AS order_material_id,
               COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit
        FROM rm_receipts r   -- receipts-raw: confirming is what takes a receipt out of 'pending'
@@ -1290,6 +1567,9 @@ router.post("/receipts/:id/confirm", requirePermission("material.receipt-confirm
     const baseCost = acceptedQty * Number(r.order_rate) + freightTotal;
     const taxAmount = r.gst_treatment === "included" ? baseCost * (Number(r.tax_pct) / 100) : 0;
     const landedRatePerKg = (baseCost + taxAmount) / acceptedQtyKg;
+    // Round 193 — the bill is booked on the quantity that now stands.
+    const billAmount = receiptBillAmount({ scope: r.order_scope, rate: r.order_rate, taxPct: r.tax_pct, acceptedQty, acceptedQtyKg,
+      freightRate: r.freight_rate ?? r.order_freight_rate, freightBasis: r.freight_basis ?? r.order_freight_basis });
     const varianceQty = Number(r.supplier_qty) - acceptedQty;
     // Signed, to match the POST above and the back-fill in setup.js.
     const variancePct = Number(r.supplier_qty) > 0
@@ -1311,12 +1591,12 @@ router.post("/receipts/:id/confirm", requirePermission("material.receipt-confirm
                 short_qty = CASE WHEN $5::numeric > 0 THEN $5::numeric ELSE NULL END,
                 variance_qty = $5, variance_pct = $6, accepted_basis = $7,
                 confirmation_status = 'confirmed', confirmed_by = $8, confirmed_at = now(),
-                confirm_note = $9
+                confirm_note = $9, bill_amount = $10
           WHERE id = $1 AND confirmation_status = 'pending'
           RETURNING *`,
         [id, acceptedQty, acceptedQtyKg, landedRatePerKg, varianceQty,
          Number(variancePct.toFixed(3)), basis, req.user.id,
-         String(req.body?.note || "").trim() || null]
+         String(req.body?.note || "").trim() || null, billAmount]
       ));
       if (rows.length && r.silo_slot && !r.not_in_silo) {
         await client.query(

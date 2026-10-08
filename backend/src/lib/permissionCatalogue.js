@@ -231,6 +231,15 @@ export const CATALOGUE = [
   // (so Store's read access for dropdowns never handed it the editor); a
   // separate view key per tab lets a Super Admin show the list read-only.
   f("material.materials-menu", "material", "Materials tab", V, { administrator: V }),
+  // Round 193 — the supplier ledger. Money owed and paid, so it is NOT handed
+  // out with "view the module" (noAutoView below): Administrator, Accountant and
+  // the Plant Manager see it by default; a Super Admin can add anyone else.
+  f("material.supplier-ledger", "material", "Supplier Ledger tab (balances, statements, PDF)", V,
+    { administrator: V, accountant: V, manager: V }),
+  // Recording a payment or an opening balance (create) and cancelling a payment
+  // (delete). Cancelling is Administrator-only by default.
+  f("material.supplier-payments", "material", "Record supplier payments & opening balances", ["create", "delete"],
+    { administrator: ["create", "delete"], accountant: ["create"] }),
   f("material.suppliers-menu", "material", "Suppliers tab", V, { administrator: V }),
   f("material.kpi", "material", "KPI cards (stock value, open orders, purchases)", V, { administrator: V }),
   // The ten reports inside the Reports tab, each switchable. Defaults copy
@@ -526,6 +535,7 @@ export const MODULES = [
       { key: "material.materials-menu", label: "Materials" },
       { key: "material.suppliers-menu", label: "Suppliers" },
       { key: "material.kpi", label: "KPI" },
+      { key: "material.supplier-ledger", label: "Supplier Ledger" },
       {
         key: "material.reports", label: "Reports",
         children: [
@@ -544,10 +554,11 @@ export const MODULES = [
       { key: "material.consumption-transfer", label: "Consumption transfer" },
     ],
     support: ["material.materials", "material.units", "material.suppliers", "material.supplier-rates",
-      "material.transporters", "material.order-approve", "material.physical-stock-approve"],
+      "material.transporters", "material.order-approve", "material.physical-stock-approve",
+      "material.supplier-payments"],
     // An Administrator's tool for moving consumption between materials — not
     // a screen to hand out with "view the module".
-    noAutoView: ["material.consumption-transfer"],
+    noAutoView: ["material.consumption-transfer", "material.supplier-ledger"],
   },
   {
     key: "plant-production", label: "Plant Production", gate: "module.plant-production", to: "/plant-production",
