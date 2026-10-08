@@ -31,11 +31,12 @@ function money(n) {
   const v = Number(n);
   return `${v < 0 ? "-" : ""}₹${amt(v)}`;
 }
-// A balance reads Cr (we owe) or Dr (advance with the supplier).
+// A balance reads "payable" (we owe) or "advance" (money with the supplier).
+// Never Cr/Dr: in India "Cr" reads as crore.
 function bal(n) {
   const v = Number(n || 0);
   if (Math.abs(v) < 0.005) return "₹0";
-  return `₹${amt(v)} ${v > 0 ? "Cr" : "Dr"}`;
+  return `₹${amt(v)} ${v > 0 ? "payable" : "advance"}`;
 }
 function fmtDate(d) {
   if (!d) return "–";
@@ -403,7 +404,7 @@ function SupplierStatement({ supplierId, onBack, mayPay, mayCancel, setNotice })
         d.overdue ? `Overdue ${money(d.overdue)}` : "",
       ].filter(Boolean),
       columns: [{ header: "Date", width: 22 }, { header: "Type", width: 18 }, { header: "Particulars" },
-        { header: "Debit (paid)", align: "right", width: 26 }, { header: "Credit (billed)", align: "right", width: 26 }, { header: "Balance", align: "right", width: 30 }],
+        { header: "Paid", align: "right", width: 26 }, { header: "Billed", align: "right", width: 26 }, { header: "Balance", align: "right", width: 30 }],
       rows,
       foot: [["", "", "Total for the period", money(d.period_debit), money(d.period_credit), bal(d.balance)]],
       extraTables: [
@@ -450,7 +451,7 @@ function SupplierStatement({ supplierId, onBack, mayPay, mayCancel, setNotice })
         <Kpi label="Purchases" value={money(d.purchases)} sub={`${d.lines.filter((l) => l.type === "bill").length} bills in the period`} />
         <Kpi label="Paid" value={money(d.paid)} tone="green" />
         <Kpi label="Received, not billed" value={money(d.not_billed_value)} tone={d.not_billed_count ? "warn" : undefined} sub={`${d.not_billed_count} load${d.not_billed_count === 1 ? "" : "s"}`} />
-        <Kpi label="Balance payable" value={bal(d.balance)} tone="dark" sub={d.overdue ? `${money(d.overdue)} overdue` : "nothing overdue"} />
+        <Kpi label="Balance" value={bal(d.balance)} tone="dark" sub={d.overdue ? `${money(d.overdue)} overdue` : "nothing overdue"} />
       </div>
 
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -466,7 +467,7 @@ function SupplierStatement({ supplierId, onBack, mayPay, mayCancel, setNotice })
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr><th style={th}>Date</th><th style={th}>Type</th><th style={th}>Particulars</th>
-                  <th style={{ ...th, ...num }}>Debit (paid)</th><th style={{ ...th, ...num }}>Credit (billed)</th><th style={{ ...th, ...num }}>Balance</th>
+                  <th style={{ ...th, ...num }}>Paid</th><th style={{ ...th, ...num }}>Billed</th><th style={{ ...th, ...num }}>Balance</th>
                   {mayCancel && <th style={th}></th>}</tr>
               </thead>
               <tbody>
@@ -500,7 +501,7 @@ function SupplierStatement({ supplierId, onBack, mayPay, mayCancel, setNotice })
             </table>
           </div>
           <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 6 }}>
-            Cr = we owe the supplier · Dr = advance with the supplier. Each bill is the accepted quantity; the invoice quantity is shown when it differs.
+            "Payable" = we owe the supplier · "advance" = money we paid ahead, with the supplier. Each bill is the accepted quantity; the invoice quantity is shown when it differs.
           </div>
         </div>
 
@@ -739,7 +740,7 @@ function OpeningForm({ supplierId, suppliers, onClose, onDone }) {
           <Label text="As on"><input required type="date" value={asOn} max={todayIst()} onChange={(e) => setAsOn(e.target.value)} style={input} /></Label>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-          {[["payable", "We owe the supplier", "unpaid bills — shown as Cr"], ["advance", "Advance we paid", "supplier owes us — shown as Dr"]].map(([k, l, sub]) => (
+          {[["payable", "We owe the supplier", "unpaid bills — shown as payable"], ["advance", "Advance we paid", "supplier owes us — shown as advance"]].map(([k, l, sub]) => (
             <button key={k} type="button" onClick={() => setDirection(k)}
               style={{ textAlign: "left", padding: "10px 12px", borderRadius: 10, border: direction === k ? "2px solid var(--charcoal)" : "1px solid var(--border-strong)", background: "#fff" }}>
               <div style={{ fontSize: 13, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 11, color: "var(--slate)" }}>{sub}</div>
