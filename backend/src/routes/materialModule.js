@@ -8,7 +8,7 @@ import { reresolveSilos } from "./plant.js";
 // a requirePermission. A request must satisfy both, so granting somebody a
 // permission can never let them past a role guard: this can only tighten
 // access, never loosen it.
-import { requirePermission, can } from "../lib/permissions.js";
+import { requirePermission, requireAnyPermission, can } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 // Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
@@ -42,6 +42,12 @@ const ADMIN = ["administrator"];
 const MATERIALS_READ_ROLES = ["administrator", "store", "plant_operator"];
 const ORDER_ROLES = ["administrator", "store"];
 const CONSUMPTION_ROLES = ["administrator", "plant_operator"];
+// Round 192 — the role lists above are kept for the handlers that still read
+// them, but no route is guarded by them any more: the permission is the gate
+// (see lib/permissions.js). The materials and suppliers lists also sit behind
+// the Weighbridge Records filters, so either module's key reads them.
+const MATERIALS_LIST_KEYS = ["material.materials", "weighbridge.records", "material.weighbridge-mapping"];
+const SUPPLIERS_LIST_KEYS = ["material.suppliers", "weighbridge.records", "material.weighbridge-mapping"];
 const STOCK_READ_ROLES = ["administrator", "store", "plant_operator"];
 
 // Round 142 — the mix-design ingredients a material may be mapped to. Kept
@@ -56,7 +62,7 @@ function isStore(req) {
 
 // ===================== Materials master =====================
 
-router.get("/materials", requireRole(...MATERIALS_READ_ROLES), requirePermission("material.materials", "view"), async (req, res) => {
+router.get("/materials", requireAnyPermission(MATERIALS_LIST_KEYS, "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT * FROM rm_materials WHERE is_active OR $1 ORDER BY category, name`,
     [isAdminLevel(req.user.role)]
@@ -66,7 +72,7 @@ router.get("/materials", requireRole(...MATERIALS_READ_ROLES), requirePermission
   res.json(sanitized);
 });
 
-router.post("/materials", requireRole(...ADMIN), requirePermission("material.materials", "create"), async (req, res) => {
+router.post("/materials", requirePermission("material.materials", "create"), async (req, res) => {
   const { name, category, sub_category, mix_component, purchase_unit, kg_per_purchase_unit, tolerance_pct, reorder_level_kg, opening_stock_kg, opening_stock_rate_per_kg } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "Material name is required." });
   if (!purchase_unit || !purchase_unit.trim()) return res.status(400).json({ error: "Purchase unit is required (e.g. CFT, Bag, MT)." });
@@ -105,7 +111,7 @@ router.post("/materials", requireRole(...ADMIN), requirePermission("material.mat
 // the physical count stay per MATERIAL — the yard holds one pile of 20 MM
 // whichever quarry it came from. A changed conversion applies to new receipts
 // only; a receipt keeps the kg it was booked at.
-router.get("/material-sources", requireRole(...MATERIALS_READ_ROLES), requirePermission("material.materials", "view"), async (req, res) => {
+router.get("/material-sources", requirePermission("material.materials", "view"), async (req, res) => {
   const params = [];
   let where = "true";
   if (req.query.material_id) { params.push(Number(req.query.material_id)); where = `s.material_id = $1`; }
@@ -144,7 +150,7 @@ function cleanSource(body) {
   return out;
 }
 
-router.post("/materials/:id/sources", requireRole(...ADMIN), requirePermission("material.materials", "create"), async (req, res) => {
+router.post("/materials/:id/sources", requirePermission("material.materials", "create"), async (req, res) => {
   let v;
   try { v = cleanSource({ name: "", purchase_unit: "", kg_per_purchase_unit: 0, ...req.body }); }
   catch (e) { return res.status(400).json({ error: e.message }); }
@@ -168,7 +174,7 @@ router.post("/materials/:id/sources", requireRole(...ADMIN), requirePermission("
   } finally { client.release(); }
 });
 
-router.patch("/material-sources/:id", requireRole(...ADMIN), requirePermission("material.materials", "edit"), async (req, res) => {
+router.patch("/material-sources/:id", requirePermission("material.materials", "edit"), async (req, res) => {
   let v;
   try { v = cleanSource(req.body || {}); } catch (e) { return res.status(400).json({ error: e.message }); }
   const id = Number(req.params.id);
@@ -203,7 +209,7 @@ router.patch("/material-sources/:id", requireRole(...ADMIN), requirePermission("
 
 // The current rate card for one source: which suppliers bring it, at what
 // rate and scope. Feeds the order form's supplier list.
-router.get("/material-sources/:id/rates", requireRole(...ORDER_ROLES), requirePermission("material.supplier-rates", "view"), async (req, res) => {
+router.get("/material-sources/:id/rates", requirePermission("material.supplier-rates", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT sr.id, sr.supplier_id, sp.name AS supplier_name, sr.scope, sr.rate,
             to_char(sr.valid_from, 'YYYY-MM-DD') AS valid_from
@@ -237,7 +243,7 @@ async function checkSource(sourceId, materialId) {
 // affects future receipts only; past receipts keep the value used at the
 // time" rule. Marking a unit here default writes through to those two
 // columns; this table is the reference/management layer on top.
-router.get("/materials/:id/units", requireRole(...MATERIALS_READ_ROLES), requirePermission("material.units", "view"), async (req, res) => {
+router.get("/materials/:id/units", requirePermission("material.units", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT * FROM rm_material_units WHERE material_id = $1 AND (is_active OR $2) ORDER BY is_default DESC, unit_name`,
     [req.params.id, isAdminLevel(req.user.role)]
@@ -245,7 +251,7 @@ router.get("/materials/:id/units", requireRole(...MATERIALS_READ_ROLES), require
   res.json(rows);
 });
 
-router.post("/materials/:id/units", requireRole(...ADMIN), requirePermission("material.units", "create"), async (req, res) => {
+router.post("/materials/:id/units", requirePermission("material.units", "create"), async (req, res) => {
   const { unit_name, kg_per_unit, is_default } = req.body;
   if (!unit_name || !unit_name.trim()) return res.status(400).json({ error: "Enter a unit name (e.g. CFT, Brass, MT)." });
   if (!kg_per_unit || Number(kg_per_unit) <= 0) return res.status(400).json({ error: "Enter the conversion to kg for this unit." });
@@ -266,7 +272,7 @@ router.post("/materials/:id/units", requireRole(...ADMIN), requirePermission("ma
   res.status(201).json(rows[0]);
 });
 
-router.patch("/materials/:id/units/:unitId", requireRole(...ADMIN), requirePermission("material.units", "edit"), async (req, res) => {
+router.patch("/materials/:id/units/:unitId", requirePermission("material.units", "edit"), async (req, res) => {
   const { unit_name, kg_per_unit, is_default, is_active } = req.body;
   const { rows: existing } = await query(`SELECT * FROM rm_material_units WHERE id = $1 AND material_id = $2`, [req.params.unitId, req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Unit not found." });
@@ -297,7 +303,7 @@ router.patch("/materials/:id/units/:unitId", requireRole(...ADMIN), requirePermi
   res.json(rows[0]);
 });
 
-router.delete("/materials/:id/units/:unitId", requireRole(...ADMIN), requirePermission("material.units", "delete"), async (req, res) => {
+router.delete("/materials/:id/units/:unitId", requirePermission("material.units", "delete"), async (req, res) => {
   const { rows: existing } = await query(`SELECT * FROM rm_material_units WHERE id = $1 AND material_id = $2`, [req.params.unitId, req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Unit not found." });
   if (existing[0].is_default) return res.status(400).json({ error: "Can't delete the default unit — mark a different unit default first." });
@@ -315,7 +321,7 @@ router.delete("/materials/:id/units/:unitId", requireRole(...ADMIN), requirePerm
 const MATERIAL_NULLABLE_NUMERIC_FIELDS = new Set(["tolerance_pct", "reorder_level_kg", "opening_stock_rate_per_kg"]);
 const MATERIAL_REQUIRED_NUMERIC_FIELDS = new Set(["kg_per_purchase_unit", "opening_stock_kg"]);
 
-router.patch("/materials/:id", requireRole(...ADMIN), requirePermission("material.materials", "edit"), async (req, res) => {
+router.patch("/materials/:id", requirePermission("material.materials", "edit"), async (req, res) => {
   const fields = ["name", "category", "sub_category", "mix_component", "purchase_unit", "kg_per_purchase_unit", "tolerance_pct", "reorder_level_kg", "opening_stock_kg", "opening_stock_rate_per_kg", "is_active"];
   const sets = [];
   const params = [];
@@ -345,12 +351,12 @@ router.patch("/materials/:id", requireRole(...ADMIN), requirePermission("materia
 
 // ===================== Suppliers, rates & transporters master =====================
 
-router.get("/suppliers", requireRole(...ORDER_ROLES), requirePermission("material.suppliers", "view"), async (req, res) => {
+router.get("/suppliers", requireAnyPermission(SUPPLIERS_LIST_KEYS, "view"), async (req, res) => {
   const { rows } = await query(`SELECT * FROM rm_suppliers WHERE is_active OR $1 ORDER BY name`, [isAdminLevel(req.user.role)]);
   res.json(rows);
 });
 
-router.post("/suppliers", requireRole(...ADMIN), requirePermission("material.suppliers", "create"), async (req, res) => {
+router.post("/suppliers", requirePermission("material.suppliers", "create"), async (req, res) => {
   const { name, contact_person, phone, address, gstin } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "Supplier name is required." });
   const { rows } = await query(
@@ -360,7 +366,7 @@ router.post("/suppliers", requireRole(...ADMIN), requirePermission("material.sup
   res.status(201).json(rows[0]);
 });
 
-router.patch("/suppliers/:id", requireRole(...ADMIN), requirePermission("material.suppliers", "edit"), async (req, res) => {
+router.patch("/suppliers/:id", requirePermission("material.suppliers", "edit"), async (req, res) => {
   const fields = ["name", "contact_person", "phone", "address", "gstin", "is_active"];
   const sets = [];
   const params = [];
@@ -379,7 +385,7 @@ router.patch("/suppliers/:id", requireRole(...ADMIN), requirePermission("materia
 // Round 140, item 2: rates are effective-dated, so this only returns each
 // combination's still-open row (valid_to IS NULL) — the "as of right now"
 // rate card. Full history is GET .../rates/history below.
-router.get("/suppliers/:supplierId/rates", requireRole(...ORDER_ROLES), requirePermission("material.supplier-rates", "view"), async (req, res) => {
+router.get("/suppliers/:supplierId/rates", requirePermission("material.supplier-rates", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT sr.*, m.name AS material_name, COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
             src.name AS source_name, src.kg_per_purchase_unit AS source_kg_per_unit
@@ -395,7 +401,7 @@ router.get("/suppliers/:supplierId/rates", requireRole(...ORDER_ROLES), requireP
 // Full effective-dated history for this supplier (every material/scope),
 // oldest first within each combination — feeds the mockup's "Rate history"
 // button (item 2).
-router.get("/suppliers/:supplierId/rates/history", requireRole(...ORDER_ROLES), requirePermission("material.supplier-rates", "view"), async (req, res) => {
+router.get("/suppliers/:supplierId/rates/history", requirePermission("material.supplier-rates", "view"), async (req, res) => {
   const params = [req.params.supplierId];
   let where = "sr.supplier_id = $1";
   if (req.query.material_id) { params.push(req.query.material_id); where += ` AND sr.material_id = $${params.length}`; }
@@ -418,7 +424,7 @@ router.get("/suppliers/:supplierId/rates/history", requireRole(...ORDER_ROLES), 
 // rate in place, so history stays intact and a "Rate history" view has
 // something real to show (item 2). Orders still snapshot rm_orders.rate at
 // order time, same as round 139 — nothing downstream needs to change.
-router.post("/suppliers/:supplierId/rates", requireRole(...ADMIN), requirePermission("material.supplier-rates", "create"), async (req, res) => {
+router.post("/suppliers/:supplierId/rates", requirePermission("material.supplier-rates", "create"), async (req, res) => {
   const { material_id, scope, rate, valid_from } = req.body;
   if (!material_id) return res.status(400).json({ error: "Select a material." });
   if (!["delivered", "ex_factory"].includes(scope)) return res.status(400).json({ error: "Scope must be delivered or ex_factory." });
@@ -454,19 +460,19 @@ router.post("/suppliers/:supplierId/rates", requireRole(...ADMIN), requirePermis
   res.status(201).json(created[0]);
 });
 
-router.get("/transporters", requireRole(...ORDER_ROLES), requirePermission("material.transporters", "view"), async (req, res) => {
+router.get("/transporters", requirePermission("material.transporters", "view"), async (req, res) => {
   const { rows } = await query(`SELECT * FROM rm_transporters WHERE is_active OR $1 ORDER BY name`, [isAdminLevel(req.user.role)]);
   res.json(rows);
 });
 
-router.post("/transporters", requireRole(...ADMIN), requirePermission("material.transporters", "create"), async (req, res) => {
+router.post("/transporters", requirePermission("material.transporters", "create"), async (req, res) => {
   const { name, phone } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "Transporter name is required." });
   const { rows } = await query(`INSERT INTO rm_transporters (name, phone) VALUES ($1,$2) RETURNING *`, [name.trim(), phone || null]);
   res.status(201).json(rows[0]);
 });
 
-router.patch("/transporters/:id", requireRole(...ADMIN), requirePermission("material.transporters", "edit"), async (req, res) => {
+router.patch("/transporters/:id", requirePermission("material.transporters", "edit"), async (req, res) => {
   const { name, phone, is_active } = req.body;
   const sets = [];
   const params = [];
@@ -483,7 +489,7 @@ router.patch("/transporters/:id", requireRole(...ADMIN), requirePermission("mate
 // Ex-factory material -> several transporters on file for one supplier, one
 // marked default. Both order and receipt can pick any of these (or the
 // default is pre-selected).
-router.get("/suppliers/:supplierId/transporters", requireRole(...ORDER_ROLES), requirePermission("material.transporters", "view"), async (req, res) => {
+router.get("/suppliers/:supplierId/transporters", requirePermission("material.transporters", "view"), async (req, res) => {
   const { material_id } = req.query;
   const params = [req.params.supplierId];
   let where = "st.supplier_id = $1 AND st.is_active";
@@ -498,7 +504,7 @@ router.get("/suppliers/:supplierId/transporters", requireRole(...ORDER_ROLES), r
   res.json(rows);
 });
 
-router.post("/suppliers/:supplierId/transporters", requireRole(...ADMIN), requirePermission("material.transporters", "create"), async (req, res) => {
+router.post("/suppliers/:supplierId/transporters", requirePermission("material.transporters", "create"), async (req, res) => {
   const { material_id, transporter_id, freight_rate, freight_basis, is_default } = req.body;
   if (!material_id || !transporter_id) return res.status(400).json({ error: "Select a material and a transporter." });
   if (!freight_rate || Number(freight_rate) < 0) return res.status(400).json({ error: "Enter a valid freight rate." });
@@ -524,7 +530,7 @@ router.post("/suppliers/:supplierId/transporters", requireRole(...ADMIN), requir
 // Confirmed decision (reversed twice during planning — see the notes doc):
 // an order cannot be received against until Administrator approves it.
 
-router.post("/orders", requireRole(...ORDER_ROLES), requirePermission("material.orders", "create"), async (req, res) => {
+router.post("/orders", requirePermission("material.orders", "create"), async (req, res) => {
   const { material_id, supplier_id, scope, transporter_id, ordered_qty, rate, freight_rate, freight_basis, tax_pct, gst_treatment, notes } = req.body;
   if (!material_id || !supplier_id) return res.status(400).json({ error: "Select a material and a supplier." });
   if (!["delivered", "ex_factory"].includes(scope)) return res.status(400).json({ error: "Scope must be delivered or ex_factory." });
@@ -576,10 +582,13 @@ const ORDER_LIST_FROM = `
   ) recv ON true
 `;
 
-router.get("/orders/mine", requireRole(...ORDER_ROLES), requirePermission("material.orders", "view"), async (req, res) => {
+router.get("/orders/mine", requirePermission("material.orders", "view"), async (req, res) => {
   const params = [req.user.id];
   let where = "o.requested_by = $1";
-  if (isAdminLevel(req.user.role)) { where = "true"; params.length = 0; }
+  // Round 192 — someone who can only VIEW orders (a Manager or Accountant
+  // given the module read-only) never raises one, so "my orders" would always
+  // be empty for them; they see all of them, as an Administrator does.
+  if (isAdminLevel(req.user.role) || !(await can(req.user, "material.orders", "create"))) { where = "true"; params.length = 0; }
   const { rows } = await query(
     `SELECT ${ORDER_LIST_COLUMNS} ${ORDER_LIST_FROM} WHERE ${where} ORDER BY o.requested_at DESC LIMIT 200`,
     params
@@ -589,7 +598,7 @@ router.get("/orders/mine", requireRole(...ORDER_ROLES), requirePermission("mater
 
 // Orders Store can currently receive against — approved, with something
 // still outstanding. Used to populate the Receipts tab's order picker.
-router.get("/orders/receivable", requireRole(...ORDER_ROLES), requirePermission("material.orders", "view"), async (req, res) => {
+router.get("/orders/receivable", requirePermission("material.orders", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT ${ORDER_LIST_COLUMNS} ${ORDER_LIST_FROM}
      WHERE o.status = 'approved' AND COALESCE(recv.received_qty, 0) < o.ordered_qty
@@ -598,14 +607,14 @@ router.get("/orders/receivable", requireRole(...ORDER_ROLES), requirePermission(
   res.json(rows);
 });
 
-router.get("/orders/pending", requireRole(...ADMIN), requirePermission("material.order-approve", "edit"), async (req, res) => {
+router.get("/orders/pending", requirePermission("material.order-approve", "edit"), async (req, res) => {
   const { rows } = await query(
     `SELECT ${ORDER_LIST_COLUMNS} ${ORDER_LIST_FROM} WHERE o.status = 'pending_approval' ORDER BY o.requested_at`
   );
   res.json(rows);
 });
 
-router.post("/orders/:id/approve", requireRole(...ADMIN), requirePermission("material.order-approve", "edit"), async (req, res) => {
+router.post("/orders/:id/approve", requirePermission("material.order-approve", "edit"), async (req, res) => {
   const { rows: existing } = await query(`SELECT * FROM rm_orders WHERE id = $1 AND status = 'pending_approval'`, [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Order not found or already actioned." });
   const { rows } = await query(
@@ -616,7 +625,7 @@ router.post("/orders/:id/approve", requireRole(...ADMIN), requirePermission("mat
   res.json(rows[0]);
 });
 
-router.post("/orders/:id/reject", requireRole(...ADMIN), requirePermission("material.order-approve", "edit"), async (req, res) => {
+router.post("/orders/:id/reject", requirePermission("material.order-approve", "edit"), async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ error: "Give a reason for rejecting this." });
   const { rows: existing } = await query(`SELECT * FROM rm_orders WHERE id = $1 AND status = 'pending_approval'`, [req.params.id]);
@@ -633,7 +642,7 @@ router.post("/orders/:id/reject", requireRole(...ADMIN), requirePermission("mate
 // when an order should stop accepting receipts even though it's not fully
 // received (rate/supply conditions changed, a replacement order was placed
 // instead). Distinct from reject (never approved to begin with).
-router.post("/orders/:id/close", requireRole(...ADMIN), requirePermission("material.orders", "delete"), async (req, res) => {
+router.post("/orders/:id/close", requirePermission("material.orders", "delete"), async (req, res) => {
   const { reason } = req.body;
   const { rows: existing } = await query(`SELECT * FROM rm_orders WHERE id = $1`, [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Order not found." });
@@ -650,7 +659,7 @@ router.post("/orders/:id/close", requireRole(...ADMIN), requirePermission("mater
 // against this order: each one's landed_rate_per_kg was already computed and
 // stored at receipt time (round 139's immutability rule) — only receipts
 // taken AFTER the revision see the new rate.
-router.patch("/orders/:id", requireRole(...ADMIN), requirePermission("material.orders", "edit"), async (req, res) => {
+router.patch("/orders/:id", requirePermission("material.orders", "edit"), async (req, res) => {
   const { rows: existing } = await query(`SELECT * FROM rm_orders WHERE id = $1`, [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Order not found." });
   if (["rejected", "closed"].includes(existing[0].status)) {
@@ -705,7 +714,7 @@ function computeFreightTotal(freight_rate, freight_basis, accepted_qty, accepted
 //
 // Not date-limited to today. A lorry weighed at 11pm and receipted the next
 // morning is ordinary, and the count is small because claimed tickets drop out.
-router.get("/orders/:id/weighbridge-tickets", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "create"), async (req, res) => {
+router.get("/orders/:id/weighbridge-tickets", requirePermission("material.receipts", "create"), async (req, res) => {
   const orderId = Number(req.params.id);
   if (!Number.isInteger(orderId)) return res.status(400).json({ error: "Invalid order id." });
   try {
@@ -772,7 +781,7 @@ function validateReceivedDate(value, res) {
 // while still allowing any as a fallback. Refillable silos carry no material_id
 // of their own (they hold whatever was last put in), so the form matches those
 // on the receipt's material against their most recent fill instead.
-router.get("/receipt-silos", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "view"), async (req, res) => {
+router.get("/receipt-silos", requirePermission("material.receipts", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT a.slot, a.slot_name, a.material_id, a.is_refillable, m.name AS material_name,
             (SELECT (array_agg(f.material_id ORDER BY f.filled_at DESC))[1]
@@ -795,7 +804,7 @@ router.get("/receipt-silos", requireRole(...ORDER_ROLES), requirePermission("mat
   })));
 });
 
-router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "create"), async (req, res) => {
+router.post("/receipts", requirePermission("material.receipts", "create"), async (req, res) => {
   const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date, silo_slot, not_in_silo } = req.body;
   if (!order_id) return res.status(400).json({ error: "Select the order this receipt is against." });
 
@@ -1000,7 +1009,7 @@ router.post("/receipts", requireRole(...ORDER_ROLES), requirePermission("materia
 // rm_receipts on every read (round 139's architecture), so editing or
 // deleting a receipt needs no separate stock/rate repair — the next read
 // simply reflects the corrected data.
-router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material.receipts", "edit"), async (req, res) => {
+router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), async (req, res) => {
   const { rows: existingRows } = await query(
     `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.material_id AS order_material_id,
             to_char(r.received_date, 'YYYY-MM-DD') AS received_date_str
@@ -1136,7 +1145,7 @@ router.patch("/receipts/:id", requireRole(...ADMIN), requirePermission("material
   res.json({ ...rows[0], received_date: receivedDate, silo_changed: siloChanged });
 });
 
-router.delete("/receipts/:id", requireRole(...ADMIN), requirePermission("material.receipts", "delete"), async (req, res) => {
+router.delete("/receipts/:id", requirePermission("material.receipts", "delete"), async (req, res) => {
   // Round 187 — remove the receipt's own silo fill with it. The fills FK is
   // ON DELETE SET NULL, so without this a deleted receipt left its fill behind
   // still raising the silo's level.
@@ -1148,7 +1157,7 @@ router.delete("/receipts/:id", requireRole(...ADMIN), requirePermission("materia
   res.json({ deleted: true });
 });
 
-router.get("/receipts", requireRole(...ORDER_ROLES), requirePermission("material.receipts", "view"), async (req, res) => {
+router.get("/receipts", requirePermission("material.receipts", "view"), async (req, res) => {
   const params = [];
   let where = "true";
   if (req.user.role === "store") {
@@ -1195,7 +1204,7 @@ router.get("/receipts", requireRole(...ORDER_ROLES), requirePermission("material
 // ---------------------------------------------------------------------------
 const CONFIRM_ROLES = ["administrator", "manager"];
 
-router.get("/receipts/pending", requireRole(...CONFIRM_ROLES), requirePermission("material.receipt-confirm", "view"), async (req, res) => {
+router.get("/receipts/pending", requirePermission("material.receipt-confirm", "view"), async (req, res) => {
   try {
     const { rows } = await query(
       // receipts-raw: this queue exists to show exactly the pending ones
@@ -1226,7 +1235,7 @@ router.get("/receipts/pending", requireRole(...CONFIRM_ROLES), requirePermission
   }
 });
 
-router.post("/receipts/:id/confirm", requireRole(...CONFIRM_ROLES), requirePermission("material.receipt-confirm", "edit"), async (req, res) => {
+router.post("/receipts/:id/confirm", requirePermission("material.receipt-confirm", "edit"), async (req, res) => {
   const id = Number(req.params.id);
   if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid receipt id." });
 
@@ -1345,7 +1354,7 @@ router.post("/receipts/:id/confirm", requireRole(...CONFIRM_ROLES), requirePermi
 // hand-keyed rm_daily_consumption is no longer the stock driver. Returns, per
 // material, the auto / manual / total kg for the chosen day, plus that day's
 // production m³ (batched + manual) for context.
-router.get("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "view"), async (req, res) => {
+router.get("/consumption", requirePermission("material.consumption", "view"), async (req, res) => {
   const date = (req.query.date || istDay()).slice(0, 10);
   const dayEnd = nextDay(date);
   const [cons, prod, mats] = await Promise.all([
@@ -1364,7 +1373,7 @@ router.get("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission(
   res.json({ date, readonly: true, source: "plant", materials, production: prod });
 });
 
-router.post("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "create"), async (req, res) => {
+router.post("/consumption", requirePermission("material.consumption", "create"), async (req, res) => {
   const { date, entries } = req.body; // entries: [{ material_id, automatic_qty_kg, manual_qty_kg }]
   if (!date) return res.status(400).json({ error: "Date is required." });
   if (!Array.isArray(entries) || !entries.length) return res.status(400).json({ error: "Enter at least one material's consumption." });
@@ -1388,13 +1397,13 @@ router.post("/consumption", requireRole(...CONSUMPTION_ROLES), requirePermission
   res.status(201).json(saved);
 });
 
-router.get("/production", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "view"), async (req, res) => {
+router.get("/production", requirePermission("material.consumption", "view"), async (req, res) => {
   const date = req.query.date || istDay();
   const { rows } = await query(`SELECT * FROM rm_daily_production WHERE production_date = $1`, [date]);
   res.json(rows[0] || null);
 });
 
-router.post("/production", requireRole(...CONSUMPTION_ROLES), requirePermission("material.consumption", "create"), async (req, res) => {
+router.post("/production", requirePermission("material.consumption", "create"), async (req, res) => {
   const { date, concrete_produced_m3 } = req.body;
   if (!date) return res.status(400).json({ error: "Date is required." });
   if (concrete_produced_m3 === undefined || concrete_produced_m3 === null || Number(concrete_produced_m3) < 0) {
@@ -1527,7 +1536,7 @@ function bucketMap(rows) {
   return out;
 }
 
-router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("material.stock", "view"), async (req, res) => {
+router.get("/stock", requirePermission("material.stock", "view"), async (req, res) => {
   const asOfMonth = req.query.month || istMonth();
   // Round 155 — was `new Date().getDate()`, the UTC day-of-month on a server
   // that runs in UTC. At 03:00 IST on the 1st, UTC is still the 30th, so this
@@ -1618,7 +1627,7 @@ router.get("/stock", requireRole(...STOCK_READ_ROLES), requirePermission("materi
 // minus = more was actually used than reported) | Cost of Actual Consumption
 // | Cost of Difference.
 
-router.post("/physical-stock", requireRole(...ORDER_ROLES), requirePermission("material.physical-stock", "create"), async (req, res) => {
+router.post("/physical-stock", requirePermission("material.physical-stock", "create"), async (req, res) => {
   const { material_id, stock_month, physical_stock_kg, notes } = req.body;
   if (!material_id) return res.status(400).json({ error: "Select a material." });
   if (!stock_month) return res.status(400).json({ error: "Select the month being counted." });
@@ -1644,7 +1653,7 @@ router.post("/physical-stock", requireRole(...ORDER_ROLES), requirePermission("m
 // stock re-anchors to the counted figure, absorbing the variance. Admin only,
 // since it moves stock valuation. Editing the count again (POST above) does not
 // clear approval on its own, so re-approve after a correction if needed.
-router.post("/physical-stock/approve", requireRole("administrator"), requirePermission("material.physical-stock", "create"), async (req, res) => {
+router.post("/physical-stock/approve", requirePermission("material.physical-stock-approve", "edit"), async (req, res) => {
   const { material_id, stock_month } = req.body;
   if (!material_id || !stock_month) return res.status(400).json({ error: "material_id and stock_month are required." });
   const monthDate = `${String(stock_month).slice(0, 7)}-01`;
@@ -1666,7 +1675,7 @@ router.post("/physical-stock/approve", requireRole("administrator"), requirePerm
   res.json({ ok: true, approved: rows[0].approved });
 });
 
-router.get("/physical-stock", requireRole(...STOCK_READ_ROLES), requirePermission("material.physical-stock", "view"), async (req, res) => {
+router.get("/physical-stock", requirePermission("material.physical-stock", "view"), async (req, res) => {
   const month = (req.query.month || istMonth()).slice(0, 7);
   const monthStart = `${month}-01`;
   const monthEnd = firstOfNextMonth(monthStart);
@@ -1861,7 +1870,7 @@ function monthBounds(ym) {
   return { start, next, last };
 }
 
-router.get("/consumption-transfers", requireRole(...ADMIN), requirePermission("material.consumption-transfer", "view"), async (req, res) => {
+router.get("/consumption-transfers", requirePermission("material.consumption-transfer", "view"), async (req, res) => {
   const b = monthBounds(req.query.month || istMonth());
   if (!b) return res.status(400).json({ error: "Give the month as YYYY-MM." });
   const { rows } = await query(
@@ -1881,7 +1890,7 @@ router.get("/consumption-transfers", requireRole(...ADMIN), requirePermission("m
   res.json({ month: b.start.slice(0, 7), cutover: CONSUMPTION_CUTOVER, transfers: rows });
 });
 
-router.post("/consumption-transfers", requireRole(...ADMIN), requirePermission("material.consumption-transfer", "create"), async (req, res) => {
+router.post("/consumption-transfers", requirePermission("material.consumption-transfer", "create"), async (req, res) => {
   const body = req.body || {};
   const b = monthBounds(body.month);
   if (!b) return res.status(400).json({ error: "Give the month as YYYY-MM." });
@@ -1951,7 +1960,7 @@ router.post("/consumption-transfers", requireRole(...ADMIN), requirePermission("
   }
 });
 
-router.delete("/consumption-transfers/:id", requireRole(...ADMIN), requirePermission("material.consumption-transfer", "delete"), async (req, res) => {
+router.delete("/consumption-transfers/:id", requirePermission("material.consumption-transfer", "delete"), async (req, res) => {
   const { rowCount } = await query(`DELETE FROM plant_consumption_transfers WHERE id = $1`, [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "No such transfer." });
   res.json({ ok: true });
@@ -1964,7 +1973,7 @@ router.delete("/consumption-transfers/:id", requireRole(...ADMIN), requirePermis
 // filters and returns every computed field a register needs.
 
 // Open order status: approved orders, ordered vs received-so-far, outstanding.
-router.get("/reports/open-orders", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/open-orders", requirePermission("material.report.open-orders", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT ${ORDER_LIST_COLUMNS},
             (o.ordered_qty - COALESCE(recv.received_qty, 0)) AS outstanding_qty
@@ -1979,7 +1988,7 @@ router.get("/reports/open-orders", requireRole(...ADMIN), requirePermission("mat
 // query serves both report items from the notes doc, since they're the same
 // underlying receipt fields viewed two ways (the frontend can filter to
 // short-only for the debit-notes view).
-router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/weighbridge-comparison", requirePermission("material.report.weighbridge-comparison", "view"), async (req, res) => {
   const params = [];
   let where = "true";
   if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
@@ -2026,7 +2035,7 @@ router.get("/reports/weighbridge-comparison", requireRole(...ADMIN), requirePerm
 //   short_loads vs over_loads. A supplier genuinely mis-weighing lands on both
 //   sides. One that is always short, never over, is not making mistakes.
 // ---------------------------------------------------------------------------
-router.get("/reports/variance", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/variance", requirePermission("weighbridge.receipt-variance", "view"), async (req, res) => {
   try {
     const params = [];
     let where = "r.variance_qty IS NOT NULL";
@@ -2103,7 +2112,7 @@ router.get("/reports/variance", requireRole(...ADMIN), requirePermission("materi
 // Daily consumption: mix (challan-derived, grade-split) vs actual (operator's
 // own production figure) — deliberately shows BOTH volumes rather than
 // applying one to the other (confirmed "Volume basis" decision).
-router.get("/reports/daily-consumption", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/daily-consumption", requirePermission("material.report.daily-consumption", "view"), async (req, res) => {
   const date = req.query.date || istDay();
 
   const { rows: consumption } = await query(
@@ -2170,7 +2179,7 @@ const MIX_COMPONENT_COLUMN = {
   admixture: "admix_kgm3",
 };
 
-router.get("/reports/mix-vs-actual", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/mix-vs-actual", requirePermission("material.report.mix-vs-actual", "view"), async (req, res) => {
   const date = req.query.date || istDay();
 
   // m3 per grade per design from the day's challans.
@@ -2272,7 +2281,7 @@ router.get("/reports/mix-vs-actual", requireRole(...ADMIN), requirePermission("m
   });
 });
 
-router.get("/reports/monthly-consumption-summary", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/monthly-consumption-summary", requirePermission("material.report.monthly-consumption", "view"), async (req, res) => {
   const month = (req.query.month || istMonth()).slice(0, 7);
   const { rows } = await query(
     `SELECT m.id AS material_id, m.name, m.category, m.purchase_unit, m.kg_per_purchase_unit,
@@ -2290,14 +2299,14 @@ router.get("/reports/monthly-consumption-summary", requireRole(...ADMIN), requir
   res.json({ month, materials: rows });
 });
 
-router.get("/reports/monthly-physical-stock", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/monthly-physical-stock", requirePermission("material.report.monthly-physical-stock", "view"), async (req, res) => {
   // Same computation as GET /physical-stock above — this alias exists purely
   // so the Reports tab has a stable, explicitly-named report path.
   req.url = `/physical-stock${req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""}`;
   return router.handle(req, res);
 });
 
-router.get("/reports/weighted-average-rate-history", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/weighted-average-rate-history", requirePermission("material.report.rate-history", "view"), async (req, res) => {
   const { rows: materials } = await query(`SELECT id, name, category, opening_stock_rate_per_kg FROM rm_materials ORDER BY category, name`);
   const results = [];
   for (const m of materials) {
@@ -2313,7 +2322,7 @@ router.get("/reports/weighted-average-rate-history", requireRole(...ADMIN), requ
   res.json(results);
 });
 
-router.get("/reports/supplier-purchase-summary", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/supplier-purchase-summary", requirePermission("material.report.supplier-summary", "view"), async (req, res) => {
   const params = [];
   let where = "true";
   if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
@@ -2334,7 +2343,7 @@ router.get("/reports/supplier-purchase-summary", requireRole(...ADMIN), requireP
   res.json(rows);
 });
 
-router.get("/reports/transporter-freight", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/transporter-freight", requirePermission("material.report.transporter-freight", "view"), async (req, res) => {
   const params = [];
   let where = "r.transporter_id IS NOT NULL";
   if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
@@ -2364,7 +2373,7 @@ router.get("/reports/transporter-freight", requireRole(...ADMIN), requirePermiss
 // (challans can miss rejected loads or contain duplicates). Every m3 figure
 // in the response is labeled with its source so the two can never be
 // silently mixed on the frontend.
-router.get("/reports/cost-per-m3", requireRole(...ADMIN), requirePermission("material.reports", "view"), async (req, res) => {
+router.get("/reports/cost-per-m3", requirePermission("material.report.cost-per-m3", "view"), async (req, res) => {
   const fromDate = req.query.from_date;
   const toDate = req.query.to_date;
   if (!fromDate || !toDate) return res.status(400).json({ error: "from_date and to_date are required." });
@@ -2422,7 +2431,7 @@ router.get("/reports/cost-per-m3", requireRole(...ADMIN), requirePermission("mat
 // weighted rate as everywhere else) and the operator's own production m3 as
 // the cost/m3 basis (never the challan-derived figure) — the same "Volume
 // basis" decision GET /reports/cost-per-m3 above already follows.
-router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("material.cost-dashboard", "view"), async (req, res) => {
+router.get("/reports/cost-dashboard", requirePermission("material.cost-dashboard", "view"), async (req, res) => {
   const month = (req.query.month || istMonth()).slice(0, 7);
   const monthStart = `${month}-01`;
 
@@ -2560,7 +2569,7 @@ router.get("/reports/cost-dashboard", requireRole(...ADMIN), requirePermission("
 // Admin Stock tab KPI banner (item 8 extra, round 140) — 4 summary cards
 // (stock value, balance on open orders, month's purchases, debit notes due)
 // plus a pending-approval count, per AdminStock.dc.html.
-router.get("/reports/stock-summary", requireRole(...ADMIN), requirePermission("material.stock-valuation", "view"), async (req, res) => {
+router.get("/reports/stock-summary", requireAnyPermission(["material.kpi", "material.stock-valuation"], "view"), async (req, res) => {
   const month = istMonth();
 
   // Round 186 — base_kg, not opening_stock_kg (same reason as the Cost

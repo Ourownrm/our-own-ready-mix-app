@@ -178,8 +178,11 @@ const ALL_TABS = [
   { key: "consumption-transfer", label: "Consumption transfer", perm: "material.consumption-transfer", action: "view" },
   { key: "reports", label: "Reports", perm: "material.reports", action: "view" },
   { key: "cost-dashboard", label: "Cost Dashboard", perm: "material.cost-dashboard", action: "view" },
-  { key: "materials", label: "Materials", perm: "material.materials", action: "create" },
-  { key: "suppliers", label: "Suppliers", perm: "material.suppliers", action: "create" },
+  // Round 192 — the Materials and Suppliers tabs have their own view keys
+  // (Raw Material module sub-menus), so a Super Admin can show the masters
+  // read-only. Editing inside still needs create/edit on the master itself.
+  { key: "materials", label: "Materials", perm: "material.materials-menu", action: "view" },
+  { key: "suppliers", label: "Suppliers", perm: "material.suppliers-menu", action: "view" },
 ];
 
 export default function MaterialModule() {
@@ -244,6 +247,12 @@ export default function MaterialModule() {
 // ===================== Materials tab (Administrator) =====================
 
 function MaterialsTab() {
+  // Round 192 — the tab can be granted read-only (Materials sub-menu); the
+  // editing controls show only for the actions this person holds.
+  const { can } = usePermissions();
+  const mayCreate = can("material.materials", "create");
+  const mayEdit = can("material.materials", "edit");
+  const mayUnits = can("material.units", "create") || can("material.units", "edit");
   const [materials, setMaterials] = useState([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -356,7 +365,7 @@ function MaterialsTab() {
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 700 }}>Materials master</div>
-        <button type="button" onClick={openNew} style={{ fontSize: 12, padding: "6px 12px" }}>+ New material</button>
+        {mayCreate && <button type="button" onClick={openNew} style={{ fontSize: 12, padding: "6px 12px" }}>+ New material</button>}
       </div>
 
       {Object.entries(grouped).map(([cat, rows]) => (
@@ -377,10 +386,12 @@ function MaterialsTab() {
                     {m.tolerance_pct != null ? ` · Tolerance ${fmtNum(m.tolerance_pct, 1)}%` : ""}
                   </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openEdit(m)}>Edit</button>
-                  <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => toggleActive(m)}>{m.is_active ? "Deactivate" : "Reactivate"}</button>
-                </div>
+                {mayEdit && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openEdit(m)}>Edit</button>
+                    <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => toggleActive(m)}>{m.is_active ? "Deactivate" : "Reactivate"}</button>
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
                 <button type="button" onClick={() => setExpandedSources(expandedSources === m.id ? null : m.id)} style={{ fontSize: 10.5, padding: "3px 0", background: "none", border: "none", color: "var(--rebar)", textAlign: "left" }}>
@@ -390,7 +401,7 @@ function MaterialsTab() {
                   {expandedUnits === m.id ? "Hide purchase units ↑" : "Purchase units →"}
                 </button>
               </div>
-              {expandedSources === m.id && <SourcesPanel material={m} />}
+              {expandedSources === m.id && <SourcesPanel material={m} mayEdit={mayCreate || mayEdit} />}
               {expandedUnits === m.id && (
                 <div style={{ marginTop: 10, borderTop: "1px solid var(--border, #DEDAD1)", paddingTop: 10 }}>
                   <div style={{ fontSize: 10.5, color: "var(--slate)", marginBottom: 6 }}>
@@ -399,13 +410,13 @@ function MaterialsTab() {
                   {units.map((u) => (
                     <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, padding: "4px 0" }}>
                       <span>{u.unit_name} = {fmtNum(u.kg_per_unit, 4)} kg{u.is_default && <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 9.5, padding: "1px 6px" }}>Default</span>}</span>
-                      <div style={{ display: "flex", gap: 6 }}>
+                      <div style={{ display: "flex", gap: 6, ...(mayUnits ? {} : { display: "none" }) }}>
                         {!u.is_default && <button type="button" style={{ fontSize: 10, padding: "2px 7px" }} onClick={() => makeUnitDefault(u)}>Make default</button>}
                         {!u.is_default && <button type="button" style={{ fontSize: 10, padding: "2px 7px" }} onClick={() => deleteUnit(u)}>Delete</button>}
                       </div>
                     </div>
                   ))}
-                  {!addingUnit ? (
+                  {!mayUnits ? null : !addingUnit ? (
                     <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 4 }} onClick={() => { setAddingUnit(true); setUnitForm({ unit_name: "", kg_per_unit: "", is_default: false }); }}>+ Add purchase unit</button>
                   ) : (
                     <form onSubmit={submitUnit} style={{ marginTop: 6, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
@@ -458,7 +469,7 @@ function MaterialsTab() {
 // The source (quarry / plant) decides how many kg one purchase unit weighs; the
 // supplier decides the price. Stock stays per material. A changed conversion
 // applies to new receipts only.
-function SourcesPanel({ material }) {
+function SourcesPanel({ material, mayEdit = true }) {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(null); // null | {} new | source row
@@ -512,14 +523,14 @@ function SourcesPanel({ material }) {
               1 {r.purchase_unit} = {fmtNum(r.kg_per_purchase_unit, 2)} kg{r.suppliers ? ` · ${r.suppliers}` : " · no supplier rate yet"}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div style={{ display: mayEdit ? "flex" : "none", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button type="button" style={{ fontSize: 10.5, padding: "3px 8px" }} onClick={() => openEdit(r)}>Edit</button>
             {!r.is_default && r.is_active && <button type="button" style={{ fontSize: 10.5, padding: "3px 8px" }} onClick={() => patch(r, { is_default: true })}>Make default</button>}
             {!r.is_default && <button type="button" style={{ fontSize: 10.5, padding: "3px 8px" }} onClick={() => patch(r, { is_active: !r.is_active })}>{r.is_active ? "Switch off" : "Switch on"}</button>}
           </div>
         </div>
       ))}
-      {!editing ? (
+      {!mayEdit ? null : !editing ? (
         <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 6 }} onClick={openNew}>+ Add source</button>
       ) : (
         <form onSubmit={submit} style={{ marginTop: 6, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
@@ -552,6 +563,12 @@ function SourcesPanel({ material }) {
 // linked to as many supplier+material combinations as needed.
 
 function SuppliersTab() {
+  // Round 192 — read-only unless this person holds the editing actions.
+  const { can } = usePermissions();
+  const maySupCreate = can("material.suppliers", "create");
+  const maySupEdit = can("material.suppliers", "edit");
+  const mayRates = can("material.supplier-rates", "create");
+  const mayLinks = can("material.transporters", "create");
   const [suppliers, setSuppliers] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [transporters, setTransporters] = useState([]);
@@ -699,7 +716,7 @@ function SuppliersTab() {
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 700 }}>Suppliers</div>
-        <button type="button" onClick={openNewSupplier} style={{ fontSize: 12, padding: "6px 12px" }}>+ New supplier</button>
+        {maySupCreate && <button type="button" onClick={openNewSupplier} style={{ fontSize: 12, padding: "6px 12px" }}>+ New supplier</button>}
       </div>
 
       {suppliers.map((s) => (
@@ -712,8 +729,8 @@ function SuppliersTab() {
               </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openEditSupplier(s)}>Edit</button>
-              <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => toggleSupplierActive(s)}>{s.is_active ? "Deactivate" : "Reactivate"}</button>
+              {maySupEdit && <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openEditSupplier(s)}>Edit</button>}
+              {maySupEdit && <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => toggleSupplierActive(s)}>{s.is_active ? "Deactivate" : "Reactivate"}</button>}
             </div>
           </div>
           <button type="button" onClick={() => toggleExpand(s)} style={{ fontSize: 10.5, padding: "3px 0", marginTop: 8, background: "none", border: "none", color: "var(--rebar)", textAlign: "left" }}>
@@ -747,7 +764,7 @@ function SuppliersTab() {
                 </div>
               )}
 
-              {!addingRate ? (
+              {!mayRates ? null : !addingRate ? (
                 <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 4 }} onClick={() => { setAddingRate(true); setRateForm({ material_id: "", scope: "delivered", rate: "", valid_from: todayStr() }); }}>+ Add / update rate</button>
               ) : (
                 <form onSubmit={submitRate} style={{ marginTop: 6, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
@@ -788,7 +805,7 @@ function SuppliersTab() {
                   <span style={{ fontWeight: 600 }}>{fmtMoney(l.freight_rate)} · {FREIGHT_BASIS_LABEL[l.freight_basis]}</span>
                 </div>
               ))}
-              {!addingLink ? (
+              {!mayLinks ? null : !addingLink ? (
                 <button type="button" style={{ fontSize: 10.5, padding: "3px 8px", marginTop: 4 }} onClick={() => { setAddingLink(true); setLinkForm({ material_id: "", transporter_id: "", new_transporter_name: "", new_transporter_phone: "", freight_rate: "", freight_basis: "per_purchase_unit", is_default: false }); }}>+ Link transporter</button>
               ) : (
                 <form onSubmit={submitLink} style={{ marginTop: 6, background: "var(--surface-2, #F7F5F0)", padding: 10, borderRadius: 8 }}>
@@ -860,6 +877,10 @@ function blankOrderForm() {
 
 function OrdersTab({ role }) {
   const isAdmin = isAdminLevel(role);
+  // Round 192 — someone given Orders view-only sees every order (the backend
+  // returns all of them) and cannot raise one.
+  const { can } = usePermissions();
+  const mayRaise = can("material.orders", "create");
   const [orders, setOrders] = useState([]);
   const [pending, setPending] = useState([]);
   const [materials, setMaterials] = useState([]);
@@ -1023,7 +1044,7 @@ function OrdersTab({ role }) {
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 13, fontWeight: 700 }}>{isAdmin ? "All orders" : "My orders"}</div>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>{isAdmin || !mayRaise ? "All orders" : "My orders"}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {closedCount > 0 && (
             <label style={{ fontSize: 11.5, color: "var(--slate)", display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
@@ -1031,7 +1052,7 @@ function OrdersTab({ role }) {
               Show closed ({closedCount})
             </label>
           )}
-          <button type="button" onClick={openNew} style={{ fontSize: 12, padding: "6px 12px" }}>+ New order</button>
+          {mayRaise && <button type="button" onClick={openNew} style={{ fontSize: 12, padding: "6px 12px" }}>+ New order</button>}
         </div>
       </div>
 
@@ -1350,6 +1371,9 @@ function siloLabel(silos, slot) {
 
 function ReceiptsTab({ role }) {
   const isAdmin = isAdminLevel(role);
+  // Round 192 — Receipts can be granted view-only.
+  const { can } = usePermissions();
+  const mayReceive = can("material.receipts", "create");
   const [receivable, setReceivable] = useState([]);
   const [history, setHistory] = useState([]);
   const [error, setError] = useState("");
@@ -1557,7 +1581,7 @@ function ReceiptsTab({ role }) {
                 <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
                   Ordered {fmtNum(o.ordered_qty)} {o.purchase_unit} · Received so far {fmtNum(o.received_qty)} · Outstanding {fmtNum(outstanding)}
                 </div>
-                <button type="button" style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }} onClick={() => openReceive(o)}>Receive</button>
+                {mayReceive && <button type="button" style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }} onClick={() => openReceive(o)}>Receive</button>}
               </div>
             );
           })}
@@ -1932,6 +1956,10 @@ function stockStatus(m) {
 function StockTab({ role, onGoTab }) {
   const showValuation = role !== "store";
   const isAdmin = isAdminLevel(role);
+  // Round 192 — the money KPI cards are the Raw Material module's "KPI"
+  // sub-menu now, not Administrator-only by role.
+  const { can } = usePermissions();
+  const canKpi = can("material.kpi", "view");
   const [month, setMonth] = useState(thisMonthStr());
   const [materials, setMaterials] = useState([]);
   const [openOrders, setOpenOrders] = useState([]);
@@ -1947,7 +1975,7 @@ function StockTab({ role, onGoTab }) {
       const data = await apiRequest(`/material-module/stock?month=${month}`);
       setMaterials(data.materials);
       setOpenOrders(data.open_orders || []);
-      if (isAdmin) setSummary(await apiRequest("/material-module/reports/stock-summary"));
+      if (canKpi) setSummary(await apiRequest("/material-module/reports/stock-summary"));
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2024,10 +2052,10 @@ function StockTab({ role, onGoTab }) {
           tone={lowMaterials.length > 0 ? "danger" : undefined}
           sub={shortest ? `${shortest.name} · lasts ${fmtNum(shortest.stock_days_remaining, 1)} days` : "no consumption recorded yet"}
         />
-        {isAdmin && summary && <KpiCard label="Stock value (book)" value={fmtMoney(summary.stock_value)} tone="dark" sub={`at ${month} average rates`} />}
-        {isAdmin && summary && <KpiCard label="Balance on open orders" value={fmtMoney(summary.open_order_balance_value)} />}
-        {isAdmin && summary && <KpiCard label="This month's purchases" value={fmtMoney(summary.month_purchase_value)} sub="landed, excl. GST" />}
-        {isAdmin && summary && <KpiCard label="Debit notes due" value={fmtMoney(summary.debit_notes_due)} tone={Number(summary.debit_notes_due) > 0 ? "danger" : undefined} />}
+        {canKpi && summary && <KpiCard label="Stock value (book)" value={fmtMoney(summary.stock_value)} tone="dark" sub={`at ${month} average rates`} />}
+        {canKpi && summary && <KpiCard label="Balance on open orders" value={fmtMoney(summary.open_order_balance_value)} />}
+        {canKpi && summary && <KpiCard label="This month's purchases" value={fmtMoney(summary.month_purchase_value)} sub="landed, excl. GST" />}
+        {canKpi && summary && <KpiCard label="Debit notes due" value={fmtMoney(summary.debit_notes_due)} tone={Number(summary.debit_notes_due) > 0 ? "danger" : undefined} />}
       </div>
 
       {showValuation && <Field label="Rate as of month (for valuation)"><input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} /></Field>}
@@ -2431,24 +2459,31 @@ function PhysicalStockTab({ role }) {
 // ===================== Reports tab (Administrator only) =====================
 
 const REPORT_LIST = [
-  { key: "open-orders", label: "Open orders" },
-  { key: "weighbridge", label: "Weighbridge comparison" },
-  { key: "daily-consumption", label: "Daily consumption" },
-  { key: "mix-vs-actual", label: "Mix vs actual" },
-  { key: "monthly-consumption", label: "Monthly consumption" },
-  { key: "monthly-physical-stock", label: "Monthly physical stock" },
-  { key: "rate-history", label: "Weighted avg rate history" },
-  { key: "supplier-summary", label: "Supplier purchase summary" },
-  { key: "transporter-freight", label: "Transporter freight" },
-  { key: "cost-per-m3", label: "Cost per m³" },
+  { key: "open-orders", perm: "material.report.open-orders", label: "Open orders" },
+  { key: "weighbridge", perm: "material.report.weighbridge-comparison", label: "Weighbridge comparison" },
+  { key: "daily-consumption", perm: "material.report.daily-consumption", label: "Daily consumption" },
+  { key: "mix-vs-actual", perm: "material.report.mix-vs-actual", label: "Mix vs actual" },
+  { key: "monthly-consumption", perm: "material.report.monthly-consumption", label: "Monthly consumption" },
+  { key: "monthly-physical-stock", perm: "material.report.monthly-physical-stock", label: "Monthly physical stock" },
+  { key: "rate-history", perm: "material.report.rate-history", label: "Weighted avg rate history" },
+  { key: "supplier-summary", perm: "material.report.supplier-summary", label: "Supplier purchase summary" },
+  { key: "transporter-freight", perm: "material.report.transporter-freight", label: "Transporter freight" },
+  { key: "cost-per-m3", perm: "material.report.cost-per-m3", label: "Cost per m³" },
 ];
 
 function ReportsTab() {
-  const [report, setReport] = useState("open-orders");
+  // Round 192 — each report is switchable on its own.
+  const { can } = usePermissions();
+  const reports = REPORT_LIST.filter((r) => can(r.perm, "view"));
+  const [picked, setReport] = useState("");
+  const report = reports.some((r) => r.key === picked) ? picked : (reports[0]?.key || "");
+  if (!reports.length) {
+    return <div className="card" style={{ fontSize: 13 }}>No reports are switched on for you.</div>;
+  }
   return (
     <div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-        {REPORT_LIST.map((r) => (
+        {reports.map((r) => (
           <button
             key={r.key}
             type="button"

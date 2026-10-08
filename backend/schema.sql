@@ -749,6 +749,17 @@ CREATE TABLE permission_change_log (
 CREATE INDEX idx_permission_change_log_at ON permission_change_log(changed_at DESC);
 CREATE INDEX idx_permission_change_log_user ON permission_change_log(target_user_id);
 
+-- Round 192 — one-time migration marks, and which catalogue functions have
+-- had their defaults seeded (so a function added later is seeded exactly once).
+CREATE TABLE app_migration_marks (
+  mark VARCHAR(80) PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE permission_key_seeds (
+  permission_key VARCHAR(80) PRIMARY KEY,
+  seeded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ===================== ORDERS (SRS 5A) =====================
 
 CREATE TABLE customer_orders (

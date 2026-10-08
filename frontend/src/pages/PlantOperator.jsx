@@ -189,7 +189,7 @@ export default function PlantOperator() {
         {/* Round 139 — daily raw-material consumption & production entry. */}
         <IfCan perm="material.module"><Link to="/material-module"><button style={{ width: "100%", marginTop: 10 }}>Material consumption</button></Link></IfCan>
         {/* Round 172 — plant production & consumption, once the plant-data permission is granted. */}
-        <IfCan perm="production.plant-data"><Link to="/plant-production"><button style={{ width: "100%", marginTop: 10 }}>Plant Production &amp; Consumption</button></Link></IfCan>
+        <IfCan perm="module.plant-production"><Link to="/plant-production"><button style={{ width: "100%", marginTop: 10 }}>Plant Production &amp; Consumption</button></Link></IfCan>
         {/* Round 153, item 1 — the notes this screen raises, where the person
             who raised them can open and reprint one. Renders nothing if the
             Super Admin has revoked challan printing from this role. */}

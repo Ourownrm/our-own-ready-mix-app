@@ -2,6 +2,7 @@ import { Router } from "express";
 import crypto from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requirePermission } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 
 const router = Router();
@@ -400,7 +401,7 @@ const STOCK_REPORT_FROM = `
   LEFT JOIN lubricant_types lt ON lt.id = ssi.lubricant_type_id
 `;
 
-router.get("/report", requireRole("manager", "administrator", "accountant", "store"), async (req, res) => {
+router.get("/report", requirePermission("reports.fuel", "view"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(req.query.page_size) || 100));
 
@@ -469,7 +470,7 @@ router.get("/report", requireRole("manager", "administrator", "accountant", "sto
   });
 });
 
-router.get("/report/export", requireRole("manager", "administrator", "accountant", "store"), async (req, res) => {
+router.get("/report/export", requirePermission("reports.fuel", "view"), async (req, res) => {
   if (req.query.request_type === "stock") {
     const { where, params } = buildStockReportFilters(req.query);
     const { rows } = await query(

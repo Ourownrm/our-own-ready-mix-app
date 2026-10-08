@@ -1,4 +1,5 @@
 import { useEffect, useState, Fragment } from "react";
+import { usePermissions } from "./PermissionContext.jsx";
 import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import { generateMixDesignPdf } from "./mixDesignPdf.js";
@@ -2027,6 +2028,10 @@ const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "Ju
 // the Manager dashboard's Achieved %/Balance/Required-per-day KPI reads
 // whatever's on file for the current month via GET /orders/dashboard.
 export function ProductionTargetPanel({ setError }) {
+  // Round 192 — reachable by a view-only role from the Modules page now; the
+  // form shows only to someone who may set a target.
+  const { can } = usePermissions();
+  const mayCreate = can("production.targets", "create");
   const now = new Date();
   const [history, setHistory] = useState([]);
   const [year, setYear] = useState(now.getFullYear());
@@ -2053,6 +2058,7 @@ export function ProductionTargetPanel({ setError }) {
 
   return (
     <div>
+      {mayCreate && (
       <form onSubmit={submit} className="field-input card" style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", fontSize: 13, marginBottom: 12 }}>
         <div>
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Month</div>
@@ -2071,6 +2077,7 @@ export function ProductionTargetPanel({ setError }) {
         <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save"}</button>
         {notice && <span style={{ color: "var(--signal-green)" }}>{notice}</span>}
       </form>
+      )}
 
       <div className="card">
         <div style={{ fontWeight: 600, marginBottom: 8 }}>History</div>
@@ -2325,6 +2332,11 @@ export function MaintenanceActionPointsPanel({ setError }) {
 // second design, just a second row here, both flagged "Shared" once they
 // point at the same design.
 export function MixDesignAssignmentsPanel({ setError }) {
+  // Round 192 — view-only roles (from the Modules page) see the list without
+  // the Assign form or Remove buttons.
+  const { can } = usePermissions();
+  const mayCreate = can("quality.mix-assignments", "create");
+  const mayDelete = can("quality.mix-assignments", "delete");
   const [assignments, setAssignments] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [grades, setGrades] = useState([]);
@@ -2388,6 +2400,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
         also updates every existing order for that customer+grade dated on/after "Since" to this
         design, so it shows correctly in their customer portal too — not just new orders going forward.
       </div>
+      {mayCreate && (
       <form onSubmit={submit} className="field-input card" style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", fontSize: 13, marginBottom: 12 }}>
         <div>
           <div style={{ color: "var(--slate)", marginBottom: 4 }}>Customer</div>
@@ -2420,6 +2433,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
         <button type="submit" disabled={saving}>{saving ? "Saving..." : "Assign"}</button>
         {notice && <span style={{ color: "var(--signal-green)" }}>{notice}</span>}
       </form>
+      )}
 
       <div className="card">
         <table>
@@ -2440,7 +2454,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
                   )}
                 </td>
                 <td>{new Date(a.effective_from).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
-                <td><button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => remove(a.id)}>Remove</button></td>
+                <td>{mayDelete && <button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => remove(a.id)}>Remove</button>}</td>
               </tr>
             ))}
             {assignments.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>No customer-specific assignments yet — everyone gets the standard design per grade.</td></tr>}

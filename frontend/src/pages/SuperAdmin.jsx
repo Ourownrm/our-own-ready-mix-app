@@ -27,7 +27,8 @@ const ROLE_LABEL = {
 
 export default function SuperAdmin() {
   const { user } = useAuth();
-  const [tab, setTab] = useState("people");
+  // Round 192 — Module access first: it is the screen the owner asked for.
+  const [tab, setTab] = useState("modules");
   const [catalogue, setCatalogue] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -53,7 +54,7 @@ export default function SuperAdmin() {
         </div>
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
-          {[["people", "People"], ["roles", "Role defaults"], ["plugins", "Plugins"], ["log", "Change log"]].map(([k, l]) => (
+          {[["modules", "Module access"], ["people", "People"], ["roles", "Role defaults"], ["plugins", "Plugins"], ["log", "Change log"]].map(([k, l]) => (
             <button key={k} type="button" className={`btn-tab${tab === k ? " active" : ""}`}
                     onClick={() => { setTab(k); setError(""); setNotice(""); }}
                     style={{ fontSize: 12, padding: "6px 12px", borderRadius: 999 }}>{l}</button>
@@ -62,6 +63,8 @@ export default function SuperAdmin() {
 
         {!catalogue ? (
           <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading…</div>
+        ) : tab === "modules" ? (
+          <ModulesTab catalogue={catalogue} setError={setError} setNotice={setNotice} />
         ) : tab === "people" ? (
           <PeopleTab catalogue={catalogue} me={user} setError={setError} setNotice={setNotice} />
         ) : tab === "roles" ? (
@@ -619,6 +622,156 @@ function RolesTab({ catalogue, setError, setNotice }) {
       )}
     </>
   );
+}
+
+// ===================== Module access (Round 192) =====================
+// The owner's role × module table, as a grid: a row per module with a tick per
+// role (the whole module on or off), and under it a row per sub-menu. Every
+// tick writes the same role default the Role defaults tab writes — View only;
+// Create / Edit / Delete stay on that tab and on People.
+//
+// The column order follows the owner's own table; the roles that table does
+// not mention come after. A sub-menu tick under a module that is off for that
+// role is shown faded: it is remembered, but does nothing until the module is
+// switched back on — the module switch always wins.
+const MODULE_ROLE_ORDER = ["manager", "lab_technician", "store", "accountant", "plant_operator", "qc_engineer",
+  "sales_executive", "site_supervisor", "driver", "loader_operator"];
+
+function ModulesTab({ catalogue, setError, setNotice }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [open, setOpen] = useState(() => new Set(["raw-material"]));
+  const roles = MODULE_ROLE_ORDER.filter((r) => catalogue.roles.includes(r) && !catalogue.computed_roles.includes(r));
+  const labelOf = useMemo(() => Object.fromEntries(catalogue.functions.map((f) => [f.key, f])), [catalogue]);
+
+  async function load() {
+    try { setData(await apiRequest("/super-admin/role-defaults")); }
+    catch (e) { setError(e.message); }
+  }
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const has = (role, key) => !!data && (data.defaults[role] || []).includes(`${key}:view`);
+
+  async function toggle(role, key, on, label) {
+    setBusy(`${role}|${key}`); setError(""); setNotice("");
+    try {
+      const res = await apiRequest(`/super-admin/roles/${role}/permissions`, { method: "PUT", body: { key, action: "view", on } });
+      const who = res.unaffected_because_overridden || [];
+      setNotice(
+        `${ROLE_LABEL[role] || role}: ${label} ${on ? "switched on" : "switched off"}.` +
+        (who.length ? ` ${who.map((u) => u.name).join(", ")} ${who.length === 1 ? "has" : "have"} a personal setting for this and ${who.length === 1 ? "is" : "are"} unchanged (People tab).` : "")
+      );
+      await load();
+    } catch (e) { setError(e.message); } finally { setBusy(""); }
+  }
+
+  function Tick({ role, fkey, label, disabledBy }) {
+    const on = has(role, fkey);
+    const faded = !!disabledBy;
+    return (
+      <td style={{ textAlign: "center", padding: "6px 4px" }}>
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={busy !== ""}
+          onChange={(e) => toggle(role, fkey, e.target.checked, label)}
+          title={faded ? `${disabledBy} is off for ${ROLE_LABEL[role]} — this has no effect until it is switched on` : `${label} — ${ROLE_LABEL[role]}`}
+          aria-label={`${label} — ${ROLE_LABEL[role]}`}
+          style={{ width: 18, height: 18, accentColor: "var(--rebar)", opacity: faded ? 0.35 : 1, cursor: "pointer" }}
+        />
+      </td>
+    );
+  }
+
+  function MenuRows({ menus, gate, gateLabel, depth = 0 }) {
+    return menus.map((m) => {
+      const f = labelOf[m.key];
+      if (!f) return null;
+      return (
+        <FragmentRows key={m.key}>
+          <tr>
+            <td style={{ paddingLeft: 14 + depth * 18, fontSize: 12.5, color: depth ? "var(--slate)" : "var(--charcoal)" }}>
+              {depth ? "– " : ""}{m.label}
+            </td>
+            {roles.map((r) => (
+              <Tick key={r} role={r} fkey={m.key} label={m.label}
+                    disabledBy={gate && !has(r, gate) ? gateLabel : null} />
+            ))}
+          </tr>
+          {m.children && <MenuRows menus={m.children} gate={gate} gateLabel={gateLabel} depth={depth + 1} />}
+        </FragmentRows>
+      );
+    });
+  }
+
+  function Section({ id, label, gate, menus, note }) {
+    const isOpen = open.has(id);
+    const flip = () => setOpen((cur) => { const n = new Set(cur); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+    return (
+      <>
+        <tr style={{ background: "#F7F5F0" }}>
+          <td style={{ fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+            <button type="button" onClick={flip}
+                    style={{ border: "none", background: "none", padding: 0, font: "inherit", cursor: "pointer", color: "var(--charcoal)" }}>
+              <span style={{ display: "inline-block", width: 14, color: "var(--slate)" }}>{isOpen ? "▾" : "▸"}</span>{label}
+            </button>
+            <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--slate)", marginLeft: 14 }}>
+              {gate ? `whole module · ${menus.length} sub-menus` : note}
+            </div>
+          </td>
+          {roles.map((r) => (gate
+            ? <Tick key={r} role={r} fkey={gate} label={`${label} module`} />
+            : <td key={r} style={{ textAlign: "center", color: "var(--border-strong)" }}>·</td>))}
+        </tr>
+        {isOpen && <MenuRows menus={menus} gate={gate} gateLabel={`${label} module`} />}
+      </>
+    );
+  }
+
+  if (!data) return <div className="card" style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading…</div>;
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 12, fontSize: 12.5, lineHeight: 1.55, color: "var(--slate)" }}>
+        Tick a <b style={{ color: "var(--charcoal)" }}>module</b> to give a role that module; untick it and the
+        whole module, every sub-menu inside it, is closed to that role. Under a module, each
+        <b style={{ color: "var(--charcoal)" }}> sub-menu</b> is its own switch. A tick here gives <b style={{ color: "var(--charcoal)" }}>View</b>;
+        Create, Edit and Delete are on the Role defaults tab. One person can be set differently on the People tab —
+        their own setting wins. Administrator always has everything. Changes reach people within a few seconds.
+      </div>
+
+      <div className="card" style={{ overflowX: "auto", padding: 0 }}>
+        <table style={{ minWidth: 220 + roles.length * 78 }}>
+          <thead>
+            <tr>
+              <th style={{ minWidth: 220, position: "sticky", left: 0 }}>Module / sub-menu</th>
+              {roles.map((r) => (
+                <th key={r} style={{ textAlign: "center", fontSize: 11, lineHeight: 1.25, width: 78 }}>
+                  {ROLE_LABEL[r] || r}
+                  {data.active_users[r] ? <div style={{ fontWeight: 400, color: "var(--slate)", fontSize: 10 }}>{data.active_users[r]} active</div> : null}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {catalogue.modules.map((m) => (
+              <Section key={m.key} id={m.key} label={m.label} gate={m.gate} menus={m.menus} />
+            ))}
+            {catalogue.function_groups.map((g) => (
+              <Section key={g.key} id={g.key} label={g.label} menus={g.menus} note={`${g.menus.length} screens, each switched on its own`} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 8 }}>
+        Fuel, HR and Accounts modules will appear here once they are built.
+      </div>
+    </>
+  );
+}
+
+function FragmentRows({ children }) {
+  return <>{children}</>;
 }
 
 // ===================== Change log =====================

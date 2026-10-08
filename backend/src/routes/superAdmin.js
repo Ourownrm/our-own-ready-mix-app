@@ -18,7 +18,7 @@ import bcrypt from "bcryptjs";
 import { query } from "../db.js";
 import { pluginStates, clearPluginCache } from "../lib/plugins.js";
 import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
-import { CATALOGUE, CATALOGUE_BY_KEY, GROUPS, ROLES, ACTIONS, PERMISSION_BY_SCREEN, isLocked } from "../lib/permissionCatalogue.js";
+import { CATALOGUE, CATALOGUE_BY_KEY, GROUPS, ROLES, ACTIONS, PERMISSION_BY_SCREEN, isLocked, MODULES, FUNCTION_GROUPS } from "../lib/permissionCatalogue.js";
 import { effectivePermissions, clearPermissionCache } from "../lib/permissions.js";
 
 const router = Router();
@@ -57,7 +57,25 @@ router.get("/catalogue", (req, res) => {
       key: c.key, group: c.group, label: c.label, actions: c.actions,
       locked: !!c.locked, screen: c.screen || null,
     })),
+    // Round 192 — the user's modules and their sub-menus, for the Module
+    // access tab. Labels here are the ones the user wrote in their list.
+    modules: MODULES.map((m) => ({ key: m.key, label: m.label, gate: m.gate, menus: m.menus, support: m.support })),
+    function_groups: FUNCTION_GROUPS,
   });
+});
+
+// Round 192 — every editable role's defaults in one call, for the role ×
+// module grid (one request instead of ten). Same data as GET
+// /roles/:role/permissions, which the grid's ticks then write through.
+router.get("/role-defaults", async (req, res) => {
+  const { rows } = await query(`SELECT role::text AS role, permission_key, action FROM role_default_permissions`);
+  const { rows: counts } = await query(
+    `SELECT role::text AS role, COUNT(*)::int AS n FROM users WHERE is_active GROUP BY role`
+  );
+  const out = {};
+  for (const r of ROLES) if (!COMPUTED_ROLES.has(r)) out[r] = [];
+  for (const r of rows) if (out[r.role]) out[r.role].push(`${r.permission_key}:${r.action}`);
+  res.json({ defaults: out, active_users: Object.fromEntries(counts.map((c) => [c.role, c.n])) });
 });
 
 // ===== Users =====

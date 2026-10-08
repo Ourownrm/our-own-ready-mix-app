@@ -87,6 +87,52 @@ for (const file of fs.readdirSync(ROUTES_DIR).filter((f) => f.endsWith(".js"))) 
   }
 }
 
+// ---------------------------------------------------------------------------
+// Round 192 — routes where the permission is the ONLY guard.
+//
+// For the user's modules the role guard was removed so a Super Admin's grant
+// actually takes effect. Two things can quietly undo that, and both are
+// checked here:
+//   1. a key or action that does not exist (a typo) — the route would 403
+//      for everyone but the Administrator, whose set is computed;
+//   2. somebody adding requireRole back in front of one of these routes —
+//      that brings back exactly the bug the user reported (grants that do
+//      nothing). In the files below a role guard may only appear on a route
+//      with NO permission guard (the Administrator-only extras).
+// ---------------------------------------------------------------------------
+const PERMISSION_ONLY_FILES = new Set(["weighbridge.js", "plant.js", "materialModule.js", "labTechnician.js"]);
+let permOnly = 0;
+for (const file of fs.readdirSync(ROUTES_DIR).filter((f) => f.endsWith(".js"))) {
+  const src = fs.readFileSync(path.join(ROUTES_DIR, file), "utf8");
+  for (const m of src.matchAll(/requirePermission\(\s*"([^"]+)"\s*,\s*"(\w+)"\s*\)/g)) {
+    const [, key, action] = m;
+    const entry = CATALOGUE_BY_KEY[key];
+    if (!entry) problems.push(`${file}  requirePermission("${key}") — no such function in the catalogue`);
+    else if (!entry.actions.includes(action)) problems.push(`${file}  requirePermission("${key}", "${action}") — that function has no ${action}`);
+    permOnly++;
+  }
+  for (const m of src.matchAll(/requireAnyPermission\(\s*(\[[^\]]*\]|\w+)\s*,\s*"(\w+)"\s*\)/g)) {
+    let keys = [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    if (!keys.length) {
+      const c = src.match(new RegExp(`const ${m[1]} = \\[([^\\]]*)\\]`));
+      keys = c ? [...c[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [];
+      if (!keys.length) { problems.push(`${file}  requireAnyPermission(${m[1]}) — could not read that list`); continue; }
+    }
+    for (const key of keys) {
+      const entry = CATALOGUE_BY_KEY[key];
+      if (!entry) problems.push(`${file}  requireAnyPermission — "${key}" is not in the catalogue`);
+      else if (!entry.actions.includes(m[2])) problems.push(`${file}  requireAnyPermission — "${key}" has no ${m[2]}`);
+    }
+    permOnly++;
+  }
+  if (PERMISSION_ONLY_FILES.has(file)) {
+    for (const m of src.matchAll(/router\.(get|post|patch|put|delete)\(\s*"([^"]+)"\s*,\s*requireRole\([^)]*\)\s*,\s*require(Any)?Permission/g)) {
+      problems.push(`${file}  ${m[1].toUpperCase()} ${m[2]}  →  has a role guard in front of its permission; Round 192 made the permission the only gate here`);
+    }
+  }
+}
+console.log(`Checked ${permOnly} permission guard(s) against the catalogue.`);
+
 console.log(`Checked ${checked} route(s) carrying both guards.`);
 if (!problems.length) {
   console.log("Every role a route allows is granted the matching action by default.");
@@ -95,8 +141,9 @@ if (!problems.length) {
 console.log(`\n${problems.length} mismatch(es):\n`);
 for (const p of problems) console.log("  " + p);
 console.log(
-  "\nFix by adding the missing default to permissionCatalogue.js — and remember that a\n" +
+  "\nFix the key/action against permissionCatalogue.js, or add the missing default there — and remember that a\n" +
   "role which has already been seeded will not pick up the change from the seeding loop,\n" +
-  "so an already-live installation also needs a named repair in setup.js (see REPAIR_148)."
+  "so an already-live installation also needs a named repair in setup.js (see REPAIR_148;\n" +
+  "a function NEW to the catalogue is seeded automatically — Round 192)."
 );
 process.exit(1);

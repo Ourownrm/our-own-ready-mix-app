@@ -63,6 +63,7 @@ import PlantProduction from "./pages/PlantProduction.jsx";
 import QcMixDesigns from "./pages/QcMixDesigns.jsx";
 import ReceiptVariance from "./pages/ReceiptVariance.jsx";
 import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
+import Modules from "./pages/Modules.jsx";
 import SuperAdmin from "./pages/SuperAdmin.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
@@ -150,19 +151,19 @@ export default function App() {
               made the admin-only delete/date-correction actions unreachable
               in practice. Opened to match what the backend already allows. */}
           <Route path="/lab-technician" element={
-            <ProtectedRoute roles={["lab_technician", "administrator"]}><LabTechnician /></ProtectedRoute>
+            <ProtectedRoute perm="quality.lab-technician"><LabTechnician /></ProtectedRoute>
           } />
           <Route path="/lab-technician/raw-material-stock" element={
-            <ProtectedRoute roles={["lab_technician"]}><RawMaterialStockEntry /></ProtectedRoute>
+            <ProtectedRoute perm="quality.raw-material-stock"><RawMaterialStockEntry /></ProtectedRoute>
           } />
           <Route path="/lab-technician/cube-test-report" element={
-            <ProtectedRoute roles={["lab_technician", "administrator"]}><CubeTestReport /></ProtectedRoute>
+            <ProtectedRoute perm="quality.cube-test-report"><CubeTestReport /></ProtectedRoute>
           } />
           {/* Round 135 — "Samples Due for Testing", opened from the KPI
               card on the Lab Technician dashboard. Same role guard as
               /lab-technician itself (see the Round 125 comment above). */}
           <Route path="/lab-technician/due-today" element={
-            <ProtectedRoute roles={["lab_technician", "administrator"]}><LabDueToday /></ProtectedRoute>
+            <ProtectedRoute perm="quality.lab-due-today"><LabDueToday /></ProtectedRoute>
           } />
           <Route path="/accountant" element={
             <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>
@@ -177,13 +178,13 @@ export default function App() {
             <ProtectedRoute roles={["administrator"]}><Reports /></ProtectedRoute>
           } />
           <Route path="/production-report" element={
-            <ProtectedRoute roles={["administrator", "manager"]}><ProductionReport /></ProtectedRoute>
+            <ProtectedRoute perm="reports.production"><ProductionReport /></ProtectedRoute>
           } />
           <Route path="/fuel-report" element={
-            <ProtectedRoute roles={["administrator", "manager", "accountant", "store"]}><FuelReport /></ProtectedRoute>
+            <ProtectedRoute perm="reports.fuel"><FuelReport /></ProtectedRoute>
           } />
           <Route path="/trip-allowance-report" element={
-            <ProtectedRoute roles={["administrator", "manager", "accountant"]}><TripAllowanceReport /></ProtectedRoute>
+            <ProtectedRoute perm="reports.trip-allowance"><TripAllowanceReport /></ProtectedRoute>
           } />
           <Route path="/delay-justification-report" element={
             <ProtectedRoute roles={["administrator", "manager", "site_supervisor", "plant_operator"]}><DelayJustificationReport /></ProtectedRoute>
@@ -192,13 +193,13 @@ export default function App() {
             <ProtectedRoute roles={["administrator", "manager"]}><Charts /></ProtectedRoute>
           } />
           <Route path="/cycle-time-report" element={
-            <ProtectedRoute roles={["administrator", "manager"]}><CycleTimeReport /></ProtectedRoute>
+            <ProtectedRoute perm="reports.cycle-time"><CycleTimeReport /></ProtectedRoute>
           } />
           <Route path="/truck-timing-report" element={
             <ProtectedRoute roles={["administrator", "manager"]}><TruckTimingReport /></ProtectedRoute>
           } />
           <Route path="/fuel-analysis" element={
-            <ProtectedRoute roles={["administrator", "manager"]}><FuelAnalysis /></ProtectedRoute>
+            <ProtectedRoute perm="reports.fuel-analysis"><FuelAnalysis /></ProtectedRoute>
           } />
           <Route path="/outstanding-collection-report" element={
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><OutstandingCollectionReport /></ProtectedRoute>
@@ -240,40 +241,46 @@ export default function App() {
               both sides: this guard and the backend router's own
               requireRole("administrator"). */}
           {/* Round 146 — access control, the one page only a Super Admin can open. */}
+          {/* Round 192 — every role's way into the modules a Super Admin has
+              given them (Raw Material, Plant Production, Weighbridge, Quality
+              Control, and the Production / Fuel & Lubricants screens). The
+              screens it links to are each guarded by their own function
+              below (perm=…), not by a role list, so a grant on the Access
+              Control page is what opens them. */}
+          <Route path="/modules" element={
+            <ProtectedRoute><Modules /></ProtectedRoute>
+          } />
           <Route path="/super-admin" element={
             <ProtectedRoute roles={["super_admin"]}><SuperAdmin /></ProtectedRoute>
           } />
           <Route path="/cube-qc-dashboard" element={
-            <ProtectedRoute roles={["administrator"]}><CubeQcDashboard /></ProtectedRoute>
+            <ProtectedRoute perm="quality.cube-qc-dashboard"><CubeQcDashboard /></ProtectedRoute>
           } />
           <Route path="/material-module" element={
-            <ProtectedRoute roles={["store", "administrator", "plant_operator"]}><MaterialModule /></ProtectedRoute>
+            <ProtectedRoute perm="material.module"><MaterialModule /></ProtectedRoute>
           } />
-          {/* Round 154 — the weighbridge. The role list here is the outer gate;
-              what each role can actually do on the page is decided by
-              material.weighbridge / material.weighbridge-mapping, which the
-              Super Admin's Access Control page controls. */}
+          {/* Round 154 — the weighbridge. Round 192: the module's own switch
+              is the gate (no role list); each tab is its own function. */}
           <Route path="/weighbridge" element={
-            <ProtectedRoute roles={["store", "administrator", "manager", "plant_operator", "lab_technician"]}><Weighbridge /></ProtectedRoute>
+            <ProtectedRoute perm="module.weighbridge"><Weighbridge /></ProtectedRoute>
           } />
           {/* Round 157 — the batching plant's own record of what it made and
-              what it consumed, fed one-way by the MCI370 agent. Same shape as
-              the weighbridge above: roles are the outer gate, and
-              production.plant-data / production.plant-mapping decide the rest. */}
+              what it consumed, fed one-way by the MCI370 agent. Round 192: the
+              module switch is the gate and each tab is its own function. */}
           <Route path="/plant-production" element={
-            <ProtectedRoute roles={["administrator", "manager", "store", "plant_operator", "qc_engineer", "lab_technician"]}><PlantProduction /></ProtectedRoute>
+            <ProtectedRoute perm="module.plant-production"><PlantProduction /></ProtectedRoute>
           } />
           {/* Round 170 — Mix Designs moved out of Plant Production into Quality
               Control. Same data, QC's home. QC Engineer and Lab reach it here. */}
           <Route path="/mix-designs" element={
-            <ProtectedRoute roles={["administrator", "manager", "qc_engineer", "lab_technician"]}><QcMixDesigns /></ProtectedRoute>
+            <ProtectedRoute perm="quality.mix-designs-view"><QcMixDesigns /></ProtectedRoute>
           } />
           {/* Round 158 — the Manager's decision on a disputed load, and the
               pattern those disputes make over time. Manager is in the role
-              list for the queue; the variance report itself is Administrator,
-              enforced by material.reports rather than by the route. */}
+              list for the queue. Round 192: opened by either of its two
+              functions — confirming disputed loads, or the variance report. */}
           <Route path="/receipt-differences" element={
-            <ProtectedRoute roles={["administrator", "manager"]}><ReceiptVariance /></ProtectedRoute>
+            <ProtectedRoute perm={["material.receipt-confirm", "weighbridge.receipt-variance"]}><ReceiptVariance /></ProtectedRoute>
           } />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>

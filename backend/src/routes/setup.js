@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { CATALOGUE as PERM_CATALOGUE, ROLES as PERM_ROLES } from "../lib/permissionCatalogue.js";
+import { CATALOGUE as PERM_CATALOGUE, ROLES as PERM_ROLES, MODULES as PERM_MODULES, MATRIX_GRANTS as PERM_MATRIX_GRANTS, functionsOfModule as permFunctionsOfModule } from "../lib/permissionCatalogue.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -2200,6 +2200,29 @@ router.get("/setup", async (req, res) => {
       (seeded.length ? `Seeded role defaults for ${seeded.join(", ")}.` : "Role defaults already present, left untouched.")
     );
 
+    // Round 192 — the REPAIR_nnn lists below run ONCE each, not on every
+    // /setup visit. Before this they re-inserted their rows every time, so a
+    // role default a Super Admin switched off came back the next time anyone
+    // opened /setup — one of the ways "access control is not working" showed
+    // up. An installation that already ran them (any database that was not
+    // seeded fresh in this same run and has not yet seen Round 192) records
+    // them as done without re-running them; a brand-new database runs them.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_migration_marks (
+        mark VARCHAR(80) PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    const { rows: preR192 } = await pool.query(`SELECT 1 FROM app_migration_marks WHERE mark = 'r192_module_access'`);
+    const assumeLegacyRepairsDone = !preR192.length && seeded.length === 0;
+    async function repairOnce(name, run) {
+      const { rows } = await pool.query(`SELECT 1 FROM app_migration_marks WHERE mark = $1`, [name]);
+      if (rows.length) return { rows: [] };
+      const result = assumeLegacyRepairsDone ? { rows: [] } : await run();
+      await pool.query(`INSERT INTO app_migration_marks (mark) VALUES ($1) ON CONFLICT DO NOTHING`, [name]);
+      return result;
+    }
+
     // Round 148 — repair the six view defaults Round 146 got wrong.
     //
     // The seeding loop above only runs for a role with NO rows, which is what
@@ -2226,13 +2249,13 @@ router.get("/setup", async (req, res) => {
       ["plant_operator", "material.units", "view"],
       ["plant_operator", "material.physical-stock", "view"],
     ];
-    const repaired = await pool.query(
+    const repaired = await repairOnce("repair_148", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING
        RETURNING role::text, permission_key`,
       [REPAIR_148.map((r) => r[0]), REPAIR_148.map((r) => r[1]), REPAIR_148.map((r) => r[2])]
-    );
+    ));
     log.push(
       repaired.rows.length
         ? `Schema migration applied (Round 148 — restored ${repaired.rows.length} master-data view default(s) Round 146 missed: ` +
@@ -2763,13 +2786,13 @@ CREATE INDEX IF NOT EXISTS idx_recipe_design_map_design ON recipe_mix_design_map
       ["qc_engineer", "production.plant-data", "view"],
       ["lab_technician", "production.plant-data", "view"],
     ];
-    const plantRepaired = await pool.query(
+    const plantRepaired = await repairOnce("repair_157", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING
        RETURNING role::text`,
       [REPAIR_157.map((r) => r[0]), REPAIR_157.map((r) => r[1]), REPAIR_157.map((r) => r[2])]
-    );
+    ));
     log.push(
       plantRepaired.rows.length
         ? `Schema migration applied (Round 157 — plant production access granted to ` +
@@ -2790,13 +2813,13 @@ CREATE INDEX IF NOT EXISTS idx_recipe_design_map_design ON recipe_mix_design_map
       ["qc_engineer", "production.recipe-edit", "view"],
       ["qc_engineer", "production.recipe-edit", "edit"],
     ];
-    const recipeEditRepaired = await pool.query(
+    const recipeEditRepaired = await repairOnce("repair_174", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING
        RETURNING role::text`,
       [REPAIR_174.map((r) => r[0]), REPAIR_174.map((r) => r[1]), REPAIR_174.map((r) => r[2])]
-    );
+    ));
     log.push(
       recipeEditRepaired.rows.length
         ? `Schema migration applied (Round 174 — recipe-edit access granted to Administrator, Manager, QC Engineer).`
@@ -2813,13 +2836,13 @@ CREATE INDEX IF NOT EXISTS idx_recipe_design_map_design ON recipe_mix_design_map
       ["lab_technician", "production.recipe-edit", "view"],
       ["lab_technician", "production.recipe-edit", "edit"],
     ];
-    const recipeEditLabRepaired = await pool.query(
+    const recipeEditLabRepaired = await repairOnce("repair_178", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING
        RETURNING role::text`,
       [REPAIR_178.map((r) => r[0]), REPAIR_178.map((r) => r[1]), REPAIR_178.map((r) => r[2])]
-    );
+    ));
     log.push(
       recipeEditLabRepaired.rows.length
         ? `Schema migration applied (Round 178 — recipe-edit access also granted to Lab Technician; Super Admin can revoke).`
@@ -3159,13 +3182,13 @@ CREATE INDEX IF NOT EXISTS idx_plant_batches_order_no ON plant_batches(order_no)
       ["manager", "material.receipt-confirm", "view"],
       ["manager", "material.receipt-confirm", "edit"],
     ];
-    const confirmRepaired = await pool.query(
+    const confirmRepaired = await repairOnce("repair_158", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING
        RETURNING role::text`,
       [REPAIR_158.map((r) => r[0]), REPAIR_158.map((r) => r[1]), REPAIR_158.map((r) => r[2])]
-    );
+    ));
     log.push(
       confirmRepaired.rows.length
         ? `Schema migration applied (Round 158 — Manager can now confirm a disputed receipt quantity). ` +
@@ -3180,12 +3203,12 @@ CREATE INDEX IF NOT EXISTS idx_plant_batches_order_no ON plant_batches(order_no)
       ["plant_operator", "production.plant-manual", "create"],
       ["plant_operator", "production.plant-manual", "edit"],
     ];
-    const manualRepaired = await pool.query(
+    const manualRepaired = await repairOnce("repair_159", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING RETURNING role::text`,
       [REPAIR_159.map((r) => r[0]), REPAIR_159.map((r) => r[1]), REPAIR_159.map((r) => r[2])]
-    );
+    ));
     log.push(
       manualRepaired.rows.length
         ? `Schema migration applied (Round 159 — the Plant Operator can now enter the consumption and production the plant did not record).`
@@ -3310,12 +3333,12 @@ ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_at TIMESTAMPTZ;
     const REPAIR_160 = [
       ["manager", "production.mixtrack-qc-delay", "view"],
     ];
-    const qcDelayRepaired = await pool.query(
+    const qcDelayRepaired = await repairOnce("repair_160", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING RETURNING role::text`,
       [REPAIR_160.map((r) => r[0]), REPAIR_160.map((r) => r[1]), REPAIR_160.map((r) => r[2])]
-    );
+    ));
     log.push(
       qcDelayRepaired.rows.length
         ? `Schema migration applied (Round 160 — a Manager can now see the QC delay allowance that moves the ticket's finish time). Administrator can change it.`
@@ -3331,12 +3354,12 @@ ALTER TABLE site_qc ADD COLUMN IF NOT EXISTS note_status_changed_at TIMESTAMPTZ;
     const REPAIR_165 = [
       ["sales_executive", "sales.booking-links", "view"],
     ];
-    const navRepaired = await pool.query(
+    const navRepaired = await repairOnce("repair_165", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING RETURNING role::text`,
       [REPAIR_165.map((r) => r[0]), REPAIR_165.map((r) => r[1]), REPAIR_165.map((r) => r[2])]
-    );
+    ));
     log.push(
       navRepaired.rows.length
         ? `Schema migration applied (Round 165 — the Sales Executive keeps its bookings link now that navigation is permission-driven).`
@@ -3587,13 +3610,13 @@ CREATE INDEX IF NOT EXISTS idx_rm_receipts_wb_ticket ON rm_receipts(weighbridge_
       ["plant_operator", "material.weighbridge", "view"],
       ["lab_technician", "material.weighbridge", "view"],
     ];
-    const wbRepaired = await pool.query(
+    const wbRepaired = await repairOnce("repair_154", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING
        RETURNING role::text, permission_key, action`,
       [REPAIR_154.map((r) => r[0]), REPAIR_154.map((r) => r[1]), REPAIR_154.map((r) => r[2])]
-    );
+    ));
     log.push(
       wbRepaired.rows.length
         ? `Schema migration applied (Round 154 — weighbridge access granted to ` +
@@ -3621,13 +3644,13 @@ CREATE INDEX IF NOT EXISTS idx_rm_receipts_wb_ticket ON rm_receipts(weighbridge_
       ["lab_technician", "orders.challan-print", "view"],
       ["qc_engineer", "orders.challan-print", "view"],
     ];
-    const challanRepaired = await pool.query(
+    const challanRepaired = await repairOnce("repair_153", () => pool.query(
       `INSERT INTO role_default_permissions (role, permission_key, action)
        SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
        ON CONFLICT DO NOTHING
        RETURNING role::text, permission_key`,
       [REPAIR_153.map((r) => r[0]), REPAIR_153.map((r) => r[1]), REPAIR_153.map((r) => r[2])]
-    );
+    ));
     log.push(
       challanRepaired.rows.length
         ? `Schema migration applied (Round 153 — challan printing granted to ${challanRepaired.rows.length} more role(s): ` +
@@ -3775,6 +3798,199 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rm_supplier_rates_current_src
   ON rm_supplier_rates(supplier_id, material_id, (COALESCE(source_id, 0)), scope) WHERE valid_to IS NULL;
 `);
     log.push("Schema migration applied (Round 189 — plant consumption transfers; material sources, existing rates and orders on each material's 'Existing' source).");
+
+    // =====================================================================
+    // Round 192 — module access control (the user's role × module table).
+    //
+    // Two parts.
+    //
+    // (1) A ONE-TIME step (guarded by app_migration_marks, so it never runs
+    //     twice and never re-grants something a Super Admin later switched
+    //     off): give the new functions to whoever held the thing they were
+    //     split out of, add the user's table (view only), and make sure every
+    //     role / person who already uses a module holds its new switch —
+    //     otherwise the module gate in lib/permissions.js would take away
+    //     access they have today.
+    //
+    // (2) From now on, a function added to the catalogue in a later round is
+    //     seeded from its catalogue defaults exactly once
+    //     (permission_key_seeds). Before this, a new key reached a live
+    //     installation only through a hand-written REPAIR_nnn list.
+    // =====================================================================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_migration_marks (
+        mark VARCHAR(80) PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS permission_key_seeds (
+        permission_key VARCHAR(80) PRIMARY KEY,
+        seeded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    const NON_COMPUTED_ROLES = PERM_ROLES.filter((r) => r !== "super_admin" && r !== "administrator");
+    // A role seeded from the catalogue earlier in THIS run (a brand-new
+    // database) already has exactly the Round 192 defaults; deriving on top of
+    // it would copy the user's table onto keys it was never meant for. Only
+    // roles that existed before this run are derived.
+    const SKIP_DERIVE = ["super_admin", "administrator", ...seeded.map((x) => x.split(":")[0])];
+    const { rows: mark192 } = await pool.query(`SELECT 1 FROM app_migration_marks WHERE mark = 'r192_module_access'`);
+    if (!mark192.length) {
+      const added = { roles: 0, users: 0 };
+
+      // newKey/newAction is given to every role, and copied onto every
+      // person's own setting, that holds ANY of the source pairs today.
+      async function derive(newKey, newAction, sources, { excludeRoles: extraExclude = [], onlyRoles = null } = {}) {
+        const excludeRoles = [...SKIP_DERIVE, ...extraExclude];
+        const sk = sources.map((x) => x[0]);
+        const sa = sources.map((x) => x[1]);
+        const r1 = await pool.query(
+          `INSERT INTO role_default_permissions (role, permission_key, action)
+           SELECT DISTINCT d.role, $1::text, $2::text
+             FROM role_default_permissions d
+             JOIN UNNEST($3::text[], $4::text[]) AS s(k, a) ON s.k = d.permission_key AND s.a = d.action
+            WHERE d.role::text <> ALL($5::text[])
+              AND ($6::text[] IS NULL OR d.role::text = ANY($6::text[]))
+           ON CONFLICT DO NOTHING`,
+          [newKey, newAction, sk, sa, excludeRoles, onlyRoles]
+        );
+        const r2 = await pool.query(
+          `INSERT INTO user_permission_overrides (user_id, permission_key, action, granted, set_by, set_at)
+           SELECT o.user_id, $1::text, $2::text, bool_or(o.granted), MIN(o.set_by), now()
+             FROM user_permission_overrides o
+             JOIN UNNEST($3::text[], $4::text[]) AS s(k, a) ON s.k = o.permission_key AND s.a = o.action
+             JOIN users u ON u.id = o.user_id
+            WHERE u.role::text <> ALL($5::text[])
+            GROUP BY o.user_id
+           ON CONFLICT DO NOTHING`,
+          [newKey, newAction, sk, sa, excludeRoles]
+        );
+        added.roles += r1.rowCount;
+        added.users += r2.rowCount;
+      }
+
+      // -- the new functions, from what they were split out of --
+      const PLANT_DATA = [["production.plant-data", "view"]];
+      await derive("plant.production", "view", PLANT_DATA);
+      await derive("plant.consumption", "view", PLANT_DATA);
+      await derive("plant.kpi", "view", PLANT_DATA);
+      // Round 187's decision: not the Plant Operator.
+      await derive("plant.vs-billed", "view", PLANT_DATA, { excludeRoles: ["plant_operator"] });
+      // The Manual entry tab was shown (read-only) to everyone who could open
+      // the plant data; it is a sub-menu of its own now.
+      await derive("production.plant-manual", "view", PLANT_DATA);
+      await derive("plant.cost", "view", [["material.stock-valuation", "view"]]);
+      await derive("material.kpi", "view", [["material.stock-valuation", "view"]]);
+      await derive("weighbridge.records", "view", [["material.weighbridge", "view"]]);
+      await derive("weighbridge.vehicles", "view", [["material.weighbridge-mapping", "view"]]);
+      await derive("weighbridge.vehicles", "edit", [["material.weighbridge-mapping", "edit"]]);
+      await derive("weighbridge.receipt-variance", "view", [["material.reports", "view"]]);
+      await derive("material.materials-menu", "view", [["material.materials", "create"]]);
+      await derive("material.suppliers-menu", "view", [["material.suppliers", "create"]]);
+      for (const r of ["open-orders", "weighbridge-comparison", "daily-consumption", "mix-vs-actual",
+        "monthly-consumption", "monthly-physical-stock", "rate-history", "supplier-summary",
+        "transporter-freight", "cost-per-m3"]) {
+        await derive(`material.report.${r}`, "view", [["material.reports", "view"]]);
+      }
+      // The /mix-designs screen needed the plant data key AND one of these roles.
+      await derive("quality.mix-designs-view", "view", PLANT_DATA,
+        { onlyRoles: ["manager", "qc_engineer", "lab_technician"] });
+      // Screens whose old guard ignored permissions entirely: their defaults
+      // are exactly that old role list.
+      for (const [key, acts, roles] of [
+        ["production.correct-order", ["view", "edit"], ["manager"]],
+        ["production.correct-tickets", ["view", "edit"], ["manager"]],
+      ]) {
+        for (const role of roles.filter((r) => !SKIP_DERIVE.includes(r))) for (const a of acts) {
+          const r = await pool.query(
+            `INSERT INTO role_default_permissions (role, permission_key, action) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [role, key, a]
+          );
+          added.roles += r.rowCount;
+        }
+      }
+
+      // -- the module switches, for everyone who uses something inside --
+      for (const m of PERM_MODULES) {
+        const inside = permFunctionsOfModule(m.key).slice(1);
+        const r1 = await pool.query(
+          `INSERT INTO role_default_permissions (role, permission_key, action)
+           SELECT DISTINCT role, $1::text, 'view' FROM role_default_permissions
+            WHERE permission_key = ANY($2::text[]) AND role::text <> ALL($3::text[])
+           ON CONFLICT DO NOTHING`,
+          [m.gate, inside, SKIP_DERIVE]
+        );
+        // A person granted something inside a module their role does not
+        // hold keeps it: their own switch for the module is turned on too.
+        const r2 = await pool.query(
+          `INSERT INTO user_permission_overrides (user_id, permission_key, action, granted, set_by, set_at)
+           SELECT o.user_id, $1::text, 'view', true, MIN(o.set_by), now()
+             FROM user_permission_overrides o
+             JOIN users u ON u.id = o.user_id
+            WHERE o.granted AND o.permission_key = ANY($2::text[])
+              AND NOT EXISTS (SELECT 1 FROM role_default_permissions d
+                               WHERE d.role = u.role AND d.permission_key = $1::text AND d.action = 'view')
+            GROUP BY o.user_id
+           ON CONFLICT DO NOTHING`,
+          [m.gate, inside]
+        );
+        added.roles += r1.rowCount;
+        added.users += r2.rowCount;
+      }
+
+      // -- defaults that now have to say what the old role guards allowed --
+      const REPAIR_192 = [
+        // The approve route always allowed these four roles.
+        ["lab_technician", "quality.mix-design-approve", "edit"],
+        ["qc_engineer", "quality.mix-design-approve", "edit"],
+        ["manager", "quality.mix-design-approve", "edit"],
+        // The user's table — view only.
+        ...PERM_MATRIX_GRANTS,
+      ].filter((r) => NON_COMPUTED_ROLES.includes(r[0]));
+      const rep = await pool.query(
+        `INSERT INTO role_default_permissions (role, permission_key, action)
+         SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+         ON CONFLICT DO NOTHING`,
+        [REPAIR_192.map((r) => r[0]), REPAIR_192.map((r) => r[1]), REPAIR_192.map((r) => r[2])]
+      );
+      added.roles += rep.rowCount;
+
+      await pool.query(`INSERT INTO app_migration_marks (mark) VALUES ('r192_module_access') ON CONFLICT DO NOTHING`);
+      log.push(
+        `Schema migration applied (Round 192 — module access control: ${added.roles} role default(s) and ` +
+        `${added.users} personal setting(s) added so nobody loses access, plus the role × module table, view only).`
+      );
+    } else {
+      log.push("Round 192 — module access already set up, left as the Super Admin has it.");
+    }
+
+    // (2) seed any catalogue function this installation has never seen.
+    const { rows: seededKeys } = await pool.query(`SELECT permission_key FROM permission_key_seeds`);
+    const allKeys = PERM_CATALOGUE.filter((c) => !c.locked).map((c) => c.key);
+    if (!seededKeys.length) {
+      // First run: everything in the catalogue today has been handled above or
+      // by an earlier round, so it is recorded as seeded without writing.
+      await pool.query(
+        `INSERT INTO permission_key_seeds (permission_key) SELECT UNNEST($1::text[]) ON CONFLICT DO NOTHING`,
+        [allKeys]
+      );
+    } else {
+      const known = new Set(seededKeys.map((r) => r.permission_key));
+      const fresh = PERM_CATALOGUE.filter((c) => !c.locked && !known.has(c.key));
+      for (const c of fresh) {
+        const values = [];
+        for (const role of NON_COMPUTED_ROLES) for (const a of (c.roles[role] || [])) values.push([role, c.key, a]);
+        if (values.length) {
+          await pool.query(
+            `INSERT INTO role_default_permissions (role, permission_key, action)
+             SELECT * FROM UNNEST($1::user_role[], $2::text[], $3::text[])
+             ON CONFLICT DO NOTHING`,
+            [values.map((v) => v[0]), values.map((v) => v[1]), values.map((v) => v[2])]
+          );
+        }
+        await pool.query(`INSERT INTO permission_key_seeds (permission_key) VALUES ($1) ON CONFLICT DO NOTHING`, [c.key]);
+      }
+      if (fresh.length) log.push(`Seeded role defaults for ${fresh.length} new function(s): ${fresh.map((c) => c.key).join(", ")}.`);
+    }
 
     log.push(`Schema migration applied (Round 142 — rm_materials.mix_component). Auto-classified ${componentsGuessed} material(s) by name; Administrator can correct any of them in Materials.`);
 

@@ -11,12 +11,24 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
+import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { resolveCubeTestDnSummary } from "../lib/cubeTestDns.js";
 
 const router = Router();
 // Broad read access for anyone who might reasonably need to see this data;
 // writes are tightened per-route below.
-router.use(requireAuth, requireRole("lab_technician", "qc_engineer", "manager", "administrator"));
+//
+// Round 192 — was requireRole(lab_technician, qc_engineer, manager,
+// administrator). Every screen that reads from here is a Quality Control
+// sub-menu, so holding View on any of them opens the reads; denying the
+// Quality Control module to a role (lib/permissions.js) closes them all.
+// Writes below are gated by their own function, not by role.
+const QC_READ_KEYS = [
+  "quality.lab-technician", "quality.cube-tests", "quality.cube-test-report", "quality.lab-due-today",
+  "quality.mix-designs", "quality.mix-assignments", "quality.mix-designs-view", "quality.cube-qc-dashboard",
+  "quality.raw-material-stock",
+];
+router.use(requireAuth, requireAnyPermission(QC_READ_KEYS, "view"));
 
 // Round 121, item 4 — order picker for "+ Record a site cast" (the only
 // place Lab Technician manually picks an order, since a site cast has no
@@ -349,7 +361,7 @@ router.get("/cube-pours/:orderId", async (req, res) => {
 // Administrator to fix their own mistake was just friction, not a real
 // safeguard against anything Lab Technician couldn't already do via the
 // POST above (which freely overwrites a result's values, date included).
-router.delete("/cube-pours/:orderId/results/:resultId", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.delete("/cube-pours/:orderId/results/:resultId", requirePermission("quality.cube-tests", "delete"), async (req, res) => {
   const { rows } = await query(
     `DELETE FROM cube_test_results WHERE id = $1 AND order_id = $2 RETURNING id`,
     [req.params.resultId, req.params.orderId]
@@ -363,7 +375,7 @@ router.delete("/cube-pours/:orderId/results/:resultId", requireRole("lab_technic
 // migration), so this is only ever hit to actively hide something. Works
 // unchanged for a pour-level or a legacy result — it only ever touches the
 // one row by its own id.
-router.patch("/cube-tests/:resultId/visibility", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.patch("/cube-tests/:resultId/visibility", requirePermission("quality.cube-tests", "edit"), async (req, res) => {
   const { rows } = await query(
     `UPDATE cube_test_results SET visible_to_customer = $1 WHERE id = $2 RETURNING id`,
     [!!req.body.visible_to_customer, req.params.resultId]
@@ -378,7 +390,7 @@ router.patch("/cube-tests/:resultId/visibility", requireRole("lab_technician", "
 // closed pour can always be reopened. Parallel to (but independent of) the
 // older per-DN cube_batch_status, which stays untouched for any DN closed
 // out under the pre-round-122 model.
-router.post("/cube-pours/:orderId/close", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.post("/cube-pours/:orderId/close", requirePermission("quality.cube-tests", "edit"), async (req, res) => {
   const { reason } = req.body;
   const { rows: orderRows } = await query("SELECT id FROM customer_orders WHERE id = $1", [req.params.orderId]);
   if (!orderRows.length) return res.status(404).json({ error: "Order not found." });
@@ -391,7 +403,7 @@ router.post("/cube-pours/:orderId/close", requireRole("lab_technician", "adminis
   res.json({ ok: true });
 });
 
-router.post("/cube-pours/:orderId/reopen", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.post("/cube-pours/:orderId/reopen", requirePermission("quality.cube-tests", "edit"), async (req, res) => {
   await query("DELETE FROM cube_pour_status WHERE order_id = $1", [req.params.orderId]);
   res.json({ ok: true });
 });
@@ -401,7 +413,7 @@ router.post("/cube-pours/:orderId/reopen", requireRole("lab_technician", "admini
 // — QC Engineer no longer has write access to this at all. Still shown
 // read-only on Manager/Administrator dashboards via GET /master/raw-material-stock,
 // unchanged. Same shared-PIN protection as before it moved.
-router.put("/raw-material-stock", requireRole("lab_technician"), async (req, res) => {
+router.put("/raw-material-stock", requirePermission("quality.raw-material-stock", "edit"), async (req, res) => {
   const configuredPin = process.env.RAW_MATERIAL_STOCK_PIN;
   if (configuredPin && req.body.pin !== configuredPin) {
     return res.status(403).json({ error: "Incorrect PIN." });
@@ -433,7 +445,7 @@ router.put("/raw-material-stock", requireRole("lab_technician"), async (req, res
 // (cube_test_cubes.plant_qc_id) for the PDF/report's own provenance, even
 // though the human-readable cube_label the Lab Technician types already
 // spells the DN out too (e.g. "TCK-2208 · Cube 1").
-router.post("/cube-pours/:orderId/results", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.post("/cube-pours/:orderId/results", requirePermission("quality.cube-tests", "create"), async (req, res) => {
   const { testing_age_days, mix_design_id, groups, remarks, failure_type } = req.body;
   if (![7, 28].includes(Number(testing_age_days))) {
     return res.status(400).json({ error: "Testing age must be 7 or 28 days." });
@@ -545,7 +557,7 @@ router.get("/site-cube-casts", async (req, res) => {
   res.json(rows);
 });
 
-router.post("/site-cube-casts", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.post("/site-cube-casts", requirePermission("quality.cube-tests", "create"), async (req, res) => {
   const { order_id, cast_date, number_of_cubes, sample_ids, remarks } = req.body;
   if (!order_id || !cast_date) {
     return res.status(400).json({ error: "Order and cast date are required." });
@@ -618,7 +630,7 @@ router.get("/site-cube-casts/:castId", async (req, res) => {
 // site_cube_test_results to site_cube_casts in the schema, by design — this
 // keeps a plain accidental-click DELETE on a *test result* from silently
 // taking the whole cast with it).
-router.delete("/site-cube-casts/:castId", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.delete("/site-cube-casts/:castId", requirePermission("quality.cube-tests", "delete"), async (req, res) => {
   const { rows: castRows } = await query("SELECT id FROM site_cube_casts WHERE id = $1", [req.params.castId]);
   if (!castRows.length) return res.status(404).json({ error: "Site cube cast not found." });
   await query(
@@ -629,7 +641,7 @@ router.delete("/site-cube-casts/:castId", requireRole("lab_technician", "adminis
   res.json({ ok: true });
 });
 
-router.post("/site-cube-casts/:castId/results", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.post("/site-cube-casts/:castId/results", requirePermission("quality.cube-tests", "create"), async (req, res) => {
   const { testing_age_days, mix_design_id, cubes, remarks, failure_type } = req.body;
   if (![7, 28].includes(Number(testing_age_days))) {
     return res.status(400).json({ error: "Testing age must be 7 or 28 days." });
@@ -688,7 +700,7 @@ router.post("/site-cube-casts/:castId/results", requireRole("lab_technician", "a
 
 // Round 120, item 4a — same toggle as the plant-cast one above, mirrored for
 // site-cast results.
-router.patch("/site-cube-tests/:resultId/visibility", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.patch("/site-cube-tests/:resultId/visibility", requirePermission("quality.cube-tests", "edit"), async (req, res) => {
   const { rows } = await query(
     `UPDATE site_cube_test_results SET visible_to_customer = $1 WHERE id = $2 RETURNING id`,
     [!!req.body.visible_to_customer, req.params.resultId]
@@ -702,7 +714,7 @@ router.patch("/site-cube-tests/:resultId/visibility", requireRole("lab_technicia
 // not just an untested cast.
 // Round 129 — opened up to Lab Technician too, same reasoning as the
 // plant-side delete above.
-router.delete("/site-cube-tests/:resultId", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.delete("/site-cube-tests/:resultId", requirePermission("quality.cube-tests", "delete"), async (req, res) => {
   const { rows } = await query(
     `DELETE FROM site_cube_test_results WHERE id = $1 RETURNING id`,
     [req.params.resultId]
@@ -720,7 +732,7 @@ router.delete("/site-cube-tests/:resultId", requireRole("lab_technician", "admin
 //
 // Like its plant-side twin this only moves the date. It does not re-run any of
 // the averaging or acceptance logic, because none of that depends on tested_at.
-router.patch("/site-cube-tests/:resultId/date", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.patch("/site-cube-tests/:resultId/date", requirePermission("quality.cube-tests", "edit"), async (req, res) => {
   const { tested_at } = req.body;
   const parsed = tested_at ? new Date(tested_at) : null;
   if (!parsed || isNaN(parsed)) {
@@ -893,7 +905,7 @@ router.get("/site-cube-casts/:castId/combined-pdf-data", async (req, res) => {
 // WHERE works uniformly regardless of which shape the result is.
 // Round 129 — opened up to Lab Technician too, per explicit request; was
 // administrator-only since Round 124.
-router.patch("/cube-pours/:orderId/results/:resultId/date", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.patch("/cube-pours/:orderId/results/:resultId/date", requirePermission("quality.cube-tests", "edit"), async (req, res) => {
   const { tested_at } = req.body;
   const parsed = tested_at ? new Date(tested_at) : null;
   if (!parsed || isNaN(parsed)) {
@@ -964,7 +976,7 @@ router.get("/cube-tests/:resultId/pdf-data", async (req, res) => {
 // Round 120, items 4b/4e — UNIONed with site_cube_test_results (cubes cast
 // at the customer's site rather than the plant) so this one report covers
 // both; `source` tells the two apart since they don't share an id space.
-router.get("/cube-test-report", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.get("/cube-test-report", requirePermission("quality.cube-test-report", "view"), async (req, res) => {
   const { from_date, to_date, customer_id, mix_grade_id, design_ref_code, testing_age_days } = req.query;
   const conditions = [];
   const params = [];
@@ -1090,7 +1102,7 @@ router.get("/mix-designs/:id", async (req, res) => {
   res.json({ ...rows[0], admixtures });
 });
 
-router.post("/mix-designs", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.post("/mix-designs", requirePermission("quality.mix-designs", "create"), async (req, res) => {
   const b = req.body;
   const required = ["mix_grade_id", "design_ref_code", "fck_28day_mpa", "std_deviation_mpa", "cement_kgm3", "free_water_kgm3", "fine_agg_kgm3", "coarse_20mm_kgm3", "coarse_12_5mm_kgm3"];
   for (const key of required) {
@@ -1155,7 +1167,7 @@ router.post("/mix-designs", requireRole("lab_technician", "administrator"), asyn
 // are replaced wholesale (delete + reinsert) rather than diffed, same
 // "keep it simple" call as everywhere else in this file that doesn't need
 // per-row admixture history.
-router.patch("/mix-designs/:id", requireRole("lab_technician", "administrator"), async (req, res) => {
+router.patch("/mix-designs/:id", requirePermission("quality.mix-designs", "edit"), async (req, res) => {
   const { rows: existingRows } = await query("SELECT id, status FROM mix_designs WHERE id = $1", [req.params.id]);
   if (!existingRows.length) return res.status(404).json({ error: "Mix design not found." });
   if (existingRows[0].status !== "draft") {
@@ -1254,7 +1266,7 @@ router.delete("/mix-designs/:id", requireRole("administrator"), async (req, res)
 // "approval isn't working"). Manager can never hit this anyway (manager
 // can't create a design), and the two-person rule still fully applies to
 // a lab_technician/qc_engineer-drafted design.
-router.post("/mix-designs/:id/approve", requireRole("lab_technician", "qc_engineer", "manager", "administrator"), async (req, res) => {
+router.post("/mix-designs/:id/approve", requirePermission("quality.mix-design-approve", "edit"), async (req, res) => {
   const { rows } = await query("SELECT id, created_by, status FROM mix_designs WHERE id = $1", [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: "Mix design not found." });
   const design = rows[0];

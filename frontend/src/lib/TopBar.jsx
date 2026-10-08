@@ -5,6 +5,9 @@ import { ROLE_HOME } from "./roleHome.js";
 import { pushSupported, pushStatus, enablePush } from "./push.js";
 import { APP_VERSION } from "./version.js";
 import SolitaireButton, { SOLITAIRE_ROLES } from "./SolitaireButton.jsx";
+import { usePermissions } from "./PermissionContext.jsx";
+import { visibleHub } from "./adminScreens.js";
+import { isAdminLevel } from "./roles.js";
 
 // Round 138, item 2 — a live clock so anyone using the app can see the current
 // date/time at a glance without switching away to check their phone. Ticks
@@ -45,6 +48,12 @@ export function TopBar({ title }) {
   const { pathname } = useLocation();
   const myHome = user ? ROLE_HOME[user.role] : null;
   const onOwnDashboard = myHome && pathname === myHome;
+  // Round 192 — the Modules page, offered to every role that has at least one
+  // module or screen switched on. The Administrator has the same grid as their
+  // own dashboard, so they are not offered it twice.
+  const { can, ready: permsReady } = usePermissions();
+  const showModules = !!user && !isAdminLevel(user.role) && pathname !== "/modules"
+    && permsReady && visibleHub(can).length > 0;
   const [notifStatus, setNotifStatus] = useState(null);
   const now = useClock();
 
@@ -87,6 +96,9 @@ export function TopBar({ title }) {
         <div className="topbar-nav">
           {!onOwnDashboard && myHome && (
             <Link to={myHome} className="topbar-link">&larr; Dashboard</Link>
+          )}
+          {showModules && (
+            <Link to="/modules" className="topbar-link">Modules</Link>
           )}
           {pathname !== "/orders" && (
             <Link to="/orders" className="topbar-link">Today &amp; tomorrow's orders</Link>

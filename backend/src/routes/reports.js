@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requirePermission } from "../lib/permissions.js";
 // Round 143 follow-up — the four headline figures have ONE definition now,
 // shared with the Administrator dashboard so the two pages cannot disagree.
 import { dashboardKpiRows } from "../lib/dashboardKpis.js";
@@ -230,7 +231,7 @@ router.get("/trip-analysis/scatter", requireRole("manager", "administrator"), as
 // checks) through Plant Out, Site In, Unloading Start, and Unloading
 // Complete. Each trip's own timestamps, not aggregated — the frontend draws
 // the actual timeline from these.
-router.get("/cycle-time", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/cycle-time", requirePermission("reports.cycle-time", "view"), async (req, res) => {
   const fromDate = req.query.from_date || istDay();
   const toDate = req.query.to_date || fromDate;
   const sortBy = req.query.sort_by === "truck" ? "t.truck_number" : "dt.ticket_number";

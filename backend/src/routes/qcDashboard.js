@@ -36,9 +36,12 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requirePermission } from "../lib/permissions.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("administrator"));
+// Round 192 — was requireRole("administrator"). Cube Strength Analysis is a
+// Quality Control sub-menu now; the function is the gate.
+router.use(requireAuth, requirePermission("quality.cube-qc-dashboard", "view"));
 
 // IS 10262 Table 2 — the sigma a design assumes before the plant has 30 of
 // its own results. Only used as a fallback: a linked mix design carries its

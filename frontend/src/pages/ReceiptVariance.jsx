@@ -337,7 +337,8 @@ export default function ReceiptVariance() {
   const [pendingCount, setPendingCount] = useState(null);
 
   const canConfirm = ready && can("material.receipt-confirm", "view");
-  const canReport = ready && can("material.reports", "view");
+  // Round 192 — the variance report is its own Weighbridge sub-menu now.
+  const canReport = ready && can("weighbridge.receipt-variance", "view");
 
   useEffect(() => {
     if (!canConfirm) return;

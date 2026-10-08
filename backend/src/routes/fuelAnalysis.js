@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requirePermission } from "../lib/permissions.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 const router = Router();
@@ -47,7 +48,7 @@ function dateRange(req) {
 // using the same LATERAL-join pattern as reports.js's /cycle-time route.
 // A truck only appears if it has fuel fills OR trips in the range, so an
 // idle/unused truck doesn't clutter the fleet view.
-router.get("/fleet", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/fleet", requirePermission("reports.fuel-analysis", "view"), async (req, res) => {
   const { fromDate, toDate } = dateRange(req);
   try {
     const { rows } = await query(
@@ -170,7 +171,7 @@ router.get("/fleet", requireRole(...STAFF_ROLES), async (req, res) => {
 // in range), the trip-level rows behind this truck's activity, and a
 // per-driver breakdown for this truck (same truck, different drivers can
 // have very different consumption/timing).
-router.get("/truck/:id", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/truck/:id", requirePermission("reports.fuel-analysis", "view"), async (req, res) => {
   const truckId = Number(req.params.id);
   if (!Number.isInteger(truckId)) return res.status(400).json({ error: "Invalid truck id." });
   const { fromDate, toDate } = dateRange(req);
@@ -283,7 +284,7 @@ router.get("/truck/:id", requireRole(...STAFF_ROLES), async (req, res) => {
 // the reason the fleet query already sets out: the litres in the first fill
 // were burned before the window opened, over hours nobody here can see.
 // total_litres still counts every litre, so the spend figure stays honest.
-router.get("/equipment", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/equipment", requirePermission("reports.fuel-analysis", "view"), async (req, res) => {
   const { fromDate, toDate } = dateRange(req);
   try {
     const { rows } = await query(
@@ -393,7 +394,7 @@ router.get("/equipment", requireRole(...STAFF_ROLES), async (req, res) => {
 // fill over the hours run since the last one. Pumps additionally get the jobs
 // behind those hours, so a high figure can be read against what the machine
 // was actually doing rather than guessed at.
-router.get("/equipment/:kind/:id", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/equipment/:kind/:id", requirePermission("reports.fuel-analysis", "view"), async (req, res) => {
   const kind = req.params.kind;
   const unitId = Number(req.params.id);
   if (kind !== "pump" && kind !== "equipment") return res.status(400).json({ error: "Invalid equipment kind." });

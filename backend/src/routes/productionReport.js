@@ -1,10 +1,13 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requirePermission } from "../lib/permissions.js";
 
 const router = Router();
 // Same visibility as the Director's Dashboard — Administrator and Manager.
-router.use(requireAuth, requireRole("administrator", "manager"));
+// Round 192 — the Daily Production Report's function is the gate (defaults:
+// Administrator and Manager, as before), so a Super Admin can grant or deny it.
+router.use(requireAuth, requirePermission("reports.production", "view"));
 
 const VALID_STATUSES = ["signed", "pending", "refused"];
 

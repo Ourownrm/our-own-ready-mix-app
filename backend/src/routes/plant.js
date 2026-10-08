@@ -28,7 +28,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { pool, query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requirePermission } from "../lib/permissions.js";
+import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { PLANT_SLOTS, SLOT_BY_KEY, RECIPE_TARGET_COLUMNS, normaliseSlot, isPlaceholderName } from "../lib/plantSlots.js";
 import { istDay } from "../lib/istDate.js";
 
@@ -617,6 +617,10 @@ const PLANT_READ = PLANT_ROLES;
 // Entering what the plant did not record is the Plant Operator's job — they are
 // the person who knows a hand mix happened. Administrator too, for corrections.
 const PLANT_MANUAL = ["administrator", "plant_operator"];
+// Round 192 — the plant's recipes and mix designs are read by Plant Production
+// AND by Quality Control's Mix Designs & Recipes screen. Either module's key
+// opens them, so denying one module does not break the other.
+const MIX_READ = ["production.plant-data", "quality.mix-designs-view"];
 
 // Round 167 — a shared date window for the reporting routes. When the caller
 // passes a valid from_date AND to_date (YYYY-MM-DD) it's an explicit range;
@@ -636,7 +640,7 @@ function dateRange(req, col) {
 }
 
 // The day's production, and how the plant is running.
-router.get("/summary", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/summary", requirePermission("plant.kpi", "view"), async (req, res) => {
   try {
     // CURRENT_DATE is the IST day — db.js pins every connection to
     // Asia/Kolkata. Doing this in JavaScript would give the UTC day and be
@@ -699,7 +703,7 @@ router.get("/summary", requireRole(...PLANT_ROLES), requirePermission("productio
 });
 
 // Production by day, and by recipe within the range.
-router.get("/production", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/production", requirePermission("plant.production", "view"), async (req, res) => {
   try {
     const rng = dateRange(req, "batch_date");
     const rngE = dateRange(req, "entry_date");   // plant_manual_entries
@@ -814,7 +818,7 @@ router.get("/production", requireRole(...PLANT_ROLES), requirePermission("produc
 // real consumption instead of disappearing — the figures are true before the
 // mapping work is done, which is the opposite of how the weighbridge behaves
 // and is right here because the plant weighed it either way.
-router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/consumption", requirePermission("plant.consumption", "view"), async (req, res) => {
   try {
     const rng = dateRange(req, "pb.batch_date");
     const { rows } = await query(
@@ -898,7 +902,7 @@ router.get("/consumption", requireRole(...PLANT_ROLES), requirePermission("produ
 // production). Rates are money, so this is gated like the material module's
 // valuation: Administrator only (material.stock-valuation). No new permission
 // key, so no seeding/REPAIR is needed.
-router.get("/cost-per-m3", requireRole("administrator"), requirePermission("material.stock-valuation", "view"), async (req, res) => {
+router.get("/cost-per-m3", requirePermission("plant.cost", "view"), async (req, res) => {
   try {
     const rngB = dateRange(req, "pb.batch_date");     // plant_batch_materials via its batch
     const rngE = dateRange(req, "e.entry_date");       // plant_manual_entries
@@ -985,13 +989,10 @@ router.get("/cost-per-m3", requireRole("administrator"), requirePermission("mate
 // / returns / unbilled or unrecorded loads — a figure worth watching, not a
 // reconciliation that must zero.
 // ---------------------------------------------------------------------------
-router.get("/production-vs-billed", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
-  // Round 187 — not for the Plant Operator (user decision). Checked inside the
-  // handler rather than by narrowing requireRole, so the role guard keeps
-  // matching the production.plant-data catalogue default (check-guards).
-  if (req.user.role === "plant_operator") {
-    return res.status(403).json({ error: "Plant vs billed is not available to the Plant Operator." });
-  }
+router.get("/production-vs-billed", requirePermission("plant.vs-billed", "view"), async (req, res) => {
+  // Round 187 kept this from the Plant Operator by a role check here. Round
+  // 192 made it the plant.vs-billed key, which the Plant Operator does not get
+  // by default — same result, but a Super Admin can now change it.
   try {
     // One date filter, applied to each source's own date column so the three
     // share a single param set (dateRange() can't, since each call restarts $1).
@@ -1072,7 +1073,7 @@ const MIX_COST_COMPONENTS = [
   { key: "coarse_12_5mm", label: "12.5 mm coarse",     col: "coarse_12_5mm_kgm3" },
 ];
 
-router.get("/mix-designs", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/mix-designs", requireAnyPermission(MIX_READ, "view"), async (req, res) => {
   try {
     const { rows } = await query(
       `SELECT d.id, d.design_ref_code, d.mix_description, d.revision, d.status, d.is_standard_for_grade,
@@ -1089,7 +1090,7 @@ router.get("/mix-designs", requireRole(...PLANT_ROLES), requirePermission("produ
   }
 });
 
-router.get("/mix-designs-comparison", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/mix-designs-comparison", requireAnyPermission(MIX_READ, "view"), async (req, res) => {
   try {
     const { rows } = await query(
       `SELECT g.name AS grade, d.design_ref_code, d.is_standard_for_grade,
@@ -1111,7 +1112,7 @@ router.get("/mix-designs-comparison", requireRole(...PLANT_ROLES), requirePermis
   }
 });
 
-router.get("/mix-designs/:id", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/mix-designs/:id", requireAnyPermission(MIX_READ, "view"), async (req, res) => {
   const id = Number(req.params.id);
   if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid mix design id." });
   try {
@@ -1143,7 +1144,7 @@ router.get("/mix-designs/:id", requireRole(...PLANT_ROLES), requirePermission("p
 // the plant weighed per m³ FOR THIS GRADE'S BATCHES in the period (load-cell
 // actual_kg over batches whose recipe resolved to this design's grade, ÷ this
 // grade's m³), same rate. The gap between the two is the over/under-batching cost.
-router.get("/mix-designs/:id/costing", requireRole("administrator"), requirePermission("material.stock-valuation", "view"), async (req, res) => {
+router.get("/mix-designs/:id/costing", requirePermission("material.stock-valuation", "view"), async (req, res) => {
   const id = Number(req.params.id);
   if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid mix design id." });
   try {
@@ -1329,7 +1330,7 @@ async function materialRateLookup() {
 const BINDER_SLOTS = ["cement1", "cement2", "cement3", "cement4", "filler1"];
 const WATER_SLOTS = ["water1", "water2"];
 
-router.get("/recipes", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/recipes", requireAnyPermission(MIX_READ, "view"), async (req, res) => {
   try {
     const [{ rows: recipes }, { rows: targets }, slotMat, rateLk] = await Promise.all([
       query(`SELECT * FROM plant_recipes WHERE COALESCE(deleted_flag, '') <> 'Yes' ORDER BY recipe_code`),
@@ -1369,7 +1370,7 @@ router.get("/recipes", requireRole(...PLANT_ROLES), requirePermission("productio
   }
 });
 
-router.get("/recipes/:id", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/recipes/:id", requireAnyPermission(MIX_READ, "view"), async (req, res) => {
   const id = Number(req.params.id);
   if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid recipe id." });
   try {
@@ -1471,7 +1472,7 @@ const RECIPE_EDIT_ROLES = ["administrator", "manager", "qc_engineer", "lab_techn
 // written to MCI370 — so no edit-password gate; gated by the same role/permission
 // that may edit recipes (production.recipe-edit edit).
 // ---------------------------------------------------------------------------
-router.post("/recipe-design-map", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+router.post("/recipe-design-map", requirePermission("production.recipe-edit", "edit"), async (req, res) => {
   const recipeId = Number(req.body.recipe_id);
   const designId = Number(req.body.mix_design_id);
   if (!(Number.isInteger(recipeId) && recipeId > 0) || !(Number.isInteger(designId) && designId > 0)) {
@@ -1496,7 +1497,7 @@ router.post("/recipe-design-map", requireRole(...RECIPE_EDIT_ROLES), requirePerm
   }
 });
 
-router.delete("/recipe-design-map", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+router.delete("/recipe-design-map", requirePermission("production.recipe-edit", "edit"), async (req, res) => {
   const recipeId = Number(req.query.recipe_id);
   const designId = Number(req.query.mix_design_id);
   if (!(Number.isInteger(recipeId) && recipeId > 0) || !(Number.isInteger(designId) && designId > 0)) {
@@ -1640,7 +1641,7 @@ async function applyRecipeEdit({ recipeId, after, note, userId, revertsEditId })
   }
 }
 
-router.patch("/recipes/:id", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+router.patch("/recipes/:id", requirePermission("production.recipe-edit", "edit"), async (req, res) => {
   const id = Number(req.params.id);
   if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid recipe id." });
   const pw = await checkEditPassword(req.body?.edit_password);
@@ -1676,7 +1677,7 @@ router.patch("/recipes/:id", requireRole(...RECIPE_EDIT_ROLES), requirePermissio
 });
 
 // Undo an edit: re-apply its before-snapshot (and queue that to the plant too).
-router.post("/recipes/edits/:editId/revert", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+router.post("/recipes/edits/:editId/revert", requirePermission("production.recipe-edit", "edit"), async (req, res) => {
   const editId = Number(req.params.editId);
   if (!(Number.isInteger(editId) && editId > 0)) return res.status(400).json({ error: "Invalid edit id." });
   const pw = await checkEditPassword(req.body?.edit_password);
@@ -1707,7 +1708,7 @@ router.post("/recipes/edits/:editId/revert", requireRole(...RECIPE_EDIT_ROLES), 
 // queue so turning write-back on never flushes a stale or unwanted edit to the
 // live plant database. reverts_edit_id is a self-FK, so any reference to this
 // row is cleared first.
-router.post("/recipes/edits/:editId/discard", requireRole(...RECIPE_EDIT_ROLES), requirePermission("production.recipe-edit", "edit"), async (req, res) => {
+router.post("/recipes/edits/:editId/discard", requirePermission("production.recipe-edit", "edit"), async (req, res) => {
   const editId = Number(req.params.editId);
   if (!(Number.isInteger(editId) && editId > 0)) return res.status(400).json({ error: "Invalid edit id." });
   const pw = await checkEditPassword(req.body?.edit_password);
@@ -1730,7 +1731,7 @@ router.post("/recipes/edits/:editId/discard", requireRole(...RECIPE_EDIT_ROLES),
 });
 
 // The recent loads, batches rolled up.
-router.get("/loads", requireRole(...PLANT_ROLES), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/loads", requirePermission("plant.production", "view"), async (req, res) => {
   try {
     const rng = dateRange(req, "batch_date");
     const { rows } = await query(
@@ -1869,7 +1870,7 @@ export async function reresolveSilos() {
 // ROUND 159 — the silos: what each hopper is, and what the refillable ones
 // have held over time.
 // ---------------------------------------------------------------------------
-router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "view"), async (req, res) => {
+router.get("/silos", requirePermission("production.plant-mapping", "view"), async (req, res) => {
   try {
     const [seen, aliases, materials, fills, notInSilo, units] = await Promise.all([
       // Keyed on the SLOT. slot_name is the panel's most recent word for it —
@@ -1999,7 +2000,7 @@ router.get("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.
 
 // Say what a hopper is: one of our materials, not stock at all, or refillable
 // storage whose contents come from the fill history.
-router.post("/silos", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "create"), async (req, res) => {
+router.post("/silos", requirePermission("production.plant-mapping", "create"), async (req, res) => {
   const slot = String(req.body?.slot ?? "").trim();
   if (!Object.prototype.hasOwnProperty.call(SLOT_BY_KEY, slot)) return res.status(400).json({ error: "That is not a hopper this plant has." });
 
@@ -2059,7 +2060,7 @@ router.post("/silos", requireRole(...PLANT_ADMIN), requirePermission("production
   }
 });
 
-router.delete("/silos/:id", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "edit"), async (req, res) => {
+router.delete("/silos/:id", requirePermission("production.plant-mapping", "edit"), async (req, res) => {
   const id = Number(req.params.id);
   if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid mapping id." });
   try {
@@ -2077,7 +2078,7 @@ router.delete("/silos/:id", requireRole(...PLANT_ADMIN), requirePermission("prod
 // ROUND 159 — silo fills. What went into a silo, when, and what was left of the
 // last lot when it did.
 // ---------------------------------------------------------------------------
-router.get("/silo-fills", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "view"), async (req, res) => {
+router.get("/silo-fills", requirePermission("production.plant-mapping", "view"), async (req, res) => {
   try {
     const { rows } = await query(
       `SELECT f.*, m.name AS material_name, u.name AS recorded_by_name,
@@ -2101,7 +2102,7 @@ router.get("/silo-fills", requireRole(...PLANT_ADMIN), requirePermission("produc
   }
 });
 
-router.post("/silo-fills", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "create"), async (req, res) => {
+router.post("/silo-fills", requirePermission("production.plant-mapping", "create"), async (req, res) => {
   const slot = String(req.body?.slot ?? "").trim();
   if (!Object.prototype.hasOwnProperty.call(SLOT_BY_KEY, slot)) return res.status(400).json({ error: "That is not a hopper this plant has." });
 
@@ -2162,7 +2163,7 @@ router.post("/silo-fills", requireRole(...PLANT_ADMIN), requirePermission("produ
   }
 });
 
-router.delete("/silo-fills/:id", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "edit"), async (req, res) => {
+router.delete("/silo-fills/:id", requirePermission("production.plant-mapping", "edit"), async (req, res) => {
   const id = Number(req.params.id);
   if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid fill id." });
   try {
@@ -2183,7 +2184,7 @@ router.delete("/silo-fills/:id", requireRole(...PLANT_ADMIN), requirePermission(
 // to the automatic figure rather than replacing it. That is what keeps "the
 // plant weighed this" a true statement whatever anybody types.
 // ---------------------------------------------------------------------------
-router.get("/manual", requireRole(...PLANT_READ), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/manual", requirePermission("production.plant-manual", "view"), async (req, res) => {
   try {
     const day = istDay(req.query.date ? new Date(req.query.date) : new Date());
     const [entries, auto, autoProd] = await Promise.all([
@@ -2310,7 +2311,7 @@ async function consumptionFromRecipes(lines) {
   };
 }
 
-router.post("/manual/calc", requireRole(...PLANT_READ), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.post("/manual/calc", requirePermission("production.plant-manual", "view"), async (req, res) => {
   try {
     const lines = cleanRecipeLines(req.body?.recipe_lines);
     res.json({ ...(await consumptionFromRecipes(lines)), production_m3: Math.round(lines.reduce((t, l) => t + l.m3, 0) * 1000) / 1000 });
@@ -2331,7 +2332,7 @@ router.post("/manual/calc", requireRole(...PLANT_READ), requirePermission("produ
 // day's manual rows are replaced as a set, in one transaction, so what is on
 // the screen after saving is exactly what is stored. A blank or zero clears.
 // ---------------------------------------------------------------------------
-router.post("/manual/day", requireRole(...PLANT_MANUAL), requirePermission("production.plant-manual", "create"), async (req, res) => {
+router.post("/manual/day", requirePermission("production.plant-manual", "create"), async (req, res) => {
   const day = String(req.body?.entry_date || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: "Give the date as YYYY-MM-DD." });
   if (day > istDay()) return res.status(400).json({ error: "Manual entries cannot be made for a future date." });
@@ -2390,7 +2391,7 @@ router.post("/manual/day", requireRole(...PLANT_MANUAL), requirePermission("prod
 
 // Round 187 — the days that have any manual entry, newest first, so a saved
 // day can be found again and edited.
-router.get("/manual/days", requireRole(...PLANT_READ), requirePermission("production.plant-data", "view"), async (req, res) => {
+router.get("/manual/days", requirePermission("production.plant-manual", "view"), async (req, res) => {
   try {
     const days = Math.min(Math.max(Number(req.query.days) || 120, 1), 800);
     const { rows } = await query(
@@ -2415,7 +2416,7 @@ router.get("/manual/days", requireRole(...PLANT_READ), requirePermission("produc
   }
 });
 
-router.post("/manual", requireRole(...PLANT_MANUAL), requirePermission("production.plant-manual", "create"), async (req, res) => {
+router.post("/manual", requirePermission("production.plant-manual", "create"), async (req, res) => {
   const day = String(req.body?.entry_date || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: "Give the date as YYYY-MM-DD." });
 
@@ -2496,7 +2497,7 @@ const QC_DELAY_READ = ["administrator", "manager"];
 // endpoint, and even the right one would have offered names a docket never
 // carries. Rules made earlier against the app's own customers / sites are
 // still listed, still applied to older dockets, and can be removed.
-router.get("/qc-delays", requireRole(...QC_DELAY_READ), requirePermission("production.mixtrack-qc-delay", "view"), async (req, res) => {
+router.get("/qc-delays", requirePermission("production.mixtrack-qc-delay", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT q.id, q.customer_id, q.site_id, q.customer_text, q.site_text, q.delay_minutes, q.note,
             to_char(q.updated_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS updated_at,
@@ -2512,7 +2513,7 @@ router.get("/qc-delays", requireRole(...QC_DELAY_READ), requirePermission("produ
   res.json(rows);
 });
 
-router.get("/qc-delays/targets", requireRole(...QC_DELAY_READ), requirePermission("production.mixtrack-qc-delay", "view"), async (req, res) => {
+router.get("/qc-delays/targets", requirePermission("production.mixtrack-qc-delay", "view"), async (req, res) => {
   const [cust, site] = await Promise.all([
     query(
       `SELECT btrim(customer_code) AS name, count(DISTINCT (batch_year, batch_no))::int AS loads
@@ -2531,7 +2532,7 @@ router.get("/qc-delays/targets", requireRole(...QC_DELAY_READ), requirePermissio
   res.json({ customers: cust.rows, sites: site.rows });
 });
 
-router.post("/qc-delays", requireRole(...PLANT_ADMIN), requirePermission("production.mixtrack-qc-delay", "create"), async (req, res) => {
+router.post("/qc-delays", requirePermission("production.mixtrack-qc-delay", "create"), async (req, res) => {
   const { delay_minutes, note } = req.body || {};
   const customerText = String(req.body?.customer_text || "").trim() || null;
   const siteText = String(req.body?.site_text || "").trim() || null;
@@ -2575,12 +2576,12 @@ router.post("/qc-delays", requireRole(...PLANT_ADMIN), requirePermission("produc
   res.status(201).json(rows[0]);
 });
 
-router.delete("/qc-delays/:id", requireRole(...PLANT_ADMIN), requirePermission("production.mixtrack-qc-delay", "edit"), async (req, res) => {
+router.delete("/qc-delays/:id", requirePermission("production.mixtrack-qc-delay", "edit"), async (req, res) => {
   await query(`DELETE FROM mixtrack_qc_delays WHERE id = $1`, [req.params.id]);
   res.json({ ok: true });
 });
 
-router.post("/recheck", requireRole(...PLANT_ADMIN), requirePermission("production.plant-mapping", "edit"), async (req, res) => {
+router.post("/recheck", requirePermission("production.plant-mapping", "edit"), async (req, res) => {
   try {
     const touched = await reresolveSilos();
     res.json({ ok: true, rows_updated: touched });

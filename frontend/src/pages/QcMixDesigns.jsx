@@ -640,7 +640,9 @@ export default function QcMixDesigns() {
   const { can, ready } = usePermissions();
   const { user } = useAuth();
   const [tab, setTab] = useState("designs");
-  const canView = ready && can("production.plant-data", "view");
+  // Round 192 — a Quality Control sub-menu with its own function, so denying
+  // Plant Production to a role no longer closes this screen too.
+  const canView = ready && can("quality.mix-designs-view", "view");
   const canCost = ready && can("material.stock-valuation", "view");
   const canEdit = ready && can("production.recipe-edit", "edit");
   const isSuperAdmin = user?.role === "super_admin";

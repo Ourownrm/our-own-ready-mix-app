@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import { useNavigate } from "react-router-dom";
 
 // Round 154 — the weighbridge screen.
 //
@@ -995,9 +996,16 @@ function Records() {
 
 export default function Weighbridge() {
   const { can, ready } = usePermissions();
-  const [tab, setTab] = useState("receipts");
+  const navigate = useNavigate();
+  const [tab, setTab] = useState("");
 
+  // Round 192 — each tab is its own function (Weighbridge module on the Super
+  // Admin's Access Control page): Receipts, Records, Name mapping, Vehicles.
   const canView = ready && can("material.weighbridge", "view");
+  const canRecords = ready && can("weighbridge.records", "view");
+  const canVehicles = ready && can("weighbridge.vehicles", "view");
+  const canVehiclesEdit = ready && can("weighbridge.vehicles", "edit");
+  const canVariance = ready && (can("weighbridge.receipt-variance", "view") || can("material.receipt-confirm", "view"));
   const canEdit = ready && can("material.weighbridge", "edit");
   const canMap = ready && can("material.weighbridge-mapping", "view");
   // Round 158 — the Vehicles and Mapping controls used to be shown to anyone
@@ -1005,10 +1013,13 @@ export default function Weighbridge() {
   // granted view-only therefore saw live dropdowns that answered 403 on use.
   // Read and write are now gated by the action each one actually needs.
   const canMapEdit = ready && can("material.weighbridge-mapping", "edit");
+  const firstTab = [["receipts", canView], ["records", canRecords], ["mapping", canMap], ["vehicles", canVehicles]]
+    .find((t) => t[1])?.[0] || "";
+  const current = tab || firstTab;
 
   if (!ready) return null;
 
-  if (!canView && !canMap) {
+  if (!firstTab && !canVariance) {
     return (
       <>
         <TopBar title="Weighbridge" />
@@ -1031,30 +1042,47 @@ export default function Weighbridge() {
             (it used to appear only for mappers). Mapping and Vehicles stay
             behind the mapping permission. */}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          <button type="button" className={`btn-tab ${tab === "receipts" ? "active" : ""}`} onClick={() => setTab("receipts")}>
-            Receipts
-          </button>
-          <button type="button" className={`btn-tab ${tab === "records" ? "active" : ""}`} onClick={() => setTab("records")}>
-            Records
-          </button>
+          {canView && (
+            <button type="button" className={`btn-tab ${current === "receipts" ? "active" : ""}`} onClick={() => setTab("receipts")}>
+              Receipts
+            </button>
+          )}
+          {canRecords && (
+            <button type="button" className={`btn-tab ${current === "records" ? "active" : ""}`} onClick={() => setTab("records")}>
+              Records
+            </button>
+          )}
           {canMap && (
-            <>
-              <button type="button" className={`btn-tab ${tab === "mapping" ? "active" : ""}`} onClick={() => setTab("mapping")}>
-                Name mapping
-              </button>
-              <button type="button" className={`btn-tab ${tab === "vehicles" ? "active" : ""}`} onClick={() => setTab("vehicles")}>
-                Vehicles
-              </button>
-            </>
+            <button type="button" className={`btn-tab ${current === "mapping" ? "active" : ""}`} onClick={() => setTab("mapping")}>
+              Name mapping
+            </button>
+          )}
+          {canVehicles && (
+            <button type="button" className={`btn-tab ${current === "vehicles" ? "active" : ""}`} onClick={() => setTab("vehicles")}>
+              Vehicles
+            </button>
+          )}
+          {/* Round 192 — Receipt Variances is a Weighbridge sub-menu; it lives on
+              its own screen, so it is a link across rather than a tab. */}
+          {canVariance && (
+            <button type="button" className="btn-tab" onClick={() => navigate("/receipt-differences")}>
+              Receipt variances &rarr;
+            </button>
           )}
         </div>
-        {tab === "records"
+        {current === "records" && canRecords
           ? <Records />
-          : tab === "mapping" && canMap
+          : current === "mapping" && canMap
             ? <Mapping canEdit={canMapEdit} />
-            : tab === "vehicles" && canMap
-              ? <Vehicles canEdit={canMapEdit} />
-              : <Receipts canEdit={canEdit} />}
+            : current === "vehicles" && canVehicles
+              ? <Vehicles canEdit={canVehiclesEdit} />
+              : current === "receipts" && canView
+                ? <Receipts canEdit={canEdit} />
+                : (
+                  <div className="card" style={{ fontSize: 13 }}>
+                    Only Receipt variances is switched on for you here — use the button above.
+                  </div>
+                )}
       </div>
     </>
   );

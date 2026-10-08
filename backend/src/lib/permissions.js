@@ -21,8 +21,18 @@
 // somebody a permission can never let them past a role guard that has not been
 // converted yet — this system can only ever tighten access, never loosen it,
 // while the conversion is in progress.
+//
+// ROUND 192 — WHERE THAT CHANGED. Because both guards had to pass, a Super
+// Admin could only ever take away what the hard-coded role list already
+// allowed, and could grant nothing beyond it — "access control is not
+// working". For the modules the user listed (Raw Material, Plant Production,
+// Weighbridge, Quality Control, and the Production / Fuel & Lubricants
+// screens), the role guard is gone and the permission is the ONLY gate. Their
+// defaults were checked against the old role lists so nobody's access moved on
+// day one (scripts/check-guards.mjs keeps that true). Routes outside those
+// modules still carry both guards, and the old rule above still holds there.
 import { query } from "../db.js";
-import { CATALOGUE, CATALOGUE_BY_KEY, ADMIN_HAS_EVERYTHING, isLocked } from "./permissionCatalogue.js";
+import { CATALOGUE, CATALOGUE_BY_KEY, ADMIN_HAS_EVERYTHING, isLocked, MODULES, MODULE_OF_KEY } from "./permissionCatalogue.js";
 
 const CACHE_MS = 5000;
 const cache = new Map(); // userId -> { at, perms: Set<"key:action"> }
@@ -95,6 +105,18 @@ export async function effectivePermissions(user) {
       if (!c.actions.includes(action)) { perms.delete(p); continue; }
       if (action !== "view" && c.actions.includes("view") && !perms.has(pair(key, "view"))) perms.delete(p);
     }
+    // Round 192 — the module gate. A module whose switch is off takes every
+    // function inside it away, whatever else is ticked — the user's rule
+    // that a module denied to a role is completely inaccessible to it. Done
+    // here, once, so no route or screen has to remember to check the module
+    // as well as its own function.
+    const closed = new Set(MODULES.filter((m) => !perms.has(pair(m.gate, "view"))).map((m) => m.key));
+    if (closed.size) {
+      for (const p of [...perms]) {
+        const key = p.slice(0, p.lastIndexOf(":"));
+        if (closed.has(MODULE_OF_KEY[key])) perms.delete(p);
+      }
+    }
   }
 
   cache.set(user.id, { at: Date.now(), perms });
@@ -112,6 +134,22 @@ export function requirePermission(key, action) {
   return async (req, res, next) => {
     try {
       if (await can(req.user, key, action)) return next();
+      return res.status(403).json({ error: "You don't have access to this." });
+    } catch (err) {
+      return next(err);
+    }
+  };
+}
+
+// Round 192 — for an endpoint two screens share (a master-data list behind a
+// dropdown, a router several screens of one module read from): passes when
+// the person holds `action` on ANY of the keys. Deliberately not a way round
+// the module gate — every key is checked against the already-gated set.
+export function requireAnyPermission(keys, action = "view") {
+  return async (req, res, next) => {
+    try {
+      const perms = await effectivePermissions(req.user);
+      if (keys.some((k) => perms.has(pair(k, action)))) return next();
       return res.status(403).json({ error: "You don't have access to this." });
     } catch (err) {
       return next(err);

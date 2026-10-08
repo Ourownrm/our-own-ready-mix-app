@@ -8367,3 +8367,56 @@ CEM2 250 — app updated immediately, queued with the exact MCI370 payload (Ceme
 Modifier stamped); a read-sync carrying the plant's OLD values did **not** clobber it; write-result marked it in
 sync; Undo restored the original and re-queued. All five checkers pass (94 routes); build clean. The Access write
 itself runs on the plant PC — enable `recipeWriteEnabled` once you've watched a dry-run.
+
+## Round 192 — Super Admin module access control actually works (v10.21)
+
+**Deploy:** upload the changed files → Render redeploys → **visit `/setup?key=…` once.** Nothing to do on the
+plant, weighbridge or print PCs.
+
+**What was wrong.** Every module screen had two locks: a role list written into the code (`requireRole` on the
+server, `<ProtectedRoute roles>` on the screen) and the Super Admin's permission. Both had to say yes, so a Super
+Admin could only remove what the role list already allowed and could never grant beyond it — and only the Raw
+Material routes were ever wired to the permissions at all. Reproduced on the v10.20 code: Store granted Material
+reports → 403; Accountant granted Weighbridge → 403. A second cause: the `REPAIR_nnn` lists in setup.js re-inserted
+their rows on every `/setup` visit, so a role default a Super Admin switched off came back next time.
+
+**The owner's role × module table (8 Oct 2026) is now the model.**
+- `MODULES` in `permissionCatalogue.js`: Raw Material (`material.module`), Plant Production
+  (`module.plant-production`), Weighbridge (`module.weighbridge`), Quality Control (`module.quality-control`), each
+  with its sub-menus in the owner's words. Fuel, HR and Accounts are added only once they are built (owner's
+  instruction). The Production and Fuel & Lubricants dashboard screens are `FUNCTION_GROUPS` — each screen
+  switchable, no whole-group switch.
+- **Module gate** (`lib/permissions.js`): if a person lacks View on a module's switch, every function inside it is
+  stripped from their effective set. Owner's rule: a module denied to a role is completely inaccessible.
+- **Table is a minimum; a tick gives View only.** Roles the table adds to a module (`matrixRoles`) get View on the
+  switch and every sub-menu; create/edit/delete unchanged. Roles that already used a module keep exactly what they had.
+- New sub-menu keys: `weighbridge.records`, `weighbridge.vehicles`, `weighbridge.receipt-variance`, `plant.production`,
+  `plant.consumption`, `plant.kpi`, `plant.vs-billed`, `plant.cost`, `material.kpi`, `material.materials-menu`,
+  `material.suppliers-menu`, ten `material.report.*`, `material.physical-stock-approve`, `quality.mix-designs-view`,
+  `production.correct-order`, `production.correct-tickets`.
+
+**Permission is now the only gate** for weighbridge.js, plant.js, materialModule.js, labTechnician.js, qcDashboard,
+productionReport, the trip-allowance report (which also fixes a Manager 403 there), cycle-time, the fuel report,
+360° fuel analysis, and the Administrator panels for Production Target, Correct Order/Tickets, Approved Mix Designs
+and Fuel Stations & Equipment. Every converted route's default was checked against its old role list, so nobody's
+access moved on deploy. `scripts/check-guards.mjs` now also fails on an unknown key/action and on a role guard put
+back in front of a permission in those four files.
+
+**Screens.** `<ProtectedRoute perm>` replaces role lists for these screens and shows a "no access" page (not a
+login loop). New `/modules` page for every role (header link "Modules"): tiles for whatever they've been given,
+with the shared panels opening in place. Tabs inside Material Module, Plant Production and Weighbridge each follow
+their own function; read-only viewers don't see editing buttons on Materials, Suppliers, Orders, Receipts, Production
+Target or Approved Mix Designs.
+
+**Super Admin → Module access tab** (first tab): role × module grid; a module row ticks the whole module, expand it
+for each sub-menu. Writes the same role defaults as the Role defaults tab.
+
+**setup.js.** One-time `r192_module_access` step: new keys given to whoever held what they were split from (role
+defaults and personal settings), module switches for everyone already using something inside, the owner's table,
+Manual entry view for the plant roles, mix-design approve for the four roles the route always allowed.
+`permission_key_seeds` seeds any later new function once. Old `REPAIR_nnn` lists now run once (`app_migration_marks`).
+
+**Verified.** Old v10.20 DB with users and Super Admin changes → new /setup ×2: every user's permission set before vs
+after — **nothing lost**; Super Admin removals survive /setup re-runs; fresh DB equals the catalogue. Probed 27
+endpoints × 9 users; denied a module, a sub-menu, granted a screen to a role that never had it — all as expected.
+`npm run check` green; vite build clean; screenshots of Module access, Modules page, no-access page, gated tabs.

@@ -62,12 +62,12 @@ export default function StoreHome() {
             <Link to="/store-stock"><button type="button" style={{ width: "100%", marginTop: 20 }}>Stock &amp; purchases</button></Link>
             {can("material.module", "view") &&
               <Link to="/material-module"><button type="button" style={{ width: "100%", marginTop: 10 }}>Material Module</button></Link>}
-            {can("material.weighbridge", "view") &&
+            {can("module.weighbridge", "view") &&
               <Link to="/weighbridge"><button type="button" style={{ width: "100%", marginTop: 10 }}>Weighbridge</button></Link>}
             {can("reports.fuel", "view") &&
               <Link to="/fuel-report"><button type="button" style={{ width: "100%", marginTop: 10 }}>Fuel and lubricant report</button></Link>}
             {/* Round 172 — plant production & consumption, once the plant-data permission is granted. */}
-            {can("production.plant-data", "view") &&
+            {can("module.plant-production", "view") &&
               <Link to="/plant-production"><button type="button" style={{ width: "100%", marginTop: 10 }}>Plant Production &amp; Consumption</button></Link>}
           </>
         )}

@@ -1,9 +1,19 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requirePermission } from "../lib/permissions.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("accountant", "administrator"));
+// Round 192 — the Trip Allowance Report is a Production sub-menu that a Super
+// Admin grants or denies by its function (reports.trip-allowance: Administrator,
+// Manager, Accountant by default). It used to sit behind this router's
+// Accountant-only role guard, so the Manager the catalogue and the screen both
+// allowed got a 403 from here. Those two paths skip the role guard and are
+// gated by the function instead; everything else in this router is unchanged.
+const TRIP_REPORT_PATHS = new Set(["/trip-allowance-report", "/trip-allowance-report/export"]);
+const accountantOnly = requireRole("accountant", "administrator");
+const tripReport = requirePermission("reports.trip-allowance", "view");
+router.use(requireAuth, (req, res, next) => (TRIP_REPORT_PATHS.has(req.path) ? tripReport : accountantOnly)(req, res, next));
 
 // Round 180 (#10) — credit notes due. Each is a partial rejection: the invoice
 // has already been adjusted down to the accepted m³, and this flags the returned

@@ -26,6 +26,10 @@
 export const ACTIONS = ["view", "create", "edit", "delete"];
 
 export const GROUPS = [
+  // Round 192 — the whole-module switches. Untick one for a role and every
+  // function inside that module is gone for that role, whatever else is ticked
+  // (see MODULES at the bottom of this file and lib/permissions.js).
+  { key: "modules", label: "Module access (whole module on / off)" },
   { key: "orders", label: "Orders & delivery" },
   { key: "production", label: "Production & plant" },
   { key: "quality", label: "Quality & lab" },
@@ -53,14 +57,44 @@ function f(key, group, label, actions, roles, extra = {}) {
   return { key, group, label, actions, roles, ...extra };
 }
 
+// Round 192 — the role lists the module routes used to carry in requireRole,
+// kept here so the new sub-menu keys default to exactly who could open that
+// screen before. Turning the role guard off changes nobody's access on day one.
+const PLANT_ROLES = { administrator: V, manager: V, store: V, plant_operator: V, qc_engineer: V, lab_technician: V };
+const WB_ROLES = { administrator: V, manager: V, store: V, plant_operator: V, lab_technician: V };
+
 export const CATALOGUE = [
+  // ---------- Module access (Round 192) ----------
+  // One switch per module. "material.module" predates this round and keeps its
+  // key (renaming would drop every grant stored under it); it is simply the
+  // Raw Material module's switch now.
+  f("material.module", "modules", "Raw Material module", V,
+    { administrator: V, store: V, plant_operator: V }, { screen: "material-module" }),
+  f("module.plant-production", "modules", "Plant Production module", V,
+    { ...PLANT_ROLES }, { screen: "plant-production" }),
+  f("module.weighbridge", "modules", "Weighbridge module", V,
+    { ...WB_ROLES }, { screen: "weighbridge-receipts" }),
+  f("module.quality-control", "modules", "Quality Control module", V,
+    // Manager and QC Engineer already reach parts of it (Approved Mix Designs,
+    // Mix Designs & Recipes, recipe edits); the matrix below adds the rest.
+    { administrator: V, lab_technician: V, manager: V, qc_engineer: V }),
+
   // ---------- Orders & delivery ----------
   f("orders.customer-orders", "orders", "Customer orders", VCED,
-    { administrator: VCED, manager: VCED, sales_executive: V }, { screen: "correct-order" }),
+    { administrator: VCED, manager: VCED, sales_executive: V }),
   f("orders.reschedule", "orders", "Reschedule an order", E,
     { administrator: E, manager: E }),
   f("orders.tickets", "orders", "Delivery tickets / challans", VCED,
-    { administrator: VCED, manager: ["view", "edit", "delete"], plant_operator: VC, qc_engineer: V, accountant: V, driver: V, site_supervisor: V }, { screen: "correct-tickets" }),
+    { administrator: VCED, manager: ["view", "edit", "delete"], plant_operator: VC, qc_engineer: V, accountant: V, driver: V, site_supervisor: V }),
+  // Round 192 — the Administrator dashboard's Correct Order / Correct Tickets
+  // screens, which only Administrator and Manager could open (their routes
+  // said so). Separate from the keys above because Sales and the plant roles
+  // hold view on orders/tickets for their OWN screens, and handing them the
+  // correction screens by accident would widen access.
+  f("production.correct-order", "orders", "Correct Order (admin correction screen)", VE,
+    { administrator: VE, manager: VE }, { screen: "correct-order" }),
+  f("production.correct-tickets", "orders", "Correct Tickets (admin correction screen)", VE,
+    { administrator: VE, manager: VE }, { screen: "correct-tickets" }),
   // Round 153, item 1 — widened from Administrator-only. The Plant Operator
   // raises every one of these notes, and the lab and QC get asked about a
   // specific load hours later; all three had to go and find an Administrator
@@ -112,8 +146,15 @@ export const CATALOGUE = [
     { administrator: V }, { screen: "cube-strength-analysis" }),
   f("quality.mix-designs", "quality", "Mix designs", VCED,
     { administrator: VCED, lab_technician: VCED }, { screen: "mix-designs-approve" }),
+  // Round 192 — the route has always let these four roles approve; the
+  // default now says so, since the permission is the only guard from here on.
   f("quality.mix-design-approve", "quality", "Approve a mix design", E,
-    { administrator: E }),
+    { administrator: E, lab_technician: E, qc_engineer: E, manager: E }),
+  // Round 192 — the Mix Designs & Recipes screen (/mix-designs). It read the
+  // plant's data key before, which tied a Quality Control screen to Plant
+  // Production; denying one module must not break the other.
+  f("quality.mix-designs-view", "quality", "Mix Designs & Recipes", V,
+    { administrator: V, manager: V, qc_engineer: V, lab_technician: V }, { screen: "mix-designs-view" }),
   f("quality.mix-design-standard", "quality", "Set a design as standard for its grade", E,
     { administrator: E, manager: E }),
   f("quality.mix-assignments", "quality", "Approved Mix Designs (assignments)", ["view", "create", "delete"],
@@ -171,6 +212,12 @@ export const CATALOGUE = [
     { administrator: V }),
   f("material.physical-stock", "material", "Monthly physical stock count", VCE,
     { administrator: VCE, store: VCE, plant_operator: V }),
+  // Round 192 — approving a month's count locks it in as the next month's
+  // opening stock. It shared the count's "create" with Store until now, kept
+  // Administrator-only by the route's role guard; that guard is gone, so the
+  // approval needs a key of its own.
+  f("material.physical-stock-approve", "material", "Approve a month's physical count", E,
+    { administrator: E }),
   // Round 189 — moving plant consumption from the material the plant booked to
   // the one really used (several materials through one bin). Administrator only.
   f("material.consumption-transfer", "material", "Plant consumption transfer", VCED,
@@ -179,8 +226,26 @@ export const CATALOGUE = [
     { administrator: V }),
   f("material.cost-dashboard", "material", "Material cost dashboard", V,
     { administrator: V }),
-  f("material.module", "material", "Raw Material Module (open it)", V,
-    { administrator: V, store: V, plant_operator: V }, { screen: "material-module" }),
+  // Round 192 — sub-menus of the Raw Material module that had no key of their
+  // own. The Materials and Suppliers TABS used to need create on the master
+  // (so Store's read access for dropdowns never handed it the editor); a
+  // separate view key per tab lets a Super Admin show the list read-only.
+  f("material.materials-menu", "material", "Materials tab", V, { administrator: V }),
+  f("material.suppliers-menu", "material", "Suppliers tab", V, { administrator: V }),
+  f("material.kpi", "material", "KPI cards (stock value, open orders, purchases)", V, { administrator: V }),
+  // The ten reports inside the Reports tab, each switchable. Defaults copy
+  // material.reports (Administrator only); setup.js copies any existing grant
+  // of material.reports onto all ten so nobody loses a report they had.
+  f("material.report.open-orders", "material", "Report — Open orders", V, { administrator: V }),
+  f("material.report.weighbridge-comparison", "material", "Report — Weighbridge comparison", V, { administrator: V }),
+  f("material.report.daily-consumption", "material", "Report — Daily consumption", V, { administrator: V }),
+  f("material.report.mix-vs-actual", "material", "Report — Mix vs actual", V, { administrator: V }),
+  f("material.report.monthly-consumption", "material", "Report — Monthly consumption", V, { administrator: V }),
+  f("material.report.monthly-physical-stock", "material", "Report — Monthly physical stock", V, { administrator: V }),
+  f("material.report.rate-history", "material", "Report — Weighted average rate history", V, { administrator: V }),
+  f("material.report.supplier-summary", "material", "Report — Supplier purchase summary", V, { administrator: V }),
+  f("material.report.transporter-freight", "material", "Report — Transporter freight", V, { administrator: V }),
+  f("material.report.cost-per-m3", "material", "Report — Cost per m³ (purchase)", V, { administrator: V }),
   // Round 154 — the weighbridge sync. Two separate keys on purpose.
   //
   // "material.weighbridge" is the day-to-day screen: see what the weighbridge
@@ -195,10 +260,16 @@ export const CATALOGUE = [
   // carrying that spelling. So it defaults to Administrator alone — Store can
   // flag a ticket for review, but not decide what it means.
   f("material.weighbridge", "material", "Weighbridge receipts", VE,
-    { administrator: VE, manager: VE, store: VE, plant_operator: V, lab_technician: V },
-    { screen: "weighbridge-receipts" }),
+    { administrator: VE, manager: VE, store: VE, plant_operator: V, lab_technician: V }),
   f("material.weighbridge-mapping", "material", "Weighbridge name mapping", VCE,
     { administrator: VCE }),
+  // Round 192 — Weighbridge sub-menus that rode on the two keys above.
+  f("weighbridge.records", "material", "Weighbridge — Records", V, { ...WB_ROLES }),
+  f("weighbridge.vehicles", "material", "Weighbridge — Vehicles", VE, { administrator: VE }),
+  // The variance REPORT on the Receipt Differences screen (it used to need the
+  // whole material.reports key). Confirming a disputed load stays
+  // material.receipt-confirm.
+  f("weighbridge.receipt-variance", "material", "Receipt variance report", V, { administrator: V }),
 
   // Round 157 — the MCI370 batching plant feed. Two keys, split the same way
   // as the weighbridge's and for the same reason.
@@ -210,14 +281,25 @@ export const CATALOGUE = [
   // "production.plant-mapping" decides which of our materials a silo holds,
   // and therefore where a month of consumption is counted. Administrator only.
   f("production.plant-data", "production", "Plant production & consumption (MCI370)", V,
-    { administrator: V, manager: V, store: V, plant_operator: V, qc_engineer: V, lab_technician: V },
-    { screen: "plant-production" }),
+    { administrator: V, manager: V, store: V, plant_operator: V, qc_engineer: V, lab_technician: V }),
   // Round 159 — entering what the plant did not record. Separate from
   // plant-data because reading the plant's figures and adding to them are
   // different acts: one is information, the other changes what stock and cost
   // are computed from.
+  // Round 192 — view added for the other plant roles: the Manual entry tab has
+  // always been shown (read-only) to everyone who could open Plant Production,
+  // and it is now a switchable sub-menu, so its view is this key.
   f("production.plant-manual", "production", "Plant manual consumption & production", VCE,
-    { administrator: VCE, plant_operator: VCE }),
+    { administrator: VCE, plant_operator: VCE, manager: V, store: V, qc_engineer: V, lab_technician: V }),
+  // Round 192 — the Plant Production tabs, each its own switch.
+  f("plant.production", "production", "Plant — Production tab", V, { ...PLANT_ROLES }),
+  f("plant.consumption", "production", "Plant — Consumption tab", V, { ...PLANT_ROLES }),
+  f("plant.kpi", "production", "Plant — KPI strip (made today, loads, agent)", V, { ...PLANT_ROLES }),
+  // Round 187 kept this tab from the Plant Operator; that is now a default
+  // instead of a hard-coded role check.
+  f("plant.vs-billed", "production", "Plant — Plant vs billed tab", V,
+    { administrator: V, manager: V, store: V, qc_engineer: V, lab_technician: V }),
+  f("plant.cost", "production", "Plant — Cost/m³ material tab", V, { administrator: V }),
   f("production.plant-mapping", "production", "Plant silo mapping", VCE,
     { administrator: VCE }),
   // ROUND 174 — editing a plant Recipe (Recipe Master) and writing the change
@@ -408,6 +490,169 @@ export const CATALOGUE = [
     {}, { locked: true }),
 ];
 
+// ===================================================================
+// Round 192 — MODULES: the user's role × module table (8 Oct 2026).
+//
+//   gate     the module's own switch. If a person does not hold View on it,
+//            EVERY function listed under that module (menus + support) is
+//            stripped from their effective set in lib/permissions.js — the
+//            user's rule: "if a module is denied to a role, the complete
+//            module is inaccessible to that role".
+//   menus    the sub-menus a Super Admin switches one by one, in screen order.
+//            `children` are switchable parts of one sub-menu (the reports).
+//   support  functions with no menu of their own that belong to the module
+//            (master-data reads behind a dropdown, approve buttons, …). They
+//            go when the module goes.
+//   matrixRoles  roles the user's table ADDS to this module. The table is a
+//            minimum — everyone who already had the module keeps it — and a
+//            ticked module gives VIEW ONLY by default (the user's answer), so
+//            these roles get View on the gate and on every menu/support key
+//            below except `noAutoView`. Create/edit/delete stay as they were.
+//
+// Fuel, HR and Accounts are deliberately NOT here yet: the user's instruction
+// is to add them only once those modules are built.
+// ===================================================================
+export const MODULES = [
+  {
+    key: "raw-material", label: "Raw Material", gate: "material.module", to: "/material-module",
+    matrixRoles: ["manager", "lab_technician", "accountant", "qc_engineer"],
+    menus: [
+      { key: "material.stock", label: "Stock" },
+      { key: "material.orders", label: "Order" },
+      { key: "material.receipts", label: "Receipts" },
+      { key: "material.consumption", label: "Consumption" },
+      { key: "material.physical-stock", label: "Physical Stock" },
+      { key: "material.cost-dashboard", label: "Cost Dashboard" },
+      { key: "material.materials-menu", label: "Materials" },
+      { key: "material.suppliers-menu", label: "Suppliers" },
+      { key: "material.kpi", label: "KPI" },
+      {
+        key: "material.reports", label: "Reports",
+        children: [
+          { key: "material.report.open-orders", label: "Open Orders" },
+          { key: "material.report.weighbridge-comparison", label: "Weighbridge Comparison" },
+          { key: "material.report.daily-consumption", label: "Daily Consumption" },
+          { key: "material.report.mix-vs-actual", label: "Mix vs Actual" },
+          { key: "material.report.monthly-consumption", label: "Monthly Consumption" },
+          { key: "material.report.monthly-physical-stock", label: "Monthly Physical Stock" },
+          { key: "material.report.rate-history", label: "Weighted Average Rate History" },
+          { key: "material.report.supplier-summary", label: "Supplier Purchase Summary" },
+          { key: "material.report.transporter-freight", label: "Transporter Freight" },
+          { key: "material.report.cost-per-m3", label: "Cost per m³ – Purchase" },
+        ],
+      },
+      { key: "material.consumption-transfer", label: "Consumption transfer" },
+    ],
+    support: ["material.materials", "material.units", "material.suppliers", "material.supplier-rates",
+      "material.transporters", "material.order-approve", "material.physical-stock-approve"],
+    // An Administrator's tool for moving consumption between materials — not
+    // a screen to hand out with "view the module".
+    noAutoView: ["material.consumption-transfer"],
+  },
+  {
+    key: "plant-production", label: "Plant Production", gate: "module.plant-production", to: "/plant-production",
+    matrixRoles: ["accountant"],
+    menus: [
+      { key: "plant.production", label: "Production" },
+      { key: "plant.consumption", label: "Consumption" },
+      { key: "production.plant-mapping", label: "Silos" },
+      { key: "production.plant-manual", label: "Manual Entry" },
+      { key: "plant.cost", label: "Cost/m³ – Material" },
+      { key: "production.mixtrack-qc-delay", label: "QC Delay" },
+      { key: "plant.kpi", label: "KPI" },
+      { key: "plant.vs-billed", label: "Plant vs billed" },
+    ],
+    support: ["production.plant-data"],
+  },
+  {
+    key: "weighbridge", label: "Weighbridge", gate: "module.weighbridge", to: "/weighbridge",
+    matrixRoles: ["accountant", "qc_engineer"],
+    menus: [
+      { key: "material.weighbridge", label: "Receipts" },
+      { key: "weighbridge.records", label: "Records" },
+      { key: "material.weighbridge-mapping", label: "Name Mapping" },
+      { key: "weighbridge.vehicles", label: "Vehicles" },
+      { key: "weighbridge.receipt-variance", label: "Receipt Variances" },
+      { key: "material.receipt-confirm", label: "Receipt Differences (confirm disputed loads)" },
+    ],
+    support: [],
+  },
+  {
+    key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",
+    matrixRoles: ["manager", "qc_engineer"],
+    menus: [
+      { key: "quality.lab-technician", label: "Laboratory" },
+      { key: "quality.mix-assignments", label: "Approved Mix Designs" },
+      { key: "quality.mix-designs", label: "Mix Designs (Approve)" },
+      { key: "quality.mix-designs-view", label: "Mix Designs & Recipes" },
+      { key: "quality.cube-test-report", label: "Cube Test Report" },
+      { key: "quality.cube-qc-dashboard", label: "Cube Strength Analysis" },
+    ],
+    support: ["quality.cube-tests", "quality.lab-due-today", "quality.raw-material-stock",
+      "quality.mix-design-approve", "production.recipe-edit"],
+  },
+];
+
+// Function groups the user listed that are not modules in their table — the
+// Administrator dashboard's Production and Fuel & Lubricants tiles. Each
+// screen is switchable; there is no whole-group switch (the future Fuel
+// Module will get one when it is built).
+export const FUNCTION_GROUPS = [
+  {
+    key: "production", label: "Production",
+    menus: [
+      { key: "production.targets", label: "Production Target" },
+      { key: "production.correct-order", label: "Correct Order" },
+      { key: "production.correct-tickets", label: "Correct Tickets" },
+      { key: "reports.production", label: "Daily Production Report" },
+      { key: "reports.trip-allowance", label: "Trip Allowance Report" },
+      { key: "reports.cycle-time", label: "Cycle Time Report" },
+    ],
+  },
+  {
+    key: "fuel-lubricants", label: "Fuel & Lubricants",
+    menus: [
+      { key: "reports.fuel-analysis", label: "360° Fuel Analysis" },
+      { key: "fleet.fuel-stations", label: "Fuel Stations & Equipment" },
+      { key: "reports.fuel", label: "Fuel & Lubricant Report" },
+    ],
+  },
+];
+
+function moduleKeys(m) {
+  const out = [];
+  for (const menu of m.menus) {
+    out.push(menu.key);
+    for (const ch of menu.children || []) out.push(ch.key);
+  }
+  return [...out, ...m.support];
+}
+
+// key -> module key, for every function that lives inside a module.
+export const MODULE_OF_KEY = {};
+for (const m of MODULES) for (const k of moduleKeys(m)) MODULE_OF_KEY[k] = m.key;
+export const MODULE_BY_KEY = Object.fromEntries(MODULES.map((m) => [m.key, m]));
+
+// The (role, key, action) rows the user's table adds — view only. Applied to
+// the catalogue's own defaults right here, so a fresh database is seeded with
+// them, and exported so setup.js can add exactly these rows to a live one.
+export const MATRIX_GRANTS = [];
+
+function applyMatrix(catalogueByKey) {
+  for (const m of MODULES) {
+    const keys = [m.gate, ...moduleKeys(m)].filter((k) => !(m.noAutoView || []).includes(k));
+    for (const role of m.matrixRoles) {
+      for (const k of keys) {
+        const c = catalogueByKey[k];
+        if (!c || c.locked || !c.actions.includes("view")) continue;
+        const cur = c.roles[role] || [];
+        if (!cur.includes("view")) c.roles[role] = ["view", ...cur];
+        MATRIX_GRANTS.push([role, k, "view"]);
+      }
+    }
+  }
+}
+
 // Every role the app has, plus the new one. Administrator and super_admin are
 // deliberately at the front — they are the two the defaults grid locks.
 export const ROLES = [
@@ -422,6 +667,15 @@ export const ROLES = [
 export const ADMIN_HAS_EVERYTHING = true;
 
 export const CATALOGUE_BY_KEY = Object.fromEntries(CATALOGUE.map((c) => [c.key, c]));
+
+// Round 192 — fold the user's role × module table into the defaults above.
+applyMatrix(CATALOGUE_BY_KEY);
+
+// A module's gate and everything inside it, for the Super Admin page.
+export function functionsOfModule(moduleKey) {
+  const m = MODULE_BY_KEY[moduleKey];
+  return m ? [m.gate, ...moduleKeys(m)] : [];
+}
 
 // screen key (adminScreens.js) -> permission key, for hiding a dashboard tile.
 export const PERMISSION_BY_SCREEN = Object.fromEntries(

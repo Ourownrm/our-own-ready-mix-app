@@ -3,7 +3,6 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { todayStr } from "../lib/istDate.js";
-import { useAuth } from "../lib/AuthContext.jsx";
 
 // Round 157 — what the batching plant actually made, and what it actually ate.
 //
@@ -1422,17 +1421,21 @@ function QcDelays({ canEdit }) {
 
 export default function PlantProduction() {
   const { can, ready } = usePermissions();
-  const { user } = useAuth();
-  // Round 187 — Plant vs billed is not shown to the Plant Operator (user decision).
-  const canPvb = user?.role !== "plant_operator";
-  const [tab, setTab] = useState("production");
+  // Round 192 — every tab is its own function now, switched per role on the
+  // Super Admin's Access Control page (Plant Production module). Round 187's
+  // "not for the Plant Operator" on Plant vs billed is that key's default.
+  const [tab, setTab] = useState("");
   const [days, setDays] = useState(30);          // a number, or "custom"
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [summary, setSummary] = useState(null);
 
-  const canView = ready && can("production.plant-data", "view");
-  const canCost = ready && can("material.stock-valuation", "view");
+  const canView = ready && can("module.plant-production", "view");
+  const canProd = ready && can("plant.production", "view");
+  const canCons = ready && can("plant.consumption", "view");
+  const canKpi = ready && can("plant.kpi", "view");
+  const canPvb = ready && can("plant.vs-billed", "view");
+  const canCost = ready && can("plant.cost", "view");
   const canMap = ready && can("production.plant-mapping", "view");
   const canManualView = ready && can("production.plant-manual", "view");
   const canManualEdit = ready && can("production.plant-manual", "create");
@@ -1441,14 +1444,21 @@ export default function PlantProduction() {
   const canQcDelayView = ready && can("production.mixtrack-qc-delay", "view");
   const canQcDelayEdit = ready && can("production.mixtrack-qc-delay", "create");
 
+  // The first tab this person may open, in screen order.
+  const firstTab = [["production", canProd], ["pvb", canPvb], ["consumption", canCons], ["silos", canMap],
+    ["manual", canManualView], ["cost", canCost], ["qc-delay", canQcDelayView]].find((t) => t[1])?.[0] || "";
   useEffect(() => {
-    if (!canView) return;
+    if (ready && !tab && firstTab) setTab(firstTab);
+  }, [ready, firstTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!canKpi) return;
     let alive = true;
     const pull = () => apiRequest("/plant/summary").then((s) => { if (alive) setSummary(s); }).catch(() => {});
     pull();
     const id = setInterval(pull, 60000);
     return () => { alive = false; clearInterval(id); };
-  }, [canView]);
+  }, [canKpi]);
 
   if (!ready) return null;
   if (!canView) {
@@ -1503,6 +1513,7 @@ export default function PlantProduction() {
       <TopBar title="Plant Production" />
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 16px 32px" }}>
 
+        {canKpi && (
         <div className="card pp-kpis" style={{ marginBottom: 16, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
           <div>
             <div className="kpi-label">Made today</div>
@@ -1536,8 +1547,9 @@ export default function PlantProduction() {
             )}
           </div>
         </div>
+        )}
 
-        {heartbeat.stale && summary && (
+        {canKpi && heartbeat.stale && summary && (
           <div className="card" style={{ marginBottom: 16, background: "var(--alert-red-bg)", borderColor: "var(--alert-red)", fontSize: 13 }}>
             The plant PC has not sent anything recently. Nothing is lost — every batch is still in
             MCI370 and arrives once the agent is back — but nothing here is current until then.
@@ -1545,17 +1557,23 @@ export default function PlantProduction() {
         )}
 
         <div className="pp-tabs" style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-          <button type="button" className={`btn-tab ${tab === "production" ? "active" : ""}`} onClick={() => setTab("production")}>Production</button>
+          {canProd && (
+            <button type="button" className={`btn-tab ${tab === "production" ? "active" : ""}`} onClick={() => setTab("production")}>Production</button>
+          )}
           {canPvb && (
             <button type="button" className={`btn-tab ${tab === "pvb" ? "active" : ""}`} onClick={() => setTab("pvb")}>Plant vs billed</button>
           )}
-          <button type="button" className={`btn-tab ${tab === "consumption" ? "active" : ""}`} onClick={() => setTab("consumption")}>Consumption</button>
+          {canCons && (
+            <button type="button" className={`btn-tab ${tab === "consumption" ? "active" : ""}`} onClick={() => setTab("consumption")}>Consumption</button>
+          )}
           {canMap && (
             <button type="button" className={`btn-tab ${tab === "silos" ? "active" : ""}`} onClick={() => setTab("silos")}>Silos</button>
           )}
           {/* Round 159 — what the plant did not record. Shown to anyone who can
               read the plant data; only the Plant Operator can type into it. */}
-          <button type="button" className={`btn-tab ${tab === "manual" ? "active" : ""}`} onClick={() => setTab("manual")}>Manual entry</button>
+          {canManualView && (
+            <button type="button" className={`btn-tab ${tab === "manual" ? "active" : ""}`} onClick={() => setTab("manual")}>Manual entry</button>
+          )}
           {canCost && (
             <button type="button" className={`btn-tab ${tab === "cost" ? "active" : ""}`} onClick={() => setTab("cost")}>Cost/m³ – Material</button>
           )}
@@ -1576,11 +1594,16 @@ export default function PlantProduction() {
 
         {tab === "silos" && canMap ? <Silos />
           : tab === "qc-delay" && canQcDelayView ? <QcDelays canEdit={canQcDelayEdit} />
-          : tab === "manual" ? <Manual canEdit={canManualEdit} />
+          : tab === "manual" && canManualView ? <Manual canEdit={canManualEdit} />
           : tab === "cost" && canCost ? <CostPerM3 qs={qs} />
-          : tab === "consumption" ? <Consumption qs={qs} />
+          : tab === "consumption" && canCons ? <Consumption qs={qs} />
           : tab === "pvb" && canPvb ? <PlantVsBilled qs={qs} />
-          : <Production qs={qs} />}
+          : tab === "production" && canProd ? <Production qs={qs} />
+          : !firstTab ? (
+            <div className="card" style={{ fontSize: 13 }}>
+              No Plant Production screens are switched on for you. A Super Admin can grant them on the Access Control page.
+            </div>
+          ) : null}
       </div>
     </>
   );

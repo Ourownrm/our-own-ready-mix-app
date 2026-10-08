@@ -38,7 +38,7 @@ import { Router } from "express";
 import crypto from "crypto";
 import { pool, query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requirePermission } from "../lib/permissions.js";
+import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { loadResolver, resolveTicket, resolveVehicle, normalise } from "../lib/weighbridgeNames.js";
 
 const router = Router();
@@ -483,7 +483,7 @@ const MAPPING_ROLES = ["administrator"];
 // The receipts list. Defaults to the last 30 days rather than everything,
 // because the backlog import can put a few hundred rows in here and the plant
 // opens this screen to answer "what came in today".
-router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+router.get("/tickets", requirePermission("material.weighbridge", "view"), async (req, res) => {
   try {
     const status = ["matched", "needs_review", "ignored"].includes(req.query.status) ? req.query.status : null;
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 400);
@@ -540,7 +540,7 @@ router.get("/tickets", requireRole(...WB_ROLES), requirePermission("material.wei
 // spellings, the challan and the driver. Dates filter on weighed_at (the real
 // event), falling back to ticket_date where the weighbridge left no timestamp.
 // ---------------------------------------------------------------------------
-router.get("/report", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+router.get("/report", requirePermission("weighbridge.records", "view"), async (req, res) => {
   try {
     const params = [];
     const wh = [];
@@ -610,7 +610,7 @@ router.get("/report", requireRole(...WB_ROLES), requirePermission("material.weig
 
 // The distinct purposes present, for the report's filter dropdown — only the
 // values that actually occur, so the filter never offers an empty category.
-router.get("/purposes", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+router.get("/purposes", requireAnyPermission(["material.weighbridge", "weighbridge.records"], "view"), async (req, res) => {
   try {
     const { rows } = await query(
       `SELECT DISTINCT purpose FROM weighbridge_tickets WHERE purpose IS NOT NULL AND purpose <> '' ORDER BY purpose`
@@ -623,7 +623,7 @@ router.get("/purposes", requireRole(...WB_ROLES), requirePermission("material.we
 
 // The header strip: how many need a human, and — the question that actually
 // matters at 7am — when did the agent last check in.
-router.get("/summary", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+router.get("/summary", requirePermission("material.weighbridge", "view"), async (req, res) => {
   try {
     const [counts, last, today] = await Promise.all([
       query(`SELECT match_status::text AS status, count(*)::int AS n FROM weighbridge_tickets GROUP BY 1`),
@@ -654,7 +654,7 @@ router.get("/summary", requireRole(...WB_ROLES), requirePermission("material.wei
 
 // Set a ticket aside, or put it back in the queue. This is the only thing a
 // person may change about a ticket — the weighbridge owns everything else.
-router.patch("/tickets/:id", requireRole(...WB_EDIT_ROLES), requirePermission("material.weighbridge", "edit"), async (req, res) => {
+router.patch("/tickets/:id", requirePermission("material.weighbridge", "edit"), async (req, res) => {
   const ticketNumber = Number(req.params.id);
   if (!Number.isInteger(ticketNumber)) return res.status(400).json({ error: "Invalid ticket number." });
 
@@ -721,7 +721,7 @@ router.patch("/tickets/:id", requireRole(...WB_EDIT_ROLES), requirePermission("m
 // mapping screen has to offer a row per supplier or there is no way to tell
 // them apart. `suppliers` carries the ones this spelling has actually arrived
 // from, so the screen only ever offers real combinations.
-router.get("/unmapped", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "view"), async (req, res) => {
+router.get("/unmapped", requirePermission("material.weighbridge-mapping", "view"), async (req, res) => {
   try {
     const { rows } = await query(
       `WITH flagged AS (
@@ -768,7 +768,7 @@ router.get("/unmapped", requireRole(...MAPPING_ROLES), requirePermission("materi
 
 // The mappings already made, plus the master lists to map onto, so the screen
 // needs one call rather than four.
-router.get("/aliases", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "view"), async (req, res) => {
+router.get("/aliases", requirePermission("material.weighbridge-mapping", "view"), async (req, res) => {
   try {
     const [mat, sup, materials, suppliers] = await Promise.all([
       // Round 156 — a material rule may be scoped to one supplier. scope_name
@@ -877,7 +877,7 @@ async function reresolveOutstanding() {
   return cleared;
 }
 
-router.post("/aliases", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "create"), async (req, res) => {
+router.post("/aliases", requirePermission("material.weighbridge-mapping", "create"), async (req, res) => {
   const kind = req.body?.kind;
   const spec = ALIAS_TABLES[kind];
   if (!spec) return res.status(400).json({ error: "kind must be material or supplier." });
@@ -968,7 +968,7 @@ router.post("/aliases", requireRole(...MAPPING_ROLES), requirePermission("materi
   }
 });
 
-router.delete("/aliases/:kind/:id", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
+router.delete("/aliases/:kind/:id", requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
   const spec = ALIAS_TABLES[req.params.kind];
   const id = Number(req.params.id);
   if (!spec) return res.status(400).json({ error: "kind must be material or supplier." });
@@ -999,7 +999,7 @@ router.delete("/aliases/:kind/:id", requireRole(...MAPPING_ROLES), requirePermis
 // to save an unrelated mapping and let its sweep pick everything up, which is
 // not a thing anybody should have to know.
 // ---------------------------------------------------------------------------
-router.post("/recheck", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
+router.post("/recheck", requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
   try {
     const before = await query(
       `SELECT count(*)::int AS n FROM weighbridge_tickets WHERE match_status = 'needs_review'`
@@ -1032,7 +1032,7 @@ router.post("/recheck", requireRole(...MAPPING_ROLES), requirePermission("materi
 // left for a human are optional enrichment: who owns it, and whether a
 // misspelling should be merged into a lorry already on the list.
 // ---------------------------------------------------------------------------
-router.get("/vehicles", requireRole(...WB_ROLES), requirePermission("material.weighbridge", "view"), async (req, res) => {
+router.get("/vehicles", requireAnyPermission(["material.weighbridge", "weighbridge.vehicles"], "view"), async (req, res) => {
   try {
     const days = Math.min(Math.max(Number(req.query.days) || 90, 1), 1000);
     const { rows } = await query(
@@ -1094,7 +1094,7 @@ router.get("/vehicles", requireRole(...WB_ROLES), requirePermission("material.we
 
 // Say who a lorry belongs to, correct its registration, or mark it junk.
 // Nothing here is required for the feed to work — it is all enrichment.
-router.patch("/vehicles/:id", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
+router.patch("/vehicles/:id", requirePermission("weighbridge.vehicles", "edit"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid vehicle id." });
 
@@ -1156,7 +1156,7 @@ router.patch("/vehicles/:id", requireRole(...MAPPING_ROLES), requirePermission("
 // The losing row's tickets are repointed and an alias is left behind, so the
 // same misspelling arriving again lands on the right lorry without anybody
 // doing this twice.
-router.post("/vehicles/:id/merge", requireRole(...MAPPING_ROLES), requirePermission("material.weighbridge-mapping", "edit"), async (req, res) => {
+router.post("/vehicles/:id/merge", requirePermission("weighbridge.vehicles", "edit"), async (req, res) => {
   const fromId = Number(req.params.id);
   const intoId = Number(req.body?.into_id);
   if (!(Number.isInteger(fromId) && fromId > 0) || !(Number.isInteger(intoId) && intoId > 0)) {

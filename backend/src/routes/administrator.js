@@ -2,6 +2,13 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { query } from "../db.js";
 import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
+import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
+
+// Round 192 — the Fuel Stations & Equipment screen manages three lists. Each
+// list keeps its own function, and the screen's function opens all three, so
+// granting the one sub-menu is enough to use the screen.
+const FUEL_SCREEN_LUB = ["fleet.lubricant-types", "fleet.fuel-stations"];
+const FUEL_SCREEN_EQUIP = ["fleet.equipment", "fleet.fuel-stations"];
 import { voidInvoiceForTicket, generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { fetchChallanData } from "../lib/challanData.js";
 import { istDay } from "../lib/istDate.js";
@@ -109,7 +116,7 @@ router.post("/users/:id/reset-password", requireRole("administrator"), async (re
 // endpoint stays active-only, id+name — that's what every dropdown across
 // the app uses, and disabling a customer here correctly removes them from
 // all of those automatically.)
-router.get("/customers", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/customers", requireAnyPermission(["masters.customers", "quality.mix-assignments"], "view"), async (req, res) => {
   const { rows } = await query("SELECT * FROM customers ORDER BY name");
   res.json(rows);
 });
@@ -623,12 +630,12 @@ router.delete("/pumps/:id", requireRole("administrator"), async (req, res) => {
 
 // ===== Master data: Fuel stations =====
 
-router.get("/fuel-stations", requireRole("administrator"), async (req, res) => {
+router.get("/fuel-stations", requirePermission("fleet.fuel-stations", "view"), async (req, res) => {
   const { rows } = await query("SELECT * FROM fuel_stations ORDER BY name");
   res.json(rows);
 });
 
-router.post("/fuel-stations", requireRole("administrator"), async (req, res) => {
+router.post("/fuel-stations", requirePermission("fleet.fuel-stations", "create"), async (req, res) => {
   const { name, location } = req.body;
   if (!name) return res.status(400).json({ error: "Station name is required." });
   const { rows } = await query(
@@ -638,7 +645,7 @@ router.post("/fuel-stations", requireRole("administrator"), async (req, res) => 
   res.status(201).json(rows[0]);
 });
 
-router.patch("/fuel-stations/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/fuel-stations/:id/status", requirePermission("fleet.fuel-stations", "edit"), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE fuel_stations SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
@@ -647,13 +654,13 @@ router.patch("/fuel-stations/:id/status", requireRole("administrator"), async (r
 // Exactly one station is ever the plant — marking a new one unmarks any
 // previous one, rather than requiring the admin to remember to do that
 // themselves.
-router.post("/fuel-stations/:id/set-plant", requireRole("administrator"), async (req, res) => {
+router.post("/fuel-stations/:id/set-plant", requirePermission("fleet.fuel-stations", "edit"), async (req, res) => {
   await query("UPDATE fuel_stations SET is_plant = FALSE WHERE is_plant = TRUE");
   await query("UPDATE fuel_stations SET is_plant = TRUE WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
-router.delete("/fuel-stations/:id", requireRole("administrator"), async (req, res) => {
+router.delete("/fuel-stations/:id", requirePermission("fleet.fuel-stations", "delete"), async (req, res) => {
   try {
     const { rowCount } = await query("DELETE FROM fuel_stations WHERE id = $1", [req.params.id]);
     if (!rowCount) return res.status(404).json({ error: "Fuel station not found." });
@@ -715,19 +722,19 @@ router.delete("/plant-locations/:id", requireRole("administrator"), async (req, 
 
 // ===== Master data: Lubricant types =====
 
-router.get("/lubricant-types", requireRole("administrator"), async (req, res) => {
+router.get("/lubricant-types", requireAnyPermission(FUEL_SCREEN_LUB, "view"), async (req, res) => {
   const { rows } = await query("SELECT * FROM lubricant_types ORDER BY name");
   res.json(rows);
 });
 
-router.post("/lubricant-types", requireRole("administrator"), async (req, res) => {
+router.post("/lubricant-types", requireAnyPermission(FUEL_SCREEN_LUB, "create"), async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: "Lubricant name is required." });
   const { rows } = await query("INSERT INTO lubricant_types (name) VALUES ($1) RETURNING *", [name]);
   res.status(201).json(rows[0]);
 });
 
-router.patch("/lubricant-types/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/lubricant-types/:id/status", requireAnyPermission(FUEL_SCREEN_LUB, "edit"), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE lubricant_types SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
@@ -739,7 +746,7 @@ router.patch("/lubricant-types/:id/status", requireRole("administrator"), async 
 // through the app at all. Deliberately just a name change, not a merge —
 // existing supply_requests/store_stock_items rows keep pointing at the same
 // lubricant_type_id, so history and the current stock balance are untouched.
-router.patch("/lubricant-types/:id", requireRole("administrator"), async (req, res) => {
+router.patch("/lubricant-types/:id", requireAnyPermission(FUEL_SCREEN_LUB, "edit"), async (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "Lubricant name is required." });
   const { rows } = await query("UPDATE lubricant_types SET name = $1 WHERE id = $2 RETURNING *", [name.trim(), req.params.id]);
@@ -778,7 +785,7 @@ router.patch("/visit-outcome-reasons/:id/status", requireRole("administrator"), 
 
 // ===== Master data: Equipment (pickup vans, loaders, generators, batching plants) =====
 
-router.get("/equipment", requireRole("administrator"), async (req, res) => {
+router.get("/equipment", requireAnyPermission(FUEL_SCREEN_EQUIP, "view"), async (req, res) => {
   const { rows } = await query("SELECT * FROM equipment ORDER BY equipment_type, name");
   res.json(rows);
 });
@@ -787,7 +794,7 @@ router.get("/equipment", requireRole("administrator"), async (req, res) => {
 // dedicated master-data panels (Fleet, Fuel Stations), not this generic Equipment list.
 const EQUIPMENT_TYPES = ["pickup_van", "loader", "generator", "batching_plant"];
 
-router.post("/equipment", requireRole("administrator"), async (req, res) => {
+router.post("/equipment", requireAnyPermission(FUEL_SCREEN_EQUIP, "create"), async (req, res) => {
   const { equipment_type, name } = req.body;
   if (!equipment_type || !EQUIPMENT_TYPES.includes(equipment_type)) {
     return res.status(400).json({ error: "Equipment type must be pickup van, loader, generator, or batching plant." });
@@ -800,13 +807,13 @@ router.post("/equipment", requireRole("administrator"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.patch("/equipment/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/equipment/:id/status", requireAnyPermission(FUEL_SCREEN_EQUIP, "edit"), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE equipment SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
 });
 
-router.delete("/equipment/:id", requireRole("administrator"), async (req, res) => {
+router.delete("/equipment/:id", requireAnyPermission(FUEL_SCREEN_EQUIP, "delete"), async (req, res) => {
   try {
     const { rowCount } = await query("DELETE FROM equipment WHERE id = $1", [req.params.id]);
     if (!rowCount) return res.status(404).json({ error: "Equipment not found." });
@@ -848,7 +855,7 @@ router.patch("/salespersons/:id/status", requireRole("administrator"), async (re
 // Nothing is ever hard-deleted (SRS §16) — "delete" here means cancelling, which
 // keeps the record but excludes it from active workflows and dashboards.
 
-router.get("/orders", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/orders", requirePermission("production.correct-order", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT o.id, o.order_date, o.order_quantity_m3, o.status, o.scheduled_batching_time, o.required_at_site_time,
             o.mix_grade_id, o.pump_requirement, o.pump_id, p.pump_code,
@@ -867,7 +874,7 @@ router.get("/orders", requireRole("administrator", "manager"), async (req, res) 
   res.json(rows);
 });
 
-router.patch("/orders/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.patch("/orders/:id", requirePermission("production.correct-order", "edit"), async (req, res) => {
   const { order_quantity_m3, scheduled_batching_time, required_at_site_time, remarks, mix_grade_id, pump_requirement, pump_id, assigned_qc_engineer_id } = req.body;
 
   // Unlike grade, the pump is deliberately editable at any time — even after
@@ -918,7 +925,7 @@ router.patch("/orders/:id", requireRole("administrator", "manager"), async (req,
   res.json(rows[0]);
 });
 
-router.post("/orders/:id/reschedule", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/orders/:id/reschedule", requirePermission("orders.reschedule", "edit"), async (req, res) => {
   const { new_order_date, new_scheduled_batching_time, reason } = req.body;
   if (!reason || (!new_order_date && !new_scheduled_batching_time)) {
     return res.status(400).json({ error: "A reason and at least a new date or new time are required to reschedule." });
@@ -939,12 +946,12 @@ router.post("/orders/:id/reschedule", requireRole("administrator", "manager"), a
   res.json(rows[0]);
 });
 
-router.post("/orders/:id/cancel", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/orders/:id/cancel", requirePermission("production.correct-order", "edit"), async (req, res) => {
   await query("UPDATE customer_orders SET status = 'cancelled', terminal_at = now() WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
-router.get("/tickets", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/tickets", requirePermission("production.correct-tickets", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id, dt.ticket_number, dt.loaded_quantity_m3, dt.status, dt.ticket_date,
             t.truck_number, u.name AS driver_name, s.name AS site_name
@@ -968,13 +975,13 @@ router.get("/tickets", requireRole("administrator", "manager"), async (req, res)
 // the lab and QC now print the same document through routes/deliveryNotes.js.
 // This URL stays exactly as it was: the Administrator screen's print button
 // already points at it, and there is no reason to make that button move.
-router.get("/tickets/:id/challan", requireRole("administrator"), async (req, res) => {
+router.get("/tickets/:id/challan", requirePermission("production.correct-tickets", "view"), async (req, res) => {
   const data = await fetchChallanData(req.params.id);
   if (!data) return res.status(404).json({ error: "Ticket not found." });
   res.json(data);
 });
 
-router.patch("/tickets/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.patch("/tickets/:id", requirePermission("production.correct-tickets", "edit"), async (req, res) => {
   const { loaded_quantity_m3 } = req.body;
 
   const { rows: before } = await query("SELECT loaded_quantity_m3 FROM delivery_tickets WHERE id = $1", [req.params.id]);
@@ -1011,7 +1018,7 @@ router.patch("/tickets/:id", requireRole("administrator", "manager"), async (req
   res.json(rows[0]);
 });
 
-router.post("/tickets/:id/cancel", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/tickets/:id/cancel", requirePermission("production.correct-tickets", "edit"), async (req, res) => {
   await query("UPDATE delivery_tickets SET status = 'cancelled' WHERE id = $1", [req.params.id]);
   await voidInvoiceForTicket(req.params.id, "cancelled");
   res.json({ ok: true });
@@ -1039,7 +1046,7 @@ router.get("/site-contacts", requireRole("administrator"), async (req, res) => {
 // One row per calendar month, so past months keep their own historical
 // target rather than a single value silently drifting. Manager dashboard
 // reads the resulting KPI via GET /orders/dashboard (see orders.js).
-router.get("/production-targets", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/production-targets", requirePermission("production.targets", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT id, year, month, target_m3, updated_at FROM monthly_production_targets
      ORDER BY year DESC, month DESC LIMIT 24`
@@ -1047,7 +1054,7 @@ router.get("/production-targets", requireRole("administrator", "manager"), async
   res.json(rows);
 });
 
-router.post("/production-targets", requireRole("administrator"), async (req, res) => {
+router.post("/production-targets", requirePermission("production.targets", "create"), async (req, res) => {
   const { year, month, target_m3 } = req.body;
   if (!year || !month || !target_m3) {
     return res.status(400).json({ error: "Year, month, and target quantity are required." });
@@ -1087,7 +1094,7 @@ router.patch("/site-contacts/:id", requireRole("administrator"), async (req, res
 // resolves to — see mix_design_assignments in schema.sql. One design (e.g.
 // "025-B") is routinely shared across several customer rows; this list is
 // customer-centric (one row per customer+grade override), not design-centric.
-router.get("/mix-design-assignments", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/mix-design-assignments", requirePermission("quality.mix-assignments", "view"), async (req, res) => {
   const { rows } = await query(
     `SELECT a.id, a.customer_id, c.name AS customer_name, a.mix_grade_id, m.name AS mix_grade_name,
             a.mix_design_id, md.design_ref_code, a.assigned_at, a.effective_from,
@@ -1110,7 +1117,7 @@ router.get("/mix-design-assignments", requireRole("administrator", "manager"), a
 // just brand-new ones — previously an assignment only ever affected orders
 // created after the fact, which read as "the assigned design doesn't appear
 // in the customer module" for anything already on the books.
-router.post("/mix-design-assignments", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/mix-design-assignments", requirePermission("quality.mix-assignments", "create"), async (req, res) => {
   const { customer_id, mix_grade_id, mix_design_id, effective_from } = req.body;
   if (!customer_id || !mix_grade_id || !mix_design_id) {
     return res.status(400).json({ error: "Customer, grade, and mix design are all required." });
@@ -1164,7 +1171,7 @@ router.post("/mix-design-assignments", requireRole("administrator", "manager"), 
 // roll those orders back to (the grade's standard design may have changed
 // since, or another assignment may apply going forward), so removing an
 // assignment only stops it from applying to brand-new orders.
-router.delete("/mix-design-assignments/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.delete("/mix-design-assignments/:id", requirePermission("quality.mix-assignments", "delete"), async (req, res) => {
   await query("DELETE FROM mix_design_assignments WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });

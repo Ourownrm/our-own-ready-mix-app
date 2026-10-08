@@ -254,3 +254,67 @@ export function moduleBadge(module, badges) {
   if (!module.screens.length) return badges[module.key] || 0;
   return module.screens.reduce((sum, s) => sum + (badges[s.key] || 0), 0);
 }
+
+// Round 192 — the Modules page (pages/Modules.jsx) for every role, and the
+// TopBar link to it. Lives here, beside the registry it reads, so TopBar and
+// the page share one definition without importing each other.
+// Each hub entry: the registry module it borrows its colour and icon from,
+// what opens it, and the function(s) that decide whether it shows.
+// A module with `screens` opens a sub-grid; one with `to` opens directly.
+export const HUB = [
+  { key: "material-module", perm: ["material.module"], to: "/material-module" },
+  { key: "plant-production", perm: ["module.plant-production"], to: "/plant-production" },
+  { key: "weighbridge-receipts", perm: ["module.weighbridge"], to: "/weighbridge" },
+  { key: "receipt-differences", perm: ["material.receipt-confirm", "weighbridge.receipt-variance"], to: "/receipt-differences" },
+  {
+    key: "quality-control",
+    screens: [
+      { key: "laboratory", perm: "quality.lab-technician" },
+      { key: "mix-assignments", perm: "quality.mix-assignments" },
+      { key: "mix-designs-approve", perm: "quality.mix-designs" },
+      { key: "mix-designs-view", perm: "quality.mix-designs-view" },
+      { key: "cube-test-report", perm: "quality.cube-test-report" },
+      { key: "cube-strength-analysis", perm: "quality.cube-qc-dashboard" },
+    ],
+  },
+  {
+    key: "production",
+    screens: [
+      { key: "production-target", perm: "production.targets" },
+      { key: "correct-order", perm: "production.correct-order" },
+      { key: "correct-tickets", perm: "production.correct-tickets" },
+      { key: "daily-production-report", perm: "reports.production" },
+      { key: "trip-allowance-report", perm: "reports.trip-allowance" },
+      { key: "cycle-time-report", perm: "reports.cycle-time" },
+    ],
+  },
+  {
+    key: "fuel-lubricants",
+    screens: [
+      { key: "fuel-analysis", perm: "reports.fuel-analysis" },
+      { key: "fuel-stations", perm: "fleet.fuel-stations" },
+      { key: "fuel-report", perm: "reports.fuel" },
+    ],
+  },
+];
+
+// The hub filtered to what this person may open. Shared with TopBar, which
+// offers the Modules link only when this is non-empty.
+export function visibleHub(can) {
+  const out = [];
+  for (const h of HUB) {
+    const reg = moduleByKey(h.key);
+    if (!reg) continue;
+    if (h.screens) {
+      const screens = h.screens
+        .filter((s) => can(s.perm, "view"))
+        .map((s) => ({ ...SCREEN_BY_KEY[s.key], perm: s.perm }))
+        .filter((s) => s.key);
+      if (screens.length) out.push({ ...reg, screens });
+    } else if (h.perm.some((p) => can(p, "view"))) {
+      out.push({ ...reg, screens: [], to: h.to });
+    }
+  }
+  return out;
+}
+

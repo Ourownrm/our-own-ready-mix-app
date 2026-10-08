@@ -90,8 +90,8 @@ export default function QcEngineer() {
             appear only once a Super Admin grants it (Round 172 fix: these were
             missing, so a granted permission had no way to be reached). */}
         <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-          <IfCan perm="production.plant-data"><Link to="/mix-designs" className="btn-tab" style={{ textDecoration: "none" }}>Mix Designs &amp; Recipes →</Link></IfCan>
-          <IfCan perm="production.plant-data"><Link to="/plant-production" className="btn-tab" style={{ textDecoration: "none" }}>Plant Production &amp; Consumption →</Link></IfCan>
+          <IfCan perm="quality.mix-designs-view"><Link to="/mix-designs" className="btn-tab" style={{ textDecoration: "none" }}>Mix Designs &amp; Recipes →</Link></IfCan>
+          <IfCan perm="module.plant-production"><Link to="/plant-production" className="btn-tab" style={{ textDecoration: "none" }}>Plant Production &amp; Consumption →</Link></IfCan>
         </div>
 
         {delayedTrucks.length > 0 && (
