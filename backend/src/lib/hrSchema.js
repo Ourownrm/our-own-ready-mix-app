@@ -98,8 +98,9 @@ export const HR_STAGE2_SQL = `
 --   own_production    salesperson — m3 of his own customers above a minimum
 --   plant_production  manager / management — whole plant m3 above a minimum
 --   own_sales_paid    pay per m3 of sales he brought, once the customer has paid
-UPDATE hr_employees SET incentive_basis = 'own_sales_paid' WHERE incentive_basis = 'own_sales';
+-- (the old check is dropped first: it does not allow the new name)
 ALTER TABLE hr_employees DROP CONSTRAINT IF EXISTS hr_employees_incentive_basis_check;
+UPDATE hr_employees SET incentive_basis = 'own_sales_paid' WHERE incentive_basis = 'own_sales';
 ALTER TABLE hr_employees ADD CONSTRAINT hr_employees_incentive_basis_check
   CHECK (incentive_basis IN ('none','own_production','plant_production','own_sales_paid'));
 -- Which salesperson (orders' "sales representative") this employee is.

@@ -51,3 +51,6 @@ Visit `/setup?key=…` once. It adds hr_settings, hr_requests, hr_advances, hr_p
 
 ## Next (stage 3)
 Manpower Cost dashboard, fed into the Cost Dashboard.
+
+## Hotfix (same version, 10.28)
+`/setup` failed with *violates check constraint "hr_employees_incentive_basis_check"* on any database where an employee already had the stage-1 incentive "own sales". The migration renamed own_sales → own_sales_paid before dropping the old check, which doesn't allow the new name. It now drops the check first, then renames, then adds the new check. The setup ran in one transaction, so the failed attempt changed nothing; running `/setup` again after deploying the fix is safe.
