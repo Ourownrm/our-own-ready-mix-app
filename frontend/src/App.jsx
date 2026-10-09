@@ -30,7 +30,8 @@ import DelayJustificationReport from "./pages/DelayJustificationReport.jsx";
 import Charts from "./pages/Charts.jsx";
 import CycleTimeReport from "./pages/CycleTimeReport.jsx";
 import TruckTimingReport from "./pages/TruckTimingReport.jsx";
-import FuelAnalysis from "./pages/FuelAnalysis.jsx";
+// Round 199 — the 360° Fuel Analysis lives inside the Fuel module now.
+import FuelModule from "./pages/FuelModule.jsx";
 import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
@@ -203,8 +204,10 @@ export default function App() {
           <Route path="/truck-timing-report" element={
             <ProtectedRoute roles={["administrator", "manager"]}><TruckTimingReport /></ProtectedRoute>
           } />
-          <Route path="/fuel-analysis" element={
-            <ProtectedRoute perm="reports.fuel-analysis"><FuelAnalysis /></ProtectedRoute>
+          {/* Round 199 — old links and bookmarks land on the analysis inside the Fuel module. */}
+          <Route path="/fuel-analysis" element={<Navigate to="/fuel-module?tab=analysis" replace />} />
+          <Route path="/fuel-module" element={
+            <ProtectedRoute perm="module.fuel"><FuelModule /></ProtectedRoute>
           } />
           <Route path="/outstanding-collection-report" element={
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><OutstandingCollectionReport /></ProtectedRoute>

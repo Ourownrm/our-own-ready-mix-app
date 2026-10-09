@@ -100,7 +100,7 @@ export const ADMIN_MODULES = [
     tint: "#F7F0DC",
     screens: [
       { key: "fuel-report", label: "Fuel and Lubricant Report", icon: "doc", to: "/fuel-report" },
-      { key: "fuel-analysis", label: "360° Fuel Analysis", icon: "gauge", to: "/fuel-analysis" },
+      // Round 199 — the 360° Fuel Analysis moved into the Fuel module.
       { key: "fuel-stations", label: "Fuel Stations & Equipment", icon: "building", view: "fuel" },
     ],
   },
@@ -229,6 +229,18 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 199 — the Fuel module: diesel stock as a tank, the transaction
+    // ledger, purchases, the 360° analysis and the tank settings. Lubricants
+    // stay in Store. Opens straight into its own tabbed page.
+    key: "fuel-module",
+    label: "Fuel",
+    icon: "fuel",
+    colour: "#B4890F",
+    tint: "#F7F0DC",
+    to: "/fuel-module",
+    screens: [],
+  },
+  {
     key: "users-roles",
     label: "Users & Roles",
     icon: "people",
@@ -282,6 +294,7 @@ export const HUB = [
   { key: "plant-production", perm: ["module.plant-production"], to: "/plant-production" },
   { key: "weighbridge-receipts", perm: ["module.weighbridge"], to: "/weighbridge" },
   { key: "hr", perm: ["module.hr"], to: "/hr" },
+  { key: "fuel-module", perm: ["module.fuel"], to: "/fuel-module" },
   { key: "receipt-differences", perm: ["material.receipt-confirm", "weighbridge.receipt-variance"], to: "/receipt-differences" },
   {
     key: "quality-control",
@@ -311,7 +324,6 @@ export const HUB = [
   {
     key: "fuel-lubricants",
     screens: [
-      { key: "fuel-analysis", perm: "reports.fuel-analysis" },
       { key: "fuel-stations", perm: "fleet.fuel-stations" },
       { key: "fuel-report", perm: "reports.fuel" },
     ],

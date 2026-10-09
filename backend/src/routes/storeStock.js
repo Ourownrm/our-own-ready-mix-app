@@ -96,6 +96,15 @@ router.patch("/items/:id/rate", requireRole("manager", "administrator"), async (
     [rate_per_liter, req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Stock item not found." });
+  // Round 199 — a fuel rate set from here still lands in the Fuel module's
+  // rate history, so the history never has a gap whichever screen was used.
+  if (rows[0].item_type === "fuel") {
+    try {
+      await query(`INSERT INTO fuel_rate_history (rate_per_liter, set_by, note) VALUES ($1, $2, 'Set from Store Stock')`, [rate_per_liter, req.user.id]);
+    } catch (err) {
+      console.error("fuel_rate_history insert failed (has /setup been run since Round 199?):", err.message);
+    }
+  }
   res.json(rows[0]);
 });
 

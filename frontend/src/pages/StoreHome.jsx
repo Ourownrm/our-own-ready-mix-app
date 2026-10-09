@@ -59,7 +59,10 @@ export default function StoreHome() {
             weighbridge access in the catalogue but no way to reach it. */}
         {ready && (
           <>
-            <Link to="/store-stock"><button type="button" style={{ width: "100%", marginTop: 20 }}>Stock &amp; purchases</button></Link>
+            {/* Round 199 — diesel has its own module; Store Stock keeps lubricants. */}
+            {can("module.fuel", "view") &&
+              <Link to="/fuel-module"><button type="button" className="btn-primary" style={{ width: "100%", marginTop: 20 }}>Fuel — tank, issues &amp; purchases</button></Link>}
+            <Link to="/store-stock"><button type="button" style={{ width: "100%", marginTop: can("module.fuel", "view") ? 10 : 20 }}>Lubricant stock &amp; purchases</button></Link>
             {can("material.module", "view") &&
               <Link to="/material-module"><button type="button" style={{ width: "100%", marginTop: 10 }}>Material Module</button></Link>}
             {can("module.weighbridge", "view") &&

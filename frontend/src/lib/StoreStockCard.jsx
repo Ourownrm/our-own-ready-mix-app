@@ -1,11 +1,17 @@
 // Round 131, item 5 — Manager dashboard summary of fuel/lubricant stock,
 // same visual pattern as RawMaterialStockCard.jsx alongside it.
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { apiRequest } from "./api.js";
+import { usePermissions } from "./PermissionContext.jsx";
 
 export default function StoreStockCard() {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+  const navigate = useNavigate();
+  const { can } = usePermissions();
+  // Round 199 — diesel lives in the Fuel module; its tile opens it.
+  const fuelLink = can("module.fuel", "view");
 
   useEffect(() => {
     apiRequest("/store-stock/items").then(setRows).catch((err) => setError(err.message));
@@ -32,10 +38,17 @@ export default function StoreStockCard() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 6 }}>
           {rows.map((r) => {
             const low = r.reorder_level != null && Number(r.current_qty) <= Number(r.reorder_level);
+            const opensFuel = r.item_type === "fuel" && fuelLink;
             return (
               <div
                 key={r.id}
+                role={opensFuel ? "link" : undefined}
+                tabIndex={opensFuel ? 0 : undefined}
+                title={opensFuel ? "Open the Fuel module" : undefined}
+                onClick={opensFuel ? () => navigate("/fuel-module") : undefined}
+                onKeyDown={opensFuel ? (e) => { if (e.key === "Enter") navigate("/fuel-module"); } : undefined}
                 style={{
+                  cursor: opensFuel ? "pointer" : undefined,
                   background: low ? "var(--alert-red-bg)" : "var(--concrete)",
                   border: low ? "1px solid var(--alert-red)" : "1px solid transparent",
                   borderRadius: 8, padding: "6px 8px",

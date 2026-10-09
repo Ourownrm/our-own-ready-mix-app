@@ -36,6 +36,8 @@ export const GROUPS = [
   { key: "material", label: "Material Module" },
   { key: "store", label: "Store & supplies" },
   { key: "fleet", label: "Fleet, fuel & maintenance" },
+  // Round 199
+  { key: "fuel", label: "Fuel module" },
   { key: "sales", label: "Sales & CRM" },
   { key: "accounts", label: "Accounts" },
   { key: "masters", label: "Masters" },
@@ -385,6 +387,31 @@ export const CATALOGUE = [
   f("fleet.lubricant-types", "fleet", "Lubricant types", VCE,
     { administrator: VCE }),
 
+  // ---------- Fuel module (Round 199) ----------
+  // Diesel moved out of Store into its own module; lubricants stay in Store.
+  // The stock itself is unchanged underneath (store_stock_items' fuel row,
+  // store_stock_transactions, store_stock_purchases, supply_requests) — these
+  // keys decide who sees which part of the new module. Defaults follow the
+  // user's role x module table: Plant Manager, Store and Accountant get Fuel.
+  f("module.fuel", "modules", "Fuel module", V,
+    { administrator: V, manager: V, store: V, accountant: V }, { screen: "fuel-module" }),
+  f("fuel.dashboard", "fuel", "Fuel dashboard — tank level, alerts, trends", V,
+    { administrator: V, manager: V, store: V, accountant: V }),
+  f("fuel.transactions", "fuel", "Fuel transactions ledger", V,
+    { administrator: V, manager: V, store: V, accountant: V }),
+  f("fuel.issue", "fuel", "Issue fuel — requests waiting to be approved or issued", V,
+    { administrator: V, manager: V, store: V }),
+  f("fuel.purchases", "fuel", "Diesel purchases", VCED,
+    { administrator: VCED, manager: VCED, store: VCE }),
+  f("fuel.reports", "fuel", "Fuel reports — stock statement", V,
+    { administrator: V, manager: V, store: V, accountant: V }),
+  // Tank capacity and the analysis rules: the user's rule is that only an
+  // Administrator sets the capacity. Others may look.
+  f("fuel.settings", "fuel", "Fuel settings — tank capacity, reorder level, rate, analysis rules", VE,
+    { administrator: VE, manager: V, store: V }),
+  f("fuel.exception-review", "fuel", "Mark a fuel exception as reviewed", E,
+    { administrator: E, manager: E }),
+
   // ---------- Sales & CRM ----------
   f("sales.leads", "sales", "Browse Leads", VCE,
     { administrator: VCE, manager: VCE, sales_executive: VCE }, { screen: "browse-leads" }),
@@ -658,6 +685,23 @@ export const MODULES = [
     noAutoView: ["hr.salary", "hr.payroll", "hr.advances"],
   },
   {
+    // Round 199 — the Fuel module. Roles are set on each function above rather
+    // than through matrixRoles, because the 360° analysis inside it stays
+    // Manager / Administrator only, as it was.
+    key: "fuel", label: "Fuel", gate: "module.fuel", to: "/fuel-module",
+    matrixRoles: [],
+    menus: [
+      { key: "fuel.dashboard", label: "Dashboard" },
+      { key: "fuel.transactions", label: "Transactions" },
+      { key: "fuel.issue", label: "Issue fuel" },
+      { key: "fuel.purchases", label: "Purchases" },
+      { key: "reports.fuel-analysis", label: "360° Analysis" },
+      { key: "fuel.reports", label: "Reports" },
+      { key: "fuel.settings", label: "Settings" },
+    ],
+    support: ["fuel.exception-review"],
+  },
+  {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",
     matrixRoles: ["manager", "qc_engineer"],
     menus: [
@@ -696,7 +740,7 @@ export const FUNCTION_GROUPS = [
   {
     key: "fuel-lubricants", label: "Fuel & Lubricants",
     menus: [
-      { key: "reports.fuel-analysis", label: "360° Fuel Analysis" },
+      // Round 199 — the 360° Fuel Analysis moved into the Fuel module above.
       { key: "fleet.fuel-stations", label: "Fuel Stations & Equipment" },
       { key: "reports.fuel", label: "Fuel & Lubricant Report" },
     ],

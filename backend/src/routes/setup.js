@@ -12,6 +12,7 @@ import { migrateRmLabTests } from "../lib/rmTestCards.js";
 import { migrateAttendance } from "../lib/attendanceSchema.js";
 // Round 197 — HR module stage 1.
 import { migrateHr } from "../lib/hrSchema.js";
+import { migrateFuel } from "../lib/fuelSchema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4078,6 +4079,10 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
 
     // ROUND 197 — HR module stage 1: employees, shifts, roster, holidays.
     await migrateHr(pool, log);
+
+    // ROUND 199 — the Fuel module: tank settings, rate history, exception
+    // reviews, and the module switch for whoever already had the 360° analysis.
+    await migrateFuel(pool, log);
 
     // (2) seed any catalogue function this installation has never seen.
     const { rows: seededKeys } = await pool.query(`SELECT permission_key FROM permission_key_seeds`);

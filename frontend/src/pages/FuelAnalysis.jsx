@@ -35,21 +35,30 @@ function num(v, digits = 0) {
 // A truck's rate relative to the fleet average — the "is this an outlier"
 // judgment call, reused by both the bar chart and the summary table so the
 // two never disagree about which trucks are flagged.
-function rateStatus(rate, fleetAvg) {
+//
+// Round 199 — the three thresholds are now Fuel → Settings values (an
+// Administrator can tune them). They default to the 12% / 3% / 10% this rule
+// has always used; FuelAnalysis360.jsx calls setStatusBands() with the saved
+// values before it draws anything, so every view on the page agrees.
+let BANDS = { high: 0.12, above: 0.03, efficient: 0.1 };
+export function setStatusBands(b) {
+  if (b && Number.isFinite(b.high) && Number.isFinite(b.above) && Number.isFinite(b.efficient)) BANDS = { ...b };
+}
+export function rateStatus(rate, fleetAvg) {
   if (rate == null || fleetAvg == null) return { key: "neutral", label: "No data" };
   const pctOver = (rate - fleetAvg) / fleetAvg;
-  if (pctOver > 0.12) return { key: "danger", label: "High consumption" };
-  if (pctOver > 0.03) return { key: "warning", label: "Above average" };
-  if (pctOver < -0.1) return { key: "success", label: "Efficient" };
+  if (pctOver > BANDS.high) return { key: "danger", label: "High consumption" };
+  if (pctOver > BANDS.above) return { key: "warning", label: "Above average" };
+  if (pctOver < -BANDS.efficient) return { key: "success", label: "Efficient" };
   return { key: "neutral", label: "Near average" };
 }
-const STATUS_COLOR = {
+export const STATUS_COLOR = {
   danger: "var(--alert-red)",
   warning: "var(--amber)",
   success: "var(--signal-green)",
   neutral: "var(--slate)",
 };
-const STATUS_BADGE = {
+export const STATUS_BADGE = {
   danger: "badge-danger",
   warning: "badge-warning",
   success: "badge-success",
@@ -61,7 +70,7 @@ const STATUS_BADGE = {
 // between trucks rather than mixing in how far each truck's routes happened
 // to be this range. Kept generic on a `metricKey`/`unit` pair so the same
 // component still works if a metric is ever swapped again.
-function FleetBarChart({ trucks, fleetAvg, onPick, metricKey = "litres_per_m3", unit = "L/m³", digits = 2 }) {
+export function FleetBarChart({ trucks, fleetAvg, onPick, metricKey = "litres_per_m3", unit = "L/m³", digits = 2 }) {
   const withRate = trucks.filter((t) => t[metricKey] != null);
   if (withRate.length === 0) {
     return <div style={{ fontSize: 13, color: "var(--slate)" }}>No trucks have both fuel fills and delivered quantity in this range yet.</div>;
@@ -129,7 +138,9 @@ function IntervalTrend({ intervals }) {
   );
 }
 
-function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, fleetAvgM3, onBack }) {
+// Round 199 — `extra` lets the Fuel module add its month-by-month and
+// exceptions cards under the summary without changing anything above it.
+export function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, fleetAvgM3, onBack, extra = null }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -214,6 +225,8 @@ function TruckDrilldown({ truckId, fromDate, toDate, fleetAvg, fleetAvgM3, onBac
           {pumpPct != null && <> Used a pump on <b>{pumpPct}%</b> of its trips in this range — pump discharge is faster and typically burns less fuel per trip than manual/chute discharge.</>}
         </div>
       )}
+
+      {extra}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Fill-to-fill consumption trend</div>
@@ -314,7 +327,7 @@ function typeLabel(t) {
   return TYPE_LABEL[t] || (t ? t.replace(/_/g, " ") : "—");
 }
 
-function EquipmentDrilldown({ kind, unitId, fromDate, toDate, typeAvg, onBack }) {
+export function EquipmentDrilldown({ kind, unitId, fromDate, toDate, typeAvg, onBack }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -433,7 +446,9 @@ function EquipmentDrilldown({ kind, unitId, fromDate, toDate, typeAvg, onBack })
   );
 }
 
-function EquipmentOverview({ data, onPick }) {
+// Round 199 — `trendFor(unit)` (optional) adds a 6-month L/hr trend column;
+// the Fuel module passes it, the standalone page does not.
+export function EquipmentOverview({ data, onPick, trendFor = null }) {
   const units = data?.units || [];
   const averages = data?.avg_litres_per_hour_by_type || {};
   const totalLitres = units.reduce((s, u) => s + Number(u.total_litres || 0), 0);
@@ -495,6 +510,7 @@ function EquipmentOverview({ data, onPick }) {
                   <tr>
                     <th>Unit</th><th>L/hr</th>{isPump ? <th>L/m³</th> : null}
                     <th>Litres</th><th>Cost</th><th>Fills</th><th>Plant / Outside</th><th>Hours run</th>
+                    {trendFor ? <th>L/hr · 6 months</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -514,6 +530,7 @@ function EquipmentOverview({ data, onPick }) {
                         <td>{u.fill_count}</td>
                         <td>{u.plant_fill_count} / {u.outside_fill_count}</td>
                         <td>{num(u.hours_run, 1)}</td>
+                        {trendFor ? <td>{trendFor(u, status)}</td> : null}
                       </tr>
                     );
                   })}

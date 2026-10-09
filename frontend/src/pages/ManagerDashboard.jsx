@@ -247,7 +247,7 @@ export default function ManagerDashboard() {
               { label: "Charts", to: "/charts", perm: "reports.charts" },
               { label: "Cycle Time Report", to: "/cycle-time-report", perm: "reports.cycle-time" },
               { label: "Truck Timing Report", to: "/truck-timing-report", perm: "reports.truck-timing" },
-              { label: "360° Fuel Analysis", to: "/fuel-analysis", perm: "reports.fuel-analysis" },
+              { label: "360° Fuel Analysis", to: "/fuel-module?tab=analysis", perm: "reports.fuel-analysis" },
               { label: "Outstanding Collection", to: "/outstanding-collection-report", perm: "accounts.outstanding" },
             ])}
           />

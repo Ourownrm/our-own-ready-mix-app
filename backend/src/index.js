@@ -29,6 +29,7 @@ import notificationsRoutes from "./routes/notifications.js";
 import trackingRoutes from "./routes/tracking.js";
 import maintenanceRoutes from "./routes/maintenance.js";
 import fuelAnalysisRoutes from "./routes/fuelAnalysis.js";
+import fuelModuleRoutes from "./routes/fuelModule.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
 import weighbridgeRoutes from "./routes/weighbridge.js";
 // Round 195 — attendance machine (eSSL) punches; /sync is API-key, the rest is session.
@@ -178,6 +179,7 @@ app.use("/api/compliance", complianceRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
 app.use("/api/fuel-analysis", fuelAnalysisRoutes);
+app.use("/api/fuel-module", fuelModuleRoutes);
 // Round 153, item 1 — today's delivery notes, for the Plant Operator, the lab
 // and QC. Gated by the orders.challan-print permission, not by role alone.
 app.use("/api/delivery-notes", deliveryNotesRoutes);

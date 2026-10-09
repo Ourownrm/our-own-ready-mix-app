@@ -5,8 +5,15 @@
 // "Adjust" action per item for a physical stock correction — Store
 // deliberately does NOT get that action, per the explicit request that
 // adjustment is a Manager-only option.
+//
+// Round 199 — diesel moved to the Fuel module (tank picture, ledger,
+// purchases, settings). This screen now shows lubricants only, and points to
+// the Fuel module for diesel. The data underneath is unchanged: the fuel row
+// is still a store_stock_items row, just shown and run from there.
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
@@ -21,6 +28,7 @@ const STATUS_COLOR = { pending: "var(--amber, #9C6B12)", approved: "var(--info)"
 export default function StoreStock() {
   const { user } = useAuth();
   const isManager = user?.role === "manager" || isAdminLevel(user?.role);
+  const { can } = usePermissions();
 
   const [items, setItems] = useState([]);
   const [mine, setMine] = useState([]);
@@ -136,15 +144,25 @@ export default function StoreStock() {
     } catch (err) { setError(err.message); }
   }
 
+  const fuelItem = items.find((it) => it.item_type === "fuel");
+  const lubeItems = items.filter((it) => it.item_type !== "fuel");
+  const myLube = mine.filter((p) => !fuelItem || p.stock_item_id !== fuelItem.id);
+
   return (
     <>
-      <TopBar title="Store Stock" />
+      <TopBar title="Lubricant Stock" />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
 
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Balances</div>
-        {items.map((it) => {
+        <div className="open-q" style={{ marginBottom: 14 }}>
+          <b>Diesel has moved to the Fuel module</b> — the tank level, issues, purchases and reports are all there.
+          {can("module.fuel") && <> <Link to="/fuel-module" style={{ fontWeight: 600 }}>Open Fuel</Link></>}
+        </div>
+
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Lubricant balances</div>
+        {lubeItems.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>No lubricant types are set up yet.</div>}
+        {lubeItems.map((it) => {
           const low = it.reorder_level != null && Number(it.current_qty) <= Number(it.reorder_level);
           return (
             <div key={it.id} className="card" style={{ marginBottom: 10, background: low ? "var(--alert-red-bg)" : undefined }}>
@@ -173,10 +191,10 @@ export default function StoreStock() {
         })}
 
         <div style={{ fontSize: 13, fontWeight: 700, margin: "20px 0 8px" }}>My purchase requests</div>
-        {mine.length === 0 ? (
+        {myLube.length === 0 ? (
           <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No requests yet.</div>
         ) : (
-          mine.map((p) => (
+          myLube.map((p) => (
             <div key={p.id} className="card" style={{ marginBottom: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>{p.item_name}</span>
