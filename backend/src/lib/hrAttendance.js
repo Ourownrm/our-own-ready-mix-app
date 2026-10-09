@@ -25,6 +25,7 @@
 // stretched to 4 hours after the shift ends, and the next day starts there.
 
 import { query } from "../db.js";
+import { loadRules } from "./hrRules.js";
 
 export const DEFAULT_FULL_MIN = 420; // hours-only days (no shift): 7 h = full day
 export const DEFAULT_HALF_MIN = 240; //                               4 h = half day
@@ -69,7 +70,10 @@ function shiftOf(s) {
 //   plan      date -> { shift, off }  (roster, already merged with default shift)
 //   holidays  Map date -> name
 //   todayDate "YYYY-MM-DD" (attendance day of now)
-export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDate, nowMs) {
+//   opts.reqs   Map date -> { full, pending }   (Round 198 requests)
+//   opts.rules  overtime rules (lib/hrRules.js)
+export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDate, nowMs, opts = {}) {
+  const rules = opts.rules || {};
   const days = [];
   // window per date
   const windows = [];
@@ -135,7 +139,8 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
 
     // machine punches
     day.n = mine.length;
-    day.times = mine.map((e) => hhmm(e.ms) + (e.state === 0 ? " in" : e.state === 1 ? " out" : ""));
+    day.times = mine.map((e) => hhmm(e.ms) + (e.state === 0 ? " in" : e.state === 1 ? " out" : "") + (e.synthetic ? " (request)" : ""));
+    if (mine.some((e) => e.synthetic)) day.flags.push("corrected by approved request");
     if (!mine.length) {
       day.code = offDay ? (holiday && !p.off ? "H" : "WO") : isToday ? "" : "A";
       days.push(day);
@@ -162,13 +167,37 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
       }
     }
     if (offDay) day.flags.push("worked on " + (holiday && !p.off ? "holiday" : "off day"));
+    // Round 198 — overtime the punches suggest. Payroll shows it for approval;
+    // nothing is paid on this number until a person accepts it there.
+    if (day.worked != null && !isToday) {
+      const after = rules.ot_after_min ?? 30, step = rules.ot_step_min ?? 30;
+      let raw = offDay ? day.worked
+        : shift ? Math.round((last - at(d, shift.end)) / 60000)
+        : day.worked - (rules.ot_standard_day_min ?? 480);
+      if (raw >= after && raw > 0) day.ot = Math.floor(raw / step) * step;
+    }
     days.push(day);
   });
+
+  // Round 198 — approved "present for the whole day" requests, and pending flags.
+  if (opts.reqs) {
+    for (const day of days) {
+      const rq = opts.reqs.get(day.date);
+      if (!rq || (!day.code && day.date > todayDate)) continue;
+      if (rq.full && day.code !== "" ) {
+        if (day.code !== "P") day.flags.push(`marked present by approved request (was ${day.code})`);
+        day.code = "P";
+        day.ot = null;
+      }
+      if (rq.pending) day.flags.push(`${rq.pending} request${rq.pending > 1 ? "s" : ""} waiting for approval`);
+      day.pending = rq.pending || 0;
+    }
+  }
   return days;
 }
 
 export function summarise(days) {
-  const s = { present: 0, half: 0, absent: 0, missed: 0, no_location: 0, off: 0, holiday: 0, late: 0, early: 0, off_day_worked: 0, paid_days: 0 };
+  const s = { present: 0, half: 0, absent: 0, missed: 0, no_location: 0, off: 0, holiday: 0, late: 0, early: 0, off_day_worked: 0, paid_days: 0, ot_min: 0, pending: 0 };
   for (const d of days) {
     if (d.code === "P") s.present++;
     else if (d.code === "HD") s.half++;
@@ -180,6 +209,8 @@ export function summarise(days) {
     if (d.late) s.late++;
     if (d.early) s.early++;
     if (d.flags.some((f) => f.startsWith("worked on"))) s.off_day_worked++;
+    if (d.ot) s.ot_min += d.ot;
+    if (d.pending) s.pending += d.pending;
   }
   // Provisional: missed punches and no-location days are NOT counted until
   // they are resolved (stage 2 requests / payroll lock).
@@ -193,7 +224,7 @@ function istToday(nowMs) {
 }
 
 // Load everything for a date range and compute every employee in it.
-export async function attendanceRegister({ from, to, employeeIds = null, nowMs = Date.now() }) {
+export async function attendanceRegister({ from, to, employeeIds = null, nowMs = Date.now(), withRows = false }) {
   const dates = datesBetween(from, to);
   const todayDate = istToday(nowMs);
 
@@ -214,11 +245,17 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
   const emps = empRes.rows;
   if (!emps.length) return { from, to, today: todayDate, dates: dates.map((d) => ({ date: d, dow: dow(d) })), employees: [] };
 
-  const [shiftRes, holRes, rosterRes] = await Promise.all([
+  const [shiftRes, holRes, rosterRes, reqRes, rules] = await Promise.all([
     query(`SELECT * FROM hr_shifts`),
     query(`SELECT to_char(holiday_date, 'YYYY-MM-DD') AS d, name FROM hr_holidays WHERE holiday_date BETWEEN $1 AND $2`, [from, to]),
     query(`SELECT employee_id, to_char(work_date, 'YYYY-MM-DD') AS d, shift_id, is_off FROM hr_roster
            WHERE work_date BETWEEN $1 AND $2 AND employee_id = ANY($3::int[])`, [from, to, emps.map((e) => e.id)]),
+    // Round 198 — approved corrections and waiting requests.
+    query(`SELECT employee_id, to_char(work_date, 'YYYY-MM-DD') AS d, kind, status,
+                  to_char(time_in, 'HH24:MI') AS time_in, to_char(time_out, 'HH24:MI') AS time_out
+           FROM hr_requests WHERE work_date BETWEEN $1 AND $2 AND employee_id = ANY($3::int[])
+             AND status IN ('approved','pending')`, [from, to, emps.map((e) => e.id)]),
+    loadRules(),
   ]);
   const shifts = new Map(shiftRes.rows.map((s) => [s.id, shiftOf(s)]));
   const holidays = new Map(holRes.rows.map((h) => [h.d, h.name]));
@@ -254,6 +291,29 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
     byApp.get(p.uid).push({ ms: Number(p.ms), kind: p.is_on ? "on" : "off", located: p.located });
   }
 
+  // An approved missed-punch / on-duty request becomes a punch at the stated
+  // time on that day (a time before 04:00 is the early hours of the next
+  // morning). Marked synthetic, so the screens can say where it came from.
+  const reqsByEmp = new Map();
+  const extraEvents = new Map();
+  for (const r of reqRes.rows) {
+    if (!reqsByEmp.has(r.employee_id)) reqsByEmp.set(r.employee_id, new Map());
+    const m = reqsByEmp.get(r.employee_id);
+    const cur = m.get(r.d) || { full: false, pending: 0 };
+    if (r.status === "pending") cur.pending++;
+    else if (r.kind === "full_day") cur.full = true;
+    else {
+      for (const t of [r.time_in, r.time_out]) {
+        if (!t) continue;
+        let min = timeToMin(t);
+        if (min < 240) min += 1440;
+        if (!extraEvents.has(r.employee_id)) extraEvents.set(r.employee_id, []);
+        extraEvents.get(r.employee_id).push({ ms: at(r.d, min), kind: "punch", state: t === r.time_in ? 0 : 1, synthetic: true });
+      }
+    }
+    m.set(r.d, cur);
+  }
+
   const employees = emps.map((e) => {
     const plan = new Map();
     for (const d of dates) {
@@ -262,18 +322,22 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
       else if (e.policy === "office" && e.default_shift_id) plan.set(d, { shift: shifts.get(e.default_shift_id) || null });
       else if (e.policy === "operations" && e.default_shift_id) plan.set(d, { shift: shifts.get(e.default_shift_id) || null });
     }
-    const events = e.attendance_source === "machine" ? (byMachine.get(e.machine_user_id) || [])
+    let events = e.attendance_source === "machine" ? (byMachine.get(e.machine_user_id) || [])
       : e.attendance_source === "app" ? (byApp.get(e.app_user_id) || []) : [];
+    if (e.attendance_source === "machine" && extraEvents.has(e.id)) {
+      events = [...events, ...extraEvents.get(e.id)].sort((a, b) => a.ms - b.ms);
+    }
     // Not linked to the machine / app yet: nothing to judge, so show nothing
     // rather than a month of false absences.
     const unlinked = (e.attendance_source === "machine" && !e.machine_user_id) || (e.attendance_source === "app" && !e.app_user_id);
     const days = e.attendance_source === "none" || unlinked ? dates.map((d) => ({ date: d, code: "", n: 0, times: [], flags: [] }))
-      : computeEmployeeDays(e, dates, events, plan, holidays, todayDate, nowMs);
+      : computeEmployeeDays(e, dates, events, plan, holidays, todayDate, nowMs, { reqs: reqsByEmp.get(e.id), rules });
     return {
       id: e.id, emp_code: e.emp_code, name: e.name, department: e.department, designation: e.designation,
       attendance_source: e.attendance_source, policy: e.policy, machine_user_id: e.machine_user_id,
       linked: e.attendance_source === "machine" ? !!e.machine_user_id : e.attendance_source === "app" ? !!e.app_user_id : true,
       days, summary: summarise(days),
+      ...(withRows ? { row: e } : {}),
     };
   });
   return {

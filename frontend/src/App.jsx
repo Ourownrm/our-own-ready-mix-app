@@ -63,6 +63,7 @@ import MaterialModule from "./pages/MaterialModule.jsx";
 import Weighbridge from "./pages/Weighbridge.jsx";
 import AttendanceMachine from "./pages/AttendanceMachine.jsx";
 import HrModule from "./pages/HrModule.jsx";
+import MyAttendance from "./pages/MyAttendance.jsx";
 import PlantProduction from "./pages/PlantProduction.jsx";
 import QcMixDesigns from "./pages/QcMixDesigns.jsx";
 import ReceiptVariance from "./pages/ReceiptVariance.jsx";
@@ -277,6 +278,10 @@ export default function App() {
           {/* Round 197 — HR module (stage 1). */}
           <Route path="/hr" element={
             <ProtectedRoute perm="module.hr"><HrModule /></ProtectedRoute>
+          } />
+          {/* Round 198 — anyone logged in; the server checks the login is linked to an employee. */}
+          <Route path="/my-attendance" element={
+            <ProtectedRoute><MyAttendance /></ProtectedRoute>
           } />
           <Route path="/attendance-machine" element={
             <ProtectedRoute perm="admin.attendance-machine"><AttendanceMachine /></ProtectedRoute>

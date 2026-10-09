@@ -9,6 +9,7 @@ import { useNavigate } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import { RequestForm, RequestsTab, PayrollTab, AdvancesTab, RulesCard } from "./HrStage2.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CODE_STYLE = {
@@ -61,9 +62,13 @@ function AttendanceTab({ meta }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [sel, setSel] = useState(null);
+  const [raising, setRaising] = useState(false);
+  const { can } = usePermissions();
+  const canRaise = can("hr.requests", "create");
+  const reload = () => apiRequest(`/hr/attendance?month=${month}`).then(setData).catch((e) => setError(e.message));
   useEffect(() => {
-    setData(null); setError(""); setSel(null);
-    apiRequest(`/hr/attendance?month=${month}`).then(setData).catch((e) => setError(e.message));
+    setData(null); setError(""); setSel(null); setRaising(false);
+    reload();
   }, [month]);
 
   const rows = useMemo(() => {
@@ -152,6 +157,8 @@ function AttendanceTab({ meta }) {
                               }}>
                               {d.code === "HD" ? "½" : d.code}
                               {(d.late || d.early) && <span aria-hidden style={{ position: "absolute", top: 2, right: 2, width: 6, height: 6, borderRadius: 3, background: "var(--rebar)" }} />}
+                              {d.pending > 0 && <span aria-hidden style={{ position: "absolute", bottom: 2, left: 2, width: 6, height: 6, borderRadius: 3, background: "var(--info)" }} />}
+                              {d.flags?.some((x) => x.includes("approved request")) && <span aria-hidden style={{ position: "absolute", bottom: 1, right: 3, fontSize: 8, lineHeight: 1 }}>✓</span>}
                             </button>
                           ) : <span style={{ color: "var(--border-strong)" }}>·</span>}
                         </td>
@@ -187,7 +194,13 @@ function AttendanceTab({ meta }) {
           </div>
           <div style={{ fontSize: 12.5, marginTop: 10 }}><span style={{ color: "var(--slate)" }}>All punches:</span> {sel.day.times.length ? sel.day.times.join(", ") : "none"}</div>
           {sel.day.flags.length > 0 && <div style={{ fontSize: 12.5, marginTop: 4, color: "var(--amber)" }}>{sel.day.flags.join(" · ")}</div>}
-          {sel.day.code === "MIS" && <div style={{ fontSize: 12, marginTop: 8, color: "var(--slate)" }}>Only one punch. It stays a missed punch until it is corrected — the employee request and approval step comes with stage 2.</div>}
+          {canRaise && sel.day.code && sel.day.code !== "P" && sel.day.code !== "WO" && sel.day.code !== "H" && !raising && (
+            <button style={{ marginTop: 10 }} onClick={() => setRaising(true)}>Raise a correction for this day</button>
+          )}
+          {raising && (
+            <RequestForm employees={[{ id: sel.emp.id, name: sel.emp.name, emp_code: sel.emp.emp_code }]} fixed={{ employee_id: sel.emp.id, work_date: sel.day.date }}
+              onDone={() => { setRaising(false); setSel(null); reload(); }} onCancel={() => setRaising(false)} />
+          )}
         </div>
       )}
 
@@ -198,9 +211,11 @@ function AttendanceTab({ meta }) {
           </span>
         ))}
         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: "var(--rebar)", display: "inline-block" }} />late in / early out</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: "var(--info)", display: "inline-block" }} />request waiting</span>
+        <span>✓ corrected by an approved request</span>
       </div>
       <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 6 }}>
-        * Paid days so far = present + half days ÷ 2 + weekly offs + holidays. Missed punches and check-ins without location are not counted until they are resolved. A day runs 04:00 to 04:00.
+        * Paid days so far = present + half days ÷ 2 + weekly offs + holidays. Missed punches count as {meta.rules.missed_punch_at_lock === "half" ? "half days" : "absent"} when payroll is locked unless corrected; check-ins without location are not paid. A day runs 04:00 to 04:00.
       </div>
     </>
   );
@@ -213,6 +228,7 @@ const EMPTY = {
   policy: "office", default_shift_id: "", weekly_off: "0", trip_allowance: false, notes: "",
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
   daily_rate: "", service_charge_pct: "", incentive_basis: "none", incentive_min_m3: "", incentive_rate: "",
+  salesperson_id: "", ot_eligible: false,
 };
 
 function EmployeeForm({ meta, initial, onSaved, onCancel }) {
@@ -239,7 +255,7 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
     setError(""); setSaving(true);
     try {
       const body = { ...f };
-      for (const k of ["department_id", "default_shift_id", "app_user_id"]) body[k] = body[k] === "" ? null : Number(body[k]);
+      for (const k of ["department_id", "default_shift_id", "app_user_id", "salesperson_id"]) body[k] = body[k] === "" ? null : Number(body[k]);
       body.weekly_off = body.weekly_off === "" ? null : Number(body.weekly_off);
       if (body.attendance_source !== "machine") body.machine_user_id = null;
       if (editing) await apiRequest(`/hr/employees/${initial.id}`, { method: "PATCH", body });
@@ -348,27 +364,38 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
                 <div style={{ fontSize: 13, alignSelf: "end", paddingBottom: 8 }}>Gross <b>{money(gross || null)}</b> / month</div>
                 <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={f.pf_applicable} onChange={set("pf_applicable")} /> PF applies</label>
                 <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={f.esi_applicable} onChange={set("esi_applicable")} /> ESI applies</label>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={f.ot_eligible} onChange={set("ot_eligible")} /> Paid overtime</label>
               </div>
             ) : (
               <div style={grid}>
                 <Field label="Daily rate (₹)"><input type="number" min="0" step="1" value={f.daily_rate} onChange={set("daily_rate")} /></Field>
                 <Field label="Contractor's service charge (%)"><input type="number" min="0" step="0.5" value={f.service_charge_pct} onChange={set("service_charge_pct")} /></Field>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={f.ot_eligible} onChange={set("ot_eligible")} /> Paid overtime</label>
               </div>
             )}
             <div style={{ ...grid, marginTop: 12 }}>
               <Field label="Sales incentive">
                 <select value={f.incentive_basis} onChange={set("incentive_basis")}>
                   <option value="none">None</option>
-                  <option value="plant_production">On production above a minimum</option>
-                  <option value="own_sales">On sales he/she brought in</option>
+                  <option value="own_production">Salesperson — own customers' production above a minimum</option>
+                  <option value="plant_production">Manager / management — whole plant production above a minimum</option>
+                  <option value="own_sales_paid">Per m³ of sales he/she brought, once the customer has paid</option>
                 </select>
               </Field>
               {f.incentive_basis !== "none" && (
                 <>
-                  <Field label="Minimum m³ in the month" hint="No incentive until this is reached.">
+                  {f.incentive_basis !== "plant_production" && (
+                    <Field label="Salesperson (as on orders) *" hint="Orders booked under this salesperson count as his/hers.">
+                      <select value={f.salesperson_id} onChange={set("salesperson_id")}>
+                        <option value="">—</option>
+                        {meta.salespersons.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+                      </select>
+                    </Field>
+                  )}
+                  <Field label={f.incentive_basis === "own_sales_paid" ? "Minimum m³ (optional)" : "Minimum m³ in the month"} hint="No incentive until this is reached.">
                     <input type="number" min="0" step="1" value={f.incentive_min_m3} onChange={set("incentive_min_m3")} />
                   </Field>
-                  <Field label={f.incentive_basis === "own_sales" ? "₹ per m³ of own sales" : "₹ per m³ above the minimum"}>
+                  <Field label={f.incentive_basis === "own_sales_paid" ? "₹ per m³ paid for" : "₹ per m³ above the minimum"}>
                     <input type="number" min="0" step="0.5" value={f.incentive_rate} onChange={set("incentive_rate")} />
                   </Field>
                 </>
@@ -598,6 +625,8 @@ function SettingsTab({ meta, reloadMeta }) {
     <>
       {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
+      <RulesCard meta={meta} canEdit={canEdit} onSaved={reloadMeta} />
+
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 4 }}>Shifts</div>
         <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>Late in / early out beyond the grace minutes is highlighted for the Administrator — nothing is deducted automatically.</div>
@@ -700,7 +729,10 @@ export default function HrModule() {
   const tabs = [
     ["attendance", "Attendance", can("hr.attendance", "view")],
     ["employees", "Employees", can("hr.employees", "view")],
+    ["requests", "Requests", can("hr.requests", "view")],
     ["roster", "Roster", can("hr.roster", "view")],
+    ["payroll", "Payroll", can("hr.payroll", "view")],
+    ["advances", "Advances", can("hr.advances", "view")],
     ["settings", "Settings", can("hr.settings", "view")],
   ].filter((t) => t[2]);
   const current = tab || tabs[0]?.[0];
@@ -719,6 +751,9 @@ export default function HrModule() {
         {meta && current === "attendance" && <AttendanceTab meta={meta} />}
         {meta && current === "employees" && <EmployeesTab meta={meta} reloadMeta={loadMeta} />}
         {meta && current === "roster" && <RosterTab meta={meta} />}
+        {meta && current === "requests" && <RequestsTab meta={meta} />}
+        {meta && current === "payroll" && <PayrollTab meta={meta} />}
+        {meta && current === "advances" && <AdvancesTab />}
         {meta && current === "settings" && <SettingsTab meta={meta} reloadMeta={loadMeta} />}
       </div>
     </>

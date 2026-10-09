@@ -8,6 +8,7 @@ import SolitaireButton, { SOLITAIRE_ROLES } from "./SolitaireButton.jsx";
 import { usePermissions } from "./PermissionContext.jsx";
 import { visibleHub } from "./adminScreens.js";
 import { isAdminLevel } from "./roles.js";
+import { apiRequest } from "./api.js";
 
 // Round 138, item 2 — a live clock so anyone using the app can see the current
 // date/time at a glance without switching away to check their phone. Ticks
@@ -57,6 +58,21 @@ export function TopBar({ title }) {
   const [notifStatus, setNotifStatus] = useState(null);
   const now = useClock();
 
+  // Round 198 — "My attendance" for anyone whose login is linked to an HR
+  // employee record. Asked once per session and remembered, so the header does
+  // not cost a request on every screen.
+  const [myAttendance, setMyAttendance] = useState(() => {
+    try { return user ? sessionStorage.getItem(`oorm_my_att_${user.id}`) === "1" : false; } catch { return false; }
+  });
+  useEffect(() => {
+    if (!user) return;
+    const key = `oorm_my_att_${user.id}`;
+    try { if (sessionStorage.getItem(key) !== null) return; } catch { /* storage blocked: ask anyway */ }
+    apiRequest("/hr/my/linked")
+      .then((r) => { setMyAttendance(!!r.linked); try { sessionStorage.setItem(key, r.linked ? "1" : "0"); } catch { /* ignore */ } })
+      .catch(() => {});
+  }, [user?.id]);
+
   useEffect(() => {
     if (pushSupported()) pushStatus().then(setNotifStatus);
   }, []);
@@ -99,6 +115,9 @@ export function TopBar({ title }) {
           )}
           {showModules && (
             <Link to="/modules" className="topbar-link">Modules</Link>
+          )}
+          {myAttendance && pathname !== "/my-attendance" && (
+            <Link to="/my-attendance" className="topbar-link">My attendance</Link>
           )}
           {pathname !== "/orders" && (
             <Link to="/orders" className="topbar-link">Today &amp; tomorrow's orders</Link>

@@ -506,6 +506,16 @@ export const CATALOGUE = [
     { administrator: VE, manager: VE }),
   f("hr.settings", "hr", "HR settings — departments, shifts, holidays", VCED,
     { administrator: VCED, manager: V }),
+  // Round 198 — stage 2. Approving (edit) a request: the Plant Manager; Admin
+  // also approves the ones the rules send to Admin (enforced in routes/hr.js
+  // by role, so it cannot be granted away by mistake). Payroll and advances
+  // carry pay, so they start Administrator-only like hr.salary.
+  f("hr.requests", "hr", "Attendance requests — raise for staff, approve", VCE,
+    { administrator: VCE, manager: VCE, accountant: V }),
+  f("hr.payroll", "hr", "Payroll — calculate, lock, record salary paid", VCED,
+    { administrator: VCED }),
+  f("hr.advances", "hr", "Salary advances", VCED,
+    { administrator: VCED }),
 
   // ---------- Administration ----------
   f("admin.users", "admin", "Users — list and create", VCE,
@@ -638,11 +648,14 @@ export const MODULES = [
       { key: "hr.attendance", label: "Attendance" },
       { key: "hr.employees", label: "Employees" },
       { key: "hr.roster", label: "Roster" },
+      { key: "hr.requests", label: "Requests" },
+      { key: "hr.payroll", label: "Payroll" },
+      { key: "hr.advances", label: "Advances" },
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
     support: ["hr.salary"],
-    noAutoView: ["hr.salary"],
+    noAutoView: ["hr.salary", "hr.payroll", "hr.advances"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",
