@@ -3911,3 +3911,93 @@ CREATE TABLE IF NOT EXISTS hr_payroll_lines (
   paid_by          INTEGER REFERENCES users(id),
   PRIMARY KEY (month, employee_id)
 );
+
+-- =====================================================================
+-- ROUND 200 — HR leave: leave types and leave records. Same statements as
+-- HR_STAGE3_SQL in backend/src/lib/hrSchema.js (default types are seeded by /setup).
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS hr_leave_types (
+  id           SERIAL PRIMARY KEY,
+  code         VARCHAR(8) NOT NULL UNIQUE,
+  name         VARCHAR(60) NOT NULL,
+  paid         BOOLEAN NOT NULL DEFAULT true,
+  yearly_days  NUMERIC(5,1),            -- NULL = no allowance tracked
+  is_active    BOOLEAN NOT NULL DEFAULT true,
+  sort_order   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS hr_leaves (
+  id             SERIAL PRIMARY KEY,
+  employee_id    INTEGER NOT NULL REFERENCES hr_employees(id),
+  leave_type_id  INTEGER NOT NULL REFERENCES hr_leave_types(id),
+  from_date      DATE NOT NULL,
+  to_date        DATE NOT NULL,
+  half_day       BOOLEAN NOT NULL DEFAULT false,
+  days           NUMERIC(5,1) NOT NULL,  -- working days it covers (weekly off and holidays not counted)
+  reason         TEXT,
+  status         VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','cancelled')),
+  needs_admin    BOOLEAN NOT NULL DEFAULT false,
+  admin_reason   VARCHAR(160),
+  raised_by      INTEGER REFERENCES users(id),
+  raised_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_by     INTEGER REFERENCES users(id),
+  decided_at     TIMESTAMPTZ,
+  decision_note  TEXT,
+  CHECK (to_date >= from_date),
+  CHECK (NOT half_day OR from_date = to_date)
+);
+CREATE INDEX IF NOT EXISTS hr_leaves_emp_dates ON hr_leaves (employee_id, from_date, to_date);
+CREATE INDEX IF NOT EXISTS hr_leaves_status ON hr_leaves (status);
+
+
+-- =====================================================================
+-- ROUND 200 — receipts without a weighbridge ticket need Admin approval.
+-- Same statements as RECEIPT_WB_SQL in backend/src/lib/receiptApprovalSchema.js.
+-- =====================================================================
+ALTER TABLE rm_materials ADD COLUMN IF NOT EXISTS wb_exempt BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS wb_approval VARCHAR(12) NOT NULL DEFAULT 'not_needed';
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS wb_reason TEXT;
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS wb_decided_by INTEGER REFERENCES users(id);
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS wb_decided_at TIMESTAMPTZ;
+ALTER TABLE rm_receipts ADD COLUMN IF NOT EXISTS wb_note TEXT;
+ALTER TABLE rm_receipts DROP CONSTRAINT IF EXISTS rm_receipts_wb_approval_check;
+ALTER TABLE rm_receipts ADD CONSTRAINT rm_receipts_wb_approval_check CHECK (wb_approval IN ('not_needed','pending','approved','rejected'));
+CREATE INDEX IF NOT EXISTS rm_receipts_wb_pending ON rm_receipts (wb_approval) WHERE wb_approval = 'pending';
+-- Every stock, rate and ledger read goes through this view, so excluding the
+-- unapproved ones here is what keeps them out of everything at once.
+CREATE OR REPLACE VIEW rm_receipts_effective AS
+  SELECT * FROM rm_receipts WHERE confirmation_status <> 'pending' AND wb_approval NOT IN ('pending','rejected');   -- receipts-raw: this IS the view's definition
+
+
+-- =====================================================================
+-- ROUND 200 — transporter ledger. Same statements as TRANSPORTER_LEDGER_SQL
+-- in backend/src/lib/transporterLedger.js.
+-- =====================================================================
+ALTER TABLE rm_transporters ADD COLUMN IF NOT EXISTS gstin VARCHAR(20);
+ALTER TABLE rm_transporters ADD COLUMN IF NOT EXISTS pan VARCHAR(12);
+ALTER TABLE rm_transporters ADD COLUMN IF NOT EXISTS credit_days INTEGER;
+ALTER TABLE rm_transporters ADD COLUMN IF NOT EXISTS gst_pct NUMERIC(5,2) NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS rm_transporter_openings (
+  transporter_id INTEGER PRIMARY KEY REFERENCES rm_transporters(id),
+  as_on          DATE NOT NULL,
+  direction      VARCHAR(8) NOT NULL CHECK (direction IN ('payable','advance')),
+  amount         NUMERIC(14,2) NOT NULL CHECK (amount >= 0),
+  remarks        TEXT,
+  set_by         INTEGER REFERENCES users(id),
+  set_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS rm_transporter_payments (
+  id             SERIAL PRIMARY KEY,
+  transporter_id INTEGER NOT NULL REFERENCES rm_transporters(id),
+  paid_on        DATE NOT NULL,
+  amount         NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  tds_amount     NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (tds_amount >= 0),
+  mode           VARCHAR(10) NOT NULL CHECK (mode IN ('neft','rtgs','cheque','upi','cash','other')),
+  reference      VARCHAR(80),
+  notes          TEXT,
+  created_by     INTEGER REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  cancelled_at   TIMESTAMPTZ,
+  cancelled_by   INTEGER REFERENCES users(id),
+  cancel_reason  TEXT
+);
+CREATE INDEX IF NOT EXISTS rm_transporter_payments_t ON rm_transporter_payments (transporter_id, paid_on);

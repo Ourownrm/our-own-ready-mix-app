@@ -10,6 +10,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { RequestForm, RequestsTab, PayrollTab, AdvancesTab, RulesCard } from "./HrStage2.jsx";
+import { LeaveForm, LeaveTab, LeaveTypesCard } from "./HrLeave.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CODE_STYLE = {
@@ -21,6 +22,7 @@ const CODE_STYLE = {
   WO: { bg: "#ECEAE4", fg: "var(--slate)", label: "Weekly / rostered off" },
   H: { bg: "#ECEAE4", fg: "var(--slate)", label: "Holiday" },
   IN: { bg: "var(--info-bg)", fg: "var(--info)", label: "At work now" },
+  L: { bg: "#E2EEF3", fg: "#28657E", label: "On leave (type shown)" },
 };
 
 function istMonth() {
@@ -63,11 +65,12 @@ function AttendanceTab({ meta }) {
   const [error, setError] = useState("");
   const [sel, setSel] = useState(null);
   const [raising, setRaising] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const { can } = usePermissions();
   const canRaise = can("hr.requests", "create");
   const reload = () => apiRequest(`/hr/attendance?month=${month}`).then(setData).catch((e) => setError(e.message));
   useEffect(() => {
-    setData(null); setError(""); setSel(null); setRaising(false);
+    setData(null); setError(""); setSel(null); setRaising(false); setLeaving(false);
     reload();
   }, [month]);
 
@@ -128,7 +131,7 @@ function AttendanceTab({ meta }) {
                       <div style={{ fontSize: 10 }}>{DOW[d.dow][0]}</div>
                     </th>
                   ))}
-                  {["P", "½", "A", "MIS", "Late", "Paid*"].map((h) => <th key={h} style={{ textAlign: "right", padding: "6px 8px" }}>{h}</th>)}
+                  {["P", "½", "A", "MIS", "Leave", "Late", "Paid*"].map((h) => <th key={h} style={{ textAlign: "right", padding: "6px 8px" }}>{h}</th>)}
                 </tr>
               </thead>
               <tbody>
@@ -148,14 +151,14 @@ function AttendanceTab({ meta }) {
                         <td key={d.date} style={{ padding: 2, textAlign: "center" }}>
                           {d.code ? (
                             <button
-                              onClick={() => setSel(active ? null : { emp: e, day: d })}
-                              title={`${st?.label || d.code}${d.late ? ` · late ${d.late} min` : ""}${d.early ? ` · left ${d.early} min early` : ""}`}
+                              onClick={() => { setSel(active ? null : { emp: e, day: d }); setRaising(false); setLeaving(false); }}
+                              title={`${d.code === "L" ? `${d.leave?.name}${d.leave?.half ? " (half day)" : ""}${d.leave?.paid ? "" : " — unpaid"}` : st?.label || d.code}${d.late ? ` · late ${d.late} min` : ""}${d.early ? ` · left ${d.early} min early` : ""}`}
                               style={{
                                 width: 32, height: 30, padding: 0, fontSize: 10.5, fontWeight: 700, borderRadius: 6, position: "relative",
                                 border: active ? "2px solid var(--charcoal)" : "1px solid transparent",
                                 background: st?.bg, color: st?.fg,
                               }}>
-                              {d.code === "HD" ? "½" : d.code}
+                              {d.code === "HD" ? "½" : d.code === "L" ? (d.leave?.half ? "½" : "") + (d.leave?.code || "L") : d.code}
                               {(d.late || d.early) && <span aria-hidden style={{ position: "absolute", top: 2, right: 2, width: 6, height: 6, borderRadius: 3, background: "var(--rebar)" }} />}
                               {d.pending > 0 && <span aria-hidden style={{ position: "absolute", bottom: 2, left: 2, width: 6, height: 6, borderRadius: 3, background: "var(--info)" }} />}
                               {d.flags?.some((x) => x.includes("approved request")) && <span aria-hidden style={{ position: "absolute", bottom: 1, right: 3, fontSize: 8, lineHeight: 1 }}>✓</span>}
@@ -164,9 +167,9 @@ function AttendanceTab({ meta }) {
                         </td>
                       );
                     })}
-                    {[e.summary.present, e.summary.half, e.summary.absent, e.summary.missed, e.summary.late, e.summary.paid_days].map((v, i) => (
-                      <td key={i} style={{ textAlign: "right", padding: "6px 8px", fontVariantNumeric: "tabular-nums", fontWeight: i === 5 ? 700 : 400,
-                        color: i === 3 && v ? "var(--violet)" : i === 4 && v ? "var(--rebar)" : undefined }}>{v}</td>
+                    {[e.summary.present, e.summary.half, e.summary.absent, e.summary.missed, e.summary.leave, e.summary.late, e.summary.paid_days].map((v, i) => (
+                      <td key={i} style={{ textAlign: "right", padding: "6px 8px", fontVariantNumeric: "tabular-nums", fontWeight: i === 6 ? 700 : 400,
+                        color: i === 3 && v ? "var(--violet)" : i === 4 && v ? "#28657E" : i === 5 && v ? "var(--rebar)" : undefined }}>{v}</td>
                     ))}
                   </tr>
                 ))}
@@ -181,7 +184,7 @@ function AttendanceTab({ meta }) {
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontWeight: 700 }}>{sel.emp.name} · {new Date(sel.day.date + "T12:00:00+05:30").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" })}</div>
-              <div style={{ fontSize: 12, color: "var(--slate)" }}>{CODE_STYLE[sel.day.code]?.label}{sel.day.shift ? ` · shift ${sel.day.shift}` : sel.emp.policy === "operations" ? " · no shift on the roster — judged on hours" : ""}</div>
+              <div style={{ fontSize: 12, color: "var(--slate)" }}>{sel.day.leave ? `${sel.day.leave.name}${sel.day.leave.half ? " — half day" : ""}${sel.day.leave.paid ? "" : " (unpaid)"}${sel.day.code === "HD" ? " · Half day" : ""}` : CODE_STYLE[sel.day.code]?.label}{sel.day.shift ? ` · shift ${sel.day.shift}` : sel.emp.policy === "operations" ? " · no shift on the roster — judged on hours" : ""}</div>
             </div>
             <button onClick={() => setSel(null)}>Close</button>
           </div>
@@ -196,6 +199,13 @@ function AttendanceTab({ meta }) {
           {sel.day.flags.length > 0 && <div style={{ fontSize: 12.5, marginTop: 4, color: "var(--amber)" }}>{sel.day.flags.join(" · ")}</div>}
           {canRaise && sel.day.code && sel.day.code !== "P" && sel.day.code !== "WO" && sel.day.code !== "H" && !raising && (
             <button style={{ marginTop: 10 }} onClick={() => setRaising(true)}>Raise a correction for this day</button>
+          )}
+          {canRaise && ["A", "MIS", "NL", "HD"].includes(sel.day.code) && !sel.day.leave && !raising && !leaving && (
+            <button style={{ marginTop: 10, marginLeft: 8 }} onClick={() => setLeaving(true)}>Record leave for this day</button>
+          )}
+          {leaving && (
+            <LeaveForm types={meta.leave_types} fixed={{ employee_id: sel.emp.id, date: sel.day.date }} canApproveNow={can("hr.requests", "edit")}
+              onDone={() => { setLeaving(false); setSel(null); reload(); }} onCancel={() => setLeaving(false)} />
           )}
           {raising && (
             <RequestForm employees={[{ id: sel.emp.id, name: sel.emp.name, emp_code: sel.emp.emp_code }]} fixed={{ employee_id: sel.emp.id, work_date: sel.day.date }}
@@ -215,7 +225,7 @@ function AttendanceTab({ meta }) {
         <span>✓ corrected by an approved request</span>
       </div>
       <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 6 }}>
-        * Paid days so far = present + half days ÷ 2 + weekly offs + holidays. Missed punches count as {meta.rules.missed_punch_at_lock === "half" ? "half days" : "absent"} when payroll is locked unless corrected; check-ins without location are not paid. A day runs 04:00 to 04:00.
+        * Paid days so far = present + half days ÷ 2 + weekly offs + holidays + paid leave. Missed punches count as {meta.rules.missed_punch_at_lock === "half" ? "half days" : "absent"} when payroll is locked unless corrected; check-ins without location are not paid. A day runs 04:00 to 04:00.
       </div>
     </>
   );
@@ -626,6 +636,7 @@ function SettingsTab({ meta, reloadMeta }) {
       {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
       <RulesCard meta={meta} canEdit={canEdit} onSaved={reloadMeta} />
+      <LeaveTypesCard meta={meta} canEdit={canEdit} canCreate={canCreate} onSaved={reloadMeta} />
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 4 }}>Shifts</div>
@@ -730,6 +741,7 @@ export default function HrModule() {
     ["attendance", "Attendance", can("hr.attendance", "view")],
     ["employees", "Employees", can("hr.employees", "view")],
     ["requests", "Requests", can("hr.requests", "view")],
+    ["leave", "Leave", can("hr.requests", "view")],
     ["roster", "Roster", can("hr.roster", "view")],
     ["payroll", "Payroll", can("hr.payroll", "view")],
     ["advances", "Advances", can("hr.advances", "view")],
@@ -752,6 +764,7 @@ export default function HrModule() {
         {meta && current === "employees" && <EmployeesTab meta={meta} reloadMeta={loadMeta} />}
         {meta && current === "roster" && <RosterTab meta={meta} />}
         {meta && current === "requests" && <RequestsTab meta={meta} />}
+        {meta && current === "leave" && <LeaveTab meta={meta} />}
         {meta && current === "payroll" && <PayrollTab meta={meta} />}
         {meta && current === "advances" && <AdvancesTab />}
         {meta && current === "settings" && <SettingsTab meta={meta} reloadMeta={loadMeta} />}

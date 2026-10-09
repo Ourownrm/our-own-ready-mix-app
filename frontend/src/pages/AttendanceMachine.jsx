@@ -11,6 +11,8 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import { useNavigate } from "react-router-dom";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 function istToday() {
   // The attendance day changes at 04:00 IST, the same rule the server uses.
@@ -205,10 +207,16 @@ export default function AttendanceMachine() {
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);
   }, []);
+  const navigate = useNavigate();
+  const { can } = usePermissions();
   return (
     <>
       <TopBar title="Attendance Machine" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
+        {/* Round 200 — the way back to HR, mirroring HR's "Attendance machine →". */}
+        {can("module.hr", "view") && (
+          <button className="btn-tab" style={{ marginBottom: 12 }} onClick={() => navigate("/hr")}>&larr; Back to HR</button>
+        )}
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
         <MachineHeader status={status} />
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>

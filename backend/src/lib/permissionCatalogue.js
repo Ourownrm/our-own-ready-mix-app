@@ -222,6 +222,10 @@ export const CATALOGUE = [
   // is what lets Store keep creating receipts without also settling disputes.
   f("material.receipt-confirm", "material", "Confirm a disputed receipt quantity", VE,
     { administrator: VE, manager: VE }, { screen: "receipt-differences" }),
+  // Round 200 — a receipt prepared without a weighbridge ticket counts only
+  // once an Administrator approves it (or a ticket is linked to it).
+  f("material.receipt-wb-approve", "material", "Approve a receipt with no weighbridge ticket", VE,
+    { administrator: VE }),
   f("material.consumption", "material", "Daily consumption entry", VCE,
     { administrator: VCE, plant_operator: VCE }),
   f("material.stock", "material", "Stock — quantities", V,
@@ -257,6 +261,12 @@ export const CATALOGUE = [
   // Recording a payment or an opening balance (create) and cancelling a payment
   // (delete). Cancelling is Administrator-only by default.
   f("material.supplier-payments", "material", "Record supplier payments & opening balances", ["create", "delete"],
+    { administrator: ["create", "delete"], accountant: ["create"] }),
+  // Round 200 — the transporter ledger: freight owed to each transporter on
+  // ex-factory loads, and what has been paid. Same shape as the supplier one.
+  f("material.transporter-ledger", "material", "Transporter Ledger tab (freight owed, statements)", V,
+    { administrator: V, accountant: V, manager: V }),
+  f("material.transporter-payments", "material", "Record transporter payments & opening balances", ["create", "delete"],
     { administrator: ["create", "delete"], accountant: ["create"] }),
   f("material.suppliers-menu", "material", "Suppliers tab", V, { administrator: V }),
   f("material.kpi", "material", "KPI cards (stock value, open orders, purchases)", V, { administrator: V }),
@@ -537,7 +547,7 @@ export const CATALOGUE = [
   // also approves the ones the rules send to Admin (enforced in routes/hr.js
   // by role, so it cannot be granted away by mistake). Payroll and advances
   // carry pay, so they start Administrator-only like hr.salary.
-  f("hr.requests", "hr", "Attendance requests — raise for staff, approve", VCE,
+  f("hr.requests", "hr", "Attendance corrections & leave — raise for staff, approve", VCE,
     { administrator: VCE, manager: VCE, accountant: V }),
   f("hr.payroll", "hr", "Payroll — calculate, lock, record salary paid", VCED,
     { administrator: VCED }),
@@ -614,6 +624,7 @@ export const MODULES = [
       { key: "material.suppliers-menu", label: "Suppliers" },
       { key: "material.kpi", label: "KPI" },
       { key: "material.supplier-ledger", label: "Supplier Ledger" },
+      { key: "material.transporter-ledger", label: "Transporter Ledger" },
       {
         key: "material.reports", label: "Reports",
         children: [
@@ -633,10 +644,10 @@ export const MODULES = [
     ],
     support: ["material.materials", "material.units", "material.suppliers", "material.supplier-rates",
       "material.transporters", "material.order-approve", "material.physical-stock-approve",
-      "material.supplier-payments"],
+      "material.supplier-payments", "material.transporter-payments", "material.receipt-wb-approve"],
     // An Administrator's tool for moving consumption between materials — not
     // a screen to hand out with "view the module".
-    noAutoView: ["material.consumption-transfer", "material.supplier-ledger"],
+    noAutoView: ["material.consumption-transfer", "material.supplier-ledger", "material.transporter-ledger"],
   },
   {
     key: "plant-production", label: "Plant Production", gate: "module.plant-production", to: "/plant-production",
@@ -675,7 +686,7 @@ export const MODULES = [
       { key: "hr.attendance", label: "Attendance" },
       { key: "hr.employees", label: "Employees" },
       { key: "hr.roster", label: "Roster" },
-      { key: "hr.requests", label: "Requests" },
+      { key: "hr.requests", label: "Requests & leave" },
       { key: "hr.payroll", label: "Payroll" },
       { key: "hr.advances", label: "Advances" },
       { key: "hr.settings", label: "Settings" },

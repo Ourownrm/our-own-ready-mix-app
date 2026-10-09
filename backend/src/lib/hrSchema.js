@@ -190,6 +190,49 @@ CREATE TABLE IF NOT EXISTS hr_payroll_lines (
 );
 `;
 
+// Round 200 — leave. Leave types (with an optional yearly allowance) and leave
+// records. A leave is requested by the employee or recorded by HR / the Plant
+// Manager on an absence, and only counts once approved. Paid leave is a paid
+// day in payroll; unpaid leave is loss of pay, but shown as leave, not absent.
+export const HR_STAGE3_SQL = `
+CREATE TABLE IF NOT EXISTS hr_leave_types (
+  id           SERIAL PRIMARY KEY,
+  code         VARCHAR(8) NOT NULL UNIQUE,
+  name         VARCHAR(60) NOT NULL,
+  paid         BOOLEAN NOT NULL DEFAULT true,
+  yearly_days  NUMERIC(5,1),            -- NULL = no allowance tracked
+  is_active    BOOLEAN NOT NULL DEFAULT true,
+  sort_order   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS hr_leaves (
+  id             SERIAL PRIMARY KEY,
+  employee_id    INTEGER NOT NULL REFERENCES hr_employees(id),
+  leave_type_id  INTEGER NOT NULL REFERENCES hr_leave_types(id),
+  from_date      DATE NOT NULL,
+  to_date        DATE NOT NULL,
+  half_day       BOOLEAN NOT NULL DEFAULT false,
+  days           NUMERIC(5,1) NOT NULL,  -- working days it covers (weekly off and holidays not counted)
+  reason         TEXT,
+  status         VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','cancelled')),
+  needs_admin    BOOLEAN NOT NULL DEFAULT false,
+  admin_reason   VARCHAR(160),
+  raised_by      INTEGER REFERENCES users(id),
+  raised_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_by     INTEGER REFERENCES users(id),
+  decided_at     TIMESTAMPTZ,
+  decision_note  TEXT,
+  CHECK (to_date >= from_date),
+  CHECK (NOT half_day OR from_date = to_date)
+);
+CREATE INDEX IF NOT EXISTS hr_leaves_emp_dates ON hr_leaves (employee_id, from_date, to_date);
+CREATE INDEX IF NOT EXISTS hr_leaves_status ON hr_leaves (status);
+`;
+
+const DEFAULT_LEAVE_TYPES = [
+  ["CL", "Casual leave", true, 12], ["SL", "Sick leave", true, 12], ["EL", "Earned leave", true, 15],
+  ["LOP", "Leave without pay", false, null],
+];
+
 const DEFAULT_DEPARTMENTS = [
   ["Plant operations", true], ["Transit mixer drivers", true], ["Pump operators & helpers", true],
   ["QC lab", true], ["Maintenance", true], ["Sales & marketing", false],
@@ -213,6 +256,14 @@ export async function migrateHr(pool, log) {
     );
   }
   await pool.query(HR_STAGE2_SQL);
+  await pool.query(HR_STAGE3_SQL);
+  const { rows: lt } = await pool.query(`SELECT count(*)::int AS n FROM hr_leave_types`);
+  if (!lt[0].n) {
+    for (const [i, [code, name, paid, days]] of DEFAULT_LEAVE_TYPES.entries()) {
+      await pool.query(`INSERT INTO hr_leave_types (code, name, paid, yearly_days, sort_order) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+        [code, name, paid, days, i + 1]);
+    }
+  }
   const { rows: e } = await pool.query(`SELECT count(*)::int AS n FROM hr_employees`);
-  log.push(`Schema migration applied (Round 197/198 — HR module: employees, shifts, roster, holidays; requests, advances, payroll). ${e[0].n} employee(s) on record.`);
+  log.push(`Schema migration applied (Round 197/198/200 — HR module: employees, shifts, roster, holidays; requests, advances, payroll; leave). ${e[0].n} employee(s) on record.`);
 }

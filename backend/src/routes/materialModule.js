@@ -14,6 +14,7 @@ import { pushToRole, pushToUser } from "../lib/push.js";
 import { issueCardsForReceipt } from "../lib/rmTestCards.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 import { buildLedgers, creditCheck, receiptBillAmount, addDays } from "../lib/supplierLedger.js";
+import { buildTransporterLedgers } from "../lib/transporterLedger.js";
 // Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
 // 185's bookStockRows() called it without importing it, so every caller (Stock
 // tab, stock-summary KPIs, Cost Dashboard) threw a ReferenceError at request
@@ -325,7 +326,7 @@ const MATERIAL_NULLABLE_NUMERIC_FIELDS = new Set(["tolerance_pct", "reorder_leve
 const MATERIAL_REQUIRED_NUMERIC_FIELDS = new Set(["kg_per_purchase_unit", "opening_stock_kg"]);
 
 router.patch("/materials/:id", requirePermission("material.materials", "edit"), async (req, res) => {
-  const fields = ["name", "category", "sub_category", "mix_component", "purchase_unit", "kg_per_purchase_unit", "tolerance_pct", "reorder_level_kg", "opening_stock_kg", "opening_stock_rate_per_kg", "is_active"];
+  const fields = ["name", "category", "sub_category", "mix_component", "purchase_unit", "kg_per_purchase_unit", "tolerance_pct", "reorder_level_kg", "opening_stock_kg", "opening_stock_rate_per_kg", "is_active", "wb_exempt"];
   const sets = [];
   const params = [];
   for (const f of fields) {
@@ -701,6 +702,102 @@ router.post("/suppliers/:supplierId/rates", requirePermission("material.supplier
   res.status(201).json(created[0]);
 });
 
+// ===================== Round 200 — Transporter ledger =====================
+// Freight owed on ex-factory loads, payments and opening balances. See
+// lib/transporterLedger.js for the rules.
+router.get("/transporter-ledger", requirePermission("material.transporter-ledger", "view"), async (req, res) => {
+  const asOn = ledgerDate(req.query.as_on, istDay());
+  const all = await buildTransporterLedgers({ asOn });
+  const list = all
+    .filter((l) => l.transporter.is_active || l.balance !== 0 || l.not_billed.length || l.trips)
+    .map((l) => ({ ...l, lines: undefined, open_bills: undefined, open_bill_count: l.open_bills.length }));
+  const sum = (f) => Math.round(list.reduce((t, x) => t + f(x), 0) * 100) / 100;
+  const { rows: month } = await query(
+    `SELECT COALESCE(SUM(amount + tds_amount), 0) AS paid, COUNT(*)::int AS n FROM rm_transporter_payments
+      WHERE cancelled_at IS NULL AND to_char(paid_on, 'YYYY-MM') = $1 AND paid_on <= $2::date`, [asOn.slice(0, 7), asOn]);
+  res.json({
+    as_on: asOn, transporters: list,
+    totals: {
+      freight: sum((x) => x.freight), paid: sum((x) => x.paid), balance: sum((x) => x.balance),
+      payable: sum((x) => Math.max(x.balance, 0)), advance: sum((x) => Math.max(-x.balance, 0)),
+      overdue: sum((x) => x.overdue), not_billed: sum((x) => x.not_billed_value),
+      no_rate: list.reduce((t, x) => t + x.no_rate.length, 0),
+      paid_this_month: Number(month[0].paid), payments_this_month: month[0].n,
+    },
+  });
+});
+
+router.get("/transporter-ledger/:id", requirePermission("material.transporter-ledger", "view"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid transporter." });
+  const to = ledgerDate(req.query.to, istDay());
+  const [l] = await buildTransporterLedgers({ transporterIds: [id], asOn: to });
+  if (!l) return res.status(404).json({ error: "Transporter not found." });
+  const from = ledgerDate(req.query.from, l.lines[0]?.date || to);
+  const before = l.lines.filter((x) => x.date < from);
+  const inPeriod = l.lines.filter((x) => x.date >= from);
+  res.json({
+    ...l, from, to,
+    brought_forward: before.length ? before[before.length - 1].balance : null,
+    lines: inPeriod,
+    period_debit: Math.round(inPeriod.reduce((t, x) => t + x.debit, 0) * 100) / 100,
+    period_credit: Math.round(inPeriod.reduce((t, x) => t + x.credit, 0) * 100) / 100,
+  });
+});
+
+router.post("/transporter-ledger/:id/payments", requirePermission("material.transporter-payments", "create"), async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  const amount = Number(String(b.amount ?? "").replace(/,/g, ""));
+  const tds = b.tds_amount === undefined || b.tds_amount === "" ? 0 : Number(String(b.tds_amount).replace(/,/g, ""));
+  const mode = String(b.mode || "").toLowerCase();
+  const paidOn = ledgerDate(b.paid_on, null);
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: "Enter the amount paid." });
+  if (!Number.isFinite(tds) || tds < 0) return res.status(400).json({ error: "TDS must be 0 or more." });
+  if (!["neft", "rtgs", "cheque", "upi", "cash", "other"].includes(mode)) return res.status(400).json({ error: "Choose how it was paid." });
+  if (!paidOn) return res.status(400).json({ error: "Enter the payment date." });
+  if (paidOn > istDay()) return res.status(400).json({ error: "The payment date can't be in the future." });
+  if (["neft", "rtgs", "cheque", "upi"].includes(mode) && !String(b.reference || "").trim()) {
+    return res.status(400).json({ error: "Enter the UTR / cheque / UPI reference." });
+  }
+  const { rows: t } = await query(`SELECT id FROM rm_transporters WHERE id = $1`, [id]);
+  if (!t.length) return res.status(404).json({ error: "Transporter not found." });
+  const { rows } = await query(
+    `INSERT INTO rm_transporter_payments (transporter_id, paid_on, amount, tds_amount, mode, reference, notes, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [id, paidOn, amount, tds, mode, String(b.reference || "").trim() || null, String(b.notes || "").trim() || null, req.user.id]);
+  res.status(201).json(rows[0]);
+});
+
+router.post("/transporter-payments/:id/cancel", requirePermission("material.transporter-payments", "delete"), async (req, res) => {
+  const reason = String(req.body?.reason || "").trim();
+  if (!reason) return res.status(400).json({ error: "Say why the payment is being cancelled." });
+  const { rows } = await query(
+    `UPDATE rm_transporter_payments SET cancelled_at = now(), cancelled_by = $2, cancel_reason = $3
+      WHERE id = $1 AND cancelled_at IS NULL RETURNING *`, [req.params.id, req.user.id, reason]);
+  if (!rows.length) return res.status(404).json({ error: "Payment not found, or already cancelled." });
+  res.json({ ok: true });
+});
+
+router.put("/transporter-ledger/:id/opening", requirePermission("material.transporter-payments", "create"), async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  const asOn = ledgerDate(b.as_on, null);
+  const amount = Number(String(b.amount ?? "").replace(/,/g, ""));
+  if (!asOn) return res.status(400).json({ error: "Enter the date the opening balance is as on." });
+  if (!["payable", "advance"].includes(b.direction)) return res.status(400).json({ error: "Say whether we owe the transporter or have paid an advance." });
+  if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ error: "Enter the opening amount (0 or more)." });
+  const { rows: t } = await query(`SELECT id FROM rm_transporters WHERE id = $1`, [id]);
+  if (!t.length) return res.status(404).json({ error: "Transporter not found." });
+  await query(
+    `INSERT INTO rm_transporter_openings (transporter_id, as_on, direction, amount, remarks, set_by)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (transporter_id) DO UPDATE SET as_on = EXCLUDED.as_on, direction = EXCLUDED.direction, amount = EXCLUDED.amount,
+       remarks = EXCLUDED.remarks, set_by = EXCLUDED.set_by, set_at = now()`,
+    [id, asOn, b.direction, amount, String(b.remarks || "").trim() || null, req.user.id]);
+  res.json({ ok: true });
+});
+
 router.get("/transporters", requirePermission("material.transporters", "view"), async (req, res) => {
   const { rows } = await query(`SELECT * FROM rm_transporters WHERE is_active OR $1 ORDER BY name`, [isAdminLevel(req.user.role)]);
   res.json(rows);
@@ -714,12 +811,25 @@ router.post("/transporters", requirePermission("material.transporters", "create"
 });
 
 router.patch("/transporters/:id", requirePermission("material.transporters", "edit"), async (req, res) => {
-  const { name, phone, is_active } = req.body;
+  const { name, phone, is_active, gstin, pan, credit_days, gst_pct } = req.body;
   const sets = [];
   const params = [];
   if (name !== undefined) { params.push(name); sets.push(`name = $${params.length}`); }
   if (phone !== undefined) { params.push(phone); sets.push(`phone = $${params.length}`); }
   if (is_active !== undefined) { params.push(is_active); sets.push(`is_active = $${params.length}`); }
+  // Round 200 — what the transporter ledger needs.
+  if (gstin !== undefined) { params.push(String(gstin || "").trim().toUpperCase() || null); sets.push(`gstin = $${params.length}`); }
+  if (pan !== undefined) { params.push(String(pan || "").trim().toUpperCase() || null); sets.push(`pan = $${params.length}`); }
+  if (credit_days !== undefined) {
+    const cd = credit_days === "" || credit_days === null ? null : Number(credit_days);
+    if (cd != null && !(Number.isInteger(cd) && cd >= 0 && cd <= 365)) return res.status(400).json({ error: "Credit days must be 0 to 365." });
+    params.push(cd); sets.push(`credit_days = $${params.length}`);
+  }
+  if (gst_pct !== undefined) {
+    const g = gst_pct === "" || gst_pct === null ? 0 : Number(gst_pct);
+    if (!(Number.isFinite(g) && g >= 0 && g <= 28)) return res.status(400).json({ error: "GST % must be 0 to 28." });
+    params.push(g); sets.push(`gst_pct = $${params.length}`);
+  }
   if (!sets.length) return res.status(400).json({ error: "Nothing to update." });
   params.push(req.params.id);
   const { rows } = await query(`UPDATE rm_transporters SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING *`, params);
@@ -811,7 +921,7 @@ router.post("/orders", requirePermission("material.orders", "create"), async (re
 });
 
 const ORDER_LIST_COLUMNS = `
-  o.*, m.name AS material_name,
+  o.*, m.name AS material_name, m.wb_exempt,
   COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
   COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit,
   src.name AS source_name, src.place AS source_place,
@@ -1066,7 +1176,7 @@ router.get("/receipt-silos", requirePermission("material.receipts", "view"), asy
 });
 
 router.post("/receipts", requirePermission("material.receipts", "create"), async (req, res) => {
-  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date, silo_slot, not_in_silo, invoice_date } = req.body;
+  const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date, silo_slot, not_in_silo, invoice_date, no_ticket_reason } = req.body;
   if (!order_id) return res.status(400).json({ error: "Select the order this receipt is against." });
 
   // ROUND 168 — where this load goes: into a silo, or explicitly not into one.
@@ -1099,7 +1209,7 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
   if (receivedDate === undefined) return; // validator already answered
 
   const { rows: orders } = await query(
-    `SELECT o.*, COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit, m.tolerance_pct
+    `SELECT o.*, COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) AS kg_per_purchase_unit, m.tolerance_pct, m.wb_exempt
      FROM rm_orders o JOIN rm_materials m ON m.id = o.material_id
      LEFT JOIN rm_material_sources src ON src.id = o.source_id
      WHERE o.id = $1 AND o.status = 'approved'`,
@@ -1210,6 +1320,15 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
     }
   }
 
+  // ROUND 200 — no weighbridge ticket: Admin approves before it counts (see
+  // lib/receiptApprovalSchema.js), unless the material never crosses the
+  // weighbridge. Store says why there is no ticket.
+  const wbPending = !ticketId && !order.wb_exempt;
+  const wbReason = String(no_ticket_reason || "").trim() || null;
+  if (wbPending && !wbReason) {
+    return res.status(400).json({ error: "This load has no weighbridge ticket. Say why — the receipt then waits for Admin approval." });
+  }
+
   // ROUND 168 — the receipt and (when a silo is named) its fill are written in
   // ONE transaction. They are two facts about a single event — this load
   // arrived, and it went into that hopper — and stock would be wrong if one
@@ -1226,17 +1345,17 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
           freight_rate, freight_basis, vehicle_number, challan_number, short_qty, debit_note_amount,
           landed_rate_per_kg, received_by, notes, weighbridge_ticket_id, short_reason,
           accepted_basis, variance_qty, variance_pct, confirmation_status, received_date,
-          silo_slot, not_in_silo, bill_amount, invoice_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING *`,
+          silo_slot, not_in_silo, bill_amount, invoice_date, wb_approval, wb_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) RETURNING *`,
       [order_id, supplier_qty, weighbridge_weight_kg || null, finalAcceptedQty, acceptedQtyKg,
         transporter_id || order.transporter_id || null, useFreightRate || null, useFreightBasis || null,
         vehicle_number || null, challan_number || null, shortQty, debit_note_amount || null,
         landedRatePerKg, req.user.id, notes || null, ticketId, String(short_reason || "").trim() || null,
         acceptedBasis, varianceQty, variancePct, confirmationStatus, receivedDate,
-        siloSlot, notInSilo, billAmount, invoiceDate]
+        siloSlot, notInSilo, billAmount, invoiceDate, wbPending ? "pending" : "not_needed", wbPending ? wbReason : null]
     ));
 
-    if (siloSlot && !needsConfirmation) {
+    if (siloSlot && !needsConfirmation && !wbPending) {
       // filled_at keys on the arrival date, not the typing time, so a back-dated
       // receipt sits at the right point in the silo's timeline (see
       // siloMaterialAt in routes/plant.js). Time is left at IST midnight of that
@@ -1269,6 +1388,13 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
     console.error("Lab test cards for receipt", rows[0].id, "failed:", err.message);
   }
 
+  const waitingFor = [
+    needsConfirmation
+      ? `The weighed quantity and the supplier's differ by ${deviationPct.toFixed(1)}% ` +
+        `(tolerance ${tolerancePct}%), so this receipt is waiting for a Manager to confirm which figure stands.`
+      : null,
+    wbPending ? "It has no weighbridge ticket, so it is waiting for Admin approval." : null,
+  ].filter(Boolean);
   res.status(201).json({
     ...rows[0],
     test_cards_issued: testCards.length,
@@ -1277,11 +1403,8 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
     // The screen needs to say what just happened, and the two outcomes are
     // genuinely different: one is filed, the other is waiting on somebody.
     pending_confirmation: needsConfirmation,
-    message: needsConfirmation
-      ? `Saved. The weighed quantity and the supplier's differ by ${deviationPct.toFixed(1)}% ` +
-        `(tolerance ${tolerancePct}%), so this receipt is waiting for a Manager to confirm which ` +
-        `figure stands. It does not affect stock until then.`
-      : null,
+    pending_admin: wbPending,
+    message: waitingFor.length ? `Saved. ${waitingFor.join(" ")} It does not affect stock until then.` : null,
   });
 });
 
@@ -1293,6 +1416,7 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
 router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), async (req, res) => {
   const { rows: existingRows } = await query(
     `SELECT r.*, o.rate AS order_rate, o.gst_treatment, o.tax_pct, o.material_id AS order_material_id, o.scope AS order_scope,
+            (SELECT m.wb_exempt FROM rm_materials m WHERE m.id = o.material_id) AS material_wb_exempt,
             to_char(r.received_date, 'YYYY-MM-DD') AS received_date_str,
             to_char(r.invoice_date, 'YYYY-MM-DD') AS invoice_date_str
      FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: editing a receipt must be able to load a pending one
@@ -1354,6 +1478,13 @@ router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), as
     }
   }
 
+  // ROUND 200 — linking a ticket settles the "no ticket" approval; removing
+  // the ticket from a receipt that had one sends it to Admin like a new one.
+  let wbApproval = existing.wb_approval || "not_needed";
+  if (ticketId && ["pending", "rejected"].includes(wbApproval)) wbApproval = "not_needed";
+  else if (!ticketId && existing.weighbridge_ticket_id && !existing.material_wb_exempt) wbApproval = "pending";
+  const wbClear = !["pending", "rejected"].includes(wbApproval);
+
   // Preserve the conversion factor the ORIGINAL receipt used (not today's
   // material default) — same "past receipts keep the value used at the
   // time" rule the receipt already followed when it was first recorded.
@@ -1403,17 +1534,18 @@ router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), as
          transporter_id = $5, freight_rate = $6, freight_basis = $7, vehicle_number = $8, challan_number = $9,
          short_qty = $10, debit_note_amount = $11, landed_rate_per_kg = $12, notes = $13,
          received_date = $15, weighbridge_ticket_id = $16, silo_slot = $17, not_in_silo = $18,
-         bill_amount = $19, invoice_date = $20
+         bill_amount = $19, invoice_date = $20, wb_approval = $21::text,
+         wb_reason = CASE WHEN $21::text = 'not_needed' THEN wb_reason ELSE COALESCE(wb_reason, 'weighbridge ticket removed on edit') END
        WHERE id = $14 RETURNING *`,
       [supplierQty, merged.weighbridge_weight_kg || null, acceptedQty, acceptedQtyKg,
         merged.transporter_id || null, merged.freight_rate || null, merged.freight_basis || null,
         merged.vehicle_number || null, merged.challan_number || null, shortQty,
         merged.debit_note_amount || null, landedRatePerKg, merged.notes || null, req.params.id,
-        receivedDate, ticketId, siloSlot, notInSilo, billAmount, invoiceDate]
+        receivedDate, ticketId, siloSlot, notInSilo, billAmount, invoiceDate, wbApproval]
     ));
-    if (touchesSilo) {
+    if (touchesSilo || wbApproval !== (existing.wb_approval || "not_needed")) {
       await client.query(`DELETE FROM plant_silo_fills WHERE receipt_id = $1`, [req.params.id]);
-      if (siloSlot && existing.confirmation_status !== "pending") {
+      if (siloSlot && !notInSilo && existing.confirmation_status !== "pending" && wbClear) {
         await client.query(
           `INSERT INTO plant_silo_fills
              (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)
@@ -1433,6 +1565,7 @@ router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), as
   // A refillable silo's contents are a timeline, so moving a fill changes what
   // the batches after it were made from. Best effort: the receipt is saved.
   if (touchesSilo) await reresolveSilos().catch((e) => console.error("reresolve after receipt edit", e));
+  // (wb_approval moving changes what counts only through rm_receipts_effective.)
   res.json({ ...rows[0], received_date: receivedDate, silo_changed: siloChanged });
 });
 
@@ -1465,6 +1598,7 @@ router.get("/receipts", requirePermission("material.receipts", "view"), async (r
             to_char(r.invoice_date,'YYYY-MM-DD') AS invoice_date,
             o.material_id, o.supplier_id, m.name AS material_name, m.purchase_unit,
             s.name AS supplier_name, t.name AS transporter_name, ru.name AS received_by_name,
+            (SELECT name FROM users u WHERE u.id = r.wb_decided_by) AS wb_decided_by_name,
             -- ROUND 162 — the weighbridge ticket this receipt was weighed on, so
             -- the screen can show the link (and its net weight) rather than just
             -- a bare id. Null for a delivery that never crossed the weighbridge.
@@ -1483,6 +1617,85 @@ router.get("/receipts", requirePermission("material.receipts", "view"), async (r
     params
   );
   res.json(rows);
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 200 — receipts with no weighbridge ticket, waiting for Admin. Each
+// comes with the matched weighbridge loads nobody has claimed for the same
+// supplier and material within three days of it, because the usual fix is
+// linking the ticket Store missed (Edit → link), not approving.
+// ---------------------------------------------------------------------------
+router.get("/receipts/no-ticket", requirePermission("material.receipt-wb-approve", "view"), async (req, res) => {
+  try {
+    const { rows } = await query(
+      // receipts-raw: this queue exists to show exactly the ones not counted yet
+      `SELECT r.id, to_char(r.received_date,'YYYY-MM-DD') AS received_date, r.received_at, r.supplier_qty, r.accepted_qty,
+              r.weighbridge_weight_kg, r.vehicle_number, r.challan_number, r.wb_reason, r.notes, r.bill_amount,
+              r.confirmation_status, o.id AS order_id, o.supplier_id, o.material_id,
+              m.name AS material_name, COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
+              s.name AS supplier_name, ru.name AS received_by_name
+       FROM rm_receipts r   -- receipts-raw: this queue exists to show exactly the ones not counted yet
+       JOIN rm_orders o ON o.id = r.order_id
+       JOIN rm_materials m ON m.id = o.material_id
+       LEFT JOIN rm_material_sources src ON src.id = o.source_id
+       JOIN rm_suppliers s ON s.id = o.supplier_id
+       JOIN users ru ON ru.id = r.received_by
+       WHERE r.wb_approval = 'pending'
+       ORDER BY r.received_date, r.id`);
+    for (const r of rows) {
+      const { rows: tk } = await query(
+        `SELECT wb.ticket_number, wb.net_weight_kg, wb.weighed_at, COALESCE(v.registration, wb.raw_vehicle) AS vehicle
+         FROM weighbridge_tickets wb
+         LEFT JOIN weighbridge_vehicles v ON v.id = wb.vehicle_id
+         LEFT JOIN rm_receipts x ON x.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a ticket held by any receipt is taken
+         WHERE wb.match_status = 'matched' AND x.id IS NULL
+           AND wb.supplier_id = $1 AND wb.material_id = $2
+           AND COALESCE((wb.weighed_at AT TIME ZONE 'Asia/Kolkata')::date, wb.ticket_date) BETWEEN $3::date - 3 AND $3::date + 3
+         ORDER BY wb.weighed_at NULLS LAST LIMIT 5`, [r.supplier_id, r.material_id, r.received_date]);
+      r.candidate_tickets = tk;
+    }
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the receipts waiting for approval." });
+  }
+});
+
+router.post("/receipts/:id/wb-decide", requirePermission("material.receipt-wb-approve", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!(Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "Invalid receipt id." });
+  const approve = req.body?.approve === true;
+  const note = String(req.body?.note || "").trim() || null;
+  if (!approve && !note) return res.status(400).json({ error: "Say why it is rejected." });
+  const client = await pool.connect();
+  let r;
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `UPDATE rm_receipts SET wb_approval = $2, wb_decided_by = $3, wb_decided_at = now(), wb_note = $4   -- receipts-raw: the write itself
+        WHERE id = $1 AND wb_approval = 'pending' RETURNING *`,
+      [id, approve ? "approved" : "rejected", req.user.id, note]);
+    r = rows[0];
+    if (!r) { await client.query("ROLLBACK"); return res.status(409).json({ error: "This receipt is not waiting any more. Reload." }); }
+    // Approved and nothing else holding it back: it becomes stock now, so its
+    // silo fill (deferred while it waited) is written in the same step.
+    if (approve && r.confirmation_status !== "pending" && r.silo_slot && !r.not_in_silo) {
+      const { rows: o } = await client.query(`SELECT material_id FROM rm_orders WHERE id = $1`, [r.order_id]);
+      await client.query(
+        `INSERT INTO plant_silo_fills (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)
+         VALUES ($1,$2,$3,$4::date::timestamptz,$5,false,NULL,$6,$7)`,
+        [r.silo_slot, o[0].material_id, id, r.received_date, r.accepted_qty_kg, "From receipt #" + id + " (approved without ticket)", req.user.id]);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    return res.status(500).json({ error: "Could not save the decision." });
+  } finally {
+    client.release();
+  }
+  if (approve && r.silo_slot) await reresolveSilos().catch((e) => console.error("reresolve after wb approval", e));
+  res.json({ ok: true, wb_approval: r.wb_approval, still_waiting_for_manager: r.confirmation_status === "pending" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1613,7 +1826,7 @@ router.post("/receipts/:id/confirm", requirePermission("material.receipt-confirm
          Number(variancePct.toFixed(3)), basis, req.user.id,
          String(req.body?.note || "").trim() || null, billAmount]
       ));
-      if (rows.length && r.silo_slot && !r.not_in_silo) {
+      if (rows.length && r.silo_slot && !r.not_in_silo && !["pending", "rejected"].includes(r.wb_approval)) {
         await client.query(
           `INSERT INTO plant_silo_fills
              (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)

@@ -11,7 +11,8 @@
 //     so no debit note is needed. The amount is fixed on the receipt
 //     (rm_receipts.bill_amount) when it is saved.
 //   * A receipt still PENDING (weighed and supplier figures disagree, waiting
-//     for a Manager) is not a bill yet — it is "received, not billed", valued at
+//     for a Manager; or, Round 200, no weighbridge ticket and waiting for
+//     Admin) is not a bill yet — it is "received, not billed", valued at
 //     its entered figure.
 //   * A load weighed in at the weighbridge with NO receipt prepared is also
 //     "received, not billed": we owe for it, it is just not in the books yet.
@@ -96,12 +97,13 @@ async function load(supplierIds) {
       // receipts-raw: a pending receipt is exactly what this needs to see — received, not yet billed
       `SELECT r.id, o.supplier_id, to_char(r.received_date, 'YYYY-MM-DD') AS received_date,
               r.accepted_qty, r.supplier_qty, r.bill_amount, r.vehicle_number, r.challan_number AS invoice_no,
+              r.confirmation_status, r.wb_approval,
               COALESCE(src.purchase_unit, m.purchase_unit) AS unit, m.name AS material_name
          FROM rm_receipts r   -- receipts-raw: pending receipts are the point — received, not billed yet
          JOIN rm_orders o ON o.id = r.order_id
          JOIN rm_materials m ON m.id = o.material_id
          LEFT JOIN rm_material_sources src ON src.id = o.source_id
-        WHERE r.confirmation_status = 'pending'
+        WHERE (r.confirmation_status = 'pending' OR r.wb_approval = 'pending')
           AND ($1::int[] IS NULL OR o.supplier_id = ANY($1::int[]))`, [only]),
     query(
       `SELECT pm.id, pm.supplier_id, to_char(pm.paid_on, 'YYYY-MM-DD') AS paid_on, pm.amount, pm.tds_amount,
@@ -236,7 +238,8 @@ export async function buildLedgers({ supplierIds = null, asOn }) {
     for (const pr of pendingBy.get(s.id) || []) {
       notBilled.push({ kind: "pending_receipt", id: pr.id, date: pr.received_date, vehicle: pr.vehicle_number,
         material_name: pr.material_name, qty: Number(pr.accepted_qty), unit: pr.unit, value: Number(pr.bill_amount || 0),
-        note: "receipt waiting for a Manager to confirm the quantity" });
+        note: [pr.confirmation_status === "pending" ? "receipt waiting for a Manager to confirm the quantity" : null,
+          pr.wb_approval === "pending" ? "receipt with no weighbridge ticket, waiting for Admin" : null].filter(Boolean).join("; ") });
     }
     for (const t of ticketsBy.get(s.id) || []) {
       const kgPerUnit = Number(t.kg_per_unit) || 0;

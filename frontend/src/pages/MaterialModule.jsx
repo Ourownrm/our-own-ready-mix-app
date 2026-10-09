@@ -30,6 +30,7 @@ import { isAdminLevel } from "../lib/roles.js";
 import { monthStartStr, todayStr } from "../lib/istDate.js";
 import { printMaterialReport } from "../lib/materialReportPdf.js";
 import SupplierLedgerTab from "./SupplierLedger.jsx";
+import TransporterLedgerTab from "./TransporterLedger.jsx";
 
 // ===================== Shared helpers =====================
 
@@ -181,6 +182,8 @@ const ALL_TABS = [
   { key: "cost-dashboard", label: "Cost Dashboard", perm: "material.cost-dashboard", action: "view" },
   // Round 193 — what we owe each supplier, payments and opening balances.
   { key: "supplier-ledger", label: "Supplier Ledger", perm: "material.supplier-ledger", action: "view" },
+  // Round 200 — freight owed to transporters on ex-factory loads, and payments.
+  { key: "transporter-ledger", label: "Transporter Ledger", perm: "material.transporter-ledger", action: "view" },
   // Round 192 — the Materials and Suppliers tabs have their own view keys
   // (Raw Material module sub-menus), so a Super Admin can show the masters
   // read-only. Editing inside still needs create/edit on the master itself.
@@ -243,6 +246,7 @@ export default function MaterialModule() {
         {tab === "reports" && <ReportsTab />}
         {tab === "cost-dashboard" && <CostDashboardTab />}
         {tab === "supplier-ledger" && <SupplierLedgerTab />}
+        {tab === "transporter-ledger" && <TransporterLedgerTab />}
       </div>
     </>
   );
@@ -317,7 +321,7 @@ function MaterialsTab() {
   }
 
   function openNew() {
-    setForm({ name: "", category: "", sub_category: "", mix_component: "", purchase_unit: "", kg_per_purchase_unit: "", tolerance_pct: "", reorder_level_kg: "", opening_stock_kg: "0", opening_stock_rate_per_kg: "" });
+    setForm({ name: "", category: "", sub_category: "", mix_component: "", purchase_unit: "", kg_per_purchase_unit: "", tolerance_pct: "", reorder_level_kg: "", opening_stock_kg: "0", opening_stock_rate_per_kg: "", wb_exempt: false });
     setEditing({});
     setError(""); setNotice("");
   }
@@ -328,6 +332,7 @@ function MaterialsTab() {
       purchase_unit: m.purchase_unit, kg_per_purchase_unit: m.kg_per_purchase_unit,
       tolerance_pct: m.tolerance_pct ?? "", reorder_level_kg: m.reorder_level_kg ?? "",
       opening_stock_kg: m.opening_stock_kg ?? "0", opening_stock_rate_per_kg: m.opening_stock_rate_per_kg ?? "",
+      wb_exempt: !!m.wb_exempt,
     });
     setEditing(m);
     setError(""); setNotice("");
@@ -388,6 +393,7 @@ function MaterialsTab() {
                   <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
                     Opening stock: {fmtNum(m.opening_stock_kg)} kg{m.opening_stock_rate_per_kg != null ? ` @ ${fmtMoney(m.opening_stock_rate_per_kg)}/kg` : ""}
                     {m.tolerance_pct != null ? ` · Tolerance ${fmtNum(m.tolerance_pct, 1)}%` : ""}
+                    {m.wb_exempt ? " · not weighed on the weighbridge" : ""}
                   </div>
                 </div>
                 {mayEdit && (
@@ -458,6 +464,12 @@ function MaterialsTab() {
             <Field label="Purchase unit"><input required value={form.purchase_unit} onChange={(e) => setForm({ ...form, purchase_unit: e.target.value })} style={inputStyle} placeholder="e.g. Bag, MT, CFT" /></Field>
             <Field label="Kg per purchase unit"><input required type="number" step="0.0001" min="0" value={form.kg_per_purchase_unit} onChange={(e) => setForm({ ...form, kg_per_purchase_unit: e.target.value })} style={inputStyle} /></Field>
             <Field label="Tolerance % (optional, for short-supply flagging)"><input type="number" step="0.1" min="0" value={form.tolerance_pct} onChange={(e) => setForm({ ...form, tolerance_pct: e.target.value })} style={inputStyle} /></Field>
+            {/* Round 200 — a receipt with no weighbridge ticket waits for Admin,
+                except for a material that never crosses the weighbridge. */}
+            <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, marginBottom: 12 }}>
+              <input type="checkbox" checked={!!form.wb_exempt} onChange={(e) => setForm({ ...form, wb_exempt: e.target.checked })} style={{ marginTop: 2 }} />
+              <span>Not weighed on the weighbridge (e.g. admixture drums) — its receipts don&rsquo;t need a ticket or Admin approval</span>
+            </label>
             <Field label="Reorder level (kg, optional)"><input type="number" step="0.01" min="0" value={form.reorder_level_kg} onChange={(e) => setForm({ ...form, reorder_level_kg: e.target.value })} style={inputStyle} /></Field>
             <Field label="Opening stock (kg)"><input type="number" step="0.01" min="0" value={form.opening_stock_kg} onChange={(e) => setForm({ ...form, opening_stock_kg: e.target.value })} style={inputStyle} /></Field>
             <Field label="Opening stock rate (₹ per kg, optional — used until the first receipt)"><input type="number" step="0.0001" min="0" value={form.opening_stock_rate_per_kg} onChange={(e) => setForm({ ...form, opening_stock_rate_per_kg: e.target.value })} style={inputStyle} /></Field>
@@ -1357,8 +1369,66 @@ function MaterialHeading({ name, count, extra }) {
   );
 }
 
+// Round 200 — receipts saved without a weighbridge ticket, waiting for Admin.
+// Linking the ticket Store missed is usually the right answer, so the loads the
+// weighbridge has for the same supplier and material around that date are
+// offered first; approving without a ticket is the exception.
+function NoTicketQueue({ onChanged }) {
+  const { can } = usePermissions();
+  const mayDecide = can("material.receipt-wb-approve", "edit");
+  const [rows, setRows] = useState(null);
+  const [notes, setNotes] = useState({});
+  const [error, setError] = useState("");
+  const load = () => apiRequest("/material-module/receipts/no-ticket").then(setRows).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []);
+  const act = async (fn) => { setError(""); try { await fn(); await load(); onChanged?.(); } catch (err) { setError(err.message); } };
+  if (!rows || (!rows.length && !error)) return null;
+  return (
+    <div className="card" style={{ marginBottom: 16, borderColor: "var(--amber)" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Receipts without a weighbridge ticket — waiting for Admin ({rows.length})</div>
+      <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>They are not in stock or the supplier ledger until approved. If the load was weighed, link its ticket instead.</div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 12.5, marginBottom: 8 }}>{error}</div>}
+      {rows.map((r) => (
+        <div key={r.id} style={{ borderTop: "1px solid var(--border)", padding: "10px 0" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontSize: 12.5 }}>
+            <div>
+              <b>{receiptNo(r.id)}</b> · {fmtDate(r.received_date)} · {r.material_name} · {r.supplier_name}
+              <div style={{ color: "var(--slate)", fontSize: 11.5 }}>
+                {fmtNum(r.accepted_qty)} {r.purchase_unit} accepted (invoice {fmtNum(r.supplier_qty)}) · {r.vehicle_number || "no vehicle"} · by {r.received_by_name}
+                {r.confirmation_status === "pending" ? " · also waiting for a Manager on quantity" : ""}
+              </div>
+              <div style={{ fontSize: 11.5, marginTop: 2 }}><span style={{ color: "var(--slate)" }}>Why no ticket:</span> {r.wb_reason || "—"}</div>
+            </div>
+            {r.bill_amount != null && <div style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtMoney(r.bill_amount)}</div>}
+          </div>
+          {r.candidate_tickets?.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 6, fontSize: 11.5 }}>
+              <span style={{ color: "var(--slate)" }}>Unclaimed loads on the weighbridge:</span>
+              {r.candidate_tickets.map((t) => (
+                <button key={t.ticket_number} type="button" disabled={!mayDecide} style={{ fontSize: 11, padding: "3px 8px" }}
+                  title={`${fmtNum(t.net_weight_kg)} kg · ${t.vehicle || "—"}`}
+                  onClick={() => act(() => apiRequest(`/material-module/receipts/${r.id}`, { method: "PATCH", body: { weighbridge_ticket_id: t.ticket_number } }))}>
+                  Link #{t.ticket_number} · {fmtNum(t.net_weight_kg)} kg · {t.vehicle || "—"}
+                </button>
+              ))}
+            </div>
+          )}
+          {mayDecide && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+              <input style={{ ...inputStyle, flex: "1 1 200px", marginBottom: 0, fontSize: 12 }} placeholder="Note (required to reject)"
+                     value={notes[r.id] || ""} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
+              <button type="button" className="btn-primary" style={{ fontSize: 12 }} onClick={() => act(() => apiRequest(`/material-module/receipts/${r.id}/wb-decide`, { method: "POST", body: { approve: true, note: notes[r.id] || "" } }))}>Approve without ticket</button>
+              <button type="button" style={{ fontSize: 12, color: "var(--alert-red)" }} onClick={() => act(() => apiRequest(`/material-module/receipts/${r.id}/wb-decide`, { method: "POST", body: { approve: false, note: notes[r.id] || "" } }))}>Reject</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function blankReceiptForm() {
-  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", invoice_date: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "", received_date: todayStr(), silo_slot: "", not_in_silo: false };
+  return { supplier_qty: "", weighbridge_weight_kg: "", accepted_qty: "", vehicle_number: "", challan_number: "", invoice_date: "", debit_note_amount: "", notes: "", weighbridge_ticket_id: "", short_reason: "", received_date: todayStr(), silo_slot: "", not_in_silo: false, no_ticket_reason: "" };
 }
 
 function receiptEditForm(r) {
@@ -1513,8 +1583,8 @@ function ReceiptsTab({ role }) {
       // to say. A receipt that posted is finished business; one waiting on a
       // Manager has NOT reached stock yet, and Store needs to know that rather
       // than discovering it when the stock figure looks wrong.
-      if (result.pending_confirmation) {
-        setNotice("Receipt saved and waiting for a Manager.");
+      if (result.pending_confirmation || result.pending_admin) {
+        setNotice(`Receipt saved and waiting for ${[result.pending_confirmation ? "a Manager" : null, result.pending_admin ? "Admin" : null].filter(Boolean).join(" and ")}.`);
         setWarning(result.message);
       } else {
         setNotice(`Receipt recorded — landed rate ${fmtMoney(result.landed_rate_per_kg)}/kg.`);
@@ -1607,6 +1677,8 @@ function ReceiptsTab({ role }) {
       {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
       {warning && <div style={{ color: "var(--amber)", fontSize: 13, marginBottom: 10 }}>{warning}</div>}
 
+      {can("material.receipt-wb-approve", "view") && <NoTicketQueue onChanged={load} />}
+
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Approved orders — awaiting receipt</div>
       {receivable.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 16 }}>Nothing outstanding right now.</div>}
       {/* Round 163 — grouped by material, same as the Orders page. */}
@@ -1689,11 +1761,14 @@ function ReceiptsTab({ role }) {
               {[...history].sort((a, b) => b.id - a.id).map((r) => {
                 const short = Number(r.short_qty) || 0;
                 const pending = r.confirmation_status === "pending";
+                const wbWait = r.wb_approval === "pending", wbRejected = r.wb_approval === "rejected";
                 return (
-                  <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: pending ? "var(--amber-bg)" : undefined }}>
+                  <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: wbRejected ? "var(--alert-red-bg)" : pending || wbWait ? "var(--amber-bg)" : undefined }}>
                     <td style={{ ...tdCell, fontWeight: 600, whiteSpace: "nowrap" }}>
                       {receiptNo(r.id)}
                       {pending && <div><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>Pending</span></div>}
+                      {wbWait && <div title={r.wb_reason || ""}><span className="badge badge-warning" style={{ fontSize: 9, padding: "0 6px" }}>No ticket — Admin</span></div>}
+                      {wbRejected && <div title={r.wb_note || ""}><span className="badge badge-danger" style={{ fontSize: 9, padding: "0 6px" }}>Rejected</span></div>}
                     </td>
                     <td style={{ ...tdCell, whiteSpace: "nowrap", fontFamily: "monospace", color: "var(--info)" }}>{r.order_id ? orderNo(r.order_id) : "—"}</td>
                     <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
@@ -1734,6 +1809,7 @@ function ReceiptsTab({ role }) {
                         : r.weighbridge_weight_kg != null
                           ? <span style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(r.weighbridge_weight_kg)} kg (manual)</span>
                           : <span style={{ fontSize: 10.5, color: "var(--slate)" }}>—</span>}
+                      {r.wb_approval === "approved" && <div style={{ fontSize: 9.5, color: "var(--slate)" }} title={r.wb_reason || ""}>no ticket · approved{r.wb_decided_by_name ? ` by ${r.wb_decided_by_name}` : ""}</div>}
                     </td>
                     <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.landed_rate_per_kg, 4)}</td>
                     <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
@@ -1800,6 +1876,18 @@ function ReceiptsTab({ role }) {
           )}
 
           <form onSubmit={submitReceipt}>
+            {/* Round 200 — no ticket: say why; Admin approves before it counts. */}
+            {!form.weighbridge_ticket_id && !receiving.wb_exempt && (
+              <div style={{ border: "1px solid var(--amber)", background: "var(--amber-bg)", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--amber)", marginBottom: 6 }}>
+                  No weighbridge ticket linked — this receipt will wait for Admin approval and won&rsquo;t count in stock until then.
+                </div>
+                <Field label="Why is there no weighbridge ticket?">
+                  <input required value={form.no_ticket_reason} onChange={(e) => setForm({ ...form, no_ticket_reason: e.target.value })}
+                         placeholder="weighbridge down · weighed elsewhere · ticket not synced yet" style={inputStyle} />
+                </Field>
+              </div>
+            )}
             {/* Round 162 — the arrival date. Defaults to today; set it back for
                 a load being entered late so it counts in the right month. */}
             <Field label="Arrival date (set this back for a late entry)">
@@ -1869,7 +1957,9 @@ function ReceiptsTab({ role }) {
                   <span style={{ fontSize: 12, flexGrow: 1 }}>Linked to weighbridge ticket <strong>#{editForm.weighbridge_ticket_id}</strong></span>
                   <button type="button" style={{ fontSize: 11.5 }} onClick={() => setEditForm({ ...editForm, weighbridge_ticket_id: "" })}>Unlink</button>
                 </div>
-              : <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 10 }}>No weighbridge ticket linked.</div>}
+              : <Field label="No weighbridge ticket linked — ticket number to link (optional)">
+                  <input type="number" min="1" value={editForm.weighbridge_ticket_id} onChange={(e) => setEditForm({ ...editForm, weighbridge_ticket_id: e.target.value })} style={inputStyle} placeholder="e.g. 10452" />
+                </Field>}
             <Field label={`Supplier's invoice/DC quantity (${editingReceipt.purchase_unit})`}>
               <input required type="number" step="0.01" min="0" value={editForm.supplier_qty} onChange={(e) => setEditForm({ ...editForm, supplier_qty: e.target.value })} style={inputStyle} />
             </Field>

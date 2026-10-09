@@ -93,9 +93,12 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
   const missedPaid = rules.missed_punch_at_lock === "half" ? s.missed * 0.5 : 0;
   const contract = emp.employment_type === "contract";
   let paidDays;
+  // Round 200 — approved paid leave is a paid day (for contract workers too:
+  // whoever approves a paid leave type for one has decided to pay it).
+  const leavePaid = s.leave_paid || 0;
   if (emp.attendance_source === "none") paidDays = daysEmployed;
-  else if (contract) paidDays = s.present + s.half * 0.5 + missedPaid;
-  else paidDays = s.present + s.half * 0.5 + s.off + s.holiday + missedPaid;
+  else if (contract) paidDays = s.present + s.half * 0.5 + missedPaid + leavePaid;
+  else paidDays = s.present + s.half * 0.5 + s.off + s.holiday + missedPaid + leavePaid;
   paidDays = Math.min(paidDays, daysEmployed);
   const lopDays = contract ? 0 : Math.max(0, daysEmployed - paidDays);
 
@@ -183,6 +186,7 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
       contract, days_in_month: daysInMonth, days_employed: daysEmployed,
       present: s.present, half: s.half, absent: s.absent, missed: s.missed, no_location: s.no_location,
       off: s.off, holiday: s.holiday, late: s.late, early: s.early,
+      leave: s.leave || 0, leave_paid: leavePaid, leave_unpaid: s.leave_unpaid || 0,
       paid_days: r2(paidDays), lop_days: r2(lopDays),
       gross_monthly: grossMonthly, daily_rate: dailyRate, earned, earned_gross: earnedGross,
       ot_eligible: !!emp.ot_eligible, ot_suggested: otSuggested, ot_hours: emp.ot_eligible ? otHours : 0, ot_amount: otAmount,

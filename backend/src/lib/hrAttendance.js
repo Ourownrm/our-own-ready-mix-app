@@ -133,6 +133,8 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
         day.code = offDay ? (holiday && !p.off ? "H" : "WO") : isToday ? "" : "A";
       }
       if (offDay && day.code === "P") day.flags.push("worked on " + (holiday ? "holiday" : "off day"));
+      // Round 200 — an app check-in with location is the whole of the duty.
+      if (day.code === "P") day.met = true;
       days.push(day);
       return;
     }
@@ -167,6 +169,12 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
       }
     }
     if (offDay) day.flags.push("worked on " + (holiday && !p.off ? "holiday" : "off day"));
+    // Round 200 — did the day meet the duty hours? The shift's own length
+    // (9 to 5 = 8 h), or 8 hours for someone with no shift (operators). The
+    // employee's own screen shows a met day as just "P"; anything short shows
+    // the punches so it can be corrected.
+    day.req = shift ? shift.end - shift.start : (rules.ot_standard_day_min ?? 480);
+    day.met = day.code === "P" && day.worked != null && day.worked >= day.req;
     // Round 198 — overtime the punches suggest. Payroll shows it for approval;
     // nothing is paid on this number until a person accepts it there.
     if (day.worked != null && !isToday) {
@@ -193,12 +201,48 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
       day.pending = rq.pending || 0;
     }
   }
+
+  // Round 200 — leave. An approved leave turns an absence (or a missed punch,
+  // a no-location check-in, a blank future day) into "L". It never takes a
+  // weekly off or holiday, and a day the person actually worked stays worked.
+  // A half-day leave on a half day makes it whole.
+  if (opts.leaves) {
+    for (const day of days) {
+      const lv = opts.leaves.get(day.date);
+      if (!lv) continue;
+      const before = (joined && day.date < joined) || (left && day.date > left);
+      if (before) continue;
+      if (lv.pending) {
+        day.pending = (day.pending || 0) + lv.pending;
+        day.flags.push(`leave request waiting (${lv.pending_code})`);
+      }
+      const a = lv.approved;
+      if (!a) continue;
+      if (day.code === "WO" || day.code === "H") continue;
+      if (day.code === "P" || day.code === "IN") { day.flags.push(`${a.code} approved, but attended`); continue; }
+      if (a.half && day.code === "HD") {
+        day.leave = { code: a.code, name: a.name, paid: a.paid, half: true };
+        day.flags.push(`half day + ${a.code} half-day leave`);
+        continue;
+      }
+      if (day.code && day.code !== "A") day.flags.push(`was ${day.code}`);
+      day.code = "L";
+      day.leave = { code: a.code, name: a.name, paid: a.paid, half: !!a.half };
+      day.ot = null;
+    }
+  }
   return days;
 }
 
 export function summarise(days) {
-  const s = { present: 0, half: 0, absent: 0, missed: 0, no_location: 0, off: 0, holiday: 0, late: 0, early: 0, off_day_worked: 0, paid_days: 0, ot_min: 0, pending: 0 };
+  const s = { present: 0, half: 0, absent: 0, missed: 0, no_location: 0, off: 0, holiday: 0, late: 0, early: 0, off_day_worked: 0, paid_days: 0, ot_min: 0, pending: 0,
+    leave: 0, leave_paid: 0, leave_unpaid: 0 };
   for (const d of days) {
+    if (d.leave) {
+      const n = d.leave.half ? 0.5 : 1;
+      s.leave += n;
+      if (d.leave.paid) s.leave_paid += n; else s.leave_unpaid += n;
+    }
     if (d.code === "P") s.present++;
     else if (d.code === "HD") s.half++;
     else if (d.code === "A") s.absent++;
@@ -214,7 +258,7 @@ export function summarise(days) {
   }
   // Provisional: missed punches and no-location days are NOT counted until
   // they are resolved (stage 2 requests / payroll lock).
-  s.paid_days = s.present + s.half * 0.5 + s.off + s.holiday;
+  s.paid_days = s.present + s.half * 0.5 + s.off + s.holiday + s.leave_paid;
   return s;
 }
 
@@ -257,6 +301,24 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
              AND status IN ('approved','pending')`, [from, to, emps.map((e) => e.id)]),
     loadRules(),
   ]);
+  // Round 200 — leave overlapping the range, approved or waiting.
+  const leaveRes = await query(
+    `SELECT l.employee_id, to_char(l.from_date, 'YYYY-MM-DD') AS f, to_char(l.to_date, 'YYYY-MM-DD') AS t, l.half_day, l.status,
+            lt.code, lt.name, lt.paid
+     FROM hr_leaves l JOIN hr_leave_types lt ON lt.id = l.leave_type_id
+     WHERE l.status IN ('approved','pending') AND l.from_date <= $2 AND l.to_date >= $1 AND l.employee_id = ANY($3::int[])`,
+    [from, to, emps.map((e) => e.id)]);
+  const leavesByEmp = new Map();
+  for (const l of leaveRes.rows) {
+    if (!leavesByEmp.has(l.employee_id)) leavesByEmp.set(l.employee_id, new Map());
+    const m = leavesByEmp.get(l.employee_id);
+    for (const d of datesBetween(l.f < from ? from : l.f, l.t > to ? to : l.t)) {
+      const cur = m.get(d) || { approved: null, pending: 0, pending_code: null };
+      if (l.status === "approved") cur.approved = { code: l.code, name: l.name, paid: l.paid, half: l.half_day };
+      else { cur.pending++; cur.pending_code = l.code; }
+      m.set(d, cur);
+    }
+  }
   const shifts = new Map(shiftRes.rows.map((s) => [s.id, shiftOf(s)]));
   const holidays = new Map(holRes.rows.map((h) => [h.d, h.name]));
   const roster = new Map();
@@ -331,7 +393,7 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
     // rather than a month of false absences.
     const unlinked = (e.attendance_source === "machine" && !e.machine_user_id) || (e.attendance_source === "app" && !e.app_user_id);
     const days = e.attendance_source === "none" || unlinked ? dates.map((d) => ({ date: d, code: "", n: 0, times: [], flags: [] }))
-      : computeEmployeeDays(e, dates, events, plan, holidays, todayDate, nowMs, { reqs: reqsByEmp.get(e.id), rules });
+      : computeEmployeeDays(e, dates, events, plan, holidays, todayDate, nowMs, { reqs: reqsByEmp.get(e.id), leaves: leavesByEmp.get(e.id), rules });
     return {
       id: e.id, emp_code: e.emp_code, name: e.name, department: e.department, designation: e.designation,
       attendance_source: e.attendance_source, policy: e.policy, machine_user_id: e.machine_user_id,

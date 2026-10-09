@@ -1960,7 +1960,7 @@ router.get("/silos", requirePermission("production.plant-mapping", "view"), asyn
          FROM rm_receipts r   -- receipts-raw: not_in_silo is newer than rm_receipts_effective (a SELECT * view freezes its columns), and pending is filtered explicitly on the next line
          JOIN rm_orders o ON o.id = r.order_id
          JOIN rm_materials m ON m.id = o.material_id
-         WHERE r.not_in_silo = true AND r.confirmation_status <> 'pending'
+         WHERE r.not_in_silo = true AND r.confirmation_status <> 'pending' AND r.wb_approval NOT IN ('pending','rejected')
          GROUP BY o.material_id, m.name
          ORDER BY m.name`
       ),

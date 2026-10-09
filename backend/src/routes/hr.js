@@ -87,6 +87,7 @@ router.get("/meta", requireAnyPermission(ANY_HR), async (req, res) => {
       can_salary_edit: await can(req.user, "hr.salary", "edit"),
       salespersons: sps.rows,
       rules, rule_defs: RULE_DEFS,
+      leave_types: await leaveTypes(),
     });
   } catch (err) {
     console.error(err);
@@ -505,6 +506,235 @@ router.post("/requests/:id/cancel", async (req, res) => {
   } catch (err) { friendly(err, res, "Could not withdraw the request."); }
 });
 
+// ---------------------------------------------------------------- leave (Round 200)
+// A leave covers a range of days (or half of one day). The employee asks from
+// My attendance, or HR / the Plant Manager records it — typically on an
+// absence after the fact. It counts only once approved, under the same rules
+// as attendance requests: the Plant Manager approves; Admin approves the Plant
+// Manager's own leave and any leave beyond the type's yearly allowance; nobody
+// approves their own. Someone who may decide it can record and approve in one
+// step ("approve now").
+const LEAVE_SELECT = `
+  SELECT l.id, l.employee_id, to_char(l.from_date, 'YYYY-MM-DD') AS from_date, to_char(l.to_date, 'YYYY-MM-DD') AS to_date,
+         l.half_day, l.days, l.reason, l.status, l.needs_admin, l.admin_reason, l.raised_at, l.decided_at, l.decision_note,
+         l.raised_by, l.leave_type_id, lt.code AS type_code, lt.name AS type_name, lt.paid,
+         e.name AS employee_name, e.emp_code, e.app_user_id, d.name AS department,
+         rb.name AS raised_by_name, db.name AS decided_by_name
+  FROM hr_leaves l
+  JOIN hr_leave_types lt ON lt.id = l.leave_type_id
+  JOIN hr_employees e ON e.id = l.employee_id
+  LEFT JOIN hr_departments d ON d.id = e.department_id
+  LEFT JOIN users rb ON rb.id = l.raised_by
+  LEFT JOIN users db ON db.id = l.decided_by`;
+
+async function leaveTypes(activeOnly = false) {
+  const { rows } = await query(`SELECT * FROM hr_leave_types ${activeOnly ? "WHERE is_active" : ""} ORDER BY sort_order, code`);
+  return rows.map((t) => ({ ...t, yearly_days: t.yearly_days == null ? null : Number(t.yearly_days) }));
+}
+
+// Working days a leave covers: weekly off and holidays are not leave.
+async function leaveDays(emp, from, to, half) {
+  if (half) return 0.5;
+  const { rows } = await query(`SELECT to_char(holiday_date, 'YYYY-MM-DD') AS d FROM hr_holidays WHERE holiday_date BETWEEN $1 AND $2`, [from, to]);
+  const hol = new Set(rows.map((r) => r.d));
+  const off = emp.weekly_off == null ? null : Number(emp.weekly_off);
+  return datesBetween(from, to).filter((d) => !hol.has(d) && new Date(d + "T00:00:00Z").getUTCDay() !== off).length;
+}
+
+// Used / waiting / left per leave type for one or more employees in a year.
+async function leaveBalances(employeeIds, year) {
+  const types = await leaveTypes();
+  const { rows } = await query(
+    `SELECT employee_id, leave_type_id, status, sum(days)::float AS days FROM hr_leaves
+     WHERE employee_id = ANY($1::int[]) AND status IN ('approved','pending') AND extract(year FROM from_date) = $2
+     GROUP BY 1, 2, 3`, [employeeIds, year]);
+  const out = new Map();
+  for (const id of employeeIds) {
+    out.set(id, types.filter((t) => t.is_active).map((t) => {
+      const used = rows.filter((r) => r.employee_id === id && r.leave_type_id === t.id && r.status === "approved").reduce((a, r) => a + r.days, 0);
+      const waiting = rows.filter((r) => r.employee_id === id && r.leave_type_id === t.id && r.status === "pending").reduce((a, r) => a + r.days, 0);
+      return { leave_type_id: t.id, code: t.code, name: t.name, paid: t.paid, allowance: t.yearly_days, used, waiting,
+        left: t.yearly_days == null ? null : Math.round((t.yearly_days - used) * 10) / 10 };
+    }));
+  }
+  return out;
+}
+
+async function lockedMonthIn(from, to) {
+  const { rows } = await query(
+    `SELECT month FROM hr_payroll_runs WHERE status = 'locked' AND month BETWEEN $1 AND $2 ORDER BY month LIMIT 1`,
+    [from.slice(0, 7), to.slice(0, 7)]);
+  return rows[0]?.month || null;
+}
+
+async function leaveAdminNeed(emp, type, from, days, excludeId = null) {
+  const reasons = [];
+  if (emp.app_user_role === "manager") reasons.push("Plant Manager's own leave");
+  if (type.yearly_days != null) {
+    const { rows } = await query(
+      `SELECT COALESCE(sum(days), 0)::float AS d FROM hr_leaves
+       WHERE employee_id = $1 AND leave_type_id = $2 AND status IN ('approved','pending')
+         AND extract(year FROM from_date) = extract(year FROM $3::date) AND ($4::int IS NULL OR id <> $4)`,
+      [emp.id, type.id, from, excludeId]);
+    if (rows[0].d + days > type.yearly_days) reasons.push(`over the ${type.code} allowance (${type.yearly_days} a year, ${rows[0].d} already taken or asked)`);
+  }
+  return { needs: reasons.length > 0, reason: reasons.join(", ").slice(0, 160) || null };
+}
+
+const canDecideLeave = (user, l) => (isAdmin(user) || !l.needs_admin) && l.app_user_id !== user.id;
+
+async function createLeave(req, res, emp, { self }) {
+  const b = req.body || {};
+  if (!emp || !emp.is_active) return res.status(400).json({ error: "Employee not found or no longer active." });
+  const from = date(b.from_date);
+  const to = date(b.to_date) || from;
+  if (!from) return res.status(400).json({ error: "Give the leave dates." });
+  if (to < from) return res.status(400).json({ error: "The last day is before the first." });
+  if (Date.parse(to) - Date.parse(from) > 62 * 86400000) return res.status(400).json({ error: "A leave can cover at most two months — split it." });
+  const half = !!b.half_day;
+  if (half && to !== from) return res.status(400).json({ error: "A half-day leave is for a single day." });
+  if (emp.date_of_joining && from < String(emp.date_of_joining).slice(0, 10)) return res.status(400).json({ error: "That is before the joining date." });
+  const types = await leaveTypes(true);
+  const type = types.find((t) => t.id === Number(b.leave_type_id));
+  if (!type) return res.status(400).json({ error: "Choose the type of leave." });
+  const reason = text(b.reason, 1000);
+  if (self && !reason) return res.status(400).json({ error: "Give a reason." });
+  const locked = await lockedMonthIn(from, to);
+  if (locked) return res.status(409).json({ error: `Payroll for ${locked} is locked — leave for it can no longer be recorded.` });
+  const { rows: clash } = await query(
+    `SELECT id, to_char(from_date, 'DD Mon') AS f FROM hr_leaves WHERE employee_id = $1 AND status IN ('approved','pending')
+       AND from_date <= $3 AND to_date >= $2 LIMIT 1`, [emp.id, from, to]);
+  if (clash.length) return res.status(409).json({ error: `There is already a leave from ${clash[0].f} on those dates.` });
+  const days = await leaveDays(emp, from, to, half);
+  if (!days) return res.status(400).json({ error: "Those days are all weekly off or holidays — no leave needed." });
+  const need = await leaveAdminNeed(emp, type, from, days);
+  // Recording and approving in one step: only for someone who may decide it.
+  const approveNow = !self && !!b.approve_now && await can(req.user, "hr.requests", "edit")
+    && canDecideLeave(req.user, { needs_admin: need.needs, app_user_id: emp.app_user_id });
+  if (!self && b.approve_now && !approveNow) {
+    return res.status(403).json({ error: need.needs ? `This leave needs Admin (${need.reason}) — send it for approval instead.` : "You cannot approve this leave yourself — send it for approval." });
+  }
+  const { rows } = await query(
+    `INSERT INTO hr_leaves (employee_id, leave_type_id, from_date, to_date, half_day, days, reason, status, needs_admin, admin_reason,
+                            raised_by, decided_by, decided_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+    [emp.id, type.id, from, to, half, days, reason, approveNow ? "approved" : "pending", need.needs, need.reason,
+      req.user.id, approveNow ? req.user.id : null, approveNow ? new Date() : null]);
+  res.status(201).json({ id: rows[0].id, days, status: approveNow ? "approved" : "pending", needs_admin: need.needs, admin_reason: need.reason });
+}
+
+router.get("/leave-types", requireAnyPermission([...ANY_HR, "hr.requests"]), async (req, res) => {
+  try { res.json(await leaveTypes()); } catch (err) { friendly(err, res, "Could not load leave types."); }
+});
+function leaveTypeFields(b) {
+  const code = text(b.code, 8)?.toUpperCase();
+  const name = text(b.name, 60);
+  if (!code || !name) throw Object.assign(new Error("Give a short code and a name."), { expose: true });
+  const yd = b.yearly_days === "" || b.yearly_days == null ? null : Number(b.yearly_days);
+  if (yd != null && (!Number.isFinite(yd) || yd < 0 || yd > 366)) throw Object.assign(new Error("Days a year must be 0 to 366, or blank."), { expose: true });
+  return [code, name, b.paid !== false, yd, b.is_active !== false, Number(b.sort_order) || 0];
+}
+router.post("/leave-types", requirePermission("hr.settings", "create"), async (req, res) => {
+  try {
+    const { rows } = await query(`INSERT INTO hr_leave_types (code, name, paid, yearly_days, is_active, sort_order) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, leaveTypeFields(req.body || {}));
+    res.status(201).json(rows[0]);
+  } catch (err) { friendly(err, res, "Could not add the leave type."); }
+});
+router.patch("/leave-types/:id", requirePermission("hr.settings", "edit"), async (req, res) => {
+  try {
+    const { rows } = await query(`UPDATE hr_leave_types SET code=$1, name=$2, paid=$3, yearly_days=$4, is_active=$5, sort_order=$6 WHERE id=$7 RETURNING *`,
+      [...leaveTypeFields(req.body || {}), Number(req.params.id)]);
+    if (!rows.length) return res.status(404).json({ error: "Leave type not found." });
+    res.json(rows[0]);
+  } catch (err) { friendly(err, res, "Could not save the leave type."); }
+});
+
+router.get("/leaves", requirePermission("hr.requests", "view"), async (req, res) => {
+  try {
+    const status = ["pending", "approved", "rejected", "cancelled"].includes(req.query.status) ? req.query.status : null;
+    const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : null;
+    const emp = Number(req.query.employee) || null;
+    const { rows } = await query(
+      `${LEAVE_SELECT}
+       WHERE ($1::text IS NULL OR l.status = $1)
+         AND ($2::text IS NULL OR (to_char(l.from_date, 'YYYY-MM') <= $2 AND to_char(l.to_date, 'YYYY-MM') >= $2))
+         AND ($3::int IS NULL OR l.employee_id = $3)
+       ORDER BY (l.status = 'pending') DESC, l.from_date DESC, l.id DESC LIMIT 500`, [status, month, emp]);
+    const year = month ? Number(month.slice(0, 4)) : Number(istToday().slice(0, 4));
+    const bal = await leaveBalances([...new Set(rows.map((r) => r.employee_id))], year);
+    const admin = isAdmin(req.user);
+    res.json({
+      year,
+      leaves: rows.map((l) => ({ ...l, days: Number(l.days), balance: bal.get(l.employee_id)?.find((b) => b.leave_type_id === l.leave_type_id) || null,
+        can_decide: l.status === "pending" && canDecideLeave(req.user, l),
+        can_cancel: (l.status === "pending" && (l.raised_by === req.user.id || admin)) || (l.status === "approved" && admin) })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load leave." });
+  }
+});
+
+router.get("/leave-balances", requirePermission("hr.requests", "view"), async (req, res) => {
+  try {
+    const year = /^\d{4}$/.test(String(req.query.year || "")) ? Number(req.query.year) : Number(istToday().slice(0, 4));
+    const { rows: emps } = await query(
+      `SELECT e.id, e.name, e.emp_code, d.name AS department FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+       WHERE e.is_active ORDER BY d.sort_order NULLS LAST, e.name`);
+    const bal = await leaveBalances(emps.map((e) => e.id), year);
+    res.json({ year, types: (await leaveTypes(true)), employees: emps.map((e) => ({ ...e, balances: bal.get(e.id) })) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load leave balances." });
+  }
+});
+
+router.post("/leaves", requirePermission("hr.requests", "create"), async (req, res) => {
+  try { await createLeave(req, res, await loadEmployee(Number(req.body?.employee_id)), { self: false }); }
+  catch (err) { friendly(err, res, "Could not save the leave."); }
+});
+
+router.post("/leaves/:id/decide", requirePermission("hr.requests", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { rows } = await query(`${LEAVE_SELECT} WHERE l.id = $1`, [id]);
+    const l = rows[0];
+    if (!l) return res.status(404).json({ error: "Leave not found." });
+    if (l.status !== "pending") return res.status(409).json({ error: "This leave has already been decided." });
+    if (l.app_user_id === req.user.id) return res.status(403).json({ error: "Nobody can approve their own leave." });
+    if (l.needs_admin && !isAdmin(req.user)) return res.status(403).json({ error: `This one needs Admin (${l.admin_reason}).` });
+    const locked = await lockedMonthIn(l.from_date, l.to_date);
+    if (locked) return res.status(409).json({ error: `Payroll for ${locked} is locked.` });
+    const approve = !!req.body?.approve;
+    const note = text(req.body?.note, 500);
+    if (!approve && !note) return res.status(400).json({ error: "Say why it is rejected." });
+    await query(`UPDATE hr_leaves SET status = $1, decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $4`,
+      [approve ? "approved" : "rejected", req.user.id, note, id]);
+    res.json({ ok: true });
+  } catch (err) { friendly(err, res, "Could not save the decision."); }
+});
+
+// Withdraw a waiting leave (whoever raised it, the employee, or Admin), or —
+// Admin only — cancel an approved one, e.g. the person came to work after all.
+router.post("/leaves/:id/cancel", async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { rows } = await query(`${LEAVE_SELECT} WHERE l.id = $1`, [id]);
+    const l = rows[0];
+    if (!l) return res.status(404).json({ error: "Leave not found." });
+    const admin = isAdmin(req.user);
+    const mine = l.raised_by === req.user.id || l.app_user_id === req.user.id;
+    if (l.status === "pending" ? !(mine || admin) : !(l.status === "approved" && admin)) {
+      return res.status(403).json({ error: l.status === "approved" ? "Only Admin can cancel an approved leave." : "You cannot withdraw this leave." });
+    }
+    const locked = await lockedMonthIn(l.from_date, l.to_date);
+    if (locked) return res.status(409).json({ error: `Payroll for ${locked} is locked.` });
+    await query(`UPDATE hr_leaves SET status = 'cancelled', decided_by = $1, decided_at = now(),
+                 decision_note = COALESCE($2, decision_note) WHERE id = $3`, [req.user.id, text(req.body?.note, 500), id]);
+    res.json({ ok: true });
+  } catch (err) { friendly(err, res, "Could not cancel the leave."); }
+});
+
 // ---------------------------------------------------------------- my attendance (self-service)
 // Any signed-in person whose login is linked to an employee record. No HR
 // permission needed — it only ever shows and touches that one person.
@@ -525,16 +755,27 @@ router.get("/my", async (req, res) => {
     if (!emp) return res.json({ linked: false });
     const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : istToday().slice(0, 7);
     const { from, to } = monthRange(month);
-    const [reg, reqs] = await Promise.all([
+    const [reg, reqs, leaves, bal, types] = await Promise.all([
       attendanceRegister({ from, to, employeeIds: [emp.id] }),
       query(`${REQ_SELECT} WHERE r.employee_id = $1 ORDER BY r.work_date DESC, r.id DESC LIMIT 60`, [emp.id]),
+      query(`${LEAVE_SELECT} WHERE l.employee_id = $1 ORDER BY l.from_date DESC, l.id DESC LIMIT 40`, [emp.id]),
+      leaveBalances([emp.id], Number(month.slice(0, 4))),
+      leaveTypes(true),
     ]);
     res.json({ linked: true, month, employee: { name: emp.name, emp_code: emp.emp_code }, attendance: reg.employees[0] || null,
-      dates: reg.dates, requests: reqs.rows, kinds: KINDS });
+      dates: reg.dates, requests: reqs.rows, kinds: KINDS,
+      leaves: leaves.rows.map((l) => ({ ...l, days: Number(l.days) })), leave_balances: bal.get(emp.id), leave_types: types });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load your attendance." });
   }
+});
+router.post("/my/leaves", async (req, res) => {
+  try {
+    const emp = await myEmployee(req);
+    if (!emp) return res.status(403).json({ error: "Your login is not linked to an employee record. Ask HR." });
+    await createLeave(req, res, emp, { self: true });
+  } catch (err) { friendly(err, res, "Could not save the leave request."); }
 });
 router.post("/my/requests", async (req, res) => {
   try {

@@ -292,6 +292,7 @@ function LineDetail({ line, locked, canEdit, month, onChanged, onClose }) {
           {row("Present · half · absent", `${c.present} · ${c.half} · ${c.absent}`)}
           {row("Missed punch · no location", `${c.missed} · ${c.no_location}`)}
           {row("Weekly off · holiday", `${c.off} · ${c.holiday}`)}
+          {(c.leave_paid || c.leave_unpaid) ? row("Leave — paid · unpaid", `${c.leave_paid || 0} · ${c.leave_unpaid || 0}`) : null}
           {row("Late · early", `${c.late} · ${c.early}`, { muted: true })}
           {row("Paid days", c.paid_days, { bold: true })}
           {!c.contract && row("Loss of pay days", c.lop_days)}
