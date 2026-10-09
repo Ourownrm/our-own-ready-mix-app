@@ -217,14 +217,15 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
-    // Round 195 — the eSSL attendance machine at the main gate: is it being
-    // read, and the raw punches. The HR module will build on this.
-    key: "attendance-machine",
-    label: "Attendance Machine",
+    // Round 197 — HR (stage 1: attendance, employees, roster, settings). It
+    // replaces the Round 195 "Attendance Machine" tile; the machine screen is
+    // now a link inside HR.
+    key: "hr",
+    label: "HR",
     icon: "clock",
     colour: "#2A6F97",
     tint: "#E3EEF4",
-    to: "/attendance-machine",
+    to: "/hr",
     screens: [],
   },
   {
@@ -280,6 +281,7 @@ export const HUB = [
   { key: "material-module", perm: ["material.module"], to: "/material-module" },
   { key: "plant-production", perm: ["module.plant-production"], to: "/plant-production" },
   { key: "weighbridge-receipts", perm: ["module.weighbridge"], to: "/weighbridge" },
+  { key: "hr", perm: ["module.hr"], to: "/hr" },
   { key: "receipt-differences", perm: ["material.receipt-confirm", "weighbridge.receipt-variance"], to: "/receipt-differences" },
   {
     key: "quality-control",

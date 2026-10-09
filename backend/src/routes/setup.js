@@ -10,6 +10,8 @@ import { pool, query } from "../db.js";
 import { migrateRmLabTests } from "../lib/rmTestCards.js";
 // Round 195 — attendance machine (eSSL) punches.
 import { migrateAttendance } from "../lib/attendanceSchema.js";
+// Round 197 — HR module stage 1.
+import { migrateHr } from "../lib/hrSchema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4073,6 +4075,9 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // ROUND 195 — the attendance machine: devices, the machine's users and raw
     // punches. Same CREATE statements at the end of schema.sql.
     await migrateAttendance(pool, log);
+
+    // ROUND 197 — HR module stage 1: employees, shifts, roster, holidays.
+    await migrateHr(pool, log);
 
     // (2) seed any catalogue function this installation has never seen.
     const { rows: seededKeys } = await pool.query(`SELECT permission_key FROM permission_key_seeds`);

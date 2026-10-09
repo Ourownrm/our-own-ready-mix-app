@@ -62,6 +62,7 @@ import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 import MaterialModule from "./pages/MaterialModule.jsx";
 import Weighbridge from "./pages/Weighbridge.jsx";
 import AttendanceMachine from "./pages/AttendanceMachine.jsx";
+import HrModule from "./pages/HrModule.jsx";
 import PlantProduction from "./pages/PlantProduction.jsx";
 import QcMixDesigns from "./pages/QcMixDesigns.jsx";
 import ReceiptVariance from "./pages/ReceiptVariance.jsx";
@@ -273,6 +274,10 @@ export default function App() {
             <ProtectedRoute perm="module.weighbridge"><Weighbridge /></ProtectedRoute>
           } />
           {/* Round 195 — the eSSL attendance machine: sync status and raw punches. */}
+          {/* Round 197 — HR module (stage 1). */}
+          <Route path="/hr" element={
+            <ProtectedRoute perm="module.hr"><HrModule /></ProtectedRoute>
+          } />
           <Route path="/attendance-machine" element={
             <ProtectedRoute perm="admin.attendance-machine"><AttendanceMachine /></ProtectedRoute>
           } />

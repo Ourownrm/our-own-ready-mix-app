@@ -40,6 +40,7 @@ export const GROUPS = [
   { key: "accounts", label: "Accounts" },
   { key: "masters", label: "Masters" },
   { key: "reports", label: "Reports" },
+  { key: "hr", label: "HR" },
   { key: "admin", label: "Administration" },
 ];
 
@@ -487,6 +488,25 @@ export const CATALOGUE = [
   f("reports.compliance", "reports", "Statutory Compliance", VCE,
     { administrator: VCE, manager: VCE }, { screen: "statutory-compliance" }),
 
+  // ---------- HR (Round 197 — stage 1) ----------
+  // The user's rule: HR appears in access control only once it is built. It is
+  // now. Defaults: Administrator everything; the Plant Manager (manager role)
+  // keeps the people, the roster and attendance; the Accountant sees attendance.
+  // Pay is its own function and Administrator-only by default — nobody sees a
+  // salary because they can see the staff list.
+  f("module.hr", "modules", "HR module", V,
+    { administrator: V, manager: V, accountant: V }, { screen: "hr" }),
+  f("hr.attendance", "hr", "Attendance register", V,
+    { administrator: V, manager: V, accountant: V }),
+  f("hr.employees", "hr", "Employees — list, add, edit", VCE,
+    { administrator: VCE, manager: VCE, accountant: V }),
+  f("hr.salary", "hr", "Employees — pay, incentive & bank-relevant details", VE,
+    { administrator: VE }),
+  f("hr.roster", "hr", "Shift roster for operations staff", VE,
+    { administrator: VE, manager: VE }),
+  f("hr.settings", "hr", "HR settings — departments, shifts, holidays", VCED,
+    { administrator: VCED, manager: V }),
+
   // ---------- Administration ----------
   f("admin.users", "admin", "Users — list and create", VCE,
     { administrator: VCE }, { screen: "users-roles" }),
@@ -503,7 +523,7 @@ export const CATALOGUE = [
   // functions when it arrives, per the user's rule that HR appears in access
   // control only once it exists.
   f("admin.attendance-machine", "admin", "Attendance machine — sync status & punches", V,
-    { administrator: V }, { screen: "attendance-machine" }),
+    { administrator: V }),
   f("admin.notifications", "admin", "Notifications setup", VCE,
     { administrator: VCE, manager: VCE }),
   f("admin.setup", "admin", "Database setup & transactional reset", ["view", "edit", "delete"],
@@ -608,6 +628,21 @@ export const MODULES = [
       { key: "material.receipt-confirm", label: "Receipt Differences (confirm disputed loads)" },
     ],
     support: [],
+  },
+  {
+    // Round 197 — HR, stage 1. Plant Manager and Accountant get the module per
+    // the user's role × module table ("+ HR later" — now built).
+    key: "hr", label: "HR", gate: "module.hr", to: "/hr",
+    matrixRoles: ["manager", "accountant"],
+    menus: [
+      { key: "hr.attendance", label: "Attendance" },
+      { key: "hr.employees", label: "Employees" },
+      { key: "hr.roster", label: "Roster" },
+      { key: "hr.settings", label: "Settings" },
+      { key: "admin.attendance-machine", label: "Attendance Machine" },
+    ],
+    support: ["hr.salary"],
+    noAutoView: ["hr.salary"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",
