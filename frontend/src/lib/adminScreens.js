@@ -217,6 +217,17 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 195 — the eSSL attendance machine at the main gate: is it being
+    // read, and the raw punches. The HR module will build on this.
+    key: "attendance-machine",
+    label: "Attendance Machine",
+    icon: "clock",
+    colour: "#2A6F97",
+    tint: "#E3EEF4",
+    to: "/attendance-machine",
+    screens: [],
+  },
+  {
     key: "users-roles",
     label: "Users & Roles",
     icon: "people",

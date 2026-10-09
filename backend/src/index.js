@@ -31,6 +31,8 @@ import maintenanceRoutes from "./routes/maintenance.js";
 import fuelAnalysisRoutes from "./routes/fuelAnalysis.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
 import weighbridgeRoutes from "./routes/weighbridge.js";
+// Round 195 — attendance machine (eSSL) punches; /sync is API-key, the rest is session.
+import attendanceRoutes from "./routes/attendance.js";
 import plantRoutes from "./routes/plant.js";
 import bookingLinksRoutes from "./routes/bookingLinks.js";
 import customerBookingRoutes from "./routes/customerBooking.js";
@@ -181,6 +183,7 @@ app.use("/api/delivery-notes", deliveryNotesRoutes);
 // route (POST /sync) that is authenticated by an API key rather than a session,
 // declared above its own requireAuth. See routes/weighbridge.js.
 app.use("/api/weighbridge", weighbridgeRoutes);
+app.use("/api/attendance", attendanceRoutes);
 // Round 157 — the MCI370 batching plant. Like the weighbridge router, this one
 // exposes a single API-key route (POST /sync) above its own requireAuth.
 app.use("/api/plant", plantRoutes);

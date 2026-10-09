@@ -1,0 +1,9 @@
+{
+  "deviceIp": "192.168.1.201",
+  "devicePort": 4370,
+  "commKey": 0,
+  "deviceLabel": "Main gate",
+  "appUrl": "https://YOUR-BACKEND.onrender.com",
+  "apiKey": "PASTE-THE-ATTENDANCE_API_KEY-VALUE-HERE",
+  "startDate": "2026-09-01"
+}

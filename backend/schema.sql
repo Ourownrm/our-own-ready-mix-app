@@ -3660,3 +3660,71 @@ CREATE TABLE IF NOT EXISTS rm_test_plan_seeds (
   material_id INTEGER PRIMARY KEY REFERENCES rm_materials(id),
   seeded_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ===================================================================
+-- Round 195 — ATTENDANCE MACHINE (eSSL K30). See routes/attendance.js and
+-- lib/attendanceSchema.js (the /setup migration runs these same statements).
+-- ===================================================================
+-- One row per attendance machine, keyed on its serial number (or "ip:<addr>"
+-- for a machine that will not report one).
+CREATE TABLE IF NOT EXISTS attendance_devices (
+  id              SERIAL PRIMARY KEY,
+  serial          VARCHAR(60) NOT NULL UNIQUE,
+  label           VARCHAR(80),
+  ip              VARCHAR(45),
+  model           VARCHAR(60),
+  firmware        VARCHAR(80),
+  user_count      INTEGER,
+  record_count    INTEGER,
+  record_capacity INTEGER,
+  device_time     TIMESTAMP,          -- the machine's own clock, IST wall time
+  clock_drift_min INTEGER,            -- machine minus the agent PC, minutes
+  agent_version   VARCHAR(20),
+  last_seen_at    TIMESTAMPTZ,        -- the agent last checked in
+  last_read_ok_at TIMESTAMPTZ,        -- the machine was last read successfully
+  last_error      TEXT,
+  last_error_at   TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The machine's own user list. machine_user_id is the number a person was
+-- enrolled under on the machine; linking it to an employee is the HR module's
+-- job, not this table's.
+CREATE TABLE IF NOT EXISTS attendance_device_users (
+  device_id       INTEGER NOT NULL REFERENCES attendance_devices(id),
+  machine_user_id VARCHAR(30) NOT NULL,
+  name_on_machine VARCHAR(60),
+  privilege       SMALLINT,
+  first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (device_id, machine_user_id)
+);
+
+-- Every punch, exactly as the machine recorded it. Never edited: a manual
+-- correction (HR module, later) is stored beside it, not over it.
+CREATE TABLE IF NOT EXISTS attendance_punches (
+  id              BIGSERIAL PRIMARY KEY,
+  device_id       INTEGER NOT NULL REFERENCES attendance_devices(id),
+  machine_user_id VARCHAR(30) NOT NULL,
+  punched_at      TIMESTAMPTZ NOT NULL,
+  key_state       SMALLINT,           -- key pressed on the machine: 0 in, 1 out, …
+  verify_mode     SMALLINT,           -- 1 finger, 15 face, … as the machine reports
+  work_code       INTEGER,
+  received_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (device_id, machine_user_id, punched_at)
+);
+CREATE INDEX IF NOT EXISTS idx_att_punches_time ON attendance_punches(punched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_att_punches_user ON attendance_punches(machine_user_id, punched_at);
+
+CREATE TABLE IF NOT EXISTS attendance_sync_log (
+  id               SERIAL PRIMARY KEY,
+  received_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  device_id        INTEGER REFERENCES attendance_devices(id),
+  agent_version    VARCHAR(20),
+  punches_sent     INTEGER NOT NULL DEFAULT 0,
+  punches_inserted INTEGER NOT NULL DEFAULT 0,
+  punches_rejected INTEGER NOT NULL DEFAULT 0,
+  users_sent       INTEGER NOT NULL DEFAULT 0,
+  error            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_att_sync_log_received ON attendance_sync_log(received_at DESC);

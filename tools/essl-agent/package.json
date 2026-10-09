@@ -1,0 +1,16 @@
+{
+  "name": "oorm-attendance-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reads punches straight from the eSSL attendance machine over the LAN and posts them to the OORM app. Read-only; needs no eSSL software.",
+  "main": "agent.js",
+  "scripts": {
+    "probe": "node probe.js",
+    "once": "node agent.js --once",
+    "start": "node agent.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

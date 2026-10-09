@@ -498,6 +498,12 @@ export const CATALOGUE = [
     { administrator: VCED, manager: VCED }, { screen: "home-screen-photos" }),
   f("admin.site-content", "admin", "Website Content", VCED,
     { administrator: VCED, manager: VCED }, { screen: "website-content" }),
+  // Round 195 — the eSSL attendance machine: is it being read, and what it
+  // recorded. Raw punches only; the HR module (not built yet) will add its own
+  // functions when it arrives, per the user's rule that HR appears in access
+  // control only once it exists.
+  f("admin.attendance-machine", "admin", "Attendance machine — sync status & punches", V,
+    { administrator: V }, { screen: "attendance-machine" }),
   f("admin.notifications", "admin", "Notifications setup", VCE,
     { administrator: VCE, manager: VCE }),
   f("admin.setup", "admin", "Database setup & transactional reset", ["view", "edit", "delete"],

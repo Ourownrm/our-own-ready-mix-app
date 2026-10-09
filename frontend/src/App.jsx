@@ -61,6 +61,7 @@ import SiteContentEditor from "./pages/SiteContentEditor.jsx";
 import HomeScreenPhotos from "./pages/HomeScreenPhotos.jsx";
 import MaterialModule from "./pages/MaterialModule.jsx";
 import Weighbridge from "./pages/Weighbridge.jsx";
+import AttendanceMachine from "./pages/AttendanceMachine.jsx";
 import PlantProduction from "./pages/PlantProduction.jsx";
 import QcMixDesigns from "./pages/QcMixDesigns.jsx";
 import ReceiptVariance from "./pages/ReceiptVariance.jsx";
@@ -270,6 +271,10 @@ export default function App() {
               is the gate (no role list); each tab is its own function. */}
           <Route path="/weighbridge" element={
             <ProtectedRoute perm="module.weighbridge"><Weighbridge /></ProtectedRoute>
+          } />
+          {/* Round 195 — the eSSL attendance machine: sync status and raw punches. */}
+          <Route path="/attendance-machine" element={
+            <ProtectedRoute perm="admin.attendance-machine"><AttendanceMachine /></ProtectedRoute>
           } />
           {/* Round 157 — the batching plant's own record of what it made and
               what it consumed, fed one-way by the MCI370 agent. Round 192: the

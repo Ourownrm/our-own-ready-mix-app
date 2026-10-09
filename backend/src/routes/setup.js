@@ -8,6 +8,8 @@ import bcrypt from "bcryptjs";
 import { pool, query } from "../db.js";
 // Round 194 — raw material lab tests: tables + one-time standard test plans.
 import { migrateRmLabTests } from "../lib/rmTestCards.js";
+// Round 195 — attendance machine (eSSL) punches.
+import { migrateAttendance } from "../lib/attendanceSchema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4067,6 +4069,10 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // Lives in lib/rmTestCards.js beside the code that uses it; the same
     // CREATE statements are in schema.sql for a fresh database.
     await migrateRmLabTests(pool, log);
+
+    // ROUND 195 — the attendance machine: devices, the machine's users and raw
+    // punches. Same CREATE statements at the end of schema.sql.
+    await migrateAttendance(pool, log);
 
     // (2) seed any catalogue function this installation has never seen.
     const { rows: seededKeys } = await pool.query(`SELECT permission_key FROM permission_key_seeds`);
