@@ -20,8 +20,8 @@ import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
-import { TEST_DEFS, computeTest, rowsFor, defaultParams, testLabel, VERDICT_LABEL } from "../lib/rmTestDefs.js";
-import { ensureScheduledCards, loadStandardPlan, standardKindFor } from "../lib/rmTestCards.js";
+import { TEST_DEFS, computeTest, rowsFor, defaultParams, testLabel, VERDICT_LABEL, STANDARD_PLANS } from "../lib/rmTestDefs.js";
+import { ensureScheduledCards, loadStandardPlan, standardKindFor, companionFor } from "../lib/rmTestCards.js";
 
 const router = Router();
 const READ_KEYS = ["quality.rm-tests", "quality.rm-test-register", "quality.rm-test-plans"];
@@ -36,12 +36,12 @@ const CARD_SELECT = `
          c.closed_at, c.closed_reason, c.created_at,
          'RMT/' || to_char(c.created_at, 'YYMM') || '/' || lpad(c.id::text, 4, '0') AS report_no,
          (c.status IN ('pending', 'in_progress') AND c.due_at < now()) AS overdue,
-         m.name AS material_name, s.name AS supplier_name,
+         COALESCE(m.name, 'Laboratory') AS material_name, s.name AS supplier_name,
          r.challan_number, r.accepted_qty, m.purchase_unit,
          su.name AS submitted_by_name, au.name AS approved_by_name, au.role::text AS approved_by_role,
          bu.name AS sent_back_by_name, cu.name AS closed_by_name, stu.name AS started_by_name
     FROM rm_test_cards c
-    JOIN rm_materials m ON m.id = c.material_id
+    LEFT JOIN rm_materials m ON m.id = c.material_id
     LEFT JOIN rm_suppliers s ON s.id = c.supplier_id
     LEFT JOIN rm_receipts r ON r.id = c.receipt_id   -- receipts-raw: the card shows its own GRN whatever its confirmation state
     LEFT JOIN users su ON su.id = c.submitted_by
@@ -49,6 +49,20 @@ const CARD_SELECT = `
     LEFT JOIN users bu ON bu.id = c.sent_back_by
     LEFT JOIN users cu ON cu.id = c.closed_by
     LEFT JOIN users stu ON stu.id = c.started_by`;
+
+// Round 196 — the laboratory's own checks (curing tank) have no material.
+// The API names that "lab"; in the database it is material_id NULL.
+const LAB = "lab";
+function materialRef(v) {
+  if (v === LAB) return { lab: true, id: null };
+  const id = positiveInt(v);
+  return id ? { lab: false, id } : null;
+}
+
+// The partner result a test's limit depends on (flakiness <-> elongation).
+async function ctxFor(card) {
+  return { companion: await companionFor({ query }, card) };
+}
 
 function positiveInt(v) {
   const x = Number(v);
@@ -105,7 +119,7 @@ async function saveWork(card, body, userId) {
   const { meta, error } = cleanMeta(body);
   if (error) return { error };
   const readings = body.readings !== undefined ? cleanReadings(card.test_code, card.params, body.readings) : card.readings;
-  const result = computeTest(card.test_code, readings, card.params);
+  const result = computeTest(card.test_code, readings, card.params, await ctxFor(card));
   const complete = !result.errors.length && result.verdict;
   await query(
     `UPDATE rm_test_cards SET
@@ -153,8 +167,15 @@ router.get("/meta", requireAnyPermission(READ_KEYS, "view"), async (req, res) =>
     ),
     query(`SELECT id, name, is_active FROM rm_suppliers ORDER BY is_active DESC, name`),
   ]);
+  const { rows: lab } = await query(
+    `SELECT COUNT(*) FILTER (WHERE is_active AND trigger <> 'off')::int AS n FROM rm_test_plans WHERE material_id IS NULL`
+  );
   res.json({
-    materials: mats.rows.map((m) => ({ ...m, standard_kind: standardKindFor(m) })),
+    // The laboratory's own checks first, as a pseudo-material ("lab").
+    materials: [
+      { id: LAB, name: "Laboratory (not a material)", is_active: true, active_tests: lab[0].n, standard_kind: "lab", lab: true },
+      ...mats.rows.map((m) => ({ ...m, standard_kind: standardKindFor(m) })),
+    ],
     suppliers: sups.rows,
   });
 });
@@ -206,30 +227,36 @@ router.get("/cards/:id", requireAnyPermission(READ_KEYS, "view"), async (req, re
     `SELECT c.id, 'RMT/' || to_char(c.created_at, 'YYMM') || '/' || lpad(c.id::text, 4, '0') AS report_no,
             to_char(COALESCE(c.tested_on, c.approved_at::date), 'YYYY-MM-DD') AS tested_on, c.verdict, c.summary
        FROM rm_test_cards c
-      WHERE c.status = 'approved' AND c.id <> $1 AND c.test_code = $2 AND c.material_id = $3
+      WHERE c.status = 'approved' AND c.id <> $1 AND c.test_code = $2 AND c.material_id IS NOT DISTINCT FROM $3
         AND c.supplier_id IS NOT DISTINCT FROM $4 AND COALESCE(c.params->>'name', '') = $5
       ORDER BY c.approved_at DESC LIMIT 4`,
     [card.id, card.test_code, card.material_id, card.supplier_id, (card.params && card.params.name) || ""]
   );
-  res.json({ ...card, history });
+  res.json({ ...card, history, companion: await companionFor({ query }, card) });
 });
 
 // ---------------------------------------------------------------------------
 // The Lab Technician's work
 // ---------------------------------------------------------------------------
 router.post("/cards", requirePermission("quality.rm-tests", "create"), async (req, res) => {
-  const materialId = positiveInt(req.body.material_id);
+  const ref = materialRef(req.body.material_id);
   const supplierId = req.body.supplier_id ? positiveInt(req.body.supplier_id) : null;
   const code = String(req.body.test_code || "");
-  if (!materialId) return res.status(400).json({ error: "Choose the material." });
-  if (!TEST_DEFS[code]) return res.status(400).json({ error: "Choose the test." });
+  if (!ref) return res.status(400).json({ error: "Choose the material." });
+  if (!TEST_DEFS[code] || TEST_DEFS[code].retired) return res.status(400).json({ error: "Choose the test." });
+  if (ref.lab !== TEST_DEFS[code].kinds.includes("lab") && code !== "external") {
+    return res.status(400).json({ error: ref.lab ? "That test is for a material, not the laboratory." : "That test is a laboratory check, not a material test." });
+  }
   if (req.body.supplier_id && !supplierId) return res.status(400).json({ error: "Invalid supplier." });
-  const { rows: mat } = await query(`SELECT id FROM rm_materials WHERE id = $1`, [materialId]);
-  if (!mat.length) return res.status(404).json({ error: "Material not found." });
+  const materialId = ref.id;
+  if (!ref.lab) {
+    const { rows: mat } = await query(`SELECT id FROM rm_materials WHERE id = $1`, [materialId]);
+    if (!mat.length) return res.status(404).json({ error: "Material not found." });
+  }
   // Use the material's own plan settings for this test where there is one.
   const { rows: plan } = await query(
     `SELECT id, params, form_no, hold_stock, due_hours FROM rm_test_plans
-      WHERE material_id = $1 AND test_code = $2 AND is_active ORDER BY sort_order, id LIMIT 1`,
+      WHERE material_id IS NOT DISTINCT FROM $1 AND test_code = $2 AND is_active ORDER BY sort_order, id LIMIT 1`,
     [materialId, code]
   );
   const p = plan[0];
@@ -308,7 +335,7 @@ router.post("/cards/:id/approve", requirePermission("quality.rm-test-approve", "
   if (card.status !== "submitted") return res.status(409).json({ error: "Only a submitted test can be approved." });
   // Recompute once more from the stored readings, so what is signed is what
   // the calculation says today — not whatever was cached at submission.
-  const result = computeTest(card.test_code, card.readings, card.params);
+  const result = computeTest(card.test_code, card.readings, card.params, await ctxFor(card));
   if (result.errors.length || !result.verdict) return res.status(400).json({ error: result.errors[0] || "The test is incomplete." });
   const remark = String(req.body.remark || "").trim().slice(0, 1000);
   const { rowCount } = await query(
@@ -380,6 +407,7 @@ function cleanPlan(body, existing) {
   const code = body.test_code !== undefined ? String(body.test_code) : existing && existing.test_code;
   const def = TEST_DEFS[code];
   if (!def) return { error: "Choose a test." };
+  if (def.retired && !existing) return { error: "That test has been replaced — choose one of the current tests." };
   const params = { ...defaultParams(code), ...((existing && existing.params) || {}) };
   if (body.params && typeof body.params === "object") {
     for (const p of def.params || []) {
@@ -421,24 +449,34 @@ function cleanPlan(body, existing) {
 }
 
 router.get("/plans", requirePermission("quality.rm-test-plans", "view"), async (req, res) => {
-  const materialId = positiveInt(req.query.material_id);
+  const ref = req.query.material_id ? materialRef(req.query.material_id) : null;
+  const where = !ref ? "" : ref.lab ? "WHERE p.material_id IS NULL" : "WHERE p.material_id = $1";
   const { rows } = await query(
-    `SELECT p.*, m.name AS material_name FROM rm_test_plans p JOIN rm_materials m ON m.id = p.material_id
-      ${materialId ? "WHERE p.material_id = $1" : ""} ORDER BY m.name, p.sort_order, p.id`,
-    materialId ? [materialId] : []
+    `SELECT p.*, COALESCE(m.name, 'Laboratory (not a material)') AS material_name
+       FROM rm_test_plans p LEFT JOIN rm_materials m ON m.id = p.material_id
+      ${where} ORDER BY m.name NULLS FIRST, p.sort_order, p.id`,
+    ref && !ref.lab ? [ref.id] : []
   );
   res.json(rows.map((p) => ({ ...p, test_label: testLabel(p.test_code, p.params) })));
 });
 
 router.post("/plans", requirePermission("quality.rm-test-plans", "create"), async (req, res) => {
-  const materialId = positiveInt(req.body.material_id);
-  if (!materialId) return res.status(400).json({ error: "Choose the material." });
-  const { plan, error } = cleanPlan({ trigger: "period", high_days: 30, due_hours: 24, ...req.body });
+  const ref = materialRef(req.body.material_id);
+  if (!ref) return res.status(400).json({ error: "Choose the material." });
+  const materialId = ref.id;
+  const { plan, error } = cleanPlan({ trigger: ref.lab ? "scheduled" : "period", high_days: ref.lab ? 1 : 30, due_hours: 24, ...req.body });
   if (error) return res.status(400).json({ error });
+  const isLabTest = TEST_DEFS[plan.test_code].kinds.includes("lab");
+  if (plan.test_code !== "external" && ref.lab !== isLabTest) {
+    return res.status(400).json({ error: ref.lab ? "That test is for a material, not the laboratory." : "That test is a laboratory check, not a material test." });
+  }
+  if (ref.lab && (plan.trigger || "scheduled") !== "scheduled" && plan.trigger !== "off") {
+    return res.status(400).json({ error: "A laboratory check has no GRN — it can only be scheduled." });
+  }
   const { rows } = await query(
     `INSERT INTO rm_test_plans (material_id, test_code, params, form_no, trigger, high_days, low_days, low_after, hold_stock, due_hours, sort_order, created_by)
      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10,
-             (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM rm_test_plans WHERE material_id = $1), $11)
+             (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM rm_test_plans WHERE material_id IS NOT DISTINCT FROM $1::int), $11)
      RETURNING *`,
     [materialId, plan.test_code, JSON.stringify(plan.params), plan.form_no ?? TEST_DEFS[plan.test_code].form ?? null,
       plan.trigger, plan.high_days ?? null, plan.low_days ?? null, plan.low_after ?? null, !!plan.hold_stock, plan.due_hours || 24, req.user.id]
@@ -474,6 +512,19 @@ router.delete("/plans/:id", requirePermission("quality.rm-test-plans", "delete")
 });
 
 router.post("/plans/load-standard", requirePermission("quality.rm-test-plans", "create"), async (req, res) => {
+  if (req.body.material_id === LAB) {
+    let added = 0;
+    for (const p of STANDARD_PLANS.lab) {
+      const r = await query(
+        `INSERT INTO rm_test_plans (material_id, test_code, params, trigger, high_days, due_hours, created_by)
+         SELECT NULL, $1::varchar, '{}'::jsonb, $2, $3, $4, $5
+          WHERE NOT EXISTS (SELECT 1 FROM rm_test_plans WHERE material_id IS NULL AND test_code = $1::varchar)`,
+        [p.test_code, p.trigger, p.high_days, p.due_hours, req.user.id]
+      );
+      added += r.rowCount;
+    }
+    return res.json({ kind: "lab", added });
+  }
   const materialId = positiveInt(req.body.material_id);
   const { rows } = await query(`SELECT id, name, mix_component FROM rm_materials WHERE id = $1`, [materialId]);
   if (!rows.length) return res.status(404).json({ error: "Material not found." });

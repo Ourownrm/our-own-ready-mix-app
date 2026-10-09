@@ -20,7 +20,11 @@
 //   params  how a material's plan configures the test (size, limit basis, ...)
 //   form    the plant's own OORM-QC form number where one exists; null for a
 //           test the plant has no paper form for yet (a plan can set one)
-//   compute(readings, params) -> {
+//   retired true = kept only so cards already filed under it still open and
+//           print; never offered for a new plan or card (Round 196 split the
+//           combined flakiness/elongation and admixture tests)
+//   compute(readings, params, ctx) -> {   ctx = { companion } for a test whose
+//           limit spans two cards (flakiness + elongation, see below)
 //     cells:    { rowKey: { fieldKey: value } }   computed values for display
 //     results:  [{ label, value, unit, dp, limit, ok }]   headline results
 //     verdict:  "conforms" | "non_conforming" | "recorded" | null (incomplete)
@@ -146,6 +150,148 @@ function sieveTable(readings, rows) {
       );
     }
   }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Builders shared by more than one test (Round 196)
+// ---------------------------------------------------------------------------
+const FRACTIONS = [["f40", "40 – 25 mm"], ["f25", "25 – 20 mm"], ["f20", "20 – 16 mm"], ["f16", "16 – 12.5 mm"], ["f12", "12.5 – 10 mm"], ["f10", "10 – 6.3 mm"]];
+
+// Flakiness (QC-04) and elongation (QC-03): the same sheet shape — weight of
+// each fraction taken, the weight caught by the gauge, the rest — and an index
+// = gauge weight / total weight × 100, exactly as the plant's forms work it.
+function indexTest(o) {
+  return {
+    code: o.code,
+    label: o.label,
+    short: o.short,
+    form: o.form,
+    method: "IS 2386 (Part 1):1963",
+    spec: "IS 383:2016 — flakiness + elongation combined ≤ 40%",
+    kinds: ["coarse"],
+    layout: "rows",
+    companion: o.other,
+    fields: [
+      { key: "taken", label: "Wt. of sample taken", unit: "g", input: true },
+      { key: o.field, label: o.fieldLabel, unit: "g", input: true },
+      { key: "rest", label: o.rest, unit: "g", dp: 0 },
+    ],
+    rows() {
+      return FRACTIONS.map(([key, label]) => ({ key, label }));
+    },
+    compute(readings, params, ctx) {
+      const out = blank();
+      let W = 0, G = 0, any = false;
+      for (const r of this.rows()) {
+        const taken = g(readings, r.key, "taken");
+        const gauge = g(readings, r.key, o.field);
+        if (taken === null && gauge === null) continue;
+        any = true;
+        if (taken === null) { out.errors.push(r.label + ": enter the weight taken (0 if none)."); continue; }
+        if ((gauge || 0) > taken) out.errors.push(r.label + ": the gauge weight is more than the weight taken.");
+        W += taken; G += gauge || 0;
+        out.cells[r.key] = { rest: rnd(taken - (gauge || 0), 0) };
+      }
+      if (!any || W <= 0) { out.errors.push("Enter the fractions tested."); return out; }
+      const idx = (G / W) * 100;
+      out.index = rnd(idx, 1);
+      out.results.push({ label: "Total weight of aggregate (W)", value: rnd(W, 0), unit: "g", dp: 0, ok: null });
+      out.results.push({ label: "Total weight caught by the gauge (W1)", value: rnd(G, 0), unit: "g", dp: 0, ok: null });
+      const comp = ctx && ctx.companion && ctx.companion.index !== null && ctx.companion.index !== undefined ? ctx.companion : null;
+      if (comp) {
+        const comb = rnd(idx, 1) + Number(comp.index);
+        out.results.push({ label: o.label, value: rnd(idx, 1), unit: "%", dp: 1, ok: null });
+        out.results.push({ label: "With " + o.otherLabel + " " + comp.index + "% (" + comp.report_no + ")", value: rnd(comb, 1), unit: "%", dp: 1, limit: "≤ 40% combined", ok: rnd(comb, 1) <= 40 });
+        out.combined = rnd(comb, 1);
+        out.summary = fmt(idx, 1) + "% · combined with " + o.otherLabel + " " + fmt(comb, 1) + "% (limit 40%)";
+      } else {
+        out.results.push({ label: o.label, value: rnd(idx, 1), unit: "%", dp: 1, limit: "≤ 40% (combined check when the " + o.otherLabel + " test is filed)", ok: rnd(idx, 1) <= 40 });
+        out.warnings.push("No " + o.otherLabel + " result for this supply yet — the combined ≤ 40% check is made on whichever of the two is filed second.");
+        out.summary = fmt(idx, 1) + "% (" + o.otherLabel + " not yet filed)";
+      }
+      if (out.errors.length) return out;
+      out.verdict = decide(out.results);
+      return out;
+    },
+  };
+}
+
+// Pycnometer specific gravity (OORM-QC-10), the same form for fine and coarse
+// aggregate. Water absorption is its own test from Round 196.
+function sgTest(o) {
+  return {
+    code: o.code,
+    label: o.label,
+    short: "Specific gravity",
+    form: "OORM-QC-10",
+    method: "IS 2386 (Part 3):1963",
+    spec: "Plant specification — minimum 2.6",
+    kinds: o.kinds,
+    layout: "trials",
+    trials: 2,
+    params: [
+      { key: "min", label: "Minimum specific gravity", default: "2.6", options: [["2.5", "2.5"], ["2.55", "2.55"], ["2.6", "2.6"], ["2.65", "2.65"]] },
+      { key: "basis", label: "Limit applies to", default: "od", options: [["od", "Oven-dry basis"], ["ssd", "Saturated surface-dry basis"]] },
+    ],
+    fields: [
+      { key: "b", label: "Pycnometer + aggregate + water (B)", unit: "g", input: true },
+      { key: "c", label: "Pycnometer + water (C)", unit: "g", input: true },
+      { key: "a", label: "Saturated surface-dry aggregate in air (A)", unit: "g", input: true },
+      { key: "d", label: "Oven-dried sample (D)", unit: "g", input: true },
+      { key: "ssd", label: "SG (SSD) = A / (A − (B − C))", dp: 2 },
+      { key: "od", label: "SG (oven-dry) = D / (A − (B − C))", dp: 2 },
+      { key: "app", label: "Apparent SG = D / (D − (B − C))", dp: 2 },
+    ],
+    compute(readings, params) {
+      const out = blank();
+      const min = Number((params && params.min) || 2.6);
+      const basis = (params && params.basis) || "od";
+      const S = { ssd: [], od: [], app: [] };
+      for (const k of trialKeys(2)) {
+        const B = g(readings, k, "b"), C = g(readings, k, "c"), A = g(readings, k, "a"), D = g(readings, k, "d");
+        if ([A, B, C, D].some((x) => x === null)) continue;
+        const vol = A - (B - C);
+        const volApp = D - (B - C);
+        if (vol <= 0 || volApp <= 0 || D <= 0) { out.errors.push("Trial " + k.slice(1) + ": the weights do not give a positive volume — check B and C."); continue; }
+        if (D > A) { out.errors.push("Trial " + k.slice(1) + ": the oven-dry weight is more than the SSD weight."); continue; }
+        const row = { ssd: A / vol, od: D / vol, app: D / volApp };
+        out.cells[k] = { ssd: rnd(row.ssd, 2), od: rnd(row.od, 2), app: rnd(row.app, 2) };
+        for (const key of Object.keys(S)) S[key].push(row[key]);
+        if (rnd(row[basis], 2) < min) out.warnings.push("Trial " + k.slice(1) + ": " + (basis === "od" ? "oven-dry" : "SSD") + " SG is " + fmt(row[basis], 2) + ", below " + min + ".");
+      }
+      if (!S.ssd.length) { out.errors.push("Enter at least one complete trial."); return out; }
+      const lim = "≥ " + min;
+      out.results.push({ label: "Specific gravity (SSD)", value: rnd(avg(S.ssd), 2), dp: 2, limit: basis === "ssd" ? lim : null, ok: basis === "ssd" ? rnd(avg(S.ssd), 2) >= min : null });
+      out.results.push({ label: "Specific gravity (oven-dry)", value: rnd(avg(S.od), 2), dp: 2, limit: basis === "od" ? lim : null, ok: basis === "od" ? rnd(avg(S.od), 2) >= min : null });
+      out.results.push({ label: "Apparent specific gravity", value: rnd(avg(S.app), 2), dp: 2, ok: null });
+      if (out.errors.length) return out;
+      out.verdict = decide(out.results);
+      out.summary = "SG " + fmt(avg(S[basis]), 2) + " (" + (basis === "od" ? "oven-dry" : "SSD") + ", min " + min + ")";
+      return out;
+    },
+  };
+}
+
+// Water absorption from an SSD weight (a) and an oven-dry weight (b).
+function absorption(readings) {
+  const out = blank();
+  const vals = [];
+  for (const k of trialKeys(2)) {
+    const a = g(readings, k, "a");
+    const b = g(readings, k, "b");
+    if (a === null || b === null || b <= 0) continue;
+    if (b > a) { out.errors.push("Trial " + k.slice(1) + ": the oven-dry weight is more than the SSD weight."); continue; }
+    const wa = ((a - b) / b) * 100;
+    out.cells[k] = { wa: rnd(wa, 2) };
+    vals.push(wa);
+  }
+  if (!vals.length) { out.errors.push("Enter at least one trial."); return out; }
+  const a = avg(vals);
+  out.results.push({ label: "Average water absorption", value: rnd(a, 2), unit: "%", dp: 2, limit: "Not specified", ok: null });
+  if (out.errors.length) return out;
+  out.verdict = "recorded";
+  out.summary = fmt(a, 2) + "%";
   return out;
 }
 
@@ -281,7 +427,7 @@ export const TEST_DEFS = {
     code: "fines_75",
     label: "Material finer than 75 µm (wash)",
     short: "Finer than 75 µm",
-    form: null,
+    form: "OORM-QC-21",
     method: "IS 2386 (Part 1):1963",
     spec: "IS 383:2016, Table 2",
     kinds: ["coarse", "fine"],
@@ -324,8 +470,9 @@ export const TEST_DEFS = {
 
   flaky_elong: {
     code: "flaky_elong",
-    label: "Flakiness & elongation index (combined)",
+    label: "Flakiness & elongation index (combined — old)",
     short: "Flakiness + elongation",
+    retired: true,
     form: "OORM-QC-04 / QC-03",
     method: "IS 2386 (Part 1):1963",
     spec: "IS 383:2016, cl 5.3 — combined index ≤ 40%",
@@ -370,6 +517,25 @@ export const TEST_DEFS = {
       return out;
     },
   },
+
+  // Round 196 — the user asked for flakiness and elongation as SEPARATE tests,
+  // matching their two paper forms (QC-04 and QC-03). IS 383:2016 limits the
+  // two together (combined index ≤ 40%), so each card looks for its partner:
+  // the server passes the partner card's index in ctx.companion (same GRN
+  // first, else the same supplier's latest within 60 days). With a partner the
+  // card is judged on the combined figure; without one it is judged on its own
+  // index against 40% and says the combined check is still to come — whichever
+  // of the two is filed second carries the combined verdict.
+  flakiness: indexTest({
+    code: "flakiness", label: "Flakiness index", short: "Flakiness index", form: "OORM-QC-04",
+    field: "flaky", fieldLabel: "Wt. of fraction passing thickness gauge", other: "elongation", otherLabel: "elongation",
+    rest: "Non-flaky (P.C passing)",
+  }),
+  elongation: indexTest({
+    code: "elongation", label: "Elongation index", short: "Elongation index", form: "OORM-QC-03",
+    field: "elong", fieldLabel: "Wt. of fraction retained on length gauge", other: "flakiness", otherLabel: "flakiness",
+    rest: "Not elongated (P.C passing)",
+  }),
 
   impact: {
     code: "impact",
@@ -432,77 +598,33 @@ export const TEST_DEFS = {
       { key: "wa", label: "Water absorption = (A − B) / B × 100", unit: "%", dp: 2 },
     ],
     compute(readings) {
-      const out = blank();
-      const vals = [];
-      for (const k of trialKeys(2)) {
-        const a = g(readings, k, "a");
-        const b = g(readings, k, "b");
-        if (a === null || b === null || b <= 0) continue;
-        if (b > a) { out.errors.push("Trial " + k.slice(1) + ": the oven-dry weight is more than the SSD weight."); continue; }
-        const wa = ((a - b) / b) * 100;
-        out.cells[k] = { wa: rnd(wa, 2) };
-        vals.push(wa);
-      }
-      if (!vals.length) { out.errors.push("Enter at least one trial."); return out; }
-      const a = avg(vals);
-      out.results.push({ label: "Average water absorption", value: rnd(a, 2), unit: "%", dp: 2, limit: "Not specified", ok: null });
-      if (out.errors.length) return out;
-      out.verdict = "recorded";
-      out.summary = fmt(a, 2) + "%";
-      return out;
+      return absorption(readings);
     },
   },
 
-  sg_fine: {
-    code: "sg_fine",
-    label: "Specific gravity & water absorption of fine aggregate",
-    short: "Specific gravity",
-    form: "OORM-QC-10",
+  // Round 196 — specific gravity and water absorption of fine aggregate are
+  // two separate tests now (user's request); coarse aggregate gets its own
+  // specific gravity test on the same pycnometer form (OORM-QC-10).
+  sg_fine: sgTest({ code: "sg_fine", label: "Specific gravity of fine aggregate", kinds: ["fine"] }),
+  sg_coarse: sgTest({ code: "sg_coarse", label: "Specific gravity of coarse aggregate", kinds: ["coarse"] }),
+
+  water_abs_fine: {
+    code: "water_abs_fine",
+    label: "Water absorption of fine aggregate",
+    short: "Water absorption",
+    form: null,
     method: "IS 2386 (Part 3):1963",
-    spec: "Plant specification",
+    spec: "IS 383:2016 — not specified; used in mix design",
     kinds: ["fine"],
     layout: "trials",
     trials: 2,
-    params: [
-      { key: "min", label: "Minimum specific gravity", default: "2.6", options: [["2.5", "2.5"], ["2.55", "2.55"], ["2.6", "2.6"], ["2.65", "2.65"]] },
-      { key: "basis", label: "Limit applies to", default: "od", options: [["od", "Oven-dry basis"], ["ssd", "Saturated surface-dry basis"]] },
-    ],
     fields: [
-      { key: "b", label: "Pycnometer + aggregate + water (B)", unit: "g", input: true },
-      { key: "c", label: "Pycnometer + water (C)", unit: "g", input: true },
-      { key: "a", label: "Saturated surface-dry aggregate in air (A)", unit: "g", input: true },
-      { key: "d", label: "Oven-dried sample (D)", unit: "g", input: true },
-      { key: "ssd", label: "SG (SSD) = A / (A − (B − C))", dp: 2 },
-      { key: "od", label: "SG (oven-dry) = D / (A − (B − C))", dp: 2 },
-      { key: "app", label: "Apparent SG = D / (D − (B − C))", dp: 2 },
+      { key: "a", label: "Saturated surface-dry sample (A)", unit: "g", input: true },
+      { key: "b", label: "Oven-dried sample (D)", unit: "g", input: true },
       { key: "wa", label: "Water absorption = (A − D) / D × 100", unit: "%", dp: 2 },
     ],
-    compute(readings, params) {
-      const out = blank();
-      const min = Number((params && params.min) || 2.6);
-      const basis = (params && params.basis) || "od";
-      const S = { ssd: [], od: [], app: [], wa: [] };
-      for (const k of trialKeys(2)) {
-        const B = g(readings, k, "b"), C = g(readings, k, "c"), A = g(readings, k, "a"), D = g(readings, k, "d");
-        if ([A, B, C, D].some((x) => x === null)) continue;
-        const vol = A - (B - C);
-        const volApp = D - (B - C);
-        if (vol <= 0 || volApp <= 0 || D <= 0) { out.errors.push("Trial " + k.slice(1) + ": the weights do not give a positive volume — check B and C."); continue; }
-        const row = { ssd: A / vol, od: D / vol, app: D / volApp, wa: ((A - D) / D) * 100 };
-        out.cells[k] = { ssd: rnd(row.ssd, 2), od: rnd(row.od, 2), app: rnd(row.app, 2), wa: rnd(row.wa, 2) };
-        for (const key of Object.keys(S)) S[key].push(row[key]);
-        if (rnd(row[basis], 2) < min) out.warnings.push("Trial " + k.slice(1) + ": " + (basis === "od" ? "oven-dry" : "SSD") + " SG is " + fmt(row[basis], 2) + ", below " + min + ".");
-      }
-      if (!S.ssd.length) { out.errors.push("Enter at least one complete trial."); return out; }
-      const lim = "≥ " + min;
-      out.results.push({ label: "Specific gravity (SSD)", value: rnd(avg(S.ssd), 2), dp: 2, limit: basis === "ssd" ? lim : null, ok: basis === "ssd" ? rnd(avg(S.ssd), 2) >= min : null });
-      out.results.push({ label: "Specific gravity (oven-dry)", value: rnd(avg(S.od), 2), dp: 2, limit: basis === "od" ? lim : null, ok: basis === "od" ? rnd(avg(S.od), 2) >= min : null });
-      out.results.push({ label: "Apparent specific gravity", value: rnd(avg(S.app), 2), dp: 2, ok: null });
-      out.results.push({ label: "Water absorption", value: rnd(avg(S.wa), 2), unit: "%", dp: 2, ok: null });
-      if (out.errors.length) return out;
-      out.verdict = decide(out.results);
-      out.summary = "SG " + fmt(avg(S[basis]), 2) + " (" + (basis === "od" ? "oven-dry" : "SSD") + ", min " + min + ") · absorption " + fmt(avg(S.wa), 2) + "%";
-      return out;
+    compute(readings) {
+      return absorption(readings);
     },
   },
 
@@ -749,8 +871,9 @@ export const TEST_DEFS = {
 
   admixture: {
     code: "admixture",
-    label: "Admixture uniformity check",
+    label: "Admixture uniformity check (old)",
     short: "Admixture check",
+    retired: true,
     form: null,
     method: "IS 9103:1999",
     spec: "IS 9103 — against the supplier's declared values",
@@ -778,6 +901,137 @@ export const TEST_DEFS = {
     },
   },
 
+  // Round 196 — specific gravity and solid content of admixture as their own
+  // tests (user's request), each against the supplier's declared value.
+  admix_sg: {
+    code: "admix_sg",
+    label: "Specific gravity of admixture",
+    short: "Admixture SG",
+    form: null,
+    method: "IS 9103:1999 (density bottle)",
+    spec: "IS 9103 — within ± 0.02 of the value declared by the supplier",
+    kinds: ["admixture"],
+    layout: "trials",
+    trials: 2,
+    head: [{ key: "declared", label: "Specific gravity declared by the supplier", type: "number" }],
+    fields: [
+      { key: "w1", label: "Empty density bottle (W1)", unit: "g", input: true },
+      { key: "w2", label: "Bottle + admixture (W2)", unit: "g", input: true },
+      { key: "w3", label: "Bottle + water (W3)", unit: "g", input: true },
+      { key: "sg", label: "Specific gravity = (W2 − W1) / (W3 − W1)", dp: 3 },
+    ],
+    compute(readings) {
+      const out = blank();
+      const vals = [];
+      for (const k of trialKeys(2)) {
+        const w1 = g(readings, k, "w1"), w2 = g(readings, k, "w2"), w3 = g(readings, k, "w3");
+        if (w1 === null || w2 === null || w3 === null) continue;
+        if (w3 <= w1 || w2 <= w1) { out.errors.push("Trial " + k.slice(1) + ": a filled bottle weighs no more than the empty one."); continue; }
+        const sg = (w2 - w1) / (w3 - w1);
+        out.cells[k] = { sg: rnd(sg, 3) };
+        vals.push(sg);
+      }
+      if (!vals.length) { out.errors.push("Enter at least one trial."); return out; }
+      const a = avg(vals);
+      const dec = n(h(readings, "declared"));
+      if (dec === null) out.errors.push("Enter the specific gravity the supplier declares.");
+      out.results.push({ label: "Specific gravity", value: rnd(a, 3), dp: 3, limit: dec === null ? "declared ± 0.02" : dec + " ± 0.02", ok: dec === null ? null : Math.abs(rnd(a, 3) - dec) <= 0.02 + 1e-9 });
+      if (out.errors.length) return out;
+      out.verdict = decide(out.results);
+      out.summary = fmt(a, 3) + " (declared " + dec + ")";
+      return out;
+    },
+  },
+
+  admix_solids: {
+    code: "admix_solids",
+    label: "Solid content of admixture",
+    short: "Admixture solids",
+    form: null,
+    method: "IS 9103:1999 (dry material content, oven at 105 °C)",
+    spec: "IS 9103 — within ± 5% of the value declared by the supplier",
+    kinds: ["admixture"],
+    layout: "trials",
+    trials: 2,
+    head: [{ key: "declared", label: "Solid content declared by the supplier", unit: "%", type: "number" }],
+    fields: [
+      { key: "w1", label: "Empty dish (W1)", unit: "g", input: true },
+      { key: "w2", label: "Dish + admixture before drying (W2)", unit: "g", input: true },
+      { key: "w3", label: "Dish + residue after drying (W3)", unit: "g", input: true },
+      { key: "pct", label: "Solid content = (W3 − W1) / (W2 − W1) × 100", unit: "%", dp: 2 },
+    ],
+    compute(readings) {
+      const out = blank();
+      const vals = [];
+      for (const k of trialKeys(2)) {
+        const w1 = g(readings, k, "w1"), w2 = g(readings, k, "w2"), w3 = g(readings, k, "w3");
+        if (w1 === null || w2 === null || w3 === null) continue;
+        if (w2 <= w1) { out.errors.push("Trial " + k.slice(1) + ": dish + admixture must weigh more than the empty dish."); continue; }
+        if (w3 < w1 || w3 > w2) { out.errors.push("Trial " + k.slice(1) + ": the dried weight must lie between the empty dish and the wet weight."); continue; }
+        const pct = ((w3 - w1) / (w2 - w1)) * 100;
+        out.cells[k] = { pct: rnd(pct, 2) };
+        vals.push(pct);
+      }
+      if (!vals.length) { out.errors.push("Enter at least one trial."); return out; }
+      const a = avg(vals);
+      const dec = n(h(readings, "declared"));
+      if (dec === null) out.errors.push("Enter the solid content the supplier declares.");
+      const lo = dec === null ? null : dec * 0.95, hi = dec === null ? null : dec * 1.05;
+      out.results.push({ label: "Solid content", value: rnd(a, 2), unit: "%", dp: 2, limit: dec === null ? "declared ± 5%" : fmt(lo, 2) + " – " + fmt(hi, 2) + "% (declared " + dec + "%)", ok: dec === null ? null : rnd(a, 2) >= rnd(lo, 2) && rnd(a, 2) <= rnd(hi, 2) });
+      if (out.errors.length) return out;
+      out.verdict = decide(out.results);
+      out.summary = fmt(a, 2) + "% (declared " + dec + "%)";
+      return out;
+    },
+  },
+
+  // Round 196 — the lab's daily curing tank log (IS 516: water at 27 ± 2 °C),
+  // from the plant's own monitoring sheet. Not a raw material: its plan and
+  // cards carry no material (material_id NULL) and it is always scheduled.
+  curing_temp: {
+    code: "curing_temp",
+    label: "Curing tank water temperature",
+    short: "Curing tank temperature",
+    form: null,
+    method: "IS 516 (Part 1)",
+    spec: "Curing water 27 ± 2 °C",
+    kinds: ["lab"],
+    layout: "rows",
+    fields: [
+      { key: "time", label: "Time", input: true, type: "text" },
+      { key: "t1", label: "Tank 1", unit: "°C", input: true },
+      { key: "t2", label: "Tank 2", unit: "°C", input: true },
+      { key: "t3", label: "Tank 3", unit: "°C", input: true },
+      { key: "chk", label: "Check", text: true },
+    ],
+    rows() {
+      return [1, 2, 3].map((i) => ({ key: "r" + i, label: "Reading " + i }));
+    },
+    compute(readings) {
+      const out = blank();
+      let count = 0, worst = null;
+      for (const r of this.rows()) {
+        const temps = ["t1", "t2", "t3"].map((t) => [t, g(readings, r.key, t)]).filter(([, v]) => v !== null);
+        if (!temps.length) continue;
+        let ok = true;
+        for (const [t, v] of temps) {
+          count++;
+          if (v < 25 || v > 29) {
+            ok = false;
+            if (!worst || Math.abs(v - 27) > Math.abs(worst.v - 27)) worst = { v, tank: t.slice(1), row: r.label };
+          }
+        }
+        out.cells[r.key] = { chk: ok ? "Within" : "Outside" };
+      }
+      if (!count) { out.errors.push("Enter at least one temperature."); return out; }
+      out.results.push({ label: "Readings taken", value: count, dp: 0, ok: null });
+      out.results.push({ label: "All within 27 ± 2 °C", value: worst ? "No — tank " + worst.tank + " at " + worst.v + " °C" : "Yes", text: true, limit: "25 – 29 °C", ok: !worst });
+      out.verdict = worst ? "non_conforming" : "conforms";
+      out.summary = worst ? "Tank " + worst.tank + " at " + worst.v + " °C (" + worst.row.toLowerCase() + ") — outside 27 ± 2 °C" : count + " readings within 27 ± 2 °C";
+      return out;
+    },
+  },
+
   external: {
     code: "external",
     label: "External laboratory test",
@@ -785,7 +1039,7 @@ export const TEST_DEFS = {
     form: null,
     method: "As per the external laboratory's certificate",
     spec: "See certificate",
-    kinds: ["coarse", "fine", "cement", "admixture", "any"],
+    kinds: ["coarse", "fine", "cement", "admixture", "lab", "any"],
     layout: "none",
     params: [
       { key: "name", label: "Test", default: "Los Angeles abrasion value", free: true },
@@ -814,12 +1068,18 @@ export const TEST_DEFS = {
   },
 };
 
+// Offered for new plans and cards, in screen order. Retired tests are left out.
 export const TEST_ORDER = [
-  "sieve_coarse", "flaky_elong", "impact", "water_abs_coarse", "bulk_density", "fines_75",
-  "sieve_fine", "sg_fine", "moisture",
+  "sieve_coarse", "flakiness", "elongation", "impact", "sg_coarse", "water_abs_coarse", "bulk_density", "fines_75",
+  "sieve_fine", "sg_fine", "water_abs_fine", "moisture",
   "cement_fineness", "cement_setting", "cement_soundness", "cement_strength",
-  "admixture", "external",
+  "admix_sg", "admix_solids", "curing_temp", "external",
 ];
+
+// The test whose result completes this one's limit (flakiness <-> elongation).
+export function companionOf(code) {
+  return TEST_DEFS[code] && TEST_DEFS[code].companion ? TEST_DEFS[code].companion : null;
+}
 
 export function testLabel(code, params) {
   const d = TEST_DEFS[code];
@@ -845,11 +1105,11 @@ export function rowsFor(code, params) {
   return [];
 }
 
-export function computeTest(code, readings, params) {
+export function computeTest(code, readings, params, ctx) {
   const d = TEST_DEFS[code];
   if (!d) return { ...blank(), errors: ["Unknown test."] };
   try {
-    return d.compute(readings || { head: {}, grid: {} }, { ...defaultParams(code), ...(params || {}) });
+    return d.compute(readings || { head: {}, grid: {} }, { ...defaultParams(code), ...(params || {}) }, ctx || {});
   } catch (e) {
     return { ...blank(), errors: ["Could not calculate: " + (e && e.message ? e.message : e)] };
   }
@@ -882,10 +1142,16 @@ export function periodLabel(days) {
 // minimums (high rate, then low rate once `low_after` results in a row
 // conform); cement and admixture are per consignment, the usual RMC practice.
 export const STANDARD_PLANS = {
+  // Not a material: the lab's own daily checks (plan with no material).
+  lab: [
+    { test_code: "curing_temp", params: {}, trigger: "scheduled", high_days: 1, low_days: null, low_after: null, due_hours: 12 },
+  ],
   coarse_20mm: [
     { test_code: "sieve_coarse", params: { grading: "20s" }, trigger: "period", high_days: 7, low_days: 30, low_after: 8, due_hours: 24 },
-    { test_code: "flaky_elong", params: {}, trigger: "period", high_days: 14, low_days: 182, low_after: 3, due_hours: 48 },
+    { test_code: "flakiness", params: {}, trigger: "period", high_days: 14, low_days: 182, low_after: 3, due_hours: 48 },
+    { test_code: "elongation", params: {}, trigger: "period", high_days: 14, low_days: 182, low_after: 3, due_hours: 48 },
     { test_code: "impact", params: { use: "general" }, trigger: "period", high_days: 30, low_days: null, low_after: null, due_hours: 48 },
+    { test_code: "sg_coarse", params: { min: "2.6", basis: "od" }, trigger: "period", high_days: 7, low_days: 91, low_after: 4, due_hours: 72 },
     { test_code: "water_abs_coarse", params: {}, trigger: "period", high_days: 7, low_days: 91, low_after: 4, due_hours: 72 },
     { test_code: "bulk_density", params: {}, trigger: "period", high_days: 30, low_days: 182, low_after: 4, due_hours: 72 },
     { test_code: "fines_75", params: { kind: "coarse_crushed" }, trigger: "period", high_days: 30, low_days: 91, low_after: 4, due_hours: 72 },
@@ -894,8 +1160,10 @@ export const STANDARD_PLANS = {
   ],
   coarse_12_5mm: [
     { test_code: "sieve_coarse", params: { grading: "12.5s" }, trigger: "period", high_days: 7, low_days: 30, low_after: 8, due_hours: 24 },
-    { test_code: "flaky_elong", params: {}, trigger: "period", high_days: 14, low_days: 182, low_after: 3, due_hours: 48 },
+    { test_code: "flakiness", params: {}, trigger: "period", high_days: 14, low_days: 182, low_after: 3, due_hours: 48 },
+    { test_code: "elongation", params: {}, trigger: "period", high_days: 14, low_days: 182, low_after: 3, due_hours: 48 },
     { test_code: "impact", params: { use: "general" }, trigger: "period", high_days: 30, low_days: null, low_after: null, due_hours: 48 },
+    { test_code: "sg_coarse", params: { min: "2.6", basis: "od" }, trigger: "period", high_days: 7, low_days: 91, low_after: 4, due_hours: 72 },
     { test_code: "water_abs_coarse", params: {}, trigger: "period", high_days: 7, low_days: 91, low_after: 4, due_hours: 72 },
     { test_code: "bulk_density", params: {}, trigger: "period", high_days: 30, low_days: 182, low_after: 4, due_hours: 72 },
     { test_code: "external", params: { name: "Soundness (sodium sulphate)", limit: "≤ 12% loss" }, trigger: "period", high_days: 365, low_days: null, low_after: null, due_hours: 336, hold_stock: true },
@@ -904,6 +1172,7 @@ export const STANDARD_PLANS = {
     { test_code: "sieve_fine", params: { sand: "crushed" }, trigger: "period", high_days: 7, low_days: 30, low_after: 8, due_hours: 24 },
     { test_code: "fines_75", params: { kind: "fine_crushed" }, trigger: "period", high_days: 30, low_days: 91, low_after: 4, due_hours: 48 },
     { test_code: "sg_fine", params: { min: "2.6", basis: "od" }, trigger: "period", high_days: 7, low_days: 91, low_after: 4, due_hours: 72 },
+    { test_code: "water_abs_fine", params: {}, trigger: "period", high_days: 7, low_days: 91, low_after: 4, due_hours: 72 },
     { test_code: "bulk_density", params: {}, trigger: "period", high_days: 30, low_days: 182, low_after: 4, due_hours: 72 },
     { test_code: "moisture", params: {}, trigger: "scheduled", high_days: 1, low_days: null, low_after: null, due_hours: 8 },
     { test_code: "external", params: { name: "Soundness (sodium sulphate)", limit: "≤ 10% loss" }, trigger: "period", high_days: 365, low_days: null, low_after: null, due_hours: 336, hold_stock: true },
@@ -918,6 +1187,7 @@ export const STANDARD_PLANS = {
     { test_code: "external", params: { name: "Fly ash (IS 3812) properties", limit: "IS 3812 (Part 1)" }, trigger: "period", high_days: 91, low_days: null, low_after: null, due_hours: 336 },
   ],
   admixture: [
-    { test_code: "admixture", params: {}, trigger: "every_grn", high_days: null, low_days: null, low_after: null, due_hours: 48 },
+    { test_code: "admix_sg", params: {}, trigger: "every_grn", high_days: null, low_days: null, low_after: null, due_hours: 48 },
+    { test_code: "admix_solids", params: {}, trigger: "every_grn", high_days: null, low_days: null, low_after: null, due_hours: 48 },
   ],
 };

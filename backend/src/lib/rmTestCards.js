@@ -169,12 +169,95 @@ export async function loadStandardPlan(db, material, userId) {
 // (ensureSeeded, below) — by then its mix component is usually set.
 export async function migrateRmLabTests(db, log) {
   await db.query(RM_TEST_SCHEMA_SQL);
+  // Round 196 — the lab's own checks (the curing tank log) belong to no
+  // material, so a plan and its cards may have none. Relaxing a NOT NULL is
+  // additive: every existing row already has a material and keeps it.
+  await db.query(`ALTER TABLE rm_test_plans ALTER COLUMN material_id DROP NOT NULL`);
+  await db.query(`ALTER TABLE rm_test_cards ALTER COLUMN material_id DROP NOT NULL`);
   await db.query(`CREATE TABLE IF NOT EXISTS app_migration_marks (mark VARCHAR(80) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
   const { rows: done } = await db.query(`SELECT 1 FROM app_migration_marks WHERE mark = 'r194_rm_test_plans'`);
   if (done.length) {
     log.push("Round 194 — raw material test tables in place; test plans left as the Administrator has them.");
-    return;
+  } else {
+    await seedRound194(db, log);
   }
+  await splitTestsRound196(db, log);
+}
+
+// Round 196 — the user's changes to the test plans (9 Oct 2026), applied ONCE
+// to plans that already exist; a fresh installation gets them from
+// STANDARD_PLANS directly.
+//   - flakiness and elongation become two tests: each "flaky_elong" plan row
+//     becomes "flakiness" (QC-04) and gains an "elongation" twin (QC-03) with
+//     the same frequency settings;
+//   - the admixture check becomes "specific gravity" + "solid content";
+//   - coarse aggregates gain specific gravity (QC-10); fine aggregate gains a
+//     separate water absorption test;
+//   - finer than 75 µm takes the plant's form number QC-21;
+//   - the laboratory gets its daily curing tank temperature check.
+// Cards already issued under the old combined tests stay as they are and can
+// still be finished and printed (those tests are kept, marked retired).
+async function splitTestsRound196(db, log) {
+  const { rows: done } = await db.query(`SELECT 1 FROM app_migration_marks WHERE mark = 'r196_split_tests'`);
+  if (done.length) return;
+  const copyCols = `trigger, high_days, low_days, low_after, hold_stock, due_hours, is_active`;
+  const changes = [];
+  // flaky_elong -> flakiness + elongation
+  const { rows: fe } = await db.query(`SELECT * FROM rm_test_plans WHERE test_code = 'flaky_elong'`);
+  for (const p of fe) {
+    await db.query(`UPDATE rm_test_plans SET test_code = 'flakiness', form_no = 'OORM-QC-04', params = '{}'::jsonb WHERE id = $1`, [p.id]);
+    await db.query(
+      `INSERT INTO rm_test_plans (material_id, test_code, params, form_no, ${copyCols}, sort_order)
+       SELECT material_id, 'elongation', '{}'::jsonb, 'OORM-QC-03', ${copyCols}, sort_order FROM rm_test_plans WHERE id = $1
+        AND NOT EXISTS (SELECT 1 FROM rm_test_plans q WHERE q.material_id IS NOT DISTINCT FROM $2 AND q.test_code = 'elongation')`,
+      [p.id, p.material_id]
+    );
+  }
+  if (fe.length) changes.push(`${fe.length} flakiness & elongation plan(s) split in two`);
+  // admixture -> admix_sg + admix_solids
+  const { rows: ad } = await db.query(`SELECT * FROM rm_test_plans WHERE test_code = 'admixture'`);
+  for (const p of ad) {
+    await db.query(`UPDATE rm_test_plans SET test_code = 'admix_sg', params = '{}'::jsonb WHERE id = $1`, [p.id]);
+    await db.query(
+      `INSERT INTO rm_test_plans (material_id, test_code, params, form_no, ${copyCols}, sort_order)
+       SELECT material_id, 'admix_solids', '{}'::jsonb, NULL, ${copyCols}, sort_order + 1 FROM rm_test_plans WHERE id = $1
+        AND NOT EXISTS (SELECT 1 FROM rm_test_plans q WHERE q.material_id IS NOT DISTINCT FROM $2 AND q.test_code = 'admix_solids')`,
+      [p.id, p.material_id]
+    );
+  }
+  if (ad.length) changes.push(`${ad.length} admixture plan(s) split into specific gravity + solid content`);
+  // New tests on materials that already have the old companions.
+  const add = async (newCode, alongside, params, label) => {
+    const r = await db.query(
+      `INSERT INTO rm_test_plans (material_id, test_code, params, form_no, trigger, high_days, low_days, low_after, hold_stock, due_hours, is_active, sort_order)
+       SELECT DISTINCT ON (p.material_id) p.material_id, $1::varchar, $2::jsonb, $3::varchar, 'period', 7, 91, 4, false, 72, true, p.sort_order
+         FROM rm_test_plans p
+        WHERE p.test_code = $4::varchar AND p.material_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM rm_test_plans q WHERE q.material_id = p.material_id AND q.test_code = $1::varchar)
+        ORDER BY p.material_id, p.id`,
+      [newCode, JSON.stringify(params), TEST_DEFS[newCode].form, alongside]
+    );
+    if (r.rowCount) changes.push(`${label} added to ${r.rowCount} material(s)`);
+  };
+  await add("sg_coarse", "water_abs_coarse", { min: "2.6", basis: "od" }, "specific gravity of coarse aggregate");
+  await add("water_abs_fine", "sg_fine", {}, "water absorption of fine aggregate");
+  await db.query(`UPDATE rm_test_plans SET form_no = 'OORM-QC-21' WHERE test_code = 'fines_75' AND form_no IS NULL`);
+  // The laboratory's own daily check.
+  const { rows: lab } = await db.query(`SELECT 1 FROM rm_test_plans WHERE material_id IS NULL AND test_code = 'curing_temp'`);
+  if (!lab.length) {
+    const p = STANDARD_PLANS.lab[0];
+    await db.query(
+      `INSERT INTO rm_test_plans (material_id, test_code, params, form_no, trigger, high_days, due_hours)
+       VALUES (NULL, $1, '{}'::jsonb, NULL, $2, $3, $4)`,
+      [p.test_code, p.trigger, p.high_days, p.due_hours]
+    );
+    changes.push("daily curing tank temperature check added for the laboratory");
+  }
+  await db.query(`INSERT INTO app_migration_marks (mark) VALUES ('r196_split_tests') ON CONFLICT DO NOTHING`);
+  log.push(`Schema migration applied (Round 196 — test plan changes): ${changes.length ? changes.join("; ") : "nothing to change"}.`);
+}
+
+async function seedRound194(db, log) {
   const { rows: mats } = await db.query(
     `SELECT m.id, m.name, m.mix_component FROM rm_materials m
       WHERE m.is_active AND NOT EXISTS (SELECT 1 FROM rm_test_plans p WHERE p.material_id = m.id)
@@ -201,7 +284,7 @@ export async function migrateRmLabTests(db, log) {
 function sameTestSql(alias = "c") {
   // The identity of "this test for this material and supplier" — external
   // tests are told apart by their name, everything else by its code.
-  return `${alias}.test_code = $1 AND ${alias}.material_id = $2 AND ${alias}.supplier_id IS NOT DISTINCT FROM $3
+  return `${alias}.test_code = $1 AND ${alias}.material_id IS NOT DISTINCT FROM $2 AND ${alias}.supplier_id IS NOT DISTINCT FROM $3
           AND COALESCE(${alias}.params->>'name', '') = $4`;
 }
 
@@ -332,8 +415,8 @@ export async function ensureScheduledCards() {
   if (Date.now() - lastEnsure < 60 * 1000) return;
   lastEnsure = Date.now();
   const { rows: plans } = await query(
-    `SELECT p.* FROM rm_test_plans p JOIN rm_materials m ON m.id = p.material_id
-      WHERE p.is_active AND p.trigger = 'scheduled' AND m.is_active`
+    `SELECT p.* FROM rm_test_plans p LEFT JOIN rm_materials m ON m.id = p.material_id
+      WHERE p.is_active AND p.trigger = 'scheduled' AND (p.material_id IS NULL OR m.is_active)`
   );
   for (const plan of plans) {
     if (!TEST_DEFS[plan.test_code]) continue;
@@ -373,4 +456,25 @@ export async function ensureScheduledCards() {
 // For tests: forget the throttle.
 export function resetScheduleThrottle() {
   lastEnsure = 0;
+}
+
+// Round 196 — flakiness and elongation are two cards whose limit is shared
+// (combined ≤ 40%). The partner is the other test's latest computed index for
+// the same material and supplier: the same GRN first, else the most recent in
+// the last 60 days. Closed cards and the card itself never count.
+export async function companionFor(db, card) {
+  const other = TEST_DEFS[card.test_code] && TEST_DEFS[card.test_code].companion;
+  if (!other) return null;
+  const { rows } = await db.query(
+    `SELECT c.id, (c.result->>'index')::numeric AS index,
+            'RMT/' || to_char(c.created_at, 'YYMM') || '/' || lpad(c.id::text, 4, '0') AS report_no
+       FROM rm_test_cards c
+      WHERE c.test_code = $1 AND c.material_id IS NOT DISTINCT FROM $2 AND c.supplier_id IS NOT DISTINCT FROM $3
+        AND c.id <> $4 AND c.status <> 'closed' AND c.result->>'index' IS NOT NULL
+        AND (c.receipt_id IS NOT DISTINCT FROM $5 OR c.created_at > now() - interval '60 days')
+      ORDER BY (c.receipt_id IS NOT DISTINCT FROM $5) DESC, c.created_at DESC
+      LIMIT 1`,
+    [other, card.material_id, card.supplier_id, card.id, card.receipt_id]
+  );
+  return rows[0] ? { index: Number(rows[0].index), report_no: rows[0].report_no, card_id: rows[0].id } : null;
 }

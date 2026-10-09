@@ -36,7 +36,7 @@ const FOOTER_Y = 285;
 export function pdfText(s) {
   if (s === null || s === undefined) return "";
   return String(s)
-    .replace(/≤/g, "<=").replace(/≥/g, ">=")
+    .replace(/≤/g, "<=").replace(/≥/g, ">=").replace(/±/g, "+/-").replace(/ ?°C/g, " deg C").replace(/°/g, " deg")
     .replace(/µm/g, " micron").replace(/µ/g, "micro")
     .replace(/m²/g, "m2").replace(/mm²/g, "mm2").replace(/²/g, "2").replace(/³/g, "3")
     .replace(/₂/g, "2").replace(/₄/g, "4")
@@ -110,7 +110,7 @@ function drawHeader(doc, card, def, logoData) {
 
   const specs = [
     ["Material", card.material_name],
-    ["Supplier / source", card.supplier_name || (card.source === "scheduled" ? "Stock pile (scheduled)" : "-")],
+    ["Supplier / source", card.supplier_name || (!card.material_id ? "Laboratory" : card.source === "scheduled" ? "Stock pile (scheduled)" : "-")],
     ["Truck no.", card.vehicle_number || "-"],
     ["GRN / received", card.receipt_id ? `R-${String(card.receipt_id).padStart(5, "0")}  ${fmtDate(card.received_date)}` : "-"],
     ["Sampled by", card.sampled_by || "-"],
@@ -187,7 +187,7 @@ function readingsTable(card, def) {
   }
   if (def.layout === "rows") {
     return {
-      head: [[def.code.startsWith("sieve") ? "IS sieve" : def.code === "cement_strength" ? "Age" : "Fraction", ...def.fields.map(label)]],
+      head: [[def.code.startsWith("sieve") ? "IS sieve" : def.code === "cement_strength" ? "Age" : ["moisture", "curing_temp"].includes(def.code) ? "Reading" : "Fraction", ...def.fields.map(label)]],
       body: rows.map((r) => [pdfText(r.label), ...def.fields.map((f) => val(r, f))]),
       firstColWidth: 26,
     };

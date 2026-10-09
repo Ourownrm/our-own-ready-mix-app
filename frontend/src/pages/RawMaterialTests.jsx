@@ -21,7 +21,8 @@ import { istDay, daysAgoStr } from "../lib/istDate.js";
 import {
   TEST_DEFS, TEST_ORDER, computeTest, rowsFor, defaultParams, VERDICT_LABEL, TRIGGERS, PERIODS, periodLabel,
 } from "../lib/rmTestDefs.js";
-import { generateRmTestPdf } from "../lib/rmTestPdf.js";
+import { generateRmTestPdf, pdfText } from "../lib/rmTestPdf.js";
+import { printMaterialReport } from "../lib/materialReportPdf.js";
 
 const VERDICT_BADGE = { conforms: "badge-success", non_conforming: "badge-danger", recorded: "badge-neutral" };
 
@@ -51,6 +52,52 @@ function toLocalInput(d) {
   if (isNaN(dt)) return "";
   const p = (x) => String(x).padStart(2, "0");
   return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}T${p(dt.getHours())}:${p(dt.getMinutes())}`;
+}
+
+// Tests a material (or the laboratory, "lab") can be given: laboratory checks
+// only for the lab, material tests only for a material; external either way.
+function testsFor(materialId) {
+  const lab = materialId === "lab";
+  return TEST_ORDER.filter((c) => c === "external" || TEST_DEFS[c].kinds.includes("lab") === lab);
+}
+
+// Round 196 — print the test plan (one material, or every material).
+async function printPlans(plans, title, meta) {
+  const trig = Object.fromEntries(TRIGGERS);
+  const settings = (p) => {
+    const def = TEST_DEFS[p.test_code];
+    return (def?.params || []).map((x) => {
+      const v = p.params?.[x.key] ?? x.default;
+      if (x.free) return v ? (x.key === "name" ? null : `Limit: ${v}`) : null;
+      const o = x.options.find(([k]) => String(k) === String(v));
+      return o ? o[1] : null;
+    }).filter(Boolean).join("; ");
+  };
+  // pdfText: the PDF font cannot draw ≤ ≥ µ, so they are spelt out.
+  const rows = plans.map((p) => [
+    p.material_name, p.test_label, p.form_no || "-", settings(p) || "-",
+    trig[p.trigger] || p.trigger,
+    p.trigger === "period" || p.trigger === "scheduled" ? periodLabel(p.high_days) : "-",
+    p.trigger === "period" && p.low_days ? periodLabel(p.low_days) : "-",
+    p.trigger === "period" && p.low_days ? `${p.low_after} results` : "-",
+    `${p.due_hours} h`, p.hold_stock ? "Yes" : "No", p.is_active ? "Yes" : "No",
+  ].map(pdfText));
+  await printMaterialReport({
+    title,
+    meta: [
+      ...meta,
+      "High rate: how often a card is issued per supplier. Low rate: the reduced frequency after the stated number of approved results in a row within limits (IS 4926:2003 Annex B / B-1.1); one failure returns the supplier to the high rate.",
+      "Results are approved by an Administrator, whose name prints as Approved by on each report.",
+    ],
+    columns: [
+      { header: "Material" }, { header: "Test" }, { header: "Form no." }, { header: "Settings" }, { header: "Card issued" },
+      { header: "High rate" }, { header: "Low rate" }, { header: "Low after" }, { header: "Due within", align: "right" },
+      { header: "Hold stock" }, { header: "Active" },
+    ],
+    rows,
+    landscape: true,
+    filename: `Raw_Material_Test_Plan_${title.replace(/[^A-Za-z0-9]+/g, "_")}.pdf`,
+  });
 }
 
 export default function RawMaterialTests() {
@@ -162,20 +209,20 @@ function TodoTab({ setError, open, canCreate }) {
   }
   useEffect(() => { load(); }, []);
 
-  const { groups, other } = useMemo(() => {
-    const byGrn = new Map();
-    const rest = [];
+  // Round 196 — grouped by MATERIAL (user's request), each material holding
+  // its GRNs, and the cards not from a GRN (scheduled, added by hand) last.
+  const groups = useMemo(() => {
+    const byMat = new Map();
     for (const c of cards || []) {
-      if (c.receipt_id) {
-        if (!byGrn.has(c.receipt_id)) byGrn.set(c.receipt_id, []);
-        byGrn.get(c.receipt_id).push(c);
-      } else rest.push(c);
+      const mk = c.material_id ?? "lab";
+      if (!byMat.has(mk)) byMat.set(mk, { key: mk, name: c.material_name, cards: [] });
+      byMat.get(mk).cards.push(c);
     }
-    const g = [...byGrn.values()].sort((a, b) => {
-      const oa = a.some((c) => c.overdue) ? 0 : 1, ob = b.some((c) => c.overdue) ? 0 : 1;
-      return oa - ob || new Date(a[0].due_at) - new Date(b[0].due_at);
+    const firstDue = (g) => Math.min(...g.cards.map((c) => (c.due_at ? new Date(c.due_at).getTime() : Infinity)));
+    return [...byMat.values()].sort((a, b) => {
+      const oa = a.cards.some((c) => c.overdue) ? 0 : 1, ob = b.cards.some((c) => c.overdue) ? 0 : 1;
+      return oa - ob || firstDue(a) - firstDue(b) || a.name.localeCompare(b.name);
     });
-    return { groups: g, other: rest };
   }, [cards]);
 
   if (!cards) return <div className="card">Loading…</div>;
@@ -188,58 +235,73 @@ function TodoTab({ setError, open, canCreate }) {
             : <AddTestForm onCancel={() => setAdding(false)} onCreated={(card) => { setAdding(false); open(card.id); }} setError={setError} />}
         </div>
       )}
-      {!groups.length && !other.length && (
+      {!groups.length && (
         <div className="card" style={{ color: "var(--slate)" }}>Nothing to test. New cards appear here when Store books a material in.</div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 12 }}>
-        {groups.map((g) => <GrnCard key={g[0].receipt_id} cards={g} open={open} />)}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 12, alignItems: "start" }}>
+        {groups.map((g) => <MaterialGroup key={g.key} group={g} open={open} />)}
       </div>
-      {other.length > 0 && (
-        <div style={{ marginTop: 18 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Scheduled and added by hand</div>
-          <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 8 }}>Not tied to a purchase: stock-pile moisture, periodic tests, and tests added by hand.</div>
-          <div className="card" style={{ padding: 0 }}>
-            {other.map((c) => <TestRow key={c.id} card={c} open={open} showMaterial />)}
-          </div>
-        </div>
-      )}
     </>
   );
 }
 
-function GrnCard({ cards, open }) {
-  const c0 = cards[0];
-  const overdue = cards.some((c) => c.overdue);
-  const hold = cards.some((c) => c.hold_stock);
+function MaterialGroup({ group, open }) {
+  const overdue = group.cards.filter((c) => c.overdue).length;
+  const hold = group.cards.some((c) => c.hold_stock);
+  const grns = [];
+  const byGrn = new Map();
+  const other = [];
+  for (const c of group.cards) {
+    if (!c.receipt_id) { other.push(c); continue; }
+    if (!byGrn.has(c.receipt_id)) { byGrn.set(c.receipt_id, []); grns.push(c.receipt_id); }
+    byGrn.get(c.receipt_id).push(c);
+  }
   return (
     <div className="card" style={{ padding: 14, borderTop: `4px solid ${overdue ? "var(--alert-red)" : "var(--amber)"}` }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>{c0.material_name}</div>
-          <div style={{ fontSize: 13, color: "var(--slate)" }}>{c0.supplier_name || "—"}</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{group.name}</div>
+          <div style={{ fontSize: 12.5, color: "var(--slate)" }}>
+            {group.cards.length} test{group.cards.length === 1 ? "" : "s"} due{overdue ? <span style={{ color: "var(--alert-red)", fontWeight: 600 }}> · {overdue} overdue</span> : null}
+          </div>
         </div>
-        {hold && <span className="badge badge-danger" title="This plan asks for the stock to be held until the test is approved">Hold stock</span>}
+        {hold && <span className="badge badge-danger" title="A plan asks for this stock to be held until the test is approved">Hold stock</span>}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6, fontSize: 12.5, margin: "10px 0" }}>
-        <div><div style={{ color: "var(--slate)" }}>GRN</div><div style={{ fontWeight: 500 }}>R-{String(c0.receipt_id).padStart(5, "0")}</div></div>
-        <div><div style={{ color: "var(--slate)" }}>Truck</div><div style={{ fontWeight: 500 }}>{c0.vehicle_number || "—"}</div></div>
-        <div><div style={{ color: "var(--slate)" }}>Received</div><div style={{ fontWeight: 500 }}>{fmtDate(c0.received_date)}</div></div>
-      </div>
-      <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-        {cards.map((c) => <TestRow key={c.id} card={c} open={open} />)}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {grns.map((id) => {
+          const list = byGrn.get(id);
+          const c0 = list[0];
+          return (
+            <div key={id} style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", padding: "7px 12px", background: "var(--concrete)", fontSize: 12.5 }}>
+                <span style={{ fontWeight: 600 }}>{c0.supplier_name || "—"}</span>
+                <span>GRN R-{String(id).padStart(5, "0")}</span>
+                <span>Truck {c0.vehicle_number || "—"}</span>
+                <span style={{ color: "var(--slate)" }}>received {fmtDate(c0.received_date)}</span>
+              </div>
+              {list.map((c) => <TestRow key={c.id} card={c} open={open} />)}
+            </div>
+          );
+        })}
+        {other.length > 0 && (
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ padding: "7px 12px", background: "var(--concrete)", fontSize: 12.5, fontWeight: 600 }}>Not from a GRN — scheduled or added by hand</div>
+            {other.map((c) => <TestRow key={c.id} card={c} open={open} showSupplier />)}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function TestRow({ card, open, showMaterial }) {
+function TestRow({ card, open, showSupplier }) {
   const action = card.status === "submitted" ? "Review" : card.status === "in_progress" ? "Continue" : card.test_code === "external" ? "Record result" : "Start test";
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{card.test_label}</div>
         <div style={{ fontSize: 12, color: "var(--slate)" }}>
-          {showMaterial ? `${card.material_name}${card.supplier_name ? " · " + card.supplier_name : ""} · ` : ""}{card.reason}
+          {showSupplier && card.supplier_name ? `${card.supplier_name} · ` : ""}{card.reason}
         </div>
         {card.sent_back_reason && card.status === "in_progress" && (
           <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 2 }}>Sent back: {card.sent_back_reason}</div>
@@ -265,7 +327,7 @@ function AddTestForm({ onCancel, onCreated, setError }) {
   return (
     <div className="card field-input" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10, alignItems: "end" }}>
       <label>Material
-        <select value={f.material_id} onChange={(e) => setF({ ...f, material_id: e.target.value })}>
+        <select value={f.material_id} onChange={(e) => setF({ ...f, material_id: e.target.value, test_code: "" })}>
           <option value="">Choose…</option>
           {meta.materials.filter((m) => m.is_active).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
@@ -279,7 +341,7 @@ function AddTestForm({ onCancel, onCreated, setError }) {
       <label>Test
         <select value={f.test_code} onChange={(e) => setF({ ...f, test_code: e.target.value })}>
           <option value="">Choose…</option>
-          {TEST_ORDER.map((c) => <option key={c} value={c}>{TEST_DEFS[c].label}</option>)}
+          {testsFor(f.material_id).map((c) => <option key={c} value={c}>{TEST_DEFS[c].label}</option>)}
         </select>
       </label>
       {f.test_code === "external" && (
@@ -375,7 +437,7 @@ function RegisterTab({ setError, open }) {
         <label>Test
           <select value={f.test_code} onChange={(e) => setF({ ...f, test_code: e.target.value })}>
             <option value="">All</option>
-            {TEST_ORDER.map((c) => <option key={c} value={c}>{TEST_DEFS[c].short}</option>)}
+            {[...TEST_ORDER, ...Object.keys(TEST_DEFS).filter((c) => TEST_DEFS[c].retired)].map((c) => <option key={c} value={c}>{TEST_DEFS[c].label}</option>)}
           </select>
         </label>
         <label>Result
@@ -465,7 +527,9 @@ function CardView({ id, onBack, onDone }) {
 
   const def = card && TEST_DEFS[card.test_code];
   const editable = card && ["pending", "in_progress"].includes(card.status) && can("quality.rm-tests", "edit");
-  const live = useMemo(() => (card ? computeTest(card.test_code, readings, card.params) : null), [card, readings]);
+  // Round 196 — flakiness/elongation are judged together; the server sends the
+  // partner card's index as card.companion.
+  const live = useMemo(() => (card ? computeTest(card.test_code, readings, card.params, { companion: card.companion }) : null), [card, readings]);
   const shown = editable ? live : (card && card.result) || live;
 
   if (error && !card) return <div className="card" style={{ color: "var(--alert-red)" }}>{error} <button type="button" onClick={onBack}>Back</button></div>;
@@ -566,7 +630,7 @@ function CardView({ id, onBack, onDone }) {
           {def.layout === "rows" && (
             <div className="card" style={{ padding: 0, overflowX: "auto" }}>
               <table style={{ minWidth: 640 }}>
-                <thead><tr><th>{def.code.startsWith("sieve") ? "IS sieve" : def.code === "cement_strength" ? "Age" : def.code === "moisture" ? "Reading" : "Fraction"}</th>
+                <thead><tr><th>{def.code.startsWith("sieve") ? "IS sieve" : def.code === "cement_strength" ? "Age" : ["moisture", "curing_temp"].includes(def.code) ? "Reading" : "Fraction"}</th>
                   {def.fields.map((f) => <th key={f.key} style={{ textAlign: f.input ? "left" : "right" }}>{f.label}{f.unit ? ` (${f.unit})` : ""}</th>)}</tr></thead>
                 <tbody>
                   {rows.map((r) => (
@@ -710,7 +774,7 @@ function PlansTab({ setError, setNotice }) {
   function loadMeta() {
     apiRequest("/rm-tests/meta").then((m) => {
       setMeta(m);
-      if (!materialId && m.materials.length) setMaterialId(m.materials[0].id);
+      if (!materialId && m.materials.length) setMaterialId((m.materials.find((x) => !x.lab) || m.materials[0]).id);
     }).catch((e) => setError(e.message));
   }
   function loadPlans() {
@@ -760,9 +824,17 @@ function PlansTab({ setError, setNotice }) {
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
           <div>
             <div style={{ fontSize: 20, fontWeight: 700 }}>{mat?.name}</div>
-            <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Every GRN of this material is checked against this plan. Frequencies are per supplier.</div>
+            <div style={{ fontSize: 12.5, color: "var(--slate)" }}>{mat?.lab
+              ? "The laboratory's own scheduled checks — not tied to any delivery."
+              : "Every GRN of this material is checked against this plan. Frequencies are per supplier."}</div>
           </div>
-          {canCreate && mat?.standard_kind && <button type="button" onClick={loadStandard}>Add missing standard tests</button>}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" disabled={!plans || !plans.length} onClick={() => printPlans(plans, mat?.name || "Plan", [`Material: ${mat?.name}`]).catch((e) => setError(e.message))}>Print this plan</button>
+            <button type="button" onClick={async () => {
+              try { await printPlans(await apiRequest("/rm-tests/plans"), "All materials", ["Every material's test plan"]); } catch (e) { setError(e.message); }
+            }}>Print all plans</button>
+            {canCreate && mat?.standard_kind && <button type="button" onClick={loadStandard}>Add missing standard tests</button>}
+          </div>
         </div>
         {!plans ? <div className="card">Loading…</div> : (
           <div className="card" style={{ padding: 0, overflowX: "auto" }}>
@@ -780,7 +852,7 @@ function PlansTab({ setError, setNotice }) {
             <label style={{ flex: "1 1 220px" }}>Add a test
               <select value={adding.test_code} onChange={(e) => setAdding({ ...adding, test_code: e.target.value })}>
                 <option value="">Choose…</option>
-                {TEST_ORDER.map((c) => <option key={c} value={c}>{TEST_DEFS[c].label}</option>)}
+                {testsFor(materialId).map((c) => <option key={c} value={c}>{TEST_DEFS[c].label}</option>)}
               </select>
             </label>
             {adding.test_code === "external" && (
