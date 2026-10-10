@@ -228,6 +228,90 @@ CREATE INDEX IF NOT EXISTS hr_leaves_emp_dates ON hr_leaves (employee_id, from_d
 CREATE INDEX IF NOT EXISTS hr_leaves_status ON hr_leaves (status);
 `;
 
+// Round 202 — leave allowance per month or year with carry forward and who
+// gets it; comp-off claims; app attendance (work locations, face, registered
+// phone, phone punches).
+export const HR_STAGE4_SQL = `
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS period VARCHAR(5) NOT NULL DEFAULT 'year';
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS carry_max NUMERIC(5,1);
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS not_on_probation BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS for_contract BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS kind VARCHAR(10) NOT NULL DEFAULT 'normal';
+ALTER TABLE hr_leave_types DROP CONSTRAINT IF EXISTS hr_leave_types_period_check;
+ALTER TABLE hr_leave_types ADD CONSTRAINT hr_leave_types_period_check CHECK (period IN ('year','month'));
+ALTER TABLE hr_leave_types DROP CONSTRAINT IF EXISTS hr_leave_types_kind_check;
+ALTER TABLE hr_leave_types ADD CONSTRAINT hr_leave_types_kind_check CHECK (kind IN ('normal','comp_off'));
+
+CREATE TABLE IF NOT EXISTS hr_compoff_claims (
+  id             SERIAL PRIMARY KEY,
+  employee_id    INTEGER NOT NULL REFERENCES hr_employees(id),
+  work_date      DATE NOT NULL,
+  days           NUMERIC(3,1) NOT NULL CHECK (days IN (0.5, 1)),
+  worked_min     INTEGER,
+  qualifies      NUMERIC(3,1),           -- what the hours earn by the rule (0, 0.5 or 1); the manager may give 1 or ½ regardless
+  reason         TEXT,
+  status         VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','cancelled')),
+  needs_admin    BOOLEAN NOT NULL DEFAULT false,
+  admin_reason   VARCHAR(160),
+  expires_on     DATE NOT NULL,
+  raised_by      INTEGER REFERENCES users(id),
+  raised_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_by     INTEGER REFERENCES users(id),
+  decided_at     TIMESTAMPTZ,
+  decision_note  TEXT
+);
+ALTER TABLE hr_compoff_claims ADD COLUMN IF NOT EXISTS qualifies NUMERIC(3,1);
+CREATE UNIQUE INDEX IF NOT EXISTS hr_compoff_one_per_day ON hr_compoff_claims (employee_id, work_date) WHERE status IN ('pending','approved');
+
+CREATE TABLE IF NOT EXISTS hr_work_locations (
+  id         SERIAL PRIMARY KEY,
+  name       VARCHAR(80) NOT NULL,
+  lat        DOUBLE PRECISION NOT NULL,
+  lng        DOUBLE PRECISION NOT NULL,
+  radius_m   INTEGER NOT NULL DEFAULT 200 CHECK (radius_m BETWEEN 20 AND 5000),
+  is_active  BOOLEAN NOT NULL DEFAULT true
+);
+
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS app_punch VARCHAR(10) NOT NULL DEFAULT 'off';
+ALTER TABLE hr_employees DROP CONSTRAINT IF EXISTS hr_employees_app_punch_check;
+ALTER TABLE hr_employees ADD CONSTRAINT hr_employees_app_punch_check CHECK (app_punch IN ('off','plant','anywhere'));
+-- The enrolled face lives in its own table: hr_employees is read on every
+-- screen and must not carry a photo along.
+CREATE TABLE IF NOT EXISTS hr_employee_faces (
+  employee_id  INTEGER PRIMARY KEY REFERENCES hr_employees(id),
+  descriptor   JSONB NOT NULL,
+  photo        BYTEA,
+  enrolled_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  enrolled_by  INTEGER REFERENCES users(id)
+);
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS device_id VARCHAR(64);
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS device_registered_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS hr_app_punches (
+  id             SERIAL PRIMARY KEY,
+  employee_id    INTEGER NOT NULL REFERENCES hr_employees(id),
+  punched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  lat            DOUBLE PRECISION,
+  lng            DOUBLE PRECISION,
+  accuracy_m     REAL,
+  location_id    INTEGER REFERENCES hr_work_locations(id),
+  distance_m     INTEGER,
+  face_distance  REAL,
+  live           BOOLEAN NOT NULL DEFAULT false,
+  tries          INTEGER NOT NULL DEFAULT 1,
+  device_id      VARCHAR(64),
+  photo          BYTEA,
+  status         VARCHAR(10) NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','review','approved','rejected')),
+  review_reason  VARCHAR(160),
+  reviewed_by    INTEGER REFERENCES users(id),
+  reviewed_at    TIMESTAMPTZ,
+  review_note    TEXT,
+  user_id        INTEGER REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS hr_app_punches_emp_time ON hr_app_punches (employee_id, punched_at);
+CREATE INDEX IF NOT EXISTS hr_app_punches_review ON hr_app_punches (status) WHERE status = 'review';
+`;
+
 const DEFAULT_LEAVE_TYPES = [
   ["CL", "Casual leave", true, 12], ["SL", "Sick leave", true, 12], ["EL", "Earned leave", true, 15],
   ["LOP", "Leave without pay", false, null],
@@ -264,6 +348,29 @@ export async function migrateHr(pool, log) {
         [code, name, paid, days, i + 1]);
     }
   }
+  await pool.query(HR_STAGE4_SQL);
+  // Round 202 — owner's rules: CL is 1 day a month, lapses at month end, not
+  // during probation, not for contract workers. Only applied to a CL still on
+  // the Round 200 default (12 a year), so a rule an Administrator has since
+  // changed is never overwritten. And the comp-off leave type.
+  await pool.query(
+    `UPDATE hr_leave_types SET period = 'month', yearly_days = 1, carry_max = NULL, not_on_probation = true, for_contract = false
+     WHERE code = 'CL' AND period = 'year' AND yearly_days = 12`);
+  await pool.query(
+    `INSERT INTO hr_leave_types (code, name, paid, yearly_days, kind, sort_order) VALUES ('CO', 'Comp-off', true, NULL, 'comp_off', 5)
+     ON CONFLICT (code) DO UPDATE SET kind = 'comp_off'`);
+  // Phone attendance: who may use it. Owner's rule — only staff who already
+  // have an app login, never drivers (they use the gate machine). Set once,
+  // for employees still on 'off' with nothing chosen; HR changes it after.
+  const { rows: pf } = await pool.query(`SELECT value FROM hr_settings WHERE key = 'app_punch_seeded'`);
+  if (!pf.length) {
+    await pool.query(
+      `UPDATE hr_employees e SET app_punch = CASE WHEN e.attendance_source = 'app' THEN 'anywhere' ELSE 'plant' END
+       FROM users u WHERE u.id = e.app_user_id AND e.app_punch = 'off' AND u.role <> 'driver'`);
+    await pool.query(
+      `INSERT INTO hr_settings (key, value) VALUES ('app_punch_seeded', 'true'::jsonb), ('app_punch_start', to_jsonb(to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')))
+       ON CONFLICT (key) DO NOTHING`);
+  }
   const { rows: e } = await pool.query(`SELECT count(*)::int AS n FROM hr_employees`);
-  log.push(`Schema migration applied (Round 197/198/200 — HR module: employees, shifts, roster, holidays; requests, advances, payroll; leave). ${e[0].n} employee(s) on record.`);
+  log.push(`Schema migration applied (Round 197–202 — HR module: employees, shifts, roster, holidays; requests, advances, payroll; leave, comp-off, app attendance). ${e[0].n} employee(s) on record.`);
 }

@@ -23,6 +23,15 @@ function Field({ label, children, hint }) {
 // `fixed` pins employee and/or dates. `self` = the employee asking for their own
 // leave. `canApproveNow` shows the "record as approved" choice to someone who
 // may decide it (the server checks again).
+// "1 of 1 left for Oct 2026", "1.5 comp-off days", "not during probation".
+export function balHint(b) {
+  if (!b) return undefined;
+  if (b.eligible === false) return b.not_eligible_reason;
+  if (b.kind === "comp_off") return `${b.left} comp-off day${b.left === 1 ? "" : "s"} available${b.next_expiry ? ` · ${b.next_expiry.days} expires ${b.next_expiry.on}` : ""}`;
+  if (b.allowance == null) return b.used ? `${b.used} taken in ${b.period_label}` : undefined;
+  return `${b.left} of ${b.allowance} left for ${b.period_label}${b.carried ? ` (${b.carried} carried)` : ""}${b.waiting ? `, ${b.waiting} waiting` : ""}`;
+}
+
 export function LeaveForm({ types, employees = [], fixed = {}, self = false, balances = null, canApproveNow = false, onDone, onCancel }) {
   const active = (types || []).filter((t) => t.is_active !== false);
   const [f, setF] = useState({
@@ -53,7 +62,7 @@ export function LeaveForm({ types, employees = [], fixed = {}, self = false, bal
             </select>
           </Field>
         )}
-        <Field label="Type of leave" hint={bal && bal.allowance != null ? `${bal.left} of ${bal.allowance} left this year${bal.waiting ? `, ${bal.waiting} waiting` : ""}` : undefined}>
+        <Field label="Type of leave" hint={balHint(bal)}>
           <select value={f.leave_type_id} onChange={(e) => set("leave_type_id", e.target.value)} required>
             {active.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.code}){t.paid ? "" : " — unpaid"}</option>)}
           </select>
@@ -155,7 +164,7 @@ export function LeaveTab({ meta }) {
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8, fontSize: 12.5, marginTop: 8 }}>
-                {l.balance && l.balance.allowance != null && <div><span style={{ color: "var(--slate)" }}>{l.type_code} this year:</span> {l.balance.used} taken, {l.balance.left} left of {l.balance.allowance}</div>}
+                {l.balance && (l.balance.allowance != null || l.balance.kind === "comp_off") && <div><span style={{ color: "var(--slate)" }}>{l.type_code}:</span> {balHint(l.balance)}</div>}
                 {l.reason && <div><span style={{ color: "var(--slate)" }}>Reason:</span> {l.reason}</div>}
                 <div><span style={{ color: "var(--slate)" }}>Recorded by</span> {l.raised_by_name || "—"}, {new Date(l.raised_at).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" })}</div>
                 {l.decided_by_name && <div><span style={{ color: "var(--slate)" }}>{l.status === "cancelled" ? "Cancelled" : "Decided"} by</span> {l.decided_by_name}{l.decision_note ? ` — ${l.decision_note}` : ""}</div>}
@@ -179,33 +188,25 @@ export function LeaveTab({ meta }) {
 }
 
 function BalancesView() {
-  const [year, setYear] = useState(Number(istMonth().slice(0, 4)));
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
-  useEffect(() => { setData(null); apiRequest(`/hr/leave-balances?year=${year}`).then(setData).catch((e) => setError(e.message)); }, [year]);
+  useEffect(() => { apiRequest("/hr/leave-balances").then(setData).catch((e) => setError(e.message)); }, []);
   return (
     <>
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
-        <Field label="Year">
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
-            {[0, 1, 2].map((k) => { const y = Number(istMonth().slice(0, 4)) - k; return <option key={y} value={y}>{y}</option>; })}
-          </select>
-        </Field>
-        <div style={{ fontSize: 12, color: "var(--slate)", paddingBottom: 8 }}>Taken / allowance per calendar year. Waiting requests in brackets.</div>
-      </div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>Left today for each type: monthly types for this month, yearly types for this year, comp-off as available now. Waiting requests in brackets.</div>
       {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}
       {data && (
         <div className="card" style={{ padding: "4px 12px" }}>
           <div style={{ overflowX: "auto" }}>
             <table style={{ fontSize: 12.5 }}>
-              <thead><tr><th>Employee</th>{data.types.map((t) => <th key={t.id} style={{ textAlign: "right" }}>{t.code}{t.yearly_days != null ? ` / ${t.yearly_days}` : ""}</th>)}</tr></thead>
+              <thead><tr><th>Employee</th>{data.types.map((t) => <th key={t.id} style={{ textAlign: "right" }}>{t.code}<div style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>{t.kind === "comp_off" ? "available" : t.yearly_days == null ? "taken" : `left of ${t.yearly_days}/${t.period === "month" ? "month" : "year"}`}</div></th>)}</tr></thead>
               <tbody>
                 {data.employees.map((e) => (
                   <tr key={e.id}>
                     <td><b>{e.name}</b> <span style={{ color: "var(--slate)", fontSize: 11.5 }}>{e.emp_code}</span></td>
                     {e.balances.map((b) => (
-                      <td key={b.leave_type_id} style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: b.left != null && b.left < 0 ? "var(--alert-red)" : undefined }}>
-                        {b.used || "—"}{b.waiting ? <span style={{ color: "var(--info)" }}> ({b.waiting})</span> : ""}
+                      <td key={b.leave_type_id} style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: b.eligible === false ? "var(--slate)" : b.left != null && b.left < 0 ? "var(--alert-red)" : undefined }} title={b.not_eligible_reason || ""}>
+                        {b.eligible === false ? "n/a" : b.allowance == null && b.kind !== "comp_off" ? (b.used || "—") : b.left}{b.waiting ? <span style={{ color: "var(--info)" }}> ({b.waiting})</span> : ""}
                       </td>
                     ))}
                   </tr>
@@ -213,6 +214,7 @@ function BalancesView() {
               </tbody>
             </table>
           </div>
+          <div style={{ fontSize: 11.5, color: "var(--slate)", padding: "6px 0" }}>n/a — the type isn't given to that person (contract worker, or on probation).</div>
         </div>
       )}
     </>
@@ -234,18 +236,20 @@ export function LeaveTypesCard({ meta, canEdit, canCreate, onSaved }) {
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <div style={{ fontWeight: 700, marginBottom: 4 }}>Leave types</div>
-      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>A paid type counts as a paid day in payroll; an unpaid type is loss of pay. Days a year is the allowance per calendar year — leave beyond it goes to Admin for approval. Leave it blank for no limit.</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>A paid type counts as a paid day in payroll; an unpaid type is loss of pay. Each type is given once a year (Jan–Dec) or every month; unused days lapse at the period end unless a carry-forward is set. Leave beyond the allowance goes to Admin. Probation length is in Payroll rules.</div>
       <div style={{ overflowX: "auto" }}>
         <table>
-          <thead><tr><th>Code</th><th>Name</th><th>Paid</th><th style={{ textAlign: "right" }}>Days a year</th><th></th></tr></thead>
+          <thead><tr><th>Code</th><th>Name</th><th>Paid</th><th>Given</th><th>Unused days</th><th>Who</th><th></th></tr></thead>
           <tbody>
             {meta.leave_types.map((t) => (
               <tr key={t.id} style={{ opacity: t.is_active ? 1 : 0.5 }}>
                 <td style={{ fontWeight: 700 }}>{t.code}</td>
                 <td>{t.name}{!t.is_active && " (off)"}</td>
                 <td>{t.paid ? "Paid" : "Unpaid"}</td>
-                <td style={{ textAlign: "right" }}>{t.yearly_days ?? "no limit"}</td>
-                <td>{canEdit && <button style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setEdit({ ...t, yearly_days: t.yearly_days ?? "" })}>Edit</button>}</td>
+                <td>{t.kind === "comp_off" ? "earned by working an off day" : t.yearly_days == null ? "no limit" : `${t.yearly_days} a ${t.period === "month" ? "month" : "year"}`}</td>
+                <td>{t.kind === "comp_off" ? "expires (Payroll rules)" : t.yearly_days == null ? "—" : t.carry_max ? `carry forward, up to ${t.carry_max}` : `lapse at ${t.period === "month" ? "month" : "year"} end`}</td>
+                <td style={{ fontSize: 12.5 }}>{[t.not_on_probation ? "not in probation" : null, t.for_contract === false ? "payroll staff only" : null].filter(Boolean).join(" · ") || "everyone"}</td>
+                <td>{canEdit && <button style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setEdit({ ...t, yearly_days: t.yearly_days ?? "", carry_max: t.carry_max ?? "" })}>Edit</button>}</td>
               </tr>
             ))}
           </tbody>
@@ -255,12 +259,18 @@ export function LeaveTypesCard({ meta, canEdit, canCreate, onSaved }) {
         <form onSubmit={save} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginTop: 12, alignItems: "end" }}>
           <Field label="Code"><input value={edit.code} maxLength={8} onChange={(e) => setEdit({ ...edit, code: e.target.value.toUpperCase() })} required /></Field>
           <Field label="Name"><input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} required /></Field>
-          <Field label="Days a year"><input type="number" min="0" max="366" step="0.5" value={edit.yearly_days} onChange={(e) => setEdit({ ...edit, yearly_days: e.target.value })} placeholder="no limit" /></Field>
+          {edit.kind !== "comp_off" && <>
+            <Field label="Given"><select value={edit.period || "year"} onChange={(e) => setEdit({ ...edit, period: e.target.value })}><option value="year">Once a year</option><option value="month">Every month</option></select></Field>
+            <Field label={edit.period === "month" ? "Days each month" : "Days a year"}><input type="number" min="0" max={edit.period === "month" ? 31 : 366} step="0.5" value={edit.yearly_days} onChange={(e) => setEdit({ ...edit, yearly_days: e.target.value })} placeholder="no limit" /></Field>
+            <Field label="Carry forward up to (days)" hint="Blank = unused days lapse"><input type="number" min="0" max="366" step="0.5" value={edit.carry_max} onChange={(e) => setEdit({ ...edit, carry_max: e.target.value })} placeholder="lapse" /></Field>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={!!edit.not_on_probation} onChange={(e) => setEdit({ ...edit, not_on_probation: e.target.checked })} /> Not during probation</label>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={edit.for_contract !== false} onChange={(e) => setEdit({ ...edit, for_contract: e.target.checked })} /> Contract workers get it</label>
+          </>}
           <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={edit.paid} onChange={(e) => setEdit({ ...edit, paid: e.target.checked })} /> Paid</label>
           <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={edit.is_active} onChange={(e) => setEdit({ ...edit, is_active: e.target.checked })} /> In use</label>
           <div style={{ display: "flex", gap: 6 }}><button className="btn-primary" type="submit">Save</button><button type="button" onClick={() => setEdit(null)}>Cancel</button></div>
         </form>
-      ) : canCreate && <button style={{ marginTop: 10 }} onClick={() => setEdit({ code: "", name: "", paid: true, yearly_days: "", is_active: true, sort_order: meta.leave_types.length + 1 })}>+ Add leave type</button>}
+      ) : canCreate && <button style={{ marginTop: 10 }} onClick={() => setEdit({ code: "", name: "", paid: true, yearly_days: "", period: "year", carry_max: "", not_on_probation: false, for_contract: true, is_active: true, sort_order: meta.leave_types.length + 1 })}>+ Add leave type</button>}
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 8 }}>{error}</div>}
     </div>
   );

@@ -15,6 +15,10 @@ export default defineConfig({
         // artifact indiscriminately — same effective scope as the previous
         // auto-generated config.
         globPatterns: ["**/*.{js,css,html,png,svg,ico}"],
+        // Round 202 — the face-check library (~1.3 MB) and its models are only
+        // for the Mark attendance / face enrolment screens: fetched when those
+        // open, never pushed to every phone with the app.
+        globIgnores: ["**/face-api*.js", "**/face-models/**"],
       },
       manifest: {
         name: "Our Own Ready Mix",

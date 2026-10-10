@@ -37,6 +37,10 @@ const DAY_MS = 86400000;
 function at(date, minutes) {
   return Date.parse(date + "T00:00:00+05:30") + minutes * 60000;
 }
+function hhmmOfMin(min) {
+  const m = ((min % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
 function hhmm(ms) {
   const d = new Date(ms + IST_MS);
   return String(d.getUTCHours()).padStart(2, "0") + ":" + String(d.getUTCMinutes()).padStart(2, "0");
@@ -107,7 +111,7 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
     const weeklyOff = emp.weekly_off !== null && emp.weekly_off !== undefined && Number(emp.weekly_off) === dow(d) && !p.rostered;
     const offDay = p.off || weeklyOff || (!!holiday && !p.rostered);
     const day = { date: d, code: "", n: 0, times: [], first: null, last: null, worked: null, late: null, early: null,
-      shift: shift ? shift.name : null, flags: [] };
+      shift: shift ? shift.name : null, start: shift ? hhmmOfMin(shift.start) : null, flags: [] };
 
     if ((joined && d < joined) || (left && d > left) || d > todayDate) { days.push(day); return; }
 
@@ -115,7 +119,16 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
     const fullMin = shift ? shift.full : DEFAULT_FULL_MIN;
     const halfMin = shift ? shift.half : DEFAULT_HALF_MIN;
 
-    if (emp.attendance_source === "app") {
+    // Round 202 — from the day phone attendance started, an app-source
+    // employee's day is judged on the face-checked phone punches, exactly like
+    // machine punches; before it, on the sales app's duty log as before.
+    const phoneDay = emp.attendance_source === "app" && opts.phoneFrom && d >= opts.phoneFrom;
+    if (phoneDay) {
+      for (let k = mine.length - 1; k >= 0; k--) if (!mine[k].phone) mine.splice(k, 1);
+    } else if (emp.attendance_source === "app") {
+      for (let k = mine.length - 1; k >= 0; k--) if (mine[k].phone) mine.splice(k, 1);
+    }
+    if (emp.attendance_source === "app" && !phoneDay) {
       const ons = mine.filter((e) => e.kind === "on");
       const located = ons.filter((e) => e.located);
       day.n = mine.length;
@@ -141,7 +154,7 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
 
     // machine punches
     day.n = mine.length;
-    day.times = mine.map((e) => hhmm(e.ms) + (e.state === 0 ? " in" : e.state === 1 ? " out" : "") + (e.synthetic ? " (request)" : ""));
+    day.times = mine.map((e) => hhmm(e.ms) + (e.state === 0 ? " in" : e.state === 1 ? " out" : "") + (e.synthetic ? " (request)" : e.phone ? " (phone)" : ""));
     if (mine.some((e) => e.synthetic)) day.flags.push("corrected by approved request");
     if (!mine.length) {
       day.code = offDay ? (holiday && !p.off ? "H" : "WO") : isToday ? "" : "A";
@@ -206,6 +219,16 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
   // a no-location check-in, a blank future day) into "L". It never takes a
   // weekly off or holiday, and a day the person actually worked stays worked.
   // A half-day leave on a half day makes it whole.
+  // Round 202 — an off day claimed as comp-off is not also overtime.
+  if (opts.claims) {
+    for (const day of days) {
+      const c = opts.claims.get(day.date);
+      if (!c) continue;
+      day.flags.push(c.status === "approved" ? `comp-off ${c.days} day earned` : "comp-off claim waiting");
+      if (c.status === "approved") { day.ot = null; day.compoff = c.days; }
+      else day.pending = (day.pending || 0) + 1;
+    }
+  }
   if (opts.leaves) {
     for (const day of days) {
       const lv = opts.leaves.get(day.date);
@@ -308,6 +331,26 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
      FROM hr_leaves l JOIN hr_leave_types lt ON lt.id = l.leave_type_id
      WHERE l.status IN ('approved','pending') AND l.from_date <= $2 AND l.to_date >= $1 AND l.employee_id = ANY($3::int[])`,
     [from, to, emps.map((e) => e.id)]);
+  // Round 202 — comp-off claims, phone punches.
+  const [claimRes, phoneRes, phoneStartRes] = await Promise.all([
+    query(`SELECT employee_id, to_char(work_date, 'YYYY-MM-DD') AS d, status, days::float AS days FROM hr_compoff_claims
+           WHERE status IN ('approved','pending') AND work_date BETWEEN $1 AND $2 AND employee_id = ANY($3::int[])`, [from, to, emps.map((e) => e.id)]),
+    query(`SELECT employee_id, extract(epoch FROM punched_at) * 1000 AS ms FROM hr_app_punches
+           WHERE status IN ('ok','approved') AND punched_at >= $1 AND punched_at < $2 AND employee_id = ANY($3::int[])
+           ORDER BY punched_at`, [new Date(at(from, 0) - DAY_MS).toISOString(), new Date(at(to, 2 * 1440 + 600)).toISOString(), emps.map((e) => e.id)]),
+    query(`SELECT value FROM hr_settings WHERE key = 'app_punch_start'`),
+  ]);
+  const claimsByEmp = new Map();
+  for (const c of claimRes.rows) {
+    if (!claimsByEmp.has(c.employee_id)) claimsByEmp.set(c.employee_id, new Map());
+    claimsByEmp.get(c.employee_id).set(c.d, c);
+  }
+  const phoneByEmp = new Map();
+  for (const p of phoneRes.rows) {
+    if (!phoneByEmp.has(p.employee_id)) phoneByEmp.set(p.employee_id, []);
+    phoneByEmp.get(p.employee_id).push({ ms: Number(p.ms), kind: "punch", state: null, phone: true });
+  }
+  const phoneFrom = phoneStartRes.rows[0]?.value || null;
   const leavesByEmp = new Map();
   for (const l of leaveRes.rows) {
     if (!leavesByEmp.has(l.employee_id)) leavesByEmp.set(l.employee_id, new Map());
@@ -389,11 +432,18 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
     if (e.attendance_source === "machine" && extraEvents.has(e.id)) {
       events = [...events, ...extraEvents.get(e.id)].sort((a, b) => a.ms - b.ms);
     }
+    // Corrections for an app-source person apply to their phone days.
+    if (e.attendance_source === "app" && extraEvents.has(e.id)) {
+      events = [...events, ...extraEvents.get(e.id).map((x) => ({ ...x, phone: true }))].sort((a, b) => a.ms - b.ms);
+    }
+    if (phoneByEmp.has(e.id) && e.attendance_source !== "none") {
+      events = [...events, ...phoneByEmp.get(e.id)].sort((a, b) => a.ms - b.ms);
+    }
     // Not linked to the machine / app yet: nothing to judge, so show nothing
     // rather than a month of false absences.
     const unlinked = (e.attendance_source === "machine" && !e.machine_user_id) || (e.attendance_source === "app" && !e.app_user_id);
     const days = e.attendance_source === "none" || unlinked ? dates.map((d) => ({ date: d, code: "", n: 0, times: [], flags: [] }))
-      : computeEmployeeDays(e, dates, events, plan, holidays, todayDate, nowMs, { reqs: reqsByEmp.get(e.id), leaves: leavesByEmp.get(e.id), rules });
+      : computeEmployeeDays(e, dates, events, plan, holidays, todayDate, nowMs, { reqs: reqsByEmp.get(e.id), leaves: leavesByEmp.get(e.id), claims: claimsByEmp.get(e.id), phoneFrom, rules });
     return {
       id: e.id, emp_code: e.emp_code, name: e.name, department: e.department, designation: e.designation,
       attendance_source: e.attendance_source, policy: e.policy, machine_user_id: e.machine_user_id,

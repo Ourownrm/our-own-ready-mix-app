@@ -65,6 +65,7 @@ import Weighbridge from "./pages/Weighbridge.jsx";
 import AttendanceMachine from "./pages/AttendanceMachine.jsx";
 import HrModule from "./pages/HrModule.jsx";
 import MyAttendance from "./pages/MyAttendance.jsx";
+import MarkAttendance from "./pages/MarkAttendance.jsx";
 import PlantProduction from "./pages/PlantProduction.jsx";
 import QcMixDesigns from "./pages/QcMixDesigns.jsx";
 import ReceiptVariance from "./pages/ReceiptVariance.jsx";
@@ -285,6 +286,10 @@ export default function App() {
           {/* Round 198 — anyone logged in; the server checks the login is linked to an employee. */}
           <Route path="/my-attendance" element={
             <ProtectedRoute><MyAttendance /></ProtectedRoute>
+          } />
+          {/* Round 202 — attendance on the phone (face, location, registered phone). */}
+          <Route path="/mark-attendance" element={
+            <ProtectedRoute><MarkAttendance /></ProtectedRoute>
           } />
           <Route path="/attendance-machine" element={
             <ProtectedRoute perm="admin.attendance-machine"><AttendanceMachine /></ProtectedRoute>

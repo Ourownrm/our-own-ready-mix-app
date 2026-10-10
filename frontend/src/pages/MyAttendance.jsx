@@ -9,7 +9,8 @@ import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { RequestForm, KIND_LABEL } from "./HrStage2.jsx";
-import { LeaveForm, leaveRange } from "./HrLeave.jsx";
+import { LeaveForm, leaveRange, balHint } from "./HrLeave.jsx";
+import { Link } from "react-router-dom";
 
 const CODE = {
   P: ["Present", "var(--signal-green-bg)", "var(--signal-green)"], HD: ["Half day", "var(--amber-bg)", "var(--amber)"],
@@ -31,6 +32,13 @@ export default function MyAttendance() {
   const [asking, setAsking] = useState(null); // leave: date or "" for free choice
   const load = () => apiRequest(`/hr/my?month=${month}`).then(setData).catch((e) => setError(e.message));
   useEffect(() => { setData(null); load(); }, [month]);
+  // Round 202 — attendance on the phone, and comp-off claims.
+  const [canPunch, setCanPunch] = useState(false);
+  useEffect(() => { apiRequest("/hr/punch/allowed").then((r) => setCanPunch(!!r.allowed)).catch(() => {}); }, []);
+  async function claim(d, days) {
+    setError("");
+    try { await apiRequest("/hr/my/compoff", { method: "POST", body: { work_date: d.date, days } }); load(); } catch (err) { setError(err.message); }
+  }
 
   async function withdraw(path) {
     setError("");
@@ -52,7 +60,8 @@ export default function MyAttendance() {
               <div><div style={{ fontWeight: 700, fontSize: 16 }}>{data.employee.name}</div><div style={{ fontSize: 12, color: "var(--slate)" }}>{data.employee.emp_code}</div></div>
               <div className="field-input" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} />
-                {!busy && <button className="btn-primary" onClick={() => setAsking("")}>+ Ask for leave</button>}
+                {canPunch && <Link to="/mark-attendance" className="btn-primary" style={{ padding: "10px 14px", borderRadius: 8, textDecoration: "none", fontSize: 13, fontWeight: 600 }}>Mark attendance</Link>}
+                {!busy && <button className={canPunch ? "" : "btn-primary"} onClick={() => setAsking("")}>+ Ask for leave</button>}
                 {!busy && <button onClick={() => setRaise("")}>+ Correct a day</button>}
               </div>
             </div>
@@ -77,23 +86,61 @@ export default function MyAttendance() {
               </div>
             )}
 
-            {data.leave_balances?.some((b) => b.allowance != null || b.used || b.waiting) && (
+            {data.leave_balances?.some((b) => b.eligible !== false && (b.allowance != null || b.used || b.waiting || b.earned)) && (
               <div className="card" style={{ marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 8 }}>My leave this year</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {data.leave_balances.filter((b) => b.allowance != null || b.used || b.waiting).map((b) => (
-                    <div key={b.leave_type_id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px", fontSize: 12.5 }}>
+                  {data.leave_balances.filter((b) => b.eligible !== false && (b.allowance != null || b.used || b.waiting || b.earned)).map((b) => (
+                    <div key={b.leave_type_id} style={{ border: `1px solid ${b.kind === "comp_off" ? "#28657E" : "var(--border)"}`, borderRadius: 8, padding: "6px 10px", fontSize: 12.5, maxWidth: 220 }}>
                       <b>{b.code}</b> <span style={{ color: "var(--slate)" }}>{b.name}</span>
-                      <div>{b.allowance != null ? <><b>{b.left}</b> left of {b.allowance}</> : <>{b.used} taken</>}{b.waiting ? <span style={{ color: "var(--info)" }}> · {b.waiting} waiting</span> : ""}</div>
+                      <div style={{ fontSize: 18, fontWeight: 700 }}>{b.left ?? b.used}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{balHint(b)}</div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {(data.leaves?.length > 0 || data.requests.length > 0) && (
+            {(data.compoff_claimable?.length > 0) && (
+              <div className="card" style={{ marginBottom: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Worked on an off day? Claim comp-off</div>
+                {data.compoff_claimable.map((d) => (
+                  <div key={d.date} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderTop: "1px solid var(--border)" }}>
+                    <span style={{ background: "#ECEAE4", color: "var(--slate)", fontWeight: 700, fontSize: 12, borderRadius: 6, padding: "3px 8px" }}>{d.holiday === "H" ? "H" : "WO"}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600 }}>{fmtDay(d.date)}</div>
+                      <div style={{ fontSize: 12, color: "var(--slate)" }}>{d.times.join(", ")}{d.worked != null ? ` · ${hm(d.worked)} worked` : ""}</div>
+                    </div>
+                    {/* Owner's rule: short hours can still ask for a full day; the manager decides. */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+                      {d.days === 1
+                        ? <button className="btn-primary" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => claim(d, 1)}>Claim 1 day</button>
+                        : <>
+                            {d.days === 0.5 && <button className="btn-primary" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => claim(d, 0.5)}>Claim ½ day</button>}
+                            <button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => claim(d, 1)}>Ask for 1 day</button>
+                            <span style={{ fontSize: 11, color: "var(--slate)" }}>{d.days ? "hours qualify for ½ day" : "hours short of ½ day"} — manager decides</span>
+                          </>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(data.leaves?.length > 0 || data.requests.length > 0 || data.compoff_claims?.length > 0) && (
               <div className="card" style={{ marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>My requests</div>
+                {(data.compoff_claims || []).filter((c) => c.status !== "cancelled").map((c) => (
+                  <div key={"c" + c.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
+                    <div>
+                      <b>{fmtDay(c.work_date)}</b> · Comp-off claim ({c.days === 1 ? "1 day" : "½ day"})
+                      <div style={{ fontSize: 12, color: "var(--slate)" }}>expires {fmtDay(c.expires_on)}{c.decision_note ? ` — ${c.decided_by_name || ""}: ${c.decision_note}` : ""}</div>
+                    </div>
+                    <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                      <span className={`badge ${STATUS_BADGE[c.status]}`}>{c.status === "pending" ? "Waiting" : c.status}</span>
+                      {c.status === "pending" && <div><button style={{ padding: "2px 8px", fontSize: 11.5, marginTop: 4 }} onClick={() => withdraw(`/hr/compoff/${c.id}/cancel`)}>Withdraw</button></div>}
+                    </div>
+                  </div>
+                ))}
                 {data.leaves.filter((l) => l.status !== "cancelled").map((l) => (
                   <div key={"l" + l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
                     <div>

@@ -14,6 +14,8 @@ import { attendanceRegister, datesBetween } from "../lib/hrAttendance.js";
 // Round 198 — stage 2.
 import { RULE_DEFS, loadRules, validateRule } from "../lib/hrRules.js";
 import { computePayroll, monthRange } from "../lib/hrPayroll.js";
+// Round 202 — leave allowances, comp-off.
+import { leaveTypes, computeBalances, compoffAvailable, eligibility, addDaysYmd } from "../lib/hrLeave.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -142,6 +144,8 @@ function employeeFields(b, { withSalary }) {
     trip_allowance: bool(b.trip_allowance, false),
     notes: text(b.notes, 2000),
   };
+  // Round 202 — attendance on the phone: only with an app login (owner's rule).
+  if (b.app_punch !== undefined) f.app_punch = f.app_user_id && ["plant", "anywhere"].includes(b.app_punch) ? b.app_punch : "off";
   if (f.weekly_off !== null && (f.weekly_off < 0 || f.weekly_off > 6)) throw Object.assign(new Error("Weekly off must be a day of the week."), { expose: true });
   if (f.date_of_leaving && f.date_of_joining && f.date_of_leaving < f.date_of_joining) throw Object.assign(new Error("Leaving date is before joining date."), { expose: true });
   if (withSalary) {
@@ -336,6 +340,94 @@ router.get("/attendance", requirePermission("hr.attendance", "view"), async (req
   }
 });
 
+// ============================================================ Round 202 — Today
+// The day at a glance: who is due, who is in, who has not punched in by their
+// shift start + a few minutes, late, on leave, on duty outside, off, and
+// yesterday's loose ends — plus each department and the last 7 days.
+router.get("/today", requirePermission("hr.attendance", "view"), async (req, res) => {
+  try {
+    const rules = await loadRules();
+    const probe = await attendanceRegister({ from: istToday(), to: istToday(), employeeIds: [-1] });
+    const today = probe.today;
+    const from = addDaysYmd(today, -7);
+    const reg = await attendanceRegister({ from, to: today, withRows: true });
+    const nowIst = new Date(Date.now() + 330 * 60000);
+    const nowMin = nowIst.getUTCHours() * 60 + nowIst.getUTCMinutes();
+    const { rows: onDuty } = await query(
+      `SELECT employee_id FROM hr_requests WHERE kind = 'on_duty' AND status = 'approved' AND work_date = $1`, [today]);
+    const onDutySet = new Set(onDuty.map((r) => r.employee_id));
+    // Due today = tracked (machine or app, linked), joined, not left.
+    const tracked = reg.employees.filter((e) => e.attendance_source !== "none" && e.linked
+      && (!e.row.date_of_joining || String(e.row.date_of_joining).slice(0, 10) <= today)
+      && (!e.row.date_of_leaving || String(e.row.date_of_leaving).slice(0, 10) >= today));
+    const { rows: empInfo } = await query(`SELECT e.id, u.phone FROM hr_employees e LEFT JOIN users u ON u.id = e.app_user_id`);
+    const phoneOf = new Map(empInfo.map((r) => [r.id, r.phone]));
+
+    const dayOfE = (e, d) => e.days.find((x) => x.date === d);
+    const isOff = (x) => x && (x.code === "WO" || x.code === "H");
+    const present = (x) => x && (x.n > 0 || x.code === "P" || x.code === "HD" || x.code === "IN" || x.code === "MIS");
+
+    const lists = { not_in: [], late: [], leave: [], on_duty: [], off: [], missed_yesterday: [] };
+    let due = 0, inNow = 0, machine = 0, phone = 0;
+    const depts = new Map();
+    const yesterday = addDaysYmd(today, -1);
+    for (const e of tracked) {
+      const t = dayOfE(e, today);
+      if (!t) continue;
+      const dep = e.department || "No department";
+      if (!depts.has(dep)) depts.set(dep, { department: dep, due: 0, present: 0, not_in: 0, late: 0, leave: 0 });
+      const D = depts.get(dep);
+      const y = dayOfE(e, yesterday);
+      if (y && y.code === "MIS" && !y.pending) lists.missed_yesterday.push({ id: e.id, name: e.name, emp_code: e.emp_code, department: e.department, times: y.times });
+      if (isOff(t) && !t.n) { lists.off.push({ id: e.id, name: e.name, code: t.code }); continue; }
+      if (t.leave && t.code === "L") { lists.leave.push({ id: e.id, name: e.name, department: e.department, leave: t.leave }); D.leave++; continue; }
+      due++; D.due++;
+      if (present(t)) {
+        inNow++; D.present++;
+        if (t.times.some((x) => x.includes("(phone)"))) phone++; else machine++;
+        if (t.late) { lists.late.push({ id: e.id, name: e.name, department: e.department, late: t.late, first: t.first, shift: t.shift }); D.late++; }
+        continue;
+      }
+      if (onDutySet.has(e.id)) { lists.on_duty.push({ id: e.id, name: e.name, department: e.department }); continue; }
+      const start = t.start || "09:00";
+      const [hh, mm] = start.split(":").map(Number);
+      const cutoff = hh * 60 + mm + rules.not_punched_after_min;
+      if (nowMin >= cutoff) {
+        const last7 = e.days.filter((x) => x.date < today && x.date >= from);
+        lists.not_in.push({ id: e.id, name: e.name, emp_code: e.emp_code, department: e.department, start, shift: t.shift,
+          cutoff: `${String(Math.floor(cutoff / 60) % 24).padStart(2, "0")}:${String(cutoff % 60).padStart(2, "0")}`,
+          minutes_past: nowMin - cutoff, source: e.attendance_source, phone: phoneOf.get(e.id) || null,
+          absent_last7: last7.filter((x) => x.code === "A").length, late_last7: last7.filter((x) => x.late).length });
+        D.not_in++;
+      }
+    }
+    // Last 7 days (not today): present ÷ due.
+    const trend = [];
+    for (let k = 7; k >= 1; k--) {
+      const d = addDaysYmd(today, -k);
+      let du = 0, pr = 0;
+      for (const e of tracked) {
+        const x = dayOfE(e, d);
+        if (!x || isOff(x) || x.code === "" || (x.leave && x.code === "L")) continue;
+        du++; if (x.code === "P" || x.code === "HD") pr++;
+      }
+      trend.push({ date: d, due: du, present: pr, pct: du ? Math.round(pr / du * 100) : null });
+    }
+    lists.not_in.sort((a, b) => b.minutes_past - a.minutes_past);
+    lists.late.sort((a, b) => b.late - a.late);
+    res.json({
+      today, now: `${String(Math.floor(nowMin / 60)).padStart(2, "0")}:${String(nowMin % 60).padStart(2, "0")}`,
+      not_punched_after_min: rules.not_punched_after_min,
+      totals: { due, present: inNow, machine, phone, not_in: lists.not_in.length, late: lists.late.length, leave: lists.leave.length,
+        on_duty: lists.on_duty.length, off: lists.off.length, missed_yesterday: lists.missed_yesterday.length, untracked: reg.employees.length - tracked.length },
+      lists, departments: [...depts.values()].filter((d) => d.due || d.leave), trend,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not work out today's attendance." });
+  }
+});
+
 // ============================================================ Round 198 — stage 2
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const ADMIN_ROLES = ["administrator", "super_admin"];
@@ -527,11 +619,6 @@ const LEAVE_SELECT = `
   LEFT JOIN users rb ON rb.id = l.raised_by
   LEFT JOIN users db ON db.id = l.decided_by`;
 
-async function leaveTypes(activeOnly = false) {
-  const { rows } = await query(`SELECT * FROM hr_leave_types ${activeOnly ? "WHERE is_active" : ""} ORDER BY sort_order, code`);
-  return rows.map((t) => ({ ...t, yearly_days: t.yearly_days == null ? null : Number(t.yearly_days) }));
-}
-
 // Working days a leave covers: weekly off and holidays are not leave.
 async function leaveDays(emp, from, to, half) {
   if (half) return 0.5;
@@ -541,23 +628,12 @@ async function leaveDays(emp, from, to, half) {
   return datesBetween(from, to).filter((d) => !hol.has(d) && new Date(d + "T00:00:00Z").getUTCDay() !== off).length;
 }
 
-// Used / waiting / left per leave type for one or more employees in a year.
-async function leaveBalances(employeeIds, year) {
-  const types = await leaveTypes();
+// Balances per type for employees on a date (lib/hrLeave.js has the rules).
+async function balancesFor(employeeIds, asOf, opts) {
+  if (!employeeIds.length) return new Map();
   const { rows } = await query(
-    `SELECT employee_id, leave_type_id, status, sum(days)::float AS days FROM hr_leaves
-     WHERE employee_id = ANY($1::int[]) AND status IN ('approved','pending') AND extract(year FROM from_date) = $2
-     GROUP BY 1, 2, 3`, [employeeIds, year]);
-  const out = new Map();
-  for (const id of employeeIds) {
-    out.set(id, types.filter((t) => t.is_active).map((t) => {
-      const used = rows.filter((r) => r.employee_id === id && r.leave_type_id === t.id && r.status === "approved").reduce((a, r) => a + r.days, 0);
-      const waiting = rows.filter((r) => r.employee_id === id && r.leave_type_id === t.id && r.status === "pending").reduce((a, r) => a + r.days, 0);
-      return { leave_type_id: t.id, code: t.code, name: t.name, paid: t.paid, allowance: t.yearly_days, used, waiting,
-        left: t.yearly_days == null ? null : Math.round((t.yearly_days - used) * 10) / 10 };
-    }));
-  }
-  return out;
+    `SELECT id, employment_type, to_char(date_of_joining, 'YYYY-MM-DD') AS date_of_joining FROM hr_employees WHERE id = ANY($1::int[])`, [employeeIds]);
+  return computeBalances(rows, asOf, await loadRules(), opts);
 }
 
 async function lockedMonthIn(from, to) {
@@ -570,13 +646,12 @@ async function lockedMonthIn(from, to) {
 async function leaveAdminNeed(emp, type, from, days, excludeId = null) {
   const reasons = [];
   if (emp.app_user_role === "manager") reasons.push("Plant Manager's own leave");
-  if (type.yearly_days != null) {
-    const { rows } = await query(
-      `SELECT COALESCE(sum(days), 0)::float AS d FROM hr_leaves
-       WHERE employee_id = $1 AND leave_type_id = $2 AND status IN ('approved','pending')
-         AND extract(year FROM from_date) = extract(year FROM $3::date) AND ($4::int IS NULL OR id <> $4)`,
-      [emp.id, type.id, from, excludeId]);
-    if (rows[0].d + days > type.yearly_days) reasons.push(`over the ${type.code} allowance (${type.yearly_days} a year, ${rows[0].d} already taken or asked)`);
+  if (type.kind !== "comp_off" && type.yearly_days != null) {
+    const b = (await balancesFor([emp.id], from, { excludeLeaveId: excludeId })).get(emp.id).find((x) => x.leave_type_id === type.id);
+    const taken = b.used + b.waiting;
+    if (taken + days > b.allowance) {
+      reasons.push(`over the ${type.code} allowance (${b.allowance} for ${b.period_label}, ${taken} already taken or asked)`);
+    }
   }
   return { needs: reasons.length > 0, reason: reasons.join(", ").slice(0, 160) || null };
 }
@@ -599,6 +674,11 @@ async function createLeave(req, res, emp, { self }) {
   if (!type) return res.status(400).json({ error: "Choose the type of leave." });
   const reason = text(b.reason, 1000);
   if (self && !reason) return res.status(400).json({ error: "Give a reason." });
+  // Round 202 — who gets the type (contract workers, probation).
+  const rules = await loadRules();
+  const el = eligibility(emp, type, rules);
+  if (!el.ok) return res.status(400).json({ error: el.reason });
+  if (el.from && from < el.from) return res.status(400).json({ error: el.reason });
   const locked = await lockedMonthIn(from, to);
   if (locked) return res.status(409).json({ error: `Payroll for ${locked} is locked — leave for it can no longer be recorded.` });
   const { rows: clash } = await query(
@@ -607,6 +687,12 @@ async function createLeave(req, res, emp, { self }) {
   if (clash.length) return res.status(409).json({ error: `There is already a leave from ${clash[0].f} on those dates.` });
   const days = await leaveDays(emp, from, to, half);
   if (!days) return res.status(400).json({ error: "Those days are all weekly off or holidays — no leave needed." });
+  if (type.kind === "comp_off") {
+    const avail = await compoffAvailable(emp.id, type.id, from);
+    if (avail < days) {
+      return res.status(400).json({ error: avail ? `Only ${avail} comp-off day${avail === 1 ? "" : "s"} available on that date — claim the worked off day first, or use another leave.` : "No comp-off available on that date. Claim the worked off day first (it must be approved)." });
+    }
+  }
   const need = await leaveAdminNeed(emp, type, from, days);
   // Recording and approving in one step: only for someone who may decide it.
   const approveNow = !self && !!b.approve_now && await can(req.user, "hr.requests", "edit")
@@ -630,19 +716,26 @@ function leaveTypeFields(b) {
   const code = text(b.code, 8)?.toUpperCase();
   const name = text(b.name, 60);
   if (!code || !name) throw Object.assign(new Error("Give a short code and a name."), { expose: true });
+  const period = b.period === "month" ? "month" : "year";
   const yd = b.yearly_days === "" || b.yearly_days == null ? null : Number(b.yearly_days);
-  if (yd != null && (!Number.isFinite(yd) || yd < 0 || yd > 366)) throw Object.assign(new Error("Days a year must be 0 to 366, or blank."), { expose: true });
-  return [code, name, b.paid !== false, yd, b.is_active !== false, Number(b.sort_order) || 0];
+  if (yd != null && (!Number.isFinite(yd) || yd < 0 || yd > (period === "month" ? 31 : 366))) {
+    throw Object.assign(new Error(`Days ${period === "month" ? "a month must be 0 to 31" : "a year must be 0 to 366"}, or blank.`), { expose: true });
+  }
+  const cm = b.carry_max === "" || b.carry_max == null ? null : Number(b.carry_max);
+  if (cm != null && (!Number.isFinite(cm) || cm < 0 || cm > 366)) throw Object.assign(new Error("Carry forward must be 0 to 366 days, or blank."), { expose: true });
+  return [code, name, b.paid !== false, yd, b.is_active !== false, Number(b.sort_order) || 0, period, cm || null, !!b.not_on_probation, b.for_contract !== false];
 }
 router.post("/leave-types", requirePermission("hr.settings", "create"), async (req, res) => {
   try {
-    const { rows } = await query(`INSERT INTO hr_leave_types (code, name, paid, yearly_days, is_active, sort_order) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, leaveTypeFields(req.body || {}));
+    const { rows } = await query(`INSERT INTO hr_leave_types (code, name, paid, yearly_days, is_active, sort_order, period, carry_max, not_on_probation, for_contract)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`, leaveTypeFields(req.body || {}));
     res.status(201).json(rows[0]);
   } catch (err) { friendly(err, res, "Could not add the leave type."); }
 });
 router.patch("/leave-types/:id", requirePermission("hr.settings", "edit"), async (req, res) => {
   try {
-    const { rows } = await query(`UPDATE hr_leave_types SET code=$1, name=$2, paid=$3, yearly_days=$4, is_active=$5, sort_order=$6 WHERE id=$7 RETURNING *`,
+    const { rows } = await query(`UPDATE hr_leave_types SET code=$1, name=$2, paid=$3, yearly_days=$4, is_active=$5, sort_order=$6, period=$7, carry_max=$8,
+              not_on_probation=$9, for_contract=$10 WHERE id=$11 RETURNING *`,
       [...leaveTypeFields(req.body || {}), Number(req.params.id)]);
     if (!rows.length) return res.status(404).json({ error: "Leave type not found." });
     res.json(rows[0]);
@@ -660,12 +753,15 @@ router.get("/leaves", requirePermission("hr.requests", "view"), async (req, res)
          AND ($2::text IS NULL OR (to_char(l.from_date, 'YYYY-MM') <= $2 AND to_char(l.to_date, 'YYYY-MM') >= $2))
          AND ($3::int IS NULL OR l.employee_id = $3)
        ORDER BY (l.status = 'pending') DESC, l.from_date DESC, l.id DESC LIMIT 500`, [status, month, emp]);
-    const year = month ? Number(month.slice(0, 4)) : Number(istToday().slice(0, 4));
-    const bal = await leaveBalances([...new Set(rows.map((r) => r.employee_id))], year);
+    // Each leave is shown against its own period's balance (its month for CL).
+    const bal = new Map();
+    for (const l of rows) {
+      const k = l.employee_id + "|" + l.from_date;
+      if (!bal.has(k)) bal.set(k, (await balancesFor([l.employee_id], l.from_date)).get(l.employee_id));
+    }
     const admin = isAdmin(req.user);
     res.json({
-      year,
-      leaves: rows.map((l) => ({ ...l, days: Number(l.days), balance: bal.get(l.employee_id)?.find((b) => b.leave_type_id === l.leave_type_id) || null,
+      leaves: rows.map((l) => ({ ...l, days: Number(l.days), balance: bal.get(l.employee_id + "|" + l.from_date)?.find((b) => b.leave_type_id === l.leave_type_id) || null,
         can_decide: l.status === "pending" && canDecideLeave(req.user, l),
         can_cancel: (l.status === "pending" && (l.raised_by === req.user.id || admin)) || (l.status === "approved" && admin) })),
     });
@@ -677,12 +773,12 @@ router.get("/leaves", requirePermission("hr.requests", "view"), async (req, res)
 
 router.get("/leave-balances", requirePermission("hr.requests", "view"), async (req, res) => {
   try {
-    const year = /^\d{4}$/.test(String(req.query.year || "")) ? Number(req.query.year) : Number(istToday().slice(0, 4));
+    const asOf = DATE_RE.test(String(req.query.as_of || "")) ? req.query.as_of : istToday();
     const { rows: emps } = await query(
       `SELECT e.id, e.name, e.emp_code, d.name AS department FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
        WHERE e.is_active ORDER BY d.sort_order NULLS LAST, e.name`);
-    const bal = await leaveBalances(emps.map((e) => e.id), year);
-    res.json({ year, types: (await leaveTypes(true)), employees: emps.map((e) => ({ ...e, balances: bal.get(e.id) })) });
+    const bal = await balancesFor(emps.map((e) => e.id), asOf);
+    res.json({ as_of: asOf, types: (await leaveTypes(true)), employees: emps.map((e) => ({ ...e, balances: bal.get(e.id) })) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load leave balances." });
@@ -735,6 +831,148 @@ router.post("/leaves/:id/cancel", async (req, res) => {
   } catch (err) { friendly(err, res, "Could not cancel the leave."); }
 });
 
+// ---------------------------------------------------------------- comp-off (Round 202)
+// Worked on a weekly off or holiday → claim comp-off (owner's rule: 8 h or
+// more = 1 day, 4 h or more = ½ day, claimed within 30 days, expires 60 days
+// after the day worked; all in Settings). The claim is checked against the
+// day's own punches. Approval: the Plant Manager; Admin for the Plant
+// Manager's own; nobody their own. Using it is a "CO" leave (lib/hrLeave.js).
+const CLAIM_SELECT = `
+  SELECT c.id, c.employee_id, to_char(c.work_date, 'YYYY-MM-DD') AS work_date, c.days::float AS days, c.worked_min, c.qualifies::float AS qualifies, c.reason,
+         c.status, c.needs_admin, c.admin_reason, to_char(c.expires_on, 'YYYY-MM-DD') AS expires_on, c.raised_by, c.raised_at,
+         c.decided_at, c.decision_note, e.name AS employee_name, e.emp_code, e.app_user_id, d.name AS department,
+         rb.name AS raised_by_name, db.name AS decided_by_name
+  FROM hr_compoff_claims c
+  JOIN hr_employees e ON e.id = c.employee_id
+  LEFT JOIN hr_departments d ON d.id = e.department_id
+  LEFT JOIN users rb ON rb.id = c.raised_by
+  LEFT JOIN users db ON db.id = c.decided_by`;
+
+// What the register says about that day for that person.
+async function dayOf(emp, d) {
+  const reg = await attendanceRegister({ from: d, to: d, employeeIds: [emp.id] });
+  return reg.employees[0]?.days.find((x) => x.date === d) || null;
+}
+function offDayWorked(day) {
+  return !!day && day.flags?.some((f) => f.startsWith("worked on"));
+}
+function compoffDaysFor(minutes, rules) {
+  if (minutes == null) return 0;
+  return minutes >= rules.co_full_min ? 1 : minutes >= rules.co_half_min ? 0.5 : 0;
+}
+
+async function createClaim(req, res, emp, { self }) {
+  const b = req.body || {};
+  if (!emp || !emp.is_active) return res.status(400).json({ error: "Employee not found or no longer active." });
+  const d = date(b.work_date);
+  if (!d) return res.status(400).json({ error: "Give the day worked." });
+  const today = istToday();
+  if (d >= today) return res.status(400).json({ error: "Claim comp-off once the day is over." });
+  const rules = await loadRules();
+  const age = Math.round((Date.parse(today) - Date.parse(d)) / 86400000);
+  if (age > rules.co_claim_days) return res.status(400).json({ error: `Comp-off must be claimed within ${rules.co_claim_days} days of the day worked.` });
+  const day = await dayOf(emp, d);
+  if (!offDayWorked(day)) return res.status(400).json({ error: "That day was not a weekly off or holiday with punches — nothing to claim." });
+  // What the hours earn by the rule. Owner's correction: the person may still
+  // ask for more (a full day on short hours) and the manager decides 1 or ½.
+  const earned = compoffDaysFor(day.worked, rules);
+  const asked = Number(b.days);
+  const days = asked === 1 || asked === 0.5 ? asked : earned || 0.5;
+  const { rows: dup } = await query(`SELECT id FROM hr_compoff_claims WHERE employee_id = $1 AND work_date = $2 AND status IN ('pending','approved')`, [emp.id, d]);
+  if (dup.length) return res.status(409).json({ error: "Comp-off for that day is already claimed." });
+  const needs = emp.app_user_role === "manager";
+  const reason = text(b.reason, 500);
+  const approveNow = !self && !!b.approve_now && await can(req.user, "hr.requests", "edit") && (isAdmin(req.user) || !needs) && emp.app_user_id !== req.user.id;
+  const { rows } = await query(
+    `INSERT INTO hr_compoff_claims (employee_id, work_date, days, worked_min, qualifies, reason, status, needs_admin, admin_reason, expires_on, raised_by, decided_by, decided_at)
+     VALUES ($1,$2,$3,$4,$13,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+    [emp.id, d, days, day.worked, reason, approveNow ? "approved" : "pending", needs, needs ? "Plant Manager's own claim" : null,
+      addDaysYmd(d, rules.co_expiry_days), req.user.id, approveNow ? req.user.id : null, approveNow ? new Date() : null, earned]);
+  res.status(201).json({ id: rows[0].id, days, qualifies: earned, worked_min: day.worked, expires_on: addDaysYmd(d, rules.co_expiry_days), status: approveNow ? "approved" : "pending" });
+}
+
+// Off days worked in the last N days that could still be claimed.
+async function claimableDays(emp, rules) {
+  const to = addDaysYmd(istToday(), -1), from = addDaysYmd(istToday(), -rules.co_claim_days);
+  const reg = await attendanceRegister({ from, to, employeeIds: [emp.id] });
+  const { rows } = await query(`SELECT to_char(work_date, 'YYYY-MM-DD') AS d FROM hr_compoff_claims WHERE employee_id = $1 AND status IN ('pending','approved')`, [emp.id]);
+  const taken = new Set(rows.map((r) => r.d));
+  return (reg.employees[0]?.days || []).filter((d) => offDayWorked(d) && !taken.has(d.date))
+    .map((d) => ({ date: d.date, worked: d.worked, times: d.times, days: compoffDaysFor(d.worked, rules), holiday: d.code }));
+}
+
+router.get("/compoff", requirePermission("hr.requests", "view"), async (req, res) => {
+  try {
+    const status = ["pending", "approved", "rejected", "cancelled"].includes(req.query.status) ? req.query.status : null;
+    const { rows } = await query(`${CLAIM_SELECT} WHERE ($1::text IS NULL OR c.status = $1) ORDER BY (c.status = 'pending') DESC, c.work_date DESC LIMIT 300`, [status]);
+    const admin = isAdmin(req.user);
+    // The day's punches, beside each claim, so it is decided on evidence.
+    const evidence = new Map();
+    for (const c of rows.filter((x) => x.status === "pending")) {
+      const day = await dayOf({ id: c.employee_id }, c.work_date);
+      evidence.set(c.id, day ? { times: day.times, worked: day.worked } : null);
+    }
+    // Comp-off uses waiting for approval are ordinary leaves of the CO type.
+    const coType = (await leaveTypes()).find((t) => t.kind === "comp_off");
+    const { rows: emps } = await query(`SELECT id, name, emp_code FROM hr_employees WHERE is_active ORDER BY name`);
+    const bal = await balancesFor(emps.map((e) => e.id), istToday());
+    res.json({
+      rules: await loadRules(), co_type_id: coType?.id || null,
+      claims: rows.map((c) => ({ ...c, evidence: evidence.get(c.id) || null,
+        can_decide: c.status === "pending" && (admin || !c.needs_admin) && c.app_user_id !== req.user.id,
+        can_cancel: (c.status === "pending" && (c.raised_by === req.user.id || admin)) || (c.status === "approved" && admin) })),
+      balances: emps.map((e) => ({ ...e, co: bal.get(e.id)?.find((b) => b.kind === "comp_off") || null }))
+        .filter((e) => e.co && (e.co.earned || e.co.claims_waiting || e.co.lapsed)),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load comp-off." });
+  }
+});
+
+router.post("/compoff", requirePermission("hr.requests", "create"), async (req, res) => {
+  try { await createClaim(req, res, await loadEmployee(Number(req.body?.employee_id)), { self: false }); }
+  catch (err) { friendly(err, res, "Could not save the claim."); }
+});
+
+router.post("/compoff/:id/decide", requirePermission("hr.requests", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { rows } = await query(`${CLAIM_SELECT} WHERE c.id = $1`, [id]);
+    const c = rows[0];
+    if (!c) return res.status(404).json({ error: "Claim not found." });
+    if (c.status !== "pending") return res.status(409).json({ error: "This claim has already been decided." });
+    if (c.app_user_id === req.user.id) return res.status(403).json({ error: "Nobody can approve their own claim." });
+    if (c.needs_admin && !isAdmin(req.user)) return res.status(403).json({ error: `This one needs Admin (${c.admin_reason}).` });
+    const approve = !!req.body?.approve;
+    const note = text(req.body?.note, 500);
+    if (!approve && !note) return res.status(400).json({ error: "Say why it is rejected." });
+    // The approver decides 1 day or ½ day, whatever was asked or the hours
+    // qualify for (owner's correction).
+    const pick = Number(req.body?.days);
+    const days = approve && (pick === 1 || pick === 0.5) ? pick : c.days;
+    await query(`UPDATE hr_compoff_claims SET status = $1, days = $2, decided_by = $3, decided_at = now(), decision_note = $4 WHERE id = $5`,
+      [approve ? "approved" : "rejected", days, req.user.id, note, id]);
+    res.json({ ok: true, days });
+  } catch (err) { friendly(err, res, "Could not save the decision."); }
+});
+
+router.post("/compoff/:id/cancel", async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { rows } = await query(`${CLAIM_SELECT} WHERE c.id = $1`, [id]);
+    const c = rows[0];
+    if (!c) return res.status(404).json({ error: "Claim not found." });
+    const admin = isAdmin(req.user);
+    const mine = c.raised_by === req.user.id || c.app_user_id === req.user.id;
+    if (c.status === "pending" ? !(mine || admin) : !(c.status === "approved" && admin)) {
+      return res.status(403).json({ error: c.status === "approved" ? "Only Admin can cancel an approved comp-off." : "You cannot withdraw this claim." });
+    }
+    await query(`UPDATE hr_compoff_claims SET status = 'cancelled', decided_by = $1, decided_at = now() WHERE id = $2`, [req.user.id, id]);
+    res.json({ ok: true });
+  } catch (err) { friendly(err, res, "Could not cancel the claim."); }
+});
+
 // ---------------------------------------------------------------- my attendance (self-service)
 // Any signed-in person whose login is linked to an employee record. No HR
 // permission needed — it only ever shows and touches that one person.
@@ -759,10 +997,16 @@ router.get("/my", async (req, res) => {
       attendanceRegister({ from, to, employeeIds: [emp.id] }),
       query(`${REQ_SELECT} WHERE r.employee_id = $1 ORDER BY r.work_date DESC, r.id DESC LIMIT 60`, [emp.id]),
       query(`${LEAVE_SELECT} WHERE l.employee_id = $1 ORDER BY l.from_date DESC, l.id DESC LIMIT 40`, [emp.id]),
-      leaveBalances([emp.id], Number(month.slice(0, 4))),
+      balancesFor([emp.id], month === istToday().slice(0, 7) ? istToday() : monthRange(month).to),
       leaveTypes(true),
     ]);
+    const rules = await loadRules();
+    const [claims, claimable] = await Promise.all([
+      query(`${CLAIM_SELECT} WHERE c.employee_id = $1 ORDER BY c.work_date DESC LIMIT 20`, [emp.id]),
+      claimableDays(emp, rules),
+    ]);
     res.json({ linked: true, month, employee: { name: emp.name, emp_code: emp.emp_code }, attendance: reg.employees[0] || null,
+      compoff_claims: claims.rows, compoff_claimable: claimable,
       dates: reg.dates, requests: reqs.rows, kinds: KINDS,
       leaves: leaves.rows.map((l) => ({ ...l, days: Number(l.days) })), leave_balances: bal.get(emp.id), leave_types: types });
   } catch (err) {
@@ -776,6 +1020,13 @@ router.post("/my/leaves", async (req, res) => {
     if (!emp) return res.status(403).json({ error: "Your login is not linked to an employee record. Ask HR." });
     await createLeave(req, res, emp, { self: true });
   } catch (err) { friendly(err, res, "Could not save the leave request."); }
+});
+router.post("/my/compoff", async (req, res) => {
+  try {
+    const emp = await myEmployee(req);
+    if (!emp) return res.status(403).json({ error: "Your login is not linked to an employee record. Ask HR." });
+    await createClaim(req, res, emp, { self: true });
+  } catch (err) { friendly(err, res, "Could not save the claim."); }
 });
 router.post("/my/requests", async (req, res) => {
   try {
@@ -874,9 +1125,19 @@ router.get("/payroll", requirePermission("hr.payroll", "view"), async (req, res)
              FROM hr_payroll_lines l JOIN hr_employees e ON e.id = l.employee_id LEFT JOIN hr_departments d ON d.id = e.department_id
              WHERE l.month = $1 ORDER BY e.employment_type, d.sort_order NULLS LAST, e.name`, [month]),
     ]);
-    const { to } = monthRange(month);
-    const pending = await query(`SELECT count(*)::int AS n FROM hr_requests WHERE status = 'pending' AND to_char(work_date, 'YYYY-MM') = $1`, [month]);
-    res.json({ month, run: run.rows[0] || null, lines: lines.rows, month_finished: to < istToday(), pending_requests: pending.rows[0].n });
+    const { from, to } = monthRange(month);
+    const [pending, orphanTrips] = await Promise.all([
+      query(`SELECT count(*)::int AS n FROM hr_requests WHERE status = 'pending' AND to_char(work_date, 'YYYY-MM') = $1`, [month]),
+      // Round 202 — trip allowance earned by a driver login that no active
+      // employee record is linked to: payroll can never pay it until linked.
+      query(`SELECT u.id, u.name, count(*)::int AS n, COALESCE(sum(tap.amount), 0)::float AS amt
+             FROM trip_allowance_payouts tap JOIN users u ON u.id = tap.driver_id
+             WHERE tap.earned_at >= $1::date AND tap.earned_at < ($2::date + 1)
+               AND NOT EXISTS (SELECT 1 FROM hr_employees e WHERE e.app_user_id = u.id AND e.is_active)
+             GROUP BY u.id, u.name ORDER BY u.name`, [from, to]),
+    ]);
+    res.json({ month, run: run.rows[0] || null, lines: lines.rows, month_finished: to < istToday(), pending_requests: pending.rows[0].n,
+      unlinked_trips: orphanTrips.rows });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not load payroll." });

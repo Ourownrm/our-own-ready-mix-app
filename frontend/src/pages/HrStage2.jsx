@@ -414,6 +414,11 @@ export function PayrollTab() {
         {data?.lines.length > 0 && <button onClick={exportXlsx}>Download Excel</button>}
       </div>
       {data && !data.month_finished && <div style={{ fontSize: 12.5, color: "var(--amber)", marginBottom: 8 }}>This month has not finished — figures so far only. It can be locked after the last day.</div>}
+      {data?.unlinked_trips?.length > 0 && (
+        <div style={{ background: "var(--amber-bg)", color: "var(--amber)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, marginBottom: 8 }}>
+          <b>Trip allowance not reaching payroll:</b> {data.unlinked_trips.map((t) => `${t.name} — ${t.n} trips, ₹${Math.round(t.amt).toLocaleString("en-IN")}`).join("; ")}. These driver logins aren't linked to any employee. Link each on Employees → edit → "App login", tick "Gets trip allowance", then recalculate.
+        </div>
+      )}
       {data?.pending_requests > 0 && !locked && <div style={{ fontSize: 12.5, color: "var(--info)", marginBottom: 8 }}>{data.pending_requests} attendance request(s) for this month are still waiting for approval.</div>}
       {data?.run && <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 10 }}>
         Calculated {new Date(data.run.computed_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}{data.run.computed_by_name ? ` by ${data.run.computed_by_name}` : ""}

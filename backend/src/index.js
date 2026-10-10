@@ -36,6 +36,7 @@ import weighbridgeRoutes from "./routes/weighbridge.js";
 import attendanceRoutes from "./routes/attendance.js";
 // Round 197 — HR module stage 1.
 import hrRoutes from "./routes/hr.js";
+import hrPunchRoutes from "./routes/hrPunch.js";
 import plantRoutes from "./routes/plant.js";
 import bookingLinksRoutes from "./routes/bookingLinks.js";
 import customerBookingRoutes from "./routes/customerBooking.js";
@@ -189,6 +190,8 @@ app.use("/api/delivery-notes", deliveryNotesRoutes);
 app.use("/api/weighbridge", weighbridgeRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/hr", hrRoutes);
+// Round 202 — attendance marked on the phone (face, location, registered phone).
+app.use("/api/hr", hrPunchRoutes);
 // Round 157 — the MCI370 batching plant. Like the weighbridge router, this one
 // exposes a single API-key route (POST /sync) above its own requireAuth.
 app.use("/api/plant", plantRoutes);

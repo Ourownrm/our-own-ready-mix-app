@@ -24,6 +24,18 @@ export const RULE_DEFS = {
   bonus_rate: { label: "Bonus provision % (of Basic + DA, up to the ceiling)", type: "num", min: 0, max: 20, default: 8.33 },
   bonus_wage_cap: { label: "Bonus wage ceiling (₹ per month)", type: "num", min: 0, max: 100000, default: 7000 },
   gratuity_rate: { label: "Gratuity provision % of Basic + DA", type: "num", min: 0, max: 10, default: 4.81 },
+  // Round 202 — leave, comp-off
+  probation_months: { label: "Probation — months from joining (leave types marked 'not during probation')", type: "int", min: 0, max: 24, default: 3 },
+  co_full_min: { label: "Comp-off — minutes worked on an off day for a full day", type: "int", min: 60, max: 960, default: 480 },
+  co_half_min: { label: "Comp-off — minutes worked on an off day for a half day", type: "int", min: 30, max: 960, default: 240 },
+  co_claim_days: { label: "Comp-off — must be claimed within (days of the day worked)", type: "int", min: 1, max: 180, default: 30 },
+  co_expiry_days: { label: "Comp-off — expires (days after the day worked)", type: "int", min: 1, max: 365, default: 60 },
+  // Round 202 — today's dashboard, phone attendance
+  not_punched_after_min: { label: "Today: \"not punched in\" after shift start plus (minutes)", type: "int", min: 0, max: 240, default: 20 },
+  gps_accuracy_max: { label: "Phone attendance — refuse a location less accurate than (metres)", type: "int", min: 10, max: 1000, default: 50 },
+  face_match_max: { label: "Phone attendance — face match distance allowed (lower = stricter; 0.5 normal)", type: "num", min: 0.3, max: 0.7, default: 0.5 },
+  face_tries: { label: "Phone attendance — face tries before the punch goes to the manager", type: "int", min: 1, max: 10, default: 3 },
+  photo_keep_days: { label: "Phone attendance — keep punch photos for (days)", type: "int", min: 7, max: 400, default: 90 },
 };
 
 export async function loadRules() {

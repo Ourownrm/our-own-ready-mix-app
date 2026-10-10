@@ -4001,3 +4001,89 @@ CREATE TABLE IF NOT EXISTS rm_transporter_payments (
   cancel_reason  TEXT
 );
 CREATE INDEX IF NOT EXISTS rm_transporter_payments_t ON rm_transporter_payments (transporter_id, paid_on);
+
+
+-- =====================================================================
+-- ROUND 202 — leave allowance rules, comp-off, app attendance (work
+-- locations, face, registered phone, phone punches). Same statements as
+-- HR_STAGE4_SQL in backend/src/lib/hrSchema.js; /setup also sets CL to
+-- monthly and adds the CO leave type.
+-- =====================================================================
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS period VARCHAR(5) NOT NULL DEFAULT 'year';
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS carry_max NUMERIC(5,1);
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS not_on_probation BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS for_contract BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE hr_leave_types ADD COLUMN IF NOT EXISTS kind VARCHAR(10) NOT NULL DEFAULT 'normal';
+ALTER TABLE hr_leave_types DROP CONSTRAINT IF EXISTS hr_leave_types_period_check;
+ALTER TABLE hr_leave_types ADD CONSTRAINT hr_leave_types_period_check CHECK (period IN ('year','month'));
+ALTER TABLE hr_leave_types DROP CONSTRAINT IF EXISTS hr_leave_types_kind_check;
+ALTER TABLE hr_leave_types ADD CONSTRAINT hr_leave_types_kind_check CHECK (kind IN ('normal','comp_off'));
+
+CREATE TABLE IF NOT EXISTS hr_compoff_claims (
+  id             SERIAL PRIMARY KEY,
+  employee_id    INTEGER NOT NULL REFERENCES hr_employees(id),
+  work_date      DATE NOT NULL,
+  days           NUMERIC(3,1) NOT NULL CHECK (days IN (0.5, 1)),
+  worked_min     INTEGER,
+  qualifies      NUMERIC(3,1),           -- what the hours earn by the rule (0, 0.5 or 1); the manager may give 1 or ½ regardless
+  reason         TEXT,
+  status         VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','cancelled')),
+  needs_admin    BOOLEAN NOT NULL DEFAULT false,
+  admin_reason   VARCHAR(160),
+  expires_on     DATE NOT NULL,
+  raised_by      INTEGER REFERENCES users(id),
+  raised_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_by     INTEGER REFERENCES users(id),
+  decided_at     TIMESTAMPTZ,
+  decision_note  TEXT
+);
+ALTER TABLE hr_compoff_claims ADD COLUMN IF NOT EXISTS qualifies NUMERIC(3,1);
+CREATE UNIQUE INDEX IF NOT EXISTS hr_compoff_one_per_day ON hr_compoff_claims (employee_id, work_date) WHERE status IN ('pending','approved');
+
+CREATE TABLE IF NOT EXISTS hr_work_locations (
+  id         SERIAL PRIMARY KEY,
+  name       VARCHAR(80) NOT NULL,
+  lat        DOUBLE PRECISION NOT NULL,
+  lng        DOUBLE PRECISION NOT NULL,
+  radius_m   INTEGER NOT NULL DEFAULT 200 CHECK (radius_m BETWEEN 20 AND 5000),
+  is_active  BOOLEAN NOT NULL DEFAULT true
+);
+
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS app_punch VARCHAR(10) NOT NULL DEFAULT 'off';
+ALTER TABLE hr_employees DROP CONSTRAINT IF EXISTS hr_employees_app_punch_check;
+ALTER TABLE hr_employees ADD CONSTRAINT hr_employees_app_punch_check CHECK (app_punch IN ('off','plant','anywhere'));
+-- The enrolled face lives in its own table: hr_employees is read on every
+-- screen and must not carry a photo along.
+CREATE TABLE IF NOT EXISTS hr_employee_faces (
+  employee_id  INTEGER PRIMARY KEY REFERENCES hr_employees(id),
+  descriptor   JSONB NOT NULL,
+  photo        BYTEA,
+  enrolled_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  enrolled_by  INTEGER REFERENCES users(id)
+);
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS device_id VARCHAR(64);
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS device_registered_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS hr_app_punches (
+  id             SERIAL PRIMARY KEY,
+  employee_id    INTEGER NOT NULL REFERENCES hr_employees(id),
+  punched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  lat            DOUBLE PRECISION,
+  lng            DOUBLE PRECISION,
+  accuracy_m     REAL,
+  location_id    INTEGER REFERENCES hr_work_locations(id),
+  distance_m     INTEGER,
+  face_distance  REAL,
+  live           BOOLEAN NOT NULL DEFAULT false,
+  tries          INTEGER NOT NULL DEFAULT 1,
+  device_id      VARCHAR(64),
+  photo          BYTEA,
+  status         VARCHAR(10) NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','review','approved','rejected')),
+  review_reason  VARCHAR(160),
+  reviewed_by    INTEGER REFERENCES users(id),
+  reviewed_at    TIMESTAMPTZ,
+  review_note    TEXT,
+  user_id        INTEGER REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS hr_app_punches_emp_time ON hr_app_punches (employee_id, punched_at);
+CREATE INDEX IF NOT EXISTS hr_app_punches_review ON hr_app_punches (status) WHERE status = 'review';

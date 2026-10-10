@@ -11,6 +11,8 @@ import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { RequestForm, RequestsTab, PayrollTab, AdvancesTab, RulesCard } from "./HrStage2.jsx";
 import { LeaveForm, LeaveTab, LeaveTypesCard } from "./HrLeave.jsx";
+import { FacePanel, WorkLocationsCard, PhonePunchReview } from "./HrPhone.jsx";
+import { TodayTab, CompOffTab } from "./HrToday.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CODE_STYLE = {
@@ -238,10 +240,11 @@ const EMPTY = {
   policy: "office", default_shift_id: "", weekly_off: "0", trip_allowance: false, notes: "",
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
   daily_rate: "", service_charge_pct: "", incentive_basis: "none", incentive_min_m3: "", incentive_rate: "",
-  salesperson_id: "", ot_eligible: false,
+  salesperson_id: "", ot_eligible: false, app_punch: "off",
 };
 
 function EmployeeForm({ meta, initial, onSaved, onCancel }) {
+  const { can } = usePermissions();
   const [f, setF] = useState(() => {
     const base = { ...EMPTY };
     if (initial) for (const k of Object.keys(EMPTY)) if (initial[k] !== undefined && initial[k] !== null) base[k] = typeof EMPTY[k] === "boolean" ? !!initial[k] : String(initial[k]);
@@ -337,6 +340,14 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
             {appOptions.map((u) => <option key={u.id} value={u.id}>{u.name} · {u.role.replace("_", " ")}</option>)}
           </select>
         </Field>
+        {/* Round 202 — attendance on the phone: only with an app login, never drivers. */}
+        <Field label="Attendance on the phone" hint={!f.app_user_id ? "Needs an app login." : appOptions.find((u) => String(u.id) === f.app_user_id)?.role === "driver" ? "Drivers use the gate machine." : "Face check + registered phone."}>
+          <select value={f.app_user_id ? f.app_punch : "off"} onChange={set("app_punch")} disabled={!f.app_user_id || appOptions.find((u) => String(u.id) === f.app_user_id)?.role === "driver"}>
+            <option value="off">Off — gate machine only</option>
+            <option value="plant">At the plant (inside a work location)</option>
+            <option value="anywhere">Anywhere — field / sales (location saved)</option>
+          </select>
+        </Field>
         <Field label="Timing">
           <select value={f.policy} onChange={set("policy")}>
             <option value="office">Office — fixed shift</option>
@@ -418,6 +429,7 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
       <div style={{ ...grid, marginTop: 12 }}>
         <Field label="Notes" span><textarea rows={2} value={f.notes} onChange={set("notes")} /></Field>
       </div>
+      {initial?.id && f.app_user_id && f.app_punch !== "off" && <FacePanel employee={initial} canEdit={can("hr.employees", "edit")} />}
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 10 }}>{error}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
         <button type="submit" className="btn-primary" disabled={saving}>{saving ? "Saving…" : editing ? "Save changes" : "Add employee"}</button>
@@ -637,6 +649,7 @@ function SettingsTab({ meta, reloadMeta }) {
 
       <RulesCard meta={meta} canEdit={canEdit} onSaved={reloadMeta} />
       <LeaveTypesCard meta={meta} canEdit={canEdit} canCreate={canCreate} onSaved={reloadMeta} />
+      <WorkLocationsCard canEdit={canEdit} canCreate={canCreate} />
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 4 }}>Shifts</div>
@@ -738,10 +751,12 @@ export default function HrModule() {
   useEffect(() => { loadMeta(); }, []);
 
   const tabs = [
+    ["today", "Today", can("hr.attendance", "view")],
     ["attendance", "Attendance", can("hr.attendance", "view")],
     ["employees", "Employees", can("hr.employees", "view")],
     ["requests", "Requests", can("hr.requests", "view")],
     ["leave", "Leave", can("hr.requests", "view")],
+    ["compoff", "Comp-off", can("hr.requests", "view")],
     ["roster", "Roster", can("hr.roster", "view")],
     ["payroll", "Payroll", can("hr.payroll", "view")],
     ["advances", "Advances", can("hr.advances", "view")],
@@ -760,10 +775,12 @@ export default function HrModule() {
         </div>
         {!tabs.length && <div className="card" style={{ fontSize: 13 }}>You don&rsquo;t have access to any part of HR. A Super Admin can grant it on the Access Control page.</div>}
         {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}
+        {meta && current === "today" && <TodayTab meta={meta} />}
         {meta && current === "attendance" && <AttendanceTab meta={meta} />}
         {meta && current === "employees" && <EmployeesTab meta={meta} reloadMeta={loadMeta} />}
         {meta && current === "roster" && <RosterTab meta={meta} />}
-        {meta && current === "requests" && <RequestsTab meta={meta} />}
+        {meta && current === "requests" && <><PhonePunchReview /><RequestsTab meta={meta} /></>}
+        {meta && current === "compoff" && <CompOffTab meta={meta} />}
         {meta && current === "leave" && <LeaveTab meta={meta} />}
         {meta && current === "payroll" && <PayrollTab meta={meta} />}
         {meta && current === "advances" && <AdvancesTab />}

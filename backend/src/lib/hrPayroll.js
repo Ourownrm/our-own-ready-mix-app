@@ -132,10 +132,17 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
   const otAmount = emp.ot_eligible ? r0(otHours * hourly * rules.ot_multiplier) : 0;
 
   // Trip allowance
+  // Round 202 — say WHY none is paid, rather than show a silent zero: trips
+  // are recorded against the driver's app login, so a missing link or an
+  // unticked "Gets trip allowance" is the usual cause.
   let trip = { n: 0, amt: 0 };
+  const loginTrips = emp.app_user_id ? data.trips.get(emp.app_user_id) : null;
   if (emp.trip_allowance) {
-    if (!emp.app_user_id) warn.push("gets trip allowance but has no app login linked");
-    else trip = data.trips.get(emp.app_user_id) || trip;
+    if (!emp.app_user_id) warn.push("gets trip allowance but has no app login linked — trips are recorded against the driver's login");
+    else if (!loginTrips) warn.push("gets trip allowance but no trips were recorded for their app login this month");
+    else trip = loginTrips;
+  } else if (loginTrips && loginTrips.amt > 0) {
+    warn.push(`${loginTrips.n} trips worth ₹${Math.round(loginTrips.amt).toLocaleString("en-IN")} this month, but "Gets trip allowance" is not ticked — not paid`);
   }
 
   // Incentive

@@ -79,6 +79,20 @@ export function TopBar({ title }) {
       .catch(() => {});
   }, [user?.id]);
 
+  // Round 202 — whether this person may mark attendance on the phone (asked
+  // once per session when linked; "no" is asked again like the link above).
+  const [canPunch, setCanPunch] = useState(() => {
+    try { return user ? sessionStorage.getItem(`oorm_can_punch_${user.id}`) === "1" : false; } catch { return false; }
+  });
+  useEffect(() => {
+    if (!user || !myAttendance) return;
+    const key = `oorm_can_punch_${user.id}`;
+    try { const v = sessionStorage.getItem(key); if (v === "1" || (v && v.startsWith("0:") && Date.now() - Number(v.slice(2)) < 10 * 60_000)) return; } catch { /* ask anyway */ }
+    apiRequest("/hr/punch/allowed")
+      .then((r) => { setCanPunch(!!r.allowed); try { sessionStorage.setItem(key, r.allowed ? "1" : `0:${Date.now()}`); } catch { /* ignore */ } })
+      .catch(() => {});
+  }, [user?.id, myAttendance]);
+
   useEffect(() => {
     if (pushSupported()) pushStatus().then(setNotifStatus);
   }, []);
@@ -121,6 +135,10 @@ export function TopBar({ title }) {
           )}
           {showModules && (
             <Link to="/modules" className="topbar-link">Modules</Link>
+          )}
+          {/* Round 202 — anyone allowed to mark attendance on the phone. */}
+          {myAttendance && canPunch && pathname !== "/mark-attendance" && (
+            <Link to="/mark-attendance" className="topbar-link" style={{ fontWeight: 600, color: "#fff" }}>Mark attendance</Link>
           )}
           {myAttendance && pathname !== "/my-attendance" && (
             <Link to="/my-attendance" className="topbar-link">My attendance</Link>
