@@ -59,17 +59,23 @@ export function TopBar({ title }) {
   const now = useClock();
 
   // Round 198 — "My attendance" for anyone whose login is linked to an HR
-  // employee record. Asked once per session and remembered, so the header does
-  // not cost a request on every screen.
+  // employee record. Round 201: only a YES is remembered for the session. A
+  // "no" used to be remembered too, so someone HR linked after they had signed
+  // in never saw the link until they closed the app; now a "no" is asked again
+  // (at most every 10 minutes), and a "yes" shows straight away on every screen.
   const [myAttendance, setMyAttendance] = useState(() => {
     try { return user ? sessionStorage.getItem(`oorm_my_att_${user.id}`) === "1" : false; } catch { return false; }
   });
   useEffect(() => {
     if (!user) return;
     const key = `oorm_my_att_${user.id}`;
-    try { if (sessionStorage.getItem(key) !== null) return; } catch { /* storage blocked: ask anyway */ }
+    try {
+      const v = sessionStorage.getItem(key);
+      if (v === "1") return;
+      if (v && v.startsWith("0:") && Date.now() - Number(v.slice(2)) < 10 * 60_000) return;
+    } catch { /* storage blocked: ask anyway */ }
     apiRequest("/hr/my/linked")
-      .then((r) => { setMyAttendance(!!r.linked); try { sessionStorage.setItem(key, r.linked ? "1" : "0"); } catch { /* ignore */ } })
+      .then((r) => { setMyAttendance(!!r.linked); try { sessionStorage.setItem(key, r.linked ? "1" : `0:${Date.now()}`); } catch { /* ignore */ } })
       .catch(() => {});
   }, [user?.id]);
 

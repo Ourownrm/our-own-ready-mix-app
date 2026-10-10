@@ -273,7 +273,7 @@ function Production({ qs }) {
               <b>#{l.batch_no} · {l.recipe_code}</b><b>{fmtM3(l.m3)}</b>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "var(--slate)", fontSize: 12 }}>
-              <span>{fmtWhen(l.started_at)} · {l.batches} mixes</span><span>{l.truck_no || "—"}</span>
+              <span>{fmtWhen(l.started_at)} · {l.batches} batches</span><span>{l.truck_no || "—"}</span>
             </div>
             {l.site_name && <div style={{ color: "var(--slate)", fontSize: 12 }}>{l.site_name}</div>}
           </div>
@@ -285,7 +285,7 @@ function Production({ qs }) {
           <thead>
             <tr style={{ background: "var(--concrete)" }}>
               <th style={TH}>Batch</th><th style={TH}>Started</th><th style={TH}>Recipe</th>
-              <th style={{ ...TH, textAlign: "right" }}>Made</th><th style={{ ...TH, textAlign: "right" }}>Mixes</th>
+              <th style={{ ...TH, textAlign: "right" }}>Made</th><th style={{ ...TH, textAlign: "right" }}>Batches</th>
               <th style={TH}>Truck</th><th style={TH}>Site</th><th style={TH}>Batcher</th>
             </tr>
           </thead>
