@@ -17,6 +17,7 @@
 // around this date.)
 // ===========================================================================
 import { query } from "../db.js";
+import { loadKept } from "./plantLoadReview.js";
 
 export const CONSUMPTION_CUTOVER = "2026-09-01";
 
@@ -114,7 +115,7 @@ export async function plantConsumptionByMaterialMonth({ from = null } = {}) {
 // Plant production (m³) over [from, toExclusive): batched m³ (plant_batches)
 // plus manual production entries (plant_manual_entries, material_id IS NULL).
 export async function plantProductionM3({ from = null, toExclusive = null } = {}) {
-  const bWh = [], bP = [];
+  const bWh = [loadKept("pb.")], bP = [];
   if (from)        { bP.push(from);        bWh.push(`pb.batch_date >= $${bP.length}::date`); }
   if (toExclusive) { bP.push(toExclusive); bWh.push(`pb.batch_date <  $${bP.length}::date`); }
   const eWh = ["e.material_id IS NULL"], eP = [];

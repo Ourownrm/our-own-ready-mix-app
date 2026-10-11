@@ -6,6 +6,7 @@ import { CustomersPanel, SitesPanel, OrdersPanel, TicketsPanel, RatesPanel, Main
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import { PieChart } from "../lib/PieChart.jsx";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
+import QuotationFollowupsCard from "../lib/QuotationFollowupsCard.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 import RawMaterialStockCard from "../lib/RawMaterialStockCard.jsx";
 import StoreStockCard from "../lib/StoreStockCard.jsx";
@@ -351,6 +352,7 @@ export default function ManagerDashboard() {
             )}
           </div>
         </Link>
+        <QuotationFollowupsCard />
         <FollowupsDue />
         <RawMaterialStockCard />
         <StoreStockCard />

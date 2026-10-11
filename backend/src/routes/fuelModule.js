@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { query } from "../db.js";
+import { loadKept } from "../lib/plantLoadReview.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { istDay, istDaysAgo } from "../lib/istDate.js";
@@ -525,7 +526,7 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
       ),
       tankSummary(monthStart, today),
       query(
-        `SELECT (SELECT COALESCE(SUM(batch_qty_m3), 0) FROM plant_batches WHERE batch_date BETWEEN $1 AND $2)
+        `SELECT (SELECT COALESCE(SUM(batch_qty_m3), 0) FROM plant_batches WHERE batch_date BETWEEN $1 AND $2 AND ${loadKept()})
               + (SELECT COALESCE(SUM(qty_m3), 0) FROM plant_manual_entries WHERE entry_date BETWEEN $1 AND $2 AND material_id IS NULL) AS m3`,
         [monthStart, today]
       ),
@@ -829,7 +830,7 @@ async function periodTotals(from, to) {
       [from, to]
     ),
     query(
-      `SELECT (SELECT COALESCE(SUM(batch_qty_m3), 0) FROM plant_batches WHERE batch_date BETWEEN $1 AND $2)
+      `SELECT (SELECT COALESCE(SUM(batch_qty_m3), 0) FROM plant_batches WHERE batch_date BETWEEN $1 AND $2 AND ${loadKept()})
             + (SELECT COALESCE(SUM(qty_m3), 0) FROM plant_manual_entries WHERE entry_date BETWEEN $1 AND $2 AND material_id IS NULL) AS m3`,
       [from, to]
     ),
@@ -877,7 +878,7 @@ router.get("/analysis/overview", ANALYSIS, async (req, res) => {
          m AS (SELECT unnest($1::text[]) AS ym)
          SELECT m.ym,
            (SELECT COALESCE(SUM(actual_quantity_issued), 0) FROM sr_all WHERE to_char(issued_at, 'YYYY-MM') = m.ym) AS used,
-           (SELECT COALESCE(SUM(batch_qty_m3), 0) FROM plant_batches WHERE to_char(batch_date, 'YYYY-MM') = m.ym)
+           (SELECT COALESCE(SUM(batch_qty_m3), 0) FROM plant_batches WHERE to_char(batch_date, 'YYYY-MM') = m.ym AND ${loadKept()})
              + (SELECT COALESCE(SUM(qty_m3), 0) FROM plant_manual_entries WHERE to_char(entry_date, 'YYYY-MM') = m.ym AND material_id IS NULL) AS m3,
            (SELECT COALESCE(SUM(qty_change), 0) FROM store_stock_transactions
              WHERE stock_item_id = $2 AND txn_type = 'purchase_receive' AND to_char(created_at, 'YYYY-MM') = m.ym) AS received,

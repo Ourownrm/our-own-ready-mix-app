@@ -85,19 +85,40 @@ router.get("/rate-check", async (req, res) => {
     return res.status(400).json({ error: "customer_id and mix_grade_id are required." });
   }
   const { rows } = await query(
-    `SELECT rate_per_m3, (site_id = $4::int) AS is_site_specific,
-            line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3,
-            part_load_min_qty_m3, part_load_charge_per_m3, pumping_charge_lumpsum
-     FROM rate_master
-     WHERE customer_id = $1 AND mix_grade_id = $2
-       AND (site_id = $4::int OR site_id IS NULL)
-       AND effective_from <= COALESCE($3::date, CURRENT_DATE) AND (effective_to IS NULL OR effective_to >= COALESCE($3::date, CURRENT_DATE))
-     ORDER BY (site_id = $4::int) DESC, effective_from DESC, id DESC LIMIT 1`,
+    `SELECT rm.rate_per_m3, (rm.site_id = $4::int) AS is_site_specific,
+            rm.line_pump_charge, rm.line_pump_min_qty_m3, rm.boom_pump_charge, rm.boom_pump_min_qty_m3,
+            rm.part_load_min_qty_m3, rm.part_load_charge_per_m3, rm.pumping_charge_lumpsum,
+            rm.quotation_id, rm.source, q.quote_no, rm.effective_from::text AS effective_from
+     FROM rate_master rm
+     LEFT JOIN quotations q ON q.id = rm.quotation_id
+     WHERE rm.customer_id = $1 AND rm.mix_grade_id = $2
+       AND (rm.site_id = $4::int OR rm.site_id IS NULL)
+       AND rm.effective_from <= COALESCE($3::date, CURRENT_DATE) AND (rm.effective_to IS NULL OR rm.effective_to >= COALESCE($3::date, CURRENT_DATE))
+     ORDER BY (rm.site_id = $4::int) DESC, rm.effective_from DESC, rm.id DESC LIMIT 1`,
     [customer_id, mix_grade_id, date || null, site_id || null]
   );
   const r = rows[0];
+  // Round 204 — a quotation for this site still with the customer (approved /
+  // sent, not accepted yet): Create Order names it, since the first order of a
+  // new site accepts it (clause 9.1).
+  let pendingQuote = null;
+  if (site_id) {
+    const { rows: pq } = await query(
+      `SELECT q.id, q.quote_no, q.status, q.revision, ql.rate_total
+         FROM quotations q JOIN quotation_lines ql ON ql.quotation_id = q.id AND ql.mix_grade_id = $3
+        WHERE q.customer_id = $1 AND q.site_id = $2 AND q.status IN ('approved', 'sent')
+        ORDER BY q.id DESC LIMIT 1`,
+      [customer_id, site_id, mix_grade_id]
+    );
+    pendingQuote = pq[0] || null;
+  }
   res.json({
     rate_exists: rows.length > 0,
+    quotation_id: r?.quotation_id ?? null,
+    quote_no: r?.quote_no ?? null,
+    rate_source: r?.source ?? null,
+    effective_from: r?.effective_from ?? null,
+    pending_quotation: pendingQuote,
     rate_per_m3: r?.rate_per_m3 ?? null,
     is_site_specific: r?.is_site_specific ?? false,
     // Falls back to the legacy single pump-charge field (as the line pump

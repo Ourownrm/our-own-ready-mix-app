@@ -1,0 +1,8 @@
+Fonts used by the quotation PDF (frontend/src/lib/quotationPdf.js), subset to
+Latin, punctuation and the rupee sign (₹) to keep them small.
+
+- Poppins (Bold, Medium) — Copyright 2020 The Poppins Project Authors.
+- Carlito (Regular, Bold, Italic) — Copyright 2010-2013 tyPoland Lukasz Dziedzic.
+
+Both are licensed under the SIL Open Font License, Version 1.1:
+https://openfontlicense.org

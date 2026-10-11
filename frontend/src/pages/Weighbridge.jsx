@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
-import { useNavigate } from "react-router-dom";
 
 // Round 154 — the weighbridge screen.
 //
@@ -996,7 +995,6 @@ function Records() {
 
 export default function Weighbridge() {
   const { can, ready } = usePermissions();
-  const navigate = useNavigate();
   const [tab, setTab] = useState("");
 
   // Round 192 — each tab is its own function (Weighbridge module on the Super
@@ -1005,7 +1003,6 @@ export default function Weighbridge() {
   const canRecords = ready && can("weighbridge.records", "view");
   const canVehicles = ready && can("weighbridge.vehicles", "view");
   const canVehiclesEdit = ready && can("weighbridge.vehicles", "edit");
-  const canVariance = ready && (can("weighbridge.receipt-variance", "view") || can("material.receipt-confirm", "view"));
   const canEdit = ready && can("material.weighbridge", "edit");
   const canMap = ready && can("material.weighbridge-mapping", "view");
   // Round 158 — the Vehicles and Mapping controls used to be shown to anyone
@@ -1019,7 +1016,7 @@ export default function Weighbridge() {
 
   if (!ready) return null;
 
-  if (!firstTab && !canVariance) {
+  if (!firstTab) {
     return (
       <>
         <TopBar title="Weighbridge" />
@@ -1062,13 +1059,7 @@ export default function Weighbridge() {
               Vehicles
             </button>
           )}
-          {/* Round 192 — Receipt Variances is a Weighbridge sub-menu; it lives on
-              its own screen, so it is a link across rather than a tab. */}
-          {canVariance && (
-            <button type="button" className="btn-tab" onClick={() => navigate("/receipt-differences")}>
-              Receipt variances &rarr;
-            </button>
-          )}
+          {/* Round 204 — Receipt Variances moved to the Raw Material module. */}
         </div>
         {current === "records" && canRecords
           ? <Records />

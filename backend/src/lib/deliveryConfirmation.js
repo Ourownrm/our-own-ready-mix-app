@@ -109,10 +109,11 @@ export async function checkPumpChargeThreshold(orderId) {
 // way via ON CONFLICT DO NOTHING.
 export async function generateInvoiceForTicket(ticketId) {
   const { rows: rateRows } = await query(
-    `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.order_date,
-            rm.rate_per_m3, co.pump_requirement,
+    `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.site_id, co.mix_grade_id, co.order_date,
+            rm.id AS rate_id, rm.rate_per_m3, rm.part_load_min_qty_m3, rm.part_load_charge_per_m3,
+            co.pump_requirement,
             co.pump_charge_applicable, co.pump_charge_amount,
-            co.part_load_applicable, co.part_load_charge_amount,
+            co.part_load_applicable, co.part_load_charge_amount, co.part_load_basis,
             -- Round 121, item 3 — the order's chosen billing profile (if any),
             -- falling back to the customer's own name/billing_address so a
             -- customer who never set up multiple billing entities invoices
@@ -133,33 +134,16 @@ export async function generateInvoiceForTicket(ticketId) {
   );
   if (rateRows[0]) {
     const r = rateRows[0];
-    const concreteAmount = Number(r.loaded_quantity_m3) * Number(r.rate_per_m3);
-
-    // Both pump charge and part load are Manager's own confirmed decision at
-    // order creation (not automatic) — still only charged once per order,
-    // on whichever ticket happens to be invoiced first.
-    let pumpingCharge = 0;
-    let partLoadCharge = 0;
-    if (r.pump_charge_applicable || r.part_load_applicable) {
-      const { rows: alreadyCharged } = await query(
-        `SELECT COALESCE(SUM(pumping_charge), 0) AS pump_total, COALESCE(SUM(part_load_charge), 0) AS part_load_total
-         FROM invoices i JOIN delivery_tickets dt2 ON dt2.id = i.ticket_id
-         WHERE dt2.order_id = $1`,
-        [r.order_id]
-      );
-      const nothingChargedYet = Number(alreadyCharged[0].pump_total) === 0 && Number(alreadyCharged[0].part_load_total) === 0;
-      if (nothingChargedYet) {
-        if (r.pump_charge_applicable) pumpingCharge = Number(r.pump_charge_amount || 0);
-        if (r.part_load_applicable) partLoadCharge = Number(r.part_load_charge_amount || 0);
-      }
-    }
+    const concreteAmount = round2(Number(r.loaded_quantity_m3) * Number(r.rate_per_m3));
+    const { pumpingCharge, partLoadCharge } = await chargesForTicket(r);
 
     await query(
-      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount, billing_name, billing_address, billing_gstin)
-       VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)
+      `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount,
+                             billing_name, billing_address, billing_gstin, rate_per_m3, rate_id)
+       VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9, $10, $11)
        ON CONFLICT DO NOTHING`,
-      [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, concreteAmount + pumpingCharge + partLoadCharge,
-       r.billing_name, r.billing_address, r.billing_gstin]
+      [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, round2(concreteAmount + pumpingCharge + partLoadCharge),
+       r.billing_name, r.billing_address, r.billing_gstin, r.rate_per_m3, r.rate_id]
     );
     return true;
   } else {
@@ -168,26 +152,94 @@ export async function generateInvoiceForTicket(ticketId) {
     // is corrected, so make that visible instead of a silent gap. Guarded so
     // this notice only fires once (creation attempt), not again at
     // unloading-complete for the same ticket.
+    //
+    // Round 204 — the price list is now set by quotations, so the notice
+    // names the quotation waiting for approval or for the customer (if any),
+    // and the Administrator is told as well as the Accountant.
     const { rows: already } = await query(
       "SELECT 1 FROM notifications WHERE ticket_id = $1 AND type = 'no_rate_on_file'",
       [ticketId]
     );
     if (already.length) return false;
-    await query(
-      `INSERT INTO notifications (recipient_role, ticket_id, type, message)
-       VALUES ('accountant', $1, 'no_rate_on_file',
-         'Delivery note created but no rate is on file for this customer/grade — invoice not generated')`,
+    const { rows: t } = await query(
+      `SELECT dt.ticket_number, co.customer_id, co.site_id, c.name AS customer_name, s.name AS site_name, m.name AS grade
+         FROM delivery_tickets dt JOIN customer_orders co ON co.id = dt.order_id
+         JOIN customers c ON c.id = co.customer_id JOIN sites s ON s.id = co.site_id
+         JOIN mix_grades m ON m.id = co.mix_grade_id
+        WHERE dt.id = $1`,
       [ticketId]
     );
-    const { rows: t } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
-    await pushToRole("accountant", {
-      title: "No rate on file",
-      body: `${t[0]?.ticket_number || "A delivery"} — invoice not generated`,
-      url: "/accountant",
-    });
+    const info = t[0] || {};
+    let pendingQuote = null;
+    if (info.customer_id) {
+      const { rows: q } = await query(
+        `SELECT quote_no, status FROM quotations
+          WHERE customer_id = $1 AND site_id = $2 AND status IN ('draft', 'pending_approval', 'approved', 'sent')
+          ORDER BY id DESC LIMIT 1`,
+        [info.customer_id, info.site_id]
+      ).catch(() => ({ rows: [] }));
+      pendingQuote = q[0] || null;
+    }
+    const why = pendingQuote
+      ? `quotation ${pendingQuote.quote_no} is ${pendingQuote.status === "pending_approval" ? "waiting for Admin approval" : pendingQuote.status === "draft" ? "still a draft" : "waiting for the customer to accept"}`
+      : "no quotation has set a price for this site and grade";
+    const message = `${info.ticket_number || "A delivery"} (${info.customer_name || "customer"} · ${info.site_name || "site"} · ${info.grade || "grade"}) — invoice held: ${why}.`;
+    for (const role of ["accountant", "administrator"]) {
+      await query(
+        `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+         VALUES ($1, $2, 'no_rate_on_file', $3)`,
+        [role, ticketId, message]
+      );
+    }
+    await pushToRole("accountant", { title: "Invoice held — no price list", body: message, url: "/accounts?tab=invoices" });
+    await pushToRole("administrator", { title: "Invoice held — no price list", body: message, url: "/accounts?tab=quotations" });
     return false;
   }
 }
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+// Round 204 — the order-level charges one delivery carries.
+//
+// Pump mobilization: the Manager's decision on the order; charged once per
+// order, on whichever delivery is invoiced first (unchanged).
+//
+// Part load: for an order made from this round on (part_load_basis
+// 'per_load'), the Manager decides on the order whether the charge applies,
+// and then EVERY delivery below the minimum load carries its own charge on
+// its own invoice: (minimum − this load) × the price list's part load rate.
+// An older order (basis NULL) keeps the old rule: one amount, decided on the
+// order, charged once.
+export async function chargesForTicket(r, { excludeTicketId = null } = {}) {
+  const { rows: already } = await query(
+    `SELECT COALESCE(SUM(i.pumping_charge), 0) AS pump_total, COALESCE(SUM(i.part_load_charge), 0) AS part_load_total
+       FROM invoices i JOIN delivery_tickets dt2 ON dt2.id = i.ticket_id
+      WHERE dt2.order_id = $1 AND ($2::int IS NULL OR i.ticket_id <> $2)`,
+    [r.order_id, excludeTicketId]
+  );
+  const pumpCharged = Number(already[0].pump_total) > 0;
+  const legacyCharged = pumpCharged || Number(already[0].part_load_total) > 0;
+  let pumpingCharge = 0;
+  let partLoadCharge = 0;
+  if (r.part_load_basis === "per_load") {
+    if (r.pump_charge_applicable && !pumpCharged) pumpingCharge = Number(r.pump_charge_amount || 0);
+    if (r.part_load_applicable) {
+      const min = Number(r.part_load_min_qty_m3 ?? 5);
+      const short = Math.max(0, min - Number(r.loaded_quantity_m3 || 0));
+      partLoadCharge = round2(short * Number(r.part_load_charge_per_m3 || 0));
+    }
+  } else if (!legacyCharged) {
+    // Both pump charge and part load are Manager's own confirmed decision at
+    // order creation (not automatic) — still only charged once per order,
+    // on whichever ticket happens to be invoiced first.
+    if (r.pump_charge_applicable) pumpingCharge = Number(r.pump_charge_amount || 0);
+    if (r.part_load_applicable) partLoadCharge = Number(r.part_load_charge_amount || 0);
+  }
+  return { pumpingCharge: round2(pumpingCharge), partLoadCharge: round2(partLoadCharge) };
+}
+
 
 // Reverses an already-generated invoice when a delivery turns out to be
 // rejected or cancelled — never silently, and never touching one a payment

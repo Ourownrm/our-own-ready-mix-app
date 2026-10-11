@@ -471,6 +471,44 @@ export const CATALOGUE = [
   f("accounts.outstanding", "accounts", "Outstanding Collection Report", V,
     { administrator: V, manager: V, accountant: V }, { screen: "outstanding-collection" }),
 
+  // ---------- Accounts module (Round 204) ----------
+  // Quotations -> Admin approval -> customer acceptance -> the customer / site
+  // price list (rate_master) -> invoices -> receipts from bank statements ->
+  // the customer ledger. Defaults are the access table the owner approved on
+  // 11 Oct 2026. Only an Administrator approves a quotation's final rates.
+  f("module.accounts", "modules", "Accounts module", V,
+    { administrator: V, manager: V, accountant: V, sales_executive: V }, { screen: "accounts-module" }),
+  f("accounts.quotations", "accounts", "Quotations — register, follow-ups, create and revise", VCE,
+    { administrator: VCE, manager: VCE, accountant: V, sales_executive: V }),
+  f("accounts.quotation-followup", "accounts", "Log a quotation follow-up (call, WhatsApp, note)", E,
+    { administrator: E, manager: E, sales_executive: E }),
+  f("accounts.quotation-approve", "accounts", "Approve a quotation's final rates", E,
+    { administrator: E }),
+  f("accounts.quotation-accept", "accounts", "Record customer acceptance (changes the price list)", E,
+    { administrator: E, manager: E }),
+  f("accounts.price-revision", "accounts", "Price revision across many customers", E,
+    { administrator: E }),
+  f("accounts.price-lists", "accounts", "Customer / site price lists", V,
+    { administrator: V, manager: V, accountant: V, sales_executive: V }),
+  f("accounts.invoice-list", "accounts", "Invoices", V,
+    { administrator: V, manager: V, accountant: V }),
+  f("accounts.invoice-gst", "accounts", "Apply / remove GST on an invoice", E,
+    { administrator: E, accountant: E }),
+  f("accounts.customer-ledger", "accounts", "Customer ledger and statements", V,
+    { administrator: V, manager: V, accountant: V }),
+  f("accounts.bank-receipts", "accounts", "Receipts from bank statements", VC,
+    { administrator: VC, accountant: VC }),
+  f("accounts.receipt-cancel", "accounts", "Cancel a posted receipt", E,
+    { administrator: E }),
+  f("accounts.rate-migration", "accounts", "Move the rate file into price lists (one time)", VE,
+    { administrator: VE }),
+  f("accounts.quotation-settings", "accounts", "Quotation settings and terms library", VE,
+    { administrator: VE, manager: V }),
+  f("orders.charge-waiver-review", "orders", "Review a pump / part load charge left out of an order", E,
+    { administrator: E }),
+  f("production.load-review", "production", "Omit a JCB / no-vehicle load from production totals", E,
+    { administrator: E }),
+
   // ---------- Masters ----------
   f("masters.customers", "masters", "Customer", VCED,
     { administrator: VCED, manager: VCED }, { screen: "customers" }),
@@ -613,8 +651,8 @@ export const CATALOGUE = [
 //            these roles get View on the gate and on every menu/support key
 //            below except `noAutoView`. Create/edit/delete stay as they were.
 //
-// Fuel, HR and Accounts are deliberately NOT here yet: the user's instruction
-// is to add them only once those modules are built.
+// Fuel, HR and (Round 204) Accounts joined once they were built, as the user
+// asked.
 // ===================================================================
 export const MODULES = [
   {
@@ -648,13 +686,19 @@ export const MODULES = [
         ],
       },
       { key: "material.consumption-transfer", label: "Consumption transfer" },
+      // Round 204 — moved here from the Weighbridge module (owner, 11 Oct 2026).
+      // The keys are unchanged so nobody's grant is lost; only the module that
+      // switches them on and off changed.
+      { key: "weighbridge.receipt-variance", label: "Receipt Variances" },
+      { key: "material.receipt-confirm", label: "Receipt Differences (confirm disputed loads)" },
     ],
     support: ["material.materials", "material.units", "material.suppliers", "material.supplier-rates",
       "material.transporters", "material.order-approve", "material.physical-stock-approve",
       "material.supplier-payments", "material.transporter-payments", "material.receipt-wb-approve"],
     // An Administrator's tool for moving consumption between materials — not
     // a screen to hand out with "view the module".
-    noAutoView: ["material.consumption-transfer", "material.supplier-ledger", "material.transporter-ledger"],
+    noAutoView: ["material.consumption-transfer", "material.supplier-ledger", "material.transporter-ledger",
+      "weighbridge.receipt-variance", "material.receipt-confirm"],
   },
   {
     key: "plant-production", label: "Plant Production", gate: "module.plant-production", to: "/plant-production",
@@ -669,7 +713,7 @@ export const MODULES = [
       { key: "plant.kpi", label: "KPI" },
       { key: "plant.vs-billed", label: "Plant vs billed" },
     ],
-    support: ["production.plant-data"],
+    support: ["production.plant-data", "production.load-review"],
   },
   {
     key: "weighbridge", label: "Weighbridge", gate: "module.weighbridge", to: "/weighbridge",
@@ -679,8 +723,6 @@ export const MODULES = [
       { key: "weighbridge.records", label: "Records" },
       { key: "material.weighbridge-mapping", label: "Name Mapping" },
       { key: "weighbridge.vehicles", label: "Vehicles" },
-      { key: "weighbridge.receipt-variance", label: "Receipt Variances" },
-      { key: "material.receipt-confirm", label: "Receipt Differences (confirm disputed loads)" },
     ],
     support: [],
   },
@@ -718,6 +760,22 @@ export const MODULES = [
       { key: "fuel.settings", label: "Settings" },
     ],
     support: ["fuel.exception-review", "fuel.outside-close", "fuel.outside-cancel", "fuel.cancel-approved"],
+  },
+  {
+    // Round 204 — the Accounts module. Roles are set on each function above.
+    key: "accounts", label: "Accounts", gate: "module.accounts", to: "/accounts",
+    matrixRoles: [],
+    menus: [
+      { key: "accounts.quotations", label: "Quotations" },
+      { key: "accounts.price-lists", label: "Price lists" },
+      { key: "accounts.invoice-list", label: "Invoices" },
+      { key: "accounts.customer-ledger", label: "Customer ledger" },
+      { key: "accounts.bank-receipts", label: "Bank receipts" },
+      { key: "accounts.rate-migration", label: "Rate file migration" },
+      { key: "accounts.quotation-settings", label: "Settings" },
+    ],
+    support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
+      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",

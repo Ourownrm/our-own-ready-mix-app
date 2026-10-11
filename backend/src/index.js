@@ -53,13 +53,15 @@ import qcDashboardRoutes from "./routes/qcDashboard.js";
 import rmTestsRoutes from "./routes/rmTests.js";
 // Round 143 — the Administrator dashboard's icon view (KPIs, badges, pins).
 import adminDashboardRoutes from "./routes/adminDashboard.js";
+import quotationRoutes from "./routes/quotations.js";
+import accountsLedgerRoutes from "./routes/accountsLedger.js";
 // Round 146 — Super Admin per-user access control.
 import superAdminRoutes from "./routes/superAdmin.js";
 import solitaireRoutes, { printRouter as mixtrackPrintRouter } from "./routes/solitaire.js";
 import solitaireAccessRoutes from "./routes/solitaireAccess.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
-  checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkUnconfirmedOutsideFills, checkGeofenceEvents,
+  checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkQuotationFollowups, checkPendingSupplyRequests, checkUnconfirmedOutsideFills, checkGeofenceEvents,
   checkPlantOutAutoRecord, checkSiteInAutoRecord, checkSiteOutAutoRecord, checkPlantInAutoRecord,
   cleanupOldNotifications,
 } from "./lib/scheduledChecks.js";
@@ -210,6 +212,9 @@ app.use("/api/material-module", materialModuleRoutes);
 app.use("/api/qc-dashboard", qcDashboardRoutes);
 app.use("/api/rm-tests", rmTestsRoutes);
 app.use("/api/admin-dashboard", adminDashboardRoutes);
+// Round 204 — Accounts module: quotations, price lists, settings.
+app.use("/api/quotations", quotationRoutes);
+app.use("/api/accounts", accountsLedgerRoutes);
 app.use("/api/super-admin", superAdminRoutes);
 // The delivery-challan plugin. Both routers gate themselves on the plugin
 // being enabled (lib/plugins.js), so mounting them here does not by itself
@@ -287,4 +292,5 @@ setInterval(() => {
 // above — hourly is plenty for a housekeeping pass.
 setInterval(() => {
   cleanupOldNotifications().catch((err) => console.error("Notification cleanup failed:", err));
+  checkQuotationFollowups().catch((err) => console.error("Quotation follow-up check failed:", err));
 }, 60 * 60 * 1000);

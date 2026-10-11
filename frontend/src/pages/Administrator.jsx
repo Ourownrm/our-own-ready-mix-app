@@ -33,6 +33,7 @@ import { ADMIN_MODULES, ALL_SCREENS, SCREEN_BY_KEY, GLYPHS, DEFAULT_PINS, module
 // The backend refuses the route as well; this only decides what is worth
 // showing (see lib/PermissionContext.jsx).
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import QuotationFollowupsCard from "../lib/QuotationFollowupsCard.jsx";
 
 // super_admin is deliberately NOT here: an Administrator must not be able
 // to mint one. Only a Super Admin can, from the access-control page.
@@ -314,6 +315,7 @@ export default function Administrator() {
         {!view && !activeModule && (
           <>
             <KpiRow kpis={summary && summary.kpis} />
+            <QuotationFollowupsCard />
 
             <div className="card" style={{ marginBottom: 18 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>

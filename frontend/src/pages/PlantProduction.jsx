@@ -173,10 +173,111 @@ function PlantVsBilled({ qs }) {
   );
 }
 
-function Production({ qs }) {
+// ROUND 204 — loads batched into a JCB, or with no vehicle. The Administrator
+// omits each from the production totals (m³ made, cost and diesel per m³,
+// plant vs billed) or keeps it. Consumption still counts the material.
+function LoadReview({ qs, canReview, onChanged }) {
+  const [status, setStatus] = useState("pending");
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState(true);
+
+  const pull = () => apiRequest(`/plant/load-reviews?${qs}&status=${status}`).then(setData).catch((e) => setError(e.message));
+  useEffect(() => { setData(null); pull(); }, [qs, status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function decide(l, decision) {
+    const k = `${l.plant_no}-${l.batch_year}-${l.batch_no}`;
+    setBusy(k); setError("");
+    try {
+      await apiRequest("/plant/load-reviews", { method: "POST", body: { decision, loads: [{ plant_no: l.plant_no, batch_year: l.batch_year, batch_no: l.batch_no }] } });
+      await pull();
+      onChanged?.();
+    } catch (e) { setError(e.message); }
+    setBusy("");
+  }
+
+  const loads = data?.loads || [];
+  if (data && status === "pending" && !loads.length && !canReview) return null;
+  const sb = { fontSize: 12, padding: "3px 10px" };
+  return (
+    <div className="card" style={{ marginBottom: 16, borderColor: loads.length && status === "pending" ? "var(--amber)" : undefined }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <h3 style={{ fontSize: 14, margin: 0, cursor: "pointer" }} onClick={() => setOpen(!open)}>
+          Loads into a JCB / no vehicle{status === "pending" && data ? <span style={{ color: loads.length ? "var(--amber)" : "var(--slate)" }}> · {loads.length} to review</span> : null}
+        </h3>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          {[["pending", "To review"], ["omit", "Omitted"], ["keep", "Kept"]].map(([k, label]) => (
+            <button key={k} type="button" className={`btn-tab ${status === k ? "active" : ""}`} style={sb} onClick={() => { setStatus(k); setOpen(true); }}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {open && (
+        <>
+          <div style={{ fontSize: 12, color: "var(--slate)", margin: "6px 0 10px" }}>
+            Loads whose truck is blank or is not one of our trucks.{" "}
+            {canReview
+              ? "Omit takes the load's m³ out of production, cost per m³, diesel per m³ and plant vs billed; the material it used still counts."
+              : "The Administrator decides whether each counts in production."}
+            {status === "omit" && data ? <> Omitted in this period: <b>{fmtM3(data.omitted_m3)}</b>.</> : null}
+          </div>
+          {error && <div style={{ color: "var(--alert-red)", fontSize: 12.5, marginBottom: 8 }}>{error}</div>}
+          {!data ? <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>
+            : !loads.length ? <div style={{ fontSize: 13, color: "var(--slate)" }}>{status === "pending" ? "Nothing to review in this period." : "None in this period."}</div>
+            : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "var(--concrete)" }}>
+                      <th style={TH}>Batch</th><th style={TH}>Started</th><th style={TH}>Recipe</th>
+                      <th style={{ ...TH, textAlign: "right" }}>Made</th><th style={TH}>Vehicle</th><th style={TH}>Site</th>
+                      <th style={TH}>{status === "pending" ? "" : "Decided by"}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loads.map((l) => {
+                      const k = `${l.plant_no}-${l.batch_year}-${l.batch_no}`;
+                      return (
+                        <tr key={k} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td style={{ ...TD, fontWeight: 600 }}>#{l.batch_no}</td>
+                          <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtWhen(l.started_at)}</td>
+                          <td style={TD}>{l.recipe_code || "—"}</td>
+                          <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{fmtM3(l.m3)}</td>
+                          <td style={TD}>{l.no_vehicle ? <span style={{ color: "var(--amber)" }}>No vehicle</span> : l.truck_no}</td>
+                          <td style={TD}>{l.site_name || "—"}</td>
+                          <td style={{ ...TD, whiteSpace: "nowrap" }}>
+                            {status !== "pending" && (
+                              <span style={{ fontSize: 12, color: "var(--slate)", marginRight: 8 }}>
+                                {l.reviewed_by_name || ""}{l.reviewed_at ? ` · ${fmtWhen(l.reviewed_at)}` : ""}
+                              </span>
+                            )}
+                            {canReview && (status === "pending" ? (
+                              <>
+                                <button type="button" className="btn-secondary" disabled={busy === k} style={{ ...sb, marginRight: 6 }} onClick={() => decide(l, "omit")}>Omit</button>
+                                <button type="button" className="btn-secondary" disabled={busy === k} style={sb} onClick={() => decide(l, "keep")}>Keep</button>
+                              </>
+                            ) : (
+                              <button type="button" className="btn-secondary" disabled={busy === k} style={sb} onClick={() => decide(l, "undo")}>Undo</button>
+                            ))}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Production({ qs, canReview }) {
   const [data, setData] = useState(null);
   const [loads, setLoads] = useState([]);
   const [error, setError] = useState("");
+  const [rev, setRev] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -187,7 +288,7 @@ function Production({ qs }) {
       .then(([p, l]) => { if (alive) { setData(p); setLoads(l); } })
       .catch((e) => { if (alive) setError(e.message); });
     return () => { alive = false; };
-  }, [qs]);
+  }, [qs, rev]);
 
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
   // Round 166b — surface a load error instead of a frozen "Loading…": when the
@@ -264,6 +365,8 @@ function Production({ qs }) {
         </div>
       </div>
 
+      <LoadReview qs={qs} canReview={canReview} onChanged={() => setRev((n) => n + 1)} />
+
       <h3 style={{ fontSize: 15, margin: "0 0 10px" }}>Recent loads</h3>
       {/* Round 189 — on a phone each load is a small card instead of an 8-column table. */}
       <div className="pp-only-narrow">
@@ -273,7 +376,7 @@ function Production({ qs }) {
               <b>#{l.batch_no} · {l.recipe_code}</b><b>{fmtM3(l.m3)}</b>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "var(--slate)", fontSize: 12 }}>
-              <span>{fmtWhen(l.started_at)} · {l.batches} batches</span><span>{l.truck_no || "—"}</span>
+              <span>{fmtWhen(l.started_at)} · {l.batches} batches</span><span>{l.truck_no || "—"}{l.review_decision === "omit" ? " · omitted" : ""}</span>
             </div>
             {l.site_name && <div style={{ color: "var(--slate)", fontSize: 12 }}>{l.site_name}</div>}
           </div>
@@ -299,7 +402,11 @@ function Production({ qs }) {
                 {/* The mix count is the thing people get wrong about this data:
                     one load is several batches, and consumption sums across them. */}
                 <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{l.batches}</td>
-                <td style={TD}>{l.truck_no || "—"}</td>
+                <td style={TD}>
+                  {l.truck_no || "—"}
+                  {l.review_decision === "omit" && <span style={{ marginLeft: 6, fontSize: 11, color: "var(--alert-red)" }} title="Omitted from the production totals">omitted</span>}
+                  {l.needs_review && !l.review_decision && <span style={{ marginLeft: 6, fontSize: 11, color: "var(--amber)" }}>to review</span>}
+                </td>
                 <td style={TD}>{l.site_name || "—"}</td>
                 <td style={{ ...TD, color: "var(--slate)" }}>{l.batcher_name || "—"}</td>
               </tr>
@@ -1467,6 +1574,8 @@ export default function PlantProduction() {
   // the Plant Operator's: this moves a time printed on a customer's document.
   const canQcDelayView = ready && can("production.mixtrack-qc-delay", "view");
   const canQcDelayEdit = ready && can("production.mixtrack-qc-delay", "create");
+  // Round 204 — omit a JCB / no-vehicle load from the production totals.
+  const canLoadReview = ready && can("production.load-review", "edit");
 
   // The first tab this person may open, in screen order.
   const firstTab = [["production", canProd], ["pvb", canPvb], ["consumption", canCons], ["silos", canMap],
@@ -1622,7 +1731,7 @@ export default function PlantProduction() {
           : tab === "cost" && canCost ? <CostPerM3 qs={qs} />
           : tab === "consumption" && canCons ? <Consumption qs={qs} />
           : tab === "pvb" && canPvb ? <PlantVsBilled qs={qs} />
-          : tab === "production" && canProd ? <Production qs={qs} />
+          : tab === "production" && canProd ? <Production qs={qs} canReview={canLoadReview} />
           : !firstTab ? (
             <div className="card" style={{ fontSize: 13 }}>
               No Plant Production screens are switched on for you. A Super Admin can grant them on the Access Control page.

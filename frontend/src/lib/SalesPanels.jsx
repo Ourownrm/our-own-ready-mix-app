@@ -217,6 +217,8 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   const [rateInfo, setRateInfo] = useState(null);
   const [pumpChargeDecision, setPumpChargeDecision] = useState(null);
   const [partLoadDecision, setPartLoadDecision] = useState(null);
+  const [pumpWaiverReason, setPumpWaiverReason] = useState("");
+  const [partLoadWaiverReason, setPartLoadWaiverReason] = useState("");
   const [billingAddresses, setBillingAddresses] = useState([]);
 
   // Round 119, post-ship again, item 2 — this form used to collect only a
@@ -296,12 +298,13 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
 
   const pumpChargeAmount = form.pump_requirement === "boom_pump" ? Number(rateInfo?.boom_pump_charge || 0) || null : form.pump_requirement === "line_pump" ? Number(rateInfo?.line_pump_charge || 0) || null : null;
   const pumpMinQty = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_min_qty_m3 : rateInfo?.line_pump_min_qty_m3;
-  const needsPumpDecision = form.pump_requirement !== "without_pump" && rateInfo;
+  // Round 204 — the same two questions as Create Order (lib/orderCharges.js
+  // on the server): pump decided on every pumped order, part load on every
+  // order; leaving either out needs a reason and the Administrator is told.
+  const needsPumpDecision = form.pump_requirement !== "without_pump";
+  const pumpRuleApplies = !!pumpChargeAmount && Number(form.order_quantity_m3 || 0) < Number(pumpMinQty || 0);
   const partLoadThreshold = Number(rateInfo?.part_load_min_qty_m3 ?? 5);
-  const partLoadShortfall = form.order_quantity_m3 ? partLoadThreshold - Number(form.order_quantity_m3) : 0;
-  const needsPartLoadDecision = rateInfo && form.order_quantity_m3 && partLoadShortfall > 0;
-  const partLoadAmount = needsPartLoadDecision && rateInfo?.part_load_charge_per_m3
-    ? partLoadShortfall * Number(rateInfo.part_load_charge_per_m3) : 0;
+  const partLoadRate = rateInfo?.part_load_charge_per_m3 ? Number(rateInfo.part_load_charge_per_m3) : null;
 
   async function submit(e) {
     e.preventDefault();
@@ -314,8 +317,16 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
       setError("Confirm whether the pump mobilization charge applies to this order.");
       return;
     }
-    if (needsPartLoadDecision && partLoadDecision === null) {
-      setError(`Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.`);
+    if (needsPumpDecision && pumpChargeDecision === false && pumpRuleApplies && !pumpWaiverReason.trim()) {
+      setError("Give the reason for not charging the pump mobilization — the Administrator is notified.");
+      return;
+    }
+    if (partLoadDecision === null) {
+      setError(`Confirm whether the part load charge applies if a load goes out below ${partLoadThreshold} m³.`);
+      return;
+    }
+    if (partLoadDecision === false && !partLoadWaiverReason.trim()) {
+      setError("Give the reason for not charging part load — the Administrator is notified.");
       return;
     }
     setSaving(true);
@@ -326,8 +337,9 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
           ...form,
           pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : undefined,
           pump_charge_amount: needsPumpDecision && pumpChargeDecision ? pumpChargeAmount : 0,
-          part_load_applicable: needsPartLoadDecision ? partLoadDecision : undefined,
-          part_load_charge_amount: needsPartLoadDecision && partLoadDecision ? partLoadAmount : 0,
+          pump_charge_waiver_reason: needsPumpDecision && pumpChargeDecision === false ? pumpWaiverReason.trim() || undefined : undefined,
+          part_load_applicable: partLoadDecision,
+          part_load_waiver_reason: partLoadDecision === false ? partLoadWaiverReason.trim() : undefined,
         },
       });
       // Same best-effort directory save as Create Order — never blocks
@@ -517,17 +529,24 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
           <div style={{ color: "var(--slate)" }}>Remarks</div>
           <textarea rows={2} value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} />
         </div>
+        {rateInfo?.rate_exists && (
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--signal-green-bg)", color: "var(--signal-green)", padding: 10, borderRadius: 8 }}>
+            Rate ₹{Number(rateInfo.rate_per_m3).toLocaleString("en-IN")}/m³ incl. GST{rateInfo.quote_no ? ` — quotation ${rateInfo.quote_no}` : rateInfo.rate_source === "rate_file" ? " — from the rate file" : ""}
+          </div>
+        )}
         {rateInfo && !rateInfo.rate_exists && (
-          <div style={{ gridColumn: "1 / -1", color: "var(--amber)", background: "var(--amber-bg)", padding: 10, borderRadius: 8, fontSize: 12 }}>
-            No rate is on file for this customer, site, and grade combination as of this order date — deliveries won't generate invoices until one is added.
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, padding: 10, borderRadius: 8, ...(rateInfo.pending_quotation?.revision === 0 ? { background: "var(--info-bg)", color: "var(--info)" } : { background: "var(--amber-bg)", color: "var(--amber)" }) }}>
+            {rateInfo.pending_quotation?.revision === 0
+              ? `New site: this order accepts quotation ${rateInfo.pending_quotation.quote_no} and sets the site's price list from the order date.`
+              : "No price for this customer, site and grade on this date — deliveries will be held from invoicing until a quotation for the site is accepted."}
           </div>
         )}
         {needsPumpDecision && (
           <div style={{ gridColumn: "1 / -1", background: "var(--amber-bg)", border: "1px solid var(--amber)", borderRadius: 8, padding: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Pump mobilization charge (required)</div>
             <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
-              {form.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump rate on file: {pumpChargeAmount ? `₹${pumpChargeAmount}` : "not set"}
-              {pumpMinQty ? ` (usually applies below ${pumpMinQty} m³)` : ""}. Confirm whether it applies to this order.
+              {form.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump charge in the price list: {pumpChargeAmount ? `₹${pumpChargeAmount}` : "not set"}
+              {pumpMinQty ? ` (applies below ${pumpMinQty} m³)` : ""}.
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button type="button" onClick={() => setPumpChargeDecision(true)} style={pumpChargeDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>
@@ -537,25 +556,25 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
                 Not applicable
               </button>
             </div>
+            {pumpChargeDecision === false && (
+              <input style={{ marginTop: 8, width: "100%" }} value={pumpWaiverReason} onChange={(e) => setPumpWaiverReason(e.target.value)}
+                placeholder={pumpRuleApplies ? "Reason (required — the Administrator is notified)" : "Reason (optional)"} />
+            )}
           </div>
         )}
-        {needsPartLoadDecision && (
-          <div style={{ gridColumn: "1 / -1", background: "var(--concrete)", border: "1px solid var(--border-strong, #ccc)", borderRadius: 8, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Part load charge (required)</div>
-            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
-              Minimum load is {partLoadThreshold} m³. This order is {form.order_quantity_m3} m³ — short by {partLoadShortfall.toFixed(2)} m³
-              {rateInfo?.part_load_charge_per_m3 ? ` × ₹${rateInfo.part_load_charge_per_m3} = ₹${partLoadAmount.toFixed(2)}` : " (no part-load rate on file)"}.
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" onClick={() => setPartLoadDecision(true)} style={partLoadDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>
-                Applicable{rateInfo?.part_load_charge_per_m3 ? ` — ₹${partLoadAmount.toFixed(2)}` : ""}
-              </button>
-              <button type="button" onClick={() => setPartLoadDecision(false)} style={partLoadDecision === false ? { background: "var(--rebar)", color: "#fff" } : undefined}>
-                Not applicable
-              </button>
-            </div>
+        <div style={{ gridColumn: "1 / -1", background: "var(--concrete)", border: "1px solid var(--border-strong, #ccc)", borderRadius: 8, padding: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Part load charge (required)</div>
+          <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
+            If a load goes out below {partLoadThreshold} m³, charge part load{partLoadRate ? ` at ₹${partLoadRate} per m³ short` : " (no part load rate in the price list)"}? It is added to that delivery's invoice.
           </div>
-        )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" onClick={() => setPartLoadDecision(true)} style={partLoadDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>Applicable</button>
+            <button type="button" onClick={() => setPartLoadDecision(false)} style={partLoadDecision === false ? { background: "var(--rebar)", color: "#fff" } : undefined}>Not applicable</button>
+          </div>
+          {partLoadDecision === false && (
+            <input style={{ marginTop: 8, width: "100%" }} value={partLoadWaiverReason} onChange={(e) => setPartLoadWaiverReason(e.target.value)} placeholder="Reason (required — the Administrator is notified)" />
+          )}
+        </div>
         <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>
           <button type="submit" disabled={saving} style={{ flex: 1 }}>{saving ? "Creating..." : "Create order"}</button>
           <button type="button" onClick={onCancel} style={{ flex: 1 }}>Cancel</button>

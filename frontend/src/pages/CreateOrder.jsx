@@ -51,6 +51,9 @@ export default function CreateOrder({ onDone }) {
   const [mixDesignInfo, setMixDesignInfo] = useState(null);
   const [pumpChargeDecision, setPumpChargeDecision] = useState(null); // null | true | false
   const [partLoadDecision, setPartLoadDecision] = useState(null);
+  // Round 204 — leaving a charge out needs a reason; the Administrator is told.
+  const [pumpWaiverReason, setPumpWaiverReason] = useState("");
+  const [partLoadWaiverReason, setPartLoadWaiverReason] = useState("");
 
   // Site Contacts directory (round 96, item 7) — autofills from any contact
   // already on file for this exact customer+site, and saves a newly-typed
@@ -145,14 +148,17 @@ export default function CreateOrder({ onDone }) {
     }
   }
 
+  // Round 204 (owner, 11 Oct 2026) — the price list carries the pump rule;
+  // the Manager decides on every order. Part load is asked on every order:
+  // "if a load goes out below the minimum, charge part load?" — when yes,
+  // each such delivery's invoice carries it. No estimate and no GST choice
+  // here: GST applies by default and the Accountant can switch it off.
   const pumpChargeAmount = form.pump_requirement === "boom_pump" ? Number(rateInfo?.boom_pump_charge || 0) || null : form.pump_requirement === "line_pump" ? Number(rateInfo?.line_pump_charge || 0) || null : null;
   const pumpMinQty = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_min_qty_m3 : rateInfo?.line_pump_min_qty_m3;
-  const needsPumpDecision = form.pump_requirement !== "without_pump" && rateInfo;
+  const needsPumpDecision = form.pump_requirement !== "without_pump";
+  const pumpRuleApplies = !!pumpChargeAmount && Number(form.order_quantity_m3 || 0) < Number(pumpMinQty || 0);
   const partLoadThreshold = Number(rateInfo?.part_load_min_qty_m3 ?? 5);
-  const partLoadShortfall = form.order_quantity_m3 ? partLoadThreshold - Number(form.order_quantity_m3) : 0;
-  const needsPartLoadDecision = rateInfo && form.order_quantity_m3 && partLoadShortfall > 0;
-  const partLoadAmount = needsPartLoadDecision && rateInfo?.part_load_charge_per_m3
-    ? partLoadShortfall * Number(rateInfo.part_load_charge_per_m3) : 0;
+  const partLoadRate = rateInfo?.part_load_charge_per_m3 ? Number(rateInfo.part_load_charge_per_m3) : null;
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -169,8 +175,16 @@ export default function CreateOrder({ onDone }) {
       setError("Confirm whether the pump mobilization charge applies to this order.");
       return;
     }
-    if (needsPartLoadDecision && partLoadDecision === null) {
-      setError(`Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.`);
+    if (needsPumpDecision && pumpChargeDecision === false && pumpRuleApplies && !pumpWaiverReason.trim()) {
+      setError("Give the reason for not charging the pump mobilization — the Administrator is notified.");
+      return;
+    }
+    if (partLoadDecision === null) {
+      setError(`Confirm whether the part load charge applies if a load goes out below ${partLoadThreshold} m³.`);
+      return;
+    }
+    if (partLoadDecision === false && !partLoadWaiverReason.trim()) {
+      setError("Give the reason for not charging part load — the Administrator is notified.");
       return;
     }
     setSaving(true);
@@ -181,8 +195,9 @@ export default function CreateOrder({ onDone }) {
           ...form,
           pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : undefined,
           pump_charge_amount: needsPumpDecision && pumpChargeDecision ? pumpChargeAmount : 0,
-          part_load_applicable: needsPartLoadDecision ? partLoadDecision : undefined,
-          part_load_charge_amount: needsPartLoadDecision && partLoadDecision ? partLoadAmount : 0,
+          pump_charge_waiver_reason: needsPumpDecision && pumpChargeDecision === false ? pumpWaiverReason.trim() || undefined : undefined,
+          part_load_applicable: partLoadDecision,
+          part_load_waiver_reason: partLoadDecision === false ? partLoadWaiverReason.trim() : undefined,
         },
       });
       // Save a newly-typed site contact to the directory so it's already on
@@ -378,77 +393,65 @@ export default function CreateOrder({ onDone }) {
           </div>
         )}
 
-        {rateInfo && !rateInfo.rate_exists && (
-          <div style={{ gridColumn: "1 / -1", color: "var(--amber)", background: "var(--amber-bg)", padding: 10, borderRadius: 8, fontSize: 12 }}>
-            No rate is on file for this customer, site, and grade combination as of this order date — deliveries won't generate invoices until one is added (Administrator/Manager → Concrete grades and rates).
+        {rateInfo?.rate_exists && (
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--signal-green-bg)", color: "var(--signal-green)", padding: 10, borderRadius: 8 }}>
+            Rate ₹{Number(rateInfo.rate_per_m3).toLocaleString("en-IN")}/m³ incl. GST{" "}
+            {rateInfo.quote_no ? <>— quotation <b>{rateInfo.quote_no}</b></> : rateInfo.rate_source === "rate_file" ? "— from the rate file" : ""}
+            {rateInfo.effective_from ? ` (from ${rateInfo.effective_from})` : ""}{!rateInfo.is_site_specific ? " · customer-wide rate" : ""}
+            {rateInfo.pending_quotation && <div style={{ color: "var(--slate)", marginTop: 2 }}>{rateInfo.pending_quotation.quote_no} (₹{Number(rateInfo.pending_quotation.rate_total).toLocaleString("en-IN")}) is with the customer — not in force until they accept it.</div>}
           </div>
+        )}
+        {rateInfo && !rateInfo.rate_exists && (
+          rateInfo.pending_quotation && rateInfo.pending_quotation.revision === 0 ? (
+            <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--info-bg)", color: "var(--info)", padding: 10, borderRadius: 8 }}>
+              New site: this order accepts quotation <b>{rateInfo.pending_quotation.quote_no}</b> (₹{Number(rateInfo.pending_quotation.rate_total).toLocaleString("en-IN")}/m³ incl. GST) and sets the site's price list from the order date.
+            </div>
+          ) : (
+            <div style={{ gridColumn: "1 / -1", color: "var(--amber)", background: "var(--amber-bg)", padding: 10, borderRadius: 8, fontSize: 12 }}>
+              No price for this customer, site and grade on this date. Deliveries will be held from invoicing until a quotation for the site is accepted (Accounts → Quotations).
+            </div>
+          )
         )}
 
         {needsPumpDecision && (
           <div style={{ gridColumn: "1 / -1", background: "var(--amber-bg)", border: "1px solid var(--amber)", borderRadius: 8, padding: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Pump mobilization charge (required)</div>
             <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
-              {form.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump rate on file: {pumpChargeAmount ? `₹${pumpChargeAmount}` : "not set"}
-              {pumpMinQty ? ` (usually applies below ${pumpMinQty} m³)` : ""}. Confirm whether it applies to this order.
+              {form.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump charge in the price list: {pumpChargeAmount ? `₹${pumpChargeAmount.toLocaleString("en-IN")}` : "not set"}
+              {pumpMinQty ? ` (applies below ${pumpMinQty} m³)` : ""}.
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button type="button" onClick={() => setPumpChargeDecision(true)} style={pumpChargeDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>
-                Applicable{pumpChargeAmount ? ` — ₹${pumpChargeAmount}` : ""}
+                Applicable{pumpChargeAmount ? ` — ₹${pumpChargeAmount.toLocaleString("en-IN")}` : ""}
               </button>
               <button type="button" onClick={() => setPumpChargeDecision(false)} style={pumpChargeDecision === false ? { background: "var(--rebar)", color: "#fff" } : undefined}>
                 Not applicable
               </button>
             </div>
+            {pumpChargeDecision === false && (
+              <div className="field-input" style={{ marginTop: 8 }}>
+                <input value={pumpWaiverReason} onChange={(e) => setPumpWaiverReason(e.target.value)}
+                  placeholder={pumpRuleApplies ? "Reason (required — the Administrator is notified)" : "Reason (optional)"} />
+              </div>
+            )}
           </div>
         )}
 
-        {needsPartLoadDecision && (
-          <div style={{ gridColumn: "1 / -1", background: "var(--concrete)", border: "1px solid var(--border-strong, #ccc)", borderRadius: 8, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Part load charge (required)</div>
-            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
-              Minimum load is {partLoadThreshold} m³. This order is {form.order_quantity_m3} m³ — short by {partLoadShortfall.toFixed(2)} m³
-              {rateInfo?.part_load_charge_per_m3 ? ` × ₹${rateInfo.part_load_charge_per_m3} = ₹${partLoadAmount.toFixed(2)}` : " (no part-load rate on file)"}.
-              Confirm whether it applies — sometimes sending a part load is the company's own call.
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" onClick={() => setPartLoadDecision(true)} style={partLoadDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>
-                Applicable{rateInfo?.part_load_charge_per_m3 ? ` — ₹${partLoadAmount.toFixed(2)}` : ""}
-              </button>
-              <button type="button" onClick={() => setPartLoadDecision(false)} style={partLoadDecision === false ? { background: "var(--rebar)", color: "#fff" } : undefined}>
-                Not applicable
-              </button>
-            </div>
+        <div style={{ gridColumn: "1 / -1", background: "var(--concrete)", border: "1px solid var(--border-strong, #ccc)", borderRadius: 8, padding: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Part load charge (required)</div>
+          <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
+            If a load goes out below {partLoadThreshold} m³, charge part load{partLoadRate ? ` at ₹${partLoadRate.toLocaleString("en-IN")} per m³ short` : " (no part load rate in the price list)"}? It is added to that delivery's invoice.
           </div>
-        )}
-
-        {rateInfo?.rate_exists && form.order_quantity_m3 && (
-          <div style={{ gridColumn: "1 / -1", fontSize: 12, borderTop: "1px solid var(--concrete)", paddingTop: 8 }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "var(--slate)" }}>Concrete ({form.order_quantity_m3} m³ × ₹{rateInfo.rate_per_m3})</span>
-              <span>₹{(Number(form.order_quantity_m3) * Number(rateInfo.rate_per_m3)).toFixed(2)}</span>
-            </div>
-            {pumpChargeDecision === true && (
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--slate)" }}>Pump mobilization</span><span>₹{pumpChargeAmount}</span>
-              </div>
-            )}
-            {partLoadDecision === true && (
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--slate)" }}>Part load charge</span><span>₹{partLoadAmount.toFixed(2)}</span>
-              </div>
-            )}
-            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, borderTop: "1px solid var(--concrete)", marginTop: 4, paddingTop: 4 }}>
-              <span>Estimated total</span>
-              <span>
-                ₹{(
-                  Number(form.order_quantity_m3) * Number(rateInfo.rate_per_m3)
-                  + (pumpChargeDecision === true ? Number(pumpChargeAmount || 0) : 0)
-                  + (partLoadDecision === true ? partLoadAmount : 0)
-                ).toFixed(2)}
-              </span>
-            </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" onClick={() => setPartLoadDecision(true)} style={partLoadDecision === true ? { background: "var(--rebar)", color: "#fff" } : undefined}>Applicable</button>
+            <button type="button" onClick={() => setPartLoadDecision(false)} style={partLoadDecision === false ? { background: "var(--rebar)", color: "#fff" } : undefined}>Not applicable</button>
           </div>
-        )}
+          {partLoadDecision === false && (
+            <div className="field-input" style={{ marginTop: 8 }}>
+              <input value={partLoadWaiverReason} onChange={(e) => setPartLoadWaiverReason(e.target.value)} placeholder="Reason (required — the Administrator is notified)" />
+            </div>
+          )}
+        </div>
 
         {error && <div style={{ gridColumn: "1 / -1", color: "var(--alert-red)" }}>{error}</div>}
 

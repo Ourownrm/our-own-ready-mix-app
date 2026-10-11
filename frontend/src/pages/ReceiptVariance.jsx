@@ -331,7 +331,9 @@ function Variance() {
 
 // ---------------------------------------------------------------------------
 
-export default function ReceiptVariance() {
+// Round 204 — the screen now lives in the Raw Material module as a tab
+// (owner, 11 Oct 2026). `embedded` drops the page chrome for that.
+export default function ReceiptVariance({ embedded = false }) {
   const { can, ready } = usePermissions();
   const [tab, setTab] = useState("waiting");
   const [pendingCount, setPendingCount] = useState(null);
@@ -367,10 +369,8 @@ export default function ReceiptVariance() {
     );
   }
 
-  return (
+  const body = (
     <>
-      <TopBar title="Receipt differences" />
-      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 16px 32px" }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {canConfirm && (
             <button type="button" className={`btn-tab ${tab === "waiting" ? "active" : ""}`} onClick={() => setTab("waiting")}>
@@ -388,7 +388,13 @@ export default function ReceiptVariance() {
         {tab === "waiting" && canConfirm
           ? <Waiting onSettled={() => setPendingCount((n) => (n == null ? n : Math.max(0, n - 1)))} />
           : canReport ? <Variance /> : null}
-      </div>
+    </>
+  );
+  if (embedded) return body;
+  return (
+    <>
+      <TopBar title="Receipt differences" />
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 16px 32px" }}>{body}</div>
     </>
   );
 }

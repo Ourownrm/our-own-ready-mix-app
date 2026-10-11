@@ -31,6 +31,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { PLANT_SLOTS, SLOT_BY_KEY, RECIPE_TARGET_COLUMNS, normaliseSlot, isPlaceholderName } from "../lib/plantSlots.js";
 import { istDay } from "../lib/istDate.js";
+import { loadKept, TRUCK_KEY } from "../lib/plantLoadReview.js";
 
 const router = Router();
 
@@ -651,7 +652,7 @@ router.get("/summary", requirePermission("plant.kpi", "view"), async (req, res) 
                 count(*)::int AS batches,
                 count(DISTINCT (batch_year, batch_no))::int AS loads,
                 count(DISTINCT recipe_code)::int AS recipes
-         FROM plant_batches WHERE batch_date = CURRENT_DATE`
+         FROM plant_batches WHERE batch_date = CURRENT_DATE AND ${loadKept()}`
       ),
       query(`SELECT received_at, agent_version, error FROM plant_sync_log ORDER BY received_at DESC LIMIT 1`),
       // Silos still needing a human. A silo somebody deliberately marked as
@@ -718,7 +719,7 @@ router.get("/production", requirePermission("plant.production", "view"), async (
                 count(*)::int AS batches,
                 count(DISTINCT (batch_year, batch_no))::int AS loads
          FROM plant_batches
-         WHERE ${rng.sql}
+         WHERE ${rng.sql} AND ${loadKept()}
          GROUP BY batch_date ORDER BY batch_date DESC`,
         rng.params
       ),
@@ -728,7 +729,7 @@ router.get("/production", requirePermission("plant.production", "view"), async (
                 sum(batch_qty_m3)::numeric AS m3,
                 count(DISTINCT (batch_year, batch_no))::int AS loads
          FROM plant_batches
-         WHERE ${rng.sql}
+         WHERE ${rng.sql} AND ${loadKept()}
          GROUP BY 1 ORDER BY m3 DESC NULLS LAST`,
         rng.params
       ),
@@ -936,7 +937,7 @@ router.get("/cost-per-m3", requirePermission("plant.cost", "view"), async (req, 
            FROM plant_manual_entries e
           WHERE ${rngE.sql} AND e.material_id IS NOT NULL
           GROUP BY e.material_id`, rngE.params),
-      query(`SELECT COALESCE(sum(batch_qty_m3),0)::numeric AS m3 FROM plant_batches pb WHERE ${rngB.sql}`, rngB.params),
+      query(`SELECT COALESCE(sum(batch_qty_m3),0)::numeric AS m3 FROM plant_batches pb WHERE ${rngB.sql} AND ${loadKept("pb.")}`, rngB.params),
       query(`SELECT COALESCE(sum(e.qty_m3),0)::numeric AS m3 FROM plant_manual_entries e WHERE ${rngE.sql} AND e.material_id IS NULL`, rngE.params),
       // Weighted-average landed rate per material, across all receipts to date.
       query(
@@ -1036,7 +1037,7 @@ router.get("/production-vs-billed", requirePermission("plant.vs-billed", "view")
     const { rows } = await query(
       `WITH p AS (
          SELECT pb.batch_date AS d, sum(pb.batch_qty_m3) AS m3
-           FROM plant_batches pb WHERE ${cond("pb.batch_date")} GROUP BY pb.batch_date
+           FROM plant_batches pb WHERE ${cond("pb.batch_date")} AND ${loadKept("pb.")} GROUP BY pb.batch_date
        ), pm AS (
          SELECT e.entry_date AS d, sum(e.qty_m3) AS m3
            FROM plant_manual_entries e WHERE ${cond("e.entry_date")} AND e.material_id IS NULL GROUP BY e.entry_date
@@ -1774,8 +1775,12 @@ router.get("/loads", requirePermission("plant.production", "view"), async (req, 
               max(recipe_code) AS recipe_code, max(recipe_name) AS recipe_name,
               max(customer_code) AS customer_code, max(site_name) AS site_name,
               max(truck_no) AS truck_no, max(truck_driver) AS truck_driver,
-              max(batcher_name) AS batcher_name, max(order_no) AS order_no
-       FROM plant_batches
+              max(batcher_name) AS batcher_name, max(order_no) AS order_no,
+              (SELECT lr.decision FROM plant_load_reviews lr WHERE lr.plant_no = pb.plant_no
+                  AND lr.batch_year = pb.batch_year AND lr.batch_no = pb.batch_no) AS review_decision,
+              NOT EXISTS (SELECT 1 FROM trucks t WHERE ${TRUCK_KEY("t.truck_number")} = ${TRUCK_KEY("max(pb.truck_no)")}
+                             AND ${TRUCK_KEY("max(pb.truck_no)")} <> '') AS needs_review
+       FROM plant_batches pb
        WHERE ${rng.sql}
        GROUP BY batch_year, batch_no, plant_no
        ORDER BY min(batched_at) DESC NULLS LAST
@@ -1787,6 +1792,78 @@ router.get("/loads", requirePermission("plant.production", "view"), async (req, 
     console.error(err);
     res.status(500).json({ error: "Could not load the batches." });
   }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 204 — loads into a JCB, or with no vehicle (owner, 11 Oct 2026).
+// Listed for the Administrator, who omits each from the production totals or
+// keeps it. Omitting changes only the m³ made (and so cost per m³, diesel per
+// m³, production vs billed); material consumption still counts the load.
+// ---------------------------------------------------------------------------
+router.get("/load-reviews", requirePermission("plant.production", "view"), async (req, res) => {
+  try {
+    const rng = dateRange(req, "pb.batch_date");
+    const status = ["pending", "omit", "keep", "all"].includes(req.query.status) ? req.query.status : "pending";
+    const { rows } = await query(
+      `SELECT * FROM (
+         SELECT pb.plant_no, pb.batch_year, pb.batch_no,
+                to_char(min(pb.batch_date), 'YYYY-MM-DD') AS batch_date,
+                min(pb.batched_at) AS started_at, count(*)::int AS batches,
+                sum(pb.batch_qty_m3)::numeric AS m3,
+                max(pb.recipe_code) AS recipe_code, max(pb.recipe_name) AS recipe_name,
+                max(pb.customer_code) AS customer_code, max(pb.site_name) AS site_name,
+                max(pb.truck_no) AS truck_no, max(pb.truck_driver) AS truck_driver, max(pb.batcher_name) AS batcher_name,
+                NULLIF(${TRUCK_KEY("max(pb.truck_no)")}, '') IS NULL AS no_vehicle
+           FROM plant_batches pb
+          WHERE ${rng.sql}
+          GROUP BY pb.plant_no, pb.batch_year, pb.batch_no
+         HAVING NOT EXISTS (SELECT 1 FROM trucks t WHERE ${TRUCK_KEY("t.truck_number")} = ${TRUCK_KEY("max(pb.truck_no)")}
+                              AND ${TRUCK_KEY("max(pb.truck_no)")} <> '')
+       ) l
+       LEFT JOIN LATERAL (
+         SELECT lr.decision, lr.note, lr.reviewed_at, u.name AS reviewed_by_name
+           FROM plant_load_reviews lr LEFT JOIN users u ON u.id = lr.reviewed_by
+          WHERE lr.plant_no = l.plant_no AND lr.batch_year = l.batch_year AND lr.batch_no = l.batch_no
+       ) r ON true
+       WHERE ${status === "pending" ? "r.decision IS NULL" : status === "all" ? "TRUE" : `r.decision = '${status}'`}
+       ORDER BY l.started_at DESC NULLS LAST
+       LIMIT 500`,
+      rng.params
+    );
+    const omitted = rows.filter((r) => r.decision === "omit").reduce((t, r) => t + Number(r.m3 || 0), 0);
+    res.json({ loads: rows, omitted_m3: Math.round(omitted * 1000) / 1000 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the loads to review." });
+  }
+});
+
+router.post("/load-reviews", requirePermission("production.load-review", "edit"), async (req, res) => {
+  const items = Array.isArray(req.body.loads) ? req.body.loads : [req.body];
+  const decision = req.body.decision;
+  if (!["omit", "keep", "undo"].includes(decision)) return res.status(400).json({ error: "Choose omit or keep." });
+  const note = String(req.body.note || "").trim().slice(0, 300) || null;
+  let n = 0;
+  for (const it of items) {
+    const key = [String(it.plant_no ?? ""), Number(it.batch_year), Number(it.batch_no)];
+    if (!Number.isFinite(key[1]) || !Number.isFinite(key[2])) continue;
+    if (decision === "undo") {
+      const { rowCount } = await query(
+        `DELETE FROM plant_load_reviews WHERE plant_no = $1 AND batch_year = $2 AND batch_no = $3`, key
+      );
+      n += rowCount;
+    } else {
+      await query(
+        `INSERT INTO plant_load_reviews (plant_no, batch_year, batch_no, decision, note, reviewed_by)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (plant_no, batch_year, batch_no)
+         DO UPDATE SET decision = $4, note = $5, reviewed_by = $6, reviewed_at = now()`,
+        [...key, decision, note, req.user.id]
+      );
+      n++;
+    }
+  }
+  res.json({ ok: true, updated: n });
 });
 
 // ---------------------------------------------------------------------------

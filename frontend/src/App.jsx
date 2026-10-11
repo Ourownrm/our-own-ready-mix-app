@@ -32,6 +32,7 @@ import CycleTimeReport from "./pages/CycleTimeReport.jsx";
 import TruckTimingReport from "./pages/TruckTimingReport.jsx";
 // Round 199 — the 360° Fuel Analysis lives inside the Fuel module now.
 import FuelModule from "./pages/FuelModule.jsx";
+import AccountsModule from "./pages/AccountsModule.jsx";
 import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
 import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
@@ -68,7 +69,6 @@ import MyAttendance from "./pages/MyAttendance.jsx";
 import MarkAttendance from "./pages/MarkAttendance.jsx";
 import PlantProduction from "./pages/PlantProduction.jsx";
 import QcMixDesigns from "./pages/QcMixDesigns.jsx";
-import ReceiptVariance from "./pages/ReceiptVariance.jsx";
 import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
 import Modules from "./pages/Modules.jsx";
 import SuperAdmin from "./pages/SuperAdmin.jsx";
@@ -207,6 +207,10 @@ export default function App() {
           } />
           {/* Round 199 — old links and bookmarks land on the analysis inside the Fuel module. */}
           <Route path="/fuel-analysis" element={<Navigate to="/fuel-module?tab=analysis" replace />} />
+          {/* Round 204 — the Accounts module (quotations, price lists, invoices, ledger, bank receipts). */}
+          <Route path="/accounts" element={
+            <ProtectedRoute perm="module.accounts"><AccountsModule /></ProtectedRoute>
+          } />
           <Route path="/fuel-module" element={
             <ProtectedRoute perm="module.fuel"><FuelModule /></ProtectedRoute>
           } />
@@ -309,9 +313,9 @@ export default function App() {
               pattern those disputes make over time. Manager is in the role
               list for the queue. Round 192: opened by either of its two
               functions — confirming disputed loads, or the variance report. */}
-          <Route path="/receipt-differences" element={
-            <ProtectedRoute perm={["material.receipt-confirm", "weighbridge.receipt-variance"]}><ReceiptVariance /></ProtectedRoute>
-          } />
+          {/* Round 204 — now a tab of the Raw Material module; old links and
+              pushes land there. */}
+          <Route path="/receipt-differences" element={<Navigate to="/material-module?tab=receipt-variances" replace />} />
           <Route path="/sales" element={
             <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>
           } />

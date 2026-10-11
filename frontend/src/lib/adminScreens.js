@@ -203,19 +203,8 @@ export const ADMIN_MODULES = [
     to: "/plant-production",
     screens: [],
   },
-  {
-    // Round 158 — sits beside Weighbridge and Plant Production because it is
-    // the same kind of thing: a disagreement between what a machine measured
-    // and what a human wrote down. The badge is the point — a Manager should
-    // be able to see there is a decision waiting without opening anything.
-    key: "receipt-differences",
-    label: "Receipt Differences",
-    icon: "target",
-    colour: "#8A4B52",
-    tint: "#F4E9EA",
-    to: "/receipt-differences",
-    screens: [],
-  },
+  // Round 204 — the "Receipt Differences" tile (Round 158) is gone: Receipt
+  // Variances is a tab of the Raw Material module now.
   {
     // Round 197 — HR (stage 1: attendance, employees, roster, settings). It
     // replaces the Round 195 "Attendance Machine" tile; the machine screen is
@@ -238,6 +227,17 @@ export const ADMIN_MODULES = [
     colour: "#B4890F",
     tint: "#F7F0DC",
     to: "/fuel-module",
+    screens: [],
+  },
+  {
+    // Round 204 — quotations, price lists, invoices with the GST switch, the
+    // customer ledger and receipts from bank statements.
+    key: "accounts-module",
+    label: "Accounts",
+    icon: "receipt",
+    colour: "#2F5D8A",
+    tint: "#E3ECF5",
+    to: "/accounts",
     screens: [],
   },
   {
@@ -295,7 +295,7 @@ export const HUB = [
   { key: "weighbridge-receipts", perm: ["module.weighbridge"], to: "/weighbridge" },
   { key: "hr", perm: ["module.hr"], to: "/hr" },
   { key: "fuel-module", perm: ["module.fuel"], to: "/fuel-module" },
-  { key: "receipt-differences", perm: ["material.receipt-confirm", "weighbridge.receipt-variance"], to: "/receipt-differences" },
+  { key: "accounts-module", perm: ["module.accounts"], to: "/accounts" },
   {
     key: "quality-control",
     screens: [

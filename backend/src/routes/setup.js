@@ -15,6 +15,7 @@ import { migrateHr } from "../lib/hrSchema.js";
 import { migrateFuel } from "../lib/fuelSchema.js";
 import { migrateReceiptApproval } from "../lib/receiptApprovalSchema.js";
 import { migrateTransporterLedger } from "../lib/transporterLedger.js";
+import { migrateQuotations } from "../lib/quotationSchema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4090,6 +4091,35 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateReceiptApproval(pool, log);
     // ROUND 200 — transporter ledger.
     await migrateTransporterLedger(pool, log);
+    // ROUND 204 — Accounts module: quotations, price lists, receipts, GST
+    // switch on invoices, plant load reviews.
+    await migrateQuotations(pool, log);
+
+    // Round 204 — Receipt Variances moved from the Weighbridge module to the
+    // Raw Material module. The module switch now gates it, so a role (or a
+    // person) who could confirm disputed loads keeps that only with the Raw
+    // Material module open. Once: give those the module's view.
+    {
+      const { rows: m204 } = await pool.query(`SELECT 1 FROM app_migration_marks WHERE mark = 'r204_receipt_variance_move'`);
+      if (!m204.length) {
+        const r1 = await pool.query(
+          `INSERT INTO role_default_permissions (role, permission_key, action)
+           SELECT DISTINCT role, 'material.module', 'view' FROM role_default_permissions
+            WHERE permission_key IN ('material.receipt-confirm', 'weighbridge.receipt-variance') AND action = 'view'
+              AND role::text NOT IN ('super_admin', 'administrator')
+           ON CONFLICT DO NOTHING`
+        );
+        const r2 = await pool.query(
+          `INSERT INTO user_permission_overrides (user_id, permission_key, action, granted, set_by, set_at)
+           SELECT user_id, 'material.module', 'view', true, MIN(set_by), now() FROM user_permission_overrides
+            WHERE permission_key IN ('material.receipt-confirm', 'weighbridge.receipt-variance') AND action = 'view' AND granted
+            GROUP BY user_id
+           ON CONFLICT DO NOTHING`
+        );
+        await pool.query(`INSERT INTO app_migration_marks (mark) VALUES ('r204_receipt_variance_move') ON CONFLICT DO NOTHING`);
+        log.push(`Round 204 — Receipt Variances now in the Raw Material module; module view given to ${r1.rowCount} role(s) and ${r2.rowCount} person(s) who confirm disputed loads.`);
+      }
+    }
 
     // (2) seed any catalogue function this installation has never seen.
     const { rows: seededKeys } = await pool.query(`SELECT permission_key FROM permission_key_seeds`);

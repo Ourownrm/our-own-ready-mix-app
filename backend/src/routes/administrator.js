@@ -526,12 +526,25 @@ router.get("/rates", requireRole("administrator", "accountant", "manager"), asyn
   res.json(rows);
 });
 
+// Round 204 — once the Accountant's rate file has been migrated (Accounts →
+// Rate migration → Complete), the price list changes only through an accepted
+// quotation. These direct edits then refuse.
+async function ratesLocked(res) {
+  const { rows } = await query(`SELECT rates_locked_at FROM quotation_settings WHERE id = 1`).catch(() => ({ rows: [] }));
+  if (rows[0]?.rates_locked_at) {
+    res.status(409).json({ error: "The price list is now kept by quotations — change a rate by revising the customer's quotation (Accounts → Quotations)." });
+    return true;
+  }
+  return false;
+}
+
 router.post("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
   const {
     customer_id, site_id, mix_grade_id, rate_per_m3, waiting_charge_per_hour, effective_from,
     line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3,
     part_load_min_qty_m3, part_load_charge_per_m3,
   } = req.body;
+  if (await ratesLocked(res)) return;
   if (!customer_id || !site_id || !mix_grade_id || !rate_per_m3 || !effective_from) {
     return res.status(400).json({ error: "Customer, site/project, mix grade, rate, and effective date are all required." });
   }
@@ -553,6 +566,7 @@ router.post("/rates", requireRole("administrator", "accountant", "manager"), asy
 // just adding a new row and leaving the old one open-ended indefinitely.
 router.post("/rates/:id/end", requireRole("administrator", "accountant", "manager"), async (req, res) => {
   const { effective_to } = req.body;
+  if (await ratesLocked(res)) return;
   if (!effective_to) return res.status(400).json({ error: "End date is required." });
   const { rows } = await query(
     "UPDATE rate_master SET effective_to = $1 WHERE id = $2 RETURNING *",
@@ -587,6 +601,7 @@ router.get("/rates/review-seed-pollution", requireRole("administrator", "account
 });
 
 router.delete("/rates/:id", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+  if (await ratesLocked(res)) return;
   const { rowCount } = await query("DELETE FROM rate_master WHERE id = $1", [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "Rate not found." });
   res.json({ ok: true });

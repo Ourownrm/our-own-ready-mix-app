@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { resolveChargeDecisions, notifyWaivers } from "../lib/orderCharges.js";
+import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { query } from "../db.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
@@ -409,20 +411,14 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
   // Same confirmation requirement as creating an order directly — not
   // automatic, and this endpoint bypasses that one entirely, so it needs its
   // own copy of the check.
-  if (pump_requirement !== "without_pump" && pump_charge_applicable === undefined) {
-    return res.status(400).json({ error: "Confirm whether the pump mobilization charge applies to this order." });
-  }
-  const { rows: rateCheck } = await query(
-    `SELECT COALESCE(part_load_min_qty_m3, 5) AS part_load_min_qty_m3 FROM rate_master
-     WHERE customer_id = $1 AND mix_grade_id = $2 AND (site_id = $3 OR site_id IS NULL)
-       AND effective_from <= $4 AND (effective_to IS NULL OR effective_to >= $4)
-     ORDER BY (site_id = $3) DESC, effective_from DESC, id DESC LIMIT 1`,
-    [booking.customer_id, finalMixGradeId, finalSiteId, order_date]
-  );
-  const partLoadThreshold = Number(rateCheck[0]?.part_load_min_qty_m3 ?? 5);
-  if (Number(finalQty) < partLoadThreshold && part_load_applicable === undefined) {
-    return res.status(400).json({ error: `Confirm whether the part load charge applies — this order is below the ${partLoadThreshold} m³ minimum.` });
-  }
+  // Round 204 — the Manager's charge decisions (pump, and part load on
+  // every order), with a reason when one is left out. See lib/orderCharges.js.
+  const charges = await resolveChargeDecisions(req.body, {
+    customer_id: booking.customer_id, site_id: finalSiteId, mix_grade_id: finalMixGradeId, order_date,
+    order_quantity_m3: finalQty, pump_requirement,
+  });
+  if (charges.error) return res.status(400).json({ error: charges.error });
+  const cd = charges.decisions;
 
   // Same mix design resolution as orders.js's own POST / — this endpoint
   // creates a customer_orders row too and had been skipping this entirely.
@@ -461,22 +457,24 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
       pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount,
-      resolved_mix_design_id, assigned_qc_engineer_id, billing_address_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+      resolved_mix_design_id, assigned_qc_engineer_id, billing_address_id, part_load_basis, pump_charge_waiver_reason, part_load_waiver_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
      RETURNING *`,
     [order_date, scheduled_batching_time, required_at_site_time || booking.preferred_time || null, truck_dispatch_interval_minutes, booking.customer_id, finalSiteId,
      finalMixGradeId, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required || null,
      assigned_pump_crew || null, assigned_site_supervisor_id || null, site_contact_number, finalQty,
      finalSalesRepId, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
-     pump_charge_applicable ?? null, pump_charge_applicable ? (pump_charge_amount || 0) : 0,
-     part_load_applicable ?? null, part_load_applicable ? (part_load_charge_amount || 0) : 0,
-     resolvedMixDesignId, defaultQcEngineerId, resolvedBillingAddressId]
+     cd.pump_charge_applicable, cd.pump_charge_amount,
+     cd.part_load_applicable, cd.part_load_charge_amount,
+     resolvedMixDesignId, defaultQcEngineerId, resolvedBillingAddressId, cd.part_load_basis, cd.pump_charge_waiver_reason, cd.part_load_waiver_reason]
   );
 
   await query(
     "UPDATE bookings SET status = 'converted', converted_order_id = $1 WHERE id = $2",
     [rows[0].id, req.params.id]
   );
+  await notifyWaivers(rows[0].id);
+  await deemedAcceptOnFirstOrder(rows[0].id, req.user.id);
   res.status(201).json(rows[0]);
 });
 

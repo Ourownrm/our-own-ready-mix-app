@@ -31,6 +31,7 @@ import { monthStartStr, todayStr } from "../lib/istDate.js";
 import { printMaterialReport } from "../lib/materialReportPdf.js";
 import SupplierLedgerTab from "./SupplierLedger.jsx";
 import TransporterLedgerTab from "./TransporterLedger.jsx";
+import ReceiptVariance from "./ReceiptVariance.jsx";
 
 // ===================== Shared helpers =====================
 
@@ -189,13 +190,17 @@ const ALL_TABS = [
   // read-only. Editing inside still needs create/edit on the master itself.
   { key: "materials", label: "Materials", perm: "material.materials-menu", action: "view" },
   { key: "suppliers", label: "Suppliers", perm: "material.suppliers-menu", action: "view" },
+  // Round 204 — moved here from the Weighbridge (owner, 11 Oct 2026): the
+  // Manager's decision on a disputed load, and the variance report. Either
+  // function opens the tab.
+  { key: "receipt-variances", label: "Receipt Variances", perm: ["material.receipt-confirm", "weighbridge.receipt-variance"], action: "view" },
 ];
 
 export default function MaterialModule() {
   const { user } = useAuth();
   const { can, ready } = usePermissions();
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabs = ready ? ALL_TABS.filter((t) => can(t.perm, t.action)) : [];
+  const tabs = ready ? ALL_TABS.filter((t) => [].concat(t.perm).some((p) => can(p, t.action))) : [];
   const requestedTab = searchParams.get("tab");
   const initialTab = tabs.some((t) => t.key === requestedTab) ? requestedTab : (tabs[0]?.key || "");
   const [tab, setTab] = useState(initialTab);
@@ -247,6 +252,7 @@ export default function MaterialModule() {
         {tab === "cost-dashboard" && <CostDashboardTab />}
         {tab === "supplier-ledger" && <SupplierLedgerTab />}
         {tab === "transporter-ledger" && <TransporterLedgerTab />}
+        {tab === "receipt-variances" && <ReceiptVariance embedded />}
       </div>
     </>
   );

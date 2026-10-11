@@ -876,3 +876,46 @@ export async function cleanupOldNotifications() {
   );
   return { readDeleted, unreadDeleted };
 }
+
+// Round 204 — quotation follow-ups (owner: follow-up of sent quotations is top
+// priority). Reminds whoever raised the quotation 2 days and 5 days after it
+// was sent, and on its last valid day — unless a follow-up already set a later
+// date. A date chosen in a follow-up is reminded on that day. Each reminder
+// fires once.
+export async function checkQuotationFollowups() {
+  const { rows } = await query(
+    `SELECT q.id, q.quote_no, q.created_by, u.role AS created_by_role, c.name AS customer_name, s.name AS site_name,
+            q.valid_until::text AS valid_until,
+            CASE
+              WHEN q.next_followup_on = CURRENT_DATE AND NOT EXISTS (
+                     SELECT 1 FROM quotation_events e WHERE e.quotation_id = q.id AND e.event = 'reminder' AND e.at::date = CURRENT_DATE)
+                THEN 'chosen'
+              WHEN q.next_followup_on > CURRENT_DATE THEN NULL
+              WHEN q.valid_until = CURRENT_DATE AND q.reminded_expiry_at IS NULL THEN 'expiry'
+              WHEN CURRENT_DATE >= q.sent_at::date + 5 AND q.reminded_day5_at IS NULL THEN 'day5'
+              WHEN CURRENT_DATE >= q.sent_at::date + 2 AND q.reminded_day2_at IS NULL THEN 'day2'
+            END AS kind
+       FROM quotations q
+       JOIN customers c ON c.id = q.customer_id
+       JOIN sites s ON s.id = q.site_id
+       LEFT JOIN users u ON u.id = q.created_by
+      WHERE q.status = 'sent' AND q.sent_at IS NOT NULL`
+  );
+  const due = rows.filter((r) => r.kind);
+  for (const r of due) {
+    const col = { day2: "reminded_day2_at", day5: "reminded_day5_at", expiry: "reminded_expiry_at" }[r.kind];
+    // day5 also covers a missed day2 (server asleep) — mark both.
+    if (col) await query(`UPDATE quotations SET ${col} = now()${r.kind === "day5" ? ", reminded_day2_at = COALESCE(reminded_day2_at, now())" : ""} WHERE id = $1`, [r.id]);
+    const why = r.kind === "expiry" ? "last valid day today" : r.kind === "chosen" ? "follow-up due today" : r.kind === "day5" ? "5 days since sent" : "2 days since sent";
+    const message = `${r.quote_no} · ${r.customer_name} · ${r.site_name} — ${why}. Call the customer and log the follow-up.`;
+    await query(`INSERT INTO quotation_events (quotation_id, event, note) VALUES ($1, 'reminder', $2)`, [r.id, why]);
+    if (r.created_by) {
+      await query(
+        `INSERT INTO notifications (recipient_role, recipient_id, type, message) VALUES ($1, $2, 'quotation_followup', $3)`,
+        [r.created_by_role || "manager", r.created_by, message]
+      );
+      await pushToUser(r.created_by, { title: "Quotation follow-up", body: message, url: `/accounts?tab=quotations&id=${r.id}` });
+    }
+  }
+  return due;
+}
