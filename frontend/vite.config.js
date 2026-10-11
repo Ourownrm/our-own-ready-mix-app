@@ -19,6 +19,12 @@ export default defineConfig({
         // for the Mark attendance / face enrolment screens: fetched when those
         // open, never pushed to every phone with the app.
         globIgnores: ["**/face-api*.js", "**/face-models/**"],
+        // Round 203 — the main app bundle reached 2.09 MB in v10.32, a few KB
+        // under the plugin's 2 MiB default, and any growth past it made the
+        // whole build FAIL (and so the Render deploy). 4 MiB keeps the app
+        // shell precached so the PWA still opens offline. Splitting the bundle
+        // into lazily-loaded routes is the longer-term fix.
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       manifest: {
         name: "Our Own Ready Mix",

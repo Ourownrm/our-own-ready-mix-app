@@ -60,6 +60,29 @@ CREATE TABLE IF NOT EXISTS fuel_exception_reviews (
   reviewed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (check_key, reference_id)
 );
+
+-- Round 203 — closing outside-station fills properly. An approved request for
+-- an outside station used to reach 'issued' only if the person who raised it
+-- remembered to tap "Mark as filled"; many never did. These columns record how
+-- each one was closed and stop the reminders from repeating.
+ALTER TABLE supply_requests
+  ADD COLUMN IF NOT EXISTS closed_via VARCHAR(10),            -- 'driver' | 'office' (outside fills only)
+  ADD COLUMN IF NOT EXISTS bill_ref VARCHAR(60),              -- station bill / slip number, when the office enters it
+  ADD COLUMN IF NOT EXISTS close_note TEXT,                   -- office's note, e.g. why litres differ from the approval
+  ADD COLUMN IF NOT EXISTS outside_reminded_at TIMESTAMPTZ,   -- 2-hour reminder to the driver sent
+  ADD COLUMN IF NOT EXISTS outside_escalated_at TIMESTAMPTZ,  -- 12-hour alert to the Manager sent
+  ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ,          -- "Not filled — cancel" after approval
+  ADD COLUMN IF NOT EXISTS cancelled_by INTEGER REFERENCES users(id);
+
+-- Round 203 — the rate per litre is written at approval for an outside fill
+-- and for a diesel purchase (the owner's rule: no approval without the rate),
+-- and an Administrator can cancel an approved purchase.
+ALTER TABLE supply_requests
+  ADD COLUMN IF NOT EXISTS approved_rate NUMERIC(10,2);
+ALTER TABLE store_stock_purchases
+  ADD COLUMN IF NOT EXISTS approved_rate NUMERIC(10,2),
+  ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS cancelled_by INTEGER REFERENCES users(id);
 `;
 
 // Functions that sit inside the Fuel module and existed before it (only the

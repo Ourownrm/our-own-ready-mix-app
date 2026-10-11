@@ -32,6 +32,8 @@ export default function FuelPurchases() {
   const canReceive = can("fuel.purchases", "edit") && REQUESTER_ROLES.includes(role);
   const canApprove = can("store.purchase-approve", "edit") && APPROVER_ROLES.includes(role);
   const canDelete = can("fuel.purchases", "delete") && APPROVER_ROLES.includes(role);
+  // Round 203 — an Administrator can cancel an approved purchase that won't come.
+  const canCancelApproved = can("fuel.cancel-approved", "edit");
 
   function load() {
     apiRequest("/fuel-module/purchases").then(setData).catch((e) => setError(e.message));
@@ -51,7 +53,8 @@ export default function FuelPurchases() {
 
   function submitAction() {
     const a = acting;
-    if (a.mode === "approve") return run(() => apiRequest(`/store-stock/purchases/${a.id}/approve`, { method: "POST", body: { approved_qty: a.qty } }), "Purchase approved.");
+    if (a.mode === "approve") return run(() => apiRequest(`/store-stock/purchases/${a.id}/approve`, { method: "POST", body: { approved_qty: a.qty, approved_rate: a.rate } }), "Purchase approved.");
+    if (a.mode === "cancel") return run(() => apiRequest(`/fuel-module/purchases/${a.id}/cancel`, { method: "POST", body: { note: a.reason } }), "Approved purchase cancelled.");
     if (a.mode === "reject") return run(() => apiRequest(`/store-stock/purchases/${a.id}/reject`, { method: "POST", body: { reason: a.reason } }), "Purchase rejected.");
     if (a.mode === "receive") return run(() => apiRequest(`/store-stock/purchases/${a.id}/receive`, { method: "POST", body: { received_qty: a.qty, unit_cost: a.rate } }), "Delivery received — the litres are now in the tank.");
     return null;
@@ -77,24 +80,32 @@ export default function FuelPurchases() {
           <td style={{ textAlign: "right" }}>{fmtL(p.requested_qty)}</td>
           <td style={{ textAlign: "right" }}>{p.approved_qty != null ? fmtL(p.approved_qty) : "—"}</td>
           <td style={{ textAlign: "right" }}>{p.received_qty != null ? fmtL(p.received_qty) : "—"}</td>
-          <td style={{ textAlign: "right" }}>{p.unit_cost != null ? `${fmtRs(p.unit_cost, 2)}/L` : "—"}<div style={{ fontSize: 11, color: "var(--slate)" }}>{p.total_cost != null ? fmtRs(p.total_cost) : ""}</div></td>
+          <td style={{ textAlign: "right" }}>{p.unit_cost != null ? `${fmtRs(p.unit_cost, 2)}/L` : p.approved_rate != null ? <span title="Rate written at approval">{fmtRs(p.approved_rate, 2)}/L<span style={{ fontSize: 10.5, color: "var(--slate)" }}> approved</span></span> : "—"}<div style={{ fontSize: 11, color: "var(--slate)" }}>{p.total_cost != null ? fmtRs(p.total_cost) : ""}</div></td>
           <td><span className={`badge ${cls}`}>{label}</span>{p.rejected_reason && <div style={{ fontSize: 11, color: "var(--slate)" }}>{p.rejected_reason}</div>}
             {p.received_at && <div style={{ fontSize: 11, color: "var(--slate)" }}>{fmtWhen(p.received_at)} · {p.received_by_name}</div>}</td>
           <td style={{ whiteSpace: "nowrap" }}>
-            {p.status === "pending" && canApprove && <button type="button" style={{ fontSize: 12, padding: "6px 10px", marginRight: 6 }} onClick={() => setActing({ id: p.id, mode: "approve", qty: p.requested_qty })}>Approve</button>}
+            {p.status === "pending" && canApprove && <button type="button" style={{ fontSize: 12, padding: "6px 10px", marginRight: 6 }} onClick={() => setActing({ id: p.id, mode: "approve", qty: p.requested_qty, rate: "" })}>Approve</button>}
             {p.status === "pending" && canApprove && <button type="button" style={{ fontSize: 12, padding: "6px 10px", marginRight: 6 }} onClick={() => setActing({ id: p.id, mode: "reject", reason: "" })}>Reject</button>}
             {p.status === "pending" && canDelete && <button type="button" style={{ fontSize: 12, padding: "6px 10px" }} disabled={busy}
               onClick={() => run(() => apiRequest(`/store-stock/purchases/${p.id}`, { method: "DELETE" }), "Request deleted.")}>Delete</button>}
             {p.status === "approved" && canReceive && <button type="button" className="btn-primary" style={{ fontSize: 12, padding: "6px 10px" }}
-              onClick={() => setActing({ id: p.id, mode: "receive", qty: p.approved_qty ?? p.requested_qty, rate: data.item.rate_per_liter ?? "" })}>Receive delivery</button>}
+              onClick={() => setActing({ id: p.id, mode: "receive", qty: p.approved_qty ?? p.requested_qty, rate: p.approved_rate ?? data.item.rate_per_liter ?? "" })}>Receive delivery</button>}
+            {p.status === "approved" && canCancelApproved && <button type="button" style={{ fontSize: 12, padding: "6px 10px", marginLeft: 6 }}
+              onClick={() => setActing({ id: p.id, mode: "cancel", reason: "" })}>Cancel</button>}
           </td>
         </tr>
         {isActing && (
           <tr><td colSpan={9} style={{ background: "#FAF9F6" }}>
             <div className="field-input" style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end", padding: "6px 0" }}>
-              {acting.mode !== "reject" && (
+              {acting.mode !== "reject" && acting.mode !== "cancel" && (
                 <label style={{ fontSize: 12, color: "var(--slate)" }}>{acting.mode === "approve" ? "Approved litres" : "Litres received"}
                   <input type="number" min="1" value={acting.qty ?? ""} onChange={(e) => setActing({ ...acting, qty: e.target.value })} style={{ display: "block", marginTop: 4, width: 150 }} />
+                </label>
+              )}
+              {acting.mode === "approve" && (
+                <label style={{ fontSize: 12, color: "var(--slate)" }}>Rate (₹ per litre) — required
+                  <input type="number" min="0" step="0.01" value={acting.rate ?? ""} placeholder={data.item.rate_per_liter != null ? `last ${data.item.rate_per_liter}` : ""}
+                    onChange={(e) => setActing({ ...acting, rate: e.target.value })} style={{ display: "block", marginTop: 4, width: 150 }} />
                 </label>
               )}
               {acting.mode === "receive" && (
@@ -102,14 +113,16 @@ export default function FuelPurchases() {
                   <input type="number" min="0" step="0.01" value={acting.rate ?? ""} onChange={(e) => setActing({ ...acting, rate: e.target.value })} style={{ display: "block", marginTop: 4, width: 150 }} />
                 </label>
               )}
-              {acting.mode === "reject" && (
-                <label style={{ fontSize: 12, color: "var(--slate)", flex: "1 1 260px" }}>Reason
+              {(acting.mode === "reject" || acting.mode === "cancel") && (
+                <label style={{ fontSize: 12, color: "var(--slate)", flex: "1 1 260px" }}>{acting.mode === "cancel" ? "Why is this approved purchase cancelled?" : "Reason"}
                   <input type="text" value={acting.reason} onChange={(e) => setActing({ ...acting, reason: e.target.value })} style={{ display: "block", marginTop: 4 }} />
                 </label>
               )}
               <button type="button" onClick={() => setActing(null)}>Cancel</button>
-              <button type="button" className={acting.mode === "reject" ? "btn-danger" : "btn-primary"} disabled={busy} onClick={submitAction}>
-                {busy ? "Saving…" : acting.mode === "approve" ? "Approve" : acting.mode === "reject" ? "Reject" : "Confirm receipt"}
+              <button type="button" className={acting.mode === "reject" || acting.mode === "cancel" ? "btn-danger" : "btn-primary"}
+                disabled={busy || (acting.mode === "approve" && !(Number(acting.rate) > 0)) || ((acting.mode === "reject" || acting.mode === "cancel") && !String(acting.reason || "").trim())}
+                onClick={submitAction}>
+                {busy ? "Saving…" : acting.mode === "approve" ? "Approve" : acting.mode === "reject" ? "Reject" : acting.mode === "cancel" ? "Cancel purchase" : "Confirm receipt"}
               </button>
             </div>
           </td></tr>

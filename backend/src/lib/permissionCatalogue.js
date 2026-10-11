@@ -421,6 +421,13 @@ export const CATALOGUE = [
     { administrator: VE, manager: V, store: V }),
   f("fuel.exception-review", "fuel", "Mark a fuel exception as reviewed", E,
     { administrator: E, manager: E }),
+  // Round 203 — closing an outside-station fill the driver never confirmed.
+  f("fuel.outside-close", "fuel", "Close an outside fill from the station bill (litres and amount)", E,
+    { administrator: E, manager: E, store: E }),
+  f("fuel.outside-cancel", "fuel", "Cancel an approved outside fill that was not filled", E,
+    { administrator: E, manager: E }),
+  f("fuel.cancel-approved", "fuel", "Cancel an approved fuel issue request or diesel purchase", E,
+    { administrator: E }),
 
   // ---------- Sales & CRM ----------
   f("sales.leads", "sales", "Browse Leads", VCE,
@@ -710,7 +717,7 @@ export const MODULES = [
       { key: "fuel.reports", label: "Reports" },
       { key: "fuel.settings", label: "Settings" },
     ],
-    support: ["fuel.exception-review"],
+    support: ["fuel.exception-review", "fuel.outside-close", "fuel.outside-cancel", "fuel.cancel-approved"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",

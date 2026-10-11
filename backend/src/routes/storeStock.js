@@ -182,7 +182,7 @@ router.get("/purchases/pending", requireRole("manager", "administrator"), async 
   const { rows } = await query(
     `SELECT sp.*, u.name AS requested_by_name,
             CASE WHEN ssi.item_type = 'fuel' THEN 'Diesel (Plant Store)' ELSE lt.name END AS item_name,
-            ssi.unit, ssi.current_qty
+            ssi.unit, ssi.current_qty, ssi.item_type, ssi.rate_per_liter
      FROM store_stock_purchases sp
      JOIN users u ON u.id = sp.requested_by
      JOIN store_stock_items ssi ON ssi.id = sp.stock_item_id
@@ -194,16 +194,31 @@ router.get("/purchases/pending", requireRole("manager", "administrator"), async 
 });
 
 router.post("/purchases/:id/approve", requireRole("manager", "administrator"), async (req, res) => {
-  const { approved_qty } = req.body;
-  const { rows: existing } = await query("SELECT * FROM store_stock_purchases WHERE id = $1 AND status = 'pending'", [req.params.id]);
+  const { approved_qty, approved_rate } = req.body;
+  const { rows: existing } = await query(
+    `SELECT sp.*, ssi.item_type FROM store_stock_purchases sp JOIN store_stock_items ssi ON ssi.id = sp.stock_item_id
+      WHERE sp.id = $1 AND sp.status = 'pending'`,
+    [req.params.id]
+  );
   if (!existing.length) return res.status(404).json({ error: "Request not found or already actioned." });
+
+  // Round 203 — the owner's rule: a diesel purchase is approved only with the
+  // rate per litre written. It pre-fills the rate when the delivery is received.
+  let rate = null;
+  if (existing[0].item_type === "fuel") {
+    rate = Number(approved_rate);
+    if (approved_rate === "" || approved_rate == null || !Number.isFinite(rate) || rate <= 0) {
+      return res.status(400).json({ error: "Enter the diesel rate per litre before approving." });
+    }
+  }
 
   const { rows } = await query(
     `UPDATE store_stock_purchases SET
-       status = 'approved', approved_qty = $1, approved_by = $2, approved_at = now()
-     WHERE id = $3 RETURNING *`,
-    [approved_qty || existing[0].requested_qty, req.user.id, req.params.id]
+       status = 'approved', approved_qty = $1, approved_by = $2, approved_at = now(), approved_rate = $4
+     WHERE id = $3 AND status = 'pending' RETURNING *`,
+    [approved_qty || existing[0].requested_qty, req.user.id, req.params.id, rate]
   );
+  if (!rows.length) return res.status(409).json({ error: "Someone has just actioned this request." });
   await pushToUser(existing[0].requested_by, { title: "Purchase approved", body: "Your stock purchase request has been approved", url: "/store-stock" });
   res.json(rows[0]);
 });
@@ -239,14 +254,16 @@ router.post("/purchases/:id/receive", requireRole(...REQUESTER_ROLES), async (re
   const { rows: existing } = await query("SELECT * FROM store_stock_purchases WHERE id = $1 AND status = 'approved'", [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Request not found or not in a receivable state." });
 
-  const totalCost = unit_cost ? Number(unit_cost) * Number(received_qty) : null;
+  // Round 203 — the rate written at approval is the default for a diesel delivery.
+  const rateUsed = unit_cost || existing[0].approved_rate || null;
+  const totalCost = rateUsed ? Number(rateUsed) * Number(received_qty) : null;
 
   const { rows } = await query(
     `UPDATE store_stock_purchases SET
        status = 'received', received_qty = $1, unit_cost = $2, total_cost = $3,
        received_by = $4, received_at = now()
      WHERE id = $5 RETURNING *`,
-    [received_qty, unit_cost || null, totalCost, req.user.id, req.params.id]
+    [received_qty, rateUsed, totalCost, req.user.id, req.params.id]
   );
 
   const { rows: item } = await query(

@@ -448,7 +448,7 @@ function Approvals({ data }) {
       <section className="card" style={{ flex: "1 1 440px" }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>How fuel requests were handled</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginTop: 14 }}>
-          {box("Requests", fmtNum(data.requests), `${data.issued} issued · ${data.rejected} rejected · ${data.open} open`)}
+          {box("Requests", fmtNum(data.requests), `${data.issued} issued · ${data.rejected} rejected${data.cancelled ? ` · ${data.cancelled} not filled` : ""} · ${data.open} open`)}
           {box("Cut at approval", fmtL(data.cut_litres), data.cut_pct != null ? `${fmtNum(data.cut_pct, 1)}% less than asked` : null)}
           {box("Request → approve", data.median_request_to_approve_min != null ? `${data.median_request_to_approve_min} min` : "—", "median")}
           {box("Approve → issue", data.median_approve_to_issue_min != null ? `${data.median_approve_to_issue_min} min` : "—", "median, plant issues")}

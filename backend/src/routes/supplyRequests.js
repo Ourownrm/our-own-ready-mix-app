@@ -14,6 +14,59 @@ router.use(requireAuth);
 // their own request history via GET /mine.
 const REQUESTER_ROLES = ["driver", "site_supervisor", "plant_operator", "manager", "administrator", "loader_operator"];
 
+// ===== Round 203 — outside-station fills =====
+// An approved fuel request whose station is NOT the plant ends with someone
+// saying what was actually filled. Until now only the person who RAISED the
+// request could, and nothing made them; these helpers let whoever is driving
+// the vehicle today confirm it, and stop the vehicle getting more fuel until
+// the last outside fill is closed.
+
+// "Open" = approved, fuel, at an outside station, not yet confirmed.
+const OPEN_OUTSIDE_SQL = `
+  sr.request_type = 'fuel' AND sr.status = 'approved'
+  AND NOT COALESCE((SELECT is_plant FROM fuel_stations WHERE id = COALESCE(sr.approved_station_id, sr.fuel_station_id)), false)`;
+
+// Who counts as driving the vehicle today: the person who raised the request,
+// anyone with a delivery ticket on that truck today or on the day it was
+// approved, or anyone who ran that pump on either day (pump_logs). There is
+// no fixed driver-to-truck assignment in this app, so the day's tickets are
+// the record of who had the truck.
+const DRIVING_IT_SQL = (userParam) => `(
+  sr.requested_by = ${userParam}
+  OR (sr.truck_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM delivery_tickets dt
+         WHERE dt.truck_id = sr.truck_id AND dt.driver_id = ${userParam}
+           AND dt.status NOT IN ('cancelled', 'rejected')
+           AND dt.ticket_date IN (CURRENT_DATE, sr.approved_at::date)))
+  OR (sr.pump_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM pump_logs pl
+         WHERE pl.pump_id = sr.pump_id AND pl.pump_operator_id = ${userParam}
+           AND pl.start_time::date IN (CURRENT_DATE, sr.approved_at::date)))
+)`;
+
+const UNIT_NAME_SQL = `COALESCE((SELECT truck_number FROM trucks WHERE id = sr.truck_id),
+                                (SELECT pump_code FROM pumps WHERE id = sr.pump_id),
+                                (SELECT name FROM equipment WHERE id = sr.equipment_id))`;
+
+// The open outside fill on this vehicle or machine, if there is one.
+async function openOutsideFill({ truck_id, pump_id, equipment_id }) {
+  const { rows } = await query(
+    `SELECT sr.id, sr.approved_at, sr.approved_quantity, ${UNIT_NAME_SQL} AS unit_name,
+            (SELECT name FROM fuel_stations WHERE id = COALESCE(sr.approved_station_id, sr.fuel_station_id)) AS station_name
+       FROM supply_requests sr
+      WHERE ${OPEN_OUTSIDE_SQL}
+        AND sr.truck_id IS NOT DISTINCT FROM $1 AND sr.pump_id IS NOT DISTINCT FROM $2 AND sr.equipment_id IS NOT DISTINCT FROM $3
+      ORDER BY sr.approved_at LIMIT 1`,
+    [truck_id || null, pump_id || null, equipment_id || null]
+  );
+  return rows[0] || null;
+}
+
+function positiveNumber(v) {
+  const n = Number(v);
+  return v !== "" && v != null && Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // A driver or machine operator requests fuel or a lubricant. Odometer/hour
 // meter reading is required — this is the field the old self-logged flow
 // captured that matters most for later efficiency analysis, so it's kept
@@ -38,6 +91,22 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
   if (!requested_quantity) return res.status(400).json({ error: "Enter the quantity needed." });
   if (request_type === "fuel" && !fuel_station_id) return res.status(400).json({ error: "Select a filling station." });
   if (request_type === "lubricant" && !lubricant_type_id) return res.status(400).json({ error: "Select which lubricant." });
+
+  // Round 203 — no more fuel for a vehicle until its last outside fill is
+  // confirmed, so an open one can never be quietly forgotten.
+  if (request_type === "fuel") {
+    const open = await openOutsideFill({
+      truck_id: equipment_type === "truck" ? truck_id : null,
+      pump_id: equipment_type === "pump" ? pump_id : null,
+      equipment_id: ["pickup_van", "loader", "generator"].includes(equipment_type) ? equipment_id : null,
+    });
+    if (open) {
+      return res.status(409).json({
+        error: `${open.unit_name || "This vehicle"} still has an outside fill to confirm (FR-${open.id}, ${Number(open.approved_quantity)} L at ${open.station_name || "an outside station"}). Confirm what was filled first — or ask Store or the Manager to close it from the bill.`,
+        open_request_id: open.id,
+      });
+    }
+  }
 
   const { rows } = await query(
     `INSERT INTO supply_requests
@@ -72,7 +141,11 @@ router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
             afs.name AS approved_station_name, afs.is_plant AS approved_station_is_plant,
             lt.name AS lubricant_type_name,
             t.truck_number, p.pump_code, e.name AS equipment_name,
-            ssi.rate_per_liter
+            ssi.rate_per_liter,
+            -- Round 203 — outside fills this person can confirm (they raised it,
+            -- or they are driving that vehicle today), and whether someone else raised it.
+            (${OPEN_OUTSIDE_SQL} AND ${DRIVING_IT_SQL("$1")}) AS can_confirm_outside,
+            (sr.requested_by <> $1) AS raised_by_other
      FROM supply_requests sr
      JOIN users u ON u.id = sr.requested_by
      LEFT JOIN fuel_stations fs ON fs.id = sr.fuel_station_id
@@ -87,8 +160,9 @@ router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
      LEFT JOIN store_stock_items ssi ON
        (sr.request_type = 'fuel' AND ssi.item_type = 'fuel')
        OR (sr.request_type = 'lubricant' AND ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = sr.lubricant_type_id)
-     WHERE sr.requested_by = $1
-       AND (sr.status != 'issued' OR sr.issued_at > now() - INTERVAL '1 day')
+     WHERE (sr.requested_by = $1
+            AND (sr.status != 'issued' OR sr.issued_at > now() - INTERVAL '1 day'))
+        OR (${OPEN_OUTSIDE_SQL} AND ${DRIVING_IT_SQL("$1")})
      ORDER BY sr.requested_at DESC`,
     [req.user.id]
   );
@@ -176,21 +250,92 @@ router.get("/pending", requireRole("manager", "administrator"), async (req, res)
 // Manager approves — can adjust quantity and (for fuel) redirect to a
 // different station than what was requested. Generates the single-use QR
 // token here, at approval time, not before.
+// Round 203 — what the plant tank can still give: the book balance less every
+// plant-station fuel request already approved and waiting to be issued, so two
+// approvals can never promise the same litres.
+async function tankAvailability(excludeId = null) {
+  const { rows } = await query(
+    `SELECT COALESCE((SELECT current_qty FROM store_stock_items WHERE item_type = 'fuel' AND is_active ORDER BY id LIMIT 1), 0) AS current,
+            COALESCE((SELECT rate_per_liter FROM store_stock_items WHERE item_type = 'fuel' AND is_active ORDER BY id LIMIT 1), NULL) AS rate,
+            COALESCE((SELECT SUM(sr.approved_quantity) FROM supply_requests sr
+                       JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
+                      WHERE sr.request_type = 'fuel' AND sr.status = 'approved' AND fs.is_plant
+                        AND ($1::int IS NULL OR sr.id <> $1)), 0) AS committed`,
+    [excludeId]
+  );
+  const current = Number(rows[0].current), committed = Number(rows[0].committed);
+  return { current, committed, available: Math.round((current - committed) * 100) / 100, rate: rows[0].rate == null ? null : Number(rows[0].rate) };
+}
+
+router.get("/tank-available", requireRole("manager", "administrator"), async (req, res) => {
+  res.json(await tankAvailability());
+});
+
 router.post("/:id/approve", requireRole("manager", "administrator"), async (req, res) => {
-  const { approved_quantity, approved_station_id } = req.body;
+  const { approved_quantity, approved_station_id, approved_rate } = req.body;
   const { rows: existing } = await query("SELECT * FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Request not found or already actioned." });
+  const r = existing[0];
+  const qty = Number(approved_quantity || r.requested_quantity);
+  if (!(qty > 0)) return res.status(400).json({ error: "Enter the quantity to approve." });
+
+  // Round 203 — the two owner rules on approving fuel:
+  //   plant tank  → never approve more than the tank can actually give;
+  //   outside     → the rate per litre must be written before approving.
+  let rate = null;
+  if (r.request_type === "fuel") {
+    const stationId = approved_station_id || r.fuel_station_id;
+    const { rows: st } = await query("SELECT is_plant, name FROM fuel_stations WHERE id = $1", [stationId]);
+    if (!st.length) return res.status(400).json({ error: "Select a filling station." });
+    if (st[0].is_plant) {
+      const tank = await tankAvailability(r.id);
+      if (qty > tank.available) {
+        return res.status(400).json({
+          error: tank.committed > 0
+            ? `Only ${tank.available} L can be approved from the plant tank: ${tank.current} L in stock, ${tank.committed} L already approved and waiting to be issued. Approve less, or send it to an outside station.`
+            : `Only ${tank.available} L is in the plant tank. Approve less, or send it to an outside station.`,
+          available: tank.available,
+        });
+      }
+    } else {
+      rate = positiveNumber(approved_rate);
+      if (!rate) return res.status(400).json({ error: `Enter the rate per litre at ${st[0].name} before approving.` });
+    }
+  }
 
   const token = crypto.randomBytes(24).toString("hex");
   const { rows } = await query(
     `UPDATE supply_requests SET
        status = 'approved', approved_quantity = $1,
        approved_station_id = COALESCE($2, fuel_station_id),
-       approved_by = $3, approved_at = now(), qr_token = $4
-     WHERE id = $5 RETURNING *`,
-    [approved_quantity || existing[0].requested_quantity, approved_station_id || null, req.user.id, token, req.params.id]
+       approved_by = $3, approved_at = now(), qr_token = $4, approved_rate = $6
+     WHERE id = $5 AND status = 'pending' RETURNING *`,
+    [qty, approved_station_id || null, req.user.id, token, req.params.id, rate]
   );
-  await pushToUser(existing[0].requested_by, { title: "Request approved", body: "Your supply request has been approved", url: "/fuel" });
+  if (!rows.length) return res.status(409).json({ error: "Someone has just actioned this request." });
+  await pushToUser(r.requested_by, { title: "Request approved", body: "Your supply request has been approved", url: "/fuel" });
+  res.json(rows[0]);
+});
+
+// Round 203 — an Administrator can cancel any approved fuel issue request,
+// plant or outside (fuel.cancel-approved). The QR stops working at once
+// because issuing requires status 'approved'.
+router.post("/:id/cancel-approved", requirePermission("fuel.cancel-approved", "edit"), async (req, res) => {
+  const note = String(req.body.note || "").trim().slice(0, 300);
+  if (!note) return res.status(400).json({ error: "Give a reason for cancelling." });
+  const { rows } = await query(
+    `UPDATE supply_requests SET
+       status = 'rejected', rejected_reason = $1, qr_token = NULL, cancelled_at = now(), cancelled_by = $2
+     WHERE id = $3 AND status = 'approved' AND request_type = 'fuel'
+     RETURNING *, ${UNIT_NAME_SQL.replace(/sr\./g, "supply_requests.")} AS unit_name`,
+    [`Cancelled after approval — ${note}`, req.user.id, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Only an approved fuel request that hasn't been issued can be cancelled." });
+  await pushToUser(rows[0].requested_by, {
+    title: "Fuel request cancelled",
+    body: `FR-${rows[0].id} · ${rows[0].unit_name || ""} — cancelled by the office`,
+    url: "/fuel",
+  }).catch(() => {});
   res.json(rows[0]);
 });
 
@@ -501,28 +646,122 @@ router.get("/report/export", requirePermission("reports.fuel", "view"), async (r
 // pump, is the only person who actually knows the real numbers, so they
 // confirm their own external fill here.
 router.post("/:id/confirm-external-fill", requireRole(...REQUESTER_ROLES), async (req, res) => {
-  const { actual_quantity_issued, fuel_cost } = req.body;
-  if (!actual_quantity_issued) return res.status(400).json({ error: "Enter the actual quantity filled." });
+  // Round 203 — litres AND amount are both required now, and whoever is
+  // driving the vehicle today may confirm, not only the person who raised it.
+  const litres = positiveNumber(req.body.actual_quantity_issued);
+  const amount = positiveNumber(req.body.fuel_cost);
+  if (!litres) return res.status(400).json({ error: "Enter the litres actually filled." });
+  if (!amount) return res.status(400).json({ error: "Enter the amount on the station bill (₹)." });
 
   const { rows: existing } = await query(
-    `SELECT sr.*, fs.is_plant FROM supply_requests sr
-     LEFT JOIN fuel_stations fs ON fs.id = sr.approved_station_id
-     WHERE sr.id = $1 AND sr.status = 'approved' AND sr.requested_by = $2`,
+    `SELECT sr.*, fs.is_plant, ${DRIVING_IT_SQL("$2")} AS driving_it
+       FROM supply_requests sr
+       LEFT JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
+      WHERE sr.id = $1 AND sr.status = 'approved'`,
     [req.params.id, req.user.id]
   );
-  if (!existing.length) return res.status(404).json({ error: "Request not found or not in a confirmable state." });
-  const isPlantIssue = existing[0].request_type !== "fuel" || existing[0].is_plant;
-  if (isPlantIssue) {
+  if (!existing.length) return res.status(404).json({ error: "Request not found or already closed." });
+  const r = existing[0];
+  if (r.request_type !== "fuel" || r.is_plant) {
     return res.status(400).json({ error: "This is issued by Store, not confirmed here." });
+  }
+  if (!r.driving_it) {
+    return res.status(403).json({ error: "Only the person who raised this, or whoever is driving that vehicle today, can confirm it." });
+  }
+  // The approval is the ceiling, same as a plant issue. If the station filled
+  // more, the office closes it from the bill and the Manager decides.
+  if (litres > Number(r.approved_quantity)) {
+    return res.status(400).json({ error: `That's more than the ${Number(r.approved_quantity)} L approved. Ask Store or the Manager to close it from the bill.` });
   }
 
   const { rows } = await query(
     `UPDATE supply_requests SET
        status = 'issued', issued_by = $1, issued_at = now(),
-       actual_quantity_issued = $2, fuel_cost = $3, qr_token = NULL
-     WHERE id = $4 RETURNING *`,
-    [req.user.id, actual_quantity_issued, fuel_cost || null, req.params.id]
+       actual_quantity_issued = $2, fuel_cost = $3, qr_token = NULL, closed_via = 'driver'
+     WHERE id = $4 AND status = 'approved' RETURNING *`,
+    [req.user.id, litres, amount, req.params.id]
   );
+  if (!rows.length) return res.status(409).json({ error: "Someone has just closed this request." });
+  res.json(rows[0]);
+});
+
+// Round 203 — the office closes an outside fill the driver never confirmed,
+// from the station's bill. Store or Manager (fuel.outside-close). When the
+// bill and the approval disagree the Manager decides, so more litres than
+// approved needs a note saying why.
+async function loadOpenOutside(id) {
+  const { rows } = await query(
+    `SELECT sr.*, ${UNIT_NAME_SQL} AS unit_name FROM supply_requests sr WHERE sr.id = $1 AND ${OPEN_OUTSIDE_SQL}`,
+    [id]
+  );
+  return rows[0] || null;
+}
+
+router.post("/:id/close-outside", requirePermission("fuel.outside-close", "edit"), async (req, res) => {
+  const litres = positiveNumber(req.body.actual_quantity_issued);
+  const amount = positiveNumber(req.body.fuel_cost);
+  const billRef = String(req.body.bill_ref || "").trim().slice(0, 60) || null;
+  const note = String(req.body.note || "").trim().slice(0, 500) || null;
+  if (!litres) return res.status(400).json({ error: "Enter the litres on the bill." });
+  if (!amount) return res.status(400).json({ error: "Enter the amount on the bill (₹)." });
+
+  const r = await loadOpenOutside(req.params.id);
+  if (!r) return res.status(404).json({ error: "This isn't an open outside fill any more." });
+  if (litres > Number(r.approved_quantity) && !note) {
+    return res.status(400).json({ error: `The bill is more than the ${Number(r.approved_quantity)} L approved — add a note saying why.` });
+  }
+
+  // When it was filled: the date on the bill if given, otherwise the time it
+  // was approved — never "now", which could push a fill into the wrong month
+  // when the office closes it days later.
+  let filledAt = r.approved_at;
+  if (req.body.filled_at) {
+    const d = new Date(req.body.filled_at);
+    if (Number.isNaN(d.getTime())) return res.status(400).json({ error: "Filled on: enter a valid date and time." });
+    if (d < new Date(r.approved_at) || d > new Date()) {
+      return res.status(400).json({ error: "Filled on must be after the approval and not in the future." });
+    }
+    filledAt = d;
+  }
+
+  const { rows } = await query(
+    `UPDATE supply_requests SET
+       status = 'issued', issued_by = $1, issued_at = $2,
+       actual_quantity_issued = $3, fuel_cost = $4, qr_token = NULL,
+       closed_via = 'office', bill_ref = $5, close_note = $6
+     WHERE id = $7 AND status = 'approved' RETURNING *`,
+    [req.user.id, filledAt, litres, amount, billRef, note, r.id]
+  );
+  if (!rows.length) return res.status(409).json({ error: "Someone has just closed this request." });
+  await pushToUser(r.requested_by, {
+    title: "Outside fill closed by the office",
+    body: `FR-${r.id} · ${r.unit_name || ""} · ${litres} L entered from the bill`,
+    url: "/fuel",
+  }).catch(() => {});
+  res.json(rows[0]);
+});
+
+// "Not filled — cancel": the vehicle never went to the station. Manager only
+// by default (fuel.outside-cancel). Recorded as rejected-after-approval, with
+// who and when, so it is told apart from a request turned down at approval.
+router.post("/:id/cancel-outside", requirePermission("fuel.outside-cancel", "edit"), async (req, res) => {
+  const note = String(req.body.note || "").trim().slice(0, 300);
+  if (!note) return res.status(400).json({ error: "Say why it wasn't filled." });
+  const r = await loadOpenOutside(req.params.id);
+  if (!r) return res.status(404).json({ error: "This isn't an open outside fill any more." });
+  const { rows } = await query(
+    `UPDATE supply_requests SET
+       status = 'rejected', rejected_reason = $1, qr_token = NULL,
+       cancelled_at = now(), cancelled_by = $2
+     WHERE id = $3 AND status = 'approved' RETURNING *`,
+    [`Not filled at the station — ${note}`, req.user.id, r.id]
+  );
+  if (!rows.length) return res.status(409).json({ error: "Someone has just closed this request." });
+  await pushToUser(r.requested_by, {
+    title: "Outside fill cancelled",
+    body: `FR-${r.id} · ${r.unit_name || ""} — marked not filled`,
+    url: "/fuel",
+  }).catch(() => {});
   res.json(rows[0]);
 });
 

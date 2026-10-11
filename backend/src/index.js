@@ -59,7 +59,7 @@ import solitaireRoutes, { printRouter as mixtrackPrintRouter } from "./routes/so
 import solitaireAccessRoutes from "./routes/solitaireAccess.js";
 import {
   checkDelayedTrucks, checkPumpDepartureOverdue, checkBatchingNotStarted, checkComplianceExpiries,
-  checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkGeofenceEvents,
+  checkBatchingDelayAfterSiteReady, checkFollowupsDue, checkPendingSupplyRequests, checkUnconfirmedOutsideFills, checkGeofenceEvents,
   checkPlantOutAutoRecord, checkSiteInAutoRecord, checkSiteOutAutoRecord, checkPlantInAutoRecord,
   cleanupOldNotifications,
 } from "./lib/scheduledChecks.js";
@@ -273,6 +273,7 @@ setInterval(() => {
   checkBatchingDelayAfterSiteReady().catch((err) => console.error("Batching-delay-after-site-ready check failed:", err));
   checkFollowupsDue().catch((err) => console.error("Follow-ups-due check failed:", err));
   checkPendingSupplyRequests().catch((err) => console.error("Pending-supply-requests check failed:", err));
+  checkUnconfirmedOutsideFills().catch((err) => console.error("Unconfirmed-outside-fills check failed:", err));
   checkGeofenceEvents().catch((err) => console.error("Geofence-events check failed:", err));
   checkPlantOutAutoRecord().catch((err) => console.error("Plant-out-auto-record check failed:", err));
   checkSiteInAutoRecord().catch((err) => console.error("Site-in-auto-record check failed:", err));

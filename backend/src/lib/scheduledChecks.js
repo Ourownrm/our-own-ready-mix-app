@@ -805,6 +805,57 @@ export async function checkPendingSupplyRequests() {
   return rows;
 }
 
+// Round 203 — outside-station fills nobody has confirmed. After 2 hours the
+// person who raised it, and whoever has driven that truck today, get a push to
+// confirm what was filled; after 12 hours the Manager is told, so Store or the
+// Manager can close it from the bill. Each fires once per request — the
+// timestamp columns on supply_requests are the guard, not the notifications
+// table, so cleaning old notifications can never make a reminder repeat.
+export async function checkUnconfirmedOutsideFills() {
+  const OPEN = `sr.request_type = 'fuel' AND sr.status = 'approved'
+    AND NOT COALESCE((SELECT is_plant FROM fuel_stations WHERE id = COALESCE(sr.approved_station_id, sr.fuel_station_id)), false)`;
+  const UNIT = `COALESCE((SELECT truck_number FROM trucks WHERE id = sr.truck_id),
+                         (SELECT pump_code FROM pumps WHERE id = sr.pump_id),
+                         (SELECT name FROM equipment WHERE id = sr.equipment_id))`;
+
+  const { rows: due2h } = await query(
+    `UPDATE supply_requests sr SET outside_reminded_at = now()
+      WHERE ${OPEN} AND sr.outside_reminded_at IS NULL AND sr.approved_at < now() - INTERVAL '2 hours'
+      RETURNING sr.id, sr.requested_by, sr.truck_id, sr.approved_quantity, ${UNIT} AS unit_name`
+  );
+  for (const r of due2h) {
+    const { rows: drivers } = await query(
+      `SELECT DISTINCT driver_id FROM delivery_tickets
+        WHERE truck_id = $1 AND ticket_date = CURRENT_DATE AND driver_id IS NOT NULL AND status NOT IN ('cancelled', 'rejected')`,
+      [r.truck_id]
+    );
+    const who = new Set([r.requested_by, ...drivers.map((d) => d.driver_id)]);
+    for (const userId of who) {
+      await pushToUser(userId, {
+        title: "Confirm your outside fuel fill",
+        body: `FR-${r.id} · ${r.unit_name || ""} · ${Number(r.approved_quantity)} L approved — enter the litres and amount filled`,
+        url: "/fuel",
+      });
+    }
+  }
+
+  const { rows: due12h } = await query(
+    `UPDATE supply_requests sr SET outside_escalated_at = now()
+      WHERE ${OPEN} AND sr.outside_escalated_at IS NULL AND sr.approved_at < now() - INTERVAL '12 hours'
+      RETURNING sr.id, sr.approved_quantity, ${UNIT} AS unit_name,
+                (SELECT name FROM users WHERE id = sr.requested_by) AS requested_by_name`
+  );
+  for (const r of due12h) {
+    const message = `FR-${r.id} · ${r.unit_name || ""} · ${Number(r.approved_quantity)} L at an outside station, approved over 12 hours ago, still not confirmed by ${r.requested_by_name || "the driver"}`;
+    await query(
+      `INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'outside_fill_unconfirmed', $1)`,
+      [message]
+    );
+    await pushToRole("manager", { title: "Outside fuel fill not confirmed", body: message, url: "/fuel-module?tab=issue" });
+  }
+  return { reminded: due2h.length, escalated: due12h.length };
+}
+
 // Notifications accumulate forever otherwise, making the notifications tab a
 // growing wall of stale, long-actioned alerts. Read notifications are pure
 // history at that point — safe to drop after a shorter window. Unread ones

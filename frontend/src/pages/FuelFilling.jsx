@@ -122,6 +122,12 @@ function RequestFlow() {
   }
 
   const active = myRequests.filter((r) => r.status !== "issued");
+  // Round 203 — the server refuses fuel for a vehicle whose last outside fill
+  // isn't confirmed; say so before the person fills in the whole form.
+  const unitKey = equipmentType === "truck" ? "truck_id" : equipmentType === "pump" ? "pump_id" : "equipment_id";
+  const openOutside = requestType === "fuel" && unitId
+    ? myRequests.find((r) => r.status === "approved" && r.request_type === "fuel" && !r.approved_station_is_plant && String(r[unitKey]) === String(unitId))
+    : null;
   const recentIssued = myRequests.filter((r) => r.status === "issued");
   const loaders = equipment.filter((e) => e.equipment_type === "loader");
 
@@ -238,9 +244,14 @@ function RequestFlow() {
               <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
             </div>
 
+            {openOutside && (
+              <div style={{ background: "var(--amber-bg)", border: "1px solid var(--amber)", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                <b>{unitLabel(openOutside)} has an outside fill to confirm first</b> ({refNumber(openOutside)}, {openOutside.approved_quantity} L). Confirm it in "Your requests" above.
+              </div>
+            )}
             {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
             {notice && <div style={{ color: "var(--signal-green)" }}>{notice}</div>}
-            <button type="submit" disabled={saving}>{saving ? "Sending..." : "Send request"}</button>
+            <button type="submit" disabled={saving || !!openOutside}>{saving ? "Sending..." : "Send request"}</button>
           </form>
         </div>
 
@@ -434,23 +445,47 @@ function RequestStatusCard({ request: r, onReload }) {
   );
 }
 
+// Round 203 — remembered per request on this phone, so the card stays in its
+// "confirm what was filled" state after a refresh. Storage can be blocked; the
+// card still works without it (it just shows the share step again).
+function slipShared(id) {
+  try { return localStorage.getItem(`oorm_slip_shared_${id}`) === "1"; } catch { return false; }
+}
+function markSlipShared(id) {
+  try { localStorage.setItem(`oorm_slip_shared_${id}`, "1"); } catch { /* storage blocked */ }
+}
+
 function ShareableSlip({ request: r, onReload }) {
   const slipRef = useRef(null);
   const [sharing, setSharing] = useState(false);
   const [shareError, setShareError] = useState("");
-  const [confirming, setConfirming] = useState(false);
-  const [actualQty, setActualQty] = useState(r.approved_quantity);
+  // Round 203 — once the slip has gone to the station, the card's job is the
+  // confirmation, so that becomes the big, bold step. Before sharing it can
+  // still be opened ("Already filled?") for a slip shown some other way.
+  const [shared, setShared] = useState(() => slipShared(r.id));
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [actualQty, setActualQty] = useState("");
   const [cost, setCost] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmError, setConfirmError] = useState("");
+  const approved = Number(r.approved_quantity);
+  const showConfirm = shared || confirmOpen;
+
+  function afterShare() {
+    markSlipShared(r.id);
+    setShared(true);
+  }
 
   async function submitFill() {
-    if (!actualQty) { setConfirmError("Enter the actual quantity filled."); return; }
+    const q = Number(actualQty), c = Number(cost);
+    if (!(q > 0)) { setConfirmError("Enter the litres actually filled."); return; }
+    if (!(c > 0)) { setConfirmError("Enter the amount on the station bill."); return; }
+    if (q > approved) { setConfirmError(`That's more than the ${approved} L approved. Ask Store or the Manager to close it from the bill.`); return; }
     setSaving(true); setConfirmError("");
     try {
       await apiRequest(`/supply-requests/${r.id}/confirm-external-fill`, {
         method: "POST",
-        body: { actual_quantity_issued: actualQty, fuel_cost: cost || null },
+        body: { actual_quantity_issued: actualQty, fuel_cost: cost },
       });
       onReload?.();
     } catch (err) {
@@ -471,8 +506,9 @@ function ShareableSlip({ request: r, onReload }) {
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: "Fuel approval slip" });
+          afterShare();
         } catch {
-          // cancelled by the user — not an error
+          // cancelled by the user — not an error, and not shared
         }
       } else {
         const url = URL.createObjectURL(blob);
@@ -480,9 +516,10 @@ function ShareableSlip({ request: r, onReload }) {
         a.href = url; a.download = "fuel-approval-slip.png";
         a.click();
         URL.revokeObjectURL(url);
-        window.alert("Sharing images isn't supported on this browser — the slip was downloaded instead. Attach it to WhatsApp or however you'd like to send it.");
+        afterShare();
+        setShareError("Sharing images isn't supported on this browser — the slip was downloaded instead. Send it on WhatsApp from your photos.");
       }
-    } catch (err) {
+    } catch {
       setShareError("Couldn't create the slip image — try again.");
     } finally {
       setSharing(false);
@@ -491,6 +528,11 @@ function ShareableSlip({ request: r, onReload }) {
 
   return (
     <div style={{ textAlign: "left", fontSize: 12 }}>
+      {r.raised_by_other && (
+        <div style={{ background: "var(--info-bg)", color: "var(--info)", borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 12 }}>
+          Raised by <b>{r.requested_by_name}</b>. You're driving this vehicle today, so you can confirm the fill.
+        </div>
+      )}
       <div ref={slipRef} style={{ position: "relative", background: "#fff", borderRadius: 8, padding: 16, marginBottom: 8, border: "1px solid #ddd", overflow: "hidden" }}>
         <div style={{
           position: "absolute", inset: 0, backgroundImage: "url(/logo.jpg)",
@@ -505,33 +547,60 @@ function ShareableSlip({ request: r, onReload }) {
           <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Station</span><span>{r.approved_station_name}</span></div>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Vehicle</span><span>{unitLabel(r)}</span></div>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid #eee", color: "#222" }}><span style={{ color: "#777" }}>Driver</span><span>{r.requested_by_name || ""}</span></div>
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", borderBottom: "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Quantity</span><span>{r.approved_quantity} L</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", borderBottom: r.approved_rate != null ? "none" : "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Quantity</span><span>{r.approved_quantity} L</span></div>
+          {/* Round 203 — the rate the Manager wrote when approving. */}
+          {r.approved_rate != null && (
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #eee", borderBottom: "1px solid #eee", color: "#111", fontSize: 15, fontWeight: 500 }}><span style={{ color: "#777", fontWeight: 400, fontSize: 12 }}>Rate</span><span>₹{Number(r.approved_rate).toFixed(2)} / L</span></div>
+          )}
 
           <div style={{ marginTop: 8, fontSize: 9, color: "#aaa", textAlign: "center", letterSpacing: 0.5 }}>
             {refNumber(r)} &middot; {(r.requested_by_name || "").toUpperCase()} &middot; {refNumber(r)} &middot; {(r.requested_by_name || "").toUpperCase()}
           </div>
         </div>
       </div>
-      {shareError && <div style={{ color: "var(--alert-red)", marginBottom: 6 }}>{shareError}</div>}
-      <button onClick={share} disabled={sharing} style={{ width: "100%", marginBottom: 10 }}>{sharing ? "Preparing..." : "Share to station"}</button>
+      {shareError && <div style={{ color: shared ? "var(--slate)" : "var(--alert-red)", marginBottom: 6 }}>{shareError}</div>}
 
-      <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10 }}>
-        {!confirming ? (
-          <button onClick={() => setConfirming(true)} style={{ width: "100%", fontSize: 12 }}>Mark as filled</button>
-        ) : (
-          <>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Confirm what was actually filled</div>
-            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 4 }}>Actual quantity (litres)</div>
-            <input type="number" value={actualQty} onChange={(e) => setActualQty(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
-            <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 4 }}>Cost (₹, optional)</div>
-            <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
-            {confirmError && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{confirmError}</div>}
-            <button onClick={submitFill} disabled={saving} style={{ width: "100%", fontSize: 12, background: "var(--signal-green)", color: "#fff", border: "none" }}>
-              {saving ? "Saving..." : "Confirm"}
+      {!shared && (
+        <>
+          <button type="button" className="btn-primary" onClick={share} disabled={sharing} style={{ width: "100%", marginBottom: 8, minHeight: 46, fontSize: 14 }}>
+            {sharing ? "Preparing..." : "Share to station"}
+          </button>
+          {!confirmOpen && (
+            <button type="button" onClick={() => setConfirmOpen(true)} style={{ width: "100%", fontSize: 12.5 }}>
+              Already filled? Confirm now
             </button>
-          </>
-        )}
-      </div>
+          )}
+        </>
+      )}
+
+      {showConfirm && (
+        <div style={{ border: "2px solid var(--rebar)", background: "#FFF6EE", borderRadius: 10, padding: 12, marginTop: shared ? 0 : 8 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: "var(--charcoal)" }}>Confirm what was filled</div>
+          <div style={{ fontSize: 12, color: "var(--slate)", margin: "3px 0 10px" }}>
+            Enter the litres and amount from the station bill. {unitLabel(r)} can't get fuel again until this is done.
+          </div>
+          <div className="field-input" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Litres filled
+              <input type="number" inputMode="decimal" min="0" value={actualQty} placeholder={`up to ${approved}`} onChange={(e) => setActualQty(e.target.value)} style={{ marginTop: 4, fontSize: 16 }} />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Amount (₹)
+              <input type="number" inputMode="decimal" min="0" value={cost}
+                placeholder={r.approved_rate != null && Number(actualQty) > 0 ? `≈ ${Math.round(Number(actualQty) * Number(r.approved_rate))}` : "from the bill"}
+                onChange={(e) => setCost(e.target.value)} style={{ marginTop: 4, fontSize: 16 }} />
+            </label>
+          </div>
+          {confirmError && <div style={{ color: "var(--alert-red)", fontSize: 12, marginBottom: 6 }}>{confirmError}</div>}
+          <button type="button" onClick={submitFill} disabled={saving}
+            style={{ width: "100%", minHeight: 46, fontSize: 14, fontWeight: 700, background: "var(--signal-green)", color: "#fff", border: "none" }}>
+            {saving ? "Saving..." : "Confirm fill"}
+          </button>
+          {shared && (
+            <button type="button" onClick={share} disabled={sharing} style={{ width: "100%", marginTop: 8, fontSize: 12 }}>
+              {sharing ? "Preparing..." : "Share the slip again"}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

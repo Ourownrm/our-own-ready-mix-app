@@ -267,6 +267,7 @@ function ledgerSql(extraWhere = "", tail = "") {
         ${UNIT_LABEL} AS unit_label, ${UNIT_SUB} AS unit_sub,
         s.odometer_reading, s.hour_meter_reading, s.requested_quantity, s.approved_quantity,
         s.actual_quantity_issued, s.fuel_cost, s.requested_at, s.approved_at, s.issued_at,
+        s.closed_via, s.bill_ref, s.close_note,
         ureq.name AS requested_by_name, uapp.name AS approved_by_name, uiss.name AS issued_by_name,
         fs.name AS station_name, fs.is_plant,
         fl.prev_reading, fl.prev_at,
@@ -326,8 +327,15 @@ function ledgerRow(r) {
       { step: "Requested", who: r.requested_by_name, at: r.requested_at, note: `${n(r.requested_quantity)} L asked` },
       r.approved_at && { step: "Approved", who: r.approved_by_name, at: r.approved_at,
         note: `${n(r.approved_quantity)} L${r.station_name ? ` · ${r.station_name}` : ""}` },
-      { step: r.kind === "external" ? "Filled (self-confirmed)" : "Issued", who: r.issued_by_name, at: r.issued_at,
-        note: `${n(r.actual_quantity_issued)} L${r.kind === "external" ? " · tank balance unchanged" : ""}` },
+      { step: r.kind !== "external" ? "Issued"
+          : r.closed_via === "office" ? "Entered from the station bill" : "Filled (confirmed by driver)",
+        who: r.issued_by_name, at: r.issued_at,
+        note: [
+          `${n(r.actual_quantity_issued)} L`,
+          r.kind === "external" && r.bill_ref ? `bill ${r.bill_ref}` : null,
+          r.kind === "external" && r.close_note ? r.close_note : null,
+          r.kind === "external" ? "tank balance unchanged" : null,
+        ].filter(Boolean).join(" · ") },
     ].filter(Boolean);
   } else if (r.kind === "receipt") {
     out.unit_label = r.supplier_name || "Supplier not named";
@@ -471,7 +479,7 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
     const from14 = istDaysAgo(13);
     const monthStart = today.slice(0, 8) + "01";
 
-    const [daily, after, issues7, pending, purchases, month, monthM3, top, lastDelivery, recent] = await Promise.all([
+    const [daily, after, issues7, pending, purchases, month, monthM3, top, lastDelivery, recent, outsideOverdue] = await Promise.all([
       // Per day for the last 14 days: issues out of the tank by category, and deliveries in.
       query(
         `SELECT to_char(sst.created_at, 'YYYY-MM-DD') AS day,
@@ -537,6 +545,19 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
         [item.id]
       ),
       query(ledgerSql("", "LIMIT 8")),
+      // Round 203 — outside fills approved more than 24 hours ago and still
+      // not confirmed: shown as an alert until Store or the Manager closes them.
+      query(
+        `SELECT s.id, s.approved_at, s.approved_quantity, ${UNIT_LABEL} AS unit_label,
+                fs.name AS station_name, u.name AS requested_by_name,
+                ROUND((EXTRACT(EPOCH FROM (now() - s.approved_at)) / 3600)::numeric, 0) AS hours_open
+           FROM supply_requests s ${UNIT_JOINS}
+           LEFT JOIN fuel_stations fs ON fs.id = COALESCE(s.approved_station_id, s.fuel_station_id)
+           LEFT JOIN users u ON u.id = s.requested_by
+          WHERE s.request_type = 'fuel' AND s.status = 'approved' AND NOT COALESCE(fs.is_plant, false)
+            AND s.approved_at < now() - INTERVAL '24 hours'
+          ORDER BY s.approved_at`
+      ),
     ]);
 
     const byDay = Object.fromEntries(daily.rows.map((r) => [r.day, r]));
@@ -583,6 +604,7 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
       pending: {
         ...Object.fromEntries(Object.entries(pending.rows[0]).map(([k, v]) => [k, Number(v)])),
         purchases: purchases.rows.map((p) => ({ ...p, requested_qty: num(p.requested_qty), approved_qty: num(p.approved_qty) })),
+        outside_overdue: outsideOverdue.rows.map((r) => ({ ...r, approved_quantity: num(r.approved_quantity), hours_open: num(r.hours_open) })),
       },
       days,
       top: top.rows.map((r) => ({ ...r, litres: num(r.litres), cost: num(r.cost), fills: Number(r.fills) })),
@@ -611,12 +633,16 @@ router.get("/issue-queue", requirePermission("fuel.issue", "view"), async (req, 
           WHERE request_type = 'fuel' AND status = 'issued'
           ORDER BY COALESCE(truck_id, 0), COALESCE(pump_id, 0), COALESCE(equipment_id, 0), issued_at DESC
        )
-       SELECT s.id, s.status, s.requested_quantity, s.approved_quantity, s.requested_at, s.approved_at,
+       SELECT s.id, s.status, s.requested_quantity, s.approved_quantity, s.requested_at, s.approved_at, s.approved_rate,
               s.odometer_reading, s.hour_meter_reading,
               ${UNIT_LABEL} AS unit_label, ${UNIT_SUB} AS unit_sub,
               ureq.name AS requested_by_name, uapp.name AS approved_by_name,
               fs.name AS station_name, COALESCE(fs.is_plant, false) AS is_plant,
-              lf.issued_at AS last_fill_at, lf.actual_quantity_issued AS last_fill_qty
+              lf.issued_at AS last_fill_at, lf.actual_quantity_issued AS last_fill_qty,
+              -- Round 203 — how long an approved request has been waiting, and
+              -- whether the driver / Manager reminders have gone out.
+              ROUND((EXTRACT(EPOCH FROM (now() - s.approved_at)) / 3600)::numeric, 1) AS hours_open,
+              s.outside_reminded_at, s.outside_escalated_at
          FROM supply_requests s
          ${UNIT_JOINS}
          LEFT JOIN users ureq ON ureq.id = s.requested_by
@@ -630,9 +656,9 @@ router.get("/issue-queue", requirePermission("fuel.issue", "view"), async (req, 
     );
     res.json(rows.map((r) => ({
       ...r,
-      requested_quantity: num(r.requested_quantity), approved_quantity: num(r.approved_quantity),
+      requested_quantity: num(r.requested_quantity), approved_quantity: num(r.approved_quantity), approved_rate: num(r.approved_rate),
       odometer_reading: num(r.odometer_reading), hour_meter_reading: num(r.hour_meter_reading),
-      last_fill_qty: num(r.last_fill_qty),
+      last_fill_qty: num(r.last_fill_qty), hours_open: num(r.hours_open),
       stage: r.status === "pending" ? "approval" : r.is_plant ? "issue" : "outside",
     })));
   } catch (err) {
@@ -665,12 +691,33 @@ router.get("/purchases", requirePermission("fuel.purchases", "view"), async (req
       purchases: rows.map((r) => ({
         ...r,
         requested_qty: num(r.requested_qty), approved_qty: num(r.approved_qty), received_qty: num(r.received_qty),
-        unit_cost: num(r.unit_cost), total_cost: num(r.total_cost),
+        unit_cost: num(r.unit_cost), total_cost: num(r.total_cost), approved_rate: num(r.approved_rate),
       })),
     });
   } catch (err) {
     console.error("GET /fuel-module/purchases failed:", err);
     res.status(500).json({ error: "Could not load diesel purchases." });
+  }
+});
+
+// Round 203 — an Administrator cancels an approved diesel purchase that
+// won't be delivered (fuel.cancel-approved). Recorded as rejected, with who
+// and when, so it's told apart from one turned down at approval.
+router.post("/purchases/:id/cancel", requirePermission("fuel.cancel-approved", "edit"), async (req, res) => {
+  const note = String(req.body.note || "").trim().slice(0, 300);
+  if (!note) return res.status(400).json({ error: "Give a reason for cancelling." });
+  try {
+    const item = await fuelItem();
+    const { rows } = await query(
+      `UPDATE store_stock_purchases SET status = 'rejected', rejected_reason = $1, cancelled_at = now(), cancelled_by = $2
+        WHERE id = $3 AND stock_item_id = $4 AND status = 'approved' RETURNING *`,
+      [`Cancelled after approval — ${note}`, req.user.id, req.params.id, item.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Only an approved diesel purchase that hasn't been received can be cancelled." });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("POST /fuel-module/purchases/:id/cancel failed:", err);
+    res.status(500).json({ error: "Could not cancel the purchase." });
   }
 });
 
@@ -1048,7 +1095,8 @@ router.get("/analysis/approvals", ANALYSIS, async (req, res) => {
       query(
         `SELECT COUNT(*) AS requests,
                 COUNT(*) FILTER (WHERE status = 'issued') AS issued,
-                COUNT(*) FILTER (WHERE status = 'rejected') AS rejected,
+                COUNT(*) FILTER (WHERE status = 'rejected' AND cancelled_at IS NULL) AS rejected,
+                COUNT(*) FILTER (WHERE cancelled_at IS NOT NULL) AS cancelled,
                 COUNT(*) FILTER (WHERE status IN ('pending', 'approved')) AS open,
                 COALESCE(SUM(requested_quantity) FILTER (WHERE approved_quantity IS NOT NULL AND status <> 'rejected'), 0) AS asked,
                 COALESCE(SUM(approved_quantity) FILTER (WHERE approved_quantity IS NOT NULL AND status <> 'rejected'), 0) AS approved
@@ -1092,7 +1140,7 @@ router.get("/analysis/approvals", ANALYSIS, async (req, res) => {
     const asked = Number(t.asked), approved = Number(t.approved);
     res.json({
       from_date: from, to_date: to,
-      requests: Number(t.requests), issued: Number(t.issued), rejected: Number(t.rejected), open: Number(t.open),
+      requests: Number(t.requests), issued: Number(t.issued), rejected: Number(t.rejected), cancelled: Number(t.cancelled), open: Number(t.open),
       cut_litres: Math.round((asked - approved) * 100) / 100,
       cut_pct: asked > 0 ? Math.round(((asked - approved) / asked) * 1000) / 10 : null,
       median_request_to_approve_min: timing.rows[0].req_to_approve == null ? null : Math.round(Number(timing.rows[0].req_to_approve)),

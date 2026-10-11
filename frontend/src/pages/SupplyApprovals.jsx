@@ -14,17 +14,24 @@ export default function SupplyApprovals() {
   // shown on this one screen rather than sending Manager to a second page.
   const [purchases, setPurchases] = useState([]);
   const [purchaseEdits, setPurchaseEdits] = useState({}); // id -> qty
+  // Round 203 — the owner's approval rules: a plant-tank issue can't exceed
+  // what the tank can give, and an outside fill or a diesel purchase needs the
+  // rate per litre written first. The server enforces both; this shows them.
+  const [tank, setTank] = useState(null);       // { current, committed, available, rate }
+  const [purchaseRates, setPurchaseRates] = useState({}); // id -> rate
 
   async function load() {
     try {
-      const [pending, stationList, pendingPurchases] = await Promise.all([
+      const [pending, stationList, pendingPurchases, tankNow] = await Promise.all([
         apiRequest("/supply-requests/pending"),
         apiRequest("/master/fuel-stations"),
         apiRequest("/store-stock/purchases/pending"),
+        apiRequest("/supply-requests/tank-available").catch(() => null),
       ]);
       setRows(pending);
       setStations(stationList);
       setPurchases(pendingPurchases);
+      setTank(tankNow);
     } catch (err) {
       setError(err.message);
     }
@@ -40,7 +47,7 @@ export default function SupplyApprovals() {
     try {
       await apiRequest(`/store-stock/purchases/${p.id}/approve`, {
         method: "POST",
-        body: { approved_qty: purchaseEdits[p.id] || p.requested_qty },
+        body: { approved_qty: purchaseEdits[p.id] || p.requested_qty, approved_rate: purchaseRates[p.id] },
       });
       setNotice("Purchase approved.");
       load();
@@ -87,6 +94,7 @@ export default function SupplyApprovals() {
         body: {
           approved_quantity: edit.quantity || r.requested_quantity,
           approved_station_id: edit.station_id || r.fuel_station_id,
+          approved_rate: edit.rate,
         },
       });
       setNotice("Approved.");
@@ -134,6 +142,12 @@ export default function SupplyApprovals() {
         ) : (
           rows.map((r) => {
             const isFuel = r.request_type === "fuel";
+            const station = stations.find((s) => String(s.id) === String(edits[r.id]?.station_id || r.fuel_station_id));
+            const atPlant = isFuel && station?.is_plant;
+            const outside = isFuel && station && !station.is_plant;
+            const qty = Number(edits[r.id]?.quantity ?? r.requested_quantity);
+            const overTank = atPlant && tank && qty > tank.available;
+            const needsRate = outside && !(Number(edits[r.id]?.rate) > 0);
             const accent = isFuel ? "var(--info)" : "#0F6E56";
             const bg = isFuel ? "var(--info-bg, #E6F1FB)" : "var(--signal-green-bg, #E1F5EE)";
             return (
@@ -172,8 +186,25 @@ export default function SupplyApprovals() {
                   />
                 </div>
 
+                {outside && (
+                  <label style={{ display: "block", fontSize: 11.5, fontWeight: 600, marginBottom: 10 }}>
+                    Rate at {station.name} (₹ per litre) — required to approve
+                    <input type="number" min="0" step="0.01" value={edits[r.id]?.rate ?? ""} onChange={(e) => setEdit(r.id, "rate", e.target.value)}
+                      placeholder="e.g. 91.80" style={{ display: "block", width: "100%", marginTop: 4, fontSize: 13 }} />
+                    {Number(edits[r.id]?.rate) > 0 && qty > 0 && <span style={{ fontWeight: 400, color: "var(--slate)" }}>About ₹{Math.round(qty * Number(edits[r.id].rate)).toLocaleString("en-IN")} for {qty} L</span>}
+                  </label>
+                )}
+                {atPlant && tank && (
+                  <div style={{ fontSize: 11.5, marginBottom: 10, padding: "6px 8px", borderRadius: 6, background: overTank ? "var(--alert-red-bg)" : "rgba(0,0,0,0.04)", color: overTank ? "var(--alert-red)" : undefined }}>
+                    <b>Plant tank: {tank.available.toLocaleString("en-IN")} L can be approved</b>
+                    {tank.committed > 0 && <span> ({tank.current.toLocaleString("en-IN")} L in stock, {tank.committed.toLocaleString("en-IN")} L already approved)</span>}
+                    {overTank && <div>More than the tank can give — approve less, or choose an outside station.</div>}
+                  </div>
+                )}
+
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button style={{ flex: 1, padding: 8, fontSize: 13, background: "var(--signal-green)", color: "#fff", border: "none" }} onClick={() => approve(r)}>Approve</button>
+                  <button style={{ flex: 1, padding: 8, fontSize: 13, background: "var(--signal-green)", color: "#fff", border: "none" }} onClick={() => approve(r)} disabled={overTank || needsRate}
+                    title={overTank ? "More than the plant tank can give" : needsRate ? "Enter the rate first" : undefined}>Approve</button>
                   <button style={{ flex: 1, padding: 8, fontSize: 13 }} onClick={() => reject(r)}>Reject</button>
                   <button style={{ padding: 8, fontSize: 13 }} onClick={() => clearRequest(r)} title="Remove without a reason or notification">Clear</button>
                 </div>
@@ -205,8 +236,16 @@ export default function SupplyApprovals() {
                 />
                 <span style={{ fontSize: 11, color: "var(--slate)", marginLeft: 6 }}>{p.unit} to approve</span>
               </div>
+              {p.item_type === "fuel" && (
+                <label style={{ display: "block", fontSize: 11.5, fontWeight: 600, marginBottom: 10 }}>
+                  Diesel rate (₹ per litre) — required to approve
+                  <input type="number" min="0" step="0.01" value={purchaseRates[p.id] ?? ""} onChange={(e) => setPurchaseRates((pr) => ({ ...pr, [p.id]: e.target.value }))}
+                    placeholder={p.rate_per_liter != null ? `last rate ${Number(p.rate_per_liter).toFixed(2)}` : "e.g. 89.40"} style={{ display: "block", width: 160, marginTop: 4, fontSize: 13 }} />
+                </label>
+              )}
               <div style={{ display: "flex", gap: 8 }}>
-                <button style={{ flex: 1, padding: 8, fontSize: 13, background: "var(--signal-green)", color: "#fff", border: "none" }} onClick={() => approvePurchase(p)}>Approve</button>
+                <button style={{ flex: 1, padding: 8, fontSize: 13, background: "var(--signal-green)", color: "#fff", border: "none" }} onClick={() => approvePurchase(p)}
+                  disabled={p.item_type === "fuel" && !(Number(purchaseRates[p.id]) > 0)}>Approve</button>
                 <button style={{ flex: 1, padding: 8, fontSize: 13 }} onClick={() => rejectPurchase(p)}>Reject</button>
                 <button style={{ padding: 8, fontSize: 13 }} onClick={() => clearPurchase(p)} title="Remove without a reason or notification">Clear</button>
               </div>

@@ -133,6 +133,27 @@ export default function FuelDashboard({ go }) {
         </div>
       )}
 
+      {/* Round 203 — outside fills nobody has confirmed for a day. */}
+      {pending.outside_overdue?.length > 0 && (
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap", background: "var(--amber-bg)", border: "1px solid var(--amber)", borderRadius: "var(--radius)", padding: "12px 14px", fontSize: 13 }}>
+          <div style={{ flex: "1 1 320px" }}>
+            <b style={{ color: "var(--amber)" }}>
+              {pending.outside_overdue.length === 1 ? "1 outside fill has" : `${pending.outside_overdue.length} outside fills have`} been open for more than 24 hours.
+            </b>{" "}
+            <span style={{ color: "var(--slate)" }}>The driver hasn't confirmed what was filled. Close it from the station bill, or cancel it if the vehicle never went.</span>
+            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+              {pending.outside_overdue.slice(0, 5).map((o) => (
+                <div key={o.id} style={{ fontSize: 12.5 }}>
+                  <b>FR-{o.id}</b> · {o.unit_label || "—"} · {fmtL(o.approved_quantity)} at {o.station_name || "an outside station"} · {o.requested_by_name} · open {o.hours_open >= 48 ? `${Math.round(o.hours_open / 24)} days` : `${fmtNum(o.hours_open)} hrs`}
+                </div>
+              ))}
+              {pending.outside_overdue.length > 5 && <div style={{ fontSize: 12, color: "var(--slate)" }}>and {pending.outside_overdue.length - 5} more</div>}
+            </div>
+          </div>
+          {can("fuel.issue") && <button type="button" onClick={() => go("issue")}>Close outside fills</button>}
+        </div>
+      )}
+
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
         <section className="card" style={{ flex: "1 1 400px", display: "flex", flexWrap: "wrap", gap: "8px 20px", alignItems: "center" }}>
           <div style={{ flex: "1 1 100%", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
