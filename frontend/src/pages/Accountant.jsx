@@ -124,6 +124,7 @@ export default function Accountant() {
     n.bank_lines > 0 && { key: "bank", tone: "var(--rebar)", title: `${n.bank_lines} bank credit${n.bank_lines > 1 ? "s" : ""} to post`, sub: `${money(n.bank_amount)} · ${n.bank_matched} with a suggested customer`, to: "/accounts?tab=receipts" },
     n.held_loads > 0 && { key: "held", tone: "var(--alert-red)", title: `${n.held_loads} load${n.held_loads > 1 ? "s" : ""} held — no price`, sub: `${Number(n.held_m3).toLocaleString("en-IN")} m³ delivered, not invoiced until the site has an accepted price`, to: "/accounts?tab=invoices&view=held" },
     n.credit_notes > 0 && { key: "cn", tone: "var(--amber)", title: `${n.credit_notes} credit note${n.credit_notes > 1 ? "s" : ""} to issue`, sub: `${money(n.credit_note_amount)} returned at site — see below`, href: "#credit-notes" },
+    n.duplicate_opening_balances > 0 && { key: "dob", tone: "var(--alert-red)", title: `${n.duplicate_opening_balances} customer${n.duplicate_opening_balances > 1 ? "s" : ""} with two opening balances`, sub: "Their dues are counted twice — open Opening balances and remove the duplicate", onClick: () => setShowOpeningBalances(true) },
     n.reprice_review > 0 && { key: "rp", tone: "var(--amber)", title: `${n.reprice_review} paid invoice${n.reprice_review > 1 ? "s" : ""} with a new rate`, sub: "The customer accepted a new quotation, but money was already set against these — not changed automatically", onClick: () => setShowReprice(true) },
     (n.charges_left_out > 0 || n.pump_recheck > 0) && { key: "wv", tone: "var(--slate)", title: `${n.charges_left_out + n.pump_recheck} charge${n.charges_left_out + n.pump_recheck > 1 ? "s" : ""} to look at`, sub: `${n.charges_left_out} left out by the Manager · ${n.pump_recheck} pump charge to recheck`, to: "/accounts?tab=invoices&view=waivers" },
   ].filter(Boolean) : [];
@@ -358,6 +359,17 @@ function OpeningBalancesPanel() {
   }
   useEffect(() => { load(); }, []);
 
+  // Round 206 — a second opening balance for the same customer.
+  async function removeDuplicate(b) {
+    if (!window.confirm(`Remove this duplicate opening balance of ₹${Number(b.amount).toLocaleString("en-IN")} for ${b.customer_name}? Any money set against it is kept and set against the customer's other dues (or kept as an advance).`)) return;
+    setError(""); setNotice("");
+    try {
+      const r = await apiRequest(`/accountant/opening-balances/${b.id}/remove-duplicate`, { method: "POST" });
+      setNotice(`Duplicate removed${r.payments_moved ? ` — ${r.payments_moved} payment(s) kept as receipts` : ""}${r.applied?.length ? ` and set against ${r.applied.map((a) => a.label).join(", ")}` : ""}.`);
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
   async function remove(id) {
     if (!window.confirm("Delete this opening balance entry?")) return;
     setError("");
@@ -372,8 +384,14 @@ function OpeningBalancesPanel() {
       <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>
         Pre-existing outstanding from before this app was in use — entered once here, it's
         blended into every outstanding/aging figure across the app automatically, and can be
-        paid down through the normal "Record payment" flow just like any other delivery.
+        paid down by Record a receipt like any other due. A customer has <b>one</b> opening balance — a second one for the same
+        customer is marked as a duplicate and can be removed.
       </div>
+      {balances.some((b) => b.duplicate) && (
+        <div style={{ color: "var(--alert-red)", background: "var(--alert-red-bg)", borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 12 }}>
+          {balances.filter((b) => b.duplicate).length} duplicate opening balance(s) — the customer's dues are counted twice until removed.
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <button onClick={() => { setShowManual(!showManual); setShowUpload(false); }}>{showManual ? "Hide" : "+ Add one manually"}</button>
@@ -394,7 +412,7 @@ function OpeningBalancesPanel() {
         <ExcelUploadForm
           customers={customers}
           setError={setError}
-          onDone={(count) => { setNotice(`${count} opening balance(s) imported.`); setShowUpload(false); load(); }}
+          onDone={(count, skipped) => { setNotice(`${count} opening balance(s) imported${skipped ? `; ${skipped} skipped — the customer already has one` : ""}.`); setShowUpload(false); load(); }}
         />
       )}
 
@@ -408,15 +426,17 @@ function OpeningBalancesPanel() {
               <thead><tr><th>Customer</th><th>Amount</th><th>Paid</th><th>As of</th><th>Notes</th><th>Entered by</th><th></th></tr></thead>
               <tbody>
                 {balances.map((b) => (
-                  <tr key={b.id}>
-                    <td>{b.customer_name}</td>
+                  <tr key={b.id} style={b.duplicate ? { background: "var(--alert-red-bg)" } : undefined}>
+                    <td>{b.customer_name}{b.duplicate && <div style={{ fontSize: 11, color: "var(--alert-red)", fontWeight: 600 }}>duplicate</div>}</td>
                     <td>₹{b.amount}</td>
                     <td>₹{b.paid_amount}</td>
                     <td>{new Date(b.as_of_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}</td>
                     <td>{b.notes || "–"}</td>
                     <td>{b.entered_by_name || "–"}</td>
                     <td>
-                      {Number(b.paid_amount) === 0 && (
+                      {b.duplicate ? (
+                        <button className="btn-danger" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => removeDuplicate(b)}>Remove duplicate</button>
+                      ) : Number(b.paid_amount) === 0 && (
                         <button className="btn-danger" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => remove(b.id)}>Delete</button>
                       )}
                     </td>
@@ -535,7 +555,7 @@ function ExcelUploadForm({ customers, setError, onDone }) {
       const toImport = rows.filter((r) => r.customer_id && r.amount && r.days_outstanding !== "");
       const result = await apiRequest("/accountant/opening-balances/bulk", { method: "POST", body: { rows: toImport } });
       setRows([]);
-      onDone(result.inserted);
+      onDone(result.inserted, result.skipped);
     } catch (err) {
       setError(err.message);
     } finally {

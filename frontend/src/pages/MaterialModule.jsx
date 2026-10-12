@@ -1455,20 +1455,20 @@ function receiptEditForm(r) {
 // Round 187 — the silo picker shared by the receive form and the admin edit
 // form. Silos holding the receipt's material come first; "not in a silo" is a
 // separate tick box (lab, store, drummed admixture).
-function SiloPicker({ silos, materialId, materialName, value, notInSilo, onChange }) {
+function SiloPicker({ silos, materialId, materialName, value, notInSilo, onChange, required = false }) {
   const mine = silos.filter((s) => materialId && s.material_id === materialId);
   const rest = silos.filter((s) => !(materialId && s.material_id === materialId));
   const opt = (s, withMat) => <option key={s.slot} value={s.slot}>{s.slot_name || s.label}{withMat && s.material_name ? ` · ${s.material_name}` : ""}</option>;
   return (
-    <Field label="Which silo does this load fill?">
+    <Field label={required ? "Which silo / bin does this load fill? (required)" : "Which silo does this load fill?"}>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 8, cursor: "pointer" }}>
         <input type="checkbox" checked={notInSilo}
                onChange={(e) => onChange({ not_in_silo: e.target.checked, silo_slot: e.target.checked ? "" : value })} />
         Not going into a silo (laboratory, store, or an admixture not tied to a tank)
       </label>
       {!notInSilo && (
-        <select value={value} onChange={(e) => onChange({ silo_slot: e.target.value, not_in_silo: false })} style={inputStyle}>
-          <option value="">— no silo —</option>
+        <select value={value} required={required} onChange={(e) => onChange({ silo_slot: e.target.value, not_in_silo: false })} style={inputStyle}>
+          <option value="">{required ? "— choose the silo / bin —" : "— no silo —"}</option>
           {mine.length > 0 && rest.length > 0 ? (
             <>
               <optgroup label={`Holds ${materialName}`}>{mine.map((s) => opt(s, false))}</optgroup>
@@ -1480,9 +1480,72 @@ function SiloPicker({ silos, materialId, materialName, value, notInSilo, onChang
       <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 5, lineHeight: 1.5 }}>
         {notInSilo
           ? "This load is recorded but raises no silo's level."
-          : "The load raises the chosen silo's level. Leave as “no silo” only for materials that are not silo-stocked (diesel, oil)."}
+          : required
+            ? "This material is kept in a silo or bin, so the load must name one — otherwise the silo level and the book stock drift apart."
+            : "The load raises the chosen silo's level. Leave as “no silo” only for materials that are not silo-stocked (diesel, oil)."}
       </div>
     </Field>
+  );
+}
+
+// Round 206 — loads of silo-stocked materials saved without a silo: the silo
+// levels never saw them. Each can be put into its silo here (or marked "not in
+// a silo") without re-entering the receipt.
+function UnassignedSiloLoads({ silos, onChanged }) {
+  const [rows, setRows] = useState(null);
+  const [pick, setPick] = useState({});
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { apiRequest("/material-module/unassigned-receipts").then(setRows).catch(() => setRows([])); }, []);
+  if (!rows || !rows.length) return null;
+  const qty = (r) => (r.kg_per_purchase_unit ? `${Math.round((r.accepted_qty_kg / Number(r.kg_per_purchase_unit)) * 100) / 100} ${r.purchase_unit}` : `${r.accepted_qty_kg} kg`);
+  async function save(r, body) {
+    setBusy(r.id); setError("");
+    try { await apiRequest(`/material-module/receipts/${r.id}/silo`, { method: "POST", body }); onChanged(); }
+    catch (e) { setError(e.message); setBusy(null); }
+  }
+  return (
+    <div style={{ border: "1px solid var(--alert-red)", background: "var(--alert-red-bg)", borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <b style={{ color: "var(--alert-red)", fontSize: 13.5 }}>{rows.length} load{rows.length === 1 ? "" : "s"} with no silo / bin</b>
+        <span style={{ fontSize: 12.5 }}>— the silo levels never counted {rows.length === 1 ? "it" : "them"}, so book stock and the silos disagree. Put each one into its silo.</span>
+        <button type="button" style={{ marginLeft: "auto", fontSize: 12, padding: "4px 10px" }} onClick={() => setOpen(!open)}>{open ? "Hide" : "Assign silos"}</button>
+      </div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 12.5, marginTop: 6 }}>{error}</div>}
+      {open && (
+        <div style={{ overflowX: "auto", marginTop: 8, background: "var(--surface, #fff)", borderRadius: 8 }}>
+          <table style={{ width: "100%", fontSize: 12.5, minWidth: 640 }}>
+            <thead><tr><th>Received</th><th>Material</th><th>Qty</th><th>Vehicle · invoice</th><th>Silo / bin</th><th /></tr></thead>
+            <tbody>
+              {rows.map((r) => {
+                const mine = silos.filter((x) => x.material_id === r.material_id);
+                const list = mine.length ? mine : silos;
+                const val = pick[r.id] ?? (mine.length === 1 ? mine[0].slot : "");
+                return (
+                  <tr key={r.id}>
+                    <td>{r.received_date}</td>
+                    <td><b>{r.material_name}</b>{r.supplier_name ? <div style={{ fontSize: 11, color: "var(--slate)" }}>{r.supplier_name}</div> : null}</td>
+                    <td>{qty(r)}</td>
+                    <td style={{ fontSize: 11.5 }}>{[r.vehicle_number, r.challan_number].filter(Boolean).join(" · ") || "—"}</td>
+                    <td>
+                      <select value={val} onChange={(e) => setPick({ ...pick, [r.id]: e.target.value })} style={{ ...inputStyle, minWidth: 150 }}>
+                        <option value="">— choose —</option>
+                        {list.map((x) => <option key={x.slot} value={x.slot}>{x.slot_name || x.label}{x.material_name && !mine.length ? ` · ${x.material_name}` : ""}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <button type="button" className="btn-primary" style={{ fontSize: 12, padding: "4px 10px" }} disabled={!val || busy === r.id} onClick={() => save(r, { silo_slot: val })}>Save</button>{" "}
+                      <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} disabled={busy === r.id} title="Lab, store or a drummed admixture" onClick={() => save(r, { not_in_silo: true })}>Not in a silo</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1521,6 +1584,9 @@ function ReceiptsTab({ role }) {
   // Round 168 — the silos a receipt can be assigned to. Loaded once; the
   // receive form narrows them to the material being received.
   const [silos, setSilos] = useState([]);
+  // Round 206 — materials that must name a silo / bin on every receipt.
+  const [siloMaterials, setSiloMaterials] = useState(new Set());
+  const [unassignedTick, setUnassignedTick] = useState(0);
 
   async function loadHistory() {
     const qs = new URLSearchParams();
@@ -1544,6 +1610,7 @@ function ReceiptsTab({ role }) {
     apiRequest("/material-module/materials").then(setMaterials).catch(() => {});
     apiRequest("/material-module/suppliers").then(setSuppliers).catch(() => {});
     apiRequest("/material-module/receipt-silos").then(setSilos).catch(() => setSilos([]));
+    apiRequest("/material-module/silo-materials").then((ids) => setSiloMaterials(new Set(ids))).catch(() => {});
   }, []);
 
   function openReceive(o) {
@@ -1684,6 +1751,7 @@ function ReceiptsTab({ role }) {
       {warning && <div style={{ color: "var(--amber)", fontSize: 13, marginBottom: 10 }}>{warning}</div>}
 
       {can("material.receipt-wb-approve", "view") && <NoTicketQueue onChanged={load} />}
+      {can("material.receipts", "edit") && <UnassignedSiloLoads key={unassignedTick} silos={silos} onChanged={() => { setUnassignedTick((t) => t + 1); loadHistory().catch(() => {}); }} />}
 
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Approved orders — awaiting receipt</div>
       {receivable.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 16 }}>Nothing outstanding right now.</div>}
@@ -1915,6 +1983,7 @@ function ReceiptsTab({ role }) {
                 not tied to a tank, is marked "not in silo": it is still recorded
                 as stock but adds to no hopper and shows in its own list. */}
             <SiloPicker silos={silos} materialId={receiving.material_id} materialName={receiving.material_name}
+                        required={siloMaterials.has(receiving.material_id)}
                         value={form.silo_slot} notInSilo={form.not_in_silo}
                         onChange={(patch) => setForm({ ...form, ...patch })} />
             <Field label="Vehicle number"><input value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value })} style={inputStyle} /></Field>
@@ -1978,6 +2047,7 @@ function ReceiptsTab({ role }) {
             {/* Round 187 — admin can correct the silo. Saving rebuilds this
                 receipt's silo fill (silo, quantity and date) to match. */}
             <SiloPicker silos={silos} materialId={editingReceipt.material_id} materialName={editingReceipt.material_name}
+                        required={siloMaterials.has(editingReceipt.material_id)}
                         value={editForm.silo_slot} notInSilo={editForm.not_in_silo}
                         onChange={(patch) => setEditForm({ ...editForm, ...patch })} />
             {editingReceipt.confirmation_status === "pending" && (

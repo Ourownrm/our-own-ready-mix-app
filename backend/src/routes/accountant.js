@@ -55,7 +55,7 @@ router.post("/credit-notes/:ticketId/clear", async (req, res) => {
 // comes from lib/receivables.js, the same calculation as Accounts → Customer
 // ledger, the Outstanding Collection report and the Director dashboard.
 router.get("/home", async (req, res) => {
-  const [all, out, today, month, billedMonth, bank, held, creditNotes, waivers, pump, reprice, allowance, todayList] = await Promise.all([
+  const [all, out, today, month, billedMonth, bank, held, creditNotes, waivers, pump, reprice, dupOb, allowance, todayList] = await Promise.all([
     positions(),
     query(OUTSTANDING_SQL),
     query(receivedSql("CURRENT_DATE", "CURRENT_DATE")),
@@ -71,6 +71,7 @@ router.get("/home", async (req, res) => {
     query(`SELECT COUNT(*)::int AS n FROM customer_orders WHERE charge_review_status = 'pending'`).catch(() => ({ rows: [{ n: 0 }] })),
     query(`SELECT COUNT(*)::int AS n FROM customer_orders WHERE pump_charge_needs_review = true`),
     query(`SELECT COUNT(*)::int AS n FROM notifications WHERE type = 'reprice_review' AND COALESCE(is_read, false) = false`),
+    query(`SELECT COUNT(*)::int AS n FROM (SELECT customer_id FROM customer_opening_balances GROUP BY customer_id HAVING COUNT(*) > 1) x`),
     query(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(DISTINCT driver_id)::int AS drivers FROM trip_allowance_payouts
             WHERE date_trunc('month', earned_at) = date_trunc('month', CURRENT_DATE)`).catch(() => ({ rows: [{ total: 0, drivers: 0 }] })),
     query(`SELECT * FROM (
@@ -111,6 +112,7 @@ router.get("/home", async (req, res) => {
       credit_notes: creditNotes.rows[0].n, credit_note_amount: Number(creditNotes.rows[0].amt),
       charges_left_out: waivers.rows[0].n, pump_recheck: pump.rows[0].n,
       reprice_review: reprice.rows[0].n,
+      duplicate_opening_balances: dupOb.rows[0].n,
     },
     chase,
     received_today: todayList.rows,
@@ -214,22 +216,34 @@ router.post("/customers/:customerId/bulk-payment", async (req, res) => {
 
 router.get("/opening-balances", async (req, res) => {
   const { rows } = await query(
-    `SELECT ob.*, c.name AS customer_name, u.name AS entered_by_name,
-            COALESCE(SUM(p.amount), 0) AS paid_amount
+    `SELECT ob.*, to_char(ob.as_of_date, 'YYYY-MM-DD') AS as_of, c.name AS customer_name, u.name AS entered_by_name,
+            COALESCE(SUM(p.amount), 0) AS paid_amount,
+            (SELECT COUNT(*) FROM customer_opening_balances o2 WHERE o2.customer_id = ob.customer_id)::int AS on_file
      FROM customer_opening_balances ob
      JOIN customers c ON c.id = ob.customer_id
      LEFT JOIN users u ON u.id = ob.entered_by
      LEFT JOIN payments p ON p.opening_balance_id = ob.id
      GROUP BY ob.id, c.name, u.name
-     ORDER BY ob.entered_at DESC`
+     ORDER BY (SELECT COUNT(*) FROM customer_opening_balances o2 WHERE o2.customer_id = ob.customer_id) > 1 DESC, c.name, ob.id`
   );
-  res.json(rows);
+  // Round 206 — a customer has ONE opening balance. Any later one for the same
+  // customer is shown as a duplicate the Accountant can remove.
+  const firstOf = new Map();
+  for (const r of rows) if (!firstOf.has(r.customer_id) || r.id < firstOf.get(r.customer_id)) firstOf.set(r.customer_id, r.id);
+  res.json(rows.map((r) => ({ ...r, duplicate: r.on_file > 1 && firstOf.get(r.customer_id) !== r.id })));
 });
 
 router.post("/opening-balances", async (req, res) => {
   const { customer_id, amount, days_outstanding, notes } = req.body;
   if (!customer_id || !amount || days_outstanding === undefined || days_outstanding === null) {
     return res.status(400).json({ error: "Customer, amount, and how many days it's been outstanding are all required." });
+  }
+  // Round 206 — one opening balance per customer (a second one doubled the
+  // customer's dues on the ledger).
+  const { rows: had } = await query(
+    `SELECT amount, to_char(as_of_date, 'DD-Mon-YYYY') AS d FROM customer_opening_balances WHERE customer_id = $1 LIMIT 1`, [customer_id]);
+  if (had.length) {
+    return res.status(409).json({ error: `This customer already has an opening balance (₹${Number(had[0].amount).toLocaleString("en-IN")} as of ${had[0].d}). A customer has only one — delete that one first if it is wrong.` });
   }
   const { rows } = await query(
     `INSERT INTO customer_opening_balances (customer_id, amount, as_of_date, notes, entered_by)
@@ -250,8 +264,14 @@ router.post("/opening-balances/bulk", async (req, res) => {
     return res.status(400).json({ error: "No rows to import." });
   }
   const inserted = [];
+  const skipped = [];
+  const { rows: had } = await query(`SELECT DISTINCT customer_id FROM customer_opening_balances`);
+  const taken = new Set(had.map((h) => h.customer_id));
   for (const r of inputRows) {
     if (!r.customer_id || !r.amount || r.days_outstanding === undefined || r.days_outstanding === null) continue;
+    // Round 206 — one per customer: already on file, or twice in this file.
+    if (taken.has(Number(r.customer_id))) { skipped.push(Number(r.customer_id)); continue; }
+    taken.add(Number(r.customer_id));
     const { rows } = await query(
       `INSERT INTO customer_opening_balances (customer_id, amount, as_of_date, notes, entered_by)
        VALUES ($1, $2, (CURRENT_DATE - ($3 || ' days')::interval)::date, $4, $5) RETURNING *`,
@@ -260,7 +280,48 @@ router.post("/opening-balances/bulk", async (req, res) => {
     inserted.push(rows[0]);
   }
   for (const cid of new Set(inserted.map((r) => r.customer_id))) await applyAdvances({ query }, cid);
-  res.status(201).json({ inserted: inserted.length });
+  res.status(201).json({ inserted: inserted.length, skipped: skipped.length });
+});
+
+// Round 206 — remove a second opening balance entered for the same customer.
+// Money already set against it is not lost: payments entered directly against
+// it become receipts, and every receipt is set again against what is still
+// open (oldest first) — anything over stays as the customer's advance.
+router.post("/opening-balances/:id(\\d+)/remove-duplicate", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT * FROM customer_opening_balances WHERE id = $1 FOR UPDATE`, [req.params.id]);
+    const ob = rows[0];
+    if (!ob) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Not found." }); }
+    const { rows: others } = await client.query(
+      `SELECT id FROM customer_opening_balances WHERE customer_id = $1 AND id <> $2`, [ob.customer_id, ob.id]);
+    if (!others.length) { await client.query("ROLLBACK"); return res.status(400).json({ error: "This is the customer's only opening balance — it is not a duplicate." }); }
+    const { rows: pays } = await client.query(
+      `SELECT p.*, to_char(p.payment_date, 'YYYY-MM-DD') AS day FROM payments p WHERE p.opening_balance_id = $1`, [ob.id]);
+    const receiptIds = new Set();
+    let moved = 0;
+    for (const p of pays) {
+      if (p.receipt_id) { receiptIds.add(p.receipt_id); continue; }
+      const { rows: rc } = await client.query(
+        `INSERT INTO customer_receipts (customer_id, receipt_date, amount, mode, reference_number, remarks, entered_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [ob.customer_id, p.day, p.amount, p.mode, p.reference_number,
+         `Moved from a duplicate opening balance${p.remarks ? ` — ${p.remarks}` : ""}`, req.user.id]);
+      receiptIds.add(rc[0].id);
+      moved++;
+    }
+    await client.query(`DELETE FROM payments WHERE opening_balance_id = $1`, [ob.id]);
+    await client.query(`DELETE FROM customer_opening_balances WHERE id = $1`, [ob.id]);
+    const applied = await applyAdvances(client, ob.customer_id);
+    await client.query("COMMIT");
+    res.json({ ok: true, payments_moved: moved, receipts_reapplied: receiptIds.size, applied });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 router.delete("/opening-balances/:id", async (req, res) => {

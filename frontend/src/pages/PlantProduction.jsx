@@ -692,6 +692,54 @@ function CostPerM3({ qs }) {
   );
 }
 
+// Round 206 — book stock (Material module) against what the silos hold, per
+// material, with the reasons they differ. Owner, 12 Oct 2026: "Material module
+// book stock supposed to match plant production silo stocks".
+function BookVsSilo() {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => { apiRequest("/material-module/book-vs-silo").then(setD).catch((e) => setError(e.message)); }, []);
+  if (error) return <div className="card" style={{ marginBottom: 20, fontSize: 13, color: "var(--alert-red)" }}>Book stock vs silos: {error}</div>;
+  if (!d || !d.rows.length) return null;
+  const u = (kg, r) => (kg == null ? "—" : r.kg_per_purchase_unit ? `${(kg / r.kg_per_purchase_unit).toLocaleString("en-IN", { maximumFractionDigits: 1 })} ${r.purchase_unit}` : `${Math.round(kg).toLocaleString("en-IN")} kg`);
+  const noSilo = d.rows.reduce((t, r) => t + r.no_silo_receipts, 0);
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>Book stock against the silos</h3>
+      <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 900 }}>
+        Book stock (Material module) = opening or last approved count + receipts − consumption. A silo = its fills − the load-cell draw since its first fill.
+        They agree when every load names its silo and both start from the same count. <b>Loads with no silo</b> are receipts the silos never saw — assign them in
+        Material module → Receipts. What is left of the gap comes from the different starting points: declare each silo's level on the day of a physical count to line them up.
+        {noSilo > 0 && <span style={{ color: "var(--alert-red)", fontWeight: 600 }}> {noSilo} load{noSilo === 1 ? "" : "s"} still have no silo.</span>}
+      </p>
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", fontSize: 12.5, minWidth: 820 }}>
+          <thead><tr>
+            <th>Material</th><th style={{ textAlign: "right" }}>Book stock</th><th style={{ textAlign: "right" }}>In silos</th>
+            <th style={{ textAlign: "right" }}>Not in a silo</th><th style={{ textAlign: "right" }}>Gap</th><th style={{ textAlign: "right" }}>Loads with no silo</th><th>Silos (counting from)</th>
+          </tr></thead>
+          <tbody>
+            {d.rows.map((r) => {
+              const big = r.book_kg !== 0 && Math.abs(r.gap_kg) > Math.max(500, Math.abs(r.book_kg) * 0.05);
+              return (
+                <tr key={r.material_id}>
+                  <td><b>{r.name}</b><div style={{ fontSize: 11, color: "var(--slate)" }}>book from {r.book_from}</div></td>
+                  <td style={{ textAlign: "right", color: r.book_kg < 0 ? "var(--alert-red)" : undefined }}>{u(r.book_kg, r)}</td>
+                  <td style={{ textAlign: "right", color: r.in_silos_kg < 0 ? "var(--alert-red)" : undefined }}>{r.silos.length ? u(r.in_silos_kg, r) : "no silo mapped"}</td>
+                  <td style={{ textAlign: "right" }}>{r.not_in_silo_kg ? u(r.not_in_silo_kg, r) : "—"}</td>
+                  <td style={{ textAlign: "right", fontWeight: 700, color: big ? "var(--alert-red)" : "var(--signal-green)" }}>{Math.abs(r.gap_kg) < 1 ? "matches" : u(r.gap_kg, r)}</td>
+                  <td style={{ textAlign: "right", color: r.no_silo_receipts ? "var(--alert-red)" : "var(--slate)" }}>{r.no_silo_receipts ? `${r.no_silo_receipts} · ${u(r.no_silo_kg, r)}` : "—"}</td>
+                  <td style={{ fontSize: 11.5 }}>{r.silos.map((x) => `${x.name}${x.refillable ? " (refillable)" : ""}${x.first_fill ? ` from ${fmtDay(x.first_fill)}` : " — no fill yet"}`).join(" · ") || "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function Silos() {
   const [data, setData] = useState(null);
   const [fills, setFills] = useState([]);
@@ -858,6 +906,8 @@ function Silos() {
           receipts to them (or record an opening declaration below) to see levels here.
         </div>
       )}
+
+      <BookVsSilo />
 
       {notInSilo.length > 0 && (
         <div style={{ marginBottom: 20 }}>

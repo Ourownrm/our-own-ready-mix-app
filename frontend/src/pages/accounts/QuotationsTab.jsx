@@ -51,6 +51,7 @@ function Register({ meta, go }) {
   const [error, setError] = useState("");
   const [logFor, setLogFor] = useState(null);
   const [tick, setTick] = useState(0);
+  const [showLater, setShowLater] = useState(false);
 
   useEffect(() => {
     Promise.all([apiRequest("/quotations/followups"), apiRequest("/quotations?status=all")])
@@ -94,37 +95,39 @@ function Register({ meta, go }) {
       {!followups ? <Empty>Loading…</Empty> : !followups.length ? (
         <Empty>No quotation is waiting on a customer.</Empty>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))", gap: 10, marginBottom: 18 }}>
-          {[...due, ...later].map((f) => (
-            <div key={f.id} className="card" style={{ padding: 12, borderLeft: `4px solid ${f.overdue ? "var(--alert-red)" : f.due_today ? "var(--amber)" : "var(--border-strong)"}` }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                <b style={{ fontSize: 13.5 }}>{f.customer_name}</b>
-                <span style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 600, color: f.overdue ? "var(--alert-red)" : f.due_today ? "var(--amber)" : "var(--slate)" }}>
-                  {f.status === "approved" ? "Approved — send it" : f.overdue ? `Overdue since ${fmtDate(f.due_on)}` : f.due_today ? "Call today" : `Next ${fmtDate(f.due_on)}`}
-                </span>
-              </div>
-              <div style={{ fontSize: 12.5, color: "var(--slate)" }}>{f.site_name}</div>
-              <div style={{ fontSize: 12.5, marginTop: 4 }}>
-                <a href={`?tab=quotations&id=${f.id}`} onClick={(e) => { e.preventDefault(); go("quotations", { id: String(f.id) }); }}>{f.quote_no}</a>
-                {Number(f.value_incl_gst) > 0 && <> · {money(f.value_incl_gst)}</>}
-                {f.valid_until && <span style={{ color: f.expired ? "var(--alert-red)" : "var(--slate)" }}> · valid till {fmtDate(f.valid_until)}</span>}
-              </div>
-              {f.last_note && (
-                <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4, fontStyle: "italic" }}>
-                  “{f.last_note}” — {f.last_by}, {fmtDate(String(f.last_at).slice(0, 10))}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                {f.contact_number && <a href={`tel:${f.contact_number}`} style={{ fontSize: 12.5, alignSelf: "center" }}>📞 {f.contact_number}</a>}
-                {meta.perms.followup && f.status === "sent" && (
-                  <button type="button" style={{ marginLeft: "auto", fontSize: 12, padding: "5px 10px" }} onClick={() => setLogFor(f)}>Log follow-up</button>
-                )}
-                {f.status === "approved" && (
-                  <button type="button" style={{ marginLeft: "auto", fontSize: 12, padding: "5px 10px" }} onClick={() => go("quotations", { id: String(f.id) })}>Open</button>
-                )}
-              </div>
-            </div>
-          ))}
+        // Round 206 — a plain list (owner: "follow up cards to be made simple,
+        // may be a table list is good"): calls due first, the rest after.
+        <div style={{ marginBottom: 18 }}>
+          {(due.length > 0 || showLater) && <Table minWidth={860} head={<>
+            <th style={TH}>When</th><th style={TH}>Customer · Site</th><th style={TH}>Quotation</th>
+            <th style={{ ...TH, textAlign: "right" }}>Value</th><th style={TH}>Valid till</th><th style={TH}>Last follow-up</th><th style={TH}>Phone</th><th style={TH} />
+          </>}>
+            {[...due, ...(showLater ? later : [])].map((f) => (
+              <tr key={f.id} style={row}>
+                <td style={{ ...TD, whiteSpace: "nowrap", fontWeight: 600, fontSize: 12.5, color: f.overdue ? "var(--alert-red)" : f.due_today ? "var(--amber)" : "var(--slate)" }}>
+                  {f.status === "approved" ? "Send it" : f.overdue ? `Overdue · ${fmtDate(f.due_on)}` : f.due_today ? "Call today" : fmtDate(f.due_on)}
+                </td>
+                <td style={TD}>{f.customer_name}<div style={{ fontSize: 11.5, color: "var(--slate)" }}>{f.site_name}</div></td>
+                <td style={{ ...TD, whiteSpace: "nowrap" }}>
+                  <a href={`?tab=quotations&id=${f.id}`} onClick={(e) => { e.preventDefault(); go("quotations", { id: String(f.id) }); }}>{f.quote_no}</a>
+                </td>
+                <td style={NUM}>{Number(f.value_incl_gst) > 0 ? money(f.value_incl_gst) : "—"}</td>
+                <td style={{ ...TD, whiteSpace: "nowrap", fontSize: 12.5, color: f.expired ? "var(--alert-red)" : undefined }}>{f.valid_until ? fmtDate(f.valid_until) : "—"}</td>
+                <td style={{ ...TD, fontSize: 12, color: "var(--slate)", maxWidth: 260 }}>{f.last_note ? <>“{f.last_note}” — {f.last_by}, {fmtDate(String(f.last_at).slice(0, 10))}</> : "—"}</td>
+                <td style={{ ...TD, whiteSpace: "nowrap", fontSize: 12.5 }}>{f.contact_number ? <a href={`tel:${f.contact_number}`}>{f.contact_number}</a> : "—"}</td>
+                <td style={{ ...TD, whiteSpace: "nowrap" }}>
+                  {meta.perms.followup && f.status === "sent" && <button type="button" style={{ fontSize: 12, padding: "4px 9px" }} onClick={() => setLogFor(f)}>Log</button>}
+                  {f.status === "approved" && <button type="button" style={{ fontSize: 12, padding: "4px 9px" }} onClick={() => go("quotations", { id: String(f.id) })}>Open</button>}
+                </td>
+              </tr>
+            ))}
+          </Table>}
+          {later.length > 0 && (
+            <button type="button" style={{ fontSize: 12, padding: "4px 10px", marginTop: 6 }} onClick={() => setShowLater(!showLater)}>
+              {showLater ? "Show only calls due" : `Show ${later.length} not due yet`}
+            </button>
+          )}
+          {!due.length && !showLater && <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 6 }}>No call is due today.</div>}
         </div>
       )}
 

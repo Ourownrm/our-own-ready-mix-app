@@ -272,11 +272,22 @@ router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
          LEFT JOIN mix_grades m ON m.id = co.mix_grade_id LEFT JOIN sites s ON s.id = co.site_id
         WHERE i.customer_id = $1
        UNION ALL
-       SELECT r.receipt_date, 'receipt', r.id, CONCAT('Receipt · ', r.mode::text), CONCAT_WS(' · ', r.reference_number, r.bank_account, r.narration),
+       SELECT r.receipt_date, 'receipt', r.id, CONCAT('Receipt · ', r.mode::text),
+              -- Round 206 — what the money was set against, so a payment of the
+              -- opening balance is visible on the ledger.
+              CONCAT_WS(' · ', r.reference_number, r.bank_account, r.narration, r.remarks,
+                (SELECT 'against ' || string_agg(COALESCE(dt.ticket_number, 'Opening balance'), ', ' ORDER BY p.id)
+                   FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN delivery_tickets dt ON dt.id = i.ticket_id
+                  WHERE p.receipt_id = r.id),
+                CASE WHEN r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) > 0.01
+                     THEN 'advance ₹' || to_char(r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0), 'FM99,99,99,990') END),
               0, r.amount, 2
          FROM customer_receipts r WHERE r.customer_id = $1 AND r.cancelled_at IS NULL
        UNION ALL
-       SELECT p.payment_date, 'payment', p.id, CONCAT('Payment · ', p.mode::text), CONCAT_WS(' · ', p.reference_number, p.remarks),
+       SELECT p.payment_date, 'payment', p.id, CONCAT('Payment · ', p.mode::text),
+              CONCAT_WS(' · ', 'against ' || CASE WHEN p.opening_balance_id IS NOT NULL THEN 'Opening balance'
+                                                  ELSE (SELECT dt.ticket_number FROM delivery_tickets dt WHERE dt.id = i.ticket_id) END,
+                        p.reference_number, p.remarks),
               0, p.amount, 2
          FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN customer_opening_balances b ON b.id = p.opening_balance_id
         WHERE p.receipt_id IS NULL AND COALESCE(i.customer_id, b.customer_id) = $1

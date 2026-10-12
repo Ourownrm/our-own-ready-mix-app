@@ -1175,6 +1175,100 @@ router.get("/receipt-silos", requirePermission("material.receipts", "view"), asy
   })));
 });
 
+// ROUND 206 — a material that lives in a silo or bin (owner, 12 Oct 2026:
+// "make bin/silo assignment in material receipt mandatory"). Every receipt of
+// such a material must say which silo it fills — or tick "not going into a
+// silo" — otherwise the plant's silo level and the book stock drift apart.
+// Silo-stocked = mapped to a silo, has ever filled one, or is a mix component
+// (cement, fly ash, sand, aggregate, admixture). Diesel, oil, spares are not.
+async function siloStocked(materialId, db = { query }) {
+  const { rows } = await db.query(
+    `SELECT (m.mix_component IS NOT NULL
+             OR EXISTS (SELECT 1 FROM plant_silo_aliases a WHERE a.material_id = m.id AND a.is_ignored = false)
+             OR EXISTS (SELECT 1 FROM plant_silo_fills f WHERE f.material_id = m.id)) AS yes
+       FROM rm_materials m WHERE m.id = $1`, [materialId]);
+  return !!rows[0]?.yes;
+}
+const SILO_REQUIRED = "Choose the silo / bin this load goes into — or tick “Not going into a silo” (lab, store, drummed admixture). Without it the silo level and the book stock drift apart.";
+
+router.get("/silo-materials", requirePermission("material.receipts", "view"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT m.id FROM rm_materials m
+      WHERE m.mix_component IS NOT NULL
+         OR EXISTS (SELECT 1 FROM plant_silo_aliases a WHERE a.material_id = m.id AND a.is_ignored = false)
+         OR EXISTS (SELECT 1 FROM plant_silo_fills f WHERE f.material_id = m.id)`);
+  res.json(rows.map((r) => r.id));
+});
+
+// Confirmed receipts of silo-stocked materials that went into no silo and are
+// not marked "not in a silo" — the loads the silo levels never saw.
+router.get("/unassigned-receipts", requirePermission("material.receipts", "view"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT r.id, to_char(r.received_date, 'YYYY-MM-DD') AS received_date, r.accepted_qty_kg, r.vehicle_number, r.challan_number,
+            o.material_id, m.name AS material_name, m.purchase_unit, m.kg_per_purchase_unit, s.name AS supplier_name
+       FROM rm_receipts r   -- receipts-raw: silo_slot / not_in_silo are newer than rm_receipts_effective; pending filtered below
+       JOIN rm_orders o ON o.id = r.order_id
+       JOIN rm_materials m ON m.id = o.material_id
+       LEFT JOIN rm_suppliers s ON s.id = o.supplier_id
+      WHERE r.silo_slot IS NULL AND COALESCE(r.not_in_silo, false) = false
+        AND r.confirmation_status <> 'pending' AND COALESCE(r.wb_approval, 'not_needed') NOT IN ('pending', 'rejected')
+        AND (m.mix_component IS NOT NULL
+             OR EXISTS (SELECT 1 FROM plant_silo_aliases a WHERE a.material_id = m.id AND a.is_ignored = false)
+             OR EXISTS (SELECT 1 FROM plant_silo_fills f WHERE f.material_id = m.id))
+      ORDER BY r.received_date DESC, r.id DESC LIMIT 500`
+  ).catch(async (err) => {
+    if (!/rm_suppliers|supplier_id/.test(err.message)) throw err;
+    return query(
+      `SELECT r.id, to_char(r.received_date, 'YYYY-MM-DD') AS received_date, r.accepted_qty_kg, r.vehicle_number, r.challan_number,
+              o.material_id, m.name AS material_name, m.purchase_unit, m.kg_per_purchase_unit, NULL AS supplier_name
+         FROM rm_receipts r   -- receipts-raw: as above
+         JOIN rm_orders o ON o.id = r.order_id JOIN rm_materials m ON m.id = o.material_id
+        WHERE r.silo_slot IS NULL AND COALESCE(r.not_in_silo, false) = false
+          AND r.confirmation_status <> 'pending' AND COALESCE(r.wb_approval, 'not_needed') NOT IN ('pending', 'rejected')
+          AND (m.mix_component IS NOT NULL
+               OR EXISTS (SELECT 1 FROM plant_silo_aliases a WHERE a.material_id = m.id AND a.is_ignored = false)
+               OR EXISTS (SELECT 1 FROM plant_silo_fills f WHERE f.material_id = m.id))
+        ORDER BY r.received_date DESC, r.id DESC LIMIT 500`);
+  });
+  res.json(rows.map((r) => ({ ...r, accepted_qty_kg: Number(r.accepted_qty_kg) })));
+});
+
+// Put an already-saved receipt into a silo (or mark it not in one) without
+// re-entering the rest of the receipt. Writes or moves its silo fill.
+router.post("/receipts/:id(\\d+)/silo", requirePermission("material.receipts", "edit"), async (req, res) => {
+  const notInSilo = req.body?.not_in_silo === true;
+  const slot = notInSilo ? null : String(req.body?.silo_slot || "").trim() || null;
+  if (!notInSilo && !slot) return res.status(400).json({ error: SILO_REQUIRED });
+  if (slot && !Object.prototype.hasOwnProperty.call(SLOT_BY_KEY, slot)) return res.status(400).json({ error: "That is not a silo this plant has." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT r.id, r.accepted_qty_kg, to_char(r.received_date, 'YYYY-MM-DD') AS received_date, r.confirmation_status, r.wb_approval, o.material_id
+         FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: the write itself
+        WHERE r.id = $1 FOR UPDATE OF r`, [req.params.id]);
+    const r = rows[0];
+    if (!r) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Receipt not found." }); }
+    await client.query(`UPDATE rm_receipts SET silo_slot = $1, not_in_silo = $2 WHERE id = $3`, [slot, notInSilo, r.id]);   // receipts-raw: the write itself
+    await client.query(`DELETE FROM plant_silo_fills WHERE receipt_id = $1`, [r.id]);
+    const clear = r.confirmation_status !== "pending" && !["pending", "rejected"].includes(r.wb_approval || "not_needed");
+    if (slot && clear) {
+      await client.query(
+        `INSERT INTO plant_silo_fills (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)
+         VALUES ($1,$2,$3,$4::date::timestamptz,$5,false,NULL,$6,$7)`,
+        [slot, r.material_id, r.id, r.received_date, r.accepted_qty_kg, "From receipt #" + r.id + " (silo set later)", req.user.id]);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+  await reresolveSilos().catch((e) => console.error("reresolveSilos", e.message));
+  res.json({ ok: true });
+});
+
 router.post("/receipts", requirePermission("material.receipts", "create"), async (req, res) => {
   const { order_id, supplier_qty, weighbridge_weight_kg, accepted_qty, transporter_id, freight_rate, freight_basis, vehicle_number, challan_number, debit_note_amount, notes, weighbridge_ticket_id, short_reason, received_date, silo_slot, not_in_silo, invoice_date, no_ticket_reason } = req.body;
   if (!order_id) return res.status(400).json({ error: "Select the order this receipt is against." });
@@ -1217,6 +1311,10 @@ router.post("/receipts", requirePermission("material.receipts", "create"), async
   );
   if (!orders.length) return res.status(404).json({ error: "Order not found or not approved yet." });
   const order = orders[0];
+  // ROUND 206 — a silo-stocked material must say where the load went.
+  if (order && !siloSlot && !notInSilo && await siloStocked(order.material_id)) {
+    return res.status(400).json({ error: SILO_REQUIRED });
+  }
 
   // accepted_qty defaults to the weighbridge weight converted to purchase
   // units when Store doesn't override it — the weighbridge figure is the
@@ -1521,6 +1619,10 @@ router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), as
   // quantity and its date. Rebuilt whenever the receipt has or had a silo, so a
   // corrected quantity or arrival date also corrects the silo level (Round 168's
   // noted limitation). A pending receipt never has a fill until it is confirmed.
+  // ROUND 206 — mandatory for silo-stocked materials, on edit too.
+  if (!siloSlot && !notInSilo && await siloStocked(existing.order_material_id)) {
+    return res.status(400).json({ error: SILO_REQUIRED });
+  }
   const touchesSilo = !!(existing.silo_slot || siloSlot);
   const siloChanged = (existing.silo_slot || null) !== siloSlot || !!existing.not_in_silo !== notInSilo;
 
@@ -2043,6 +2145,80 @@ function bucketMap(rows) {
   }
   return out;
 }
+
+// ROUND 206 — book stock against the silos (owner, 12 Oct 2026: "Material
+// module book stock supposed to match plant production silo stocks, but it is
+// not matching"). Per silo-stocked material:
+//   book       = opening / approved count + receipts − consumption (GET /stock)
+//   in silos   = Σ (fills − load-cell draw since the first fill) of the silos
+//                holding it (a refillable silo counts for its current material)
+//   not in silo= receipts marked "not going into a silo"
+//   no silo    = receipts that named no silo at all — the silo never saw them
+//   gap        = book − in silos − not in silo
+// Whatever gap is left after the "no silo" loads are assigned comes from where
+// each count starts: book stock from the opening / last approved physical
+// count, a silo from its first fill. Declaring each silo's level once, on the
+// day of a physical count, makes the two run together from then on.
+router.get("/book-vs-silo", requireAnyPermission(["material.stock", "production.plant-mapping"]), async (req, res) => {
+  const [book, aliases, fills, notIn, noSilo] = await Promise.all([
+    bookStockRows(),
+    query(`SELECT slot, slot_name, material_id, is_refillable FROM plant_silo_aliases WHERE is_ignored = false`),
+    query(
+      `SELECT f.slot,
+              (array_agg(f.material_id ORDER BY f.filled_at DESC))[1] AS current_material_id,
+              to_char(min(f.filled_at) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS first_fill,
+              sum(f.qty_kg)::numeric AS filled_kg,
+              COALESCE((SELECT sum(pm.actual_kg) FROM plant_batch_materials pm JOIN plant_batches pb ON pb.id = pm.batch_id
+                         WHERE pm.slot = f.slot AND COALESCE(pb.batched_at, pb.batch_date::timestamptz) >= min(f.filled_at)), 0)::numeric AS used_kg
+         FROM plant_silo_fills f GROUP BY f.slot`),
+    query(
+      `SELECT o.material_id, sum(r.accepted_qty_kg)::numeric AS kg
+         FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: not_in_silo is newer than the view; pending filtered
+        WHERE r.not_in_silo = true AND r.confirmation_status <> 'pending' AND COALESCE(r.wb_approval, 'not_needed') NOT IN ('pending','rejected')
+        GROUP BY o.material_id`),
+    query(
+      `SELECT o.material_id, sum(r.accepted_qty_kg)::numeric AS kg, count(*)::int AS n
+         FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: as above
+        WHERE r.silo_slot IS NULL AND COALESCE(r.not_in_silo, false) = false
+          AND r.confirmation_status <> 'pending' AND COALESCE(r.wb_approval, 'not_needed') NOT IN ('pending','rejected')
+        GROUP BY o.material_id`),
+  ]);
+  const fillBy = new Map(fills.rows.map((f) => [f.slot, f]));
+  const silosOf = new Map();
+  for (const a of aliases.rows) {
+    const f = fillBy.get(a.slot);
+    const mid = a.is_refillable ? f?.current_material_id : a.material_id;
+    if (!mid) continue;
+    if (!silosOf.has(mid)) silosOf.set(mid, []);
+    silosOf.get(mid).push({
+      slot: a.slot, name: a.slot_name || SLOT_BY_KEY[a.slot]?.label || a.slot, refillable: a.is_refillable,
+      level_kg: f ? Math.round((Number(f.filled_kg) - Number(f.used_kg)) * 100) / 100 : null, first_fill: f?.first_fill || null,
+    });
+  }
+  const notInBy = new Map(notIn.rows.map((r) => [r.material_id, Number(r.kg)]));
+  const noSiloBy = new Map(noSilo.rows.map((r) => [r.material_id, r]));
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const rows = book
+    .filter((m) => silosOf.has(m.id) || m.mix_component)
+    .map((m) => {
+      const bookKg = Number(m.base_kg) + Number(m.received_kg) - Number(m.consumed_kg);
+      const silos = silosOf.get(m.id) || [];
+      const inSilos = silos.reduce((t, x) => t + (x.level_kg || 0), 0);
+      const notInKg = notInBy.get(m.id) || 0;
+      const ns = noSiloBy.get(m.id);
+      return {
+        material_id: m.id, name: m.name, category: m.category, purchase_unit: m.purchase_unit,
+        kg_per_purchase_unit: Number(m.kg_per_purchase_unit) || null,
+        book_kg: r2(bookKg), in_silos_kg: r2(inSilos), not_in_silo_kg: r2(notInKg),
+        no_silo_kg: r2(ns ? Number(ns.kg) : 0), no_silo_receipts: ns ? ns.n : 0,
+        gap_kg: r2(bookKg - inSilos - notInKg),
+        book_from: m.stock_anchor_month ? `count for ${m.stock_anchor_month}` : "opening stock",
+        silos,
+      };
+    })
+    .sort((a, b) => Math.abs(b.gap_kg) - Math.abs(a.gap_kg));
+  res.json({ rows });
+});
 
 router.get("/stock", requirePermission("material.stock", "view"), async (req, res) => {
   const asOfMonth = req.query.month || istMonth();
