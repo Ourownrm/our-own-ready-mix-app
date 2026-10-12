@@ -1,41 +1,59 @@
+// Round 205 — the Accountant home, reworked (owner, 12 Oct 2026; mockup
+// "Accountant Home Rework"). Every rupee figure comes from the server's one
+// calculation (backend lib/receivables.js): billed − received, advances
+// counted, aged from the delivery date in 0–7 / 8–14 / 15–30 / over 30 days —
+// the same numbers as Accounts → Customer ledger, the Outstanding Collection
+// report and the Director dashboard.
+//
+// Gone from here: the old "Record payment" (replaced by Record a receipt,
+// which keeps any extra as an advance), the rate recalculation and "Concrete
+// grades and rates" (prices now come only from accepted quotations), and the
+// pump charge review (now under Accounts → Invoices → Charges left out).
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { IfCan } from "../lib/PermissionContext.jsx";
+import { IfCan, usePermissions } from "../lib/PermissionContext.jsx";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
-import { RatesPanel } from "../lib/MasterDataPanels.jsx";
 import FollowupsDue from "../lib/FollowupsDue.jsx";
-import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
+import { todayStr } from "../lib/istDate.js";
+import { fmtDate } from "../lib/quotationTerms.js";
+import { ReceiptModal } from "./accounts/ReceiptModal.jsx";
+import { Modal, money } from "./accounts/ui.jsx";
+
+const AGE = [["d0_7", "0–7 days"], ["d8_14", "8–14 days"], ["d15_30", "15–30 days"], ["d30p", "Over 30 days"]];
+const AGE_COLOR = { d0_7: "var(--signal-green)", d8_14: "var(--amber)", d15_30: "var(--rebar)", d30p: "var(--alert-red)" };
+const th = { padding: "7px 8px", textAlign: "left", fontSize: 11.5, fontWeight: 600, color: "var(--slate)", whiteSpace: "nowrap" };
+const td = { padding: "8px 6px", fontSize: 13, verticalAlign: "top", borderTop: "1px solid var(--border)" };
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const num = { ...td, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
 
 export default function Accountant() {
-  const [stats, setStats] = useState(null);
-  const [customers, setCustomers] = useState([]);
+  const { can } = usePermissions();
+  const [home, setHome] = useState(null);
   const [allowances, setAllowances] = useState([]);
-  const [unbilled, setUnbilled] = useState([]);
   const [creditNotes, setCreditNotes] = useState([]);
-  const [payingCustomer, setPayingCustomer] = useState(null);
-  const [showRates, setShowRates] = useState(false);
+  const [everyone, setEveryone] = useState(null); // "Show everyone who owes"
+  const [receiptFor, setReceiptFor] = useState(null); // {customerId} | {} | null
+  const [notice, setNotice] = useState("");
   const [showOpeningBalances, setShowOpeningBalances] = useState(false);
-  const [showPumpChargeReview, setShowPumpChargeReview] = useState(false);
+  const [showReprice, setShowReprice] = useState(false);
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState(null);
 
   async function load() {
     try {
-      const [s, c, a, d, cn] = await Promise.all([
-        apiRequest("/accountant/dashboard"),
-        apiRequest("/accountant/customers-outstanding"),
-        apiRequest("/accountant/trip-allowances"),
-        apiRequest("/reports/director-dashboard"),
-        apiRequest("/accountant/credit-notes"),
+      const [h, a, cn] = await Promise.all([
+        apiRequest("/accountant/home"),
+        apiRequest("/accountant/trip-allowances").catch(() => []),
+        apiRequest("/accountant/credit-notes").catch(() => []),
       ]);
-      setStats(s); setCustomers(c); setAllowances(a); setUnbilled(d.unbilled_deliveries_month || []); setCreditNotes(cn);
+      setHome(h); setAllowances(a); setCreditNotes(cn);
+      if (everyone) setEveryone(await apiRequest("/accountant/customers-outstanding"));
     } catch (err) {
       setError(err.message);
     }
   }
-
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function clearCreditNote(ticketId) {
     setError("");
@@ -43,81 +61,41 @@ export default function Accountant() {
     catch (err) { setError(err.message); }
   }
 
-  function inrPdf(value) {
-    return `Rs. ${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
-  }
-
-  async function exportOutstandingPdf() {
-    if (customers.length === 0) { setError("Nothing outstanding to export."); return; }
-    setExporting("pdf"); setError("");
+  async function exportOutstanding(kind) {
+    setExporting(kind); setError("");
     try {
-      const { jsPDF } = await import("jspdf");
-      await import("jspdf-autotable");
-      const doc = new jsPDF();
-      doc.setFontSize(14);
-      doc.text("Our Own Ready Mix", 14, 14);
-      doc.setFontSize(11);
-      doc.text("Customer-wise Outstanding Report", 14, 21);
-      doc.setFontSize(8);
-      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 27);
-
-      const totalInvoiced = customers.reduce((s, c) => s + Number(c.total_invoiced), 0);
-      const totalPaid = customers.reduce((s, c) => s + Number(c.total_paid), 0);
-      const totalBalance = customers.reduce((s, c) => s + Number(c.balance), 0);
-
-      doc.autoTable({
-        startY: 32,
-        head: [["Customer", "Invoiced", "Paid", "Balance", "Oldest unpaid"]],
-        body: customers.map((c) => [
-          c.customer_name, inrPdf(c.total_invoiced), inrPdf(c.total_paid), inrPdf(c.balance),
-          c.oldest_unpaid_date ? new Date(c.oldest_unpaid_date).toLocaleDateString() : "–",
-        ]),
-        foot: [["Total", inrPdf(totalInvoiced), inrPdf(totalPaid), inrPdf(totalBalance), `${customers.length} customers`]],
-        styles: { fontSize: 9 },
-        headStyles: { fillColor: [199, 91, 18] },
-      });
-      doc.save(`Customer_Outstanding_${todayStr()}.pdf`);
+      const rows = await apiRequest("/accountant/customers-outstanding");
+      if (!rows.length) { setError("Nothing outstanding to export."); return; }
+      const total = (k) => rows.reduce((t, r) => t + Number(r[k] || 0), 0);
+      const cols = ["Customer", "Billed", "Received", "Balance", "0–7 days", "8–14 days", "15–30 days", "Over 30 days", "Oldest due", "Last receipt"];
+      const line = (r) => [r.customer_name, r.total_invoiced, r.total_paid, r.balance, r.d0_7, r.d8_14, r.d15_30, r.d30p,
+        r.oldest_unpaid_date ? fmtDate(r.oldest_unpaid_date) : "", r.last_receipt_on ? fmtDate(r.last_receipt_on) : ""];
+      const foot = ["Total", total("total_invoiced"), total("total_paid"), total("balance"), total("d0_7"), total("d8_14"), total("d15_30"), total("d30p"), `${rows.length} customers`, ""];
+      if (kind === "pdf") {
+        const { jsPDF } = await import("jspdf");
+        await import("jspdf-autotable");
+        const doc = new jsPDF({ orientation: "landscape" });
+        const rs = (v) => (typeof v === "number" ? `Rs. ${v.toLocaleString("en-IN", { maximumFractionDigits: 0 })}` : v);
+        doc.setFontSize(14); doc.text("Our Own Ready Mix", 14, 14);
+        doc.setFontSize(11); doc.text("Customer-wise Outstanding (aged from delivery date)", 14, 21);
+        doc.setFontSize(8); doc.text(`As on ${fmtDate(todayStr())}`, 14, 27);
+        doc.autoTable({
+          startY: 32, head: [cols], body: rows.map((r) => line(r).map((v, i) => (i >= 1 && i <= 7 ? rs(Number(v)) : v))),
+          foot: [foot.map((v) => rs(v))], styles: { fontSize: 8 }, headStyles: { fillColor: [199, 91, 18] },
+        });
+        doc.save(`Customer_Outstanding_${todayStr()}.pdf`);
+      } else {
+        const XLSX = await import("xlsx");
+        const aoa = [cols, ...rows.map((r) => line(r).map((v, i) => (i >= 1 && i <= 7 ? Number(v) : v))), foot];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Outstanding");
+        XLSX.writeFile(wb, `Customer_Outstanding_${todayStr()}.xlsx`);
+      }
     } catch (err) {
-      setError(err.message || "Couldn't export PDF.");
+      setError(err.message || "Couldn't export.");
     } finally {
       setExporting(null);
     }
-  }
-
-  async function exportOutstandingExcel() {
-    if (customers.length === 0) { setError("Nothing outstanding to export."); return; }
-    setExporting("excel"); setError("");
-    try {
-      const XLSX = await import("xlsx");
-      const sheetRows = customers.map((c) => ({
-        Customer: c.customer_name, Invoiced: Number(c.total_invoiced), Paid: Number(c.total_paid),
-        Balance: Number(c.balance), "Oldest unpaid": c.oldest_unpaid_date ? new Date(c.oldest_unpaid_date).toLocaleDateString() : "",
-      }));
-      sheetRows.push({
-        Customer: "Total", Invoiced: customers.reduce((s, c) => s + Number(c.total_invoiced), 0),
-        Paid: customers.reduce((s, c) => s + Number(c.total_paid), 0),
-        Balance: customers.reduce((s, c) => s + Number(c.balance), 0), "Oldest unpaid": `${customers.length} customers`,
-      });
-      const ws = XLSX.utils.json_to_sheet(sheetRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Outstanding");
-      XLSX.writeFile(wb, `Customer_Outstanding_${todayStr()}.xlsx`);
-    } catch (err) {
-      setError(err.message || "Couldn't export Excel.");
-    } finally {
-      setExporting(null);
-    }
-  }
-
-  if (payingCustomer) {
-    return (
-      <>
-        <TopBar title="Accountant · Record payment" />
-        <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
-          <BulkPaymentForm customer={payingCustomer} onDone={() => { setPayingCustomer(null); load(); }} onCancel={() => setPayingCustomer(null)} />
-        </div>
-      </>
-    );
   }
 
   if (showOpeningBalances) {
@@ -125,310 +103,242 @@ export default function Accountant() {
       <>
         <TopBar title="Accountant · Opening balances" />
         <div style={{ maxWidth: 700, margin: "0 auto", padding: "0 16px 32px" }}>
-          <button onClick={() => setShowOpeningBalances(false)} style={{ marginBottom: 16 }}>← Back to dashboard</button>
+          <button onClick={() => { setShowOpeningBalances(false); load(); }} style={{ marginBottom: 16 }}>← Back</button>
           <OpeningBalancesPanel />
         </div>
       </>
     );
   }
 
-  if (showPumpChargeReview) {
-    return (
-      <>
-        <TopBar title="Accountant · Pump charge review" />
-        <div style={{ maxWidth: 700, margin: "0 auto", padding: "0 16px 32px" }}>
-          <button onClick={() => setShowPumpChargeReview(false)} style={{ marginBottom: 16 }}>← Back to dashboard</button>
-          <PumpChargeReviewPanel />
-        </div>
-      </>
-    );
-  }
+  const k = home?.kpis;
+  const n = home?.needs;
+  const ageTotal = home ? AGE.reduce((t, [key]) => t + home.ageing[key], 0) : 0;
+  const chase = everyone
+    ? everyone.map((r) => ({ id: r.customer_id, name: r.customer_name, balance: r.balance, d0_7: r.d0_7, d8_14: r.d8_14, d15_30: r.d15_30, d30p: r.d30p, credit: r.credit, last_receipt_on: r.last_receipt_on, advance: r.advance }))
+    : home?.chase || [];
+  const canLedger = can("accounts.customer-ledger", "view");
+  const hasCredit = chase.some((c) => c.credit);
+  const canReceipt = can("accounts.bank-receipts", "create");
 
-  if (showRates) {
-    return (
-      <>
-        <TopBar title="Accountant · Concrete grades and rates" />
-        <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
-          <button onClick={() => setShowRates(false)} style={{ marginBottom: 16 }}>← Back to dashboard</button>
-          {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
-          <RatesPanel setError={setError} />
-        </div>
-      </>
-    );
-  }
+  const needs = n ? [
+    n.bank_lines > 0 && { key: "bank", tone: "var(--rebar)", title: `${n.bank_lines} bank credit${n.bank_lines > 1 ? "s" : ""} to post`, sub: `${money(n.bank_amount)} · ${n.bank_matched} with a suggested customer`, to: "/accounts?tab=receipts" },
+    n.held_loads > 0 && { key: "held", tone: "var(--alert-red)", title: `${n.held_loads} load${n.held_loads > 1 ? "s" : ""} held — no price`, sub: `${Number(n.held_m3).toLocaleString("en-IN")} m³ delivered, not invoiced until the site has an accepted price`, to: "/accounts?tab=invoices&view=held" },
+    n.credit_notes > 0 && { key: "cn", tone: "var(--amber)", title: `${n.credit_notes} credit note${n.credit_notes > 1 ? "s" : ""} to issue`, sub: `${money(n.credit_note_amount)} returned at site — see below`, href: "#credit-notes" },
+    n.reprice_review > 0 && { key: "rp", tone: "var(--amber)", title: `${n.reprice_review} paid invoice${n.reprice_review > 1 ? "s" : ""} with a new rate`, sub: "The customer accepted a new quotation, but money was already set against these — not changed automatically", onClick: () => setShowReprice(true) },
+    (n.charges_left_out > 0 || n.pump_recheck > 0) && { key: "wv", tone: "var(--slate)", title: `${n.charges_left_out + n.pump_recheck} charge${n.charges_left_out + n.pump_recheck > 1 ? "s" : ""} to look at`, sub: `${n.charges_left_out} left out by the Manager · ${n.pump_recheck} pump charge to recheck`, to: "/accounts?tab=invoices&view=waivers" },
+  ].filter(Boolean) : [];
 
   return (
     <>
       <TopBar title="Accountant" />
-      <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
-      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 16px 32px" }}>
+        {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+        {notice && <div className="card" style={{ color: "var(--signal-green)", background: "var(--signal-green-bg)", fontSize: 13, marginBottom: 12 }}>{notice}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
-        <Kpi label="Outstanding" value={`₹${stats?.outstanding ?? "–"}`} />
-        <Kpi label="Collected today" value={`₹${stats?.collected_today ?? "–"}`} />
-        <Kpi label="Pumping/waiting due" value={`₹${stats?.pumping_waiting_due ?? "–"}`} />
-        <Kpi label="Trip allowance, this month" value={`₹${stats?.trip_allowance_this_month ?? "–"}`} />
-      </div>
-
-      {unbilled.length > 0 && (
-        <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--alert-red)" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Unbilled deliveries this month ({unbilled.length})</div>
-          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
-            Delivered but never invoiced — usually means no rate is on file for that customer/grade. This is real, uncollected revenue.
-          </div>
-          <table style={{ fontSize: 12 }}>
-            <thead><tr><th>DC No.</th><th>Customer</th><th>Site</th><th>Date</th><th>Qty</th><th>Why</th></tr></thead>
-            <tbody>
-              {unbilled.map((u, i) => (
-                <tr key={i}>
-                  <td>{u.ticket_number}</td>
-                  <td>{u.customer_name}</td>
-                  <td>{u.site_name}</td>
-                  <td>{new Date(u.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
-                  <td>{u.qty} m³</td>
-                  <td style={{ fontSize: 11 }}>{u.likely_reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+          {canReceipt && <button type="button" className="btn-primary" onClick={() => setReceiptFor({})}>+ Record a receipt</button>}
+          <IfCan perm="accounts.bank-receipts"><Link to="/accounts?tab=receipts" className="btn-link">Bank receipts</Link></IfCan>
+          <IfCan perm="accounts.customer-ledger"><Link to="/accounts?tab=ledger" className="btn-link">Customer ledger</Link></IfCan>
+          <IfCan perm="accounts.outstanding"><Link to="/outstanding-collection-report" className="btn-link">Outstanding Collection</Link></IfCan>
+          <button type="button" className="btn-link" onClick={() => setShowOpeningBalances(true)}>Opening balances</button>
         </div>
-      )}
 
-      {creditNotes.length > 0 && (
-        <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--amber)" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Credit notes due ({creditNotes.length})</div>
-          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
-            Partial rejections at site. The invoice has already been reduced to the accepted m³ — if the full invoice
-            already reached the customer, issue a credit note for the returned concrete, then mark it issued.
-          </div>
-          <table style={{ fontSize: 12 }}>
-            <thead><tr><th>DC No.</th><th>Customer</th><th>Site</th><th>Date</th><th>Returned</th><th>Credit</th><th>Reason</th><th></th></tr></thead>
-            <tbody>
-              {creditNotes.map((n) => (
-                <tr key={n.ticket_id}>
-                  <td>{n.ticket_number}</td>
-                  <td>{n.customer_name}</td>
-                  <td>{n.site_name}</td>
-                  <td>{new Date(n.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })}</td>
-                  <td>{Number(n.rejected_quantity_m3)} m³</td>
-                  <td style={{ fontWeight: 600 }}>₹{n.credit_note_amount != null ? Number(n.credit_note_amount).toLocaleString("en-IN") : "–"}</td>
-                  <td style={{ fontSize: 11 }}>{n.rejection_reason || n.credit_note_reason || "—"}</td>
-                  <td><button style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => clearCreditNote(n.ticket_id)}>Mark issued</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
+          <Kpi label="Outstanding" value={k ? money(k.outstanding) : "–"} sub={k ? `${plural(k.customers_owing, "customer")}${k.advances > 0.5 ? ` · after ${money(k.advances)} advances` : ""}` : ""} />
+          <Kpi label="Over 30 days" value={k ? money(k.over_30) : "–"} sub={k ? plural(k.over_30_customers, "customer") : ""} tone={k?.over_30 > 0 ? "var(--alert-red)" : undefined} />
+          <Kpi label="Received today" value={k ? money(k.received_today) : "–"} sub={k ? `${k.received_today_count} receipt${k.received_today_count === 1 ? "" : "s"}` : ""} />
+          <Kpi label="Received this month" value={k ? money(k.received_month) : "–"} sub={k ? `billed ${money(k.billed_month)}` : ""} />
+          <Kpi label="Advances held" value={k ? money(k.advances) : "–"} sub="paid ahead, pays next invoices" />
+          <Kpi label="Held — no price" value={n ? `${n.held_loads} loads` : "–"} sub={n ? `${Number(n.held_m3).toLocaleString("en-IN")} m³ not invoiced` : ""} tone={n?.held_loads > 0 ? "var(--alert-red)" : undefined} />
         </div>
-      )}
 
-      <FollowupsDue />
-
-      <button onClick={() => { setError(""); setShowRates(true); }} style={{ marginBottom: 20 }}>Concrete grades and rates</button>
-      <button onClick={() => setShowOpeningBalances(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Opening balances</button>
-      <button onClick={() => setShowPumpChargeReview(true)} style={{ marginBottom: 20, marginLeft: 8 }}>Pump charge review</button>
-      <IfCan perm="reports.fuel"><Link to="/fuel-report" style={{ marginLeft: 12, fontSize: 13 }}>Fuel and lubricant report</Link></IfCan>
-      <IfCan perm="accounts.outstanding"><Link to="/outstanding-collection-report" style={{ marginLeft: 12, fontSize: 13 }}>Outstanding Collection</Link></IfCan>
-      <IfCan perm="reports.trip-allowance"><Link to="/trip-allowance-report" style={{ marginLeft: 12, fontSize: 13 }}>Trip allowance report</Link></IfCan>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
-        <div className="card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>Customers — outstanding</div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button onClick={exportOutstandingPdf} disabled={exporting} style={{ fontSize: 11, padding: "4px 8px" }}>
-                {exporting === "pdf" ? "..." : "Export PDF"}
-              </button>
-              <button onClick={exportOutstandingExcel} disabled={exporting} style={{ fontSize: 11, padding: "4px 8px" }}>
-                {exporting === "excel" ? "..." : "Export Excel"}
-              </button>
+        {home && ageTotal > 0 && (
+          <div className="card" style={{ marginBottom: 14, padding: "12px 14px" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)", marginBottom: 6 }}>Outstanding by age (from the delivery date)</div>
+            <div style={{ display: "flex", height: 12, borderRadius: 6, overflow: "hidden", background: "var(--concrete)" }}>
+              {AGE.map(([key]) => home.ageing[key] > 0 && <div key={key} title={key} style={{ width: `${(home.ageing[key] / ageTotal) * 100}%`, background: AGE_COLOR[key] }} />)}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 6, fontSize: 12.5 }}>
+              {AGE.map(([key, label]) => (
+                <span key={key}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: AGE_COLOR[key], marginRight: 5 }} />{label}: <b>{money(home.ageing[key])}</b></span>
+              ))}
             </div>
           </div>
-          <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
-            Record one payment against a customer — it's applied automatically across their oldest unpaid deliveries first, instead of paying each one individually.
+        )}
+
+        <div className="acct-home-grid">
+          <div style={{ minWidth: 0 }}>
+            <div className="card" style={{ padding: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "12px 14px" }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{everyone ? "Everyone who owes" : "Who to chase"}</div>
+                <span style={{ fontSize: 12, color: "var(--slate)" }}>{everyone ? "largest balance first" : "oldest money first"}</span>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                  <button type="button" style={{ fontSize: 12, padding: "4px 9px" }} onClick={async () => {
+                    if (everyone) { setEveryone(null); return; }
+                    try { setEveryone(await apiRequest("/accountant/customers-outstanding")); } catch (e) { setError(e.message); }
+                  }}>{everyone ? "Top 25" : "Show everyone"}</button>
+                  <button type="button" onClick={() => exportOutstanding("pdf")} disabled={!!exporting} style={{ fontSize: 12, padding: "4px 9px" }}>{exporting === "pdf" ? "…" : "PDF"}</button>
+                  <button type="button" onClick={() => exportOutstanding("excel")} disabled={!!exporting} style={{ fontSize: 12, padding: "4px 9px" }}>{exporting === "excel" ? "…" : "Excel"}</button>
+                </div>
+              </div>
+              {!home ? <div style={{ padding: 14, fontSize: 13, color: "var(--slate)" }}>Loading…</div>
+                : !chase.length ? <div style={{ padding: 14, fontSize: 13, color: "var(--slate)" }}>Nothing outstanding — everyone has paid.</div> : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: hasCredit ? 720 : 640 }}>
+                    <thead><tr style={{ background: "var(--concrete)" }}>
+                      <th style={th}>Customer</th><th style={{ ...th, textAlign: "right" }}>Balance</th>
+                      {AGE.map(([key, label]) => <th key={key} style={{ ...th, textAlign: "right" }}>{label.replace(" days", "")}</th>)}
+                      {hasCredit && <th style={th}>Credit</th>}<th style={th}>Last receipt</th><th style={th} />
+                    </tr></thead>
+                    <tbody>
+                      {chase.map((c) => (
+                        <tr key={c.id}>
+                          <td style={td}><b style={{ fontWeight: 600 }}>{c.name}</b>{c.advance > 0.5 && <div style={{ fontSize: 11.5, color: "var(--signal-green)" }}>advance {money(c.advance)}</div>}</td>
+                          <td style={{ ...num, fontWeight: 700 }}>{money(c.balance)}</td>
+                          {AGE.map(([key]) => <td key={key} style={{ ...num, color: c[key] > 0.5 ? (key === "d30p" ? "var(--alert-red)" : undefined) : "var(--slate)" }}>{c[key] > 0.5 ? money(c[key]) : "—"}</td>)}
+                          {hasCredit && <td style={{ ...td, fontSize: 12 }}>
+                            {c.credit ? (c.credit.limit != null ? (c.credit.over_by > 0
+                              ? <span style={{ color: "var(--alert-red)", fontWeight: 600 }}>over by {money(c.credit.over_by)}</span>
+                              : <>limit {money(c.credit.limit)}</>) : "credit") : <span style={{ color: "var(--slate)" }}>—</span>}
+                            {c.credit?.days != null && <div style={{ color: "var(--slate)" }}>{c.credit.days} days</div>}
+                          </td>}
+                          <td style={{ ...td, fontSize: 12 }}>{c.last_receipt_on ? fmtDate(c.last_receipt_on) : <span style={{ color: "var(--slate)" }}>none</span>}</td>
+                          <td style={{ ...td, whiteSpace: "nowrap", textAlign: "right" }}>
+                            {canLedger && <Link to={`/accounts?tab=ledger&customer_id=${c.id}`} style={{ fontSize: 12.5, marginRight: 6 }}>Ledger</Link>}
+                            {canReceipt && <button type="button" style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => setReceiptFor({ customerId: c.id, name: c.name })}>Receipt</button>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
-          <table>
-            <thead>
-              <tr><th>Customer</th><th>Invoiced</th><th>Paid</th><th>Balance</th><th>Oldest unpaid</th><th></th></tr>
-            </thead>
-            <tbody>
-              {customers.map((c) => (
-                <tr key={c.customer_id}>
-                  <td>{c.customer_name}</td>
-                  <td>₹{c.total_invoiced}</td>
-                  <td>₹{c.total_paid}</td>
-                  <td style={{ fontWeight: 600, color: "var(--alert-red)" }}>₹{c.balance}</td>
-                  <td>{c.oldest_unpaid_date ? new Date(c.oldest_unpaid_date).toLocaleDateString([], { day: "2-digit", month: "short" }) : "–"}</td>
-                  <td><button onClick={() => setPayingCustomer(c)}>Record payment</button></td>
-                </tr>
+
+          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="card">
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Needs you</div>
+              {!n ? <div style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>
+                : !needs.length ? <div style={{ fontSize: 13, color: "var(--signal-green)" }}>All clear.</div>
+                : needs.map((x) => {
+                  const inner = (
+                    <div style={{ borderLeft: `3px solid ${x.tone}`, padding: "6px 10px", marginBottom: 8, background: "var(--concrete)", borderRadius: 6 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--charcoal)" }}>{x.title} ›</div>
+                      <div style={{ fontSize: 12, color: "var(--slate)" }}>{x.sub}</div>
+                    </div>
+                  );
+                  return x.to ? <Link key={x.key} to={x.to} style={{ textDecoration: "none" }}>{inner}</Link>
+                    : x.href ? <a key={x.key} href={x.href} style={{ textDecoration: "none" }}>{inner}</a>
+                    : <div key={x.key} role="button" tabIndex={0} style={{ cursor: "pointer" }} onClick={x.onClick} onKeyDown={(e) => e.key === "Enter" && x.onClick()}>{inner}</div>;
+                })}
+            </div>
+
+            <div className="card">
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Received today</div>
+              {!home?.received_today.length ? <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing yet today.</div>
+                : home.received_today.map((r) => (
+                  <div key={`${r.kind}${r.id}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, padding: "4px 0", borderTop: "1px solid var(--border)" }}>
+                    <span>{r.customer_name}<span style={{ color: "var(--slate)", fontSize: 11.5 }}> · {String(r.mode).replace("_", " ")}{r.reference_number ? ` · ${r.reference_number}` : ""}</span></span>
+                    <b style={{ whiteSpace: "nowrap" }}>{money(r.amount)}</b>
+                  </div>
+                ))}
+            </div>
+
+            <div className="card">
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>Driver trip allowance</div>
+                <span style={{ fontSize: 12, color: "var(--slate)" }}>this month</span>
+                <b style={{ marginLeft: "auto" }}>{home ? money(home.trip_allowance.total) : ""}</b>
+              </div>
+              {allowances.slice(0, 8).map((a) => (
+                <div key={a.driver_name} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+                  <span>{a.driver_name}</span><span>{money(a.total)}</span>
+                </div>
               ))}
-              {customers.length === 0 && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>Nothing outstanding — everyone's paid up.</td></tr>}
-            </tbody>
-          </table>
+              {!allowances.length && <div style={{ fontSize: 13, color: "var(--slate)" }}>No completed trips yet this month.</div>}
+              <IfCan perm="reports.trip-allowance"><Link to="/trip-allowance-report" style={{ fontSize: 12.5, display: "inline-block", marginTop: 6 }}>Trip allowance report ›</Link></IfCan>
+            </div>
+
+            <div style={{ fontSize: 12.5 }}>
+              <IfCan perm="reports.fuel"><Link to="/fuel-report">Fuel and lubricant report ›</Link></IfCan>
+            </div>
+          </div>
         </div>
 
-        <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Driver trip allowance</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {allowances.map((a) => (
-              <div key={a.driver_name} style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, fontSize: 13, display: "flex", justifyContent: "space-between" }}>
-                <span>{a.driver_name}</span>
-                <span style={{ fontWeight: 600 }}>₹{a.total}</span>
-              </div>
-            ))}
-            {allowances.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No completed trips yet this month.</div>}
+        {creditNotes.length > 0 && (
+          <div id="credit-notes" className="card" style={{ marginTop: 16, borderLeft: "3px solid var(--amber)", overflowX: "auto" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Credit notes to issue ({creditNotes.length})</div>
+            <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>
+              Part of the load was returned at site. The invoice is already reduced to the accepted m³ — if the full invoice reached the customer, issue a credit note for the returned concrete, then mark it issued.
+            </div>
+            <table style={{ fontSize: 12.5, borderCollapse: "collapse", minWidth: 680, width: "100%" }}>
+              <thead><tr><th style={th}>DC No.</th><th style={th}>Customer · site</th><th style={th}>Date</th><th style={th}>Returned</th><th style={{ ...th, textAlign: "right" }}>Credit</th><th style={th}>Reason</th><th style={th} /></tr></thead>
+              <tbody>
+                {creditNotes.map((c) => (
+                  <tr key={c.ticket_id}>
+                    <td style={td}>{c.ticket_number}</td>
+                    <td style={td}>{c.customer_name}<div style={{ fontSize: 11.5, color: "var(--slate)" }}>{c.site_name}</div></td>
+                    <td style={td}>{fmtDate(String(c.ticket_date).slice(0, 10))}</td>
+                    <td style={td}>{Number(c.rejected_quantity_m3)} m³</td>
+                    <td style={{ ...num, fontWeight: 600 }}>{c.credit_note_amount != null ? money(c.credit_note_amount) : "–"}</td>
+                    <td style={{ ...td, fontSize: 11.5 }}>{c.rejection_reason || c.credit_note_reason || "—"}</td>
+                    <td style={td}><button style={{ fontSize: 11.5, padding: "3px 8px" }} onClick={() => clearCreditNote(c.ticket_id)}>Mark issued</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Based on completed deliveries only</div>
-        </div>
+        )}
+
+        <div style={{ marginTop: 16 }}><FollowupsDue /></div>
       </div>
-      </div>
+
+      {receiptFor && (
+        <ReceiptModal customerId={receiptFor.customerId} onClose={() => setReceiptFor(null)}
+          onDone={(r) => {
+            setReceiptFor(null);
+            setNotice(`Receipt saved${receiptFor.name ? ` for ${receiptFor.name}` : ""}${r.applied.length ? ` — set against ${r.applied.map((a) => a.label).join(", ")}` : ""}${r.advance ? `; ${money(r.advance)} kept as advance` : ""}.`);
+            load();
+          }} />
+      )}
+      {showReprice && <RepriceReview onClose={() => { setShowReprice(false); load(); }} />}
     </>
   );
 }
 
-function Kpi({ label, value }) {
+function Kpi({ label, value, sub, tone }) {
   return (
     <div className="kpi">
       <div className="kpi-label">{label}</div>
-      <div className="kpi-value">{value}</div>
+      <div className="kpi-value" style={tone ? { color: tone } : undefined}>{value}</div>
+      {sub && <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }
 
-function BulkPaymentForm({ customer, onDone, onCancel }) {
-  const [invoices, setInvoices] = useState([]);
-  const [amount, setAmount] = useState("");
-  const [paymentDate, setPaymentDate] = useState(todayStr());
-  const [mode, setMode] = useState("cash");
-  const [reference, setReference] = useState("");
-  const [remarks, setRemarks] = useState("");
+// Paid invoices a newly accepted rate could not change by itself.
+function RepriceReview({ onClose }) {
+  const [rows, setRows] = useState(null);
   const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [result, setResult] = useState(null);
-
-  useEffect(() => {
-    apiRequest(`/accountant/customers/${customer.customer_id}/invoices`)
-      .then((rows) => setInvoices(rows.filter((r) => r.status !== "paid")))
-      .catch((err) => setError(err.message));
-  }, []);
-
-  // Live preview of what this amount would cover, oldest delivery first —
-  // so the accountant can see exactly what they're paying off before submitting.
-  const preview = [];
-  {
-    let remaining = Number(amount) || 0;
-    for (const inv of invoices) {
-      if (remaining <= 0.01) break;
-      const invBalance = Number(inv.total_amount) - Number(inv.paid_amount);
-      const applied = Math.min(remaining, invBalance);
-      preview.push({ ticket_number: inv.ticket_number, ticket_date: inv.ticket_date, applied, invBalance, fullyPaid: applied >= invBalance - 0.01 });
-      remaining -= applied;
-    }
+  const load = () => apiRequest("/accountant/reprice-review").then(setRows).catch((e) => { setError(e.message); setRows([]); });
+  useEffect(() => { load(); }, []);
+  async function seen(id) {
+    try { await apiRequest(`/accountant/reprice-review/${id}/seen`, { method: "POST" }); load(); } catch (e) { setError(e.message); }
   }
-  const leftover = Math.max(0, (Number(amount) || 0) - preview.reduce((s, p) => s + p.applied, 0));
-
-  async function submit(e) {
-    e.preventDefault();
-    setError(""); setSaving(true);
-    try {
-      const r = await apiRequest(`/accountant/customers/${customer.customer_id}/bulk-payment`, {
-        method: "POST",
-        body: { amount, payment_date: paymentDate, mode, reference_number: reference, remarks },
-      });
-      setResult(r);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (result) {
-    return (
-      <div className="card">
-        <div style={{ fontWeight: 600, marginBottom: 10 }}>Payment recorded</div>
-        <div style={{ fontSize: 13, marginBottom: 10 }}>₹{result.total_received} received from {customer.customer_name}</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
-          {result.applied.map((a, i) => (
-            <div key={i} style={{ fontSize: 13, background: "var(--concrete)", borderRadius: 8, padding: 8 }}>
-              {a.ticket_number} — ₹{a.amount_applied} applied {a.fully_paid ? "(fully paid)" : "(partial)"}
-            </div>
-          ))}
-        </div>
-        {result.unapplied_credit > 0.01 && (
-          <div style={{ fontSize: 12, color: "var(--amber)", background: "var(--amber-bg)", padding: 8, borderRadius: 8, marginBottom: 12 }}>
-            ₹{result.unapplied_credit} received beyond what was currently owed — this customer had no more outstanding invoices to apply it to. Keep this in mind for their next delivery/payment; it isn't tracked automatically as a credit balance.
-          </div>
-        )}
-        <button onClick={onDone} style={{ width: "100%" }}>Done</button>
-      </div>
-    );
-  }
-
   return (
-    <div className="card">
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>Record payment — {customer.customer_name}</div>
-      <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>
-        Currently owed: ₹{customer.balance}
+    <Modal title="Paid invoices with a new rate" onClose={onClose} width={620}>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>
+        The customer accepted a new quotation dated before these deliveries, but money was already set against the invoice, so it was not changed. Settle the difference with the customer, then mark it done.
       </div>
-      <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
-        <div>
-          <div style={{ color: "var(--slate)" }}>Amount received</div>
-          <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} required />
+      {!rows ? "Loading…" : !rows.length ? <div style={{ fontSize: 13 }}>Nothing left to review.</div> : rows.map((r) => (
+        <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
+          <div style={{ flex: 1 }}>{r.message}</div>
+          <button type="button" style={{ fontSize: 12, padding: "4px 9px" }} onClick={() => seen(r.id)}>Done</button>
         </div>
-        <div>
-          <div style={{ color: "var(--slate)" }}>Payment date</div>
-          <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} required />
-        </div>
-        <div>
-          <div style={{ color: "var(--slate)" }}>Payment mode</div>
-          <select value={mode} onChange={(e) => setMode(e.target.value)}>
-            <option value="cash">Cash</option>
-            <option value="cheque">Cheque</option>
-            <option value="bank_transfer">Bank transfer</option>
-            <option value="upi">UPI</option>
-          </select>
-        </div>
-        <div>
-          <div style={{ color: "var(--slate)" }}>Reference number</div>
-          <input type="text" value={reference} onChange={(e) => setReference(e.target.value)} />
-        </div>
-        <div>
-          <div style={{ color: "var(--slate)" }}>Remarks</div>
-          <textarea rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="e.g. covers deliveries from 12–18 Jul" />
-        </div>
-
-        {Number(amount) > 0 && (
-          <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10 }}>
-            <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 6 }}>This will apply to (oldest first):</div>
-            {preview.length === 0 ? (
-              <div style={{ fontSize: 12, color: "var(--slate)" }}>Nothing outstanding to apply this to.</div>
-            ) : (
-              preview.map((p, i) => (
-                <div key={i} style={{ fontSize: 12, display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
-                  <span>{p.ticket_number} ({new Date(p.ticket_date).toLocaleDateString([], { day: "2-digit", month: "short" })})</span>
-                  <span>₹{p.applied.toFixed(2)} {p.fullyPaid ? "" : "(partial)"}</span>
-                </div>
-              ))
-            )}
-            {leftover > 0.01 && (
-              <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 6 }}>
-                ⚠ ₹{leftover.toFixed(2)} left over — beyond what's currently owed by this customer.
-              </div>
-            )}
-          </div>
-        )}
-
-        <div style={{ fontSize: 11, color: "var(--slate)" }}>
-          Any delivery that was rejected at site never generated an invoice in the first place, so it's never included here — only accepted, completed deliveries count toward what's owed.
-        </div>
-
-        {error && <div style={{ color: "var(--alert-red)" }}>{error}</div>}
-        <div style={{ display: "flex", gap: 8 }}>
-          <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save payment"}</button>
-          <button type="button" onClick={onCancel}>Cancel</button>
-        </div>
-      </form>
-    </div>
+      ))}
+    </Modal>
   );
 }
 
@@ -675,100 +585,6 @@ function ExcelUploadForm({ customers, setError, onDone }) {
             {saving ? "Importing..." : `Import ${readyCount} opening balance(s)`}
           </button>
         </>
-      )}
-    </div>
-  );
-}
-
-function PumpChargeReviewPanel() {
-  const [rows, setRows] = useState([]);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [busyId, setBusyId] = useState(null);
-
-  async function load() {
-    try {
-      setRows(await apiRequest("/accountant/pump-charge-review"));
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-  useEffect(() => { load(); }, []);
-
-  async function dismiss(orderId) {
-    setBusyId(orderId); setError(""); setNotice("");
-    try {
-      await apiRequest(`/accountant/pump-charge-review/${orderId}/dismiss`, { method: "POST" });
-      setNotice("Dismissed — left as-is.");
-      load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function removeCharge(orderId) {
-    if (!window.confirm("Remove the pump mobilization charge from this order's invoice? This can't be undone automatically.")) return;
-    setBusyId(orderId); setError(""); setNotice("");
-    try {
-      await apiRequest(`/accountant/pump-charge-review/${orderId}/remove-charge`, { method: "POST" });
-      setNotice("Pump charge removed.");
-      load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  return (
-    <div>
-      <div style={{ fontSize: 13, color: "var(--slate)", marginBottom: 16 }}>
-        Orders where a later delivery pushed the cumulative quantity past the pump type's minimum
-        threshold, after the mobilization charge was already confirmed applicable. Never auto-corrected —
-        review each one and decide whether the charge still makes sense.
-      </div>
-      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
-      {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 12 }}>{notice}</div>}
-
-      {rows.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--slate)" }}>Nothing needs review right now.</div>
-      ) : (
-        rows.map((r) => (
-          <div key={r.order_id} className="card" style={{ marginBottom: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div>
-                <div style={{ fontWeight: 600 }}>{r.customer_name} — {r.site_name}</div>
-                <div style={{ fontSize: 12, color: "var(--slate)" }}>
-                  {r.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump &middot; Order qty {r.order_quantity_m3} m³ &middot; Delivered so far {r.cumulative_qty} m³
-                </div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 12, color: "var(--slate)" }}>Current pump charge</div>
-                <div style={{ fontWeight: 600 }}>{r.pumping_charge ? `₹${r.pumping_charge}` : "–"}</div>
-              </div>
-            </div>
-            {r.charged_ticket_number && (
-              <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 4 }}>
-                Charged on {r.charged_ticket_number}
-                {Number(r.payment_count) > 0 && <span style={{ color: "var(--alert-red)" }}> — payment already recorded, can't remove automatically</span>}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button onClick={() => dismiss(r.order_id)} disabled={busyId === r.order_id}>
-                Dismiss — charge is correct
-              </button>
-              <button
-                className="btn-danger"
-                onClick={() => removeCharge(r.order_id)}
-                disabled={busyId === r.order_id || Number(r.payment_count) > 0 || !r.invoice_id}
-              >
-                Remove pump charge
-              </button>
-            </div>
-          </div>
-        ))
       )}
     </div>
   );

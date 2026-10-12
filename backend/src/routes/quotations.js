@@ -112,9 +112,16 @@ function cleanLines(lines) {
     const rate = Number(l.rate_total);
     if (!gradeId && !label) return { error: `Line ${i + 1}: choose a grade (or name the extra item).` };
     if (!(rate > 0)) return { error: `Line ${i + 1}: enter the total rate per m³ including GST.` };
+    // Round 205 — a grade may be quoted twice (e.g. OPC and OPC + fly ash) as
+    // long as the specification tells the two apart; each becomes its own
+    // price option.
     if (gradeId) {
-      if (seen.has(gradeId)) return { error: `Line ${i + 1}: that grade is already on this quotation.` };
-      seen.add(gradeId);
+      const key = `${gradeId}|${String(l.specification || "").toUpperCase().replace(/[^A-Z0-9+]/g, "")}`;
+      if (seen.has(key)) return { error: `Line ${i + 1}: that grade is already on this quotation with the same specification — change the specification to tell the two prices apart.` };
+      if ([...seen].some((k) => k.startsWith(`${gradeId}|`)) && !String(l.specification || "").trim()) {
+        return { error: `Line ${i + 1}: the grade is quoted twice — give each line its specification (e.g. OPC / OPC + fly ash).` };
+      }
+      seen.add(key);
     }
     out.push({
       mix_grade_id: gradeId, item_label: gradeId ? null : label,
@@ -156,6 +163,7 @@ router.get("/meta", VIEW, async (req, res) => {
     followup: await can(req.user, "accounts.quotation-followup", "edit"),
     accept: await can(req.user, "accounts.quotation-accept", "edit"),
     revision_bulk: await can(req.user, "accounts.price-revision", "edit"),
+    import: await can(req.user, "accounts.quotation-import", "edit"),
   };
   res.json({
     agreement_types: AGREEMENT_TYPES,
@@ -834,7 +842,7 @@ router.get("/price-lists/:customerId(\\d+)", PRICE_VIEW, async (req, res) => {
     out.push({
       site: s,
       rates: live.map((r) => ({
-        id: r.id, mix_grade_id: r.mix_grade_id, grade_name: r.grade_name, rate_per_m3: r.rate_per_m3,
+        id: r.id, mix_grade_id: r.mix_grade_id, grade_name: r.grade_name, rate_per_m3: r.rate_per_m3, price_option: r.price_option,
         site_specific: r.site_id != null, source: r.source, quote_no: r.quote_no,
         effective_from: r.effective_from, committed_qty_m3: r.committed_qty_m3, rebate_per_m3: r.rebate_per_m3,
         supplied_m3: suppliedBy[r.mix_grade_id] || 0,

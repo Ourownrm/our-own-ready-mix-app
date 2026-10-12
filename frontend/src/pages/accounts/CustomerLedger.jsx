@@ -7,7 +7,7 @@ import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
 import { inr2, fmtDate } from "../../lib/quotationTerms.js";
 import { TH, TD, NUM, row, money, Banner, Empty, Table } from "./ui.jsx";
-import { ReceiptModal } from "./BankReceipts.jsx";
+import { ReceiptModal } from "./ReceiptModal.jsx";
 
 export default function CustomerLedger({ params, go }) {
   const cid = params.get("customer_id");
@@ -122,7 +122,7 @@ function Statement({ customerId, go }) {
           </div>
         )}
         <div><div className="kpi-label">Ageing of what is due</div>
-          {Object.entries(d.aging).map(([k, v]) => <span key={k} style={{ marginRight: 10, color: k === "60+" && v > 0 ? "var(--alert-red)" : undefined }}>{k} d: <b>{money(v)}</b></span>)}
+          {Object.entries(d.aging).map(([k, v]) => <span key={k} style={{ marginRight: 10, color: k.startsWith("Over") && v > 0 ? "var(--alert-red)" : undefined }}>{k}: <b>{money(v)}</b></span>)}
         </div>
       </div>
       <Table minWidth={760} head={<>

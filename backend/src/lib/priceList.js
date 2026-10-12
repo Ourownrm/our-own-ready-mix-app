@@ -14,6 +14,7 @@ import { pool, query } from "../db.js";
 import { generateInvoiceForTicket } from "./deliveryConfirmation.js";
 import { recomputeOrderCharges } from "./orderCharges.js";
 import { pushToRole } from "./push.js";
+import { optionsOf, rateForOrder } from "./rateLookup.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -22,7 +23,7 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // exists — the same precedence invoicing uses).
 export async function liveRatesForSite(customerId, siteId, date = null) {
   const { rows } = await query(
-    `SELECT DISTINCT ON (rm.mix_grade_id) rm.*, rm.effective_from::text AS effective_from, rm.effective_to::text AS effective_to,
+    `SELECT rm.*, rm.effective_from::text AS effective_from, rm.effective_to::text AS effective_to,
             m.name AS grade_name, q.quote_no
        FROM rate_master rm
        JOIN mix_grades m ON m.id = rm.mix_grade_id
@@ -30,10 +31,16 @@ export async function liveRatesForSite(customerId, siteId, date = null) {
       WHERE rm.customer_id = $1 AND (rm.site_id = $2 OR rm.site_id IS NULL)
         AND rm.effective_from <= COALESCE($3::date, CURRENT_DATE)
         AND (rm.effective_to IS NULL OR rm.effective_to >= COALESCE($3::date, CURRENT_DATE))
-      ORDER BY rm.mix_grade_id, (rm.site_id = $2) DESC NULLS LAST, rm.effective_from DESC, rm.id DESC`,
+      ORDER BY m.name, rm.effective_from DESC, rm.id DESC`,
     [customerId, siteId, date]
   );
-  return rows;
+  // Round 205 — one row per grade and price option (lib/rateLookup.js).
+  const byGrade = new Map();
+  for (const r of rows) {
+    if (!byGrade.has(r.mix_grade_id)) byGrade.set(r.mix_grade_id, []);
+    byGrade.get(r.mix_grade_id).push(r);
+  }
+  return [...byGrade.values()].flatMap((g) => optionsOf(g));
 }
 
 // Writes one accepted quotation into the price list, inside a transaction.
@@ -50,32 +57,39 @@ export async function applyQuotationToPriceList(quotationId, ratesFrom, userId) 
       [quotationId]
     );
     const c = q.charges || {};
-    const touched = [];
-    for (const ln of lines) {
-      // End whatever is live for this site + grade from the new date on. A row
-      // that would only have started on/after the new date is closed off
+    const touched = [...new Set(lines.map((l) => l.mix_grade_id))];
+    // Round 205 — a grade quoted twice (OPC / OPC + fly ash) keeps both, each
+    // with its specification as the price option. End what is live for every
+    // grade first, then write the lines — so the second option of a grade does
+    // not end the first.
+    const count = new Map();
+    for (const ln of lines) count.set(ln.mix_grade_id, (count.get(ln.mix_grade_id) || 0) + 1);
+    for (const gradeId of touched) {
+      // A row that would only have started on/after the new date is closed off
       // completely (to = from − 1, so it never applies).
       await client.query(
         `UPDATE rate_master
             SET effective_to = CASE WHEN effective_from < $4::date THEN ($4::date - 1) ELSE (effective_from - 1) END
           WHERE customer_id = $1 AND site_id = $2 AND mix_grade_id = $3
             AND (effective_to IS NULL OR effective_to >= $4::date)`,
-        [q.customer_id, q.site_id, ln.mix_grade_id, ratesFrom]
+        [q.customer_id, q.site_id, gradeId, ratesFrom]
       );
+    }
+    for (const ln of lines) {
+      const option = count.get(ln.mix_grade_id) > 1 ? (ln.specification || `Option ${ln.line_no}`) : null;
       await client.query(
         `INSERT INTO rate_master
            (customer_id, site_id, mix_grade_id, rate_per_m3,
             line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3, boom_rate_above_per_m3,
             part_load_min_qty_m3, part_load_charge_per_m3, waiting_charge_per_hour,
-            committed_qty_m3, rebate_per_m3, effective_from, source, quotation_id, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'quotation',$16,$17)`,
+            committed_qty_m3, rebate_per_m3, effective_from, source, quotation_id, created_by, price_option)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'quotation',$16,$17,$18)`,
         [q.customer_id, q.site_id, ln.mix_grade_id, ln.rate_total,
          c.line_pump_charge ?? null, c.line_pump_min_qty ?? 20, c.boom_min_charge ?? null, c.boom_min_qty ?? 50, c.boom_rate_above ?? null,
          c.part_load_min_qty ?? 5, c.part_load_rate ?? null, c.waiting_rate ?? 0,
          q.agreement_type === "credit_qty" ? ln.qty_m3 : null, q.agreement_type === "credit_qty" ? q.rebate_per_m3 : null,
-         ratesFrom, quotationId, userId]
+         ratesFrom, quotationId, userId, option]
       );
-      touched.push(ln.mix_grade_id);
     }
     // Earlier quotations of this customer + site that were live are superseded.
     await client.query(
@@ -105,6 +119,7 @@ export async function repriceAfterAcceptance({ customer_id, site_id, grades }, r
   if (!grades.length) return { created: 0, updated: 0, flagged: 0 };
   const { rows: tickets } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.order_id, dt.loaded_quantity_m3,
+            co.customer_id, co.site_id, co.mix_grade_id, co.order_date::text AS order_day, co.price_option,
             i.id AS invoice_id, i.rate_per_m3 AS inv_rate, i.concrete_amount, i.rejected_quantity_m3,
             (SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id)::int AS payment_count
        FROM delivery_tickets dt
@@ -123,16 +138,8 @@ export async function repriceAfterAcceptance({ customer_id, site_id, grades }, r
       if (await generateInvoiceForTicket(t.ticket_id)) created++;
       continue;
     }
-    const { rows: rr } = await query(
-      `SELECT rm.id, rm.rate_per_m3 FROM delivery_tickets dt
-         JOIN customer_orders co ON co.id = dt.order_id
-         JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
-          AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
-          AND rm.effective_from <= co.order_date AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
-        WHERE dt.id = $1
-        ORDER BY (rm.site_id = co.site_id) DESC, rm.effective_from DESC, rm.id DESC LIMIT 1`,
-      [t.ticket_id]
-    );
+    const picked = await rateForOrder({ customer_id: t.customer_id, site_id: t.site_id, mix_grade_id: t.mix_grade_id, order_date: t.order_day, price_option: t.price_option });
+    const rr = picked.rate ? [picked.rate] : [];
     const rate = rr[0];
     if (!rate) continue;
     const accepted = Number(t.loaded_quantity_m3 || 0) - Number(t.rejected_quantity_m3 || 0);

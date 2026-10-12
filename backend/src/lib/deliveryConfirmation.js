@@ -1,5 +1,7 @@
 import { query } from "../db.js";
 import { pushToRole } from "./push.js";
+import { applyAdvances } from "./receivables.js";
+import { rateForOrder } from "./rateLookup.js";
 
 // The actual arrival/unloading/rejection logic — including the trip-allowance
 // payout and invoice generation that fire on completion — used to live only in
@@ -108,9 +110,9 @@ export async function checkPumpChargeThreshold(orderId) {
 // exist yet at creation time but does by completion) — idempotent either
 // way via ON CONFLICT DO NOTHING.
 export async function generateInvoiceForTicket(ticketId) {
-  const { rows: rateRows } = await query(
+  const { rows: tk } = await query(
     `SELECT dt.loaded_quantity_m3, dt.order_id, co.customer_id, co.site_id, co.mix_grade_id, co.order_date,
-            rm.id AS rate_id, rm.rate_per_m3, rm.part_load_min_qty_m3, rm.part_load_charge_per_m3,
+            co.order_date::text AS order_day, co.price_option,
             co.pump_requirement,
             co.pump_charge_applicable, co.pump_charge_amount,
             co.part_load_applicable, co.part_load_charge_amount, co.part_load_basis,
@@ -125,13 +127,21 @@ export async function generateInvoiceForTicket(ticketId) {
      JOIN customer_orders co ON co.id = dt.order_id
      JOIN customers c ON c.id = co.customer_id
      LEFT JOIN customer_billing_addresses ba ON ba.id = co.billing_address_id
-     JOIN rate_master rm ON rm.customer_id = co.customer_id AND rm.mix_grade_id = co.mix_grade_id
-       AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
-       AND rm.effective_from <= co.order_date AND (rm.effective_to IS NULL OR rm.effective_to >= co.order_date)
-     WHERE dt.id = $1
-     ORDER BY (rm.site_id = co.site_id) DESC, rm.effective_from DESC, rm.id DESC LIMIT 1`,
+     WHERE dt.id = $1`,
     [ticketId]
   );
+  // Round 205 — the price-list row comes from lib/rateLookup.js: the site's
+  // row (or the customer-wide one), and the price option the Manager chose
+  // when the site has two prices for the grade.
+  let picked = { rate: null, reason: "none" };
+  if (tk[0]) {
+    const t = tk[0];
+    picked = await rateForOrder({ customer_id: t.customer_id, site_id: t.site_id, mix_grade_id: t.mix_grade_id, order_date: t.order_day, price_option: t.price_option });
+  }
+  const rateRows = picked.rate ? [{
+    ...tk[0], rate_id: picked.rate.id, rate_per_m3: picked.rate.rate_per_m3,
+    part_load_min_qty_m3: picked.rate.part_load_min_qty_m3, part_load_charge_per_m3: picked.rate.part_load_charge_per_m3,
+  }] : [];
   if (rateRows[0]) {
     const r = rateRows[0];
     const concreteAmount = round2(Number(r.loaded_quantity_m3) * Number(r.rate_per_m3));
@@ -145,6 +155,9 @@ export async function generateInvoiceForTicket(ticketId) {
       [ticketId, r.customer_id, concreteAmount, pumpingCharge, partLoadCharge, round2(concreteAmount + pumpingCharge + partLoadCharge),
        r.billing_name, r.billing_address, r.billing_gstin, r.rate_per_m3, r.rate_id]
     );
+    // Round 205 — money the customer paid ahead (an advance receipt) pays the
+    // new invoice at once.
+    await applyAdvances({ query }, r.customer_id).catch((e) => console.error("applyAdvances", e.message));
     return true;
   } else {
     // No rate on file for this customer/mix-grade combination — this delivery
@@ -180,7 +193,11 @@ export async function generateInvoiceForTicket(ticketId) {
       ).catch(() => ({ rows: [] }));
       pendingQuote = q[0] || null;
     }
-    const why = pendingQuote
+    const why = picked.reason === "choose"
+      ? "the site has two prices for this grade and the order does not say which (set the price option on the order)"
+      : picked.reason === "no_option"
+      ? `the order's price option "${tk[0]?.price_option}" is not in the site's price list any more`
+      : pendingQuote
       ? `quotation ${pendingQuote.quote_no} is ${pendingQuote.status === "pending_approval" ? "waiting for Admin approval" : pendingQuote.status === "draft" ? "still a draft" : "waiting for the customer to accept"}`
       : "no quotation has set a price for this site and grade";
     const message = `${info.ticket_number || "A delivery"} (${info.customer_name || "customer"} · ${info.site_name || "site"} · ${info.grade || "grade"}) — invoice held: ${why}.`;

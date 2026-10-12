@@ -609,7 +609,8 @@ router.post("/requests/:id/cancel", async (req, res) => {
 const LEAVE_SELECT = `
   SELECT l.id, l.employee_id, to_char(l.from_date, 'YYYY-MM-DD') AS from_date, to_char(l.to_date, 'YYYY-MM-DD') AS to_date,
          l.half_day, l.days, l.reason, l.status, l.needs_admin, l.admin_reason, l.raised_at, l.decided_at, l.decision_note,
-         l.raised_by, l.leave_type_id, lt.code AS type_code, lt.name AS type_name, lt.paid,
+         l.raised_by, l.leave_type_id, lt.code AS type_code, lt.name AS type_name, lt.paid, l.compoff_claim_id,
+         (SELECT to_char(cc.work_date, 'YYYY-MM-DD') FROM hr_compoff_claims cc WHERE cc.id = l.compoff_claim_id) AS compoff_work_date,
          e.name AS employee_name, e.emp_code, e.app_user_id, d.name AS department,
          rb.name AS raised_by_name, db.name AS decided_by_name
   FROM hr_leaves l
@@ -804,6 +805,11 @@ router.post("/leaves/:id/decide", requirePermission("hr.requests", "edit"), asyn
     const approve = !!req.body?.approve;
     const note = text(req.body?.note, 500);
     if (!approve && !note) return res.status(400).json({ error: "Say why it is rejected." });
+    if (l.compoff_claim_id) {
+      // Round 205 — a comp-off request: the worked day and the day off together.
+      await decideLinked({ claimId: l.compoff_claim_id, leaveId: id }, { status: approve ? "approved" : "rejected", days: null, userId: req.user.id, note });
+      return res.json({ ok: true });
+    }
     await query(`UPDATE hr_leaves SET status = $1, decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $4`,
       [approve ? "approved" : "rejected", req.user.id, note, id]);
     res.json({ ok: true });
@@ -827,6 +833,7 @@ router.post("/leaves/:id/cancel", async (req, res) => {
     if (locked) return res.status(409).json({ error: `Payroll for ${locked} is locked.` });
     await query(`UPDATE hr_leaves SET status = 'cancelled', decided_by = $1, decided_at = now(),
                  decision_note = COALESCE($2, decision_note) WHERE id = $3`, [req.user.id, text(req.body?.note, 500), id]);
+    if (l.compoff_claim_id) await decideLinked({ claimId: l.compoff_claim_id }, { status: "cancelled", days: null, userId: req.user.id, note: null });
     res.json({ ok: true });
   } catch (err) { friendly(err, res, "Could not cancel the leave."); }
 });
@@ -841,7 +848,8 @@ const CLAIM_SELECT = `
   SELECT c.id, c.employee_id, to_char(c.work_date, 'YYYY-MM-DD') AS work_date, c.days::float AS days, c.worked_min, c.qualifies::float AS qualifies, c.reason,
          c.status, c.needs_admin, c.admin_reason, to_char(c.expires_on, 'YYYY-MM-DD') AS expires_on, c.raised_by, c.raised_at,
          c.decided_at, c.decision_note, e.name AS employee_name, e.emp_code, e.app_user_id, d.name AS department,
-         rb.name AS raised_by_name, db.name AS decided_by_name
+         rb.name AS raised_by_name, db.name AS decided_by_name, c.for_absence,
+         (SELECT to_char(lv.from_date, 'YYYY-MM-DD') FROM hr_leaves lv WHERE lv.compoff_claim_id = c.id AND lv.status <> 'cancelled' ORDER BY lv.id DESC LIMIT 1) AS off_date
   FROM hr_compoff_claims c
   JOIN hr_employees e ON e.id = c.employee_id
   LEFT JOIN hr_departments d ON d.id = e.department_id
@@ -861,25 +869,35 @@ function compoffDaysFor(minutes, rules) {
   return minutes >= rules.co_full_min ? 1 : minutes >= rules.co_half_min ? 0.5 : 0;
 }
 
-async function createClaim(req, res, emp, { self }) {
-  const b = req.body || {};
-  if (!emp || !emp.is_active) return res.status(400).json({ error: "Employee not found or no longer active." });
+// The checks every comp-off claim passes: the day is over, within the claim
+// window, an off day or holiday with punches, not already claimed.
+async function checkClaim(emp, b) {
+  const fail = (error, code = 400) => ({ error, code });
+  if (!emp || !emp.is_active) return fail("Employee not found or no longer active.");
   const d = date(b.work_date);
-  if (!d) return res.status(400).json({ error: "Give the day worked." });
+  if (!d) return fail("Give the day worked.");
   const today = istToday();
-  if (d >= today) return res.status(400).json({ error: "Claim comp-off once the day is over." });
+  if (d >= today) return fail("Claim comp-off once the day is over.");
   const rules = await loadRules();
   const age = Math.round((Date.parse(today) - Date.parse(d)) / 86400000);
-  if (age > rules.co_claim_days) return res.status(400).json({ error: `Comp-off must be claimed within ${rules.co_claim_days} days of the day worked.` });
+  if (age > rules.co_claim_days) return fail(`Comp-off must be claimed within ${rules.co_claim_days} days of the day worked.`);
   const day = await dayOf(emp, d);
-  if (!offDayWorked(day)) return res.status(400).json({ error: "That day was not a weekly off or holiday with punches — nothing to claim." });
+  if (!offDayWorked(day)) return fail("That day was not a weekly off or holiday with punches — nothing to claim.");
   // What the hours earn by the rule. Owner's correction: the person may still
   // ask for more (a full day on short hours) and the manager decides 1 or ½.
   const earned = compoffDaysFor(day.worked, rules);
   const asked = Number(b.days);
   const days = asked === 1 || asked === 0.5 ? asked : earned || 0.5;
   const { rows: dup } = await query(`SELECT id FROM hr_compoff_claims WHERE employee_id = $1 AND work_date = $2 AND status IN ('pending','approved')`, [emp.id, d]);
-  if (dup.length) return res.status(409).json({ error: "Comp-off for that day is already claimed." });
+  if (dup.length) return fail("Comp-off for that day is already claimed.", 409);
+  return { d, day, earned, days, rules };
+}
+
+async function createClaim(req, res, emp, { self }) {
+  const b = req.body || {};
+  const c = await checkClaim(emp, b);
+  if (c.error) return res.status(c.code).json({ error: c.error });
+  const { d, day, earned, days, rules } = c;
   const needs = emp.app_user_role === "manager";
   const reason = text(b.reason, 500);
   const approveNow = !self && !!b.approve_now && await can(req.user, "hr.requests", "edit") && (isAdmin(req.user) || !needs) && emp.app_user_id !== req.user.id;
@@ -889,6 +907,89 @@ async function createClaim(req, res, emp, { self }) {
     [emp.id, d, days, day.worked, reason, approveNow ? "approved" : "pending", needs, needs ? "Plant Manager's own claim" : null,
       addDaysYmd(d, rules.co_expiry_days), req.user.id, approveNow ? req.user.id : null, approveNow ? new Date() : null, earned]);
   res.status(201).json({ id: rows[0].id, days, qualifies: earned, worked_min: day.worked, expires_on: addDaysYmd(d, rules.co_expiry_days), status: approveNow ? "approved" : "pending" });
+}
+
+// Round 205 — a comp-off REQUEST in one go (owner, 12 Oct 2026): "an employee
+// works on holiday or weekly off day, then he want to take compensatory off,
+// let him raise a comp off request where he should have to refer the date he
+// worked on holiday/weekly off day. And also this can be raised against
+// correction of an absent".
+//
+//   work_date — the weekly off / holiday worked (must have punches; the usual
+//               claim rules apply)
+//   off_date  — the day taken off: a coming working day, or a past day marked
+//               Absent (a half day for a past Half day) — the absence is then
+//               corrected to comp-off leave
+//   days      — 1 or ½
+//
+// It makes the claim and the CO leave together, tied by compoff_claim_id, and
+// they are approved or rejected together. The leave is paid by its own claim
+// whatever the order of the two dates.
+async function createCompoffRequest(req, res, emp, { self }) {
+  const b = req.body || {};
+  const c = await checkClaim(emp, b);
+  if (c.error) return res.status(c.code).json({ error: c.error });
+  const { d, day, earned, rules } = c;
+  const days = Number(b.days) === 0.5 ? 0.5 : 1;
+  const off = date(b.off_date);
+  if (!off) return res.status(400).json({ error: "Give the day to be taken off." });
+  if (off === d) return res.status(400).json({ error: "The day off cannot be the day worked." });
+  const gap = Math.abs(Math.round((Date.parse(off) - Date.parse(d)) / 86400000));
+  if (gap > rules.co_expiry_days) return res.status(400).json({ error: `The day off must be within ${rules.co_expiry_days} days of the day worked.` });
+  if (emp.date_of_joining && off < String(emp.date_of_joining).slice(0, 10)) return res.status(400).json({ error: "That is before the joining date." });
+  const today = istToday();
+  let forAbsence = false;
+  if (off < today) {
+    const od = await dayOf(emp, off);
+    const ok = od && (od.code === "A" || (od.code === "HD" && days === 0.5));
+    if (!ok) {
+      return res.status(400).json({ error: od?.code === "HD"
+        ? "That day was a half day — ask for ½ day comp-off against it."
+        : "A past day can only be taken as comp-off if it was marked Absent. Choose a coming working day instead." });
+    }
+    forAbsence = true;
+  } else if (!(await leaveDays(emp, off, off, false))) {
+    return res.status(400).json({ error: "That day is already a weekly off or holiday — choose a working day." });
+  }
+  const locked = await lockedMonthIn(off, off);
+  if (locked) return res.status(409).json({ error: `Payroll for ${locked} is locked — that day can no longer be changed.` });
+  const { rows: clash } = await query(
+    `SELECT id FROM hr_leaves WHERE employee_id = $1 AND status IN ('approved','pending') AND from_date <= $2 AND to_date >= $2 LIMIT 1`, [emp.id, off]);
+  if (clash.length) return res.status(409).json({ error: "There is already a leave on that day." });
+  const coType = (await leaveTypes(true)).find((t) => t.kind === "comp_off");
+  if (!coType) return res.status(400).json({ error: "No comp-off leave type is set up in HR Settings." });
+  const needs = emp.app_user_role === "manager";
+  const reason = text(b.reason, 500);
+  if (self && !reason && forAbsence) return res.status(400).json({ error: "Say why you were absent that day." });
+  const approveNow = !self && !!b.approve_now && await can(req.user, "hr.requests", "edit") && (isAdmin(req.user) || !needs) && emp.app_user_id !== req.user.id;
+  const status = approveNow ? "approved" : "pending";
+  const note = forAbsence ? `Absent on ${off} — taken as comp-off for ${d}` : `Comp-off for ${d}`;
+  const { rows } = await query(
+    `INSERT INTO hr_compoff_claims (employee_id, work_date, days, worked_min, qualifies, reason, status, needs_admin, admin_reason, expires_on,
+                                    raised_by, decided_by, decided_at, for_absence)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+    [emp.id, d, days, day.worked, earned, reason || note, status, needs, needs ? "Plant Manager's own claim" : null,
+      addDaysYmd(d, rules.co_expiry_days), req.user.id, approveNow ? req.user.id : null, approveNow ? new Date() : null, forAbsence]);
+  const { rows: lv } = await query(
+    `INSERT INTO hr_leaves (employee_id, leave_type_id, from_date, to_date, half_day, days, reason, status, needs_admin, admin_reason,
+                            raised_by, decided_by, decided_at, compoff_claim_id)
+     VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+    [emp.id, coType.id, off, days === 0.5, days, reason ? `${note}. ${reason}` : note, status, needs, needs ? "Plant Manager's own" : null,
+      req.user.id, approveNow ? req.user.id : null, approveNow ? new Date() : null, rows[0].id]);
+  res.status(201).json({ claim_id: rows[0].id, leave_id: lv[0].id, days, for_absence: forAbsence, status });
+}
+
+// A claim and its linked leave move together (Round 205).
+async function decideLinked({ claimId, leaveId }, { status, days, userId, note }) {
+  if (claimId) {
+    await query(`UPDATE hr_compoff_claims SET status = $1, days = COALESCE($2, days), decided_by = $3, decided_at = now(), decision_note = COALESCE($4, decision_note)
+                  WHERE id = $5 AND status IN ('pending','approved')`, [status, days, userId, note, claimId]);
+  }
+  if (leaveId) {
+    await query(`UPDATE hr_leaves SET status = $1, days = COALESCE($2, days), half_day = CASE WHEN $2::numeric = 0.5 THEN true ELSE half_day END,
+                        decided_by = $3, decided_at = now(), decision_note = COALESCE($4, decision_note)
+                  WHERE id = $5 AND status IN ('pending','approved')`, [status, days, userId, note, leaveId]);
+  }
 }
 
 // Off days worked in the last N days that could still be claimed.
@@ -935,6 +1036,11 @@ router.post("/compoff", requirePermission("hr.requests", "create"), async (req, 
   catch (err) { friendly(err, res, "Could not save the claim."); }
 });
 
+router.post("/compoff-request", requirePermission("hr.requests", "create"), async (req, res) => {
+  try { await createCompoffRequest(req, res, await loadEmployee(Number(req.body?.employee_id)), { self: false }); }
+  catch (err) { friendly(err, res, "Could not save the comp-off request."); }
+});
+
 router.post("/compoff/:id/decide", requirePermission("hr.requests", "edit"), async (req, res) => {
   const id = Number(req.params.id);
   try {
@@ -951,8 +1057,12 @@ router.post("/compoff/:id/decide", requirePermission("hr.requests", "edit"), asy
     // qualify for (owner's correction).
     const pick = Number(req.body?.days);
     const days = approve && (pick === 1 || pick === 0.5) ? pick : c.days;
-    await query(`UPDATE hr_compoff_claims SET status = $1, days = $2, decided_by = $3, decided_at = now(), decision_note = $4 WHERE id = $5`,
-      [approve ? "approved" : "rejected", days, req.user.id, note, id]);
+    const { rows: linked } = await query(`SELECT id, to_char(from_date, 'YYYY-MM-DD') AS d FROM hr_leaves WHERE compoff_claim_id = $1 AND status = 'pending'`, [id]);
+    if (linked[0]) {
+      const locked = await lockedMonthIn(linked[0].d, linked[0].d);
+      if (locked) return res.status(409).json({ error: `Payroll for ${locked} is locked.` });
+    }
+    await decideLinked({ claimId: id, leaveId: linked[0]?.id }, { status: approve ? "approved" : "rejected", days, userId: req.user.id, note });
     res.json({ ok: true, days });
   } catch (err) { friendly(err, res, "Could not save the decision."); }
 });
@@ -968,7 +1078,8 @@ router.post("/compoff/:id/cancel", async (req, res) => {
     if (c.status === "pending" ? !(mine || admin) : !(c.status === "approved" && admin)) {
       return res.status(403).json({ error: c.status === "approved" ? "Only Admin can cancel an approved comp-off." : "You cannot withdraw this claim." });
     }
-    await query(`UPDATE hr_compoff_claims SET status = 'cancelled', decided_by = $1, decided_at = now() WHERE id = $2`, [req.user.id, id]);
+    const { rows: linked } = await query(`SELECT id FROM hr_leaves WHERE compoff_claim_id = $1 AND status IN ('pending','approved')`, [id]);
+    await decideLinked({ claimId: id, leaveId: linked[0]?.id }, { status: "cancelled", days: null, userId: req.user.id, note: null });
     res.json({ ok: true });
   } catch (err) { friendly(err, res, "Could not cancel the claim."); }
 });
@@ -1020,6 +1131,13 @@ router.post("/my/leaves", async (req, res) => {
     if (!emp) return res.status(403).json({ error: "Your login is not linked to an employee record. Ask HR." });
     await createLeave(req, res, emp, { self: true });
   } catch (err) { friendly(err, res, "Could not save the leave request."); }
+});
+router.post("/my/compoff-request", async (req, res) => {
+  try {
+    const emp = await myEmployee(req);
+    if (!emp) return res.status(403).json({ error: "Your login is not linked to an employee record. Ask HR." });
+    await createCompoffRequest(req, res, emp, { self: true });
+  } catch (err) { friendly(err, res, "Could not save the comp-off request."); }
 });
 router.post("/my/compoff", async (req, res) => {
   try {

@@ -138,8 +138,8 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
       assigned_pump_crew, assigned_site_supervisor_id, site_contact_number, order_quantity_m3,
       sales_representative_id, casting_location, specified_slump_mm, pump_departure_time, remarks, created_by,
       pump_charge_applicable, pump_charge_amount, part_load_applicable, part_load_charge_amount, resolved_mix_design_id,
-      assigned_qc_engineer_id, billing_address_id, part_load_basis, pump_charge_waiver_reason, part_load_waiver_reason)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+      assigned_qc_engineer_id, billing_address_id, part_load_basis, pump_charge_waiver_reason, part_load_waiver_reason, price_option)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
      RETURNING *`,
     [order_date, scheduled_batching_time, required_at_site_time || null, truck_dispatch_interval_minutes, customer_id, site_id,
      mix_grade_id, pump_requirement, pump_id || null, !!site_technician_required, cube_samples_required,
@@ -147,7 +147,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
      sales_representative_id || null, casting_location || null, specified_slump_mm || null, pump_departure_time || null, remarks || null, req.user.id,
      cd.pump_charge_applicable, cd.pump_charge_amount,
      cd.part_load_applicable, cd.part_load_charge_amount, resolvedMixDesignId,
-     defaultQcEngineerId, resolvedBillingAddressId, cd.part_load_basis, cd.pump_charge_waiver_reason, cd.part_load_waiver_reason]
+     defaultQcEngineerId, resolvedBillingAddressId, cd.part_load_basis, cd.pump_charge_waiver_reason, cd.part_load_waiver_reason, cd.price_option]
   );
   // Round 204 — a charge left out goes to the Administrator; a brand-new
   // site's approved quotation is accepted by its first order (clause 9.1).

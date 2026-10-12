@@ -5,6 +5,7 @@ import { requirePermission } from "../lib/permissions.js";
 // Round 143 follow-up — the four headline figures have ONE definition now,
 // shared with the Administrator dashboard so the two pages cannot disagree.
 import { dashboardKpiRows } from "../lib/dashboardKpis.js";
+import { positions, receivedSql } from "../lib/receivables.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 const router = Router();
@@ -268,31 +269,17 @@ router.get("/cycle-time", requirePermission("reports.cycle-time", "view"), async
 // a balance, broken into aging buckets. Shared with Accountant, not just
 // Admin/Manager, since chasing collections is squarely their job too.
 router.get("/outstanding-collection", requireRole("administrator", "manager", "accountant"), async (req, res) => {
-  const { rows } = await query(
-    `WITH inv AS (
-       SELECT i.customer_id, i.total_amount - COALESCE(p.paid, 0) AS outstanding,
-              (CURRENT_DATE - i.created_at::date) AS age_days
-       FROM invoices i
-       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
-         ON p.invoice_id = i.id
-       UNION ALL
-       SELECT ob.customer_id, ob.amount - COALESCE(p.paid, 0) AS outstanding,
-              (CURRENT_DATE - ob.as_of_date) AS age_days
-       FROM customer_opening_balances ob
-       LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p
-         ON p.opening_balance_id = ob.id
-     )
-     SELECT c.name AS customer_name,
-       COALESCE(SUM(CASE WHEN age_days <= 7 THEN outstanding ELSE 0 END), 0) AS bucket_0_7,
-       COALESCE(SUM(CASE WHEN age_days > 7 AND age_days <= 14 THEN outstanding ELSE 0 END), 0) AS bucket_8_14,
-       COALESCE(SUM(CASE WHEN age_days > 14 AND age_days <= 30 THEN outstanding ELSE 0 END), 0) AS bucket_15_30,
-       COALESCE(SUM(CASE WHEN age_days > 30 THEN outstanding ELSE 0 END), 0) AS bucket_30_plus,
-       COALESCE(SUM(outstanding), 0) AS total_outstanding
-     FROM inv JOIN customers c ON c.id = inv.customer_id
-     GROUP BY c.name
-     HAVING COALESCE(SUM(outstanding), 0) > 0.01
-     ORDER BY total_outstanding DESC`
-  );
+  // Round 205 — the shared calculation (lib/receivables.js): billed − received
+  // per customer, open amounts aged from the delivery date. A customer who
+  // has paid ahead is not listed.
+  const rows = (await positions())
+    .filter((p) => p.balance > 0.01)
+    .sort((a, b) => b.balance - a.balance)
+    .map((p) => ({
+      customer_id: p.id, customer_name: p.name,
+      bucket_0_7: p.d0_7, bucket_8_14: p.d8_14, bucket_15_30: p.d15_30, bucket_30_plus: p.d30p,
+      total_outstanding: p.balance, last_receipt_on: p.last_receipt_on,
+    }));
   res.json(rows);
 });
 
@@ -333,8 +320,9 @@ router.get("/director-dashboard", requireRole("administrator", "manager", "accou
        GROUP BY c.id, c.name ORDER BY total DESC`
     ),
 
-    query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE payment_date = CURRENT_DATE - INTERVAL '1 day'`),
-    query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE date_trunc('month', payment_date) = date_trunc('month', CURRENT_DATE)`),
+    // Round 205 — money received = receipts + payments entered without one.
+    query(receivedSql("CURRENT_DATE - 1", "CURRENT_DATE - 1")),
+    query(receivedSql("date_trunc('month', CURRENT_DATE)", "CURRENT_DATE")),
 
     query(
       `SELECT o.id, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,

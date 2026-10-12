@@ -71,8 +71,8 @@ router.get("/summary", async (req, res) => {
   const overdue = await query(
     `WITH inv AS (
        SELECT i.customer_id, i.total_amount - COALESCE(p.paid, 0) AS outstanding,
-              (CURRENT_DATE - i.created_at::date) AS age_days
-       FROM invoices i
+              (CURRENT_DATE - dt.ticket_date) AS age_days   -- Round 205: aged from delivery
+       FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id
        LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p
          ON p.invoice_id = i.id
      )

@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { query } from "../db.js";
+import { pool, query } from "../db.js";
+import { positions, postReceipt, applyAdvances, OUTSTANDING_SQL, receivedSql } from "../lib/receivables.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 
@@ -50,96 +51,95 @@ router.post("/credit-notes/:ticketId/clear", async (req, res) => {
   res.json({ ok: true });
 });
 
-// Dashboard KPIs: outstanding, collected today, pumping/waiting charges due, trip allowance this month
-router.get("/dashboard", async (req, res) => {
-  const [outstanding, collectedToday, pumping, allowance] = await Promise.all([
-    query(
-      `SELECT
-         (SELECT COALESCE(SUM(i.total_amount), 0) FROM invoices i)
-         + (SELECT COALESCE(SUM(amount), 0) FROM customer_opening_balances)
-         - (SELECT COALESCE(SUM(amount), 0) FROM payments)
-         AS total`
-    ),
-    query(
-      `SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE payment_date = CURRENT_DATE`
-    ),
-    query(
-      `SELECT COALESCE(SUM(pumping_charge + waiting_charge), 0) AS total FROM invoices i
-       WHERE NOT EXISTS (SELECT 1 FROM payments p WHERE p.invoice_id = i.id)`
-    ),
-    query(
-      `SELECT COALESCE(SUM(amount), 0) AS total FROM trip_allowance_payouts
-       WHERE date_trunc('month', earned_at) = date_trunc('month', CURRENT_DATE)`
-    ),
+// Round 205 — the Accountant home (owner, 12 Oct 2026). Every rupee figure
+// comes from lib/receivables.js, the same calculation as Accounts → Customer
+// ledger, the Outstanding Collection report and the Director dashboard.
+router.get("/home", async (req, res) => {
+  const [all, out, today, month, billedMonth, bank, held, creditNotes, waivers, pump, reprice, allowance, todayList] = await Promise.all([
+    positions(),
+    query(OUTSTANDING_SQL),
+    query(receivedSql("CURRENT_DATE", "CURRENT_DATE")),
+    query(receivedSql("date_trunc('month', CURRENT_DATE)", "CURRENT_DATE")),
+    query(`SELECT COALESCE(SUM(i.total_amount), 0) AS total FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id
+            WHERE dt.ticket_date >= date_trunc('month', CURRENT_DATE)`),
+    query(`SELECT COUNT(*)::int AS n, COALESCE(SUM(amount), 0) AS amt, COUNT(*) FILTER (WHERE suggested_customer_id IS NOT NULL)::int AS matched
+             FROM bank_statement_lines WHERE status = 'open'`).catch(() => ({ rows: [{ n: 0, amt: 0, matched: 0 }] })),
+    query(`SELECT COUNT(*)::int AS n, COALESCE(SUM(dt.loaded_quantity_m3), 0) AS m3 FROM delivery_tickets dt
+            WHERE dt.status NOT IN ('cancelled', 'rejected') AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.ticket_id = dt.id)`),
+    query(`SELECT COUNT(*)::int AS n, COALESCE(SUM(credit_note_amount), 0) AS amt FROM invoices
+            WHERE credit_note_needed = true AND COALESCE(credit_note_cleared, false) = false`),
+    query(`SELECT COUNT(*)::int AS n FROM customer_orders WHERE charge_review_status = 'pending'`).catch(() => ({ rows: [{ n: 0 }] })),
+    query(`SELECT COUNT(*)::int AS n FROM customer_orders WHERE pump_charge_needs_review = true`),
+    query(`SELECT COUNT(*)::int AS n FROM notifications WHERE type = 'reprice_review' AND COALESCE(is_read, false) = false`),
+    query(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(DISTINCT driver_id)::int AS drivers FROM trip_allowance_payouts
+            WHERE date_trunc('month', earned_at) = date_trunc('month', CURRENT_DATE)`).catch(() => ({ rows: [{ total: 0, drivers: 0 }] })),
+    query(`SELECT * FROM (
+             SELECT r.id, 'receipt' AS kind, c.name AS customer_name, r.amount, r.mode::text AS mode, r.reference_number, r.created_at
+               FROM customer_receipts r JOIN customers c ON c.id = r.customer_id
+              WHERE r.cancelled_at IS NULL AND r.receipt_date = CURRENT_DATE
+             UNION ALL
+             SELECT p.id, 'payment', c.name, p.amount, p.mode::text, p.reference_number, p.created_at
+               FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN customer_opening_balances b ON b.id = p.opening_balance_id
+               JOIN customers c ON c.id = COALESCE(i.customer_id, b.customer_id)
+              WHERE p.receipt_id IS NULL AND p.payment_date = CURRENT_DATE
+           ) x ORDER BY created_at DESC LIMIT 30`).catch(() => ({ rows: [] })),
   ]);
-
+  const owing = all.filter((p) => p.balance > 0.01);
+  const sum = (k) => owing.reduce((t, p) => t + p[k], 0);
+  // Who to chase: oldest money first, then the largest.
+  const chase = owing
+    .map((p) => ({ ...p, overdue: p.d15_30 + p.d30p }))
+    .sort((a, b) => b.d30p - a.d30p || b.overdue - a.overdue || b.balance - a.balance)
+    .slice(0, 25);
+  const r2 = (n) => Math.round(n * 100) / 100;
   res.json({
-    outstanding: outstanding.rows[0].total,
-    collected_today: collectedToday.rows[0].total,
-    pumping_waiting_due: pumping.rows[0].total,
-    trip_allowance_this_month: allowance.rows[0].total,
+    kpis: {
+      outstanding: Number(out.rows[0].total),
+      customers_owing: owing.length,
+      over_30: r2(sum("d30p")),
+      over_30_customers: owing.filter((p) => p.d30p > 0.01).length,
+      received_today: Number(today.rows[0].total), received_today_count: Number(today.rows[0].count),
+      received_month: Number(month.rows[0].total),
+      billed_month: Number(billedMonth.rows[0].total),
+      advances: r2(all.reduce((t, p) => t + p.advance, 0)),
+      over_credit_limit: owing.filter((p) => p.credit?.over_by > 0).length,
+    },
+    ageing: { d0_7: r2(sum("d0_7")), d8_14: r2(sum("d8_14")), d15_30: r2(sum("d15_30")), d30p: r2(sum("d30p")) },
+    needs: {
+      bank_lines: bank.rows[0].n, bank_amount: Number(bank.rows[0].amt), bank_matched: bank.rows[0].matched,
+      held_loads: held.rows[0].n, held_m3: Number(held.rows[0].m3),
+      credit_notes: creditNotes.rows[0].n, credit_note_amount: Number(creditNotes.rows[0].amt),
+      charges_left_out: waivers.rows[0].n, pump_recheck: pump.rows[0].n,
+      reprice_review: reprice.rows[0].n,
+    },
+    chase,
+    received_today: todayList.rows,
+    trip_allowance: { total: Number(allowance.rows[0].total), drivers: allowance.rows[0].drivers },
   });
 });
 
-// Customer ledger — invoices with payment status
-router.get("/ledger", async (req, res) => {
-  const { rows } = await query(
-    `SELECT i.id, i.total_amount, dt.ticket_number, c.name AS customer_name,
-            COALESCE(SUM(p.amount), 0) AS paid_amount
-     FROM invoices i
-     JOIN delivery_tickets dt ON dt.id = i.ticket_id
-     JOIN customers c ON c.id = i.customer_id
-     LEFT JOIN payments p ON p.invoice_id = i.id
-     GROUP BY i.id, dt.ticket_number, c.name
-     ORDER BY i.created_at DESC
-     LIMIT 50`
-  );
-  const withStatus = rows.map((r) => ({
-    ...r,
-    status: Number(r.paid_amount) >= Number(r.total_amount) ? "paid"
-      : Number(r.paid_amount) > 0 ? "partially_paid" : "pending",
-  }));
-  res.json(withStatus);
+// Everyone who owes money, with ageing — the export on the Accountant home.
+router.get("/customers-outstanding", async (req, res) => {
+  const rows = (await positions()).filter((p) => p.balance > 0.01).sort((a, b) => b.balance - a.balance);
+  res.json(rows.map((p) => ({
+    customer_id: p.id, customer_name: p.name, contact_number: p.contact_number,
+    total_invoiced: p.billed, total_paid: p.received, balance: p.balance, advance: p.advance,
+    d0_7: p.d0_7, d8_14: p.d8_14, d15_30: p.d15_30, d30p: p.d30p,
+    oldest_unpaid_date: p.oldest_due_on, last_receipt_on: p.last_receipt_on, credit: p.credit,
+  })));
 });
 
-// Customer-level outstanding summary — the real day-to-day view: who owes
-// how much in total (invoices AND any pre-app opening balance combined), not
-// scattered across dozens of individual delivery rows. Sorted by balance
-// descending so the biggest amounts owed surface first.
-router.get("/customers-outstanding", async (req, res) => {
+// Reprice notices (an accepted new rate could not change an invoice that
+// already had money set against it): listed, then marked seen.
+router.get("/reprice-review", async (req, res) => {
   const { rows } = await query(
-    `SELECT * FROM (
-       SELECT c.id AS customer_id, c.name AS customer_name,
-              COALESCE(inv.total_invoiced, 0) + COALESCE(ob.total_opening, 0) AS total_invoiced,
-              COALESCE(inv.total_paid, 0) + COALESCE(ob.total_paid, 0) AS total_paid,
-              (COALESCE(inv.total_invoiced, 0) + COALESCE(ob.total_opening, 0))
-                - (COALESCE(inv.total_paid, 0) + COALESCE(ob.total_paid, 0)) AS balance,
-              LEAST(
-                COALESCE(inv.oldest_unpaid_date, ob.oldest_unpaid_date),
-                COALESCE(ob.oldest_unpaid_date, inv.oldest_unpaid_date)
-              ) AS oldest_unpaid_date
-       FROM customers c
-       LEFT JOIN LATERAL (
-         SELECT SUM(i.total_amount) AS total_invoiced, SUM(COALESCE(p.paid, 0)) AS total_paid,
-                MIN(dt.ticket_date) FILTER (WHERE i.total_amount > COALESCE(p.paid, 0)) AS oldest_unpaid_date
-         FROM invoices i
-         JOIN delivery_tickets dt ON dt.id = i.ticket_id
-         LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
-         WHERE i.customer_id = c.id
-       ) inv ON true
-       LEFT JOIN LATERAL (
-         SELECT SUM(ob.amount) AS total_opening, SUM(COALESCE(p.paid, 0)) AS total_paid,
-                MIN(ob.as_of_date) FILTER (WHERE ob.amount > COALESCE(p.paid, 0)) AS oldest_unpaid_date
-         FROM customer_opening_balances ob
-         LEFT JOIN (SELECT opening_balance_id, SUM(amount) AS paid FROM payments GROUP BY opening_balance_id) p ON p.opening_balance_id = ob.id
-         WHERE ob.customer_id = c.id
-       ) ob ON true
-       WHERE COALESCE(inv.total_invoiced, 0) > 0 OR COALESCE(ob.total_opening, 0) > 0
-     ) summary
-     WHERE balance > 0.01
-     ORDER BY balance DESC`
-  );
+    `SELECT id, ticket_id, message, created_at FROM notifications
+      WHERE type = 'reprice_review' AND COALESCE(is_read, false) = false ORDER BY id DESC LIMIT 100`);
   res.json(rows);
+});
+router.post("/reprice-review/:id(\\d+)/seen", async (req, res) => {
+  await query(`UPDATE notifications SET is_read = true WHERE id = $1 AND type = 'reprice_review'`, [req.params.id]);
+  res.json({ ok: true });
 });
 
 // One customer's individual invoices plus their opening balance (if any), for
@@ -178,219 +178,37 @@ router.get("/customers/:customerId/invoices", async (req, res) => {
   res.json([...withStatus(obRows, true), ...withStatus(invoiceRows, false)]);
 });
 
-// The main time-saver: Accountant enters one lump sum against a customer,
-// and it's applied automatically across everything that customer owes —
-// their opening balance first (it's always the oldest debt), then invoices
-// oldest delivery first — instead of hunting down and paying each one
-// individually. Still creates one row per item touched in `payments` (same
-// table, same reporting), so nothing downstream needs to know this was
-// entered in bulk.
+// Round 205 — the old "Record payment" now records a RECEIPT, exactly like
+// Accounts → Bank receipts → Record a receipt: set against the opening
+// balance and then the oldest deliveries, and anything left over is kept as
+// the customer's advance (it used to be lost).
 router.post("/customers/:customerId/bulk-payment", async (req, res) => {
   const { amount, mode, reference_number, remarks, payment_date } = req.body;
-  if (!amount || !mode || Number(amount) <= 0) {
+  if (!(Number(amount) > 0) || !["cash", "cheque", "bank_transfer", "upi"].includes(mode)) {
     return res.status(400).json({ error: "Amount and payment mode are required." });
   }
-
-  const [{ rows: openingBalances }, { rows: outstandingInvoices }] = await Promise.all([
-    query(
-      `SELECT ob.id, ob.as_of_date, ob.amount - COALESCE(SUM(p.amount), 0) AS balance
-       FROM customer_opening_balances ob
-       LEFT JOIN payments p ON p.opening_balance_id = ob.id
-       WHERE ob.customer_id = $1
-       GROUP BY ob.id, ob.amount
-       HAVING ob.amount - COALESCE(SUM(p.amount), 0) > 0.01
-       ORDER BY ob.as_of_date`,
-      [req.params.customerId]
-    ),
-    query(
-      `SELECT i.id, i.total_amount, dt.ticket_number, dt.ticket_date,
-              i.total_amount - COALESCE(SUM(p.amount), 0) AS balance
-       FROM invoices i
-       JOIN delivery_tickets dt ON dt.id = i.ticket_id
-       LEFT JOIN payments p ON p.invoice_id = i.id
-       WHERE i.customer_id = $1
-       GROUP BY i.id, dt.ticket_number, dt.ticket_date
-       HAVING i.total_amount - COALESCE(SUM(p.amount), 0) > 0.01
-       ORDER BY dt.ticket_date, i.id`,
-      [req.params.customerId]
-    ),
-  ]);
-
-  // Opening balances predate every real invoice by definition, so they're
-  // paid off first, then invoices oldest-delivery-first.
-  const items = [
-    ...openingBalances.map((ob) => ({ kind: "opening_balance", id: ob.id, label: "Opening balance", balance: Number(ob.balance) })),
-    ...outstandingInvoices.map((inv) => ({ kind: "invoice", id: inv.id, label: inv.ticket_number, balance: Number(inv.balance) })),
-  ];
-
-  let remaining = Number(amount);
-  const applied = [];
-  for (const item of items) {
-    if (remaining <= 0.01) break;
-    const thisPayment = Math.min(remaining, item.balance);
-    const column = item.kind === "opening_balance" ? "opening_balance_id" : "invoice_id";
-    await query(
-      `INSERT INTO payments (${column}, payment_date, amount, mode, reference_number, remarks, entered_by)
-       VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, $7)`,
-      [item.id, payment_date || null, thisPayment, mode, reference_number || null, remarks || null, req.user.id]
-    );
-    applied.push({
-      ticket_number: item.label,
-      amount_applied: thisPayment,
-      fully_paid: thisPayment >= item.balance - 0.01,
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(payment_date || "") ? payment_date : (await query(`SELECT CURRENT_DATE::text AS d`)).rows[0].d;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const out = await postReceipt(client, {
+      customer_id: Number(req.params.customerId), receipt_date: day, amount: Number(amount), mode,
+      reference_number, remarks, userId: req.user.id,
     });
-    remaining -= thisPayment;
+    await client.query("COMMIT");
+    res.status(201).json({
+      receipt_id: out.id, total_received: Number(amount),
+      total_applied: Math.round((Number(amount) - out.advance) * 100) / 100,
+      unapplied_credit: out.advance,
+      applied: out.applied.map((a) => ({ ticket_number: a.label, amount_applied: a.amount })),
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
-
-  res.status(201).json({
-    total_received: Number(amount),
-    total_applied: Number(amount) - remaining,
-    unapplied_credit: remaining, // leftover if payment exceeds everything currently owed
-    applied,
-  });
 });
-
-// Record a payment — supports multiple receipts against the same invoice
-router.post("/payments", async (req, res) => {
-  const { invoice_id, amount, mode, reference_number, remarks, payment_date } = req.body;
-  if (!invoice_id || !amount || !mode) {
-    return res.status(400).json({ error: "Invoice, amount, and payment mode are required." });
-  }
-  const { rows } = await query(
-    `INSERT INTO payments (invoice_id, payment_date, amount, mode, reference_number, remarks, entered_by)
-     VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, $7) RETURNING *`,
-    [invoice_id, payment_date || null, amount, mode, reference_number, remarks, req.user.id]
-  );
-  res.status(201).json(rows[0]);
-});
-
-// ===================== RETROACTIVE INVOICE RECALCULATION =====================
-// When a rate is added or corrected with a past effective date, this finds
-// every delivery that rate should apply to and shows exactly what would
-// change before touching anything. Deliveries with no invoice yet get one
-// created; an existing invoice only gets corrected if nothing has been paid
-// against it yet — anything with payments already recorded is left alone and
-// flagged for manual review, since silently changing the amount owed on
-// something a customer may have already paid against isn't safe to automate.
-
-async function buildRecalculationPreview(rateId) {
-  const { rows: rateRows } = await query(
-    `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name, s.name AS site_name
-     FROM rate_master rm
-     JOIN customers c ON c.id = rm.customer_id
-     JOIN mix_grades m ON m.id = rm.mix_grade_id
-     LEFT JOIN sites s ON s.id = rm.site_id
-     WHERE rm.id = $1`,
-    [rateId]
-  );
-  if (!rateRows.length) return null;
-  const rate = rateRows[0];
-
-  const { rows: tickets } = await query(
-    `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date, dt.loaded_quantity_m3, dt.order_id,
-            co.pump_requirement, co.pump_charge_applicable, co.pump_charge_amount,
-            co.part_load_applicable, co.part_load_charge_amount,
-            i.id AS invoice_id, i.total_amount AS current_total_amount,
-            COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
-     FROM delivery_tickets dt
-     JOIN customer_orders co ON co.id = dt.order_id
-     LEFT JOIN invoices i ON i.ticket_id = dt.id
-     WHERE co.customer_id = $1 AND co.mix_grade_id = $2
-       AND ($5::int IS NULL OR co.site_id = $5)
-       AND dt.status NOT IN ('cancelled', 'rejected')
-       AND dt.ticket_date >= $3 AND ($4::date IS NULL OR dt.ticket_date <= $4)
-     ORDER BY dt.ticket_date, dt.id`,
-    [rate.customer_id, rate.mix_grade_id, rate.effective_from, rate.effective_to, rate.site_id]
-  );
-
-  // Pump charge and part load are Manager's own confirmed decision on the
-  // order, not something this tool recalculates — it only corrects the
-  // concrete rate itself. Still only charged once per order regardless of
-  // which ticket ends up carrying it.
-  //
-  // One real exception: if the order confirmed "applicable" but the amount
-  // is zero, that zero was never a meaningful decision — it's what happens
-  // when Manager confirms applicable before any rate exists to show a real
-  // number against. Once a rate does exist (this recalculation), use its
-  // actual pump/part-load charge instead of perpetuating that zero forever.
-  const { rows: alreadyCharged } = await query(
-    `SELECT DISTINCT dt.order_id FROM delivery_tickets dt
-     JOIN invoices i ON i.ticket_id = dt.id
-     WHERE dt.order_id = ANY($1) AND (i.pumping_charge > 0 OR i.part_load_charge > 0)`,
-    [[...new Set(tickets.map((t) => t.order_id))]]
-  );
-  const chargedOrders = new Set(alreadyCharged.map((r) => r.order_id));
-
-  const preview = tickets.map((t) => {
-    const concreteAmount = Number(t.loaded_quantity_m3) * Number(rate.rate_per_m3);
-    let pumpingCharge = 0;
-    let partLoadCharge = 0;
-    if (!chargedOrders.has(t.order_id)) {
-      if (t.pump_charge_applicable) {
-        const confirmedAmount = Number(t.pump_charge_amount || 0);
-        const rateAmount = t.pump_requirement === "boom_pump" ? Number(rate.boom_pump_charge || 0) : Number(rate.line_pump_charge || 0);
-        pumpingCharge = confirmedAmount > 0 ? confirmedAmount : rateAmount;
-      }
-      if (t.part_load_applicable) {
-        const confirmedAmount = Number(t.part_load_charge_amount || 0);
-        partLoadCharge = confirmedAmount > 0 ? confirmedAmount : Number(rate.part_load_charge_per_m3 || 0);
-      }
-      if (pumpingCharge > 0 || partLoadCharge > 0) chargedOrders.add(t.order_id);
-    }
-    const newTotal = concreteAmount + pumpingCharge + partLoadCharge;
-    const hasPayments = Number(t.payment_count) > 0;
-    const currentTotal = t.current_total_amount !== null ? Number(t.current_total_amount) : null;
-    const changed = currentTotal === null || Math.abs(currentTotal - newTotal) > 0.01;
-    return {
-      ticket_id: t.ticket_id, ticket_number: t.ticket_number, ticket_date: t.ticket_date,
-      qty: t.loaded_quantity_m3, current_amount: currentTotal, new_concrete_amount: concreteAmount,
-      new_pumping_charge: pumpingCharge, new_part_load_charge: partLoadCharge, new_total_amount: newTotal,
-      action: !t.invoice_id ? "create" : (changed ? "update" : "unchanged"),
-      blocked: hasPayments && changed,
-    };
-  });
-
-  return { rate, tickets: preview };
-}
-
-router.get("/rates/:rateId/recalculate-preview", async (req, res) => {
-  const result = await buildRecalculationPreview(req.params.rateId);
-  if (!result) return res.status(404).json({ error: "Rate not found." });
-  res.json(result);
-});
-
-router.post("/rates/:rateId/recalculate-confirm", async (req, res) => {
-  const result = await buildRecalculationPreview(req.params.rateId);
-  if (!result) return res.status(404).json({ error: "Rate not found." });
-
-  const requestedIds = new Set((req.body.ticket_ids || []).map(String));
-  let created = 0, updated = 0, skipped = 0;
-
-  for (const t of result.tickets) {
-    if (!requestedIds.has(String(t.ticket_id))) continue;
-    if (t.blocked || t.action === "unchanged") { skipped++; continue; }
-
-    if (t.action === "create") {
-      await query(
-        `INSERT INTO invoices (ticket_id, customer_id, concrete_amount, pumping_charge, part_load_charge, waiting_charge, total_amount)
-         VALUES ($1, $2, $3, $4, $5, 0, $6)
-         ON CONFLICT DO NOTHING`,
-        [t.ticket_id, result.rate.customer_id, t.new_concrete_amount, t.new_pumping_charge, t.new_part_load_charge, t.new_total_amount]
-      );
-      created++;
-    } else if (t.action === "update") {
-      await query(
-        `UPDATE invoices SET concrete_amount = $1, pumping_charge = $2, part_load_charge = $3, total_amount = $4
-         WHERE ticket_id = $5`,
-        [t.new_concrete_amount, t.new_pumping_charge, t.new_part_load_charge, t.new_total_amount, t.ticket_id]
-      );
-      updated++;
-    }
-  }
-
-  res.json({ created, updated, skipped });
-});
-
 
 // Pre-existing outstanding from before this app was in use.
 
@@ -418,6 +236,7 @@ router.post("/opening-balances", async (req, res) => {
      VALUES ($1, $2, (CURRENT_DATE - ($3 || ' days')::interval)::date, $4, $5) RETURNING *`,
     [customer_id, amount, Number(days_outstanding), notes || null, req.user.id]
   );
+  await applyAdvances({ query }, customer_id); // Round 205: an advance pays it at once
   res.status(201).json(rows[0]);
 });
 
@@ -440,6 +259,7 @@ router.post("/opening-balances/bulk", async (req, res) => {
     );
     inserted.push(rows[0]);
   }
+  for (const cid of new Set(inserted.map((r) => r.customer_id))) await applyAdvances({ query }, cid);
   res.status(201).json({ inserted: inserted.length });
 });
 

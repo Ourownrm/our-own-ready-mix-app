@@ -7,6 +7,7 @@ import { fmtDate, inr } from "../../lib/quotationTerms.js";
 import { todayStr } from "../../lib/istDate.js";
 import QuotationBuilder from "./QuotationBuilder.jsx";
 import QuotationView from "./QuotationView.jsx";
+import QuotationImport from "./QuotationImport.jsx";
 import { TH, TD, NUM, row, money, StatusBadge, Banner, Field, Modal, Empty, Table } from "./ui.jsx";
 
 const FILTERS = [
@@ -30,6 +31,7 @@ export default function QuotationsTab({ params, go }) {
   if (!meta) return <Empty>Loading…</Empty>;
 
   const back = () => go("quotations");
+  if (params.get("import") === "1" && meta.perms.import) return <QuotationImport onDone={back} />;
   if (isNew || edit) {
     return (
       <QuotationBuilder meta={meta} id={edit ? Number(edit) : null} customerId={params.get("customer_id")} siteId={params.get("site_id")}
@@ -83,9 +85,10 @@ function Register({ meta, go }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>Follow-ups</h2>
         <span style={{ fontSize: 12.5, color: "var(--slate)" }}>Quotations with the customer — call 2 and 5 days after sending, and on the last valid day.</span>
-        {meta.perms.create && (
-          <button type="button" className="btn-primary" style={{ marginLeft: "auto" }} onClick={() => go("quotations", { new: "1" })}>+ New quotation</button>
-        )}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          {meta.perms.import && <button type="button" onClick={() => go("quotations", { import: "1" })}>Import from Excel</button>}
+          {meta.perms.create && <button type="button" className="btn-primary" onClick={() => go("quotations", { new: "1" })}>+ New quotation</button>}
+        </span>
       </div>
 
       {!followups ? <Empty>Loading…</Empty> : !followups.length ? (

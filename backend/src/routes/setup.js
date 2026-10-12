@@ -16,6 +16,7 @@ import { migrateFuel } from "../lib/fuelSchema.js";
 import { migrateReceiptApproval } from "../lib/receiptApprovalSchema.js";
 import { migrateTransporterLedger } from "../lib/transporterLedger.js";
 import { migrateQuotations } from "../lib/quotationSchema.js";
+import { migrateRound205 } from "../lib/round205Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4094,6 +4095,7 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // ROUND 204 — Accounts module: quotations, price lists, receipts, GST
     // switch on invoices, plant load reviews.
     await migrateQuotations(pool, log);
+    await migrateRound205(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

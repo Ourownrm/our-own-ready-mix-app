@@ -17,18 +17,13 @@
 import { query } from "../db.js";
 import { pushToRole } from "./push.js";
 import { chargesForTicket } from "./deliveryConfirmation.js";
+import { rateForOrder } from "./rateLookup.js";
 
-export async function rateFor(customerId, siteId, gradeId, date) {
-  const { rows } = await query(
-    `SELECT id, rate_per_m3, line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3,
-            part_load_min_qty_m3, part_load_charge_per_m3, pumping_charge_lumpsum, quotation_id, source
-       FROM rate_master
-      WHERE customer_id = $1 AND mix_grade_id = $2 AND (site_id = $3 OR site_id IS NULL)
-        AND effective_from <= $4::date AND (effective_to IS NULL OR effective_to >= $4::date)
-      ORDER BY (site_id = $3) DESC, effective_from DESC, id DESC LIMIT 1`,
-    [customerId, gradeId, siteId, date]
-  );
-  return rows[0] || null;
+// Round 205 — the row from lib/rateLookup.js (site first, then the price
+// option chosen on the order when the site has two prices for the grade).
+export async function rateFor(customerId, siteId, gradeId, date, priceOption = null) {
+  const p = await rateForOrder({ customer_id: customerId, site_id: siteId, mix_grade_id: gradeId, order_date: date, price_option: priceOption });
+  return p.rate;
 }
 
 function pumpRule(rate, pumpRequirement) {
@@ -43,9 +38,19 @@ function pumpRule(rate, pumpRequirement) {
 
 // Validates the two decisions and returns the columns to store, or { error }.
 export async function resolveChargeDecisions(body, { customer_id, site_id, mix_grade_id, order_date, order_quantity_m3, pump_requirement }) {
-  const rate = await rateFor(customer_id, site_id, mix_grade_id, order_date);
+  // Round 205 — two prices for the grade at this site (e.g. OPC and OPC + fly
+  // ash): the Manager must say which; the choice is kept on the order.
+  const picked = await rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option: body.price_option || null });
+  if (picked.options.length > 1 && !picked.rate) {
+    return { error: picked.reason === "no_option"
+      ? "That price option is not in the site's price list — choose one of the options shown."
+      : `This site has ${picked.options.length} prices for this grade (${picked.options.map((o) => o.price_option || "standard").join(" / ")}) — choose which one this order is.` };
+  }
+  const rate = picked.rate;
+  const priceOption = picked.options.length > 1 ? rate.price_option : null;
   const qty = Number(order_quantity_m3) || 0;
   const out = {
+    price_option: priceOption,
     pump_charge_applicable: null, pump_charge_amount: 0, pump_charge_waiver_reason: null,
     part_load_applicable: null, part_load_charge_amount: 0, part_load_waiver_reason: null,
     part_load_basis: "per_load",
@@ -141,8 +146,8 @@ export async function recomputeOrderCharges(orderId) {
     // order's current price list row for the part load rule.
     let row = t;
     if (t.part_load_min_qty_m3 == null && t.part_load_basis === "per_load") {
-      const { rows: o } = await query(`SELECT customer_id, site_id, mix_grade_id, order_date FROM customer_orders WHERE id = $1`, [orderId]);
-      const rate = o[0] ? await rateFor(o[0].customer_id, o[0].site_id, o[0].mix_grade_id, o[0].order_date) : null;
+      const { rows: o } = await query(`SELECT customer_id, site_id, mix_grade_id, order_date::text AS order_date, price_option FROM customer_orders WHERE id = $1`, [orderId]);
+      const rate = o[0] ? await rateFor(o[0].customer_id, o[0].site_id, o[0].mix_grade_id, o[0].order_date, o[0].price_option) : null;
       row = { ...t, part_load_min_qty_m3: rate?.part_load_min_qty_m3, part_load_charge_per_m3: rate?.part_load_charge_per_m3 };
     }
     const { pumpingCharge, partLoadCharge } = await chargesForTicket(row);

@@ -55,6 +55,8 @@ import rmTestsRoutes from "./routes/rmTests.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 import quotationRoutes from "./routes/quotations.js";
 import accountsLedgerRoutes from "./routes/accountsLedger.js";
+import quotationImportRoutes from "./routes/quotationImport.js";
+import hrAdvanceRoutes from "./routes/hrAdvances.js";
 // Round 146 — Super Admin per-user access control.
 import superAdminRoutes from "./routes/superAdmin.js";
 import solitaireRoutes, { printRouter as mixtrackPrintRouter } from "./routes/solitaire.js";
@@ -213,6 +215,8 @@ app.use("/api/qc-dashboard", qcDashboardRoutes);
 app.use("/api/rm-tests", rmTestsRoutes);
 app.use("/api/admin-dashboard", adminDashboardRoutes);
 // Round 204 — Accounts module: quotations, price lists, settings.
+app.use("/api/quotation-import", quotationImportRoutes);
+app.use("/api/hr-advance-requests", hrAdvanceRoutes);
 app.use("/api/quotations", quotationRoutes);
 app.use("/api/accounts", accountsLedgerRoutes);
 app.use("/api/super-admin", superAdminRoutes);

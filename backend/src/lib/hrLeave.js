@@ -93,8 +93,19 @@ export function compoffLedger(claims, coLeaves, asOf) {
     .sort((a, b) => (a.expires_on < b.expires_on ? -1 : a.expires_on > b.expires_on ? 1 : a.id - b.id));
   const uses = [...coLeaves].sort((a, b) => (a.from_date < b.from_date ? -1 : 1));
   let unfunded = 0;
+  // Round 205 — a leave raised with its own worked day (a comp-off request)
+  // is paid by that day first, whichever date comes first — an absence can
+  // be made good by an off day worked afterwards.
+  const own = new Map();
   for (const u of uses) {
-    let need = u.days;
+    if (!u.compoff_claim_id) continue;
+    const c = credits.find((x) => x.id === u.compoff_claim_id);
+    const take = c ? Math.min(c.left, u.days) : 0;
+    if (c) c.left -= take;
+    own.set(u, take);
+  }
+  for (const u of uses) {
+    let need = u.days - (own.get(u) || 0);
     for (const c of credits) {
       if (need <= 0) break;
       if (c.left <= 0 || c.work_date >= u.from_date || c.expires_on < u.from_date) continue;
@@ -118,7 +129,7 @@ export function compoffLedger(claims, coLeaves, asOf) {
 async function loadFor(employeeIds, asOf, excludeLeaveId) {
   const from = addMonths(asOf, -40);
   const [lv, cl] = await Promise.all([
-    query(`SELECT id, employee_id, leave_type_id, status, days::float AS days, to_char(from_date, 'YYYY-MM-DD') AS from_date
+    query(`SELECT id, employee_id, leave_type_id, status, days::float AS days, to_char(from_date, 'YYYY-MM-DD') AS from_date, compoff_claim_id
            FROM hr_leaves WHERE employee_id = ANY($1::int[]) AND status IN ('approved','pending') AND from_date >= $2
              AND ($3::int IS NULL OR id <> $3)`, [employeeIds, from, excludeLeaveId || null]),
     query(`SELECT id, employee_id, status, days::float AS days, to_char(work_date, 'YYYY-MM-DD') AS work_date,

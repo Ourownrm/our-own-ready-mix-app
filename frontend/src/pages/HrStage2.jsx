@@ -172,13 +172,198 @@ export function RequestsTab() {
 }
 
 // ================================================================ advances tab
+// Round 205 — advances go through a request (owner, 12 Oct 2026): the
+// Accountant raises it for one or many employees → the Plant Manager / Admin
+// approves (the amount can be cut) → the Accountant records what was paid.
+// The payment is the advance payroll recovers, listed below the requests.
+const ADV_STATUS = {
+  pending: ["Waiting for approval", "badge-info"], approved: ["Approved — to pay", "badge-warning"], part_paid: ["Part paid", "badge-warning"],
+  paid: ["Paid", "badge-success"], rejected: ["Rejected", "badge-danger"], cancelled: ["Withdrawn", "badge-neutral"],
+};
+const LINE_STATUS = { pending: "waiting", approved: "approved", rejected: "rejected", paid: "paid", cancelled: "withdrawn" };
+
+function AdvanceRequests({ onPaid }) {
+  const [show, setShow] = useState("open");
+  const [data, setData] = useState(null);
+  const [employees, setEmployees] = useState([]);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [form, setForm] = useState(null);
+  const [deciding, setDeciding] = useState(null); // { id, lines: {lineId: {approve, amount}}, note }
+  const [paying, setPaying] = useState(null);
+  const load = () => apiRequest(`/hr-advance-requests?show=${show}`).then(setData).catch((e) => setError(e.message));
+  useEffect(() => { setData(null); load(); }, [show]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { apiRequest("/hr-advance-requests/employees").then(setEmployees).catch(() => {}); }, []);
+  const p = data?.perms || {};
+  const blankLine = () => ({ employee_id: "", amount: "", recover_month: istMonth() });
+
+  async function raise(e) {
+    e.preventDefault(); setError(""); setNotice("");
+    try {
+      await apiRequest("/hr-advance-requests", { method: "POST", body: { purpose: form.purpose, lines: form.lines.map((l) => ({ ...l, employee_id: Number(l.employee_id), amount: Number(l.amount) })) } });
+      setForm(null); setNotice("Request raised — it now waits for the Plant Manager or Admin."); load();
+    } catch (err) { setError(err.message); }
+  }
+  async function decide(r, action) {
+    setError(""); setNotice("");
+    try {
+      const lines = r.lines.map((l) => ({ id: l.id, approve: deciding.lines[l.id]?.approve !== false, approved_amount: deciding.lines[l.id]?.amount ?? l.amount }));
+      const out = await apiRequest(`/hr-advance-requests/${r.id}/decide`, { method: "POST", body: { action, note: deciding.note, lines } });
+      setDeciding(null); setNotice(out.status === "approved" ? `Request #${r.id} approved — the Accountant can pay it now.` : `Request #${r.id} rejected.`); load();
+    } catch (err) { setError(err.message); }
+  }
+  async function cancel(r) {
+    if (!window.confirm(`Withdraw advance request #${r.id}?`)) return;
+    try { await apiRequest(`/hr-advance-requests/${r.id}/cancel`, { method: "POST" }); load(); } catch (err) { setError(err.message); }
+  }
+  async function pay(e) {
+    e.preventDefault(); setError("");
+    try {
+      await apiRequest(`/hr-advance-requests/lines/${paying.line.id}/pay`, { method: "POST", body: { amount: Number(paying.amount), given_on: paying.given_on, mode: paying.mode, reference: paying.reference, recover_month: paying.recover_month } });
+      setNotice(`Paid ${rs(paying.amount)} to ${paying.line.employee_name}.`); setPaying(null); load(); onPaid?.();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Advance requests</h3>
+        {[["open", "Open"], ["all", "All (6 months)"]].map(([k, l]) => <button key={k} className={`btn-tab${show === k ? " active" : ""}`} style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setShow(k)}>{l}</button>)}
+        {p.raise && !form && <button className="btn-primary" style={{ marginLeft: "auto" }} onClick={() => setForm({ purpose: "", lines: [blankLine()] })}>+ New advance request</button>}
+      </div>
+      {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+      {notice && <div className="card" style={{ color: "var(--signal-green)", background: "var(--signal-green-bg)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
+
+      {form && (
+        <form className="card" onSubmit={raise} style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>New advance request</div>
+          <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>One employee or several. The Plant Manager or Admin approves it; then you record what was paid.</div>
+          {form.lines.map((l, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "minmax(180px, 2fr) minmax(110px, 1fr) minmax(140px, 1fr) auto", gap: 8, alignItems: "end", marginBottom: 6 }}>
+              <Field label={i === 0 ? "Employee" : ""}>
+                <select required value={l.employee_id} onChange={(e) => setForm({ ...form, lines: form.lines.map((x, j) => (j === i ? { ...x, employee_id: e.target.value } : x)) })}>
+                  <option value="">—</option>
+                  {employees.filter((e) => String(e.id) === l.employee_id || !form.lines.some((x) => x.employee_id === String(e.id))).map((e) => <option key={e.id} value={e.id}>{e.name} ({e.emp_code})</option>)}
+                </select>
+              </Field>
+              <Field label={i === 0 ? "Amount asked (₹)" : ""}><input type="number" min="1" step="1" required value={l.amount} onChange={(e) => setForm({ ...form, lines: form.lines.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)) })} /></Field>
+              <Field label={i === 0 ? "Recover from salary of" : ""}><input type="month" required value={l.recover_month} onChange={(e) => setForm({ ...form, lines: form.lines.map((x, j) => (j === i ? { ...x, recover_month: e.target.value } : x)) })} /></Field>
+              <button type="button" disabled={form.lines.length === 1} style={{ padding: "6px 10px" }} aria-label="Remove line" onClick={() => setForm({ ...form, lines: form.lines.filter((_, j) => j !== i) })}>✕</button>
+            </div>
+          ))}
+          <button type="button" style={{ fontSize: 12.5, marginBottom: 10 }} onClick={() => setForm({ ...form, lines: [...form.lines, blankLine()] })}>+ Another employee</button>
+          <Field label="Reason (optional)"><input value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })} placeholder="e.g. festival advance" /></Field>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+            <button type="submit" className="btn-primary">Raise request</button>
+            <button type="button" onClick={() => setForm(null)}>Cancel</button>
+            <span style={{ fontSize: 13, marginLeft: "auto" }}>Total <b>{rs(form.lines.reduce((t, l) => t + (Number(l.amount) || 0), 0))}</b></span>
+          </div>
+        </form>
+      )}
+
+      {!data ? <div className="card" style={{ fontSize: 13 }}>Loading…</div>
+        : !data.requests.length ? <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>{show === "open" ? "No open advance requests." : "No advance requests in the last 6 months."}</div>
+        : data.requests.map((r) => {
+          const dec = deciding?.id === r.id ? deciding : null;
+          const asked = r.lines.reduce((t, l) => t + Number(l.amount), 0);
+          const [label, badge] = ADV_STATUS[r.status] || [r.status, "badge-neutral"];
+          return (
+            <div key={r.id} className="card" style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline", marginBottom: 6 }}>
+                <b>Request #{r.id}</b><span className={`badge ${badge}`}>{label}</span>
+                <span style={{ fontSize: 12.5, color: "var(--slate)" }}>raised by {r.raised_by_name || "—"} · {fmtDay(new Date(r.raised_at).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }))}{r.purpose ? ` · ${r.purpose}` : ""}</span>
+                <span style={{ marginLeft: "auto", fontSize: 13 }}>asked <b>{rs(asked)}</b></span>
+              </div>
+              {r.decided_by_name && r.status !== "cancelled" && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 6 }}>{r.status === "rejected" ? "Rejected" : "Approved"} by {r.decided_by_name}{r.decision_note ? ` — “${r.decision_note}”` : ""}</div>}
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ minWidth: 560 }}>
+                  <thead><tr><th>Employee</th><th style={{ textAlign: "right" }}>Asked</th><th style={{ textAlign: "right" }}>Approved</th><th>Recover from</th><th>Status</th><th /></tr></thead>
+                  <tbody>
+                    {r.lines.map((l) => {
+                      const d = dec?.lines[l.id] || {};
+                      return (
+                        <tr key={l.id}>
+                          <td><b>{l.employee_name}</b> <span style={{ color: "var(--slate)", fontSize: 12 }}>{l.emp_code}</span></td>
+                          <td style={{ textAlign: "right" }}>{rs(l.amount)}</td>
+                          <td style={{ textAlign: "right" }}>
+                            {dec ? (
+                              <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                                <input type="checkbox" checked={d.approve !== false} onChange={(e) => setDeciding({ ...dec, lines: { ...dec.lines, [l.id]: { ...d, approve: e.target.checked } } })} title="Approve this line" />
+                                <input type="number" min="1" max={l.amount} step="1" style={{ width: 96 }} disabled={d.approve === false} value={d.amount ?? Number(l.amount)} onChange={(e) => setDeciding({ ...dec, lines: { ...dec.lines, [l.id]: { ...d, amount: e.target.value } } })} />
+                              </span>
+                            ) : rs(l.approved_amount)}
+                          </td>
+                          <td style={{ fontSize: 12.5 }}>{l.recover_month}</td>
+                          <td style={{ fontSize: 12.5 }}>{l.paid ? <span className="badge badge-success">paid {rs(l.paid.amount)} · {fmtDay(l.paid.given_on)} · {MODES[l.paid.mode]}</span> : LINE_STATUS[l.status]}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>
+                            {p.pay && l.status === "approved" && <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setPaying({ line: l, amount: Number(l.approved_amount), given_on: istDay(), mode: "cash", reference: "", recover_month: l.recover_month })}>Record payment</button>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {dec ? (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 8 }}>
+                  <div style={{ flex: "1 1 220px" }}><Field label="Note (needed to reject)"><input value={dec.note} onChange={(e) => setDeciding({ ...dec, note: e.target.value })} /></Field></div>
+                  <button className="btn-primary" onClick={() => decide(r, "approve")}>Approve ticked</button>
+                  <button className="btn-danger" onClick={() => decide(r, "reject")}>Reject all</button>
+                  <button onClick={() => setDeciding(null)}>Cancel</button>
+                </div>
+              ) : (r.can_decide || r.can_cancel) && (
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  {r.can_decide && <button className="btn-primary" onClick={() => setDeciding({ id: r.id, lines: {}, note: "" })}>Decide</button>}
+                  {r.can_cancel && <button onClick={() => cancel(r)}>Withdraw</button>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+      {paying && (
+        <div onClick={() => setPaying(null)} role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 12 }}>
+          <form className="card" onClick={(e) => e.stopPropagation()} onSubmit={pay} style={{ width: "100%", maxWidth: 440 }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Record payment — {paying.line.employee_name}</div>
+            <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>Approved {rs(paying.line.approved_amount)}. Enter what was actually paid.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Amount paid (₹)"><input type="number" min="1" max={paying.line.approved_amount} step="1" required value={paying.amount} onChange={(e) => setPaying({ ...paying, amount: e.target.value })} /></Field>
+              <Field label="Paid on"><input type="date" required max={istDay()} value={paying.given_on} onChange={(e) => setPaying({ ...paying, given_on: e.target.value })} /></Field>
+              <Field label="Paid by">
+                <select value={paying.mode} onChange={(e) => setPaying({ ...paying, mode: e.target.value })}>{Object.entries(MODES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+              </Field>
+              <Field label="Reference"><input value={paying.reference} onChange={(e) => setPaying({ ...paying, reference: e.target.value })} placeholder="UTR / cheque no." /></Field>
+              <Field label="Recover from salary of"><input type="month" required value={paying.recover_month} onChange={(e) => setPaying({ ...paying, recover_month: e.target.value })} /></Field>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+              <button type="button" onClick={() => setPaying(null)}>Cancel</button>
+              <button type="submit" className="btn-primary">Save payment</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AdvancesTab() {
+  const { can } = usePermissions();
+  const [tick, setTick] = useState(0);
+  const seesRequests = can("hr.advance-request", "view") || can("hr.advance-approve", "edit") || can("hr.advance-pay", "edit");
+  return (
+    <>
+      {seesRequests && <AdvanceRequests onPaid={() => setTick((t) => t + 1)} />}
+      {can("hr.advances", "view") && <AdvancesPaid key={tick} />}
+    </>
+  );
+}
+
+function AdvancesPaid() {
   const { can } = usePermissions();
   const [month, setMonth] = useState(istMonth());
   const [data, setData] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [error, setError] = useState("");
-  const blank = { employee_id: "", given_on: istDay(), amount: "", mode: "cash", reference: "", recover_month: "", note: "" };
   const [form, setForm] = useState(null);
   const load = () => apiRequest(`/hr/advances?month=${month}`).then(setData).catch((e) => setError(e.message));
   useEffect(() => { setData(null); load(); }, [month]);
@@ -203,10 +388,10 @@ export function AdvancesTab() {
     <>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
         <Field label="Month"><input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} /></Field>
-        {can("hr.advances", "create") && !form && <button className="btn-primary" onClick={() => setForm(blank)}>+ Record an advance</button>}
+        <h3 style={{ margin: "0 auto 8px 0", fontSize: 16, alignSelf: "center" }}>Advances paid</h3>
         {data && <div style={{ fontSize: 13, paddingBottom: 8 }}>To recover from {month} salary: <b>{rs(total)}</b>{data.locked && <span className="badge badge-neutral" style={{ marginLeft: 8 }}>month locked</span>}</div>}
       </div>
-      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>Money paid to an employee before the month&rsquo;s salary. It is deducted from the salary of the month chosen (normally the same month).</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>Money paid to an employee before the month&rsquo;s salary, deducted from the salary of the month shown. New advances come through a request above; Edit here only to correct one.</div>
       {form && (
         <form className="card" onSubmit={save} style={{ marginBottom: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>

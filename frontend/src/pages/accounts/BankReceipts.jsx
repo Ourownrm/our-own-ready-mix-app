@@ -8,9 +8,9 @@ import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
-import { todayStr } from "../../lib/istDate.js";
 import { inr2, fmtDate } from "../../lib/quotationTerms.js";
 import { TH, TD, NUM, row, money, Banner, Field, Modal, Empty, Table } from "./ui.jsx";
+import { ReceiptModal } from "./ReceiptModal.jsx";
 
 const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 const pad = (n) => String(n).padStart(2, "0");
@@ -63,12 +63,20 @@ export function readStatement(aoa) {
   return null;
 }
 
-// A suggested payer name to remember: the narration without numbers and the
-// bank's transfer words.
-function aliasFrom(narr) {
-  const parts = String(narr || "").toUpperCase().split(/[/|\\-]+/).map((p) => p.replace(/[^A-Z ]/g, " ").replace(/\s+/g, " ").trim())
-    .filter((p) => p.length >= 4 && !/^(NEFT|RTGS|IMPS|UPI|INF|INFT|MOB|TRANSFER|CLG|BY|TO|CR|DR|FROM|PAYMENT|ICIC|HDFC|SBIN|FDRL|UTIB|KKBK|BARB|CNRB)\b/.test(p));
-  return parts[0] || "";
+// A suggested payer name to remember (Round 205): the name part of the
+// narration — never a segment with digits (the bank's reference code,
+// account numbers, IFSC), never transfer words or a bank's name, never ours.
+const SKIP = /^(NEFT|RTGS|IMPS|UPI|MMT|INF|INFT|NFT|TRF|TRANSFER|CLG|CHQ|CHEQUE|BY|TO|CR|DR|FROM|PAYMENT|FASTNOT ELIGIBLE|NA|NIL)$/;
+export function aliasFrom(narr) {
+  const parts = String(narr || "").toUpperCase().split(/[/|\\-]+/).map((p) => p.replace(/\s+/g, " ").trim());
+  for (const p of parts) {
+    if (!p || /[0-9]/.test(p) || SKIP.test(p)) continue;
+    if (/\bBANK\b/.test(p) || /OUR OWN/.test(p)) continue;
+    const letters = p.replace(/[^A-Z]/g, "");
+    if (letters.length < 4) continue;
+    return p.replace(/[^A-Z0-9 &.]/g, "").trim().slice(0, 60);
+  }
+  return "";
 }
 
 export default function BankReceipts({ params, go }) {
@@ -79,7 +87,7 @@ export default function BankReceipts({ params, go }) {
   const [importing, setImporting] = useState(false);
   const [tick, setTick] = useState(0);
   const [msg, setMsg] = useState("");
-  const V = [["open", "To post"], ["posted", "Posted"], ["ignored", "Ignored"], ["receipts", "All receipts"], ["aliases", "Payer names"]];
+  const V = [["open", "To post"], ["own", "Own transfers"], ["posted", "Posted"], ["ignored", "Ignored"], ["receipts", "All receipts"], ["aliases", "Payer names"]];
   return (
     <>
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -94,7 +102,7 @@ export default function BankReceipts({ params, go }) {
         : view === "aliases" ? <Aliases canEdit={canCreate} />
         : <Lines key={`${view}-${tick}`} status={view} canPost={canCreate} />}
       {manual && <ReceiptModal onClose={() => setManual(false)} onDone={(r) => { setManual(false); setMsg(`Receipt saved${r.applied.length ? ` — set against ${r.applied.map((a) => a.label).join(", ")}` : ""}${r.advance ? `; ₹${inr2(r.advance)} kept as advance` : ""}.`); setTick((t) => t + 1); }} />}
-      {importing && <ImportModal onClose={() => setImporting(false)} onDone={(r) => { setImporting(false); setMsg(`${r.added} credit(s) added${r.duplicates ? `, ${r.duplicates} already imported earlier` : ""}${r.skipped ? `, ${r.skipped} line(s) not credits` : ""}.`); go("receipts", { view: "open" }); setTick((t) => t + 1); }} />}
+      {importing && <ImportModal onClose={() => setImporting(false)} onDone={(r) => { setImporting(false); setMsg(`${r.added} credit(s) added${r.own_transfers ? ` (${r.own_transfers} from our own accounts, set aside)` : ""}${r.duplicates ? `, ${r.duplicates} already imported earlier — skipped` : ""}${r.skipped ? `, ${r.skipped} line(s) not credits` : ""}.`); go("receipts", { view: "open" }); setTick((t) => t + 1); }} />}
     </>
   );
 }
@@ -169,9 +177,12 @@ function Lines({ status, canPost }) {
   const [tick, setTick] = useState(0);
   const [onlyMatched, setOnlyMatched] = useState(false);
   useEffect(() => { apiRequest("/master/customers").then(setCustomers).catch(() => {}); }, []);
-  useEffect(() => { apiRequest(`/accounts/bank/lines?status=${status}`).then(setD).catch((e) => setError(e.message)); }, [status, tick]);
-  const lines = useMemo(() => (d?.lines || []).filter((l) => !onlyMatched || l.suggested_customer_id), [d, onlyMatched]);
-  const pick = (l) => choice[l.id] || { customer_id: l.suggested_customer_id ? String(l.suggested_customer_id) : "", alias: l.match_level === "sure" ? "" : aliasFrom(l.narration), learn: l.match_level !== "sure" };
+  const apiStatus = status === "own" ? "ignored" : status;
+  useEffect(() => { apiRequest(`/accounts/bank/lines?status=${apiStatus}`).then(setD).catch((e) => setError(e.message)); }, [apiStatus, tick]);
+  const isOwn = (l) => /^Own account/.test(l.ignored_reason || "");
+  const lines = useMemo(() => (d?.lines || []).filter((l) => (!onlyMatched || l.suggested_customer_id)
+    && (status === "own" ? isOwn(l) : status === "ignored" ? !isOwn(l) : true)), [d, onlyMatched, status]);
+  const pick = (l) => { if (choice[l.id]) return choice[l.id]; const a = l.match_level === "sure" ? "" : aliasFrom(l.narration); return { customer_id: l.suggested_customer_id ? String(l.suggested_customer_id) : "", alias: a, learn: !!a }; };
 
   async function post(l) {
     const c = pick(l);
@@ -250,7 +261,7 @@ function Lines({ status, canPost }) {
                     <button type="button" className="btn-primary" style={{ fontSize: 12, padding: "5px 10px", marginRight: 4 }} disabled={busy === l.id} onClick={() => post(l)}>Post</button>
                     <button type="button" style={{ fontSize: 12, padding: "5px 10px" }} disabled={busy === l.id} onClick={() => ignore(l)}>Not a customer</button>
                   </>}
-                  {status === "ignored" && canPost && <button type="button" style={{ fontSize: 12, padding: "5px 10px" }} onClick={() => reopen(l)}>Reopen</button>}
+                  {(status === "ignored" || status === "own") && canPost && <button type="button" style={{ fontSize: 12, padding: "5px 10px" }} onClick={() => reopen(l)}>Reopen</button>}
                 </td>
               </tr>
             );
@@ -314,46 +325,3 @@ function Aliases({ canEdit }) {
   );
 }
 
-export function ReceiptModal({ customerId, onClose, onDone }) {
-  const [customers, setCustomers] = useState([]);
-  const [f, setF] = useState({ customer_id: customerId || "", receipt_date: todayStr(), amount: "", mode: "bank_transfer", reference_number: "", remarks: "" });
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { if (!customerId) apiRequest("/master/customers").then(setCustomers).catch(() => {}); }, [customerId]);
-  async function save(e) {
-    e.preventDefault();
-    setBusy(true); setError("");
-    try { onDone(await apiRequest("/accounts/receipts", { method: "POST", body: { ...f, customer_id: Number(f.customer_id), amount: Number(f.amount) } })); }
-    catch (err) { setError(err.message); setBusy(false); }
-  }
-  return (
-    <Modal title="Record a receipt" onClose={onClose} width={480}>
-      <form onSubmit={save}>
-        <Banner>{error}</Banner>
-        {!customerId && (
-          <Field label="Customer">
-            <select required value={f.customer_id} onChange={(e) => setF({ ...f, customer_id: e.target.value })}>
-              <option value="">Choose…</option>{customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </Field>
-        )}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <Field label="Date received"><input type="date" required value={f.receipt_date} max={todayStr()} onChange={(e) => setF({ ...f, receipt_date: e.target.value })} /></Field>
-          <Field label="Amount ₹"><input type="number" min="1" step="0.01" required value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></Field>
-          <Field label="Mode">
-            <select value={f.mode} onChange={(e) => setF({ ...f, mode: e.target.value })}>
-              <option value="bank_transfer">Bank transfer</option><option value="upi">UPI</option><option value="cheque">Cheque</option><option value="cash">Cash</option>
-            </select>
-          </Field>
-          <Field label="Reference / cheque no."><input value={f.reference_number} onChange={(e) => setF({ ...f, reference_number: e.target.value })} /></Field>
-        </div>
-        <Field label="Remarks"><input value={f.remarks} onChange={(e) => setF({ ...f, remarks: e.target.value })} /></Field>
-        <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>Paid against the oldest dues first; anything over is kept as an advance.</div>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button type="button" onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={busy}>{busy ? "Saving…" : "Save receipt"}</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}

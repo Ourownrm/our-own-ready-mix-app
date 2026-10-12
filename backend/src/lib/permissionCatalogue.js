@@ -504,6 +504,9 @@ export const CATALOGUE = [
     { administrator: VE }),
   f("accounts.quotation-settings", "accounts", "Quotation settings and terms library", VE,
     { administrator: VE, manager: V }),
+  // Round 205 — one-time import of quotations issued from the Excel.
+  f("accounts.quotation-import", "accounts", "Import quotations from the Excel (one time)", E,
+    { administrator: E }),
   f("orders.charge-waiver-review", "orders", "Review a pump / part load charge left out of an order", E,
     { administrator: E }),
   f("production.load-review", "production", "Omit a JCB / no-vehicle load from production totals", E,
@@ -598,6 +601,15 @@ export const CATALOGUE = [
     { administrator: VCED }),
   f("hr.advances", "hr", "Salary advances", VCED,
     { administrator: VCED }),
+  // Round 205 — advances as a request (owner, 12 Oct 2026): the Accountant
+  // raises one for one or many employees, the Plant Manager / Admin approves,
+  // the Accountant records what was paid (routes/hrAdvances.js).
+  f("hr.advance-request", "hr", "Salary advance requests — raise and see", ["view", "create"],
+    { administrator: ["view", "create"], accountant: ["view", "create"], manager: ["view"] }),
+  f("hr.advance-approve", "hr", "Salary advance requests — approve or reject", E,
+    { administrator: E, manager: E }),
+  f("hr.advance-pay", "hr", "Salary advance requests — record the payment", E,
+    { administrator: E, accountant: E }),
 
   // ---------- Administration ----------
   f("admin.users", "admin", "Users — list and create", VCE,
@@ -741,7 +753,7 @@ export const MODULES = [
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
-    support: ["hr.salary"],
+    support: ["hr.salary", "hr.advance-request", "hr.advance-approve", "hr.advance-pay"],
     noAutoView: ["hr.salary", "hr.payroll", "hr.advances"],
   },
   {
@@ -775,7 +787,7 @@ export const MODULES = [
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
-      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel"],
+      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel", "accounts.quotation-import"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",

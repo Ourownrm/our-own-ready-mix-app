@@ -22,14 +22,13 @@
 //                      operator figure is the right basis for cost per m³ in
 //                      the Material Module — and only there; this is the
 //                      number the plant reports as production.
-//   Outstanding      — all invoices + all opening balances − all payments.
-//                      NOTE this is not the same arithmetic as the
-//                      Outstanding Collection *report*, which sums only
-//                      customers whose own balance is positive, so a customer
-//                      in credit reduces this figure but not that one. Both
-//                      numbers are long-standing; this is the one the Reports
-//                      page shows, so it is the one the KPI shows.
+//   Outstanding      — billed (invoices + opening balances) − received
+//                      (receipts + payments entered without a receipt).
+//                      Round 205: the same arithmetic as the Accountant home,
+//                      the customer ledger and the Outstanding Collection
+//                      report (lib/receivables.js).
 import { query } from "../db.js";
+import { OUTSTANDING_SQL } from "./receivables.js";
 
 export async function dashboardKpiRows() {
   return Promise.all([
@@ -64,13 +63,9 @@ export async function dashboardKpiRows() {
        FROM site_qc sq JOIN delivery_tickets dt ON dt.id = sq.ticket_id
        WHERE date_trunc('month', dt.ticket_date) = date_trunc('month', CURRENT_DATE)`
     ),
-    query(
-      `SELECT
-         (SELECT COALESCE(SUM(i.total_amount), 0) FROM invoices i)
-         + (SELECT COALESCE(SUM(amount), 0) FROM customer_opening_balances)
-         - (SELECT COALESCE(SUM(amount), 0) FROM payments)
-         AS total`
-    ),
+    // Round 205 — the one definition in lib/receivables.js (receipts count in
+    // full, advances included; payments made by a receipt are not counted twice).
+    query(OUTSTANDING_SQL),
   ]);
 }
 

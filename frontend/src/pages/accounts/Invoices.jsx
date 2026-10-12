@@ -182,16 +182,23 @@ function Waivers({ canReview }) {
   const [error, setError] = useState("");
   const [acting, setActing] = useState(null);
   const [tick, setTick] = useState(0);
-  useEffect(() => { setRows(null); apiRequest(`/accounts/waivers?status=${status}`).then(setRows).catch((e) => setError(e.message)); }, [status, tick]);
+  useEffect(() => {
+    if (status === "pump") return;
+    setRows(null); apiRequest(`/accounts/waivers?status=${status}`).then(setRows).catch((e) => setError(e.message));
+  }, [status, tick]);
+  const tabs = (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+      {[["pending", "To review"], ["accepted", "Accepted"], ["charged", "Charged after all"], ["pump", "Pump charge to recheck"]].map(([k, l]) => (
+        <button key={k} type="button" className={`btn-tab ${status === k ? "active" : ""}`} style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setStatus(k)}>{l}</button>
+      ))}
+      {status !== "pump" && <span style={{ fontSize: 12.5, color: "var(--slate)", marginLeft: 8 }}>Orders where the Manager chose not to charge pump mobilization or part load.</span>}
+    </div>
+  );
+  if (status === "pump") return <>{tabs}<PumpRecheck /></>;
   return (
     <>
       <Banner>{error}</Banner>
-      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
-        {[["pending", "To review"], ["accepted", "Accepted"], ["charged", "Charged after all"]].map(([k, l]) => (
-          <button key={k} type="button" className={`btn-tab ${status === k ? "active" : ""}`} style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setStatus(k)}>{l}</button>
-        ))}
-        <span style={{ fontSize: 12.5, color: "var(--slate)", marginLeft: 8 }}>Orders where the Manager chose not to charge pump mobilization or part load.</span>
-      </div>
+      {tabs}
       {!rows ? <Empty>Loading…</Empty> : !rows.length ? <Empty>Nothing here.</Empty> : (
         <Table minWidth={900} head={<>
           <th style={TH}>Order</th><th style={TH}>Customer · site</th><th style={TH}>Left out, and why</th><th style={TH}>Loads</th>
@@ -221,6 +228,59 @@ function Waivers({ canReview }) {
         </Table>
       )}
       {acting && <WaiverModal {...acting} onClose={() => setActing(null)} onDone={() => { setActing(null); setTick((t) => t + 1); }} />}
+    </>
+  );
+}
+
+// Round 205 — moved here from the Accountant home ("Pump charge review"):
+// orders where a later load took the total past the pump's minimum after the
+// mobilization charge was billed. Never corrected on its own.
+function PumpRecheck() {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(null);
+  const load = () => apiRequest("/accountant/pump-charge-review").then(setRows).catch((e) => { setError(e.message); setRows([]); });
+  useEffect(() => { load(); }, []);
+  async function act(orderId, what) {
+    if (what === "remove-charge" && !window.confirm("Remove the pump mobilization charge from this order's invoice?")) return;
+    setBusy(orderId); setError(""); setNotice("");
+    try {
+      await apiRequest(`/accountant/pump-charge-review/${orderId}/${what}`, { method: "POST" });
+      setNotice(what === "dismiss" ? "Left as it is." : "Pump charge removed.");
+      load();
+    } catch (e) { setError(e.message); } finally { setBusy(null); }
+  }
+  return (
+    <>
+      <Banner>{error}</Banner>
+      <Banner kind="ok">{notice}</Banner>
+      <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>
+        A later load took the order past the pump's minimum quantity after the mobilization charge was billed. Decide whether the charge still stands.
+      </div>
+      {!rows ? <Empty>Loading…</Empty> : !rows.length ? <Empty>Nothing to recheck.</Empty> : (
+        <Table minWidth={760} head={<>
+          <th style={TH}>Order</th><th style={TH}>Customer · site</th><th style={TH}>Delivered</th><th style={{ ...TH, textAlign: "right" }}>Pump charge</th><th style={TH} />
+        </>}>
+          {rows.map((r) => (
+            <tr key={r.order_id} style={row}>
+              <td style={TD}>#{r.order_id}<div style={{ fontSize: 11.5, color: "var(--slate)" }}>{r.pump_requirement === "boom_pump" ? "Boom" : "Line"} pump{r.charged_ticket_number ? ` · on ${r.charged_ticket_number}` : ""}</div></td>
+              <td style={TD}>{r.customer_name}<div style={{ fontSize: 11.5, color: "var(--slate)" }}>{r.site_name}</div></td>
+              <td style={TD}>{inr(r.cumulative_qty)} of {inr(r.order_quantity_m3)} m³</td>
+              <td style={NUM}>{r.pumping_charge ? money(r.pumping_charge) : "—"}</td>
+              <td style={TD}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button type="button" style={{ fontSize: 12, padding: "5px 10px" }} disabled={busy === r.order_id} onClick={() => act(r.order_id, "dismiss")}>Charge is right</button>
+                  <button type="button" className="btn-danger" style={{ fontSize: 12, padding: "5px 10px" }}
+                    disabled={busy === r.order_id || Number(r.payment_count) > 0 || !r.invoice_id}
+                    title={Number(r.payment_count) > 0 ? "Money is already set against this invoice" : ""}
+                    onClick={() => act(r.order_id, "remove-charge")}>Remove charge</button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </Table>
+      )}
     </>
   );
 }

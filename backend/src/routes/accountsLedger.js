@@ -13,6 +13,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 import { generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { recomputeOrderCharges, rateFor } from "../lib/orderCharges.js";
+import { openItems, postReceipt, applyAdvances, positions, AGE_GROUPS } from "../lib/receivables.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -139,7 +140,7 @@ router.get("/waivers", INV_VIEW, async (req, res) => {
                FROM delivery_tickets dt WHERE dt.order_id = co.id AND dt.status NOT IN ('cancelled', 'rejected')) AS loads,
             (SELECT COUNT(*) FROM payments p JOIN invoices i ON i.id = p.invoice_id JOIN delivery_tickets dt ON dt.id = i.ticket_id
               WHERE dt.order_id = co.id)::int AS payment_count,
-            co.customer_id, co.site_id, co.mix_grade_id
+            co.customer_id, co.site_id, co.mix_grade_id, co.price_option
        FROM customer_orders co
        JOIN customers c ON c.id = co.customer_id
        LEFT JOIN sites s ON s.id = co.site_id
@@ -152,7 +153,7 @@ router.get("/waivers", INV_VIEW, async (req, res) => {
   );
   // What charging would add, from the price list.
   for (const r of rows) {
-    const rate = await rateFor(r.customer_id, r.site_id, r.mix_grade_id, r.order_date);
+    const rate = await rateFor(r.customer_id, r.site_id, r.mix_grade_id, r.order_date, r.price_option);
     let pump = 0, part = 0;
     if (r.pump_charge_waiver_reason && rate) {
       pump = Number(r.pump_requirement === "boom_pump" ? rate.boom_pump_charge : (rate.line_pump_charge ?? rate.pumping_charge_lumpsum)) || 0;
@@ -194,7 +195,7 @@ router.post("/waivers/:orderId(\\d+)", requirePermission("orders.charge-waiver-r
   if (paid.length) {
     return res.status(409).json({ error: "A payment is already recorded on this order's invoices — raise the charge on a separate invoice instead." });
   }
-  const rate = await rateFor(o.customer_id, o.site_id, o.mix_grade_id, o.od);
+  const rate = await rateFor(o.customer_id, o.site_id, o.mix_grade_id, o.od, o.price_option);
   const charge = req.body.charge || {};
   const sets = [];
   const vals = [o.id];
@@ -246,62 +247,10 @@ const BALANCES_SQL = `
     LEFT JOIN rc ON rc.customer_id = c.id LEFT JOIN lp ON lp.customer_id = c.id LEFT JOIN al ON al.customer_id = c.id
    WHERE (inv.amt IS NOT NULL OR ob.amt IS NOT NULL OR rc.amt IS NOT NULL)`;
 
-// Open items (opening balances first, then invoices oldest delivery first).
-async function openItems(db, customerId) {
-  const { rows } = await db.query(
-    `SELECT * FROM (
-       SELECT 'opening_balance' AS kind, ob.id, ob.as_of_date AS on_date, 'Opening balance' AS label,
-              ob.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.opening_balance_id = ob.id), 0) AS balance, 0 AS ord
-         FROM customer_opening_balances ob WHERE ob.customer_id = $1
-       UNION ALL
-       SELECT 'invoice', i.id, dt.ticket_date, dt.ticket_number,
-              i.total_amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id), 0), 1
-         FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id WHERE i.customer_id = $1
-     ) x WHERE balance > 0.01 ORDER BY ord, on_date, id`,
-    [customerId]
-  );
-  return rows;
-}
-
-// Applies what a receipt has not yet allocated to the oldest open items.
-// Whatever is left stays on the receipt as the customer's advance.
-async function allocateReceipt(db, receiptId) {
-  const { rows } = await db.query(
-    `SELECT r.*, r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) AS free
-       FROM customer_receipts r WHERE r.id = $1 AND r.cancelled_at IS NULL`,
-    [receiptId]
-  );
-  const r = rows[0];
-  if (!r) return { applied: [], advance: 0 };
-  let free = Number(r.free);
-  const applied = [];
-  for (const item of await openItems(db, r.customer_id)) {
-    if (free <= 0.01) break;
-    const amt = r2(Math.min(free, Number(item.balance)));
-    const col = item.kind === "opening_balance" ? "opening_balance_id" : "invoice_id";
-    await db.query(
-      `INSERT INTO payments (${col}, payment_date, amount, mode, reference_number, remarks, entered_by, receipt_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [item.id, r.receipt_date, amt, r.mode, r.reference_number, `Receipt #${r.id}`, r.entered_by, r.id]
-    );
-    applied.push({ label: item.label, amount: amt });
-    free = r2(free - amt);
-  }
-  return { applied, advance: r2(Math.max(0, free)) };
-}
-
 router.get("/ledger", LEDGER_VIEW, async (req, res) => {
-  const { rows } = await query(`${BALANCES_SQL} ORDER BY balance DESC, c.name`);
-  // Overdue: open invoice balances older than 30 days.
-  const { rows: od } = await query(
-    `SELECT i.customer_id, SUM(i.total_amount - COALESCE(p.paid, 0)) AS overdue
-       FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id
-       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
-      WHERE dt.ticket_date < CURRENT_DATE - 30 AND i.total_amount - COALESCE(p.paid, 0) > 0.01
-      GROUP BY i.customer_id`
-  );
-  const overdue = Object.fromEntries(od.map((r) => [r.customer_id, Number(r.overdue)]));
-  res.json(rows.map((r) => ({ ...r, overdue_30: overdue[r.id] || 0 })));
+  // One calculation for every screen (lib/receivables.js).
+  const rows = (await positions()).sort((x, y) => y.balance - x.balance || x.name.localeCompare(y.name));
+  res.json(rows.map((r) => ({ ...r, unallocated: r.advance, overdue_30: r.d30p })));
 });
 
 router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
@@ -344,40 +293,22 @@ router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
     lines.push({ ...e, on_date: d, balance: running });
   }
   const items = await openItems(pool, cid);
-  const today = new Date();
-  const aging = { "0-15": 0, "16-30": 0, "31-60": 0, "60+": 0 };
-  for (const it of items) {
-    const days = Math.floor((today - new Date(it.on_date)) / 86400000);
-    const k = days <= 15 ? "0-15" : days <= 30 ? "16-30" : days <= 60 ? "31-60" : "60+";
-    aging[k] = r2(aging[k] + Number(it.balance));
-  }
-  const { rows: bal } = await query(`${BALANCES_SQL} AND c.id = $1`, [cid]);
-  const { rows: credit } = await query(
-    `SELECT quote_no, agreement_type, payment FROM quotations WHERE customer_id = $1 AND status = 'accepted'
-        AND agreement_type IN ('credit', 'credit_qty') ORDER BY accepted_at DESC LIMIT 1`,
-    [cid]
-  );
+  const pos = (await positions({ customerId: cid }))[0];
+  const aging = Object.fromEntries(AGE_GROUPS.map((g) => [g.label, pos ? pos[g.key] : 0]));
   res.json({
     customer: cust[0], opening_balance: from ? opening : null, lines, aging,
-    position: bal[0] || { billed: 0, received: 0, balance: 0, unallocated: 0 },
-    credit: credit[0] ? { quote_no: credit[0].quote_no, limit: credit[0].payment?.credit_limit ?? null, days: credit[0].payment?.credit_days ?? null } : null,
-    open_items: items.map((i) => ({ ...i, on_date: typeof i.on_date === "string" ? i.on_date : i.on_date.toLocaleDateString("en-CA") })), // ist-ok: DATE column
+    position: pos ? { ...pos, unallocated: pos.advance } : { billed: 0, received: 0, balance: 0, unallocated: 0 },
+    credit: pos?.credit || null,
+    open_items: items,
   });
 });
 
 // Apply a customer's advance to invoices raised since.
 router.post("/ledger/:customerId(\\d+)/apply-advance", requirePermission("accounts.bank-receipts", "create"), async (req, res) => {
-  const { rows } = await query(
-    `SELECT id FROM customer_receipts r WHERE customer_id = $1 AND cancelled_at IS NULL
-        AND r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) > 0.01
-      ORDER BY receipt_date, id`,
-    [req.params.customerId]
-  );
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const applied = [];
-    for (const r of rows) applied.push(...(await allocateReceipt(client, r.id)).applied);
+    const applied = await applyAdvances(client, req.params.customerId);
     await client.query("COMMIT");
     res.json({ applied });
   } catch (err) {
@@ -394,17 +325,6 @@ router.post("/ledger/:customerId(\\d+)/apply-advance", requirePermission("accoun
 const RC_VIEW = requirePermission("accounts.bank-receipts", "view");
 const RC_CREATE = requirePermission("accounts.bank-receipts", "create");
 const MODES = ["cash", "cheque", "bank_transfer", "upi"];
-
-async function postReceipt(client, { customer_id, receipt_date, amount, mode, reference_number, bank_account, narration, remarks, bank_line_id, userId }) {
-  const { rows } = await client.query(
-    `INSERT INTO customer_receipts (customer_id, receipt_date, amount, mode, reference_number, bank_account, narration, remarks, bank_line_id, entered_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-    [customer_id, receipt_date, r2(amount), mode, reference_number || null, bank_account || null, narration || null, remarks || null, bank_line_id || null, userId]
-  );
-  const id = rows[0].id;
-  const alloc = await allocateReceipt(client, id);
-  return { id, ...alloc };
-}
 
 router.get("/receipts", RC_VIEW, async (req, res) => {
   const params = [];
@@ -481,10 +401,45 @@ const STOP = new Set(["PVT", "LTD", "PRIVATE", "LIMITED", "THE", "AND", "CONSTRU
   "DEVELOPERS", "ENTERPRISES", "INFRA", "PROJECTS", "COMPANY", "TRADERS", "ASSOCIATES", "GROUP", "SONS", "MR", "MRS", "MS"]);
 const tokens = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter((t) => t.length >= 4 && !STOP.has(t) && !/^\d+$/.test(t));
 
+// Round 205 — a remembered payer name counts only as a whole word in the
+// narration, never as the front of a reference code ("FDRLR" inside
+// "FDRLR52026…" is the paying bank, not a customer).
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export function aliasHit(narr, alias) {
+  const a = String(alias || "").toUpperCase().trim();
+  if (!a) return false;
+  return new RegExp(`(^|[^A-Z0-9])${escRe(a)}($|[^A-Z0-9])`).test(String(narr || "").toUpperCase());
+}
+// Why a payer name cannot be remembered, or null.
+export function aliasProblem(alias, narration, ownWords) {
+  const a = String(alias || "").toUpperCase().replace(/\s+/g, " ").trim();
+  const letters = (a.match(/[A-Z]/g) || []).length, digits = (a.match(/[0-9]/g) || []).length;
+  if (letters < 4) return "Too short — use the payer's name as the bank shows it.";
+  if (digits > letters / 2) return "That is a reference number, not a name.";
+  const narr = String(narration || "").toUpperCase();
+  const codeTokens = narr.split(/[^A-Z0-9]+/).filter((t) => /[0-9]/.test(t) && /[A-Z]/.test(t));
+  const flat = a.replace(/[^A-Z0-9]/g, "");
+  if (codeTokens.some((t) => t.startsWith(flat) || t.includes(flat))) return "That is part of the bank's reference code (the paying bank), not the payer — use the name.";
+  if (ownWords.some((w) => a.includes(w))) return "That is our own name or account.";
+  return null;
+}
+// Credits from our own accounts (bank-to-bank transfers): the narration
+// carries our name or one of our account numbers from Settings.
+async function ownMarkers() {
+  const { rows } = await query(`SELECT bank_accounts FROM quotation_settings WHERE id = 1`).catch(() => ({ rows: [] }));
+  const nums = (rows[0]?.bank_accounts || []).map((b) => String(b.number || "").replace(/\D/g, "")).filter((n) => n.length >= 6);
+  return { names: ["OUR OWN READY MIX", "OUR OWN READYMIX", "OUROWN READY MIX"], nums };
+}
+export function isOwnTransfer(narration, own) {
+  const n = String(narration || "").toUpperCase();
+  const digits = n.replace(/[^0-9]/g, " ");
+  return own.names.some((w) => n.includes(w)) || own.nums.some((x) => digits.split(/\s+/).includes(x) || n.includes(x));
+}
+
 async function matchLine(line, ctx) {
   const narr = String(line.narration || "").toUpperCase();
   for (const a of ctx.aliases) {
-    if (narr.includes(a.alias.toUpperCase())) return { customer_id: a.customer_id, level: "sure", reason: `Known payer “${a.alias}”` };
+    if (aliasHit(narr, a.alias)) return { customer_id: a.customer_id, level: "sure", reason: `Known payer “${a.alias}”` };
   }
   const narrTokens = new Set(tokens(narr));
   const byName = ctx.customers.filter((c) => {
@@ -526,8 +481,16 @@ router.post("/bank/import", RC_CREATE, async (req, res) => {
     if (!ISO.test(r.date || "") || !(amount > 0)) { skipped++; continue; }
     const narration = String(r.narration || "").trim().slice(0, 500);
     const reference = String(r.reference || "").trim().slice(0, 120) || null;
-    const key = [bankAccount, r.date, amount.toFixed(2), reference || narration.slice(0, 120), r.balance ?? ""].join("|").slice(0, 300);
-    clean.push({ date: r.date, amount, narration, reference, key });
+    // Round 205 — the same credit gives the same key however the statement
+    // was downloaded: balance as a number, reference / narration without
+    // spaces or case. The Round 204 key is still checked, so a statement
+    // uploaded before this round is not brought in twice.
+    const bal = String(r.balance ?? "").replace(/[,₹\s]/g, "").replace(/(CR|DR)$/i, "");
+    const balKey = bal !== "" && Number.isFinite(Number(bal)) ? Number(bal).toFixed(2) : "";
+    const refKey = (reference || narration).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 120);
+    const key = ["v2", bankAccount, r.date, amount.toFixed(2), refKey, balKey].join("|").slice(0, 300);
+    const legacyKey = [bankAccount, r.date, amount.toFixed(2), reference || narration.slice(0, 120), r.balance ?? ""].join("|").slice(0, 300);
+    clean.push({ date: r.date, amount, narration, reference, key, legacyKey });
   }
   const ctx = await matchContext();
   const dates = clean.map((c) => c.date).sort();
@@ -541,19 +504,25 @@ router.post("/bank/import", RC_CREATE, async (req, res) => {
       [bankAccount, String(req.body.file_name || "").slice(0, 200) || null, dates[0] || null, dates[dates.length - 1] || null, skipped, req.user.id]
     );
     const importId = imp[0].id;
+    const own = await ownMarkers();
+    let ownCount = 0;
     for (const c of clean) {
-      const m = await matchLine(c, ctx);
+      const { rows: legacy } = await client.query(`SELECT 1 FROM bank_statement_lines WHERE dedupe_key = $1`, [c.legacyKey]);
+      if (legacy.length) { duplicates++; continue; }
+      const ownT = isOwnTransfer(c.narration, own);
+      const m = ownT ? { customer_id: null, level: "none", reason: "Own account" } : await matchLine(c, ctx);
       const { rowCount } = await client.query(
         `INSERT INTO bank_statement_lines (import_id, bank_account, txn_date, narration, reference, amount, dedupe_key,
-                                           suggested_customer_id, match_level, match_reason)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (dedupe_key) DO NOTHING`,
-        [importId, bankAccount, c.date, c.narration, c.reference, c.amount, c.key, m.customer_id, m.level, m.reason]
+                                           suggested_customer_id, match_level, match_reason, status, ignored_reason)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (dedupe_key) DO NOTHING`,
+        [importId, bankAccount, c.date, c.narration, c.reference, c.amount, c.key, m.customer_id, m.level, m.reason,
+         ownT ? "ignored" : "open", ownT ? "Own account transfer" : null]
       );
-      if (rowCount) added++; else duplicates++;
+      if (rowCount) { added++; if (ownT) ownCount++; } else duplicates++;
     }
     await client.query(`UPDATE bank_statement_imports SET credit_lines = $2 WHERE id = $1`, [importId, added]);
     await client.query("COMMIT");
-    res.json({ import_id: importId, added, duplicates, skipped });
+    res.json({ import_id: importId, added, duplicates, skipped, own_transfers: ownCount });
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -618,8 +587,12 @@ router.post("/bank/lines/:id(\\d+)/post", RC_CREATE, async (req, res) => {
       `UPDATE bank_statement_lines SET status = 'posted', receipt_id = $2, settled_by = $3, settled_at = now() WHERE id = $1`,
       [l.id, out.id, req.user.id]
     );
-    const alias = String(req.body.learn_alias || "").trim().toUpperCase().slice(0, 120);
-    if (alias.length >= 4) {
+    const alias = String(req.body.learn_alias || "").trim().toUpperCase().replace(/\s+/g, " ").slice(0, 120);
+    if (alias) {
+      const problem = aliasProblem(alias, l.narration, (await ownMarkers()).names);
+      if (problem) { await client.query("ROLLBACK"); return res.status(400).json({ error: `Payer name "${alias}": ${problem} Or untick "Remember".` }); }
+      const { rows: taken } = await client.query(`SELECT c.name FROM customer_payment_aliases a JOIN customers c ON c.id = a.customer_id WHERE a.alias = $1 AND a.customer_id <> $2`, [alias, customerId]);
+      if (taken.length) { await client.query("ROLLBACK"); return res.status(409).json({ error: `"${alias}" is already remembered for ${taken[0].name}. Untick "Remember" or forget it under Payer names first.` }); }
       await client.query(
         `INSERT INTO customer_payment_aliases (customer_id, alias, created_by) VALUES ($1, $2, $3) ON CONFLICT (alias) DO NOTHING`,
         [customerId, alias, req.user.id]

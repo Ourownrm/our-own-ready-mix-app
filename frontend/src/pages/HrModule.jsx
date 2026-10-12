@@ -59,6 +59,65 @@ function Field({ label, children, hint, span }) {
 }
 
 // ================================================================ Attendance
+// Round 205 — the attendance register on paper (owner, 12 Oct 2026: "also need
+// a print option for attendance"). A4 landscape: one row per employee, the
+// day codes of the month, the totals, a legend and signature lines. It prints
+// exactly the rows on screen (department / search filters apply).
+async function printRegister({ data, rows, month, dept, mode }) {
+  const { jsPDF } = await import("jspdf");
+  await import("jspdf-autotable");
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const [y, m] = month.split("-").map(Number);
+  const monthName = new Date(Date.UTC(y, m - 1, 15)).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" });
+  doc.setFontSize(13); doc.text("Our Own Ready Mix", 10, 11);
+  doc.setFontSize(10); doc.text(`Attendance register — ${monthName}${dept ? ` — ${dept}` : ""}`, 10, 17);
+  doc.setFontSize(7.5);
+  const printed = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  doc.text(`Printed ${printed} · ${rows.length} employee${rows.length === 1 ? "" : "s"}`, 287, 11, { align: "right" });
+  const offCol = new Set(data.dates.map((d, i) => (d.dow === 0 || d.holiday ? i : -1)).filter((i) => i >= 0));
+  const head = [["#", "Employee", ...data.dates.map((d) => `${Number(d.date.slice(8))}\n${DOW[d.dow][0]}`), "P", "½", "A", "MIS", "L", "WO", "H", "Paid"]];
+  const body = rows.map((e, i) => [
+    String(i + 1), `${e.name}\n${e.emp_code}${e.designation ? ` · ${e.designation}` : ""}`,
+    ...e.days.map((d) => (d.code === "IN" ? "P" : d.code || "")),
+    e.summary.present, e.summary.half, e.summary.absent, e.summary.missed, e.summary.leave ?? "", e.summary.off, e.summary.holiday, e.summary.paid_days,
+  ]);
+  const n = data.dates.length;
+  const tone = { A: [196, 48, 43], L: [40, 101, 126], MIS: [111, 66, 193], HD: [176, 112, 0], WO: [120, 120, 120], H: [120, 120, 120] };
+  doc.autoTable({
+    startY: 21, head, body, theme: "grid", margin: { left: 6, right: 6, bottom: 22 },
+    styles: { fontSize: 6, cellPadding: 0.6, halign: "center", valign: "middle", lineWidth: 0.1, lineColor: [190, 190, 190] },
+    headStyles: { fillColor: [35, 39, 44], textColor: 255, fontSize: 6, halign: "center" },
+    columnStyles: { 0: { cellWidth: 5 }, 1: { cellWidth: 34, halign: "left" }, ...Object.fromEntries([...Array(8)].map((_, k) => [n + 2 + k, { cellWidth: 7, fontStyle: k === 7 ? "bold" : "normal" }])) },
+    didParseCell: (h) => {
+      const di = h.column.index - 2;
+      if (h.section === "body" && di >= 0 && di < n) {
+        if (offCol.has(di)) h.cell.styles.fillColor = [243, 241, 236];
+        const c = tone[h.cell.raw];
+        if (c) { h.cell.styles.textColor = c; if (h.cell.raw === "A") h.cell.styles.fontStyle = "bold"; }
+      }
+      if (h.section === "head" && di >= 0 && di < n && offCol.has(di)) h.cell.styles.fillColor = [90, 94, 100];
+    },
+    didDrawPage: () => {
+      const H = doc.internal.pageSize.getHeight();
+      doc.setFontSize(6.5); doc.setTextColor(90);
+      doc.text("P present · HD half day · A absent · MIS missed punch (not counted until corrected) · L leave · WO weekly off · H holiday · NL app check-in without location · Paid = present + ½ × half days + off days + holidays + paid leave", 6, H - 16);
+      doc.setTextColor(0); doc.setFontSize(8);
+      ["Prepared by", "Checked by (Plant Manager)", "Approved by"].forEach((t, i) => {
+        const x = 20 + i * 95;
+        doc.line(x, H - 7, x + 60, H - 7); doc.text(t, x, H - 3);
+      });
+    },
+  });
+  const file = `Attendance_${month}${dept ? `_${dept.replace(/[^A-Za-z0-9]+/g, "_")}` : ""}.pdf`;
+  if (mode === "print") {
+    doc.autoPrint();
+    const w = window.open(doc.output("bloburl"), "_blank");
+    if (!w) doc.save(file); // pop-up blocked: download instead
+  } else {
+    doc.save(file);
+  }
+}
+
 function AttendanceTab({ meta }) {
   const [month, setMonth] = useState(istMonth());
   const [dept, setDept] = useState("");
@@ -103,6 +162,12 @@ function AttendanceTab({ meta }) {
           </select>
         </Field>
         <Field label="Search"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or code" /></Field>
+        {data && rows.length > 0 && (
+          <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            <button type="button" onClick={() => printRegister({ data, rows, month, dept, mode: "print" }).catch((e) => setError(e.message))}>Print register</button>
+            <button type="button" onClick={() => printRegister({ data, rows, month, dept, mode: "save" }).catch((e) => setError(e.message))}>PDF</button>
+          </div>
+        )}
       </div>
 
       {data && rows.length > 0 && (
@@ -747,7 +812,9 @@ export default function HrModule() {
   const [meta, setMeta] = useState(null);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("");
-  const loadMeta = () => apiRequest("/hr/meta").then(setMeta).catch((e) => setError(e.message));
+  // Someone who only handles advance requests has no other HR screen, so the
+  // meta it is refused is not an error for them.
+  const loadMeta = () => apiRequest("/hr/meta").then(setMeta).catch((e) => { if (!/access/i.test(e.message)) setError(e.message); });
   useEffect(() => { loadMeta(); }, []);
 
   const tabs = [
@@ -759,7 +826,7 @@ export default function HrModule() {
     ["compoff", "Comp-off", can("hr.requests", "view")],
     ["roster", "Roster", can("hr.roster", "view")],
     ["payroll", "Payroll", can("hr.payroll", "view")],
-    ["advances", "Advances", can("hr.advances", "view")],
+    ["advances", "Advances", can("hr.advances", "view") || can("hr.advance-request", "view") || can("hr.advance-approve", "edit") || can("hr.advance-pay", "edit")],
     ["settings", "Settings", can("hr.settings", "view")],
   ].filter((t) => t[2]);
   const current = tab || tabs[0]?.[0];
@@ -783,7 +850,7 @@ export default function HrModule() {
         {meta && current === "compoff" && <CompOffTab meta={meta} />}
         {meta && current === "leave" && <LeaveTab meta={meta} />}
         {meta && current === "payroll" && <PayrollTab meta={meta} />}
-        {meta && current === "advances" && <AdvancesTab />}
+        {current === "advances" && <AdvancesTab />}
         {meta && current === "settings" && <SettingsTab meta={meta} reloadMeta={loadMeta} />}
       </div>
     </>

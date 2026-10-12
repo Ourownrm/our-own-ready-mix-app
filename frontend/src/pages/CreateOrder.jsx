@@ -54,6 +54,10 @@ export default function CreateOrder({ onDone }) {
   // Round 204 — leaving a charge out needs a reason; the Administrator is told.
   const [pumpWaiverReason, setPumpWaiverReason] = useState("");
   const [partLoadWaiverReason, setPartLoadWaiverReason] = useState("");
+  // Round 205 — two prices for the grade at this site (OPC / OPC + fly ash):
+  // which one this order is.
+  const [priceOption, setPriceOption] = useState("");
+  useEffect(() => { setPriceOption(""); }, [form.site_id, form.mix_grade_id]);
 
   // Site Contacts directory (round 96, item 7) — autofills from any contact
   // already on file for this exact customer+site, and saves a newly-typed
@@ -87,10 +91,10 @@ export default function CreateOrder({ onDone }) {
   useEffect(() => {
     setPumpChargeDecision(null); setPartLoadDecision(null);
     if (!form.customer_id || !form.mix_grade_id || !form.site_id) { setRateInfo(null); return; }
-    apiRequest(`/master/rate-check?customer_id=${form.customer_id}&mix_grade_id=${form.mix_grade_id}&site_id=${form.site_id}&date=${form.order_date}`)
+    apiRequest(`/master/rate-check?customer_id=${form.customer_id}&mix_grade_id=${form.mix_grade_id}&site_id=${form.site_id}&date=${form.order_date}${priceOption ? `&price_option=${encodeURIComponent(priceOption)}` : ""}`)
       .then(setRateInfo)
       .catch(() => setRateInfo(null));
-  }, [form.customer_id, form.mix_grade_id, form.site_id, form.order_date]);
+  }, [form.customer_id, form.mix_grade_id, form.site_id, form.order_date, priceOption]);
 
   // Purely informational (round 118) — shows which mix design this
   // customer+grade will actually resolve to (a customer-specific assignment,
@@ -171,6 +175,10 @@ export default function CreateOrder({ onDone }) {
       setError("Select which pump will be used for this order.");
       return;
     }
+    if (rateInfo?.options?.length > 1 && !priceOption) {
+      setError("This site has two prices for the grade — choose which one this order is.");
+      return;
+    }
     if (needsPumpDecision && pumpChargeDecision === null) {
       setError("Confirm whether the pump mobilization charge applies to this order.");
       return;
@@ -195,6 +203,7 @@ export default function CreateOrder({ onDone }) {
           ...form,
           pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : undefined,
           pump_charge_amount: needsPumpDecision && pumpChargeDecision ? pumpChargeAmount : 0,
+          price_option: priceOption || undefined,
           pump_charge_waiver_reason: needsPumpDecision && pumpChargeDecision === false ? pumpWaiverReason.trim() || undefined : undefined,
           part_load_applicable: partLoadDecision,
           part_load_waiver_reason: partLoadDecision === false ? partLoadWaiverReason.trim() : undefined,
@@ -401,7 +410,18 @@ export default function CreateOrder({ onDone }) {
             {rateInfo.pending_quotation && <div style={{ color: "var(--slate)", marginTop: 2 }}>{rateInfo.pending_quotation.quote_no} (₹{Number(rateInfo.pending_quotation.rate_total).toLocaleString("en-IN")}) is with the customer — not in force until they accept it.</div>}
           </div>
         )}
-        {rateInfo && !rateInfo.rate_exists && (
+        {rateInfo?.options?.length > 1 && (
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--info-bg)", color: "var(--info)", padding: 10, borderRadius: 8 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>This site has {rateInfo.options.length} prices for this grade — which one is this order? (required)</div>
+            <select value={priceOption} onChange={(e) => setPriceOption(e.target.value)} style={{ width: "100%" }}>
+              <option value="">Choose…</option>
+              {rateInfo.options.map((o) => (
+                <option key={o.price_option} value={o.price_option}>{o.price_option} — ₹{Number(o.rate_per_m3).toLocaleString("en-IN")}/m³ incl. GST</option>
+              ))}
+            </select>
+          </div>
+        )}
+        {rateInfo && !rateInfo.rate_exists && !rateInfo.needs_option && (
           rateInfo.pending_quotation && rateInfo.pending_quotation.revision === 0 ? (
             <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--info-bg)", color: "var(--info)", padding: 10, borderRadius: 8 }}>
               New site: this order accepts quotation <b>{rateInfo.pending_quotation.quote_no}</b> (₹{Number(rateInfo.pending_quotation.rate_total).toLocaleString("en-IN")}/m³ incl. GST) and sets the site's price list from the order date.

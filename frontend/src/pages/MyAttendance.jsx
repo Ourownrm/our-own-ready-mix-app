@@ -39,6 +39,15 @@ export default function MyAttendance() {
     setError("");
     try { await apiRequest("/hr/my/compoff", { method: "POST", body: { work_date: d.date, days } }); load(); } catch (err) { setError(err.message); }
   }
+  // Round 205 — comp-off request: the worked off day + the day to take off
+  // (a coming working day, or a past day marked Absent).
+  const [co, setCo] = useState(null);
+  async function sendCo(e) {
+    e.preventDefault(); setError("");
+    try { await apiRequest("/hr/my/compoff-request", { method: "POST", body: { ...co, days: Number(co.days) } }); setCo(null); load(); }
+    catch (err) { setError(err.message); }
+  }
+  const absentDays = (data?.attendance?.days || []).filter((d) => d.code === "A" || d.code === "HD").map((d) => d.date);
 
   async function withdraw(path) {
     setError("");
@@ -47,7 +56,7 @@ export default function MyAttendance() {
 
   const att = data?.attendance;
   const days = att ? [...att.days].filter((d) => d.code).reverse() : [];
-  const busy = raise !== null || asking !== null;
+  const busy = raise !== null || asking !== null || co !== null;
   return (
     <>
       <TopBar title="My attendance" />
@@ -63,6 +72,7 @@ export default function MyAttendance() {
                 {canPunch && <Link to="/mark-attendance" className="btn-primary" style={{ padding: "10px 14px", borderRadius: 8, textDecoration: "none", fontSize: 13, fontWeight: 600 }}>Mark attendance</Link>}
                 {!busy && <button className={canPunch ? "" : "btn-primary"} onClick={() => setAsking("")}>+ Ask for leave</button>}
                 {!busy && <button onClick={() => setRaise("")}>+ Correct a day</button>}
+                {!busy && data.compoff_claimable?.length > 0 && <button onClick={() => setCo({ work_date: data.compoff_claimable[0].date, off_date: "", days: "1", reason: "" })}>+ Comp-off request</button>}
               </div>
             </div>
             {asking !== null && (
@@ -71,6 +81,33 @@ export default function MyAttendance() {
                 <LeaveForm self types={data.leave_types} balances={data.leave_balances} fixed={asking ? { date: asking } : {}}
                   onDone={() => { setAsking(null); load(); }} onCancel={() => setAsking(null)} />
               </div>
+            )}
+            {co && (
+              <form className="card field-input" onSubmit={sendCo} style={{ marginBottom: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>Comp-off request</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Off day / holiday I worked
+                    <select value={co.work_date} onChange={(e) => setCo({ ...co, work_date: e.target.value })} required>
+                      {data.compoff_claimable.map((d) => <option key={d.date} value={d.date}>{fmtDay(d.date)}{d.worked != null ? ` · ${hm(d.worked)}` : ""}</option>)}
+                    </select>
+                  </label>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Day I take off
+                    <input type="date" value={co.off_date} onChange={(e) => setCo({ ...co, off_date: e.target.value })} required />
+                  </label>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>How much
+                    <select value={co.days} onChange={(e) => setCo({ ...co, days: e.target.value })}><option value="1">1 day</option><option value="0.5">½ day</option></select>
+                  </label>
+                </div>
+                {absentDays.length > 0 && (
+                  <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Absent this month — tap to make good with comp-off: {absentDays.map((d) => (
+                    <button key={d} type="button" style={{ padding: "2px 8px", fontSize: 12, margin: "2px 4px 0 0" }} onClick={() => setCo({ ...co, off_date: d })}>{fmtDay(d)}</button>
+                  ))}</div>
+                )}
+                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)", marginTop: 8 }}>Reason
+                  <input value={co.reason} onChange={(e) => setCo({ ...co, reason: e.target.value })} placeholder="Needed if the day off was an absence" />
+                </label>
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}><button className="btn-primary" type="submit">Send request</button><button type="button" onClick={() => setCo(null)}>Cancel</button></div>
+              </form>
             )}
             {raise !== null && (
               <div className="card" style={{ marginBottom: 12 }}>
@@ -132,8 +169,8 @@ export default function MyAttendance() {
                 {(data.compoff_claims || []).filter((c) => c.status !== "cancelled").map((c) => (
                   <div key={"c" + c.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
                     <div>
-                      <b>{fmtDay(c.work_date)}</b> · Comp-off claim ({c.days === 1 ? "1 day" : "½ day"})
-                      <div style={{ fontSize: 12, color: "var(--slate)" }}>expires {fmtDay(c.expires_on)}{c.decision_note ? ` — ${c.decided_by_name || ""}: ${c.decision_note}` : ""}</div>
+                      <b>{fmtDay(c.work_date)}</b> · Comp-off {c.off_date ? "request" : "claim"} ({c.days === 1 ? "1 day" : "½ day"}){c.off_date ? <> — off on <b>{fmtDay(c.off_date)}</b>{c.for_absence ? " (was absent)" : ""}</> : null}
+                      <div style={{ fontSize: 12, color: "var(--slate)" }}>{c.off_date ? "worked day and day off decided together" : `expires ${fmtDay(c.expires_on)}`}{c.decision_note ? ` — ${c.decided_by_name || ""}: ${c.decision_note}` : ""}</div>
                     </div>
                     <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                       <span className={`badge ${STATUS_BADGE[c.status]}`}>{c.status === "pending" ? "Waiting" : c.status}</span>
@@ -141,7 +178,7 @@ export default function MyAttendance() {
                     </div>
                   </div>
                 ))}
-                {data.leaves.filter((l) => l.status !== "cancelled").map((l) => (
+                {data.leaves.filter((l) => l.status !== "cancelled" && !l.compoff_claim_id).map((l) => (
                   <div key={"l" + l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
                     <div>
                       <b>{leaveRange(l)}</b> · {l.type_name} ({l.days} day{l.days === 1 ? "" : "s"})

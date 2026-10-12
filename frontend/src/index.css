@@ -455,3 +455,9 @@ a { color: var(--rebar); }
   .pp-only-wide { display: none !important; }
   .pp-only-narrow { display: block; }
 }
+
+/* Round 205 — Accountant home: who to chase beside "Needs you". */
+.acct-home-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 920px) { .acct-home-grid { grid-template-columns: minmax(0, 1fr); } }
+.btn-link { display: inline-block; font-size: 13px; padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--charcoal); text-decoration: none; background: var(--surface, #fff); }
+.btn-link:hover { border-color: var(--rebar); }

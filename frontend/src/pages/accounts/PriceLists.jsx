@@ -100,7 +100,7 @@ function CustomerPriceList({ customerId, go, canQuote }) {
                   const ch = r.charges;
                   return (
                     <tr key={r.id} style={row}>
-                      <td style={{ ...TD, fontWeight: 700 }}>{r.grade_name}{!r.site_specific && <div style={{ fontSize: 11, color: "var(--amber)", fontWeight: 400 }}>customer-wide</div>}</td>
+                      <td style={{ ...TD, fontWeight: 700 }}>{r.grade_name}{r.price_option && <div style={{ fontSize: 11, color: "var(--info)", fontWeight: 400 }}>{r.price_option}</div>}{!r.site_specific && <div style={{ fontSize: 11, color: "var(--amber)", fontWeight: 400 }}>customer-wide</div>}</td>
                       <td style={{ ...NUM, fontWeight: 700 }}>{inr2(r.rate_per_m3)}</td>
                       <td style={{ ...NUM, fontSize: 12, color: "var(--slate)" }}>{inr2(sp.base)} · {inr2(sp.gst)}</td>
                       <td style={{ ...TD, fontSize: 12 }}>{fmtDate(r.effective_from)}<div style={{ color: "var(--slate)" }}>{r.quote_no || (r.source === "rate_file" ? "old rate file" : r.source)}</div></td>
