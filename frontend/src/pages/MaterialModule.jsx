@@ -32,6 +32,7 @@ import { printMaterialReport } from "../lib/materialReportPdf.js";
 import SupplierLedgerTab from "./SupplierLedger.jsx";
 import TransporterLedgerTab from "./TransporterLedger.jsx";
 import ReceiptVariance from "./ReceiptVariance.jsx";
+import { PrintPoModal, PoSettingsModal } from "./PurchaseOrderPrint.jsx";
 
 // ===================== Shared helpers =====================
 
@@ -936,6 +937,10 @@ function OrdersTab({ role }) {
 
   const [rejecting, setRejecting] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
+  // Round 208 — print an order as a purchase order; PO settings (Admin).
+  const [printingPo, setPrintingPo] = useState(null);
+  const [poSettingsOpen, setPoSettingsOpen] = useState(false);
+  const mayPoSettings = can("material.po-settings", "edit");
 
   // Round 140, item 7 — close / revise an approved order.
   const [closing, setClosing] = useState(null);
@@ -1103,6 +1108,7 @@ function OrdersTab({ role }) {
               Show closed ({closedCount})
             </label>
           )}
+          {mayPoSettings && <button type="button" onClick={() => setPoSettingsOpen(true)} style={{ fontSize: 12, padding: "6px 12px" }}>PO settings</button>}
           {mayRaise && <button type="button" onClick={openNew} style={{ fontSize: 12, padding: "6px 12px" }}>+ New order</button>}
         </div>
       </div>
@@ -1116,6 +1122,7 @@ function OrdersTab({ role }) {
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button type="button" style={{ fontSize: 11.5, padding: "5px 10px", flex: 1 }} onClick={() => approve(o)}>Approve</button>
                 <button type="button" className="btn-danger" style={{ fontSize: 11.5, padding: "5px 10px", flex: 1 }} onClick={() => openReject(o)}>Reject</button>
+                <button type="button" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => setPrintingPo(o.id)}>Draft PO</button>
               </div>
             </div>
           ))}
@@ -1130,10 +1137,15 @@ function OrdersTab({ role }) {
           {g.items.map((o) => (
             <div key={o.id} className="card" style={{ marginBottom: 8 }}>
               <OrderSummary o={o} />
-              {isAdmin && o.status === "approved" && (
-                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                  <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openRevise(o)}>Revise</button>
-                  <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openClose(o)}>Close order</button>
+              {o.status !== "rejected" && (
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => setPrintingPo(o.id)}>
+                    {o.status === "pending_approval" ? "Draft PO" : "Print PO"}
+                  </button>
+                  {isAdmin && o.status === "approved" && <>
+                    <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openRevise(o)}>Revise</button>
+                    <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openClose(o)}>Close order</button>
+                  </>}
                 </div>
               )}
             </div>
@@ -1144,6 +1156,9 @@ function OrdersTab({ role }) {
       {orders.length > 0 && visibleOrders.length === 0 && (
         <div style={{ fontSize: 12.5, color: "var(--slate)" }}>All orders are closed. Tick “Show closed” above to see them.</div>
       )}
+
+      {printingPo && <PrintPoModal orderId={printingPo} onClose={() => setPrintingPo(null)} />}
+      {poSettingsOpen && <PoSettingsModal onClose={() => setPoSettingsOpen(false)} onSaved={setNotice} />}
 
       {creating && (
         <Modal title="New material order" onClose={() => setCreating(false)} wide>

@@ -213,6 +213,10 @@ export const CATALOGUE = [
     { administrator: VCED, store: VC }),
   f("material.order-approve", "material", "Approve / reject a material order", E,
     { administrator: E }),
+  // Round 208 — the purchase order's letterhead: addresses, contact, our
+  // GSTIN, default terms and remarks. Printing a PO needs only Orders view.
+  f("material.po-settings", "material", "Purchase order settings (addresses, default terms)", VE,
+    { administrator: VE }),
   f("material.receipts", "material", "Material receipts", VCED,
     { administrator: VCED, store: VC }),
   // Round 158 — deciding which quantity stands when the weighbridge and the
@@ -706,7 +710,8 @@ export const MODULES = [
     ],
     support: ["material.materials", "material.units", "material.suppliers", "material.supplier-rates",
       "material.transporters", "material.order-approve", "material.physical-stock-approve",
-      "material.supplier-payments", "material.transporter-payments", "material.receipt-wb-approve"],
+      "material.supplier-payments", "material.transporter-payments", "material.receipt-wb-approve",
+      "material.po-settings"],
     // An Administrator's tool for moving consumption between materials — not
     // a screen to hand out with "view the module".
     noAutoView: ["material.consumption-transfer", "material.supplier-ledger", "material.transporter-ledger",

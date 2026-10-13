@@ -8499,3 +8499,14 @@ block the plant from batching. No 90-day cement retest card yet.
 - Deleting a receipt whose bill had a supplier payment matched to it failed on a foreign key and only showed "Something went wrong" *behind* the dialog, so it looked stuck on "Deleting…".
 - Now: one transaction. The payment match is released (that money settles the supplier's oldest bills; logged in rm_supplier_ledger_log as `receipt_deleted`), the silo fill and the receipt are removed together. Any failure changes nothing and is shown inside the dialog.
 - Before this fix, a failed attempt had already removed the receipt's silo fill. No /setup needed.
+
+## Round 208 — Material order prints as a purchase order (v10.38)
+
+**Deploy:** upload the files, let Render redeploy, then visit `/setup?key=…` once (adds the PO settings table and the order's saved PO terms).
+
+- Orders tab: **Print PO** on every order (approved or closed); **Draft PO** on one waiting for approval prints with a DRAFT watermark and no signatory.
+- Layout follows the owner's LPO format: logo, "PURCHASE ORDER", To / PO No (app style PO-00032), PO date (approval date), quotation ref/date, our GSTIN, valid till; item line; Total, GST, Total Amount; amount in words; billing and delivery address; terms; other remarks; "For OUR OWN READY MIX" signed by the **Administrator who approved the order**; company footer. A4.
+- GST: CGST + SGST when the supplier's GSTIN is from Kerala (or blank), IGST otherwise; a rate marked "GST included" shows the taxable value and the included tax.
+- The Print dialog pre-fills the terms (payment from the supplier's credit days, freight from delivered / ex-factory) and saves them with the order so a reprint matches. Store can save terms on orders; anyone who can see orders can print.
+- **PO settings** (Administrator, Orders tab): addresses, contact, our GST No., validity days, default terms, standard remarks. New permission `material.po-settings`.
+- Supplier address, GSTIN and contact print from the Suppliers master — fill them in there.

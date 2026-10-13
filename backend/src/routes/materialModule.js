@@ -15,6 +15,7 @@ import { issueCardsForReceipt } from "../lib/rmTestCards.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 import { buildLedgers, creditCheck, receiptBillAmount, addDays } from "../lib/supplierLedger.js";
 import { buildTransporterLedgers } from "../lib/transporterLedger.js";
+import { getPoSettings, cleanSettings, cleanTerms, defaultTerms } from "../lib/purchaseOrders.js";
 // Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
 // 185's bookStockRows() called it without importing it, so every caller (Stock
 // tab, stock-summary KPIs, Cost Dashboard) threw a ReferenceError at request
@@ -996,6 +997,69 @@ router.post("/orders/:id/reject", requirePermission("material.order-approve", "e
   );
   await pushToUser(existing[0].requested_by, { title: "Material order rejected", body: reason, url: "/material-module?tab=orders" });
   res.json(rows[0]);
+});
+
+// ROUND 208 — the order printed as a purchase order. Anyone who can see
+// orders can print one; the terms typed for it are saved on the order (by
+// whoever raises or revises orders) so a reprint matches what was sent. The
+// letterhead, addresses and default terms are the PO settings, Administrator's.
+router.get("/orders/:id/po", requirePermission("material.orders", "view"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid order." });
+  const { rows } = await query(
+    `SELECT ${ORDER_LIST_COLUMNS},
+            s.address AS supplier_address, s.gstin AS supplier_gstin, s.contact_person AS supplier_contact,
+            s.phone AS supplier_phone, s.credit_days AS supplier_credit_days,
+            to_char(o.requested_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS requested_day,
+            to_char(o.approved_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS approved_day,
+            to_char(o.approved_at AT TIME ZONE 'Asia/Kolkata', 'DD-Mon-YYYY, HH12:MI AM') AS approved_at_text
+     ${ORDER_LIST_FROM} WHERE o.id = $1`, [id]);
+  if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  const order = rows[0];
+  // Store sees only the orders they raised (as on the Orders tab).
+  if (!isAdminLevel(req.user.role) && order.requested_by !== req.user.id && await can(req.user, "material.orders", "create")
+      && !(await can(req.user, "material.orders", "edit"))) {
+    return res.status(404).json({ error: "Order not found." });
+  }
+  if (order.status === "rejected") return res.status(400).json({ error: "A rejected order has no purchase order." });
+  const settings = await getPoSettings({ query });
+  res.json({
+    order,
+    settings,
+    terms: order.po_terms || null,
+    defaults: defaultTerms(order, settings),
+    may_save_terms: (await can(req.user, "material.orders", "create")) || (await can(req.user, "material.orders", "edit")),
+  });
+});
+
+router.put("/orders/:id/po-terms", requirePermission("material.orders", "view"), async (req, res) => {
+  if (!(await can(req.user, "material.orders", "create")) && !(await can(req.user, "material.orders", "edit"))) {
+    return res.status(403).json({ error: "You don't have access to this." });
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid order." });
+  const t = cleanTerms(req.body);
+  if (t.error) return res.status(400).json({ error: t.error });
+  const { rows } = await query(
+    `UPDATE rm_orders SET po_terms = $1, po_terms_by = $2, po_terms_at = now() WHERE id = $3 AND status <> 'rejected' RETURNING id`,
+    [JSON.stringify(t.value), req.user.id, id]);
+  if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  res.json({ saved: true, terms: t.value });
+});
+
+router.get("/po-settings", requirePermission("material.po-settings", "view"), async (req, res) => {
+  res.json(await getPoSettings({ query }));
+});
+
+router.put("/po-settings", requirePermission("material.po-settings", "edit"), async (req, res) => {
+  const c = cleanSettings(req.body || {});
+  if (c.error) return res.status(400).json({ error: c.error });
+  const merged = { ...(await getPoSettings({ query })), ...c.value };
+  await query(
+    `INSERT INTO rm_po_settings (key, value, updated_by, updated_at) VALUES ('po', $1, $2, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [JSON.stringify(merged), req.user.id]);
+  res.json(merged);
 });
 
 // Close (item 7, round 140) — a terminal state Administrator sets by hand

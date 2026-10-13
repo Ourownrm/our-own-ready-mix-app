@@ -4087,3 +4087,14 @@ CREATE TABLE IF NOT EXISTS hr_app_punches (
 );
 CREATE INDEX IF NOT EXISTS hr_app_punches_emp_time ON hr_app_punches (employee_id, punched_at);
 CREATE INDEX IF NOT EXISTS hr_app_punches_review ON hr_app_punches (status) WHERE status = 'review';
+
+-- Round 208 — purchase order print (lib/purchaseOrders.js).
+CREATE TABLE IF NOT EXISTS rm_po_settings (
+  key        VARCHAR(40) PRIMARY KEY,
+  value      JSONB NOT NULL,
+  updated_by INTEGER REFERENCES users(id),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS po_terms JSONB;
+ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS po_terms_by INTEGER REFERENCES users(id);
+ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS po_terms_at TIMESTAMPTZ;
