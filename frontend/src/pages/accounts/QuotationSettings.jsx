@@ -57,6 +57,7 @@ export default function QuotationSettings() {
   return (
     <>
       <Banner>{error}</Banner><Banner kind="ok">{msg}</Banner>
+      {can("accounts.quotation-costing", "view") && <CostingSettings canEdit={can("accounts.quotation-costing", "edit")} />}
       <div className="card" style={{ marginBottom: 12 }}>
         <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>Numbering and signature</h3>
         <div style={grid}>
@@ -122,5 +123,87 @@ export default function QuotationSettings() {
           onReset={canEdit ? () => saveTerms(editing.def) : null} />
       )}
     </>
+  );
+}
+
+// Round 209 — what the proposed rate on a quotation adds up (Administrator).
+function CostingSettings({ canEdit }) {
+  const [d, setD] = useState(null);
+  const [c, setC] = useState(null);
+  const [error, setError] = useState("");
+  const [msg, setMsg] = useState("");
+  const load = () => apiRequest("/quotations/costing-settings").then((r) => { setD(r.context); setC(r.settings); }).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []);
+  if (!c) return error ? <Banner>{error}</Banner> : null;
+  const set = (k) => (e) => setC({ ...c, [k]: e.target.value });
+  const rs = (v) => (v == null ? "—" : `₹${Math.round(Number(v)).toLocaleString("en-IN")}`);
+  async function save() {
+    setError(""); setMsg("");
+    try { await apiRequest("/quotations/costing-settings", { method: "PUT", body: c }); setMsg("Costing saved."); load(); }
+    catch (e) { setError(e.message); }
+  }
+  const grid = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "0 12px" };
+  const radio = (name, val, label) => (
+    <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, marginBottom: 4 }}>
+      <input type="radio" name={name} checked={c[name] === val} onChange={() => setC({ ...c, [name]: val })} disabled={!canEdit} style={{ width: "auto" }} /> {label}
+    </label>
+  );
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <h3 style={{ margin: "0 0 4px", fontSize: 15 }}>Proposed-rate costing</h3>
+      <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>
+        Proposed rate = (material from the mix design + fuel + salary + other) × (1 + margin) × (1 + GST), rounded. Shown to the Administrator only, never printed.
+      </div>
+      <Banner>{error}</Banner><Banner kind="ok">{msg}</Banner>
+      <fieldset disabled={!canEdit} style={{ border: "none", padding: 0, margin: 0 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+          <div>
+            <b style={{ fontSize: 13 }}>Fuel per m³ (when a quotation uses the average)</b>
+            {radio("fuel_mode", "actual", `Actual: ${rs(d?.fuel_average?.per_m3)} (${d?.fuel_average?.label || "—"})`)}
+            {radio("fuel_mode", "set", "A value set here")}
+            <div style={grid}>
+              <Field label="Set value ₹ / m³"><input type="number" min="0" value={c.fuel_set ?? ""} onChange={set("fuel_set")} /></Field>
+              <Field label="Actual over">
+                <select value={c.fuel_months} onChange={set("fuel_months")}><option value={1}>Last month</option><option value={3}>Last 3 months</option></select>
+              </Field>
+            </div>
+          </div>
+          <div>
+            <b style={{ fontSize: 13 }}>Salary per m³</b>
+            {radio("salary_mode", "actual", `Actual: ${rs(d?.salary?.per_m3)} (${d?.salary ? `${d.salary.month} payroll ÷ ${Math.round(d.salary.m3)} m³` : "no locked payroll yet"})`)}
+            {radio("salary_mode", "set", "A value set here")}
+            <Field label="Set value ₹ / m³"><input type="number" min="0" value={c.salary_set ?? ""} onChange={set("salary_set")} /></Field>
+          </div>
+          <div>
+            <b style={{ fontSize: 13 }}>Other costs, margin and rounding</b>
+            <div style={grid}>
+              <Field label="Other costs ₹ / m³" hint="Rent, power, maintenance, office…"><input type="number" min="0" value={c.other_per_m3} onChange={set("other_per_m3")} /></Field>
+              <Field label="Margin %"><input type="number" min="0" step="0.5" value={c.margin_pct} onChange={set("margin_pct")} /></Field>
+              <Field label="GST %"><input type="number" min="0" value={c.gst_pct} onChange={set("gst_pct")} /></Field>
+              <Field label="Round to ₹"><input type="number" min="1" value={c.round_to} onChange={set("round_to")} /></Field>
+            </div>
+          </div>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <b style={{ fontSize: 13 }}>Site-specific fuel</b> <span style={{ fontSize: 12, color: "var(--slate)" }}>(from the road km typed on each quotation)</span>
+          <div style={grid}>
+            <Field label="Drum &amp; waiting L / trip"><input type="number" min="0" step="0.5" value={c.drum_litres_per_trip} onChange={set("drum_litres_per_trip")} /></Field>
+            <Field label="Usual load per trip (m³)"><input type="number" min="1" step="0.5" value={c.default_load_m3} onChange={set("default_load_m3")} /></Field>
+            <Field label="TM km per litre" hint={d?.fleet_kmpl ? `Fleet actual, 90 days: ${d.fleet_kmpl} — used instead` : "Used until fills give a fleet figure"}><input type="number" min="0.5" step="0.1" value={c.tm_kmpl} onChange={set("tm_kmpl")} /></Field>
+            <Field label="Line pump L / hour"><input type="number" min="0" step="0.5" value={c.line_pump_lph} onChange={set("line_pump_lph")} /></Field>
+            <Field label="Boom pump L / hour"><input type="number" min="0" step="0.5" value={c.boom_pump_lph} onChange={set("boom_pump_lph")} /></Field>
+            <Field label="Pour hours per 60 m³"><input type="number" min="0" step="0.5" value={c.pour_hours_per_60} onChange={set("pour_hours_per_60")} /></Field>
+          </div>
+          {radio("plant_fuel_mode", "actual", `Genset & loader: last month's actual (${d?.plant_fuel?.genset_lpm3 != null ? `${Math.round(d.plant_fuel.genset_lpm3 * 100) / 100}` : "—"} · ${d?.plant_fuel?.loader_lpm3 != null ? `${Math.round(d.plant_fuel.loader_lpm3 * 100) / 100}` : "—"} L/m³)`)}
+          {radio("plant_fuel_mode", "set", "Genset & loader: values set here")}
+          <div style={grid}>
+            <Field label="Genset L / m³"><input type="number" min="0" step="0.05" value={c.genset_lpm3 ?? ""} onChange={set("genset_lpm3")} /></Field>
+            <Field label="Loader L / m³"><input type="number" min="0" step="0.05" value={c.loader_lpm3 ?? ""} onChange={set("loader_lpm3")} /></Field>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--slate)" }}>Diesel rate: {d?.diesel_rate ? `₹${d.diesel_rate}/L (Fuel module)` : "not set in the Fuel module"}.</div>
+        </div>
+      </fieldset>
+      {canEdit && <div style={{ marginTop: 10 }}><button type="button" className="btn-primary" onClick={save}>Save costing</button></div>}
+    </div>
   );
 }

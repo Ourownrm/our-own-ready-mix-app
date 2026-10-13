@@ -72,7 +72,9 @@ export default function MyAttendance() {
                 {canPunch && <Link to="/mark-attendance" className="btn-primary" style={{ padding: "10px 14px", borderRadius: 8, textDecoration: "none", fontSize: 13, fontWeight: 600 }}>Mark attendance</Link>}
                 {!busy && <button className={canPunch ? "" : "btn-primary"} onClick={() => setAsking("")}>+ Ask for leave</button>}
                 {!busy && <button onClick={() => setRaise("")}>+ Correct a day</button>}
-                {!busy && data.compoff_claimable?.length > 0 && <button onClick={() => setCo({ work_date: data.compoff_claimable[0].date, off_date: "", days: "1", reason: "" })}>+ Comp-off request</button>}
+                {/* Round 209 — always offered (owner): the employee names the off day
+                    or holiday worked; the server checks its punches. */}
+                {!busy && <button onClick={() => setCo({ work_date: data.compoff_claimable?.[0]?.date || "", off_date: "", days: "1", reason: "" })}>+ Comp-off request</button>}
               </div>
             </div>
             {asking !== null && (
@@ -87,9 +89,16 @@ export default function MyAttendance() {
                 <div style={{ fontWeight: 700, marginBottom: 8 }}>Comp-off request</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
                   <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Off day / holiday I worked
-                    <select value={co.work_date} onChange={(e) => setCo({ ...co, work_date: e.target.value })} required>
-                      {data.compoff_claimable.map((d) => <option key={d.date} value={d.date}>{fmtDay(d.date)}{d.worked != null ? ` · ${hm(d.worked)}` : ""}</option>)}
-                    </select>
+                    {data.compoff_claimable?.length > 0 ? (
+                      <select value={co.work_date} onChange={(e) => setCo({ ...co, work_date: e.target.value })} required>
+                        {data.compoff_claimable.map((d) => <option key={d.date} value={d.date}>{fmtDay(d.date)}{d.worked != null ? ` · ${hm(d.worked)}` : ""}</option>)}
+                      </select>
+                    ) : (
+                      <>
+                        <input type="date" value={co.work_date} onChange={(e) => setCo({ ...co, work_date: e.target.value })} required />
+                        <span style={{ fontWeight: 400, fontSize: 11 }}>No worked off day found in your punches yet — give the date; HR checks it.</span>
+                      </>
+                    )}
                   </label>
                   <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Day I take off
                     <input type="date" value={co.off_date} onChange={(e) => setCo({ ...co, off_date: e.target.value })} required />

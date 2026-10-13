@@ -11,7 +11,8 @@ import { splitRate, inr2, filledTerms } from "../../lib/quotationTerms.js";
 import { quotationPdfBlobUrl } from "../../lib/quotationPdf.js";
 import { TH, TD, NUM, row, Banner, Field, Modal, Empty } from "./ui.jsx";
 
-const blankLine = () => ({ mix_grade_id: "", item_label: "", specification: "", qty_m3: "", rate_total: "" });
+const blankLine = () => ({ mix_grade_id: "", mix_design_id: "", item_label: "", specification: "", qty_m3: "", rate_total: "" });
+const money0 = (n) => (n == null ? "—" : `₹${Math.round(Number(n)).toLocaleString("en-IN")}`);
 
 const CHARGE_FIELDS = [
   ["line_pump_min_qty", "Line pump: below (m³)"], ["line_pump_charge", "Line pump charge ₹/day"],
@@ -39,7 +40,11 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
     charges: { ...(defaults.charges || {}) }, payment: { ...(defaults.payment || {}) },
     rebate_per_m3: "", special_conditions: "", terms: null, terms_modified: false,
     lines: [blankLine()],
+    // Round 209 — app only: salesperson; fuel basis + site fuel for the
+    // proposed rate (Administrator).
+    salesperson_id: "", fuel_basis: "site", site_fuel: { road_km: "", load_m3: "", pump: "none", diesel_rate: "" },
   });
+  const [costing, setCosting] = useState(null); // { lines: {mix_design_id: c}, site_fuel, context }
   const [status, setStatus] = useState("draft");
   const [quoteNo, setQuoteNo] = useState("");
 
@@ -55,7 +60,9 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
           kind_attention: q.kind_attention || "", agreement_type: q.agreement_type, quote_date: String(q.quote_date).slice(0, 10),
           validity_days: q.validity_days, charges: { ...(defaults.charges || {}), ...(q.charges || {}) }, payment: { ...(defaults.payment || {}), ...(q.payment || {}) },
           rebate_per_m3: q.rebate_per_m3 ?? "", special_conditions: q.special_conditions || "", terms: q.terms, terms_modified: q.terms_modified,
-          lines: q.lines.map((l) => ({ mix_grade_id: l.mix_grade_id ? String(l.mix_grade_id) : "extra", item_label: l.item_label || "", specification: l.specification || "", qty_m3: l.qty_m3 ?? "", rate_total: l.rate_total })),
+          lines: q.lines.map((l) => ({ mix_grade_id: l.mix_grade_id ? String(l.mix_grade_id) : "extra", mix_design_id: l.mix_design_id ? String(l.mix_design_id) : "", item_label: l.item_label || "", specification: l.specification || "", qty_m3: l.qty_m3 ?? "", rate_total: l.rate_total })),
+          salesperson_id: q.salesperson_id ? String(q.salesperson_id) : "", fuel_basis: q.fuel_basis || "average",
+          site_fuel: { road_km: q.site_fuel?.road_km ?? q.site_road_km ?? "", load_m3: q.site_fuel?.load_m3 ?? "", pump: q.site_fuel?.pump || "none", diesel_rate: q.site_fuel?.diesel_rate ?? "" },
         });
       }).catch((e) => setError(e.message));
     }
@@ -74,6 +81,41 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
   }, [f.customer_id, f.site_id]);
 
   const siteOptions = useMemo(() => sites.filter((s) => String(s.customer_id) === String(f.customer_id)), [sites, f.customer_id]);
+  // Round 209 — a new site brings its salesperson and its remembered road km.
+  function chooseSite(siteIdV) {
+    const st = sites.find((x) => String(x.id) === String(siteIdV));
+    setF((p) => ({
+      ...p, site_id: siteIdV,
+      salesperson_id: p.salesperson_id || (st?.assigned_sales_representative_id ? String(st.assigned_sales_representative_id) : ""),
+      site_fuel: { ...p.site_fuel, road_km: p.site_fuel.road_km !== "" ? p.site_fuel.road_km : (st?.road_km ?? st?.distance_from_plant_km ?? "") },
+    }));
+  }
+  const designsOf = (gradeId) => (meta.mix_designs || []).filter((d) => String(d.mix_grade_id) === String(gradeId));
+  // Choosing a mix design copies its Mix description into the line (editable).
+  function chooseDesign(i, designId) {
+    const d = (meta.mix_designs || []).find((x) => String(x.id) === String(designId));
+    setF((p) => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, mix_design_id: designId, specification: d?.mix_description || l.specification } : l)) }));
+  }
+  function chooseGrade(i, gradeId) {
+    const ds = designsOf(gradeId);
+    const std = ds.find((d) => d.is_standard_for_grade) || (ds.length === 1 ? ds[0] : null);
+    setF((p) => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, mix_grade_id: gradeId, mix_design_id: std ? String(std.id) : "", specification: std?.mix_description || (l.mix_design_id ? "" : l.specification) } : l)) }));
+  }
+  // Proposed rate (Administrator only): worked out by the server from the mix
+  // designs, fuel basis and the site's road km.
+  const costKey = JSON.stringify([f.lines.map((l) => l.mix_design_id), f.fuel_basis, f.site_fuel]);
+  useEffect(() => {
+    if (!meta.perms.costing) return;
+    const ids = [...new Set(f.lines.map((l) => Number(l.mix_design_id)).filter(Boolean))];
+    if (!ids.length && f.fuel_basis !== "site") { setCosting(null); return; }
+    const t = setTimeout(() => {
+      apiRequest("/quotations/costing", { method: "POST", body: { mix_design_ids: ids, fuel_basis: f.fuel_basis, site_fuel: f.site_fuel } })
+        .then(setCosting).catch(() => setCosting(null));
+    }, 350);
+    return () => clearTimeout(t);
+  }, [costKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const setSiteFuel = (k, v) => setF((p) => ({ ...p, site_fuel: { ...p.site_fuel, [k]: v } }));
+  const [openCost, setOpenCost] = useState(null);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setCharge = (k, v) => setF((p) => ({ ...p, charges: { ...p.charges, [k]: v } }));
   const setPay = (k, v) => setF((p) => ({ ...p, payment: { ...p.payment, [k]: v } }));
@@ -91,7 +133,8 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
       ...f, submit,
       terms: f.terms_modified ? f.terms : termsForType,
       lines: f.lines.filter((l) => l.mix_grade_id || l.item_label || l.rate_total)
-        .map((l) => ({ ...l, mix_grade_id: l.mix_grade_id === "extra" ? null : l.mix_grade_id })),
+        .map((l) => ({ ...l, mix_grade_id: l.mix_grade_id === "extra" ? null : l.mix_grade_id, mix_design_id: l.mix_grade_id === "extra" ? null : (l.mix_design_id || null) })),
+      salesperson_id: f.salesperson_id || null,
     };
   }
 
@@ -149,7 +192,7 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
           </Field>
           <Field label="Project / site">
             <div style={{ display: "flex", gap: 6 }}>
-              <select value={f.site_id} onChange={(e) => set("site_id", e.target.value)} disabled={!f.customer_id}>
+              <select value={f.site_id} onChange={(e) => chooseSite(e.target.value)} disabled={!f.customer_id}>
                 <option value="">Choose…</option>
                 {siteOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
@@ -168,6 +211,12 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
               {meta.agreement_types.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
           </Field>
+          <Field label="Salesperson" hint="Shown in the app only — not printed.">
+            <select value={f.salesperson_id} onChange={(e) => set("salesperson_id", e.target.value)}>
+              <option value="">Not set</option>
+              {(meta.salespersons || salespersons).map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+            </select>
+          </Field>
           <Field label="Quotation date"><input type="date" value={f.quote_date} onChange={(e) => set("quote_date", e.target.value)} /></Field>
           <Field label="Valid for (days)" hint="Counted from the day it is sent."><input type="number" min="1" max="90" value={f.validity_days} onChange={(e) => set("validity_days", e.target.value)} /></Field>
         </div>
@@ -176,15 +225,17 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
       <div className="card field-input" style={{ marginBottom: 12, padding: 0, overflowX: "auto" }}>
         <div style={{ padding: "12px 14px 4px", display: "flex", alignItems: "baseline", gap: 10 }}>
           <h3 style={{ margin: 0, fontSize: 15 }}>Grades and rates</h3>
-          <span style={{ fontSize: 12, color: "var(--slate)" }}>Type the total rate per m³ including GST — the base price and GST are worked out.</span>
+          <span style={{ fontSize: 12, color: "var(--slate)" }}>Choose the grade and its mix design (ref / rev) — the mix description fills in and can be edited. Type the total rate per m³ including GST.</span>
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
           <thead><tr style={{ background: "var(--concrete)" }}>
-            <th style={TH}>Grade</th><th style={TH}>Specification (cementitious content)</th>
+            <th style={TH}>Grade</th><th style={TH}>Mix design ref / rev</th><th style={TH}>Description (printed)</th>
             <th style={{ ...TH, textAlign: "right" }}>{f.agreement_type === "credit_qty" ? "Committed m³" : "Qty m³ (optional)"}</th>
             <th style={{ ...TH, textAlign: "right" }}>Total rate ₹/m³ incl. GST</th>
             <th style={{ ...TH, textAlign: "right" }}>Base</th><th style={{ ...TH, textAlign: "right" }}>GST 18%</th>
-            <th style={{ ...TH, textAlign: "right" }}>Current price list</th><th style={TH} />
+            <th style={{ ...TH, textAlign: "right" }}>Current price list</th>
+            {meta.perms.costing && <th style={{ ...TH, textAlign: "right" }}>Proposed rate</th>}
+            <th style={TH} />
           </tr></thead>
           <tbody>
             {f.lines.map((l, i) => {
@@ -193,14 +244,22 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
               return (
                 <tr key={i} style={row}>
                   <td style={TD}>
-                    <select value={l.mix_grade_id} onChange={(e) => setLine(i, "mix_grade_id", e.target.value)} style={{ minWidth: 110 }}>
+                    <select value={l.mix_grade_id} onChange={(e) => chooseGrade(i, e.target.value)} style={{ minWidth: 100 }}>
                       <option value="">Grade…</option>
                       {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                       <option value="extra">Extra item…</option>
                     </select>
                     {l.mix_grade_id === "extra" && <input placeholder="Item name" value={l.item_label} onChange={(e) => setLine(i, "item_label", e.target.value)} style={{ marginTop: 4, width: 120 }} />}
                   </td>
-                  <td style={TD}><input value={l.specification} onChange={(e) => setLine(i, "specification", e.target.value)} placeholder="OPC (320 KG/M3)" style={{ width: "100%", minWidth: 180 }} /></td>
+                  <td style={TD}>
+                    {l.mix_grade_id && l.mix_grade_id !== "extra" ? (
+                      <select value={l.mix_design_id} onChange={(e) => chooseDesign(i, e.target.value)} style={{ minWidth: 170 }}>
+                        <option value="">{designsOf(l.mix_grade_id).length ? "Choose ref / rev…" : "No approved mix design"}</option>
+                        {designsOf(l.mix_grade_id).map((d) => <option key={d.id} value={d.id}>{d.label}{d.mix_description ? ` — ${d.mix_description}` : ""}</option>)}
+                      </select>
+                    ) : <span style={{ color: "var(--slate)", fontSize: 12 }}>—</span>}
+                  </td>
+                  <td style={TD}><textarea rows={2} value={l.specification} onChange={(e) => setLine(i, "specification", e.target.value)} placeholder="From the mix design's Mix description" style={{ width: "100%", minWidth: 200, fontFamily: "inherit", fontSize: 13 }} /></td>
                   <td style={NUM}><input type="number" min="0" value={l.qty_m3} onChange={(e) => setLine(i, "qty_m3", e.target.value)} style={{ width: 90, textAlign: "right" }} /></td>
                   <td style={NUM}><input type="number" min="0" step="0.01" value={l.rate_total} onChange={(e) => setLine(i, "rate_total", e.target.value)} style={{ width: 110, textAlign: "right", fontWeight: 700 }} /></td>
                   <td style={NUM}>{l.rate_total ? inr2(sp.base) : "—"}</td>
@@ -211,6 +270,19 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
                         {Number(l.rate_total) > Number(lr.rate_per_m3) ? "+" : ""}{inr2(Number(l.rate_total) - Number(lr.rate_per_m3))}
                       </div>)}</> : "—"}
                   </td>
+                  {meta.perms.costing && (() => {
+                    const c = l.mix_design_id ? costing?.lines?.[l.mix_design_id] : null;
+                    const below = c && Number(l.rate_total) > 0 ? c.proposed - Number(l.rate_total) : 0;
+                    return (
+                      <td style={NUM}>
+                        {c ? (
+                          <button type="button" onClick={() => setOpenCost(c)} style={{ padding: "3px 8px", fontWeight: 700, background: "none" }} title="See how it is worked out">{money0(c.proposed)}</button>
+                        ) : <span style={{ color: "var(--slate)" }}>—</span>}
+                        {c && below > 0 && <div style={{ fontSize: 11, fontWeight: 600, color: below > c.proposed * 0.01 ? "var(--alert-red)" : "var(--amber)" }}>₹{Math.round(below).toLocaleString("en-IN")} below</div>}
+                        {c?.material?.missing?.length > 0 && <div style={{ fontSize: 10.5, color: "var(--amber)" }}>no rate: {c.material.missing.join(", ")}</div>}
+                      </td>
+                    );
+                  })()}
                   <td style={TD}>
                     {f.lines.length > 1 && <button type="button" style={{ padding: "4px 9px" }} onClick={() => setF((p) => ({ ...p, lines: p.lines.filter((_, j) => j !== i) }))} aria-label="Remove line">✕</button>}
                   </td>
@@ -223,6 +295,47 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
           <button type="button" onClick={() => setF((p) => ({ ...p, lines: [...p.lines, blankLine()] }))} disabled={f.lines.length >= 12}>+ Add grade</button>
         </div>
       </div>
+
+      {meta.perms.costing && (
+        <div className="card field-input" style={{ marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <h3 style={{ margin: 0, fontSize: 15 }}>Proposed rate — fuel for this site</h3>
+            <span style={{ fontSize: 12, color: "var(--slate)" }}>Administrator only · not printed</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: "0 12px" }}>
+            <Field label="Fuel cost basis">
+              <select value={f.fuel_basis} onChange={(e) => set("fuel_basis", e.target.value)}>
+                <option value="site">Site-specific (road km)</option>
+                <option value="average">Average of all sites{costing?.context?.fuel_average?.per_m3 != null ? ` (${money0(costing.context.fuel_average.per_m3)})` : ""}</option>
+                <option value="admin">Admin's value{costing?.context?.settings?.fuel_set != null ? ` (${money0(costing.context.settings.fuel_set)})` : ""}</option>
+              </select>
+            </Field>
+            {f.fuel_basis === "site" && <>
+              <Field label="Road km, plant → site (one way)" hint="Typed here; kept on the site."><input type="number" min="0" step="0.1" value={f.site_fuel.road_km} onChange={(e) => setSiteFuel("road_km", e.target.value)} /></Field>
+              <Field label="Load per trip (m³)"><input type="number" min="1" step="0.5" value={f.site_fuel.load_m3} placeholder={String(costing?.context?.settings?.default_load_m3 ?? 6)} onChange={(e) => setSiteFuel("load_m3", e.target.value)} /></Field>
+              <Field label="Pump">
+                <select value={f.site_fuel.pump} onChange={(e) => setSiteFuel("pump", e.target.value)}>
+                  <option value="none">No pump</option><option value="line_pump">Line pump</option><option value="boom_pump">Boom pump</option>
+                </select>
+              </Field>
+              <Field label="Diesel ₹/L" hint={costing?.context?.diesel_rate ? "Blank = Fuel module rate" : "No rate in the Fuel module — type one"}>
+                <input type="number" min="0" step="0.01" value={f.site_fuel.diesel_rate ?? ""} placeholder={costing?.context?.diesel_rate ? String(costing.context.diesel_rate) : ""} onChange={(e) => setSiteFuel("diesel_rate", e.target.value)} />
+              </Field>
+            </>}
+          </div>
+          {f.fuel_basis === "site" && costing?.site_fuel && (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 4 }}>
+              <tbody>
+                {costing.site_fuel.parts.map((p) => (
+                  <tr key={p.key} style={row}><td style={TD}><b>{p.label}</b></td><td style={{ ...TD, color: "var(--slate)" }}>{p.how}</td><td style={NUM}>{p.lpm3} L/m³</td><td style={NUM}>{money0(p.per_m3)}</td></tr>
+                ))}
+                <tr style={row}><td style={TD} colSpan={2}><b>Fuel per m³</b> at diesel ₹{costing.site_fuel.diesel_rate}/L</td><td style={NUM} /><td style={{ ...NUM, fontWeight: 700 }}>{money0(costing.site_fuel.per_m3)}</td></tr>
+              </tbody>
+            </table>
+          )}
+          {f.fuel_basis === "site" && !costing?.site_fuel && <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Type the road km to work out the site's fuel.{costing && !costing.context?.diesel_rate && !f.site_fuel.diesel_rate ? " No diesel rate is set in the Fuel module yet — type one in Diesel ₹/L." : ""}</div>}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(330px, 1fr))", gap: 12, marginBottom: 12 }}>
         <div className="card">
@@ -284,6 +397,7 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
         </button>
       </div>
 
+      {openCost && <CostBreakup c={openCost} onClose={() => setOpenCost(null)} />}
       {termsOpen && (
         <TermsEditor terms={termsForType} q={f} defaults={defaults} onClose={() => setTermsOpen(false)}
           onReset={() => { setF((p) => ({ ...p, terms: null, terms_modified: false })); setTermsOpen(false); }}
@@ -298,6 +412,32 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
           }} />
       )}
     </>
+  );
+}
+
+// Round 209 — how a proposed rate is worked out (Administrator only).
+export function CostBreakup({ c, onClose }) {
+  const cell = { padding: "4px 0", fontSize: 13 };
+  const right = { ...cell, textAlign: "right", whiteSpace: "nowrap" };
+  return (
+    <Modal title={`Proposed rate — ${c.design_ref}`} onClose={onClose} width={560}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <tbody>
+          {c.material.lines.map((l) => (
+            <tr key={l.comp}><td style={cell}>{l.label} · {l.kg} kg × {l.rate_per_kg == null ? "no rate" : `₹${l.rate_per_kg}`}</td><td style={right}>{money0(l.amount)}</td></tr>
+          ))}
+          <tr style={{ borderTop: "1px solid var(--border)", fontWeight: 600 }}><td style={cell}>Material per m³</td><td style={right}>{money0(c.material.total)}</td></tr>
+          <tr><td style={cell}>Fuel per m³ · {c.fuel.label}</td><td style={right}>{money0(c.fuel.per_m3)}</td></tr>
+          <tr><td style={cell}>Salary per m³ · {c.salary.label}</td><td style={right}>{money0(c.salary.per_m3)}</td></tr>
+          <tr><td style={cell}>Other costs · fixed per m³</td><td style={right}>{money0(c.other)}</td></tr>
+          <tr style={{ borderTop: "1px solid var(--border)", fontWeight: 600 }}><td style={cell}>Cost per m³</td><td style={right}>{money0(c.cost)}</td></tr>
+          <tr><td style={cell}>+ margin {c.margin_pct}% → {money0(c.with_margin)} · + GST {c.gst_pct}%</td><td style={right}>{money0(c.with_gst)}</td></tr>
+          <tr style={{ borderTop: "2px solid var(--charcoal)", fontWeight: 700 }}><td style={{ ...cell, fontSize: 14 }}>Proposed rate (incl. GST, rounded to ₹{c.round_to})</td><td style={{ ...right, fontSize: 14, color: "var(--rebar)" }}>{money0(c.proposed)}</td></tr>
+        </tbody>
+      </table>
+      {c.material.missing?.length > 0 && <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 8 }}>No purchase rate yet for {c.material.missing.join(", ")} — counted as ₹0.</div>}
+      <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 8 }}>Material rates: the month's weighted-average landed rate (Material module). Settings: Accounts → Settings → Proposed-rate costing.</div>
+    </Modal>
   );
 }
 

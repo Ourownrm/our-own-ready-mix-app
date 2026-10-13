@@ -39,6 +39,10 @@ export default function FuelPurchases() {
     apiRequest("/fuel-module/purchases").then(setData).catch((e) => setError(e.message));
   }
   useEffect(load, []);
+  // Round 209 — the supplier is picked from the approved fuel stations
+  // (Admin → Fuel Stations, active, not the plant's own tank) instead of typed.
+  const [stations, setStations] = useState([]);
+  useEffect(() => { apiRequest("/master/fuel-stations").then((s) => setStations(s.filter((x) => !x.is_plant))).catch(() => {}); }, []);
 
   async function run(fn, done) {
     setBusy(true); setError(""); setNotice("");
@@ -158,14 +162,18 @@ export default function FuelPurchases() {
           <label style={{ fontSize: 12, color: "var(--slate)" }}>Litres to buy
             <input type="number" min="1" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} style={{ display: "block", marginTop: 4, width: 150 }} />
           </label>
-          <label style={{ fontSize: 12, color: "var(--slate)", flex: "1 1 200px" }}>Supplier
-            <input type="text" value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} style={{ display: "block", marginTop: 4 }} />
+          <label style={{ fontSize: 12, color: "var(--slate)", flex: "1 1 220px" }}>Supplier (approved fuel station)
+            <select value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} style={{ display: "block", marginTop: 4, width: "100%" }}>
+              <option value="">— choose —</option>
+              {stations.map((s) => <option key={s.id} value={s.name}>{s.name}{s.location ? ` · ${s.location}` : ""}</option>)}
+            </select>
+            {!stations.length && <span style={{ fontSize: 11, display: "block", marginTop: 3 }}>No outside fuel station is set up — Admin adds them in Masters → Fuel Stations.</span>}
           </label>
           <label style={{ fontSize: 12, color: "var(--slate)", flex: "1 1 240px" }}>Notes
             <input type="text" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ display: "block", marginTop: 4 }} />
           </label>
           <button type="button" onClick={() => setForm(null)}>Cancel</button>
-          <button type="button" className="btn-primary" disabled={busy || !(Number(form.qty) > 0)} onClick={submitRequest}>{busy ? "Sending…" : "Send for approval"}</button>
+          <button type="button" className="btn-primary" disabled={busy || !(Number(form.qty) > 0) || !form.supplier} onClick={submitRequest}>{busy ? "Sending…" : "Send for approval"}</button>
         </div>
       )}
 

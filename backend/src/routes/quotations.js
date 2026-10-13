@@ -17,7 +17,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, can } from "../lib/permissions.js";
 import { istDay } from "../lib/istDate.js";
 import { AGREEMENT_TYPES, DEFAULT_TERMS } from "../lib/quotationTerms.js";
-import { applyQuotationToPriceList, repriceAfterAcceptance, liveRatesForSite } from "../lib/priceList.js";
+import { applyQuotationToPriceList, repriceAfterAcceptance, liveRatesForSite, setRowEnabled } from "../lib/priceList.js";
+import { costContext, costMix, siteFuel, cleanCosting } from "../lib/quotationCosting.js";
 import { pushToRole } from "../lib/push.js";
 
 const router = Router();
@@ -79,7 +80,8 @@ async function loadQuotation(id) {
   const { rows } = await query(
     `SELECT q.*, c.name AS customer_name, c.billing_address AS customer_address, s.name AS site_name,
             ba.name AS billing_name, ba.address AS billing_address, ba.gstin AS billing_gstin,
-            cu.name AS created_by_name, au.name AS approved_by_name, acu.name AS accepted_by_name
+            cu.name AS created_by_name, au.name AS approved_by_name, acu.name AS accepted_by_name,
+            sp.name AS salesperson_name, s.road_km AS site_road_km
        FROM quotations q
        JOIN customers c ON c.id = q.customer_id
        JOIN sites s ON s.id = q.site_id
@@ -87,13 +89,15 @@ async function loadQuotation(id) {
        LEFT JOIN users cu ON cu.id = q.created_by
        LEFT JOIN users au ON au.id = q.approved_by
        LEFT JOIN users acu ON acu.id = q.accepted_by
+       LEFT JOIN salespersons sp ON sp.id = q.salesperson_id
       WHERE q.id = $1`,
     [id]
   );
   if (!rows.length) return null;
   const q = rows[0];
   const { rows: lines } = await query(
-    `SELECT ql.*, m.name AS grade_name FROM quotation_lines ql LEFT JOIN mix_grades m ON m.id = ql.mix_grade_id
+    `SELECT ql.*, m.name AS grade_name, md.design_ref_code, md.revision AS design_revision, md.mix_description
+       FROM quotation_lines ql LEFT JOIN mix_grades m ON m.id = ql.mix_grade_id LEFT JOIN mix_designs md ON md.id = ql.mix_design_id
       WHERE ql.quotation_id = $1 ORDER BY ql.line_no`,
     [id]
   );
@@ -115,16 +119,20 @@ function cleanLines(lines) {
     // Round 205 — a grade may be quoted twice (e.g. OPC and OPC + fly ash) as
     // long as the specification tells the two apart; each becomes its own
     // price option.
+    // Round 209 — or by its mix design (ref / rev).
+    const designId = gradeId && l.mix_design_id ? Number(l.mix_design_id) : null;
     if (gradeId) {
-      const key = `${gradeId}|${String(l.specification || "").toUpperCase().replace(/[^A-Z0-9+]/g, "")}`;
-      if (seen.has(key)) return { error: `Line ${i + 1}: that grade is already on this quotation with the same specification — change the specification to tell the two prices apart.` };
-      if ([...seen].some((k) => k.startsWith(`${gradeId}|`)) && !String(l.specification || "").trim()) {
-        return { error: `Line ${i + 1}: the grade is quoted twice — give each line its specification (e.g. OPC / OPC + fly ash).` };
+      const key = designId ? `${gradeId}|md${designId}` : `${gradeId}|${String(l.specification || "").toUpperCase().replace(/[^A-Z0-9+]/g, "")}`;
+      if (seen.has(key)) return { error: designId
+        ? `Line ${i + 1}: that mix design is already on this quotation.`
+        : `Line ${i + 1}: that grade is already on this quotation with the same specification — choose a mix design or change the description to tell the two prices apart.` };
+      if ([...seen].some((k) => k.startsWith(`${gradeId}|`)) && !designId && !String(l.specification || "").trim()) {
+        return { error: `Line ${i + 1}: the grade is quoted twice — choose each line's mix design (or give its description).` };
       }
       seen.add(key);
     }
     out.push({
-      mix_grade_id: gradeId, item_label: gradeId ? null : label,
+      mix_grade_id: gradeId, item_label: gradeId ? null : label, mix_design_id: designId,
       specification: String(l.specification || "").trim().slice(0, 200) || null,
       qty_m3: l.qty_m3 === "" || l.qty_m3 == null ? null : Number(l.qty_m3),
       rate_total: r2(rate),
@@ -164,7 +172,16 @@ router.get("/meta", VIEW, async (req, res) => {
     accept: await can(req.user, "accounts.quotation-accept", "edit"),
     revision_bulk: await can(req.user, "accounts.price-revision", "edit"),
     import: await can(req.user, "accounts.quotation-import", "edit"),
+    costing: await can(req.user, "accounts.quotation-costing", "view"),
+    costing_edit: await can(req.user, "accounts.quotation-costing", "edit"),
   };
+  // Round 209 — approved mix designs per grade (ref / rev + Mix description),
+  // and the salespersons.
+  const [{ rows: designs }, { rows: salespersons }] = await Promise.all([
+    query(`SELECT md.id, md.mix_grade_id, md.design_ref_code, md.revision, md.mix_description, md.is_standard_for_grade
+             FROM mix_designs md WHERE md.status = 'approved' ORDER BY md.mix_grade_id, md.is_standard_for_grade DESC, md.design_ref_code`),
+    query(`SELECT id, name FROM salespersons WHERE is_active ORDER BY name`),
+  ]);
   res.json({
     agreement_types: AGREEMENT_TYPES,
     validity_days: s.validity_days,
@@ -174,6 +191,8 @@ router.get("/meta", VIEW, async (req, res) => {
     director: { name: s.director_name, title: s.director_title, phone: s.director_phone },
     library,
     perms,
+    mix_designs: designs.map((d) => ({ ...d, label: `${d.design_ref_code} · rev ${d.revision}` })),
+    salespersons,
   });
 });
 
@@ -197,14 +216,15 @@ router.get("/", VIEW, async (req, res) => {
             q.valid_until::text AS valid_until, q.sent_at, q.accepted_on::text AS accepted_on, q.rates_from::text AS rates_from,
             q.closed_reason, q.payment, q.created_at, q.approved_at, q.terms_modified,
             c.id AS customer_id, c.name AS customer_name, s.id AS site_id, s.name AS site_name,
-            u.name AS created_by_name, u.role AS created_by_role,
-            (SELECT json_agg(json_build_object('grade', COALESCE(m.name, ql.item_label), 'rate', ql.rate_total, 'qty', ql.qty_m3) ORDER BY ql.line_no)
+            u.name AS created_by_name, u.role AS created_by_role, q.salesperson_id, spn.name AS salesperson_name,
+            (SELECT json_agg(json_build_object('grade', COALESCE(m.name, ql.item_label), 'rate', ql.rate_total, 'qty', ql.qty_m3, 'approved', ql.approved) ORDER BY ql.line_no)
                FROM quotation_lines ql LEFT JOIN mix_grades m ON m.id = ql.mix_grade_id WHERE ql.quotation_id = q.id) AS lines,
             (SELECT SUM(ql.rate_total * COALESCE(ql.qty_m3, 0)) FROM quotation_lines ql WHERE ql.quotation_id = q.id) AS value_incl_gst
        FROM quotations q
        JOIN customers c ON c.id = q.customer_id
        JOIN sites s ON s.id = q.site_id
        LEFT JOIN users u ON u.id = q.created_by
+       LEFT JOIN salespersons spn ON spn.id = q.salesperson_id
       WHERE ${where}
       ORDER BY q.created_at DESC, q.id DESC
       LIMIT 500`,
@@ -224,13 +244,14 @@ router.get("/followups", VIEW, async (req, res) => {
     `SELECT q.id, q.quote_no, q.status, q.sent_at, q.valid_until::text AS valid_until, q.next_followup_on::text AS next_followup_on,
             q.quote_date::text AS quote_date, q.approved_at, q.kind_attention,
             c.id AS customer_id, c.name AS customer_name, c.contact_number, s.name AS site_name,
-            u.name AS owner_name,
+            u.name AS owner_name, q.salesperson_id, spn.name AS salesperson_name,
             (SELECT SUM(ql.rate_total * COALESCE(ql.qty_m3, 0)) FROM quotation_lines ql WHERE ql.quotation_id = q.id) AS value_incl_gst,
             last.at AS last_at, last.note AS last_note, last.outcome AS last_outcome, last.contact AS last_contact, lu.name AS last_by
        FROM quotations q
        JOIN customers c ON c.id = q.customer_id
        JOIN sites s ON s.id = q.site_id
        LEFT JOIN users u ON u.id = q.created_by
+       LEFT JOIN salespersons spn ON spn.id = q.salesperson_id
        LEFT JOIN LATERAL (
          SELECT e.* FROM quotation_events e WHERE e.quotation_id = q.id AND e.event = 'followup' ORDER BY e.at DESC LIMIT 1
        ) last ON true
@@ -293,7 +314,19 @@ router.get("/:id(\\d+)", VIEW, async (req, res) => {
   let parent = null;
   if (q.parent_id) parent = await loadQuotation(q.parent_id);
   delete q.acceptance_proof; // fetched separately — it can be a few MB
-  res.json({ quotation: q, events: events.rows, family: family.rows, live_rates: live, parent });
+  // Round 209 — the proposed rate is for the Administrator only.
+  let costing = null;
+  if (await can(req.user, "accounts.quotation-costing", "view")) {
+    const ctx = await costContext();
+    costing = { lines: {}, context: costSummary(ctx) };
+    for (const l of q.lines) {
+      if (l.mix_design_id) costing.lines[l.id] = await costMix(ctx, l.mix_design_id, { fuel_basis: q.fuel_basis, site_fuel: q.site_fuel });
+    }
+  } else {
+    for (const l of q.lines) { delete l.cost_rate; delete l.cost_breakup; }
+    if (parent) for (const l of parent.lines) { delete l.cost_rate; delete l.cost_breakup; }
+  }
+  res.json({ quotation: q, events: events.rows, family: family.rows, live_rates: live, parent, costing });
 });
 
 router.get("/:id(\\d+)/proof", VIEW, async (req, res) => {
@@ -305,6 +338,34 @@ router.get("/:id(\\d+)/proof", VIEW, async (req, res) => {
 // ---------------------------------------------------------------------------
 // Create / edit.
 // ---------------------------------------------------------------------------
+// Round 209 — the site-specific fuel inputs kept on the quotation.
+function cleanSiteFuel(sf) {
+  if (!sf || typeof sf !== "object") return null;
+  const n = (v) => (v === "" || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+  const out = {
+    road_km: n(sf.road_km), load_m3: n(sf.load_m3),
+    pump: ["none", "line_pump", "boom_pump"].includes(sf.pump) ? sf.pump : "none",
+    tm_kmpl: n(sf.tm_kmpl), diesel_rate: n(sf.diesel_rate), genset_lpm3: n(sf.genset_lpm3), loader_lpm3: n(sf.loader_lpm3),
+  };
+  if (out.road_km != null && (out.road_km < 0 || out.road_km > 500)) return null;
+  return out;
+}
+
+// Mix designs on lines must be approved designs of the line's grade.
+async function checkDesigns(lines) {
+  const ids = lines.filter((l) => l.mix_design_id).map((l) => l.mix_design_id);
+  if (!ids.length) return null;
+  const { rows } = await query(`SELECT id, mix_grade_id, status FROM mix_designs WHERE id = ANY($1::int[])`, [ids]);
+  const by = new Map(rows.map((r) => [r.id, r]));
+  for (const [i, l] of lines.entries()) {
+    if (!l.mix_design_id) continue;
+    const d = by.get(l.mix_design_id);
+    if (!d || d.mix_grade_id !== l.mix_grade_id) return `Line ${i + 1}: that mix design is not one of the grade's designs.`;
+    if (d.status !== "approved") return `Line ${i + 1}: that mix design is not approved yet (QC → Mix designs).`;
+  }
+  return null;
+}
+
 function readBody(b) {
   const type = String(b.agreement_type || "");
   if (!TYPES.has(type)) return { error: "Choose the agreement type." };
@@ -325,6 +386,10 @@ function readBody(b) {
       special_conditions: String(b.special_conditions || "").trim() || null,
       terms: b.terms && typeof b.terms === "object" ? b.terms : null,
       terms_modified: !!b.terms_modified,
+      // Round 209 — app only, never printed.
+      salesperson_id: b.salesperson_id ? Number(b.salesperson_id) : null,
+      fuel_basis: ["site", "average", "admin"].includes(b.fuel_basis) ? b.fuel_basis : "average",
+      site_fuel: cleanSiteFuel(b.site_fuel),
     },
     lines: lines.lines,
   };
@@ -345,9 +410,9 @@ async function writeLines(client, quotationId, lines) {
   let n = 1;
   for (const l of lines) {
     await client.query(
-      `INSERT INTO quotation_lines (quotation_id, line_no, mix_grade_id, item_label, specification, qty_m3, rate_total)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [quotationId, n++, l.mix_grade_id, l.item_label, l.specification, l.qty_m3, l.rate_total]
+      `INSERT INTO quotation_lines (quotation_id, line_no, mix_grade_id, item_label, specification, qty_m3, rate_total, mix_design_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [quotationId, n++, l.mix_grade_id, l.item_label, l.specification, l.qty_m3, l.rate_total, l.mix_design_id || null]
     );
   }
 }
@@ -357,6 +422,8 @@ async function writeLines(client, quotationId, lines) {
 router.post("/", CREATE, async (req, res) => {
   const parsed = readBody(req.body);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const designErr = await checkDesigns(parsed.lines);
+  if (designErr) return res.status(400).json({ error: designErr });
   const d = parsed.data;
   if (!(await assertSiteOfCustomer(d.customer_id, d.site_id))) {
     return res.status(400).json({ error: "That project / site belongs to a different customer." });
@@ -373,16 +440,19 @@ router.post("/", CREATE, async (req, res) => {
       `INSERT INTO quotations
          (quote_no, family_no, revision, customer_id, site_id, billing_address_id, kind_attention, agreement_type,
           quote_date, validity_days, status, charges, payment, rebate_per_m3, special_conditions, terms, terms_modified,
-          created_by, submitted_at, approved_by, approved_at)
+          created_by, submitted_at, approved_by, approved_at, salesperson_id, fuel_basis, site_fuel)
        VALUES ($1, $1, 0, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-               CASE WHEN $17 THEN now() END, CASE WHEN $18 THEN $16::int END, CASE WHEN $18 THEN now() END)
+               CASE WHEN $17 THEN now() END, CASE WHEN $18 THEN $16::int END, CASE WHEN $18 THEN now() END,
+               COALESCE($19::int, (SELECT assigned_sales_representative_id FROM sites WHERE id = $3)), $20, $21)
        RETURNING id`,
       [no, d.customer_id, d.site_id, d.billing_address_id, d.kind_attention, d.agreement_type,
        d.quote_date, d.validity_days, status, d.charges, d.payment, d.rebate_per_m3, d.special_conditions,
-       JSON.stringify(terms), d.terms_modified, req.user.id, submit, selfApprove]
+       JSON.stringify(terms), d.terms_modified, req.user.id, submit, selfApprove,
+       d.salesperson_id, d.fuel_basis, d.site_fuel ? JSON.stringify(d.site_fuel) : null]
     );
     const id = rows[0].id;
     await writeLines(client, id, parsed.lines);
+    if (d.site_fuel?.road_km != null) await client.query(`UPDATE sites SET road_km = $2 WHERE id = $1`, [d.site_id, d.site_fuel.road_km]);
     await logEvent(client, id, "created", req.user.id);
     if (submit) await logEvent(client, id, selfApprove ? "approved" : "submitted", req.user.id, selfApprove ? { note: "Created and approved by an Administrator" } : {});
     await client.query("COMMIT");
@@ -408,6 +478,8 @@ router.put("/:id(\\d+)", EDIT, async (req, res) => {
   }
   const parsed = readBody(req.body);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const designErr = await checkDesigns(parsed.lines);
+  if (designErr) return res.status(400).json({ error: designErr });
   const d = parsed.data;
   if (!(await assertSiteOfCustomer(d.customer_id, d.site_id))) {
     return res.status(400).json({ error: "That project / site belongs to a different customer." });
@@ -424,13 +496,16 @@ router.put("/:id(\\d+)", EDIT, async (req, res) => {
               terms=COALESCE($13::jsonb, terms), terms_modified=$14, status=$15, updated_at=now(),
               submitted_at = CASE WHEN $16 THEN now() ELSE submitted_at END,
               approved_by = CASE WHEN $17 THEN $18::int ELSE approved_by END,
-              approved_at = CASE WHEN $17 THEN now() ELSE approved_at END
+              approved_at = CASE WHEN $17 THEN now() ELSE approved_at END,
+              salesperson_id = $19, fuel_basis = $20, site_fuel = $21
         WHERE id = $1`,
       [q.id, d.customer_id, d.site_id, d.billing_address_id, d.kind_attention, d.agreement_type, d.quote_date,
        d.validity_days, d.charges, d.payment, d.rebate_per_m3, d.special_conditions,
-       d.terms ? JSON.stringify(d.terms) : null, d.terms_modified, status, submit, selfApprove, req.user.id]
+       d.terms ? JSON.stringify(d.terms) : null, d.terms_modified, status, submit, selfApprove, req.user.id,
+       d.salesperson_id, d.fuel_basis, d.site_fuel ? JSON.stringify(d.site_fuel) : null]
     );
     await writeLines(client, q.id, parsed.lines);
+    if (d.site_fuel?.road_km != null) await client.query(`UPDATE sites SET road_km = $2 WHERE id = $1`, [d.site_id, d.site_fuel.road_km]);
     await logEvent(client, q.id, submit ? (selfApprove ? "approved" : "submitted") : "edited", req.user.id);
     await client.query("COMMIT");
     if (submit && !selfApprove) {
@@ -479,6 +554,15 @@ router.post("/:id(\\d+)/approve", APPROVE, async (req, res) => {
           [l.id, r2(f)]
         );
         changed.push(`${l.grade_name || l.item_label} ₹${l.rate_total} → ₹${r2(f)}`);
+      }
+    }
+    // Round 209 — the proposed rate at the time of approval is kept on each line.
+    if (await can(req.user, "accounts.quotation-costing", "view")) {
+      const ctx = await costContext();
+      for (const l of q.lines) {
+        if (!l.mix_design_id) continue;
+        const c = await costMix(ctx, l.mix_design_id, { fuel_basis: q.fuel_basis, site_fuel: q.site_fuel });
+        if (c) await client.query(`UPDATE quotation_lines SET cost_rate = $2, cost_breakup = $3 WHERE id = $1`, [l.id, c.proposed, JSON.stringify(c)]);
       }
     }
     await client.query(
@@ -618,7 +702,16 @@ router.post("/:id(\\d+)/accept", ACCEPT, async (req, res) => {
   if (q.revision > 0 && !proof) {
     return res.status(400).json({ error: "Attach the proof of acceptance — a revised price list changes only with the customer's written acceptance." });
   }
-  const result = await applyQuotationToPriceList(q.id, ratesFrom, req.user.id);
+  // Round 209 — the lines the customer approved (all, when the form does not
+  // say). The rest are kept as not approved; Admin can enable them later.
+  const gradeLines = q.lines.filter((l) => l.mix_grade_id);
+  let approvedIds = null;
+  if (Array.isArray(req.body.approved_line_ids)) {
+    const valid = new Set(gradeLines.map((l) => l.id));
+    approvedIds = req.body.approved_line_ids.map(Number).filter((x) => valid.has(x));
+    if (!approvedIds.length) return res.status(400).json({ error: "Tick at least one grade the customer approved." });
+  }
+  const result = await applyQuotationToPriceList(q.id, ratesFrom, req.user.id, approvedIds);
   await query(
     `UPDATE quotations SET status = 'accepted', accepted_at = now(), accepted_on = $2, acceptance_mode = $3,
             acceptance_proof = $4, acceptance_proof_name = $5, rates_from = $6, accepted_by = $7,
@@ -626,7 +719,9 @@ router.post("/:id(\\d+)/accept", ACCEPT, async (req, res) => {
       WHERE id = $1`,
     [q.id, acceptedOn, mode, proof, String(req.body.proof_name || "").slice(0, 200) || null, ratesFrom, req.user.id]
   );
-  await logEvent(pool, q.id, "accepted", req.user.id, { note: `Accepted by ${mode.replace("_", " ")} on ${acceptedOn}; price list from ${ratesFrom}.` });
+  const notApproved = approvedIds ? gradeLines.filter((l) => !approvedIds.includes(l.id)) : [];
+  const lineName = (l) => [l.grade_name, l.design_ref_code ? `${l.design_ref_code} rev ${l.design_revision}` : l.specification].filter(Boolean).join(" ");
+  await logEvent(pool, q.id, "accepted", req.user.id, { note: `Accepted by ${mode.replace("_", " ")} on ${acceptedOn}; price list from ${ratesFrom}.${notApproved.length ? ` Not approved: ${notApproved.map(lineName).join(", ")}.` : ""}` });
   const repriced = await repriceAfterAcceptance(result, ratesFrom);
   res.json({ ok: true, repriced });
 });
@@ -663,12 +758,13 @@ async function createRevision(q, rev, no, reason, userId, rateAdjust) {
       `INSERT INTO quotations
          (quote_no, family_no, revision, parent_id, customer_id, site_id, billing_address_id, kind_attention, agreement_type,
           quote_date, validity_days, status, charges, payment, rebate_per_m3, special_conditions, terms, terms_modified,
-          revision_reason, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+          revision_reason, created_by, salesperson_id, fuel_basis, site_fuel)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        RETURNING id`,
       [no, q.family_no, rev, q.id, q.customer_id, q.site_id, q.billing_address_id, q.kind_attention, q.agreement_type,
        q.validity_days, rateAdjust ? "pending_approval" : "draft", q.charges, q.payment, q.rebate_per_m3, q.special_conditions,
-       JSON.stringify(q.terms), q.terms_modified, reason, userId]
+       JSON.stringify(q.terms), q.terms_modified, reason, userId, q.salesperson_id, q.fuel_basis || "average",
+       q.site_fuel ? JSON.stringify(q.site_fuel) : null]
     );
     const id = rows[0].id;
     let n = 1;
@@ -676,9 +772,9 @@ async function createRevision(q, rev, no, reason, userId, rateAdjust) {
       const rate = rateAdjust && l.mix_grade_id && (!rateAdjust.grades || rateAdjust.grades.includes(l.mix_grade_id))
         ? r2(Number(l.rate_total) + rateAdjust.amount) : Number(l.rate_total);
       await client.query(
-        `INSERT INTO quotation_lines (quotation_id, line_no, mix_grade_id, item_label, specification, qty_m3, rate_total)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, n++, l.mix_grade_id, l.item_label, l.specification, l.qty_m3, rate]
+        `INSERT INTO quotation_lines (quotation_id, line_no, mix_grade_id, item_label, specification, qty_m3, rate_total, mix_design_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [id, n++, l.mix_grade_id, l.item_label, l.specification, l.qty_m3, rate, l.mix_design_id || null]
       );
     }
     await logEvent(client, id, "revised", userId, { note: `Revision of ${q.quote_no}: ${reason}` });
@@ -748,6 +844,10 @@ router.get("/:id(\\d+)/print", VIEW, async (req, res) => {
   if (!q) return res.status(404).json({ error: "Quotation not found." });
   const s = await settings();
   delete q.acceptance_proof;
+  // Round 209 — the print carries neither the mix design ref / rev, the
+  // proposed rate nor the salesperson.
+  delete q.salesperson_id; delete q.salesperson_name; delete q.site_fuel; delete q.fuel_basis;
+  for (const l of q.lines) { delete l.cost_rate; delete l.cost_breakup; delete l.design_ref_code; delete l.design_revision; delete l.mix_design_id; }
   res.json({
     quotation: q,
     settings: {
@@ -813,7 +913,7 @@ router.get("/price-lists/:customerId(\\d+)", PRICE_VIEW, async (req, res) => {
     [customerId]
   );
   for (const s of siteList) {
-    const live = await liveRatesForSite(customerId, s.id);
+    const live = await liveRatesForSite(customerId, s.id, null, { includeDisabled: true });
     const { rows: delivered } = await query(
       `SELECT co.mix_grade_id, SUM(dt.loaded_quantity_m3) AS m3
          FROM delivery_tickets dt JOIN customer_orders co ON co.id = dt.order_id
@@ -843,6 +943,9 @@ router.get("/price-lists/:customerId(\\d+)", PRICE_VIEW, async (req, res) => {
       site: s,
       rates: live.map((r) => ({
         id: r.id, mix_grade_id: r.mix_grade_id, grade_name: r.grade_name, rate_per_m3: r.rate_per_m3, price_option: r.price_option,
+        // Round 209 — approved (orderable) or not; the mix design priced.
+        is_enabled: r.is_enabled !== false, enabled_note: r.enabled_note, mix_design_id: r.mix_design_id,
+        design_ref: r.design_ref_code ? `${r.design_ref_code} · rev ${r.design_revision}` : null, mix_description: r.mix_description,
         site_specific: r.site_id != null, source: r.source, quote_no: r.quote_no,
         effective_from: r.effective_from, committed_qty_m3: r.committed_qty_m3, rebate_per_m3: r.rebate_per_m3,
         supplied_m3: suppliedBy[r.mix_grade_id] || 0,
@@ -861,6 +964,64 @@ router.get("/price-lists/:customerId(\\d+)", PRICE_VIEW, async (req, res) => {
     customer: cust.rows[0], grades: grades.rows, sites: out, has_customer_wide_rates: wide.length > 0,
     credit: credit.rows[0] || null, outstanding: Number(outstanding.rows[0].balance) || 0,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Round 209 — proposed rate (Administrator only) and price-list enable.
+// ---------------------------------------------------------------------------
+const COST_VIEW = requirePermission("accounts.quotation-costing", "view");
+const COST_EDIT = requirePermission("accounts.quotation-costing", "edit");
+
+function costSummary(ctx) {
+  return {
+    diesel_rate: ctx.diesel_rate, fleet_kmpl: ctx.fleet_kmpl, fuel_average: ctx.fuel_average, plant_fuel: ctx.plant_fuel,
+    salary: ctx.salary, rates: ctx.rates, settings: ctx.costing,
+  };
+}
+
+// { mix_design_ids: [..], fuel_basis, site_fuel } → { lines: {id: costing}, site_fuel, context }
+router.post("/costing", COST_VIEW, async (req, res) => {
+  const ids = (Array.isArray(req.body.mix_design_ids) ? req.body.mix_design_ids : []).map(Number).filter(Boolean).slice(0, 12);
+  const fuelBasis = ["site", "average", "admin"].includes(req.body.fuel_basis) ? req.body.fuel_basis : "average";
+  const sf = cleanSiteFuel(req.body.site_fuel);
+  const ctx = await costContext();
+  const lines = {};
+  for (const id of ids) lines[id] = await costMix(ctx, id, { fuel_basis: fuelBasis, site_fuel: sf });
+  res.json({ lines, site_fuel: sf && sf.road_km != null ? siteFuel(ctx, sf) : null, context: costSummary(ctx) });
+});
+
+router.get("/costing-settings", COST_VIEW, async (req, res) => {
+  const ctx = await costContext();
+  res.json({ settings: ctx.costing, context: costSummary(ctx) });
+});
+router.put("/costing-settings", COST_EDIT, async (req, res) => {
+  let c;
+  try { c = cleanCosting(req.body || {}); } catch (e) { return res.status(400).json({ error: e.message }); }
+  await query(`UPDATE quotation_settings SET costing = $1 WHERE id = 1`, [JSON.stringify(c)]);
+  res.json({ ok: true, settings: c });
+});
+
+// Remember a site's road distance (typed on a quotation).
+router.post("/sites/:siteId(\\d+)/road-km", EDIT, async (req, res) => {
+  const km = Number(req.body.road_km);
+  if (!(km >= 0 && km <= 500)) return res.status(400).json({ error: "Road distance must be 0 to 500 km." });
+  await query(`UPDATE sites SET road_km = $2 WHERE id = $1`, [req.params.siteId, km]);
+  res.json({ ok: true });
+});
+
+const PL_ENABLE = requirePermission("accounts.price-list-enable", "edit");
+router.post("/price-lists/rows/:rowId(\\d+)/:action(enable|disable)", PL_ENABLE, async (req, res) => {
+  const enable = req.params.action === "enable";
+  const note = String(req.body.note || "").trim().slice(0, 300);
+  if (!note) return res.status(400).json({ error: enable ? "Say why it is enabled (e.g. the customer's email)." : "Say why it is disabled." });
+  const from = ISO.test(req.body.from || "") ? req.body.from : null;
+  try {
+    const r = await setRowEnabled(Number(req.params.rowId), enable, { from, note, userId: req.user.id });
+    res.json({ ok: true, row_id: r.id });
+  } catch (e) {
+    if (e.status === 404) return res.status(404).json({ error: e.message });
+    throw e;
+  }
 });
 
 // ---------------------------------------------------------------------------

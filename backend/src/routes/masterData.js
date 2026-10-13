@@ -3,6 +3,7 @@ import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { BREAKDOWN_ISSUE_TYPES } from "../lib/breakdownIssueTypes.js";
 import { liveRows, pick } from "../lib/rateLookup.js";
+import { liveRatesForSite } from "../lib/priceList.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -24,7 +25,7 @@ router.get("/lubricant-types", async (req, res) => {
 
 router.get("/sites", async (req, res) => {
   const { rows } = await query(
-    `SELECT s.id, s.name, s.customer_id, s.distance_from_plant_km, s.latitude, s.longitude,
+    `SELECT s.id, s.name, s.customer_id, s.distance_from_plant_km, s.latitude, s.longitude, s.road_km, s.assigned_sales_representative_id,
             tac.label AS trip_allowance_label
      FROM sites s LEFT JOIN trip_allowance_categories tac ON tac.id = s.trip_allowance_category_id
      WHERE s.is_active ORDER BY s.name`
@@ -80,6 +81,47 @@ router.post("/site-contacts", async (req, res) => {
 // Lets the order-creation form check whether a rate is actually on file for a
 // customer/grade before the order is placed, instead of only discovering the
 // gap after a delivery completes with no invoice.
+// Round 209 — the mixes a site may order: its enabled (customer-approved)
+// price-list rows, by grade and mix design ref / rev — no price (owner: Create
+// Order shows grade and mix design only). `source`:
+//   price_list   the site has approved prices — only these can be ordered
+//   quotation    no price list yet, but a quotation is with the customer
+//                (its lines; the first order accepts it, clause 9.1)
+//   none         neither — any grade, the invoice waits for a price
+router.get("/site-mixes", async (req, res) => {
+  const customerId = Number(req.query.customer_id), siteId = Number(req.query.site_id);
+  if (!customerId || !siteId) return res.status(400).json({ error: "customer_id and site_id are required." });
+  const live = await liveRatesForSite(customerId, siteId, req.query.date || null);
+  const label = (r) => [r.grade_name, r.design_ref_code ? `${r.design_ref_code} · rev ${r.design_revision}` : r.price_option].filter(Boolean).join(" · ");
+  if (live.length) {
+    return res.json({ source: "price_list", mixes: live.map((r) => ({
+      mix_grade_id: r.mix_grade_id, grade_name: r.grade_name, price_option: r.price_option || null,
+      mix_design_id: r.mix_design_id || null, design_ref: r.design_ref_code ? `${r.design_ref_code} · rev ${r.design_revision}` : null,
+      label: label(r),
+    })) });
+  }
+  const { rows } = await query(
+    `SELECT q.quote_no, ql.mix_grade_id, m.name AS grade_name, ql.mix_design_id, md.design_ref_code, md.revision
+       FROM quotations q JOIN quotation_lines ql ON ql.quotation_id = q.id AND ql.mix_grade_id IS NOT NULL
+       JOIN mix_grades m ON m.id = ql.mix_grade_id LEFT JOIN mix_designs md ON md.id = ql.mix_design_id
+      WHERE q.id = (SELECT id FROM quotations WHERE customer_id = $1 AND site_id = $2 AND status IN ('approved', 'sent') ORDER BY id DESC LIMIT 1)
+      ORDER BY ql.line_no`,
+    [customerId, siteId]
+  );
+  if (rows.length) {
+    // The option name the price list will give a grade quoted twice (lib/priceList.js).
+    const n = {};
+    for (const r of rows) n[r.mix_grade_id] = (n[r.mix_grade_id] || 0) + 1;
+    return res.json({ source: "quotation", quote_no: rows[0].quote_no, mixes: rows.map((r) => ({
+      mix_grade_id: r.mix_grade_id, grade_name: r.grade_name, mix_design_id: r.mix_design_id,
+      price_option: n[r.mix_grade_id] > 1 && r.design_ref_code ? `${r.design_ref_code} · rev ${r.revision}` : null,
+      design_ref: r.design_ref_code ? `${r.design_ref_code} · rev ${r.revision}` : null,
+      label: [r.grade_name, r.design_ref_code ? `${r.design_ref_code} · rev ${r.revision}` : null].filter(Boolean).join(" · "),
+    })) });
+  }
+  res.json({ source: "none", mixes: [] });
+});
+
 router.get("/rate-check", async (req, res) => {
   const { customer_id, mix_grade_id, site_id, date } = req.query;
   if (!customer_id || !mix_grade_id) {
@@ -88,9 +130,13 @@ router.get("/rate-check", async (req, res) => {
   // Round 205 — the same lookup invoicing uses (lib/rateLookup.js). When the
   // site has two prices for the grade (OPC / OPC + fly ash), they are returned
   // as `options` and the order must say which (price_option).
-  const picked = pick(await liveRows(customer_id, site_id || null, mix_grade_id, date || null), req.query.price_option || null);
+  // Round 209 — only rows the customer approved can be ordered.
+  const picked = pick(await liveRows(customer_id, site_id || null, mix_grade_id, date || null, undefined, { enabledOnly: true }), req.query.price_option || null);
   const r = picked.rate ? { ...picked.rate, is_site_specific: picked.rate.site_id != null } : null;
   const rows = r ? [r] : [];
+  // Rows exist but none is approved → the order will be refused; say so now.
+  const notApproved = !r && !picked.options.length
+    && (await liveRows(customer_id, site_id || null, mix_grade_id, date || null)).length > 0;
   // Round 204 — a quotation for this site still with the customer (approved /
   // sent, not accepted yet): Create Order names it, since the first order of a
   // new site accepts it (clause 9.1).
@@ -107,14 +153,16 @@ router.get("/rate-check", async (req, res) => {
   }
   res.json({
     rate_exists: rows.length > 0,
+    not_approved: notApproved,
     quotation_id: r?.quotation_id ?? null,
     quote_no: r?.quote_no ?? null,
     rate_source: r?.source ?? null,
     effective_from: r?.effective_from ?? null,
     pending_quotation: pendingQuote,
     options: picked.options.length > 1
-      ? picked.options.map((o) => ({ price_option: o.price_option, rate_per_m3: o.rate_per_m3, quote_no: o.quote_no || null }))
+      ? picked.options.map((o) => ({ price_option: o.price_option, rate_per_m3: o.rate_per_m3, quote_no: o.quote_no || null, mix_design_id: o.mix_design_id || null }))
       : [],
+    mix_design_id: r?.mix_design_id ?? null,
     needs_option: picked.reason === "choose" || picked.reason === "no_option",
     rate_per_m3: r?.rate_per_m3 ?? null,
     is_site_specific: r?.is_site_specific ?? false,

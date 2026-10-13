@@ -55,7 +55,11 @@ function CustomerPriceList({ customerId, go, canQuote }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState("");
   const [hist, setHist] = useState({});
-  useEffect(() => { apiRequest(`/quotations/price-lists/${customerId}`).then(setD).catch((e) => setError(e.message)); }, [customerId]);
+  const [tick, setTick] = useState(0);
+  const [acting, setActing] = useState(null); // { r, enable }
+  const { can } = usePermissions();
+  const canEnable = can("accounts.price-list-enable", "edit");
+  useEffect(() => { apiRequest(`/quotations/price-lists/${customerId}`).then(setD).catch((e) => setError(e.message)); }, [customerId, tick]);
   if (error) return <><button type="button" onClick={() => go("price-lists")}>← All customers</button><Banner>{error}</Banner></>;
   if (!d) return <Empty>Loading…</Empty>;
   return (
@@ -92,6 +96,7 @@ function CustomerPriceList({ customerId, go, canQuote }) {
                 <th style={TH}>Grade</th><th style={{ ...TH, textAlign: "right" }}>Rate incl. GST</th><th style={{ ...TH, textAlign: "right" }}>Base · GST</th>
                 <th style={TH}>Since · from</th><th style={TH}>Charges</th><th style={{ ...TH, textAlign: "right" }}>Supplied</th>
                 {pending && <th style={{ ...TH, textAlign: "right" }}>Pending quote</th>}
+                <th style={TH}>Status</th>
               </tr></thead>
               <tbody>
                 {rates.map((r) => {
@@ -99,8 +104,11 @@ function CustomerPriceList({ customerId, go, canQuote }) {
                   const pend = pending?.lines?.find((l) => l.mix_grade_id === r.mix_grade_id);
                   const ch = r.charges;
                   return (
-                    <tr key={r.id} style={row}>
-                      <td style={{ ...TD, fontWeight: 700 }}>{r.grade_name}{r.price_option && <div style={{ fontSize: 11, color: "var(--info)", fontWeight: 400 }}>{r.price_option}</div>}{!r.site_specific && <div style={{ fontSize: 11, color: "var(--amber)", fontWeight: 400 }}>customer-wide</div>}</td>
+                    <tr key={r.id} style={{ ...row, background: r.is_enabled ? undefined : "var(--concrete)", color: r.is_enabled ? undefined : "var(--slate)" }}>
+                      <td style={{ ...TD, fontWeight: 700 }}>{r.grade_name}
+                        {r.design_ref && <div style={{ fontSize: 11, fontWeight: 600 }}>{r.design_ref}</div>}
+                        {r.mix_description && <div style={{ fontSize: 11, fontWeight: 400, color: "var(--slate)" }}>{r.mix_description}</div>}
+                        {r.price_option && !r.design_ref && <div style={{ fontSize: 11, color: "var(--info)", fontWeight: 400 }}>{r.price_option}</div>}{!r.site_specific && <div style={{ fontSize: 11, color: "var(--amber)", fontWeight: 400 }}>customer-wide</div>}</td>
                       <td style={{ ...NUM, fontWeight: 700 }}>{inr2(r.rate_per_m3)}</td>
                       <td style={{ ...NUM, fontSize: 12, color: "var(--slate)" }}>{inr2(sp.base)} · {inr2(sp.gst)}</td>
                       <td style={{ ...TD, fontSize: 12 }}>{fmtDate(r.effective_from)}<div style={{ color: "var(--slate)" }}>{r.quote_no || (r.source === "rate_file" ? "old rate file" : r.source)}</div></td>
@@ -112,6 +120,19 @@ function CustomerPriceList({ customerId, go, canQuote }) {
                       </td>
                       <td style={NUM}>{inr(r.supplied_m3)} m³{r.committed_qty_m3 ? <div style={{ fontSize: 11, color: "var(--slate)" }}>of {inr(r.committed_qty_m3)} committed</div> : null}</td>
                       {pending && <td style={{ ...NUM, color: "var(--info)" }}>{pend ? inr2(pend.rate) : "—"}</td>}
+                      <td style={TD}>
+                        {r.is_enabled
+                          ? <span className="badge badge-success">Approved · can order</span>
+                          : <span className="badge badge-neutral">Not approved · hidden</span>}
+                        {r.enabled_note && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 3 }}>{r.enabled_note}</div>}
+                        {canEnable && r.source === "quotation" && (
+                          <div style={{ marginTop: 4 }}>
+                            <button type="button" className={r.is_enabled ? "" : "btn-primary"} style={{ fontSize: 11.5, padding: "3px 9px" }} onClick={() => setActing({ r, enable: !r.is_enabled })}>
+                              {r.is_enabled ? "Disable" : "Enable"}
+                            </button>
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -129,6 +150,7 @@ function CustomerPriceList({ customerId, go, canQuote }) {
         </div>
       ))}
       {!d.sites.length && <Empty>This customer has no active sites.</Empty>}
+      {acting && <EnableModal {...acting} onClose={() => setActing(null)} onDone={() => { setActing(null); setTick((t) => t + 1); }} />}
     </>
   );
 }
@@ -136,6 +158,36 @@ function CustomerPriceList({ customerId, go, canQuote }) {
 // Cement / diesel price change: a revision for every customer whose price
 // list came from an accepted quotation, each waiting for the Administrator's
 // approval, then for that customer's acceptance.
+// Round 209 — enable a mix the customer did not approve at first (at its
+// quoted rate, from a date), or disable one so it cannot be ordered.
+function EnableModal({ r, enable, onClose, onDone }) {
+  const [note, setNote] = useState("");
+  const [from, setFrom] = useState(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }));
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true); setError("");
+    try { await apiRequest(`/quotations/price-lists/rows/${r.id}/${enable ? "enable" : "disable"}`, { method: "POST", body: { note, from } }); onDone(); }
+    catch (e) { setError(e.message); setBusy(false); }
+  }
+  return (
+    <Modal title={`${enable ? "Enable" : "Disable"} ${r.grade_name}${r.design_ref ? ` · ${r.design_ref}` : ""}`} onClose={onClose} width={480}>
+      <Banner>{error}</Banner>
+      <div style={{ fontSize: 13, marginBottom: 10 }}>
+        {enable
+          ? <>The site can order it at the quoted <b>₹{inr2(r.rate_per_m3)}</b> (incl. GST). A different rate needs a revised quotation.</>
+          : "New orders can no longer use it. Orders already placed keep their rate."}
+      </div>
+      {enable && <Field label="Approved from"><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>}
+      <Field label={enable ? "Customer's word (e.g. email from the site engineer)" : "Why"}><input value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button type="button" onClick={onClose}>Cancel</button>
+        <button type="button" className="btn-primary" disabled={busy || !note.trim()} onClick={save}>{busy ? "Saving…" : enable ? "Enable for ordering" : "Disable"}</button>
+      </div>
+    </Modal>
+  );
+}
+
 function BulkRevision({ onClose, go }) {
   const [f, setF] = useState({ increase: "", reason: "Raw material / diesel price change" });
   const [preview, setPreview] = useState(null);

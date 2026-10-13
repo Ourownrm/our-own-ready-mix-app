@@ -20,7 +20,7 @@ import { leaveTypes, computeBalances, compoffAvailable, eligibility, addDaysYmd 
 const router = Router();
 router.use(requireAuth);
 
-const ANY_HR = ["hr.attendance", "hr.employees", "hr.roster", "hr.settings"];
+const ANY_HR = ["hr.today", "hr.attendance", "hr.employees", "hr.roster", "hr.settings"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -41,6 +41,29 @@ const bool = (v, dflt) => (v === undefined ? dflt : !!v);
 
 const SALARY_FIELDS = ["salary_basic", "salary_da", "salary_hra", "salary_conveyance", "salary_special",
   "pf_applicable", "esi_applicable", "daily_rate", "service_charge_pct", "incentive_basis", "incentive_min_m3", "incentive_rate", "salesperson_id", "ot_eligible"];
+
+// Round 209 — identity and bank details on the employee file (owner). Seen and
+// changed only with hr.employee-ids (Administrator by default).
+const ID_FIELDS = ["aadhaar_no", "pan_no", "dl_no", "dl_valid_till", "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc"];
+function idFields(b) {
+  const up = (v, max) => { const t = text(v, max); return t ? t.toUpperCase().replace(/\s+/g, "") : null; };
+  const f = {
+    aadhaar_no: b.aadhaar_no ? String(b.aadhaar_no).replace(/\D/g, "") || null : null,
+    pan_no: up(b.pan_no, 10),
+    dl_no: up(b.dl_no, 20),
+    dl_valid_till: date(b.dl_valid_till),
+    bank_account_name: text(b.bank_account_name, 120),
+    bank_name: text(b.bank_name, 80),
+    bank_account_no: b.bank_account_no ? String(b.bank_account_no).replace(/[\s-]/g, "") || null : null,
+    bank_ifsc: up(b.bank_ifsc, 11),
+  };
+  const bad = (m) => { throw Object.assign(new Error(m), { expose: true }); };
+  if (f.aadhaar_no && !/^\d{12}$/.test(f.aadhaar_no)) bad("Aadhaar number must be 12 digits.");
+  if (f.pan_no && !/^[A-Z]{5}\d{4}[A-Z]$/.test(f.pan_no)) bad("PAN must look like ABCDE1234F.");
+  if (f.bank_ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(f.bank_ifsc)) bad("IFSC must look like SBIN0001234.");
+  if (f.bank_account_no && !/^\d{6,20}$/.test(f.bank_account_no)) bad("Bank account number must be 6 to 20 digits.");
+  return f;
+}
 
 function friendly(err, res, fallback) {
   if (err.code === "23505") {
@@ -101,8 +124,10 @@ router.get("/meta", requireAnyPermission(ANY_HR), async (req, res) => {
 router.get("/employees", requirePermission("hr.employees", "view"), async (req, res) => {
   try {
     const salary = await can(req.user, "hr.salary", "view");
+    const ids = await can(req.user, "hr.employee-ids", "view");
     const { rows } = await query(
       `SELECT e.*, to_char(e.date_of_joining, 'YYYY-MM-DD') AS date_of_joining, to_char(e.date_of_leaving, 'YYYY-MM-DD') AS date_of_leaving,
+              to_char(e.dl_valid_till, 'YYYY-MM-DD') AS dl_valid_till,
               d.name AS department, s.name AS default_shift_name, u.name AS app_user_name,
               (SELECT max(name_on_machine) FROM attendance_device_users du WHERE du.machine_user_id = e.machine_user_id) AS name_on_machine
        FROM hr_employees e
@@ -112,6 +137,7 @@ router.get("/employees", requirePermission("hr.employees", "view"), async (req, 
        ORDER BY e.is_active DESC, d.sort_order NULLS LAST, e.name`
     );
     if (!salary) for (const r of rows) for (const f of SALARY_FIELDS) delete r[f];
+    if (!ids) for (const r of rows) for (const f of ID_FIELDS) delete r[f];
     for (const r of rows) {
       if (!salary) continue;
       const g = ["salary_basic", "salary_da", "salary_hra", "salary_conveyance", "salary_special"].reduce((a, f) => a + Number(r[f] || 0), 0);
@@ -167,6 +193,7 @@ router.post("/employees", requirePermission("hr.employees", "create"), async (re
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
     const f = employeeFields(req.body || {}, { withSalary });
+    if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
     if (!f.emp_code || !f.name) return res.status(400).json({ error: "Employee code and name are required." });
     f.is_active = !f.date_of_leaving;
     f.created_by = req.user.id;
@@ -187,6 +214,7 @@ router.patch("/employees/:id", requirePermission("hr.employees", "edit"), async 
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
     const f = employeeFields(req.body || {}, { withSalary });
+    if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
     if (!f.emp_code || !f.name) return res.status(400).json({ error: "Employee code and name are required." });
     // Someone who has left is inactive, so their machine number frees up for a new joiner.
     f.is_active = req.body.is_active === false ? false : !f.date_of_leaving || f.date_of_leaving >= new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
@@ -344,7 +372,7 @@ router.get("/attendance", requirePermission("hr.attendance", "view"), async (req
 // The day at a glance: who is due, who is in, who has not punched in by their
 // shift start + a few minutes, late, on leave, on duty outside, off, and
 // yesterday's loose ends — plus each department and the last 7 days.
-router.get("/today", requirePermission("hr.attendance", "view"), async (req, res) => {
+router.get("/today", requirePermission("hr.today", "view"), async (req, res) => {
   try {
     const rules = await loadRules();
     const probe = await attendanceRegister({ from: istToday(), to: istToday(), employeeIds: [-1] });

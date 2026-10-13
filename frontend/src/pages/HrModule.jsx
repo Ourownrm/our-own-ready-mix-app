@@ -306,6 +306,7 @@ const EMPTY = {
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
   daily_rate: "", service_charge_pct: "", incentive_basis: "none", incentive_min_m3: "", incentive_rate: "",
   salesperson_id: "", ot_eligible: false, app_punch: "off",
+  aadhaar_no: "", pan_no: "", dl_no: "", dl_valid_till: "", bank_account_name: "", bank_name: "", bank_account_no: "", bank_ifsc: "",
 };
 
 function EmployeeForm({ meta, initial, onSaved, onCancel }) {
@@ -486,6 +487,25 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
                   </Field>
                 </>
               )}
+            </div>
+          </fieldset>
+        </>
+      )}
+
+      {/* Round 209 — identity and bank details (hr.employee-ids, Administrator by default). */}
+      {can("hr.employee-ids", "view") && (
+        <>
+          <div style={section}>ID &amp; bank {!can("hr.employee-ids", "edit") && <span style={{ textTransform: "none", fontWeight: 400 }}>(view only)</span>}</div>
+          <fieldset disabled={!can("hr.employee-ids", "edit")} style={{ border: "none", padding: 0, margin: 0 }}>
+            <div style={grid}>
+              <Field label="Aadhaar number" hint="12 digits"><input inputMode="numeric" maxLength={14} value={f.aadhaar_no} onChange={set("aadhaar_no")} placeholder="1234 5678 9012" /></Field>
+              <Field label="PAN"><input maxLength={10} value={f.pan_no} onChange={set("pan_no")} placeholder="ABCDE1234F" style={{ textTransform: "uppercase" }} /></Field>
+              <Field label="Driving licence number"><input maxLength={20} value={f.dl_no} onChange={set("dl_no")} style={{ textTransform: "uppercase" }} /></Field>
+              <Field label="Licence valid till"><input type="date" value={f.dl_valid_till} onChange={set("dl_valid_till")} /></Field>
+              <Field label="Account holder name"><input maxLength={120} value={f.bank_account_name} onChange={set("bank_account_name")} /></Field>
+              <Field label="Bank"><input maxLength={80} value={f.bank_name} onChange={set("bank_name")} placeholder="e.g. Federal Bank" /></Field>
+              <Field label="Account number"><input inputMode="numeric" maxLength={24} value={f.bank_account_no} onChange={set("bank_account_no")} /></Field>
+              <Field label="IFSC"><input maxLength={11} value={f.bank_ifsc} onChange={set("bank_ifsc")} placeholder="FDRL0001234" style={{ textTransform: "uppercase" }} /></Field>
             </div>
           </fieldset>
         </>
@@ -818,7 +838,7 @@ export default function HrModule() {
   useEffect(() => { loadMeta(); }, []);
 
   const tabs = [
-    ["today", "Today", can("hr.attendance", "view")],
+    ["today", "Today", can("hr.today", "view")],
     ["attendance", "Attendance", can("hr.attendance", "view")],
     ["employees", "Employees", can("hr.employees", "view")],
     ["requests", "Requests", can("hr.requests", "view")],

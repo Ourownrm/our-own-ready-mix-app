@@ -21,22 +21,34 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // Live price-list rows for one site on a date (site-specific rows first; a
 // customer-wide row from the old rate file still applies where no site row
 // exists — the same precedence invoicing uses).
-export async function liveRatesForSite(customerId, siteId, date = null) {
+// Round 209 — { includeDisabled: true } also returns the rows of lines the
+// customer did not approve (is_enabled = false), for the price-list screen.
+export async function liveRatesForSite(customerId, siteId, date = null, { includeDisabled = false } = {}) {
   const { rows } = await query(
     `SELECT rm.*, rm.effective_from::text AS effective_from, rm.effective_to::text AS effective_to,
-            m.name AS grade_name, q.quote_no
+            m.name AS grade_name, q.quote_no, md.design_ref_code, md.revision AS design_revision, md.mix_description
        FROM rate_master rm
        JOIN mix_grades m ON m.id = rm.mix_grade_id
        LEFT JOIN quotations q ON q.id = rm.quotation_id
+       LEFT JOIN mix_designs md ON md.id = rm.mix_design_id
       WHERE rm.customer_id = $1 AND (rm.site_id = $2 OR rm.site_id IS NULL)
+        AND ($4::boolean OR COALESCE(rm.is_enabled, true))
         AND rm.effective_from <= COALESCE($3::date, CURRENT_DATE)
         AND (rm.effective_to IS NULL OR rm.effective_to >= COALESCE($3::date, CURRENT_DATE))
       ORDER BY m.name, rm.effective_from DESC, rm.id DESC`,
-    [customerId, siteId, date]
+    [customerId, siteId, date, includeDisabled]
   );
   // Round 205 — one row per grade and price option (lib/rateLookup.js).
+  // Round 209 — enabled and disabled rows are kept apart, so a disabled line
+  // never hides the enabled price of the same grade.
   const byGrade = new Map();
   for (const r of rows) {
+    if (includeDisabled) {
+      const k = `${r.mix_grade_id}|${r.is_enabled === false ? "off" : "on"}`;
+      if (!byGrade.has(k)) byGrade.set(k, []);
+      byGrade.get(k).push(r);
+      continue;
+    }
     if (!byGrade.has(r.mix_grade_id)) byGrade.set(r.mix_grade_id, []);
     byGrade.get(r.mix_grade_id).push(r);
   }
@@ -45,7 +57,11 @@ export async function liveRatesForSite(customerId, siteId, date = null) {
 
 // Writes one accepted quotation into the price list, inside a transaction.
 // Returns the grades touched.
-export async function applyQuotationToPriceList(quotationId, ratesFrom, userId) {
+// Round 209 — approvedLineIds: the lines the customer approved (null = all).
+// A not-approved line is written as a disabled row (is_enabled = false) that
+// the Administrator can enable later at the quoted rate; it does not end the
+// grade's current price.
+export async function applyQuotationToPriceList(quotationId, ratesFrom, userId, approvedLineIds = null) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -53,11 +69,17 @@ export async function applyQuotationToPriceList(quotationId, ratesFrom, userId) 
     const q = qs[0];
     if (!q) throw new Error("Quotation not found.");
     const { rows: lines } = await client.query(
-      `SELECT * FROM quotation_lines WHERE quotation_id = $1 AND mix_grade_id IS NOT NULL ORDER BY line_no`,
+      `SELECT ql.*, md.design_ref_code, md.revision AS design_revision
+         FROM quotation_lines ql LEFT JOIN mix_designs md ON md.id = ql.mix_design_id
+        WHERE ql.quotation_id = $1 AND ql.mix_grade_id IS NOT NULL ORDER BY ql.line_no`,
       [quotationId]
     );
     const c = q.charges || {};
-    const touched = [...new Set(lines.map((l) => l.mix_grade_id))];
+    const approvedSet = approvedLineIds ? new Set(approvedLineIds.map(Number)) : null;
+    const isApproved = (ln) => !approvedSet || approvedSet.has(ln.id);
+    await client.query(`UPDATE quotation_lines SET approved = (id = ANY($2::int[])) WHERE quotation_id = $1`,
+      [quotationId, lines.filter(isApproved).map((l) => l.id)]);
+    const touched = [...new Set(lines.filter(isApproved).map((l) => l.mix_grade_id))];
     // Round 205 — a grade quoted twice (OPC / OPC + fly ash) keeps both, each
     // with its specification as the price option. End what is live for every
     // grade first, then write the lines — so the second option of a grade does
@@ -76,19 +98,23 @@ export async function applyQuotationToPriceList(quotationId, ratesFrom, userId) 
       );
     }
     for (const ln of lines) {
-      const option = count.get(ln.mix_grade_id) > 1 ? (ln.specification || `Option ${ln.line_no}`) : null;
+      // Round 209 — a mix design names the option by its ref / rev.
+      const option = count.get(ln.mix_grade_id) > 1
+        ? (ln.design_ref_code ? `${ln.design_ref_code} · rev ${ln.design_revision}` : (ln.specification || `Option ${ln.line_no}`)) : null;
       await client.query(
         `INSERT INTO rate_master
            (customer_id, site_id, mix_grade_id, rate_per_m3,
             line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3, boom_rate_above_per_m3,
             part_load_min_qty_m3, part_load_charge_per_m3, waiting_charge_per_hour,
-            committed_qty_m3, rebate_per_m3, effective_from, source, quotation_id, created_by, price_option)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'quotation',$16,$17,$18)`,
+            committed_qty_m3, rebate_per_m3, effective_from, source, quotation_id, created_by, price_option,
+            mix_design_id, is_enabled, enabled_note)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'quotation',$16,$17,$18,$19,$20,$21)`,
         [q.customer_id, q.site_id, ln.mix_grade_id, ln.rate_total,
          c.line_pump_charge ?? null, c.line_pump_min_qty ?? 20, c.boom_min_charge ?? null, c.boom_min_qty ?? 50, c.boom_rate_above ?? null,
          c.part_load_min_qty ?? 5, c.part_load_rate ?? null, c.waiting_rate ?? 0,
          q.agreement_type === "credit_qty" ? ln.qty_m3 : null, q.agreement_type === "credit_qty" ? q.rebate_per_m3 : null,
-         ratesFrom, quotationId, userId, option]
+         ratesFrom, quotationId, userId, option,
+         ln.mix_design_id || null, isApproved(ln), isApproved(ln) ? null : "Not approved by the customer"]
       );
     }
     // Earlier quotations of this customer + site that were live are superseded.
@@ -221,5 +247,57 @@ export async function deemedAcceptOnFirstOrder(orderId, userId) {
   } catch (err) {
     console.error("Deemed acceptance failed:", err);
     return null;
+  }
+}
+
+// Round 209 — the Administrator enables a price-list row the customer did not
+// approve at first (at its quoted rate, from the given date), or disables a
+// row so it can no longer be ordered. Enabling ends any other enabled row of
+// the same grade and option for that site.
+export async function setRowEnabled(rowId, enabled, { from = null, note = null, userId }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT * FROM rate_master WHERE id = $1 FOR UPDATE`, [rowId]);
+    const r = rows[0];
+    if (!r) throw Object.assign(new Error("Price-list row not found."), { status: 404 });
+    if (enabled) {
+      const day = from || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      await client.query(
+        `UPDATE rate_master SET effective_to = GREATEST(effective_from, $5::date - 1)
+          WHERE customer_id = $1 AND site_id IS NOT DISTINCT FROM $2 AND mix_grade_id = $3 AND id <> $4
+            AND COALESCE(is_enabled, true) AND (effective_to IS NULL OR effective_to >= $5::date)
+            AND upper(regexp_replace(COALESCE(price_option, ''), '[^A-Za-z0-9+]', '', 'g'))
+              = upper(regexp_replace(COALESCE($6::text, ''), '[^A-Za-z0-9+]', '', 'g'))`,
+        [r.customer_id, r.site_id, r.mix_grade_id, r.id, day, r.price_option]
+      );
+      await client.query(
+        `UPDATE rate_master SET is_enabled = true, effective_from = GREATEST(effective_from, $2::date), effective_to = NULL,
+                enabled_note = $3, enabled_changed_by = $4, enabled_changed_at = now() WHERE id = $1`,
+        [r.id, day, note, userId]
+      );
+      if (r.quotation_id) {
+        await client.query(`UPDATE quotation_lines SET approved = true WHERE quotation_id = $1 AND mix_grade_id = $2 AND mix_design_id IS NOT DISTINCT FROM $3`,
+          [r.quotation_id, r.mix_grade_id, r.mix_design_id]);
+      }
+    } else {
+      await client.query(
+        `UPDATE rate_master SET is_enabled = false, enabled_note = $2, enabled_changed_by = $3, enabled_changed_at = now() WHERE id = $1`,
+        [r.id, note, userId]
+      );
+    }
+    if (r.quotation_id) {
+      await client.query(
+        `INSERT INTO quotation_events (quotation_id, event, note, by_user) VALUES ($1, 'price_list', $2, $3)`,
+        [r.quotation_id, `${enabled ? "Enabled" : "Disabled"} on the price list${note ? `: ${note}` : ""}.`, userId]
+      );
+    }
+    await client.query("COMMIT");
+    return r;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 }

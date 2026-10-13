@@ -40,17 +40,28 @@ function pumpRule(rate, pumpRequirement) {
 export async function resolveChargeDecisions(body, { customer_id, site_id, mix_grade_id, order_date, order_quantity_m3, pump_requirement }) {
   // Round 205 — two prices for the grade at this site (e.g. OPC and OPC + fly
   // ash): the Manager must say which; the choice is kept on the order.
-  const picked = await rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option: body.price_option || null });
+  // Round 209 — only mixes the customer approved (enabled price-list rows)
+  // can be ordered.
+  const picked = await rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option: body.price_option || null }, undefined, { enabledOnly: true });
+  if (!picked.options.length) {
+    const any = await rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option: null });
+    if (any.options.length) {
+      return { error: "This grade / mix is not approved by the customer for this site — the Administrator can enable it in Accounts → Price lists." };
+    }
+  }
   if (picked.options.length > 1 && !picked.rate) {
     return { error: picked.reason === "no_option"
       ? "That price option is not in the site's price list — choose one of the options shown."
       : `This site has ${picked.options.length} prices for this grade (${picked.options.map((o) => o.price_option || "standard").join(" / ")}) — choose which one this order is.` };
   }
   const rate = picked.rate;
-  const priceOption = picked.options.length > 1 ? rate.price_option : null;
+  // No price list yet (first order of a new site): keep what the form chose
+  // from the quotation, so the deemed acceptance prices it.
+  const priceOption = rate?.price_option || (!picked.options.length ? String(body.price_option || "").trim() || null : null);
   const qty = Number(order_quantity_m3) || 0;
   const out = {
     price_option: priceOption,
+    mix_design_id: rate?.mix_design_id || (!picked.options.length && Number(body.mix_design_id) ? Number(body.mix_design_id) : null),
     pump_charge_applicable: null, pump_charge_amount: 0, pump_charge_waiver_reason: null,
     part_load_applicable: null, part_load_charge_amount: 0, part_load_waiver_reason: null,
     part_load_basis: "per_load",
@@ -82,6 +93,10 @@ export async function resolveChargeDecisions(body, { customer_id, site_id, mix_g
     const reason = String(body.part_load_waiver_reason || "").trim();
     if (!reason) return { error: "Give a reason for not charging part load — the Administrator is notified." };
     out.part_load_waiver_reason = reason;
+  }
+  if (out.mix_design_id && !rate?.mix_design_id) {
+    const { rows: ok } = await query(`SELECT 1 FROM mix_designs WHERE id = $1 AND mix_grade_id = $2 AND status = 'approved'`, [out.mix_design_id, mix_grade_id]);
+    if (!ok.length) out.mix_design_id = null;
   }
   return { decisions: out, rate };
 }

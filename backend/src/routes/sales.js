@@ -429,7 +429,7 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
      ) AS mix_design_id`,
     [booking.customer_id, finalMixGradeId]
   );
-  const resolvedMixDesignId = resolvedDesign[0]?.mix_design_id || null;
+  const resolvedMixDesignId = cd.mix_design_id || resolvedDesign[0]?.mix_design_id || null; // Round 209: the priced mix wins
 
   // Same default QC Engineer as orders.js (round 119, post-ship again, item
   // 3) — a booking converted into an order should get Ajith Pulikkol by

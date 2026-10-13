@@ -52,6 +52,9 @@ function Register({ meta, go }) {
   const [logFor, setLogFor] = useState(null);
   const [tick, setTick] = useState(0);
   const [showLater, setShowLater] = useState(false);
+  // Round 209 — salesperson filter on follow-ups and the register.
+  const [sp, setSp] = useState("");
+  const spMatch = (x) => !sp || (sp === "none" ? !x.salesperson_id : String(x.salesperson_id) === sp);
 
   useEffect(() => {
     Promise.all([apiRequest("/quotations/followups"), apiRequest("/quotations?status=all")])
@@ -66,10 +69,11 @@ function Register({ meta, go }) {
       if (filter === "open" && !OPEN.has(q.status)) return false;
       if (filter === "closed" && !["lost", "declined"].includes(q.status)) return false;
       if (!["open", "closed", "all"].includes(filter) && q.status !== filter) return false;
-      if (s && !`${q.quote_no} ${q.customer_name} ${q.site_name}`.toLowerCase().includes(s)) return false;
+      if (s && !`${q.quote_no} ${q.customer_name} ${q.site_name} ${q.salesperson_name || ""}`.toLowerCase().includes(s)) return false;
+      if (!spMatch(q)) return false;
       return true;
     });
-  }, [list, filter, search]);
+  }, [list, filter, search, sp]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const counts = useMemo(() => {
     const c = {};
@@ -77,8 +81,8 @@ function Register({ meta, go }) {
     return c;
   }, [list]);
 
-  const due = (followups || []).filter((f) => f.overdue || f.due_today);
-  const later = (followups || []).filter((f) => !f.overdue && !f.due_today);
+  const due = (followups || []).filter((f) => (f.overdue || f.due_today) && spMatch(f));
+  const later = (followups || []).filter((f) => !f.overdue && !f.due_today && spMatch(f));
 
   return (
     <>
@@ -86,7 +90,12 @@ function Register({ meta, go }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>Follow-ups</h2>
         <span style={{ fontSize: 12.5, color: "var(--slate)" }}>Quotations with the customer — call 2 and 5 days after sending, and on the last valid day.</span>
-        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+        <select value={sp} onChange={(e) => setSp(e.target.value)} aria-label="Salesperson" style={{ marginLeft: "auto", padding: "6px 8px", border: "1px solid var(--border-strong)", borderRadius: 7 }}>
+          <option value="">All salespersons</option>
+          {(meta.salespersons || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          <option value="none">Salesperson not set</option>
+        </select>
+        <span style={{ display: "flex", gap: 8 }}>
           {meta.perms.import && <button type="button" onClick={() => go("quotations", { import: "1" })}>Import from Excel</button>}
           {meta.perms.create && <button type="button" className="btn-primary" onClick={() => go("quotations", { new: "1" })}>+ New quotation</button>}
         </span>
@@ -99,7 +108,7 @@ function Register({ meta, go }) {
         // may be a table list is good"): calls due first, the rest after.
         <div style={{ marginBottom: 18 }}>
           {(due.length > 0 || showLater) && <Table minWidth={860} head={<>
-            <th style={TH}>When</th><th style={TH}>Customer · Site</th><th style={TH}>Quotation</th>
+            <th style={TH}>When</th><th style={TH}>Customer · Site</th><th style={TH}>Quotation</th><th style={TH}>Salesperson</th>
             <th style={{ ...TH, textAlign: "right" }}>Value</th><th style={TH}>Valid till</th><th style={TH}>Last follow-up</th><th style={TH}>Phone</th><th style={TH} />
           </>}>
             {[...due, ...(showLater ? later : [])].map((f) => (
@@ -111,6 +120,7 @@ function Register({ meta, go }) {
                 <td style={{ ...TD, whiteSpace: "nowrap" }}>
                   <a href={`?tab=quotations&id=${f.id}`} onClick={(e) => { e.preventDefault(); go("quotations", { id: String(f.id) }); }}>{f.quote_no}</a>
                 </td>
+                <td style={{ ...TD, fontSize: 12.5, whiteSpace: "nowrap" }}>{f.salesperson_name || <span style={{ color: "var(--alert-red)" }}>not set</span>}</td>
                 <td style={NUM}>{Number(f.value_incl_gst) > 0 ? money(f.value_incl_gst) : "—"}</td>
                 <td style={{ ...TD, whiteSpace: "nowrap", fontSize: 12.5, color: f.expired ? "var(--alert-red)" : undefined }}>{f.valid_until ? fmtDate(f.valid_until) : "—"}</td>
                 <td style={{ ...TD, fontSize: 12, color: "var(--slate)", maxWidth: 260 }}>{f.last_note ? <>“{f.last_note}” — {f.last_by}, {fmtDate(String(f.last_at).slice(0, 10))}</> : "—"}</td>
@@ -151,20 +161,21 @@ function Register({ meta, go }) {
       {!list ? <Empty>Loading…</Empty> : !shown.length ? <Empty>No quotations here.</Empty> : (
         <Table minWidth={820} head={<>
           <th style={TH}>Quotation</th><th style={TH}>Customer · Site</th><th style={TH}>Type</th>
-          <th style={TH}>Grades (incl. GST)</th><th style={{ ...TH, textAlign: "right" }}>Value</th><th style={TH}>Status</th><th style={TH}>By</th>
+          <th style={TH}>Grades (incl. GST)</th><th style={{ ...TH, textAlign: "right" }}>Value</th><th style={TH}>Status</th><th style={TH}>Salesperson</th><th style={TH}>By</th>
         </>}>
           {shown.map((q) => (
             <tr key={q.id} style={{ ...row, cursor: "pointer" }} onClick={() => go("quotations", { id: String(q.id) })}>
               <td style={TD}><b>{q.quote_no}</b><div style={{ fontSize: 11.5, color: "var(--slate)" }}>{fmtDate(q.quote_date)}</div></td>
               <td style={TD}>{q.customer_name}<div style={{ fontSize: 12, color: "var(--slate)" }}>{q.site_name}</div></td>
               <td style={{ ...TD, fontSize: 12 }}>{meta.agreement_types.find((t) => t.key === q.agreement_type)?.label}</td>
-              <td style={{ ...TD, fontSize: 12 }}>{(q.lines || []).map((l) => `${l.grade} ₹${inr(l.rate)}`).join(" · ")}</td>
+              <td style={{ ...TD, fontSize: 12 }}>{(q.lines || []).map((l, i) => <span key={i} style={{ color: l.approved === false ? "var(--slate)" : undefined, textDecoration: l.approved === false ? "line-through" : undefined, marginRight: 6 }}>{l.grade} ₹{inr(l.rate)}</span>)}</td>
               <td style={NUM}>{Number(q.value_incl_gst) > 0 ? money(q.value_incl_gst) : "—"}</td>
               <td style={TD}>
                 <StatusBadge status={q.status} />
                 {q.status === "accepted" && q.rates_from && <div style={{ fontSize: 11, color: "var(--slate)" }}>price list from {fmtDate(q.rates_from)}</div>}
                 {["lost", "declined"].includes(q.status) && q.closed_reason && <div style={{ fontSize: 11, color: "var(--slate)" }}>{q.closed_reason}</div>}
               </td>
+              <td style={{ ...TD, fontSize: 12 }}>{q.salesperson_name || <span style={{ color: "var(--slate)" }}>—</span>}</td>
               <td style={{ ...TD, fontSize: 12, color: "var(--slate)" }}>{q.created_by_name}</td>
             </tr>
           ))}

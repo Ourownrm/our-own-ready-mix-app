@@ -99,7 +99,9 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
      ) AS mix_design_id`,
     [customer_id, mix_grade_id]
   );
-  const resolvedMixDesignId = resolvedDesign[0]?.mix_design_id || null;
+  // Round 209 — the mix design priced on the site's price list (the one the
+  // customer approved) wins.
+  const resolvedMixDesignId = cd.mix_design_id || resolvedDesign[0]?.mix_design_id || null;
 
   // Round 119, post-ship again, item 3 — Ajith Pulikkol is the default QC
   // Engineer on every new order, so this never has to be picked by hand at

@@ -14,15 +14,19 @@ import { query } from "../db.js";
 export const normOption = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9+]/g, "");
 
 // Every live row for the customer + site + grade on the date, newest first.
-export async function liveRows(customerId, siteId, gradeId, date, q = query) {
+// Round 209 — { enabledOnly: true } leaves out rows the customer has not
+// approved (or the Administrator disabled): used for ordering. Invoicing reads
+// every row, so an order placed while a price was enabled is still invoiced.
+export async function liveRows(customerId, siteId, gradeId, date, q = query, { enabledOnly = false } = {}) {
   const { rows } = await q(
     `SELECT rm.*, rm.effective_from::text AS effective_from, rm.effective_to::text AS effective_to, qn.quote_no
        FROM rate_master rm LEFT JOIN quotations qn ON qn.id = rm.quotation_id
       WHERE rm.customer_id = $1 AND rm.mix_grade_id = $2 AND (rm.site_id = $3 OR rm.site_id IS NULL)
+        AND (NOT $5::boolean OR COALESCE(rm.is_enabled, true))
         AND rm.effective_from <= COALESCE($4::date, CURRENT_DATE)
         AND (rm.effective_to IS NULL OR rm.effective_to >= COALESCE($4::date, CURRENT_DATE))
       ORDER BY rm.effective_from DESC, rm.id DESC`,
-    [customerId, gradeId, siteId || null, date || null]
+    [customerId, gradeId, siteId || null, date || null, enabledOnly]
   );
   return rows;
 }
@@ -54,6 +58,6 @@ export function pick(rows, option) {
   return hit ? { rate: hit, options, reason: null } : { rate: null, options, reason: "no_option" };
 }
 
-export async function rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option }, q = query) {
-  return pick(await liveRows(customer_id, site_id, mix_grade_id, order_date, q), price_option);
+export async function rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option }, q = query, opts = {}) {
+  return pick(await liveRows(customer_id, site_id, mix_grade_id, order_date, q, opts), price_option);
 }

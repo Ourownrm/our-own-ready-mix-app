@@ -57,7 +57,27 @@ export default function CreateOrder({ onDone }) {
   // Round 205 — two prices for the grade at this site (OPC / OPC + fly ash):
   // which one this order is.
   const [priceOption, setPriceOption] = useState("");
-  useEffect(() => { setPriceOption(""); }, [form.site_id, form.mix_grade_id]);
+  // Round 209 — the site's approved mixes (grade + mix design ref / rev, no
+  // price): only these can be ordered once the site has a price list.
+  const [siteMixes, setSiteMixes] = useState(null);
+  const [mixKey, setMixKey] = useState("");
+  const [mixDesignId, setMixDesignId] = useState("");
+  useEffect(() => {
+    setSiteMixes(null); setMixKey(""); setMixDesignId("");
+    if (!form.customer_id || !form.site_id) return;
+    apiRequest(`/master/site-mixes?customer_id=${form.customer_id}&site_id=${form.site_id}&date=${form.order_date}`)
+      .then(setSiteMixes).catch(() => setSiteMixes(null));
+  }, [form.customer_id, form.site_id, form.order_date]);
+  const mixMode = siteMixes && siteMixes.source !== "none" && siteMixes.mixes.length > 0;
+  const mixKeyOf = (m) => `${m.mix_grade_id}|${m.price_option || ""}|${m.mix_design_id || ""}`;
+  function chooseMix(key) {
+    setMixKey(key);
+    const m = siteMixes.mixes.find((x) => mixKeyOf(x) === key);
+    setForm((f) => ({ ...f, mix_grade_id: m ? String(m.mix_grade_id) : "" }));
+    setPriceOption(m?.price_option || "");
+    setMixDesignId(m?.mix_design_id ? String(m.mix_design_id) : "");
+  }
+  useEffect(() => { if (!mixMode) setPriceOption(""); }, [form.site_id, form.mix_grade_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Site Contacts directory (round 96, item 7) — autofills from any contact
   // already on file for this exact customer+site, and saves a newly-typed
@@ -204,6 +224,7 @@ export default function CreateOrder({ onDone }) {
           pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : undefined,
           pump_charge_amount: needsPumpDecision && pumpChargeDecision ? pumpChargeAmount : 0,
           price_option: priceOption || undefined,
+          mix_design_id: mixMode && mixDesignId ? Number(mixDesignId) : undefined,
           pump_charge_waiver_reason: needsPumpDecision && pumpChargeDecision === false ? pumpWaiverReason.trim() || undefined : undefined,
           part_load_applicable: partLoadDecision,
           part_load_waiver_reason: partLoadDecision === false ? partLoadWaiverReason.trim() : undefined,
@@ -277,13 +298,22 @@ export default function CreateOrder({ onDone }) {
             </select>
           </Field>
         )}
-        <Field label="Mix grade">
-          <select value={form.mix_grade_id} onChange={(e) => set("mix_grade_id", e.target.value)} required>
-            <option value="">Select</option>
-            {mixGrades.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
-        </Field>
-        {form.customer_id && form.mix_grade_id && (
+        {mixMode ? (
+          <Field label={siteMixes.source === "quotation" ? `Grade · mix design (quotation ${siteMixes.quote_no})` : "Grade · mix design (approved for this site)"}>
+            <select value={mixKey} onChange={(e) => chooseMix(e.target.value)} required>
+              <option value="">Select</option>
+              {siteMixes.mixes.map((m) => <option key={mixKeyOf(m)} value={mixKeyOf(m)}>{m.label}</option>)}
+            </select>
+          </Field>
+        ) : (
+          <Field label="Mix grade">
+            <select value={form.mix_grade_id} onChange={(e) => set("mix_grade_id", e.target.value)} required>
+              <option value="">Select</option>
+              {mixGrades.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </Field>
+        )}
+        {form.customer_id && form.mix_grade_id && !mixMode && (
           <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "var(--slate)", background: "var(--concrete)", borderRadius: 8, padding: "6px 10px", marginTop: -4 }}>
             {mixDesignInfo
               ? `Mix design on file: ${mixDesignInfo.design_ref_code}${mixDesignInfo.is_customer_specific ? " (assigned to this customer)" : " (standard for this grade)"}.`
@@ -404,27 +434,31 @@ export default function CreateOrder({ onDone }) {
 
         {rateInfo?.rate_exists && (
           <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--signal-green-bg)", color: "var(--signal-green)", padding: 10, borderRadius: 8 }}>
-            Rate ₹{Number(rateInfo.rate_per_m3).toLocaleString("en-IN")}/m³ incl. GST{" "}
+            Price on the site's price list{" "}
             {rateInfo.quote_no ? <>— quotation <b>{rateInfo.quote_no}</b></> : rateInfo.rate_source === "rate_file" ? "— from the rate file" : ""}
             {rateInfo.effective_from ? ` (from ${rateInfo.effective_from})` : ""}{!rateInfo.is_site_specific ? " · customer-wide rate" : ""}
-            {rateInfo.pending_quotation && <div style={{ color: "var(--slate)", marginTop: 2 }}>{rateInfo.pending_quotation.quote_no} (₹{Number(rateInfo.pending_quotation.rate_total).toLocaleString("en-IN")}) is with the customer — not in force until they accept it.</div>}
+            {rateInfo.pending_quotation && <div style={{ color: "var(--slate)", marginTop: 2 }}>{rateInfo.pending_quotation.quote_no} is with the customer — not in force until they accept it.</div>}
           </div>
         )}
-        {rateInfo?.options?.length > 1 && (
+        {rateInfo?.options?.length > 1 && !mixMode && (
           <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--info-bg)", color: "var(--info)", padding: 10, borderRadius: 8 }}>
             <div style={{ fontWeight: 600, marginBottom: 6 }}>This site has {rateInfo.options.length} prices for this grade — which one is this order? (required)</div>
             <select value={priceOption} onChange={(e) => setPriceOption(e.target.value)} style={{ width: "100%" }}>
               <option value="">Choose…</option>
               {rateInfo.options.map((o) => (
-                <option key={o.price_option} value={o.price_option}>{o.price_option} — ₹{Number(o.rate_per_m3).toLocaleString("en-IN")}/m³ incl. GST</option>
+                <option key={o.price_option} value={o.price_option}>{o.price_option}</option>
               ))}
             </select>
           </div>
         )}
         {rateInfo && !rateInfo.rate_exists && !rateInfo.needs_option && (
-          rateInfo.pending_quotation && rateInfo.pending_quotation.revision === 0 ? (
+          rateInfo.not_approved ? (
+            <div style={{ gridColumn: "1 / -1", color: "var(--alert-red)", background: "var(--alert-red-bg, #fdecec)", padding: 10, borderRadius: 8, fontSize: 12 }}>
+              This grade / mix is not approved by the customer for this site, so it cannot be ordered. The Administrator can enable it in Accounts → Price lists.
+            </div>
+          ) : rateInfo.pending_quotation && rateInfo.pending_quotation.revision === 0 ? (
             <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--info-bg)", color: "var(--info)", padding: 10, borderRadius: 8 }}>
-              New site: this order accepts quotation <b>{rateInfo.pending_quotation.quote_no}</b> (₹{Number(rateInfo.pending_quotation.rate_total).toLocaleString("en-IN")}/m³ incl. GST) and sets the site's price list from the order date.
+              New site: this order accepts quotation <b>{rateInfo.pending_quotation.quote_no}</b> and sets the site's price list from the order date.
             </div>
           ) : (
             <div style={{ gridColumn: "1 / -1", color: "var(--amber)", background: "var(--amber-bg)", padding: 10, borderRadius: 8, fontSize: 12 }}>

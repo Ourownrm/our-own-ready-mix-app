@@ -540,7 +540,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
         </div>
         {rateInfo?.rate_exists && (
           <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--signal-green-bg)", color: "var(--signal-green)", padding: 10, borderRadius: 8 }}>
-            Rate ₹{Number(rateInfo.rate_per_m3).toLocaleString("en-IN")}/m³ incl. GST{rateInfo.quote_no ? ` — quotation ${rateInfo.quote_no}` : rateInfo.rate_source === "rate_file" ? " — from the rate file" : ""}
+            Price on the site's price list{rateInfo.quote_no ? ` — quotation ${rateInfo.quote_no}` : rateInfo.rate_source === "rate_file" ? " — from the rate file" : ""}
           </div>
         )}
         {rateInfo?.options?.length > 1 && (
@@ -549,7 +549,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
             <select value={priceOption} onChange={(e) => setPriceOption(e.target.value)} style={{ width: "100%" }}>
               <option value="">Choose…</option>
               {rateInfo.options.map((o) => (
-                <option key={o.price_option} value={o.price_option}>{o.price_option} — ₹{Number(o.rate_per_m3).toLocaleString("en-IN")}/m³ incl. GST</option>
+                <option key={o.price_option} value={o.price_option}>{o.price_option}</option>
               ))}
             </select>
           </div>

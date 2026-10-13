@@ -511,6 +511,13 @@ export const CATALOGUE = [
   // Round 205 — one-time import of quotations issued from the Excel.
   f("accounts.quotation-import", "accounts", "Import quotations from the Excel (one time)", E,
     { administrator: E }),
+  // Round 209 — the proposed rate (cost of the mix + fuel + salary + other +
+  // margin) and its settings, and enabling / disabling price-list rows.
+  // Owner: Administrator only.
+  f("accounts.quotation-costing", "accounts", "Proposed rate & costing settings on quotations", VE,
+    { administrator: VE }),
+  f("accounts.price-list-enable", "accounts", "Enable / disable price-list mixes (not approved by the customer)", E,
+    { administrator: E }),
   f("orders.charge-waiver-review", "orders", "Review a pump / part load charge left out of an order", E,
     { administrator: E }),
   f("production.load-review", "production", "Omit a JCB / no-vehicle load from production totals", E,
@@ -585,11 +592,19 @@ export const CATALOGUE = [
   // salary because they can see the staff list.
   f("module.hr", "modules", "HR module", V,
     { administrator: V, manager: V, accountant: V }, { screen: "hr" }),
+  // Round 209 — the "Today" dashboard is its own function (owner: it was
+  // tied to the attendance register). Same default roles as before.
+  f("hr.today", "hr", "Today — the day at a glance", V,
+    { administrator: V, manager: V, accountant: V }),
   f("hr.attendance", "hr", "Attendance register", V,
     { administrator: V, manager: V, accountant: V }),
   f("hr.employees", "hr", "Employees — list, add, edit", VCE,
     { administrator: VCE, manager: VCE, accountant: V }),
   f("hr.salary", "hr", "Employees — pay, incentive & bank-relevant details", VE,
+    { administrator: VE }),
+  // Round 209 — Aadhaar, PAN, driving licence and bank account on the employee
+  // file. Personal data: Administrator only by default.
+  f("hr.employee-ids", "hr", "Employees — Aadhaar, PAN, driving licence, bank account", VE,
     { administrator: VE }),
   f("hr.roster", "hr", "Shift roster for operations staff", VE,
     { administrator: VE, manager: VE }),
@@ -749,6 +764,7 @@ export const MODULES = [
     key: "hr", label: "HR", gate: "module.hr", to: "/hr",
     matrixRoles: ["manager", "accountant"],
     menus: [
+      { key: "hr.today", label: "Today" },
       { key: "hr.attendance", label: "Attendance" },
       { key: "hr.employees", label: "Employees" },
       { key: "hr.roster", label: "Roster" },
@@ -758,8 +774,8 @@ export const MODULES = [
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
-    support: ["hr.salary", "hr.advance-request", "hr.advance-approve", "hr.advance-pay"],
-    noAutoView: ["hr.salary", "hr.payroll", "hr.advances"],
+    support: ["hr.salary", "hr.employee-ids", "hr.advance-request", "hr.advance-approve", "hr.advance-pay"],
+    noAutoView: ["hr.salary", "hr.employee-ids", "hr.payroll", "hr.advances"],
   },
   {
     // Round 199 — the Fuel module. Roles are set on each function above rather
@@ -792,7 +808,8 @@ export const MODULES = [
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
-      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel", "accounts.quotation-import"],
+      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel", "accounts.quotation-import",
+      "accounts.quotation-costing", "accounts.price-list-enable"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",

@@ -201,6 +201,8 @@ function StatusBadge({ card }) {
 // ---------------------------------------------------------------------------
 // To test — grouped by GRN
 // ---------------------------------------------------------------------------
+// The open material survives going into a test and back.
+let lastMaterialKey = null;
 function TodoTab({ setError, open, canCreate }) {
   const [cards, setCards] = useState(null);
   const [adding, setAdding] = useState(false);
@@ -225,6 +227,10 @@ function TodoTab({ setError, open, canCreate }) {
     });
   }, [cards]);
 
+  const [selKey, setSelKeyState] = useState(lastMaterialKey);
+  const setSelKey = (k) => { lastMaterialKey = k; setSelKeyState(k); };
+  const sel = selKey == null ? null : groups.find((g) => g.key === selKey) || null;
+
   if (!cards) return <div className="card">Loading…</div>;
   return (
     <>
@@ -238,10 +244,54 @@ function TodoTab({ setError, open, canCreate }) {
       {!groups.length && (
         <div className="card" style={{ color: "var(--slate)" }}>Nothing to test. New cards appear here when Store books a material in.</div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 12, alignItems: "start" }}>
-        {groups.map((g) => <MaterialGroup key={g.key} group={g} open={open} />)}
-      </div>
+      {/* Round 209 — one summary card per material (owner's request); a click
+          opens that material's tests, listed as before. */}
+      {sel ? (
+        <>
+          <button type="button" onClick={() => setSelKey(null)} style={{ marginBottom: 10 }}>← All materials</button>
+          <MaterialGroup group={sel} open={open} />
+        </>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, alignItems: "stretch" }}>
+          {groups.map((g) => <MaterialSummary key={g.key} group={g} onOpen={() => setSelKey(g.key)} />)}
+        </div>
+      )}
     </>
+  );
+}
+
+function MaterialSummary({ group, onOpen }) {
+  const cards = group.cards;
+  const overdue = cards.filter((c) => c.overdue).length;
+  const inProgress = cards.filter((c) => c.status === "in_progress").length;
+  const submitted = cards.filter((c) => c.status === "submitted").length;
+  const toStart = cards.filter((c) => c.status === "pending").length;
+  const grns = new Set(cards.filter((c) => c.receipt_id).map((c) => c.receipt_id)).size;
+  const hold = cards.some((c) => c.hold_stock);
+  const next = cards.filter((c) => c.due_at && !c.overdue).sort((a, b) => new Date(a.due_at) - new Date(b.due_at))[0];
+  const Line = ({ label, value, color }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+      <span style={{ color: "var(--slate)" }}>{label}</span><span style={{ fontWeight: 600, color }}>{value}</span>
+    </div>
+  );
+  return (
+    <button type="button" onClick={onOpen} className="card"
+      style={{ textAlign: "left", padding: 14, cursor: "pointer", borderTop: `4px solid ${overdue ? "var(--alert-red)" : "var(--amber)"}`, display: "flex", flexDirection: "column", gap: 6, font: "inherit", color: "inherit" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{group.name}</div>
+        {hold && <span className="badge badge-danger" title="A plan asks for this stock to be held until the test is approved">Hold stock</span>}
+      </div>
+      <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1.1 }}>
+        {cards.length} <span style={{ fontSize: 13, fontWeight: 500, color: "var(--slate)" }}>test{cards.length === 1 ? "" : "s"} due</span>
+      </div>
+      {overdue > 0 && <Line label="Overdue" value={overdue} color="var(--alert-red)" />}
+      {toStart > 0 && <Line label="Not started" value={toStart} />}
+      {inProgress > 0 && <Line label="In progress" value={inProgress} />}
+      {submitted > 0 && <Line label="Awaiting approval" value={submitted} />}
+      <Line label="GRNs" value={grns || "—"} />
+      {next && <Line label="Next due" value={dueText(next) || fmtDate(next.due_at)} />}
+      <div style={{ marginTop: "auto", paddingTop: 6, fontSize: 12.5, color: "var(--blue, #2563eb)", fontWeight: 600 }}>Open tests →</div>
+    </button>
   );
 }
 

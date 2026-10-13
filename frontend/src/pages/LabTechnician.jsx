@@ -257,6 +257,7 @@ function AssignmentsTab({ setError }) {
 
 function CubeTestingTab({ setError, setNotice, focusOrderId }) {
   const [viewBucket, setViewBucket] = useState("active"); // active | completed | closed
+  const [addingMissed, setAddingMissed] = useState(false); // Round 209
   const [pours, setPours] = useState([]);
   const [openOrderId, setOpenOrderId] = useState(null);
   const [highlightOrderId, setHighlightOrderId] = useState(null);
@@ -315,8 +316,16 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
     closed: "No closed pours.",
   };
 
+  if (addingMissed) {
+    return <MissedPlantSampleForm setError={setError} setNotice={setNotice} onCancel={() => setAddingMissed(false)}
+      onDone={(orderId) => { setAddingMissed(false); setViewBucket("active"); load(); setOpenOrderId(orderId); }} />;
+  }
+
   return (
     <div>
+      <IfCan perm="quality.cube-tests" action="create">
+        <button type="button" className="btn-primary" style={{ marginBottom: 10 }} onClick={() => setAddingMissed(true)}>+ Add a missed plant sample</button>
+      </IfCan>
       <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
         <button className={`btn-tab ${viewBucket === "active" ? "active" : ""}`} onClick={() => setViewBucket("active")}>Active</button>
         <button className={`btn-tab ${viewBucket === "completed" ? "active" : ""}`} onClick={() => setViewBucket("completed")}>Completed</button>
@@ -895,6 +904,80 @@ function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
       ))}
       {casts.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No site-cast cube batches recorded yet.</div>}
     </div>
+  );
+}
+
+// Round 209 — cubes taken at the plant that the QC did not record at dispatch.
+// Same shape as recording a site cast: choose the order, then its delivery
+// note; the cubes go on that note's plant QC record.
+function MissedPlantSampleForm({ setError, setNotice, onDone, onCancel }) {
+  const [orders, setOrders] = useState([]);
+  const [orderId, setOrderId] = useState("");
+  const [tickets, setTickets] = useState([]);
+  const [ticketId, setTicketId] = useState("");
+  const [sampleDate, setSampleDate] = useState("");
+  const [cubes, setCubes] = useState("");
+  const [sampleIds, setSampleIds] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { apiRequest("/lab-technician/orders-with-supply").then(setOrders).catch((err) => setError(err.message)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setTickets([]); setTicketId("");
+    if (orderId) apiRequest(`/lab-technician/orders/${orderId}/tickets`).then(setTickets).catch((err) => setError(err.message));
+  }, [orderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const t = tickets.find((x) => String(x.id) === String(ticketId));
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true); setError(""); setNotice("");
+    try {
+      const r = await apiRequest("/lab-technician/plant-samples", {
+        method: "POST", body: { ticket_id: Number(ticketId), number_of_cubes: Number(cubes), sample_date: sampleDate || t?.ticket_date, sample_ids: sampleIds || null, remarks: remarks || null },
+      });
+      setNotice("Plant sample added — the pour is in Cube Testing; enter results when they are due.");
+      onDone(r.order_id);
+    } catch (err) { setError(err.message); } finally { setSaving(false); }
+  }
+  return (
+    <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+      <button type="button" onClick={onCancel} style={{ alignSelf: "flex-start" }}>← Cancel</button>
+      <div style={{ fontWeight: 700, fontSize: 15 }}>Add a missed plant sample</div>
+      <div style={{ fontSize: 12, color: "var(--slate)" }}>For cubes cast at the plant that were not recorded at dispatch.</div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Order</div>
+        <select value={orderId} onChange={(e) => setOrderId(e.target.value)} required>
+          <option value="">Select the order</option>
+          {orders.map((o) => <option key={o.id} value={o.id}>{formatOrderNumber(o.id)} — {o.customer_name} — {o.site_name} · {o.mix_grade_name}</option>)}
+        </select>
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Delivery note the cubes were taken from</div>
+        <select value={ticketId} onChange={(e) => { setTicketId(e.target.value); const x = tickets.find((y) => String(y.id) === e.target.value); setSampleDate(x?.ticket_date || ""); }} required disabled={!orderId}>
+          <option value="">{orderId ? (tickets.length ? "Select the delivery note" : "No delivery notes") : "Choose the order first"}</option>
+          {tickets.map((x) => (
+            <option key={x.id} value={x.id} disabled={Number(x.number_of_cubes) > 0}>
+              {x.ticket_number} · {fmtDate(x.ticket_date)} · {Number(x.loaded_quantity_m3)} m³{Number(x.number_of_cubes) > 0 ? ` — ${x.number_of_cubes} cubes already recorded` : ""}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Sample date</div>
+        <input type="date" value={sampleDate} min={t?.ticket_date} max={todayStr()} onChange={(e) => setSampleDate(e.target.value)} required />
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Number of cubes</div>
+        <input type="number" min="1" max="60" value={cubes} onChange={(e) => setCubes(e.target.value)} required />
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Sample IDs (comma-separated, optional)</div>
+        <input value={sampleIds} onChange={(e) => setSampleIds(e.target.value)} />
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Remarks</div>
+        <textarea rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="e.g. QC on leave — sample taken by the lab" />
+      </div>
+      <button type="submit" disabled={saving}>{saving ? "Saving..." : "Add sample"}</button>
+    </form>
   );
 }
 

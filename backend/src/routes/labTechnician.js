@@ -557,6 +557,55 @@ router.get("/site-cube-casts", async (req, res) => {
   res.json(rows);
 });
 
+// Round 209 — a plant sample the QC did not record at dispatch (owner: "add
+// missed plant samples, same as adding site cast"). The Lab Technician picks
+// the order and its delivery note; the cubes are written to that note's
+// plant_qc row, so the pour appears in Cube Testing as if recorded at the
+// plant. A note that already has cubes is not changed.
+router.get("/orders/:orderId(\\d+)/tickets", async (req, res) => {
+  const { rows } = await query(
+    `SELECT dt.id, dt.ticket_number, dt.ticket_date::text AS ticket_date, dt.loaded_quantity_m3, dt.status,
+            pq.id AS plant_qc_id, COALESCE(pq.number_of_cubes, 0) AS number_of_cubes
+       FROM delivery_tickets dt LEFT JOIN plant_qc pq ON pq.ticket_id = dt.id
+      WHERE dt.order_id = $1 AND dt.status <> 'cancelled'
+      ORDER BY dt.id`,
+    [req.params.orderId]
+  );
+  res.json(rows);
+});
+
+router.post("/plant-samples", requirePermission("quality.cube-tests", "create"), async (req, res) => {
+  const ticketId = Number(req.body.ticket_id);
+  const cubes = Number(req.body.number_of_cubes);
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(req.body.sample_date || "") ? req.body.sample_date : null;
+  if (!ticketId) return res.status(400).json({ error: "Choose the delivery note the cubes were taken from." });
+  if (!(Number.isInteger(cubes) && cubes > 0 && cubes <= 60)) return res.status(400).json({ error: "Enter how many cubes were cast (1 to 60)." });
+  const { rows: t } = await query(
+    `SELECT dt.id, dt.ticket_date::text AS ticket_date, dt.status, pq.id AS pq_id, COALESCE(pq.number_of_cubes, 0) AS cubes
+       FROM delivery_tickets dt LEFT JOIN plant_qc pq ON pq.ticket_id = dt.id WHERE dt.id = $1`, [ticketId]);
+  if (!t.length) return res.status(404).json({ error: "Delivery note not found." });
+  if (t[0].status === "cancelled") return res.status(400).json({ error: "That delivery note is cancelled." });
+  if (Number(t[0].cubes) > 0) return res.status(409).json({ error: `That delivery note already has ${t[0].cubes} cube(s) recorded at the plant.` });
+  const sampleDay = day || t[0].ticket_date;
+  if (sampleDay < t[0].ticket_date) return res.status(400).json({ error: "The sample date cannot be before the delivery date." });
+  const note = ["Missed at the plant — added by the lab", String(req.body.remarks || "").trim()].filter(Boolean).join(". ");
+  if (t[0].pq_id) {
+    await query(
+      `UPDATE plant_qc SET number_of_cubes = $2, sample_ids = COALESCE($3, sample_ids),
+              remarks = CONCAT_WS(' · ', NULLIF(remarks, ''), $4::text),
+              entered_at = ($5::date + time '12:00') AT TIME ZONE 'Asia/Kolkata'
+        WHERE id = $1`,
+      [t[0].pq_id, cubes, String(req.body.sample_ids || "").trim() || null, note, sampleDay]);
+  } else {
+    await query(
+      `INSERT INTO plant_qc (ticket_id, number_of_cubes, sample_ids, remarks, entered_by, entered_at)
+       VALUES ($1, $2, $3, $4, $5, ($6::date + time '12:00') AT TIME ZONE 'Asia/Kolkata')`,
+      [ticketId, cubes, String(req.body.sample_ids || "").trim() || null, note, req.user.id, sampleDay]);
+  }
+  const { rows: o } = await query(`SELECT order_id FROM delivery_tickets WHERE id = $1`, [ticketId]);
+  res.status(201).json({ ok: true, order_id: o[0].order_id });
+});
+
 router.post("/site-cube-casts", requirePermission("quality.cube-tests", "create"), async (req, res) => {
   const { order_id, cast_date, number_of_cubes, sample_ids, remarks } = req.body;
   if (!order_id || !cast_date) {
