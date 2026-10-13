@@ -1574,6 +1574,8 @@ function ReceiptsTab({ role }) {
   const [editingReceipt, setEditingReceipt] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [deletingReceipt, setDeletingReceipt] = useState(null);
+  // Round 207 — a failed delete is shown inside the dialog, not behind it.
+  const [deleteError, setDeleteError] = useState("");
 
   // Round 162 — the register's filters, plus the master lists that drive their
   // dropdowns. Materials and suppliers are loaded once; the receipt list
@@ -1684,13 +1686,15 @@ function ReceiptsTab({ role }) {
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
   async function confirmDeleteReceipt() {
-    setSaving(true); setError(""); setNotice("");
+    setSaving(true); setError(""); setNotice(""); setDeleteError("");
     try {
-      await apiRequest(`/material-module/receipts/${deletingReceipt.id}`, { method: "DELETE" });
-      setNotice("Receipt deleted.");
+      const r = await apiRequest(`/material-module/receipts/${deletingReceipt.id}`, { method: "DELETE" });
+      setNotice(r && r.released_amount > 0
+        ? `Receipt deleted. ${fmtMoney(r.released_amount)} of supplier payment that was matched to this bill now settles the supplier's oldest bills (Supplier Ledger).`
+        : "Receipt deleted.");
       setDeletingReceipt(null);
       await load();
-    } catch (err) { setError(err.message); } finally { setSaving(false); }
+    } catch (err) { setDeleteError(err.message); } finally { setSaving(false); }
   }
 
   const outstandingUnit = receiving ? receiving.purchase_unit : "";
@@ -1890,7 +1894,7 @@ function ReceiptsTab({ role }) {
                       {isAdmin && (
                         <>
                           <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>
-                          <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => setDeletingReceipt(r)}>Delete</button>
+                          <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => { setDeleteError(""); setDeletingReceipt(r); }}>Delete</button>
                         </>
                       )}
                     </td>
@@ -2068,13 +2072,14 @@ function ReceiptsTab({ role }) {
       )}
 
       {deletingReceipt && (
-        <Modal title="Delete receipt?" onClose={() => setDeletingReceipt(null)}>
+        <Modal title="Delete receipt?" onClose={() => { setDeletingReceipt(null); setDeleteError(""); }}>
+          {deleteError && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 12.5, marginBottom: 10 }}>{deleteError}</div>}
           <div style={{ fontSize: 12.5, marginBottom: 14 }}>
             Delete the receipt of {fmtNum(deletingReceipt.accepted_qty)} {deletingReceipt.purchase_unit} of {deletingReceipt.material_name}
             {" "}from {deletingReceipt.supplier_name} received {fmtDateTime(deletingReceipt.received_at)}? Stock and rates will recompute immediately — this can't be undone.
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" onClick={() => setDeletingReceipt(null)} style={{ flex: 1 }}>Cancel</button>
+            <button type="button" onClick={() => { setDeletingReceipt(null); setDeleteError(""); }} style={{ flex: 1 }}>Cancel</button>
             <button type="button" className="btn-danger" disabled={saving} onClick={confirmDeleteReceipt} style={{ flex: 1 }}>{saving ? "Deleting..." : "Delete receipt"}</button>
           </div>
         </Modal>

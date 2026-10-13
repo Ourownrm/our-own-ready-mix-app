@@ -1672,15 +1672,49 @@ router.patch("/receipts/:id", requirePermission("material.receipts", "edit"), as
 });
 
 router.delete("/receipts/:id", requirePermission("material.receipts", "delete"), async (req, res) => {
-  // Round 187 — remove the receipt's own silo fill with it. The fills FK is
-  // ON DELETE SET NULL, so without this a deleted receipt left its fill behind
-  // still raising the silo's level.
-  const { rowCount: fillsRemoved } = await query(`DELETE FROM plant_silo_fills WHERE receipt_id = $1`, [req.params.id]);
-  // receipts-raw: the write itself
-  const { rows } = await query(`DELETE FROM rm_receipts WHERE id = $1 RETURNING id`, [req.params.id]);
-  if (!rows.length) return res.status(404).json({ error: "Receipt not found." });
-  if (fillsRemoved) await reresolveSilos().catch((e) => console.error("reresolve after receipt delete", e));
-  res.json({ deleted: true });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid receipt." });
+  // Round 207 — one transaction. Before, the silo fill was deleted first and
+  // the receipt second; when the receipt delete then failed (a supplier
+  // payment matched to this bill holds a foreign key on it), the fill was
+  // already gone and the screen only said "Something went wrong".
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: rc } = await client.query(
+      // receipts-raw: the write itself
+      `SELECT r.id, o.supplier_id FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id WHERE r.id = $1 FOR UPDATE OF r`, [id]);
+    if (!rc.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Receipt not found." }); }
+
+    // A payment matched to this bill keeps its money: the match is released
+    // and that part settles the supplier's oldest open bills instead.
+    const { rows: released } = await client.query(
+      `DELETE FROM rm_payment_allocations a USING rm_supplier_payments p
+       WHERE a.receipt_id = $1 AND p.id = a.payment_id
+       RETURNING a.payment_id, a.amount, p.paid_on, p.reference, p.cancelled_at`, [id]);
+    const live = released.filter((x) => !x.cancelled_at);
+    const releasedAmount = live.reduce((t, x) => t + Number(x.amount), 0);
+    if (released.length) {
+      await client.query(
+        `INSERT INTO rm_supplier_ledger_log (supplier_id, action, detail, changed_by) VALUES ($1, 'receipt_deleted', $2, $3)`,
+        [rc[0].supplier_id, JSON.stringify({ receipt_id: id, released: released.map((x) => ({ payment_id: x.payment_id, amount: Number(x.amount) })) }), req.user.id]);
+    }
+
+    // Round 187 — remove the receipt's own silo fill with it (the FK is SET NULL).
+    const { rowCount: fillsRemoved } = await client.query(`DELETE FROM plant_silo_fills WHERE receipt_id = $1`, [id]);
+    // receipts-raw: the write itself
+    await client.query(`DELETE FROM rm_receipts WHERE id = $1`, [id]);
+    await client.query("COMMIT");
+    if (fillsRemoved) await reresolveSilos().catch((e) => console.error("reresolve after receipt delete", e));
+    res.json({ deleted: true, payments_released: live.length, released_amount: Math.round(releasedAmount * 100) / 100 });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("receipt delete", id, e);
+    const fk = e.code === "23503" ? ` It is still linked from ${e.table || "another record"}.` : "";
+    res.status(409).json({ error: `Receipt R-${String(id).padStart(5, "0")} could not be deleted — nothing was changed.${fk}` });
+  } finally {
+    client.release();
+  }
 });
 
 router.get("/receipts", requirePermission("material.receipts", "view"), async (req, res) => {

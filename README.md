@@ -8493,3 +8493,9 @@ three-trial and draft cards. `npm run check` (7 checkers) green; vite build clea
 **Limits to know:** IS 383 Table 7 limits for sizes other than 12.5 mm single-sized were written from the standard as
 recalled — check them against the licensed copy. "Hold stock" is a flag on the card and the GRN's cards, it does not
 block the plant from batching. No 90-day cement retest card yet.
+
+## Round 207 — receipt delete no longer hangs (v10.37)
+
+- Deleting a receipt whose bill had a supplier payment matched to it failed on a foreign key and only showed "Something went wrong" *behind* the dialog, so it looked stuck on "Deleting…".
+- Now: one transaction. The payment match is released (that money settles the supplier's oldest bills; logged in rm_supplier_ledger_log as `receipt_deleted`), the silo fill and the receipt are removed together. Any failure changes nothing and is shown inside the dialog.
+- Before this fix, a failed attempt had already removed the receipt's silo fill. No /setup needed.
