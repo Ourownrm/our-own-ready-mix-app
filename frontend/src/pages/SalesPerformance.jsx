@@ -4,6 +4,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { CreateLeadForm } from "../lib/SalesPanels.jsx";
 import VisitCadenceStrip from "../lib/VisitCadenceStrip.jsx";
+import { ContactsList, CustomerCleanup } from "../lib/SalesContacts.jsx";
 
 const VISITOR_TYPE_LABEL = { customer: "Customer", client: "Client", consultant: "Consultant", site_engineer: "Site engineer", other: "Other" };
 
@@ -12,10 +13,13 @@ export default function SalesPerformance() {
   const [visits, setVisits] = useState([]);
   const [error, setError] = useState("");
   const [showAssignLead, setShowAssignLead] = useState(false);
+  const [customers, setCustomers] = useState([]);
+  const [contactsKey, setContactsKey] = useState(0);
 
   useEffect(() => {
     apiRequest("/sales/performance").then(setRows).catch((err) => setError(err.message));
     apiRequest("/sales/visits").then(setVisits).catch((err) => setError(err.message));
+    apiRequest("/master/customers").then(setCustomers).catch(() => {});
   }, []);
 
   function reload() {
@@ -77,6 +81,8 @@ export default function SalesPerformance() {
         </div>
 
         <UnlinkedVisitNames onLinked={reload} />
+        <CustomerCleanup onMoved={() => { reload(); setContactsKey((k) => k + 1); apiRequest("/master/customers").then(setCustomers).catch(() => {}); }} />
+        <div style={{ marginBottom: 20 }}><ContactsList key={contactsKey} canLink customers={customers} /></div>
 
         <div className="card">
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Customer visits report</div>
@@ -93,7 +99,7 @@ export default function SalesPerformance() {
                     <tr key={v.id}>
                       <td>{new Date(v.visit_date).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}{v.visit_time ? ` ${v.visit_time.slice(0, 5)}` : ""}</td>
                       <td>{v.visited_by_name}</td>
-                      <td>{v.visited_name}{v.customer_name ? ` (${v.customer_name})` : ""}</td>
+                      <td>{v.visited_name}{v.customer_name && v.customer_name !== v.visited_name ? ` (${v.customer_name})` : ""}{v.contact_id ? <span className="badge badge-neutral" style={{ marginLeft: 4 }}>contact</span> : null}</td>
                       <td>{VISITOR_TYPE_LABEL[v.visitor_type] || v.visitor_type}</td>
                       <td>{v.contact_person || "–"}</td>
                       <td>{v.discussion_outcome}</td>

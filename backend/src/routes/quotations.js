@@ -1002,6 +1002,31 @@ router.put("/costing-settings", COST_EDIT, async (req, res) => {
 });
 
 // Remember a site's road distance (typed on a quotation).
+// Round 210 — the customer's address, shown under the customer on the
+// quotation (and printed when no separate billing name is chosen). Whoever
+// can make a quotation can fill it in, without going to the customer master.
+router.get("/customers/:id(\\d+)", VIEW, async (req, res) => {
+  const { rows } = await query(`SELECT id, name, contact_number, billing_address FROM customers WHERE id = $1`, [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: "Customer not found." });
+  res.json(rows[0]);
+});
+
+const CREATE_OR_EDIT = async (req, res, next) => {
+  if ((await can(req.user, "accounts.quotations", "create")) || (await can(req.user, "accounts.quotations", "edit"))) return next();
+  res.status(403).json({ error: "You don't have access to this." });
+};
+router.post("/customers/:id(\\d+)/address", CREATE_OR_EDIT, async (req, res) => {
+  const address = String(req.body.billing_address || "").trim();
+  if (address.length > 600) return res.status(400).json({ error: "The address is too long." });
+  const phone = req.body.contact_number === undefined ? undefined : (String(req.body.contact_number || "").trim() || null);
+  const { rows } = await query(
+    `UPDATE customers SET billing_address = $2, contact_number = CASE WHEN $4 THEN $3 ELSE contact_number END
+      WHERE id = $1 RETURNING id, name, contact_number, billing_address`,
+    [req.params.id, address || null, phone ?? null, phone !== undefined]);
+  if (!rows.length) return res.status(404).json({ error: "Customer not found." });
+  res.json(rows[0]);
+});
+
 router.post("/sites/:siteId(\\d+)/road-km", EDIT, async (req, res) => {
   const km = Number(req.body.road_km);
   if (!(km >= 0 && km <= 500)) return res.status(400).json({ error: "Road distance must be 0 to 500 km." });

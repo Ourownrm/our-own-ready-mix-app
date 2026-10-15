@@ -32,6 +32,9 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
   const [busy, setBusy] = useState("");
   const [termsOpen, setTermsOpen] = useState(false);
   const [quick, setQuick] = useState(null);     // "customer" | "site"
+  // Round 210 — the customer's address, shown and editable here.
+  const [custInfo, setCustInfo] = useState(null);
+  const [editAddr, setEditAddr] = useState(false);
   const [live, setLive] = useState(null);       // the site's current price list
   const defaults = meta.defaults || {};
   const [f, setF] = useState({
@@ -122,6 +125,11 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
   const setLine = (i, k, v) => setF((p) => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, [k]: v } : l)) }));
   const liveRate = (gradeId) => live?.rates?.find((r) => String(r.mix_grade_id) === String(gradeId));
 
+  useEffect(() => {
+    setCustInfo(null);
+    if (f.customer_id) apiRequest(`/quotations/customers/${f.customer_id}`).then(setCustInfo).catch(() => {});
+  }, [f.customer_id]);
+
   // Changing the type brings that type's standard terms, unless they were edited.
   function changeType(t) {
     setF((p) => ({ ...p, agreement_type: t, terms: p.terms_modified ? p.terms : null }));
@@ -156,7 +164,7 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
       const s = sites.find((x) => String(x.id) === String(f.site_id));
       const b = billing.find((x) => String(x.id) === String(f.billing_address_id));
       const q = {
-        ...f, quote_no: quoteNo || "RMC-QTN-(number on saving)", customer_name: c?.name, site_name: s?.name,
+        ...f, quote_no: quoteNo || "RMC-QTN-(number on saving)", customer_name: c?.name, site_name: s?.name, customer_address: custInfo?.billing_address,
         billing_name: b?.name, billing_address: b?.address, billing_gstin: b?.gstin, terms: termsForType,
         lines: f.lines.filter((l) => Number(l.rate_total) > 0).map((l) => ({ ...l, grade_name: grades.find((g) => String(g.id) === String(l.mix_grade_id))?.name })),
       };
@@ -189,6 +197,15 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
               </select>
               <button type="button" style={{ padding: "6px 10px" }} onClick={() => setQuick("customer")} title="Add a new customer">+</button>
             </div>
+            {custInfo && (
+              <div style={{ fontSize: 12, marginTop: 4, color: "var(--slate)", whiteSpace: "pre-line" }}>
+                {custInfo.billing_address
+                  ? <><span style={{ color: "var(--ink, inherit)" }}>{custInfo.billing_address}</span>{" "}</>
+                  : <span style={{ color: "var(--amber)" }}>No address on file. </span>}
+                <button type="button" className="btn-link" style={{ fontSize: 12, padding: 0, border: "none", background: "none", color: "var(--orange, #c2410c)", textDecoration: "underline", cursor: "pointer" }}
+                  onClick={() => setEditAddr(true)}>{custInfo.billing_address ? "Edit address" : "+ Add address"}</button>
+              </div>
+            )}
           </Field>
           <Field label="Project / site">
             <div style={{ display: "flex", gap: 6 }}>
@@ -403,6 +420,10 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
           onReset={() => { setF((p) => ({ ...p, terms: null, terms_modified: false })); setTermsOpen(false); }}
           onSave={(t) => { setF((p) => ({ ...p, terms: t, terms_modified: true })); setTermsOpen(false); }} />
       )}
+      {editAddr && custInfo && (
+        <AddressEditor customer={custInfo} onClose={() => setEditAddr(false)}
+          onSaved={(c) => { setCustInfo(c); setEditAddr(false); }} />
+      )}
       {quick && (
         <QuickAdd kind={quick} customerId={f.customer_id} salespersons={salespersons} onClose={() => setQuick(null)}
           onAdded={(rec) => {
@@ -509,6 +530,33 @@ export function TermsEditor({ terms, q, defaults, onClose, onSave, onReset, titl
   );
 }
 
+// Round 210 — the customer's address (and phone), from the quotation screen.
+function AddressEditor({ customer, onClose, onSaved }) {
+  const [addr, setAddr] = useState(customer.billing_address || "");
+  const [phone, setPhone] = useState(customer.contact_number || "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function save(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try { onSaved(await apiRequest(`/quotations/customers/${customer.id}/address`, { method: "POST", body: { billing_address: addr, contact_number: phone } })); }
+    catch (err) { setError(err.message); setBusy(false); }
+  }
+  return (
+    <Modal title={`Address — ${customer.name}`} onClose={onClose} width={460}>
+      <form onSubmit={save}>
+        <Banner>{error}</Banner>
+        <Field label="Address" hint="Printed under the customer's name on the quotation (when no separate billing name is chosen). Saved on the customer."><textarea rows={4} value={addr} onChange={(e) => setAddr(e.target.value)} autoFocus /></Field>
+        <Field label="Contact number"><input value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn-primary" disabled={busy}>{busy ? "Saving…" : "Save address"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function QuickAdd({ kind, customerId, salespersons, onClose, onAdded }) {
   const [f, setF] = useState({ name: "", contact_number: "", billing_address: "", address: "", assigned_sales_representative_id: salespersons[0]?.id || "" });
   const [error, setError] = useState("");
@@ -527,10 +575,10 @@ function QuickAdd({ kind, customerId, salespersons, onClose, onAdded }) {
     <Modal title={kind === "customer" ? "New customer" : "New project / site"} onClose={onClose} width={460}>
       <form onSubmit={save}>
         <Banner>{error}</Banner>
-        <Field label={kind === "customer" ? "Customer name" : "Site name"}><input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <Field label={kind === "customer" ? "Customer name" : "Site name"} hint="Saved in CAPITALS."><input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value.toUpperCase() })} /></Field>
         {kind === "customer" ? <>
           <Field label="Contact number"><input value={f.contact_number} onChange={(e) => setF({ ...f, contact_number: e.target.value })} /></Field>
-          <Field label="Billing address"><textarea rows={3} value={f.billing_address} onChange={(e) => setF({ ...f, billing_address: e.target.value })} /></Field>
+          <Field label="Address (printed on the quotation)"><textarea rows={3} value={f.billing_address} onChange={(e) => setF({ ...f, billing_address: e.target.value })} /></Field>
         </> : <>
           <Field label="Site address / location"><textarea rows={2} value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} /></Field>
           <Field label="Salesperson for this site">

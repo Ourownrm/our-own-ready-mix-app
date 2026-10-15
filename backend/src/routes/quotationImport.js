@@ -13,6 +13,7 @@
 //   * sent → follow-ups, valid for the usual days from its date;
 //   * lost → kept for history.
 // Afterwards the next number continues after the highest serial imported.
+import { upperName } from "../lib/names.js";
 import { Router } from "express";
 import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -84,7 +85,7 @@ router.post("/", IMPORT, async (req, res) => {
       // Customer
       let customerId = Number(r.customer_id) || null;
       if (!customerId) {
-        const name = String(r.new_customer?.name || "").trim();
+        const name = upperName(r.new_customer?.name);
         if (!name) throw new Error("No customer.");
         const key = name.toUpperCase();
         if (newCustomers.has(key)) customerId = newCustomers.get(key);
@@ -101,7 +102,7 @@ router.post("/", IMPORT, async (req, res) => {
       // Site
       let siteId = Number(r.site_id) || null;
       if (!siteId) {
-        const name = String(r.new_site?.name || "").trim();
+        const name = upperName(r.new_site?.name);
         if (!name) throw new Error("No project / site.");
         const key = `${customerId}|${name.toUpperCase()}`;
         if (newSites.has(key)) siteId = newSites.get(key);

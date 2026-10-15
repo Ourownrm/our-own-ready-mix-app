@@ -95,7 +95,7 @@ export default function QuotationView({ meta, id, go, onBack }) {
       <Banner kind="ok">{notice}</Banner>
 
       <div className="card" style={{ marginBottom: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10, fontSize: 13 }}>
-        <div><div className="kpi-label">Customer</div><b>{q.billing_name || q.customer_name}</b>{q.billing_gstin && <div style={{ fontSize: 12 }}>GSTIN {q.billing_gstin}</div>}{q.kind_attention && <div style={{ fontSize: 12, color: "var(--slate)" }}>Attn: {q.kind_attention}</div>}</div>
+        <div><div className="kpi-label">Customer</div><b>{q.billing_name || q.customer_name}</b>{(q.billing_name ? q.billing_address : q.customer_address) && <div style={{ fontSize: 12, whiteSpace: "pre-line" }}>{q.billing_name ? q.billing_address : q.customer_address}</div>}{q.billing_gstin && <div style={{ fontSize: 12 }}>GSTIN {q.billing_gstin}</div>}{q.kind_attention && <div style={{ fontSize: 12, color: "var(--slate)" }}>Attn: {q.kind_attention}</div>}</div>
         <div><div className="kpi-label">Project / site</div>{q.site_name}</div>
         <div><div className="kpi-label">Agreement</div>{typeLabel}{q.terms_modified && <div style={{ fontSize: 11.5, color: "var(--amber)" }}>terms edited for this quotation</div>}</div>
         <div><div className="kpi-label">Dated · valid</div>{fmtDate(q.quote_date)} · {q.valid_until ? `till ${fmtDate(q.valid_until)}` : `${q.validity_days} days from sending`}</div>

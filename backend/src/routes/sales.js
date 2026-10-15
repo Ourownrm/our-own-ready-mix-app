@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { resolveChargeDecisions, notifyWaivers } from "../lib/orderCharges.js";
 import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
-import { query } from "../db.js";
+import { pool, query } from "../db.js";
+import { upperName } from "../lib/names.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { daysElapsedIn, istDay, istDaysAgo, istDaysFromNow, istMonth } from "../lib/istDate.js";
@@ -277,19 +278,28 @@ router.post("/leads/:id/won", requireRole("administrator"), async (req, res) => 
 // minimal (name only for the customer; name + optional distance for the
 // site) — Manager/Admin can fill in the fuller detail later when converting
 // the booking to an order.
+// Round 210 — used only for a BOOKING now (a booking is a real order on the
+// way). People met on visits go to the Sales contacts list instead (below),
+// so the customer master is not filled with site engineers and clients.
+// The name is kept in capitals, and a name already in the master is
+// offered back instead of being added a second time.
 router.post("/quick-customer", requireRole("sales_executive"), async (req, res) => {
-  const { name } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: "Customer name is required." });
+  const name = upperName(req.body.name);
+  if (!name) return res.status(400).json({ error: "Customer name is required." });
+  const { rows: dup } = await query(
+    `SELECT id, name FROM customers WHERE UPPER(BTRIM(name)) = $1 ORDER BY is_active DESC NULLS LAST, id LIMIT 1`, [name]);
+  if (dup.length) return res.status(409).json({ error: `"${dup[0].name}" is already a customer — it has been selected.`, existing: dup[0] });
   const { rows } = await query(
-    "INSERT INTO customers (name) VALUES ($1) RETURNING *",
-    [name.trim()]
+    "INSERT INTO customers (name, created_via) VALUES ($1, 'sales') RETURNING *",
+    [name]
   );
   res.status(201).json(rows[0]);
 });
 
 router.post("/quick-site", requireRole("sales_executive"), async (req, res) => {
-  const { customer_id, name, distance_from_plant_km, force } = req.body;
-  if (!customer_id || !name || !name.trim()) return res.status(400).json({ error: "Customer and site name are required." });
+  const { customer_id, distance_from_plant_km, force } = req.body;
+  const name = upperName(req.body.name);
+  if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
   if (!spRows.length) return res.status(400).json({ error: "No salesperson record linked to your account — ask Manager/Admin to set this up first." });
 
@@ -309,7 +319,7 @@ router.post("/quick-site", requireRole("sales_executive"), async (req, res) => {
   const { rows } = await query(
     `INSERT INTO sites (customer_id, name, distance_from_plant_km, assigned_sales_representative_id)
      VALUES ($1, $2, $3, $4) RETURNING *`,
-    [customer_id, name.trim(), distance_from_plant_km || null, spRows[0].id]
+    [customer_id, name, distance_from_plant_km || null, spRows[0].id]
   );
   res.status(201).json(rows[0]);
 });
@@ -683,11 +693,20 @@ async function applyVisitFollowupsAndNotifications({ visit, isNewProject, answer
 router.post("/visits", requireRole("sales_executive"), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const {
-    customer_id, visited_name, site_id, visitor_type, visit_date, visit_time,
+    visited_name, site_id, visitor_type, visit_date, visit_time,
     contact_person, contact_number, at_site, latitude, longitude,
     is_new_project, answers, comments, manual_followup,
     post_delivery_feedback,
   } = req.body;
+  let customer_id = req.body.customer_id || null;
+  // Round 210 — a visit to a sales contact (not a customer). A contact
+  // already linked to its customer counts toward that customer.
+  const contactId = Number(req.body.contact_id) || null;
+  if (contactId) {
+    const { rows: ct } = await query(`SELECT linked_customer_id FROM sales_contacts WHERE id = $1`, [contactId]);
+    if (!ct.length) return res.status(400).json({ error: "That contact is not in the Sales contacts list." });
+    if (!customer_id) customer_id = ct[0].linked_customer_id || null;
+  }
 
   if (!visited_name || !visit_date) return res.status(400).json({ error: "Customer name and date are required." });
   if (!contact_person) return res.status(400).json({ error: "Who you met is required." });
@@ -705,11 +724,11 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
     `INSERT INTO customer_visits
        (customer_id, visited_name, site_id, visitor_type, visited_by, visit_date, visit_time,
         contact_person, contact_number, discussion_outcome, at_site, latitude, longitude,
-        is_new_project, answers)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-    [customer_id || null, visited_name, site_id || null, visitor_type, req.user.id, visit_date, visit_time || null,
+        is_new_project, answers, contact_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+    [customer_id || null, visited_name, customer_id ? (site_id || null) : null, visitor_type, req.user.id, visit_date, visit_time || null,
      contact_person, contact_number, comments || null, at_site, at_site ? (latitude || null) : null, at_site ? (longitude || null) : null,
-     is_new_project, JSON.stringify(answers || {})]
+     is_new_project, JSON.stringify(answers || {}), contactId]
   );
   const visit = rows[0];
 
@@ -842,9 +861,11 @@ router.get("/visits", requireRole("sales_executive", "manager", "administrator")
     // Round 124, item 7 — joins in the site name so the rebuilt Visits list
     // (matching the approved mockup) can show it under the visited name,
     // same as the Leads list already does with site_location.
-    `SELECT cv.*, c.name AS customer_name, u.name AS visited_by_name, s.name AS site_name
+    `SELECT cv.*, c.name AS customer_name, u.name AS visited_by_name, s.name AS site_name,
+            sc.name AS contact_name, sc.contact_type, sc.organisation AS contact_organisation
      FROM customer_visits cv
      LEFT JOIN customers c ON c.id = cv.customer_id
+     LEFT JOIN sales_contacts sc ON sc.id = cv.contact_id
      LEFT JOIN sites s ON s.id = cv.site_id
      JOIN users u ON u.id = cv.visited_by
      ${own ? "WHERE cv.visited_by = $1" : ""}
@@ -875,7 +896,7 @@ router.get("/visits/unlinked-names", requireRole("manager", "administrator"), as
             (ARRAY_AGG(u.name ORDER BY cv.created_at DESC))[1] AS last_visited_by_name
      FROM customer_visits cv
      JOIN users u ON u.id = cv.visited_by
-     WHERE cv.customer_id IS NULL
+     WHERE cv.customer_id IS NULL AND cv.contact_id IS NULL
      GROUP BY LOWER(TRIM(cv.visited_name))
      ORDER BY MAX(cv.visit_date) DESC`
   );
@@ -893,7 +914,7 @@ router.post("/visits/link-customer", requireRole("manager", "administrator"), as
   }
   const { rows } = await query(
     `UPDATE customer_visits SET customer_id = $1
-     WHERE customer_id IS NULL AND LOWER(TRIM(visited_name)) = LOWER(TRIM($2))
+     WHERE customer_id IS NULL AND contact_id IS NULL AND LOWER(TRIM(visited_name)) = LOWER(TRIM($2))
      RETURNING id`,
     [customer_id, visited_name]
   );
@@ -1407,6 +1428,150 @@ router.get("/on-duty", requireRole("manager", "administrator"), async (req, res)
      ORDER BY d.salesperson_user_id, d.event_time DESC`
   );
   res.json(rows);
+});
+
+// ===================== SALES CONTACTS (Round 210) =====================
+// The people a Sales Executive meets — site engineers, clients,
+// consultants, contractors — kept here in the Sales module, not in the
+// customer master. Shared by the sales team; Manager / Administrator can
+// link a contact to the real billing customer once it is known.
+export const CONTACT_TYPES = ["client", "site_engineer", "consultant", "contractor", "architect", "builder", "other"];
+
+function cleanContact(b) {
+  const name = String(b.name || "").trim().replace(/\s+/g, " ");
+  if (!name) return { error: "Enter the person's name." };
+  const type = CONTACT_TYPES.includes(b.contact_type) ? b.contact_type : "other";
+  const phone = String(b.phone || "").replace(/[^\d+]/g, "") || null;
+  if (phone && phone.replace("+", "").length < 6) return { error: "The phone number looks too short." };
+  return {
+    name: name.slice(0, 150), contact_type: type,
+    organisation: upperName(b.organisation).slice(0, 200) || null,
+    phone: phone ? phone.slice(0, 20) : null, notes: String(b.notes || "").trim() || null,
+  };
+}
+
+router.get("/contacts", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+  const { rows } = await query(
+    `SELECT sc.*, u.name AS created_by_name, c.name AS linked_customer_name,
+            (SELECT COUNT(*) FROM customer_visits cv WHERE cv.contact_id = sc.id)::int AS visit_count,
+            (SELECT MAX(cv.visit_date)::text FROM customer_visits cv WHERE cv.contact_id = sc.id) AS last_visit_date
+       FROM sales_contacts sc
+       LEFT JOIN users u ON u.id = sc.created_by
+       LEFT JOIN customers c ON c.id = sc.linked_customer_id
+      WHERE sc.is_active OR $1::boolean
+      ORDER BY sc.name`, [req.query.all === "1"]);
+  res.json(rows);
+});
+
+router.post("/contacts", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+  const c = cleanContact(req.body);
+  if (c.error) return res.status(400).json({ error: c.error });
+  if (!req.body.force) {
+    const { rows: dup } = await query(
+      `SELECT id, name, phone FROM sales_contacts
+        WHERE is_active AND (LOWER(name) = LOWER($1) OR ($2::text IS NOT NULL AND phone = $2)) LIMIT 1`, [c.name, c.phone]);
+    if (dup.length) return res.status(409).json({ error: `${dup[0].name}${dup[0].phone ? ` (${dup[0].phone})` : ""} is already in Sales contacts.`, existing: dup[0] });
+  }
+  const { rows } = await query(
+    `INSERT INTO sales_contacts (name, contact_type, organisation, phone, notes, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [c.name, c.contact_type, c.organisation, c.phone, c.notes, req.user.id]);
+  res.status(201).json(rows[0]);
+});
+
+router.patch("/contacts/:id(\\d+)", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+  const { rows: cur } = await query(`SELECT * FROM sales_contacts WHERE id = $1`, [req.params.id]);
+  if (!cur.length) return res.status(404).json({ error: "Contact not found." });
+  const boss = req.user.role !== "sales_executive";
+  if (!boss && cur[0].created_by !== req.user.id) return res.status(403).json({ error: "Only the person who added this contact (or the Manager) can change it." });
+  const c = cleanContact({ ...cur[0], ...req.body });
+  if (c.error) return res.status(400).json({ error: c.error });
+  const linked = boss && "linked_customer_id" in req.body ? (Number(req.body.linked_customer_id) || null) : cur[0].linked_customer_id;
+  const active = boss && "is_active" in req.body ? !!req.body.is_active : cur[0].is_active;
+  const { rows } = await query(
+    `UPDATE sales_contacts SET name = $2, contact_type = $3, organisation = $4, phone = $5, notes = $6,
+            linked_customer_id = $7, is_active = $8 WHERE id = $1 RETURNING *`,
+    [req.params.id, c.name, c.contact_type, c.organisation, c.phone, c.notes, linked, active]);
+  // Linking a contact to its customer counts its past visits toward that customer.
+  if (linked && linked !== cur[0].linked_customer_id) {
+    await query(`UPDATE customer_visits SET customer_id = $2 WHERE contact_id = $1 AND customer_id IS NULL`, [req.params.id, linked]);
+  }
+  res.json(rows[0]);
+});
+
+// ---- Customers that were only ever people met on visits ----
+// Lists customers added from Sales, or visited, with nothing against them but visits, visit follow-ups and
+// sites that themselves have nothing but visits — no order, quotation,
+// price, invoice, receipt, booking … (worked out from the database's own
+// foreign keys, so a table added later is respected automatically). The
+// Administrator / Manager can move such a name to Sales contacts: its
+// visits move with it and the empty customer (and its empty sites) go.
+const MOVABLE_CUSTOMER_REFS = new Set(["customer_visits.customer_id", "visit_followups.customer_id", "sites.customer_id", "leads.won_customer_id"]);
+const MOVABLE_SITE_REFS = new Set(["customer_visits.site_id"]);
+
+async function refsTo(table) {
+  const { rows } = await query(
+    `SELECT c.conrelid::regclass::text AS tbl, a.attname AS col
+       FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+      WHERE c.contype = 'f' AND c.confrelid = $1::regclass`, [table]);
+  return rows.map((r) => ({ ...r, key: `${r.tbl}.${r.col}` }));
+}
+const qi = (s) => `"${String(s).replace(/"/g, '""')}"`;
+
+async function movableCustomerSql() {
+  const custRefs = (await refsTo("customers")).filter((r) => !MOVABLE_CUSTOMER_REFS.has(r.key) && r.tbl !== "sales_contacts");
+  const siteRefs = (await refsTo("sites")).filter((r) => !MOVABLE_SITE_REFS.has(r.key));
+  const notC = custRefs.map((r) => `NOT EXISTS (SELECT 1 FROM ${qi(r.tbl)} x WHERE x.${qi(r.col)} = c.id)`);
+  const notS = siteRefs.map((r) => `NOT EXISTS (SELECT 1 FROM ${qi(r.tbl)} x WHERE x.${qi(r.col)} = s.id)`);
+  // A lead won "as" this customer only counts if the lead also has an order.
+  notC.push(`NOT EXISTS (SELECT 1 FROM leads l WHERE l.won_customer_id = c.id AND l.won_order_id IS NOT NULL)`);
+  return `${notC.join(" AND ")}${notS.length ? ` AND NOT EXISTS (SELECT 1 FROM sites s WHERE s.customer_id = c.id AND NOT (${notS.join(" AND ")}))` : ""}`;
+}
+
+router.get("/customer-cleanup", requireRole("manager", "administrator"), async (req, res) => {
+  const cond = await movableCustomerSql();
+  const { rows } = await query(
+    `SELECT c.id, c.name, c.contact_number, c.created_via, c.created_at, c.is_active,
+            (SELECT COUNT(*) FROM customer_visits cv WHERE cv.customer_id = c.id)::int AS visit_count,
+            (SELECT MAX(cv.visit_date)::text FROM customer_visits cv WHERE cv.customer_id = c.id) AS last_visit_date,
+            (SELECT (ARRAY_AGG(cv.visitor_type ORDER BY cv.created_at DESC))[1] FROM customer_visits cv WHERE cv.customer_id = c.id) AS last_visitor_type,
+            (SELECT (ARRAY_AGG(cv.contact_number ORDER BY cv.created_at DESC))[1] FROM customer_visits cv WHERE cv.customer_id = c.id) AS last_contact_number,
+            (SELECT COUNT(*) FROM sites s WHERE s.customer_id = c.id)::int AS site_count
+       FROM customers c
+      WHERE ${cond}
+        AND (c.created_via = 'sales' OR EXISTS (SELECT 1 FROM customer_visits cv WHERE cv.customer_id = c.id))
+      ORDER BY (c.created_via = 'sales') DESC NULLS LAST, c.name`);
+  res.json(rows);
+});
+
+router.post("/customer-cleanup/:id(\\d+)/move", requireRole("manager", "administrator"), async (req, res) => {
+  const id = Number(req.params.id);
+  const type = CONTACT_TYPES.includes(req.body.contact_type) ? req.body.contact_type : "other";
+  const cond = await movableCustomerSql();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: c } = await client.query(`SELECT c.* FROM customers c WHERE c.id = $1 AND ${cond} FOR UPDATE`, [id]);
+    if (!c.length) { await client.query("ROLLBACK"); return res.status(409).json({ error: "This customer has orders, quotations or other records against it — it stays in the customer master." }); }
+    const { rows: last } = await client.query(
+      `SELECT contact_number, contact_person FROM customer_visits WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 1`, [id]);
+    const { rows: ct } = await client.query(
+      `INSERT INTO sales_contacts (name, contact_type, phone, notes, created_by)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [c[0].name, type, c[0].contact_number || last[0]?.contact_number || null,
+       `Moved from the customer master${last[0]?.contact_person ? ` · last met: ${last[0].contact_person}` : ""}`, req.user.id]);
+    const v = await client.query(`UPDATE customer_visits SET customer_id = NULL, site_id = NULL, contact_id = $2 WHERE customer_id = $1`, [id, ct[0].id]);
+    await client.query(`UPDATE visit_followups SET customer_id = NULL WHERE customer_id = $1`, [id]);
+    await client.query(`UPDATE leads SET won_customer_id = NULL WHERE won_customer_id = $1`, [id]);
+    await client.query(`DELETE FROM sites WHERE customer_id = $1`, [id]);
+    await client.query(`DELETE FROM customers WHERE id = $1`, [id]);
+    await client.query("COMMIT");
+    res.json({ ok: true, contact: ct[0], visits_moved: v.rowCount });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (e.code === "23503") return res.status(409).json({ error: "This customer is still used somewhere else in the app — it stays in the customer master." });
+    throw e;
+  } finally { client.release(); }
 });
 
 export default router;

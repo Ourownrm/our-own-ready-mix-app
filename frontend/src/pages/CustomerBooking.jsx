@@ -868,7 +868,7 @@ function NewBookingForm({ onDone, onCancel }) {
   const sitesForCustomer = form.customer_id ? sites.filter((s) => String(s.customer_id) === String(form.customer_id)) : sites;
 
   async function addCustomer() {
-    const name = window.prompt("New customer name:");
+    const name = window.prompt("New customer name (the billing name — saved in CAPITALS). For a person met on a visit, use Sales contacts instead:");
     if (!name || !name.trim()) return;
     setError("");
     try {
@@ -876,6 +876,12 @@ function NewBookingForm({ onDone, onCancel }) {
       setCustomers((prev) => [...prev, created]);
       setForm((f) => ({ ...f, customer_id: created.id, site_id: "" }));
     } catch (err) {
+      // Round 210 — the name is already a customer: use that one.
+      if (err.status === 409 && err.data?.existing) {
+        const ex = err.data.existing;
+        setCustomers((prev) => (prev.some((c) => c.id === ex.id) ? prev : [...prev, ex]));
+        setForm((f) => ({ ...f, customer_id: ex.id, site_id: "" }));
+      }
       setError(err.message);
     }
   }

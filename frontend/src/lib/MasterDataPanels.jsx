@@ -207,7 +207,7 @@ export function CustomersPanel({ setError }) {
               <tr style={!c.is_active ? { opacity: 0.6 } : undefined}>
                 {editingId === c.id ? (
                   <>
-                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: "100%" }} /></td>
+                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value.toUpperCase() })} style={{ width: "100%" }} /></td>
                     <td><input value={editForm.contact_number} onChange={(e) => setEditForm({ ...editForm, contact_number: e.target.value })} style={{ width: "100%" }} /></td>
                     <td><input value={editForm.billing_address} onChange={(e) => setEditForm({ ...editForm, billing_address: e.target.value })} style={{ width: "100%" }} /></td>
                     <td></td>
@@ -245,7 +245,7 @@ export function CustomersPanel({ setError }) {
         </table>
       </div>
       <form onSubmit={submit} className="field-input card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
-        <div><div style={{ color: "var(--slate)" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value.toUpperCase() })} required /></div>
         <div><div style={{ color: "var(--slate)" }}>Contact number</div><input value={form.contact_number} onChange={(e) => setForm({ ...form, contact_number: e.target.value })} /></div>
         <div style={{ gridColumn: "1 / -1" }}><div style={{ color: "var(--slate)" }}>Billing address</div><textarea rows={2} value={form.billing_address} onChange={(e) => setForm({ ...form, billing_address: e.target.value })} /></div>
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={saving}>{saving ? "Saving..." : "Add customer"}</button></div>
@@ -382,7 +382,7 @@ export function SitesPanel({ setError }) {
               <tr key={s.id} style={!s.is_active ? { opacity: 0.6 } : undefined}>
                 {editingId === s.id ? (
                   <>
-                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ width: "100%" }} /></td>
+                    <td><input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value.toUpperCase() })} style={{ width: "100%" }} /></td>
                     <td>{s.customer_name}</td>
                     <td><input type="number" value={editForm.distance_from_plant_km} onChange={(e) => setEditForm({ ...editForm, distance_from_plant_km: e.target.value })} style={{ width: 70 }} /></td>
                     <td><input type="number" min="1" placeholder="12" value={editForm.plant_out_grace_minutes} onChange={(e) => setEditForm({ ...editForm, plant_out_grace_minutes: e.target.value })} style={{ width: 60 }} /></td>
@@ -436,7 +436,7 @@ export function SitesPanel({ setError }) {
             {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        <div><div style={{ color: "var(--slate)" }}>Site name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+        <div><div style={{ color: "var(--slate)" }}>Site name</div><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value.toUpperCase() })} required /></div>
         <div>
           <div style={{ color: "var(--slate)" }}>Salesperson (required)</div>
           <select value={form.assigned_sales_representative_id} onChange={(e) => setForm({ ...form, assigned_sales_representative_id: e.target.value })} required>

@@ -1,3 +1,4 @@
+import { upperName } from "../lib/names.js";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { query } from "../db.js";
@@ -122,17 +123,19 @@ router.get("/customers", requireAnyPermission(["masters.customers", "quality.mix
 });
 
 router.post("/customers", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
-  const { name, contact_number, billing_address } = req.body;
+  const { contact_number, billing_address } = req.body;
+  const name = upperName(req.body.name);
   if (!name) return res.status(400).json({ error: "Customer name is required." });
   const { rows } = await query(
-    "INSERT INTO customers (name, contact_number, billing_address) VALUES ($1,$2,$3) RETURNING *",
-    [name, contact_number, billing_address]
+    "INSERT INTO customers (name, contact_number, billing_address, created_via) VALUES ($1,$2,$3,$4) RETURNING *",
+    [name, contact_number || null, String(billing_address || "").trim() || null, req.user.role === "sales_executive" ? "sales" : null]
   );
   res.status(201).json(rows[0]);
 });
 
 router.patch("/customers/:id", requireRole("administrator", "manager"), async (req, res) => {
-  const { name, contact_number, billing_address } = req.body;
+  const { contact_number, billing_address } = req.body;
+  const name = upperName(req.body.name);
   if (!name) return res.status(400).json({ error: "Customer name is required." });
   const { rows } = await query(
     `UPDATE customers SET name = $1, contact_number = $2, billing_address = $3 WHERE id = $4 RETURNING *`,
@@ -299,7 +302,8 @@ router.get("/sites/geofence-report", requireRole("administrator", "manager"), as
 });
 
 router.post("/sites", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
-  const { customer_id, name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, assigned_sales_representative_id, plant_out_grace_minutes, force } = req.body;
+  const { customer_id, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, assigned_sales_representative_id, plant_out_grace_minutes, force } = req.body;
+  const name = upperName(req.body.name);
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
   if (!assigned_sales_representative_id) return res.status(400).json({ error: "Every site needs a salesperson assigned." });
 
@@ -328,7 +332,8 @@ router.post("/sites", requireRole("administrator", "manager", "sales_executive")
 // only ever existed in the schema with its SQL-level default (150), with no
 // way to actually set it per site.
 router.patch("/sites/:id", requireRole("administrator", "manager"), async (req, res) => {
-  const { name, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, plant_out_grace_minutes } = req.body;
+  const { address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, plant_out_grace_minutes } = req.body;
+  const name = upperName(req.body.name);
   if (!name) return res.status(400).json({ error: "Site name is required." });
   const { rows } = await query(
     `UPDATE sites SET name = $1, address = $2, distance_from_plant_km = $3, trip_allowance_category_id = $4,

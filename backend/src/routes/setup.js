@@ -19,6 +19,7 @@ import { migrateQuotations } from "../lib/quotationSchema.js";
 import { migrateRound205 } from "../lib/round205Schema.js";
 import { migratePurchaseOrders } from "../lib/purchaseOrders.js";
 import { migrateRound209 } from "../lib/round209Schema.js";
+import { migrateRound210 } from "../lib/round210Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4101,6 +4102,7 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // ROUND 208 — purchase order print: PO settings, per-order terms.
     await migratePurchaseOrders(pool, log);
     await migrateRound209(pool, log);
+    await migrateRound210(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

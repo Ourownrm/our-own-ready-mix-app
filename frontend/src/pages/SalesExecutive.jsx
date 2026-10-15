@@ -11,6 +11,7 @@ import VisitCadenceStrip from "../lib/VisitCadenceStrip.jsx";
 import { TruckTrackingPanel } from "../lib/DeliveryTrackingView.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
+import { NewContactForm, ContactsList, CONTACT_TYPE_LABEL, VISITOR_TYPES_FOR_CONTACT } from "../lib/SalesContacts.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -314,6 +315,11 @@ export default function SalesExecutive() {
                 <div className="se-tile-title">Visits</div>
                 <div className="se-tile-sub">{dashboard ? `${visitsThisWeekCount} this week` : "Loading..."}</div>
               </button>
+              <button type="button" className="se-tile" onClick={() => setView("contacts")}>
+                <div className="se-tile-ic"><IconVisits color="#C75B12" size={17} /></div>
+                <div className="se-tile-title">Contacts</div>
+                <div className="se-tile-sub">Site engineers, clients, consultants</div>
+              </button>
               <button type="button" className="se-tile" onClick={() => setView("collections")}>
                 <div className="se-tile-ic"><IconCollections color="#C75B12" size={17} /></div>
                 <div className="se-tile-title">Collections &amp; Follow-ups</div>
@@ -388,6 +394,10 @@ export default function SalesExecutive() {
         {view === "visits" && (
           <VisitsList visits={visits} onDuty={onDuty} onNew={() => setView("new-visit")} weekCount={visitsThisWeekCount} cadenceDays={visitCadence} />
         )}
+        {view === "contacts" && <>
+          <button type="button" onClick={() => setView("home")} style={{ marginBottom: 10 }}>← Home</button>
+          <ContactsList compact />
+        </>}
         {view === "collections" && (
           <CollectionsTab dashboard={dashboard} asUser={isAdmin ? viewAsUser : undefined} />
         )}
@@ -1126,6 +1136,10 @@ function NewVisitForm({ onDone, onCancel }) {
   const [customerId, setCustomerId] = useState("");
   const [siteId, setSiteId] = useState("");
   const [browseAll, setBrowseAll] = useState(false);
+  // Round 210 — people met who are not (yet) customers live in Sales contacts.
+  const [contacts, setContacts] = useState([]);
+  const [contactId, setContactId] = useState("");
+  const [addingContact, setAddingContact] = useState(false);
   const [visitedName, setVisitedName] = useState("");
   const [visitorType, setVisitorType] = useState("customer");
   const [visitDate, setVisitDate] = useState(todayStr());
@@ -1152,29 +1166,24 @@ function NewVisitForm({ onDone, onCancel }) {
   const [manualFollowupDue, setManualFollowupDue] = useState("");
 
   useEffect(() => {
-    Promise.all([apiRequest("/master/customers"), apiRequest("/master/sites")])
-      .then(([c, s]) => { setCustomers(c); setSites(s); })
+    Promise.all([apiRequest("/master/customers"), apiRequest("/master/sites"), apiRequest("/sales/contacts")])
+      .then(([c, s, ct]) => { setCustomers(c); setSites(s); setContacts(ct); })
       .catch((err) => setError(err.message));
   }, []);
+
+  function pickContact(ct) {
+    setContactId(ct.id);
+    setVisitedName(ct.name);
+    setCustomerId(ct.linked_customer_id || "");
+    setSiteId("");
+    if (VISITOR_TYPES_FOR_CONTACT[ct.contact_type]) setVisitorType(VISITOR_TYPES_FOR_CONTACT[ct.contact_type]);
+    if (!contactPerson) setContactPerson(ct.name);
+    if (!contactNumber && ct.phone) setContactNumber(ct.phone);
+  }
 
   const sitesForCustomer = customerId ? sites.filter((s) => String(s.customer_id) === String(customerId)) : [];
   const questions = isNewProject === null ? [] : isNewProject ? NEW_PROJECT_QUESTIONS : RUNNING_PROJECT_QUESTIONS;
   const visibleQuestions = questions.filter((q) => !q.conditional || q.conditional(answers));
-
-  async function addNewCustomer() {
-    const name = window.prompt("New customer name:");
-    if (!name || !name.trim()) return;
-    setError("");
-    try {
-      const created = await apiRequest("/sales/quick-customer", { method: "POST", body: { name } });
-      setCustomers((prev) => [...prev, created]);
-      setCustomerId(created.id);
-      setVisitedName(created.name);
-      setSiteId("");
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
   async function addNewSite() {
     if (!customerId) { setError("Link to a customer first."); return; }
@@ -1228,7 +1237,7 @@ function NewVisitForm({ onDone, onCancel }) {
       await apiRequest("/sales/visits", {
         method: "POST",
         body: {
-          customer_id: customerId || null, visited_name: visitedName, site_id: siteId || null,
+          customer_id: customerId || null, contact_id: contactId || null, visited_name: visitedName, site_id: siteId || null,
           visitor_type: visitorType, visit_date: visitDate, visit_time: visitTime || null,
           contact_person: contactPerson, contact_number: contactNumber,
           at_site: atSite, latitude: coords?.latitude, longitude: coords?.longitude,
@@ -1254,7 +1263,7 @@ function NewVisitForm({ onDone, onCancel }) {
           <div style={{ fontWeight: 600, marginBottom: 10 }}>Report a visit</div>
           <form onSubmit={submit} className="field-input" style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
             <div>
-              <div style={{ color: "var(--slate)" }}>Customer name</div>
+              <div style={{ color: "var(--slate)" }}>Customer / person visited</div>
               <input
                 value={visitedName}
                 onChange={(e) => {
@@ -1264,9 +1273,11 @@ function NewVisitForm({ onDone, onCancel }) {
                   // that exact name, the link no longer reflects what's typed —
                   // unlink rather than silently keep a stale customer_id.
                   const linked = customers.find((c) => String(c.id) === String(customerId));
-                  if (customerId && linked && linked.name !== v) { setCustomerId(""); setSiteId(""); }
+                  const linkedCt = contacts.find((c) => String(c.id) === String(contactId));
+                  if (contactId && linkedCt && linkedCt.name !== v) { setContactId(""); setCustomerId(""); setSiteId(""); }
+                  else if (customerId && linked && linked.name !== v) { setCustomerId(""); setSiteId(""); }
                 }}
-                placeholder="Who did you visit? (type to search existing customers)"
+                placeholder="Who did you visit? (type to search customers and contacts)"
                 required
                 autoComplete="off"
               />
@@ -1274,15 +1285,24 @@ function NewVisitForm({ onDone, onCancel }) {
                   actual fix for the "guessed the wrong billing name" problem:
                   surfacing a likely existing-customer match while they type,
                   instead of only offering to browse everyone alphabetically. */}
-              {!customerId && visitedName.trim().length >= 2 && (
+              {!customerId && !contactId && visitedName.trim().length >= 2 && (
                 <div style={{ marginTop: 4 }}>
+                  {contacts
+                    .filter((c) => `${c.name} ${c.organisation || ""} ${c.phone || ""}`.toLowerCase().includes(visitedName.trim().toLowerCase()))
+                    .slice(0, 5)
+                    .map((c) => (
+                      <div key={`ct${c.id}`} onClick={() => pickContact(c)}
+                        style={{ padding: "6px 8px", fontSize: 12, border: "1px solid var(--border)", borderTop: "none", cursor: "pointer", background: "var(--surface)" }}>
+                        👤 Contact: <strong>{c.name}</strong> · {CONTACT_TYPE_LABEL[c.contact_type] || c.contact_type}{c.organisation ? ` · ${c.organisation}` : ""}{c.phone ? ` · ${c.phone}` : ""}
+                      </div>
+                    ))}
                   {customers
                     .filter((c) => c.name.toLowerCase().includes(visitedName.trim().toLowerCase()))
                     .slice(0, 5)
                     .map((c) => (
                       <div
                         key={c.id}
-                        onClick={() => { setCustomerId(c.id); setVisitedName(c.name); setSiteId(""); }}
+                        onClick={() => { setCustomerId(c.id); setContactId(""); setVisitedName(c.name); setSiteId(""); }}
                         style={{ padding: "6px 8px", fontSize: 12, border: "1px solid var(--border)", borderTop: "none", cursor: "pointer", background: "var(--surface)" }}
                       >
                         🔗 Link to existing customer: <strong>{c.name}</strong>
@@ -1290,19 +1310,28 @@ function NewVisitForm({ onDone, onCancel }) {
                     ))}
                 </div>
               )}
-              {customerId && (
+              {contactId && (
+                <div style={{ fontSize: 11, color: "var(--signal-green)", marginTop: 4 }}>
+                  ✓ Sales contact{customerId ? " — linked to their customer, so this visit counts toward the customer too." : " — saved in Sales contacts, not in the customer master."}
+                </div>
+              )}
+              {customerId && !contactId && (
                 <div style={{ fontSize: 11, color: "var(--signal-green)", marginTop: 4 }}>
                   ✓ Linked to existing customer — this visit will count toward their record.
                 </div>
               )}
-              {!customerId && visitedName.trim().length >= 2 && customers.filter((c) => c.name.toLowerCase().includes(visitedName.trim().toLowerCase())).length === 0 && (
+              {!customerId && !contactId && visitedName.trim().length >= 2 && (
                 <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
-                  No matching existing customer — this will be saved as a new, unlinked name. An Admin can link it to the
-                  real billing customer later once that's known (Sales Performance → Unlinked visit names).
+                  Not an existing customer? Add the person to <b>Sales contacts</b> (site engineer, client, consultant …) —
+                  they are kept in the Sales module, not in the customer master.
                 </div>
               )}
+              {addingContact && (
+                <NewContactForm initialName={visitedName} onCancel={() => setAddingContact(false)}
+                  onSaved={(ct) => { setContacts((p) => [...p.filter((x) => x.id !== ct.id), ct]); pickContact(ct); setAddingContact(false); }} />
+              )}
               <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                <button type="button" onClick={addNewCustomer} style={{ fontSize: 12, padding: "4px 10px" }}>+ New customer</button>
+                <button type="button" onClick={() => setAddingContact(true)} style={{ fontSize: 12, padding: "4px 10px" }}>+ New contact</button>
                 <button type="button" onClick={() => setBrowseAll((b) => !b)} style={{ fontSize: 12, padding: "4px 10px" }}>
                   {browseAll ? "Hide full list" : "Browse full customer list"}
                 </button>
@@ -1310,7 +1339,7 @@ function NewVisitForm({ onDone, onCancel }) {
               {browseAll && (
                 <select
                   value={customerId}
-                  onChange={(e) => { setCustomerId(e.target.value); setSiteId(""); const c = customers.find((x) => String(x.id) === e.target.value); if (c) setVisitedName(c.name); }}
+                  onChange={(e) => { setCustomerId(e.target.value); setContactId(""); setSiteId(""); const c = customers.find((x) => String(x.id) === e.target.value); if (c) setVisitedName(c.name); }}
                   style={{ marginTop: 6, width: "100%" }}
                 >
                   <option value="">Or pick from the full list</option>
