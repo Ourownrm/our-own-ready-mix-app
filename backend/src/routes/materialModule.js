@@ -2780,7 +2780,10 @@ router.get("/reports/weighbridge-comparison", requirePermission("material.report
             COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit, m.tolerance_pct,
             src.name AS source_name, src.kg_per_purchase_unit AS source_kg_per_unit,
             s.name AS supplier_name, r.supplier_qty, r.weighbridge_weight_kg, r.accepted_qty,
-            r.short_qty, r.debit_note_amount, r.vehicle_number, r.challan_number
+            r.short_qty, r.debit_note_amount, r.vehicle_number, r.challan_number, r.accepted_basis,
+            -- Round 213 — the weighbridge weight in the purchase unit (same
+            -- conversion the receipt uses), shown between billed and accepted.
+            ROUND((r.weighbridge_weight_kg / NULLIF(COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit), 0))::numeric, 2) AS weighbridge_qty
      FROM rm_receipts_effective r
      JOIN rm_orders o ON o.id = r.order_id
      JOIN rm_materials m ON m.id = o.material_id

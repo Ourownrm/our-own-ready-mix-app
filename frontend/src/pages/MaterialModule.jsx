@@ -2828,15 +2828,26 @@ function WeighbridgeComparisonReport() {
       <button type="button" onClick={run} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10 }}>Run</button>
       <ReportShell error={error} loading={loading} empty={!loading && rows.length === 0}>
         <table>
-          <thead><tr><th>Date</th><th>Material</th><th>Supplier</th><th>Supplier qty</th><th>Weighbridge kg</th><th>Accepted</th><th>Short/Excess</th><th>Debit note</th></tr></thead>
+          <thead><tr><th>Date</th><th>Material</th><th>Supplier</th><th>Billed qty</th><th>Weighbridge qty</th><th>Accepted</th><th>Short/Excess</th><th>Debit note</th></tr></thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} style={r.tolerance_exceeded ? { background: "var(--alert-red-bg)" } : undefined}>
                 <td>{fmtDate(r.received_at)}</td>
                 <td>{r.material_name}{r.source_name ? <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{r.source_name} · {fmtNum(r.source_kg_per_unit, 2)} kg/{r.purchase_unit}</div> : null}</td>
                 <td>{r.supplier_name}</td>
-                <td>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td><td>{r.weighbridge_weight_kg != null ? fmtNum(r.weighbridge_weight_kg) : "–"}</td>
-                <td>{fmtNum(r.accepted_qty)}</td>
+                {/* Round 213 — billed, weighbridge and accepted side by side in the
+                    purchase unit; accepted is either the billed or our weighbridge figure. */}
+                <td>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
+                <td>
+                  {r.weighbridge_qty != null ? `${fmtNum(r.weighbridge_qty)} ${r.purchase_unit}` : "–"}
+                  {r.weighbridge_weight_kg != null && <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{fmtNum(r.weighbridge_weight_kg)} kg</div>}
+                </td>
+                <td>
+                  {fmtNum(r.accepted_qty)} {r.purchase_unit}
+                  <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
+                    {r.accepted_basis === "weighed" ? "weighbridge" : r.accepted_basis === "supplier" ? "billed" : "entered"}
+                  </div>
+                </td>
                 <td>{Number(r.short_qty) !== 0 ? fmtNum(r.short_qty) : "–"}</td>
                 <td>{r.debit_note_amount != null ? fmtMoney(r.debit_note_amount) : "–"}</td>
               </tr>
