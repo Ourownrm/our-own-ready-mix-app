@@ -13,6 +13,7 @@ import { RequestForm, RequestsTab, PayrollTab, AdvancesTab, RulesCard } from "./
 import { LeaveForm, LeaveTab, LeaveTypesCard } from "./HrLeave.jsx";
 import { FacePanel, WorkLocationsCard, PhonePunchReview } from "./HrPhone.jsx";
 import { TodayTab, CompOffTab } from "./HrToday.jsx";
+import { ContractLabourTab, ContractorBillsTab } from "./HrContract.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CODE_STYLE = {
@@ -300,7 +301,7 @@ function AttendanceTab({ meta }) {
 
 // ================================================================ Employees
 const EMPTY = {
-  emp_code: "", name: "", mobile: "", department_id: "", designation: "", employment_type: "payroll", contractor_name: "",
+  emp_code: "", name: "", mobile: "", department_id: "", designation: "", employment_type: "payroll", contractor_name: "", contractor_id: "", contract_basis: "daily", monthly_rate: "",
   date_of_joining: "", date_of_leaving: "", attendance_source: "machine", machine_user_id: "", app_user_id: "",
   policy: "office", default_shift_id: "", weekly_off: "0", trip_allowance: false, notes: "",
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
@@ -311,6 +312,9 @@ const EMPTY = {
 
 function EmployeeForm({ meta, initial, onSaved, onCancel }) {
   const { can } = usePermissions();
+  // Round 211 — contractors are records (HR → Contract labour).
+  const [contractors, setContractors] = useState([]);
+  useEffect(() => { apiRequest("/contract-labour/contractors").then(setContractors).catch(() => {}); }, []);
   const [f, setF] = useState(() => {
     const base = { ...EMPTY };
     if (initial) for (const k of Object.keys(EMPTY)) if (initial[k] !== undefined && initial[k] !== null) base[k] = typeof EMPTY[k] === "boolean" ? !!initial[k] : String(initial[k]);
@@ -374,7 +378,14 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
             <option value="contract">Contract (through a contractor)</option>
           </select>
         </Field>
-        {f.employment_type === "contract" && <Field label="Contractor"><input value={f.contractor_name} onChange={set("contractor_name")} maxLength={120} /></Field>}
+        {f.employment_type === "contract" && (contractors.length ? (
+          <Field label="Contractor" hint="Paid through this contractor's monthly bill (HR → Contractor bills).">
+            <select value={f.contractor_id} onChange={set("contractor_id")}>
+              <option value="">— paid directly —</option>
+              {contractors.filter((c) => c.is_active || String(c.id) === f.contractor_id).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        ) : <Field label="Contractor"><input value={f.contractor_name} onChange={set("contractor_name")} maxLength={120} /></Field>)}
         <Field label="Date of joining"><input type="date" value={f.date_of_joining} onChange={set("date_of_joining")} /></Field>
         {editing && <Field label="Date of leaving" hint="Fill in when someone leaves — frees their machine number."><input type="date" value={f.date_of_leaving} onChange={set("date_of_leaving")} /></Field>}
       </div>
@@ -455,7 +466,15 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
               </div>
             ) : (
               <div style={grid}>
-                <Field label="Daily rate (₹)"><input type="number" min="0" step="1" value={f.daily_rate} onChange={set("daily_rate")} /></Field>
+                <Field label="Pay basis">
+                  <select value={f.contract_basis} onChange={set("contract_basis")}>
+                    <option value="daily">Daily rate — days worked</option>
+                    <option value="monthly">Monthly rate — with weekly offs &amp; holidays</option>
+                  </select>
+                </Field>
+                {f.contract_basis === "monthly"
+                  ? <Field label="Monthly rate (₹)"><input type="number" min="0" step="1" value={f.monthly_rate} onChange={set("monthly_rate")} /></Field>
+                  : <Field label="Daily rate (₹)"><input type="number" min="0" step="1" value={f.daily_rate} onChange={set("daily_rate")} /></Field>}
                 <Field label="Contractor's service charge (%)"><input type="number" min="0" step="0.5" value={f.service_charge_pct} onChange={set("service_charge_pct")} /></Field>
                 <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={f.ot_eligible} onChange={set("ot_eligible")} /> Paid overtime</label>
               </div>
@@ -585,7 +604,7 @@ function EmployeesTab({ meta, reloadMeta }) {
                     <td style={{ fontSize: 12.5 }}>{r.policy === "office" ? (r.default_shift_name || "Office") : `Operations${r.default_shift_name ? " · " + r.default_shift_name : ""}`}</td>
                     {meta.can_salary && (
                       <td style={{ textAlign: "right", fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
-                        {r.employment_type === "contract" ? (r.daily_rate ? `${money(r.daily_rate)}/day` : "—") : money(r.gross_monthly)}
+                        {r.employment_type === "contract" ? (r.contract_basis === "monthly" ? (r.monthly_rate ? `${money(r.monthly_rate)}/month` : "—") : r.daily_rate ? `${money(r.daily_rate)}/day` : "—") : money(r.gross_monthly)}
                         {r.incentive_basis && r.incentive_basis !== "none" && <div style={{ fontSize: 11, color: "var(--slate)" }}>+ incentive</div>}
                       </td>
                     )}
@@ -847,6 +866,8 @@ export default function HrModule() {
     ["roster", "Roster", can("hr.roster", "view")],
     ["payroll", "Payroll", can("hr.payroll", "view")],
     ["advances", "Advances", can("hr.advances", "view") || can("hr.advance-request", "view") || can("hr.advance-approve", "edit") || can("hr.advance-pay", "edit")],
+    ["contract", "Contract labour", can("hr.gangs", "view")],
+    ["bills", "Contractor bills", can("hr.contractor-bills", "view")],
     ["settings", "Settings", can("hr.settings", "view")],
   ].filter((t) => t[2]);
   const current = tab || tabs[0]?.[0];
@@ -871,6 +892,8 @@ export default function HrModule() {
         {meta && current === "leave" && <LeaveTab meta={meta} />}
         {meta && current === "payroll" && <PayrollTab meta={meta} />}
         {current === "advances" && <AdvancesTab />}
+        {current === "contract" && <ContractLabourTab />}
+        {current === "bills" && <ContractorBillsTab />}
         {meta && current === "settings" && <SettingsTab meta={meta} reloadMeta={loadMeta} />}
       </div>
     </>

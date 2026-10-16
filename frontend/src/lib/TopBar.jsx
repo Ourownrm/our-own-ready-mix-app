@@ -140,6 +140,10 @@ export function TopBar({ title }) {
           {myAttendance && canPunch && pathname !== "/mark-attendance" && (
             <Link to="/mark-attendance" className="topbar-link" style={{ fontWeight: 600, color: "#fff" }}>Mark attendance</Link>
           )}
+          {/* Round 211 — the Site Supervisor confirms the pump gangs' crews. */}
+          {permsReady && can("hr.gang-attendance", "edit") && !can("hr.gangs", "view") && pathname !== "/gang-attendance" && (
+            <Link to="/gang-attendance" className="topbar-link">Pump gangs</Link>
+          )}
           {myAttendance && pathname !== "/my-attendance" && (
             <Link to="/my-attendance" className="topbar-link">My attendance</Link>
           )}

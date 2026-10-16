@@ -85,6 +85,9 @@ export const CATALOGUE = [
   // ---------- Orders & delivery ----------
   f("orders.customer-orders", "orders", "Customer orders", VCED,
     { administrator: VCED, manager: VCED, sales_executive: V }),
+  // Round 211 — which pump gang works an order (the gang is not fixed to a pump).
+  f("orders.pump-gang", "orders", "Choose the pump gang on an order", E,
+    { administrator: E, manager: E, site_supervisor: E }),
   f("orders.reschedule", "orders", "Reschedule an order", E,
     { administrator: E, manager: E }),
   f("orders.tickets", "orders", "Delivery tickets / challans", VCED,
@@ -629,6 +632,17 @@ export const CATALOGUE = [
     { administrator: E, manager: E }),
   f("hr.advance-pay", "hr", "Salary advance requests — record the payment", E,
     { administrator: E, accountant: E }),
+  // Round 211 — contract labour (owner, 15 Oct 2026): pump gangs paid one
+  // monthly amount, the Site Supervisor confirms each gang's day, Admin alone
+  // decides any deduction for absence; contractor bills with GST / TDS.
+  f("hr.gangs", "hr", "Pump gangs & contractors — set up, monthly register", VCED,
+    { administrator: VCED, manager: VCE }),
+  f("hr.gang-attendance", "hr", "Pump gangs — confirm the day's crew", VE,
+    { administrator: VE, manager: VE, site_supervisor: VE }),
+  f("hr.gang-deduction", "hr", "Pump gangs — decide deductions, close the month", E,
+    { administrator: E }),
+  f("hr.contractor-bills", "hr", "Contractor bills, payments & ledger", VCED,
+    { administrator: VCED, accountant: VC }),
 
   // ---------- Administration ----------
   f("admin.users", "admin", "Users — list and create", VCE,
@@ -771,11 +785,15 @@ export const MODULES = [
       { key: "hr.requests", label: "Requests & leave" },
       { key: "hr.payroll", label: "Payroll" },
       { key: "hr.advances", label: "Advances" },
+      { key: "hr.gangs", label: "Contract labour" },
+      { key: "hr.contractor-bills", label: "Contractor bills" },
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
-    support: ["hr.salary", "hr.employee-ids", "hr.advance-request", "hr.advance-approve", "hr.advance-pay"],
-    noAutoView: ["hr.salary", "hr.employee-ids", "hr.payroll", "hr.advances"],
+    support: ["hr.salary", "hr.employee-ids", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction"],
+    // Round 211 — hr.gang-attendance is deliberately NOT in this module: the
+    // Site Supervisor confirms gang crews without having the HR module.
+    noAutoView: ["hr.salary", "hr.employee-ids", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs"],
   },
   {
     // Round 199 — the Fuel module. Roles are set on each function above rather

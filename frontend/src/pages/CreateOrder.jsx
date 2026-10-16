@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PumpGangField } from "../lib/PumpGangPicker.jsx";
 import { apiRequest } from "../lib/api.js";
 import { estimateTravelMinutes, suggestBatchingTime } from "../lib/travelEstimate.js";
 import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
@@ -22,6 +23,7 @@ const initialForm = {
   // carrying over a number that was never really chosen.
   cube_samples_required: "",
   assigned_pump_crew: "",
+  pump_gang_id: "",
   assigned_site_supervisor_id: "",
   site_contact_number: "",
   order_quantity_m3: "",
@@ -346,8 +348,8 @@ export default function CreateOrder({ onDone }) {
         <Field label="Cube samples required">
           <input type="number" min="0" placeholder="e.g. based on pour quantity" value={form.cube_samples_required} onChange={(e) => set("cube_samples_required", e.target.value)} />
         </Field>
-        <Field label="Assigned pump crew">
-          <input type="text" value={form.assigned_pump_crew} onChange={(e) => set("assigned_pump_crew", e.target.value)} />
+        <Field label="Pump gang">
+          <PumpGangField gangId={form.pump_gang_id} crewText={form.assigned_pump_crew} onGang={(v) => set("pump_gang_id", v)} onText={(v) => set("assigned_pump_crew", v)} />
         </Field>
         <Field label="Assigned site supervisor">
           <select value={form.assigned_site_supervisor_id} onChange={(e) => set("assigned_site_supervisor_id", e.target.value)}>

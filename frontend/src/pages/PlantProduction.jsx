@@ -94,10 +94,103 @@ function fmtSiloQty(kg, kind) {
 
 // ---------------------------------------------------------------------------
 
+// Round 211 — one day, load by load: each plant load against its challan,
+// paired by truck number and loading order (routes/plant.js pairLoads).
+const LOAD_STATUS = {
+  ok: ["Matches", "var(--signal-green)", "var(--signal-green-bg)"],
+  quantity_differs: ["Quantity differs", "#8A5A00", "var(--amber-bg)"],
+  truck_differs: ["Truck number differs", "#8A5A00", "var(--amber-bg)"],
+  plant_only: ["No challan", "var(--alert-red)", "var(--alert-red-bg)"],
+  challan_only: ["No plant load", "var(--alert-red)", "var(--alert-red-bg)"],
+};
+const hm = (ts) => (ts ? new Date(ts).toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" }) : "–");
+function LoadByLoad({ day }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [only, setOnly] = useState("all");
+  useEffect(() => {
+    setData(null); setError("");
+    apiRequest(`/plant/production-vs-billed/loads?date=${day}`).then(setData).catch((e) => setError(e.message));
+  }, [day]);
+  if (error) return <div style={{ color: "var(--alert-red)", fontSize: 13, padding: 10 }}>{error}</div>;
+  if (!data) return <div style={{ fontSize: 13, color: "var(--slate)", padding: 10 }}>Loading the day's loads…</div>;
+  const t = data.totals;
+  const rows = only === "all" ? data.rows : only === "issues" ? data.rows.filter((r) => r.status !== "ok") : data.rows.filter((r) => r.status === only);
+  const chip = (k, label, n) => (
+    <button key={k} type="button" className={`btn-tab${only === k ? " active" : ""}`} style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setOnly(k)}>{label} · {n}</button>
+  );
+  return (
+    <div style={{ padding: "10px 12px 14px", background: "#FAF8F4" }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 12.5, color: "var(--slate)", marginRight: 6 }}>{t.loads} plant load{t.loads === 1 ? "" : "s"} · {t.challans} challan{t.challans === 1 ? "" : "s"}</span>
+        {chip("all", "All", data.rows.length)}
+        {chip("issues", "Needs a look", data.rows.length - t.ok)}
+        {t.quantity_differs > 0 && chip("quantity_differs", "Quantity differs", t.quantity_differs)}
+        {t.truck_differs > 0 && chip("truck_differs", "Truck differs", t.truck_differs)}
+        {t.plant_only > 0 && chip("plant_only", "No challan", t.plant_only)}
+        {t.challan_only > 0 && chip("challan_only", "No plant load", t.challan_only)}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 820 }}>
+          <thead>
+            <tr style={{ color: "var(--slate)", fontSize: 11.5 }}>
+              <th style={TH}>#</th>
+              <th style={TH}>Truck</th>
+              <th style={TH}>Plant load</th>
+              <th style={{ ...TH, textAlign: "right" }}>Plant m³</th>
+              <th style={TH}>Challan</th>
+              <th style={{ ...TH, textAlign: "right" }}>Billed m³</th>
+              <th style={{ ...TH, textAlign: "right" }}>Difference</th>
+              <th style={TH}>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const st = LOAD_STATUS[r.status];
+              const d = Number(r.difference_m3);
+              return (
+                <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ ...TD, color: "var(--slate)" }}>{data.rows.indexOf(r) + 1}</td>
+                  <td style={TD}>
+                    <b>{r.load?.truck_no || r.ticket?.truck_no || "—"}</b>
+                    {r.truck_differs && <div style={{ fontSize: 11.5, color: "#8A5A00" }}>challan: {r.ticket.truck_no || "no truck"}</div>}
+                    {r.truck_seq && <div style={{ fontSize: 11, color: "var(--slate)" }}>trip {r.truck_seq} of the day</div>}
+                  </td>
+                  <td style={TD}>
+                    {r.load ? <>
+                      <div>{hm(r.load.started_at)} · batch {r.load.batch_no}{r.load.batches > 1 ? ` (${r.load.batches} batches)` : ""}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{[r.load.recipe_code, r.load.customer_code, r.load.site_name].filter(Boolean).join(" · ")}{r.load.omitted ? " · omitted by Admin" : ""}</div>
+                    </> : <span style={{ color: "var(--slate)" }}>—</span>}
+                  </td>
+                  <td style={{ ...TD, textAlign: "right", textDecoration: r.load?.omitted ? "line-through" : "none" }}>{r.load ? fmtM3(r.load.m3) : "—"}</td>
+                  <td style={TD}>
+                    {r.ticket ? <>
+                      <div>{r.ticket.ticket_number} · {hm(r.ticket.loaded_at)}{r.gap_min != null && r.load ? <span style={{ color: "var(--slate)" }}> ({r.gap_min >= 0 ? "+" : ""}{r.gap_min} min)</span> : null}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{[r.ticket.mix_grade_name, r.ticket.customer_name, r.ticket.site_name].filter(Boolean).join(" · ")}</div>
+                    </> : <span style={{ color: "var(--slate)" }}>—</span>}
+                  </td>
+                  <td style={{ ...TD, textAlign: "right" }}>{r.ticket ? fmtM3(r.ticket.m3) : "—"}</td>
+                  <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: d > 0 ? "#B58A55" : d < 0 ? "var(--alert-red)" : "var(--slate)" }}>{d > 0 ? "+" : ""}{fmtM3(d)}</td>
+                  <td style={TD}><span style={{ fontSize: 11.5, fontWeight: 600, color: st[1], background: st[2], borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>{st[0]}</span></td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && <tr><td colSpan={8} style={{ ...TD, color: "var(--slate)" }}>Nothing here.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 8, lineHeight: 1.5 }}>
+        Each plant load is paired with a challan of the same truck in loading order (within 2 hours); a load and a challan of different trucks within 20 minutes are paired and flagged "truck number differs". Loading time on a challan is its batching event, else when it was raised.
+      </div>
+    </div>
+  );
+}
+
 // Round 179 (#4) — plant vs billed production over the selected period.
 function PlantVsBilled({ qs }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const [openDay, setOpenDay] = useState(null);
   useEffect(() => {
     let alive = true;
     setData(null); setError("");
@@ -150,22 +243,31 @@ function PlantVsBilled({ qs }) {
               <th style={{ ...TH, textAlign: "right" }}>Billed m³</th>
               <th style={{ ...TH, textAlign: "right" }}>Difference</th>
               <th style={{ ...TH, textAlign: "right" }}>Challans</th>
+              <th style={TH}></th>
             </tr>
           </thead>
           <tbody>
             {data.rows.map((r) => {
               const d = Number(r.difference_m3);
               return (
-                <tr key={r.day} style={{ borderTop: "1px solid var(--border)" }}>
+                <Fragment key={r.day}>
+                <tr style={{ borderTop: "1px solid var(--border)", background: openDay === r.day ? "#F3F1EC" : undefined }}>
                   <td style={TD}>{r.day}</td>
                   <td style={{ ...TD, textAlign: "right" }}>{fmtM3(r.plant_m3)}</td>
                   <td style={{ ...TD, textAlign: "right" }}>{fmtM3(r.billed_m3)}</td>
                   <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: d > 0 ? "#B58A55" : d < 0 ? "var(--alert-red)" : "var(--slate)" }}>{d > 0 ? "+" : ""}{fmtM3(r.difference_m3)}</td>
                   <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{r.tickets}</td>
+                  <td style={{ ...TD, textAlign: "right" }}>
+                    <button type="button" style={{ fontSize: 12, padding: "4px 10px", whiteSpace: "nowrap" }} onClick={() => setOpenDay(openDay === r.day ? null : r.day)}>
+                      {openDay === r.day ? "Hide loads" : "Load by load"}
+                    </button>
+                  </td>
                 </tr>
+                {openDay === r.day && <tr><td colSpan={6} style={{ padding: 0, borderTop: "1px solid var(--border)" }}><LoadByLoad day={r.day} /></td></tr>}
+                </Fragment>
               );
             })}
-            {data.rows.length === 0 && <tr><td colSpan={5} style={{ ...TD, color: "var(--slate)" }}>Nothing in this period.</td></tr>}
+            {data.rows.length === 0 && <tr><td colSpan={6} style={{ ...TD, color: "var(--slate)" }}>Nothing in this period.</td></tr>}
           </tbody>
         </table>
       </div>

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { setOrderGang } from "../lib/gangs.js";
 import { resolveChargeDecisions, notifyWaivers } from "../lib/orderCharges.js";
 import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { query } from "../db.js";
@@ -151,6 +152,8 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
      cd.part_load_applicable, cd.part_load_charge_amount, resolvedMixDesignId,
      defaultQcEngineerId, resolvedBillingAddressId, cd.part_load_basis, cd.pump_charge_waiver_reason, cd.part_load_waiver_reason, cd.price_option]
   );
+  // Round 211 — the pump gang, when one was chosen.
+  await setOrderGang(rows[0].id, req.body?.pump_gang_id, req.user.id);
   // Round 204 — a charge left out goes to the Administrator; a brand-new
   // site's approved quotation is accepted by its first order (clause 9.1).
   await notifyWaivers(rows[0].id);

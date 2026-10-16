@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PumpGangField } from "./PumpGangPicker.jsx";
 import { Link } from "react-router-dom";
 import { apiRequest } from "./api.js";
 import { estimateTravelMinutes, suggestBatchingTime } from "./travelEstimate.js";
@@ -198,6 +199,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
     pump_requirement: booking.pump_requirement || "without_pump",
     pump_id: "",
     assigned_pump_crew: "",
+    pump_gang_id: "",
     site_technician_required: false,
     // Round 120, item 4c — see the matching comment/fix in CreateOrder.jsx;
     // same hardcoded-3 default, same fix.
@@ -442,8 +444,8 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
         )}
         {form.pump_requirement !== "without_pump" && (
           <div>
-            <div style={{ color: "var(--slate)" }}>Assigned pump crew</div>
-            <input type="text" value={form.assigned_pump_crew} onChange={(e) => setForm({ ...form, assigned_pump_crew: e.target.value })} />
+            <div style={{ color: "var(--slate)" }}>Pump gang</div>
+            <PumpGangField gangId={form.pump_gang_id} crewText={form.assigned_pump_crew} onGang={(v) => setForm({ ...form, pump_gang_id: v })} onText={(v) => setForm({ ...form, assigned_pump_crew: v })} />
           </div>
         )}
         {form.pump_requirement !== "without_pump" && (

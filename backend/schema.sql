@@ -4098,3 +4098,158 @@ CREATE TABLE IF NOT EXISTS rm_po_settings (
 ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS po_terms JSONB;
 ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS po_terms_by INTEGER REFERENCES users(id);
 ALTER TABLE rm_orders ADD COLUMN IF NOT EXISTS po_terms_at TIMESTAMPTZ;
+
+-- Round 211 — contract labour: contractors, pump gangs, contractor bills (lib/round211Schema.js).
+CREATE TABLE IF NOT EXISTS hr_contractors (
+  id             SERIAL PRIMARY KEY,
+  name           VARCHAR(120) NOT NULL,
+  kind           VARCHAR(10) NOT NULL DEFAULT 'individual' CHECK (kind IN ('individual','firm')),
+  pan            VARCHAR(10),
+  gst_registered BOOLEAN NOT NULL DEFAULT false,
+  gstin          VARCHAR(15),
+  gst_rate       NUMERIC(5,2) NOT NULL DEFAULT 18,
+  phone          VARCHAR(20),
+  address        TEXT,
+  notes          TEXT,
+  is_active      BOOLEAN NOT NULL DEFAULT true,
+  created_by     INTEGER REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by     INTEGER REFERENCES users(id),
+  updated_at     TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hr_contractors_name ON hr_contractors (LOWER(BTRIM(name)));
+
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS contractor_id INTEGER REFERENCES hr_contractors(id);
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS contract_basis VARCHAR(8) NOT NULL DEFAULT 'daily';
+ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS monthly_rate NUMERIC(10,2);
+
+CREATE TABLE IF NOT EXISTS hr_gangs (
+  id            SERIAL PRIMARY KEY,
+  name          VARCHAR(60) NOT NULL,
+  contractor_id INTEGER NOT NULL REFERENCES hr_contractors(id),
+  location      VARCHAR(80),
+  min_crew      SMALLINT,
+  notes         TEXT,
+  is_active     BOOLEAN NOT NULL DEFAULT true,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    INTEGER REFERENCES users(id),
+  updated_at    TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hr_gangs_name ON hr_gangs (LOWER(BTRIM(name))) WHERE is_active;
+
+CREATE TABLE IF NOT EXISTS hr_gang_members (
+  id           SERIAL PRIMARY KEY,
+  gang_id      INTEGER NOT NULL REFERENCES hr_gangs(id),
+  employee_id  INTEGER NOT NULL REFERENCES hr_employees(id),
+  monthly_rate NUMERIC(10,2) NOT NULL,
+  is_leader    BOOLEAN NOT NULL DEFAULT false,
+  role         VARCHAR(40),
+  from_date    DATE NOT NULL,
+  to_date      DATE,
+  created_by   INTEGER REFERENCES users(id),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (to_date IS NULL OR to_date >= from_date)
+);
+CREATE INDEX IF NOT EXISTS hr_gang_members_gang ON hr_gang_members (gang_id, from_date);
+-- One open membership per person.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hr_gang_member_open ON hr_gang_members (employee_id) WHERE to_date IS NULL;
+
+ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_gang_id INTEGER REFERENCES hr_gangs(id);
+ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_gang_set_by INTEGER REFERENCES users(id);
+ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS pump_gang_set_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_orders_pump_gang ON customer_orders (pump_gang_id, order_date) WHERE pump_gang_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS hr_gang_days (
+  gang_id      INTEGER NOT NULL REFERENCES hr_gangs(id),
+  work_date    DATE NOT NULL,
+  confirmed_by INTEGER REFERENCES users(id),
+  confirmed_at TIMESTAMPTZ,
+  note         TEXT,
+  PRIMARY KEY (gang_id, work_date)
+);
+
+CREATE TABLE IF NOT EXISTS hr_gang_marks (
+  gang_id     INTEGER NOT NULL REFERENCES hr_gangs(id),
+  work_date   DATE NOT NULL,
+  employee_id INTEGER NOT NULL REFERENCES hr_employees(id),
+  present     BOOLEAN NOT NULL,
+  reason      VARCHAR(200),
+  lat         DOUBLE PRECISION,
+  lng         DOUBLE PRECISION,
+  marked_by   INTEGER REFERENCES users(id),
+  marked_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (gang_id, work_date, employee_id)
+);
+
+CREATE TABLE IF NOT EXISTS hr_gang_subs (
+  id              SERIAL PRIMARY KEY,
+  gang_id         INTEGER NOT NULL REFERENCES hr_gangs(id),
+  work_date       DATE NOT NULL,
+  name            VARCHAR(80) NOT NULL,
+  for_employee_id INTEGER REFERENCES hr_employees(id),
+  added_by        INTEGER REFERENCES users(id),
+  added_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hr_gang_subs_day ON hr_gang_subs (gang_id, work_date);
+
+CREATE TABLE IF NOT EXISTS hr_gang_deductions (
+  gang_id     INTEGER NOT NULL REFERENCES hr_gangs(id),
+  month       CHAR(7) NOT NULL,
+  employee_id INTEGER NOT NULL REFERENCES hr_employees(id),
+  days        NUMERIC(4,1) NOT NULL DEFAULT 0 CHECK (days >= 0),
+  note        VARCHAR(200),
+  decided_by  INTEGER REFERENCES users(id),
+  decided_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (gang_id, month, employee_id)
+);
+
+CREATE TABLE IF NOT EXISTS hr_gang_months (
+  gang_id     INTEGER NOT NULL REFERENCES hr_gangs(id),
+  month       CHAR(7) NOT NULL,
+  gross       NUMERIC(12,2) NOT NULL,
+  deduction   NUMERIC(12,2) NOT NULL DEFAULT 0,
+  amount      NUMERIC(12,2) NOT NULL,
+  detail      JSONB NOT NULL,
+  closed_by   INTEGER REFERENCES users(id),
+  closed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (gang_id, month)
+);
+
+CREATE TABLE IF NOT EXISTS hr_contractor_bills (
+  id                 SERIAL PRIMARY KEY,
+  contractor_id      INTEGER NOT NULL REFERENCES hr_contractors(id),
+  month              CHAR(7) NOT NULL,
+  gangs_amount       NUMERIC(12,2) NOT NULL DEFAULT 0,
+  individual_amount  NUMERIC(12,2) NOT NULL DEFAULT 0,
+  taxable            NUMERIC(12,2) NOT NULL,
+  gst_rate           NUMERIC(5,2) NOT NULL DEFAULT 0,
+  gst_amount         NUMERIC(12,2) NOT NULL DEFAULT 0,
+  tds_rate           NUMERIC(5,2) NOT NULL DEFAULT 0,
+  tds_amount         NUMERIC(12,2) NOT NULL DEFAULT 0,
+  tds_note           VARCHAR(200),
+  net_payable        NUMERIC(12,2) NOT NULL,
+  their_invoice_no   VARCHAR(40),
+  their_invoice_date DATE,
+  detail             JSONB NOT NULL,
+  status             VARCHAR(10) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved')),
+  created_by         INTEGER REFERENCES users(id),
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  approved_by        INTEGER REFERENCES users(id),
+  approved_at        TIMESTAMPTZ,
+  UNIQUE (contractor_id, month)
+);
+
+CREATE TABLE IF NOT EXISTS hr_contractor_payments (
+  id            SERIAL PRIMARY KEY,
+  contractor_id INTEGER NOT NULL REFERENCES hr_contractors(id),
+  bill_id       INTEGER REFERENCES hr_contractor_bills(id),
+  paid_on       DATE NOT NULL,
+  amount        NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  mode          VARCHAR(20) NOT NULL DEFAULT 'bank_transfer',
+  ref           VARCHAR(60),
+  note          VARCHAR(200),
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hr_contractor_payments_c ON hr_contractor_payments (contractor_id, paid_on);

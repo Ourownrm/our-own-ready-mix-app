@@ -57,6 +57,7 @@ import quotationRoutes from "./routes/quotations.js";
 import accountsLedgerRoutes from "./routes/accountsLedger.js";
 import quotationImportRoutes from "./routes/quotationImport.js";
 import hrAdvanceRoutes from "./routes/hrAdvances.js";
+import contractLabourRoutes from "./routes/contractLabour.js";
 // Round 146 — Super Admin per-user access control.
 import superAdminRoutes from "./routes/superAdmin.js";
 import solitaireRoutes, { printRouter as mixtrackPrintRouter } from "./routes/solitaire.js";
@@ -217,6 +218,8 @@ app.use("/api/admin-dashboard", adminDashboardRoutes);
 // Round 204 — Accounts module: quotations, price lists, settings.
 app.use("/api/quotation-import", quotationImportRoutes);
 app.use("/api/hr-advance-requests", hrAdvanceRoutes);
+// Round 211 — contract labour: contractors, pump gangs, contractor bills.
+app.use("/api/contract-labour", contractLabourRoutes);
 app.use("/api/quotations", quotationRoutes);
 app.use("/api/accounts", accountsLedgerRoutes);
 app.use("/api/super-admin", superAdminRoutes);

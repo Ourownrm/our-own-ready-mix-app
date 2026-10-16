@@ -40,7 +40,8 @@ const intOrNull = (v) => (v === null || v === undefined || v === "" ? null : Num
 const bool = (v, dflt) => (v === undefined ? dflt : !!v);
 
 const SALARY_FIELDS = ["salary_basic", "salary_da", "salary_hra", "salary_conveyance", "salary_special",
-  "pf_applicable", "esi_applicable", "daily_rate", "service_charge_pct", "incentive_basis", "incentive_min_m3", "incentive_rate", "salesperson_id", "ot_eligible"];
+  "pf_applicable", "esi_applicable", "daily_rate", "service_charge_pct", "incentive_basis", "incentive_min_m3", "incentive_rate", "salesperson_id", "ot_eligible",
+  "contract_basis", "monthly_rate"];
 
 // Round 209 — identity and bank details on the employee file (owner). Seen and
 // changed only with hr.employee-ids (Administrator by default).
@@ -159,6 +160,8 @@ function employeeFields(b, { withSalary }) {
     designation: text(b.designation, 80),
     employment_type: b.employment_type === "contract" ? "contract" : "payroll",
     contractor_name: text(b.contractor_name, 120),
+    // Round 211 — the contractor is a record now (Contract labour → Contractors).
+    contractor_id: b.employment_type === "contract" ? intOrNull(b.contractor_id) : null,
     date_of_joining: date(b.date_of_joining),
     date_of_leaving: date(b.date_of_leaving),
     attendance_source: ["machine", "app", "none"].includes(b.attendance_source) ? b.attendance_source : "machine",
@@ -180,6 +183,7 @@ function employeeFields(b, { withSalary }) {
       salary_conveyance: money(b.salary_conveyance), salary_special: money(b.salary_special),
       pf_applicable: bool(b.pf_applicable, true), esi_applicable: bool(b.esi_applicable, true),
       daily_rate: money(b.daily_rate), service_charge_pct: money(b.service_charge_pct),
+      contract_basis: b.contract_basis === "monthly" ? "monthly" : "daily", monthly_rate: money(b.monthly_rate),
       incentive_basis: ["none", "own_production", "plant_production", "own_sales_paid"].includes(b.incentive_basis) ? b.incentive_basis : "none",
       salesperson_id: intOrNull(b.salesperson_id),
       ot_eligible: bool(b.ot_eligible, false),
@@ -193,6 +197,7 @@ router.post("/employees", requirePermission("hr.employees", "create"), async (re
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
     const f = employeeFields(req.body || {}, { withSalary });
+    if (f.contractor_id) f.contractor_name = (await query(`SELECT name FROM hr_contractors WHERE id = $1`, [f.contractor_id])).rows[0]?.name || f.contractor_name;
     if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
     if (!f.emp_code || !f.name) return res.status(400).json({ error: "Employee code and name are required." });
     f.is_active = !f.date_of_leaving;
@@ -214,6 +219,7 @@ router.patch("/employees/:id", requirePermission("hr.employees", "edit"), async 
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
     const f = employeeFields(req.body || {}, { withSalary });
+    if (f.contractor_id) f.contractor_name = (await query(`SELECT name FROM hr_contractors WHERE id = $1`, [f.contractor_id])).rows[0]?.name || f.contractor_name;
     if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
     if (!f.emp_code || !f.name) return res.status(400).json({ error: "Employee code and name are required." });
     // Someone who has left is inactive, so their machine number frees up for a new joiner.
@@ -1267,7 +1273,7 @@ router.get("/payroll", requirePermission("hr.payroll", "view"), async (req, res)
       query(`SELECT r.*, cu.name AS computed_by_name, lu.name AS locked_by_name FROM hr_payroll_runs r
              LEFT JOIN users cu ON cu.id = r.computed_by LEFT JOIN users lu ON lu.id = r.locked_by WHERE r.month = $1`, [month]),
       query(`SELECT l.*, to_char(l.paid_on, 'YYYY-MM-DD') AS paid_on, e.name, e.emp_code, e.designation, e.employment_type,
-                    e.contractor_name, d.name AS department
+                    e.contractor_name, e.contractor_id, d.name AS department
              FROM hr_payroll_lines l JOIN hr_employees e ON e.id = l.employee_id LEFT JOIN hr_departments d ON d.id = e.department_id
              WHERE l.month = $1 ORDER BY e.employment_type, d.sort_order NULLS LAST, e.name`, [month]),
     ]);
@@ -1374,7 +1380,9 @@ router.post("/payroll/:month/pay-all", requirePermission("hr.payroll", "edit"), 
     const { rowCount } = await query(
       `UPDATE hr_payroll_lines SET paid_amount = net_pay, paid_on = $1, paid_mode = $2, paid_ref = $3, paid_by = $4
        WHERE month = $5 AND paid_amount IS NULL AND net_pay > 0
-         AND ($6::text IS NULL OR employee_id IN (SELECT id FROM hr_employees WHERE employment_type = $6))`,
+         AND ($6::text IS NULL OR employee_id IN (SELECT id FROM hr_employees WHERE employment_type = $6))
+         -- Round 211 — contract workers with a contractor are paid through the contractor's bill
+         AND employee_id NOT IN (SELECT id FROM hr_employees WHERE employment_type = 'contract' AND contractor_id IS NOT NULL)`,
       [on, mode, text(req.body?.paid_ref, 100), req.user.id, month, ["payroll", "contract"].includes(req.body?.only) ? req.body.only : null]);
     res.json({ ok: true, paid: rowCount });
   } catch (err) { friendly(err, res, "Could not record the payments."); }

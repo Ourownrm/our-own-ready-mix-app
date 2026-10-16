@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { setOrderGang } from "../lib/gangs.js";
 import { resolveChargeDecisions, notifyWaivers } from "../lib/orderCharges.js";
 import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { pool, query } from "../db.js";
@@ -478,6 +479,8 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
      cd.part_load_applicable, cd.part_load_charge_amount,
      resolvedMixDesignId, defaultQcEngineerId, resolvedBillingAddressId, cd.part_load_basis, cd.pump_charge_waiver_reason, cd.part_load_waiver_reason, cd.price_option]
   );
+  // Round 211 — the pump gang, when one was chosen.
+  await setOrderGang(rows[0].id, req.body?.pump_gang_id, req.user.id);
 
   await query(
     "UPDATE bookings SET status = 'converted', converted_order_id = $1 WHERE id = $2",

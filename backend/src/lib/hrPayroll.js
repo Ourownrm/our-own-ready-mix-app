@@ -97,6 +97,9 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
   // whoever approves a paid leave type for one has decided to pay it).
   const leavePaid = s.leave_paid || 0;
   if (emp.attendance_source === "none") paidDays = daysEmployed;
+  // Round 211 — a contract worker on a monthly rate is paid weekly offs and
+  // holidays like staff; on a daily rate, only the days worked.
+  else if (contract && emp.contract_basis === "monthly") paidDays = s.present + s.half * 0.5 + s.off + s.holiday + missedPaid + leavePaid;
   else if (contract) paidDays = s.present + s.half * 0.5 + missedPaid + leavePaid;
   else paidDays = s.present + s.half * 0.5 + s.off + s.holiday + missedPaid + leavePaid;
   paidDays = Math.min(paidDays, daysEmployed);
@@ -112,12 +115,13 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
     conveyance: Number(emp.salary_conveyance || 0), special: Number(emp.salary_special || 0),
   };
   const grossMonthly = comp.basic + comp.da + comp.hra + comp.conveyance + comp.special;
-  const dailyRate = Number(emp.daily_rate || 0);
+  const monthlyContract = contract && emp.contract_basis === "monthly";
+  const dailyRate = monthlyContract ? r2(Number(emp.monthly_rate || 0) / daysInMonth) : Number(emp.daily_rate || 0);
   if (contract ? !dailyRate : !grossMonthly) warn.push("pay not set on the employee record");
 
   const f = daysInMonth ? paidDays / daysInMonth : 0;
   const earned = contract
-    ? { wages: r2(dailyRate * paidDays) }
+    ? { wages: monthlyContract ? r2(Number(emp.monthly_rate || 0) * f) : r2(dailyRate * paidDays) }
     : Object.fromEntries(Object.entries(comp).map(([k, v]) => [k, r2(v * f)]));
   const earnedGross = contract ? earned.wages : r2(Object.values(earned).reduce((a, b) => a + b, 0));
   const earnedBasicDa = contract ? 0 : r2(earned.basic + earned.da);
@@ -222,7 +226,12 @@ export async function computePayroll(month, { employeeIds = null } = {}) {
   ]);
   const manual = new Map(manualRes.rows.map((m) => [m.employee_id, m]));
   const dates = datesBetween(from, to);
-  const lines = reg.employees.map((att) => {
+  // Round 211 — pump gang members are paid through the gang's monthly amount
+  // on the contractor's bill, not through payroll.
+  const gangRes = await query(
+    `SELECT DISTINCT employee_id FROM hr_gang_members WHERE from_date <= $2::date AND (to_date IS NULL OR to_date >= $1::date)`, [from, to]);
+  const inGang = new Set(gangRes.rows.map((r) => r.employee_id));
+  const lines = reg.employees.filter((att) => !inGang.has(att.id)).map((att) => {
     const emp = att.row;
     const out = payLine({ emp, att, daysInMonth: days, datesInMonth: dates, rules, data, manual: manual.get(emp.id) || {} });
     return { employee_id: emp.id, ...out };

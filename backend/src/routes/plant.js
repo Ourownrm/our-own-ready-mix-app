@@ -1085,6 +1085,112 @@ router.get("/production-vs-billed", requirePermission("plant.vs-billed", "view")
   }
 });
 
+// ---------------------------------------------------------------------------
+// ROUND 211 — plant vs billed LOAD BY LOAD for one day (owner, 15 Oct 2026):
+// "plant vs billed is for the total production of the day, I want to see it
+// load by load — compare it with truck number, time / sequence of loading."
+//
+// Each plant load (one MCI370 batch number = one truck load, its batches
+// summed) is paired with a delivery challan of the SAME truck (registration
+// compared without spaces / dashes), in loading order: for each truck the
+// loads and challans are walked in time order and paired when they are within
+// two hours of each other. What is left is then paired across trucks when the
+// times are within 20 minutes (flagged "truck differs"). Anything still left
+// is a plant load with no challan, or a challan with no plant load.
+// ---------------------------------------------------------------------------
+const PAIR_SAME_TRUCK_MIN = 120;
+const PAIR_OTHER_TRUCK_MIN = 20;
+export function pairLoads(loads, tickets) {
+  const rows = [];
+  const usedL = new Set(), usedT = new Set();
+  const keys = new Set([...loads.map((l) => l.key), ...tickets.map((t) => t.key)].filter(Boolean));
+  for (const k of keys) {
+    const L = loads.filter((l) => l.key === k).sort((a, b) => a.ms - b.ms);
+    const T = tickets.filter((t) => t.key === k).sort((a, b) => a.ms - b.ms);
+    let i = 0, j = 0;
+    while (i < L.length && j < T.length) {
+      const gap = (T[j].ms - L[i].ms) / 60000;
+      if (Math.abs(gap) <= PAIR_SAME_TRUCK_MIN) { rows.push({ load: L[i], ticket: T[j], gap_min: Math.round(gap) }); usedL.add(L[i]); usedT.add(T[j]); i++; j++; }
+      else if (L[i].ms < T[j].ms) i++;
+      else j++;
+    }
+  }
+  const leftL = loads.filter((l) => !usedL.has(l)).sort((a, b) => a.ms - b.ms);
+  const leftT = tickets.filter((t) => !usedT.has(t)).sort((a, b) => a.ms - b.ms);
+  for (const l of leftL) {
+    let best = null;
+    for (const t of leftT) {
+      if (usedT.has(t)) continue;
+      const gap = Math.abs(t.ms - l.ms) / 60000;
+      if (gap <= PAIR_OTHER_TRUCK_MIN && (!best || gap < best.gap)) best = { t, gap };
+    }
+    if (best) { rows.push({ load: l, ticket: best.t, gap_min: Math.round((best.t.ms - l.ms) / 60000), truck_differs: true }); usedL.add(l); usedT.add(best.t); }
+  }
+  for (const l of loads) if (!usedL.has(l)) rows.push({ load: l, ticket: null });
+  for (const t of tickets) if (!usedT.has(t)) rows.push({ load: null, ticket: t });
+  rows.sort((a, b) => Math.min(a.load?.ms ?? Infinity, a.ticket?.ms ?? Infinity) - Math.min(b.load?.ms ?? Infinity, b.ticket?.ms ?? Infinity));
+  // Sequence: the n-th load of the day for that truck (plant side, else challan side).
+  const seq = new Map();
+  for (const r of rows) {
+    const k = r.load?.key || r.ticket?.key || "";
+    const n = (seq.get(k) || 0) + 1; seq.set(k, n);
+    r.truck_seq = k ? n : null;
+    const p = r.load && !r.load.omitted ? r.load.m3 : 0;
+    const b = r.ticket ? r.ticket.m3 : 0;
+    r.difference_m3 = Math.round((p - b) * 100) / 100;
+    r.status = !r.ticket ? "plant_only" : !r.load ? "challan_only" : r.truck_differs ? "truck_differs"
+      : Math.abs(r.difference_m3) > 0.1 ? "quantity_differs" : "ok";
+  }
+  return rows;
+}
+
+router.get("/production-vs-billed/loads", requirePermission("plant.vs-billed", "view"), async (req, res) => {
+  const day = ISO_DATE.test(req.query.date || "") ? req.query.date : null;
+  if (!day) return res.status(400).json({ error: "Give the day." });
+  try {
+    const [loadRes, ticketRes] = await Promise.all([
+      query(
+        `SELECT pb.plant_no, pb.batch_year, pb.batch_no, min(pb.batched_at) AS started_at, max(pb.batched_at) AS finished_at,
+                extract(epoch FROM min(pb.batched_at)) * 1000 AS ms, count(*)::int AS batches, sum(pb.batch_qty_m3)::float AS m3,
+                max(pb.truck_no) AS truck_no, ${TRUCK_KEY("max(pb.truck_no)")} AS key, max(pb.recipe_code) AS recipe_code, max(pb.recipe_name) AS recipe_name,
+                max(pb.customer_code) AS customer_code, max(pb.site_name) AS site_name, max(pb.order_no) AS order_no,
+                bool_or(NOT ${loadKept("pb.")}) AS omitted
+           FROM plant_batches pb WHERE pb.batch_date = $1
+          GROUP BY pb.plant_no, pb.batch_year, pb.batch_no`, [day]),
+      // Same challans as the day total: not cancelled. Loading time = the
+      // batching-completed event when there is one, else when it was raised.
+      query(
+        `SELECT dt.id, dt.ticket_number, dt.loaded_quantity_m3::float AS m3, dt.status, t.truck_number AS truck_no, ${TRUCK_KEY("t.truck_number")} AS key,
+                COALESCE(ev.t, dt.created_at) AS loaded_at, extract(epoch FROM COALESCE(ev.t, dt.created_at)) * 1000 AS ms,
+                c.name AS customer_name, s.name AS site_name, mg.name AS mix_grade_name
+           FROM delivery_tickets dt
+           JOIN customer_orders o ON o.id = dt.order_id
+           JOIN customers c ON c.id = o.customer_id
+           JOIN sites s ON s.id = o.site_id
+           JOIN mix_grades mg ON mg.id = o.mix_grade_id
+           LEFT JOIN trucks t ON t.id = dt.truck_id
+           LEFT JOIN LATERAL (SELECT min(te.event_time) AS t FROM trip_events te WHERE te.ticket_id = dt.id
+                                 AND te.event_type IN ('batching_completed', 'batching_started')) ev ON true
+          WHERE dt.ticket_date = $1 AND dt.status <> 'cancelled'`, [day]),
+    ]);
+    const loads = loadRes.rows.map((l) => ({ ...l, ms: Number(l.ms) || 0, m3: Math.round((l.m3 || 0) * 100) / 100 }));
+    const tickets = ticketRes.rows.map((t) => ({ ...t, ms: Number(t.ms) || 0, m3: Number(t.m3) || 0 }));
+    const rows = pairLoads(loads, tickets);
+    const n = (s) => rows.filter((r) => r.status === s).length;
+    const plantM3 = loads.filter((l) => !l.omitted).reduce((a, l) => a + l.m3, 0);
+    const billedM3 = tickets.reduce((a, t) => a + t.m3, 0);
+    res.json({
+      date: day, rows,
+      totals: { loads: loads.length, challans: tickets.length, plant_m3: Math.round(plantM3 * 100) / 100, billed_m3: Math.round(billedM3 * 100) / 100,
+                difference_m3: Math.round((plantM3 - billedM3) * 100) / 100,
+                ok: n("ok"), quantity_differs: n("quantity_differs"), truck_differs: n("truck_differs"), plant_only: n("plant_only"), challan_only: n("challan_only") },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the day's loads." });
+  }
+});
+
 // mix_designs data the lab already maintains, brought onto the plant side:
 // Details (one design in full), Comparison (every grade's standard design side
 // by side) and Costing (design kg/m³ vs what the plant actually weighed, each
