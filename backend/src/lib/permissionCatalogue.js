@@ -507,6 +507,10 @@ export const CATALOGUE = [
     { administrator: VC, accountant: VC }),
   f("accounts.receipt-cancel", "accounts", "Cancel a posted receipt", E,
     { administrator: E }),
+  // Round 212 — correct a wrong receipt / payment from the customer ledger
+  // (every change is logged with the reason).
+  f("accounts.receipt-correct", "accounts", "Edit / delete a payment entry in the customer ledger", ["edit", "delete"],
+    { administrator: ["edit", "delete"], accountant: ["edit", "delete"] }),
   f("accounts.rate-migration", "accounts", "Move the rate file into price lists (one time)", VE,
     { administrator: VE }),
   f("accounts.quotation-settings", "accounts", "Quotation settings and terms library", VE,
@@ -826,7 +830,7 @@ export const MODULES = [
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
-      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel", "accounts.quotation-import",
+      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
       "accounts.quotation-costing", "accounts.price-list-enable"],
   },
   {

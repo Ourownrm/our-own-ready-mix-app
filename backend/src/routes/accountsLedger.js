@@ -276,11 +276,14 @@ router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
               -- Round 206 — what the money was set against, so a payment of the
               -- opening balance is visible on the ledger.
               CONCAT_WS(' · ', r.reference_number, r.bank_account, r.narration, r.remarks,
-                (SELECT 'against ' || string_agg(COALESCE(dt.ticket_number, 'Opening balance'), ', ' ORDER BY p.id)
-                   FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN delivery_tickets dt ON dt.id = i.ticket_id
-                  WHERE p.receipt_id = r.id),
+                -- Round 212 — each due named once (a corrected receipt can pay one in parts).
+                (SELECT 'against ' || string_agg(lbl, ', ' ORDER BY first_id) FROM (
+                   SELECT COALESCE(dt.ticket_number, 'Opening balance') AS lbl, MIN(p.id) AS first_id
+                     FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN delivery_tickets dt ON dt.id = i.ticket_id
+                    WHERE p.receipt_id = r.id GROUP BY 1) q),
                 CASE WHEN r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) > 0.01
-                     THEN 'advance ₹' || to_char(r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0), 'FM99,99,99,990') END),
+                     THEN 'advance ₹' || to_char(r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0), 'FM99,99,99,990') END,
+                CASE WHEN r.edited_at IS NOT NULL THEN 'corrected' END),
               0, r.amount, 2
          FROM customer_receipts r WHERE r.customer_id = $1 AND r.cancelled_at IS NULL
        UNION ALL
@@ -378,21 +381,10 @@ router.post("/receipts/:id(\\d+)/cancel", requirePermission("accounts.receipt-ca
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query(
-      `UPDATE customer_receipts SET cancelled_at = now(), cancelled_by = $2, cancel_reason = $3
-        WHERE id = $1 AND cancelled_at IS NULL RETURNING bank_line_id`,
-      [req.params.id, req.user.id, reason]
-    );
-    if (!rows.length) {
+    const ok = await cancelReceipt(client, Number(req.params.id), req.user.id, reason);
+    if (!ok) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Receipt not found or already cancelled." });
-    }
-    await client.query(`DELETE FROM payments WHERE receipt_id = $1`, [req.params.id]);
-    if (rows[0].bank_line_id) {
-      await client.query(
-        `UPDATE bank_statement_lines SET status = 'open', receipt_id = NULL, settled_by = NULL, settled_at = NULL WHERE id = $1`,
-        [rows[0].bank_line_id]
-      );
     }
     await client.query("COMMIT");
     res.json({ ok: true });
@@ -402,6 +394,271 @@ router.post("/receipts/:id(\\d+)/cancel", requirePermission("accounts.receipt-ca
   } finally {
     client.release();
   }
+});
+
+// Cancels a receipt: its allocations go, a bank line goes back to "To post",
+// and any other advance of the customer is set against what this freed.
+// The change is logged. Returns false if there is no such live receipt.
+async function cancelReceipt(client, id, userId, reason) {
+  const { rows } = await client.query(
+    `UPDATE customer_receipts SET cancelled_at = now(), cancelled_by = $2, cancel_reason = $3
+      WHERE id = $1 AND cancelled_at IS NULL
+      RETURNING id, customer_id, receipt_date::text AS receipt_date, amount, mode::text AS mode, reference_number, remarks, bank_line_id`,
+    [id, userId, reason]
+  );
+  if (!rows.length) return false;
+  const r = rows[0];
+  await client.query(`DELETE FROM payments WHERE receipt_id = $1`, [id]);
+  if (r.bank_line_id) {
+    await client.query(
+      `UPDATE bank_statement_lines SET status = 'open', receipt_id = NULL, settled_by = NULL, settled_at = NULL WHERE id = $1`,
+      [r.bank_line_id]
+    );
+  }
+  await logCorrection(client, { kind: "receipt", id, customerId: r.customer_id, action: "delete", before: receiptView(r), after: null, reason, userId });
+  await applyAdvances(client, r.customer_id);
+  return true;
+}
+
+// ===========================================================================
+// Round 212 — correcting a wrong payment entry from the customer ledger
+// (owner, 16 Oct 2026). Receipts are edited in place and re-set against the
+// dues; a delete cancels the receipt (kept, hidden). Old-style payments
+// (entered before receipts existed) are edited or removed. Every change is
+// logged with the values before / after and the reason.
+// ===========================================================================
+const CORRECT_EDIT = requirePermission("accounts.receipt-correct", "edit");
+const CORRECT_DELETE = requirePermission("accounts.receipt-correct", "delete");
+
+const receiptView = (r) => ({
+  customer_id: r.customer_id, date: r.receipt_date, amount: r2(r.amount), mode: r.mode,
+  reference_number: r.reference_number || null, remarks: r.remarks || null,
+});
+const paymentView = (p) => ({
+  date: p.payment_date, amount: r2(p.amount), mode: p.mode,
+  reference_number: p.reference_number || null, remarks: p.remarks || null,
+});
+
+async function logCorrection(client, { kind, id, customerId, action, before, after, reason, userId }) {
+  await client.query(
+    `INSERT INTO customer_ledger_corrections (entry_kind, entry_id, customer_id, action, before_value, after_value, reason, done_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [kind, id, customerId, action, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null, reason, userId]
+  );
+}
+
+const clean = (v, max) => { const t = String(v ?? "").trim(); return t ? t.slice(0, max) : null; };
+
+// One entry as stored, for the edit form.
+router.get("/ledger/entries/receipt/:id(\\d+)", CORRECT_EDIT, async (req, res) => {
+  const { rows } = await query(
+    `SELECT r.id, r.customer_id, c.name AS customer_name, r.receipt_date::text AS date, r.amount, r.mode::text AS mode,
+            r.reference_number, r.remarks, r.narration, r.bank_account, r.bank_line_id,
+            COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) AS allocated
+       FROM customer_receipts r JOIN customers c ON c.id = r.customer_id
+      WHERE r.id = $1 AND r.cancelled_at IS NULL`,
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Receipt not found or already deleted." });
+  res.json({ kind: "receipt", ...rows[0], from_bank: !!rows[0].bank_line_id });
+});
+
+router.get("/ledger/entries/payment/:id(\\d+)", CORRECT_EDIT, async (req, res) => {
+  const { rows } = await query(
+    `SELECT p.id, COALESCE(i.customer_id, b.customer_id) AS customer_id, p.payment_date::text AS date, p.amount, p.mode::text AS mode,
+            p.reference_number, p.remarks, p.invoice_id, p.opening_balance_id,
+            CASE WHEN p.opening_balance_id IS NOT NULL THEN 'Opening balance' ELSE dt.ticket_number END AS against
+       FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN delivery_tickets dt ON dt.id = i.ticket_id
+       LEFT JOIN customer_opening_balances b ON b.id = p.opening_balance_id
+      WHERE p.id = $1 AND p.receipt_id IS NULL`,
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Payment not found." });
+  res.json({ kind: "payment", ...rows[0] });
+});
+
+// Edit a receipt. A receipt from a bank statement keeps its date and amount
+// (they are the bank's) — delete it and post the bank line again for those.
+router.post("/ledger/entries/receipt/:id(\\d+)/edit", CORRECT_EDIT, async (req, res) => {
+  const b = req.body || {};
+  const reason = clean(b.reason, 300);
+  if (!reason) return res.status(400).json({ error: "Give the reason for the correction." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT id, customer_id, receipt_date::text AS receipt_date, amount, mode::text AS mode, reference_number, remarks, bank_line_id
+         FROM customer_receipts WHERE id = $1 AND cancelled_at IS NULL FOR UPDATE`,
+      [req.params.id]
+    );
+    const old = rows[0];
+    if (!old) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Receipt not found or already deleted." }); }
+    const next = {
+      customer_id: b.customer_id ? Number(b.customer_id) : old.customer_id,
+      receipt_date: b.date ?? old.receipt_date,
+      amount: b.amount != null && b.amount !== "" ? r2(b.amount) : r2(old.amount),
+      mode: b.mode ?? old.mode,
+      reference_number: b.reference_number !== undefined ? clean(b.reference_number, 100) : old.reference_number,
+      remarks: b.remarks !== undefined ? clean(b.remarks, 500) : old.remarks,
+    };
+    const bad = (msg, code = 400) => client.query("ROLLBACK").then(() => res.status(code).json({ error: msg }));
+    if (!ISO.test(next.receipt_date || "")) return bad("Enter the date received.");
+    if (!(next.amount > 0)) return bad("Enter the amount received.");
+    if (!MODES.includes(next.mode)) return bad("Choose how it was paid.");
+    if (old.bank_line_id && (next.receipt_date !== old.receipt_date || Math.abs(next.amount - Number(old.amount)) > 0.005)) {
+      return bad("This receipt came from a bank statement — its date and amount are the bank's. To change them, delete the receipt and post the bank line again.");
+    }
+    if (next.customer_id !== old.customer_id) {
+      const { rows: c } = await client.query(`SELECT 1 FROM customers WHERE id = $1`, [next.customer_id]);
+      if (!c.length) return bad("Customer not found.");
+    }
+    const before = receiptView(old);
+    const after = receiptView({ ...next });
+    if (JSON.stringify(before) === JSON.stringify(after)) return bad("Nothing was changed.");
+
+    // Take the receipt off the dues it paid, change it, and set it (and any
+    // other advance of the customer) against the dues again, oldest first.
+    await client.query(`DELETE FROM payments WHERE receipt_id = $1`, [old.id]);
+    await client.query(
+      `UPDATE customer_receipts SET customer_id = $2, receipt_date = $3, amount = $4, mode = $5, reference_number = $6, remarks = $7,
+              edited_at = now(), edited_by = $8
+        WHERE id = $1`,
+      [old.id, next.customer_id, next.receipt_date, next.amount, next.mode, next.reference_number, next.remarks, req.user.id]
+    );
+    await logCorrection(client, { kind: "receipt", id: old.id, customerId: next.customer_id, action: "edit", before, after, reason, userId: req.user.id });
+    if (next.customer_id !== old.customer_id) {
+      // Also logged under the customer it was taken from.
+      await logCorrection(client, { kind: "receipt", id: old.id, customerId: old.customer_id, action: "edit", before, after, reason, userId: req.user.id });
+      await applyAdvances(client, old.customer_id);
+    }
+    await applyAdvances(client, next.customer_id);
+    const { rows: left } = await client.query(
+      `SELECT r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) AS free,
+              (SELECT string_agg(lbl, ', ' ORDER BY first_id) FROM (
+                 SELECT COALESCE(dt.ticket_number, 'Opening balance') AS lbl, MIN(p.id) AS first_id
+                   FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN delivery_tickets dt ON dt.id = i.ticket_id
+                  WHERE p.receipt_id = r.id GROUP BY 1) q) AS against
+         FROM customer_receipts r WHERE r.id = $1`,
+      [old.id]
+    );
+    await client.query("COMMIT");
+    res.json({ ok: true, moved: next.customer_id !== old.customer_id, against: left[0].against, advance: r2(Math.max(0, Number(left[0].free))) });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/ledger/entries/receipt/:id(\\d+)/delete", CORRECT_DELETE, async (req, res) => {
+  const reason = clean(req.body?.reason, 300);
+  if (!reason) return res.status(400).json({ error: "Give the reason for deleting." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const ok = await cancelReceipt(client, Number(req.params.id), req.user.id, reason);
+    if (!ok) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Receipt not found or already deleted." }); }
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// Old-style payment (set straight against one invoice / opening balance).
+// It cannot be raised above what that item still owes.
+router.post("/ledger/entries/payment/:id(\\d+)/edit", CORRECT_EDIT, async (req, res) => {
+  const b = req.body || {};
+  const reason = clean(b.reason, 300);
+  if (!reason) return res.status(400).json({ error: "Give the reason for the correction." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT p.*, p.payment_date::text AS payment_date, p.mode::text AS mode, COALESCE(i.customer_id, ob.customer_id) AS customer_id,
+              COALESCE(i.total_amount, ob.amount)
+                - COALESCE((SELECT SUM(x.amount) FROM payments x WHERE x.id <> p.id
+                              AND (x.invoice_id = p.invoice_id OR x.opening_balance_id = p.opening_balance_id)), 0) AS room
+         FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN customer_opening_balances ob ON ob.id = p.opening_balance_id
+        WHERE p.id = $1 AND p.receipt_id IS NULL FOR UPDATE OF p`,
+      [req.params.id]
+    );
+    const old = rows[0];
+    if (!old) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Payment not found." }); }
+    const next = {
+      payment_date: b.date ?? old.payment_date,
+      amount: b.amount != null && b.amount !== "" ? r2(b.amount) : r2(old.amount),
+      mode: b.mode ?? old.mode,
+      reference_number: b.reference_number !== undefined ? clean(b.reference_number, 100) : old.reference_number,
+      remarks: b.remarks !== undefined ? clean(b.remarks, 500) : old.remarks,
+    };
+    const bad = (msg) => client.query("ROLLBACK").then(() => res.status(400).json({ error: msg }));
+    if (!ISO.test(next.payment_date || "")) return bad("Enter the date received.");
+    if (!(next.amount > 0)) return bad("Enter the amount — to remove the payment, delete it.");
+    if (!MODES.includes(next.mode)) return bad("Choose how it was paid.");
+    if (next.amount > Number(old.room) + 0.005) return bad(`Only ₹${r2(old.room)} is owed on what this payment is against. For more, record a receipt — the extra is kept as an advance.`);
+    const before = paymentView(old);
+    const after = paymentView(next);
+    if (JSON.stringify(before) === JSON.stringify(after)) return bad("Nothing was changed.");
+    await client.query(
+      `UPDATE payments SET payment_date = $2, amount = $3, mode = $4, reference_number = $5, remarks = $6 WHERE id = $1`,
+      [old.id, next.payment_date, next.amount, next.mode, next.reference_number, next.remarks]
+    );
+    await logCorrection(client, { kind: "payment", id: old.id, customerId: old.customer_id, action: "edit", before, after, reason, userId: req.user.id });
+    if (next.amount < Number(old.amount)) await applyAdvances(client, old.customer_id);
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/ledger/entries/payment/:id(\\d+)/delete", CORRECT_DELETE, async (req, res) => {
+  const reason = clean(req.body?.reason, 300);
+  if (!reason) return res.status(400).json({ error: "Give the reason for deleting." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `DELETE FROM payments p USING (SELECT p2.id, COALESCE(i.customer_id, ob.customer_id) AS customer_id
+                                       FROM payments p2 LEFT JOIN invoices i ON i.id = p2.invoice_id
+                                       LEFT JOIN customer_opening_balances ob ON ob.id = p2.opening_balance_id) c
+        WHERE p.id = $1 AND p.receipt_id IS NULL AND c.id = p.id
+        RETURNING p.id, c.customer_id, p.payment_date::text AS payment_date, p.amount, p.mode::text AS mode, p.reference_number, p.remarks`,
+      [req.params.id]
+    );
+    if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Payment not found." }); }
+    const p = rows[0];
+    await logCorrection(client, { kind: "payment", id: p.id, customerId: p.customer_id, action: "delete", before: paymentView(p), after: null, reason, userId: req.user.id });
+    await applyAdvances(client, p.customer_id);
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// The corrections made on one customer's ledger, newest first.
+router.get("/ledger/:customerId(\\d+)/corrections", LEDGER_VIEW, async (req, res) => {
+  const { rows } = await query(
+    `SELECT k.id, k.entry_kind, k.entry_id, k.action, k.before_value, k.after_value, k.reason, k.done_at, u.name AS done_by_name
+       FROM customer_ledger_corrections k LEFT JOIN users u ON u.id = k.done_by
+      WHERE k.customer_id = $1 ORDER BY k.done_at DESC, k.id DESC LIMIT 200`,
+    [req.params.customerId]
+  );
+  const ids = [...new Set(rows.flatMap((r) => [r.before_value?.customer_id, r.after_value?.customer_id]).filter(Boolean))];
+  const names = ids.length ? (await query(`SELECT id, name FROM customers WHERE id = ANY($1::int[])`, [ids])).rows : [];
+  res.json({ rows, customers: Object.fromEntries(names.map((c) => [c.id, c.name])) });
 });
 
 // ===========================================================================

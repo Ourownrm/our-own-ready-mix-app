@@ -4253,3 +4253,20 @@ CREATE TABLE IF NOT EXISTS hr_contractor_payments (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS hr_contractor_payments_c ON hr_contractor_payments (contractor_id, paid_on);
+
+-- Round 212 — edit / delete payment entries in the customer ledger, with a log.
+CREATE TABLE IF NOT EXISTS customer_ledger_corrections (
+  id           SERIAL PRIMARY KEY,
+  entry_kind   VARCHAR(10) NOT NULL CHECK (entry_kind IN ('receipt','payment')),
+  entry_id     INTEGER NOT NULL,
+  customer_id  INTEGER REFERENCES customers(id),
+  action       VARCHAR(10) NOT NULL CHECK (action IN ('edit','delete')),
+  before_value JSONB,
+  after_value  JSONB,
+  reason       TEXT NOT NULL,
+  done_by      INTEGER REFERENCES users(id),
+  done_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_corrections_customer ON customer_ledger_corrections(customer_id, done_at);
+-- (customer_receipts.edited_at / edited_by are added by round212Schema.js,
+-- after the Accounts tables exist.)

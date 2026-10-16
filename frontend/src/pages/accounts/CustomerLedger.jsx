@@ -8,6 +8,7 @@ import { usePermissions } from "../../lib/PermissionContext.jsx";
 import { inr2, fmtDate } from "../../lib/quotationTerms.js";
 import { TH, TD, NUM, row, money, Banner, Empty, Table } from "./ui.jsx";
 import { ReceiptModal } from "./ReceiptModal.jsx";
+import { CorrectEntryModal, CorrectionsLog } from "./CorrectEntryModal.jsx";
 
 export default function CustomerLedger({ params, go }) {
   const cid = params.get("customer_id");
@@ -66,6 +67,11 @@ function Statement({ customerId, go }) {
   const [msg, setMsg] = useState("");
   const [receipt, setReceipt] = useState(false);
   const [tick, setTick] = useState(0);
+  // Round 212 — the Accountant corrects a wrong receipt / payment here.
+  const [fix, setFix] = useState(null);
+  const canFixEdit = can("accounts.receipt-correct", "edit");
+  const canFixDelete = can("accounts.receipt-correct", "delete");
+  const canFix = canFixEdit || canFixDelete;
   useEffect(() => {
     const qs = new URLSearchParams(Object.entries(range).filter(([, v]) => v)).toString();
     apiRequest(`/accounts/ledger/${customerId}?${qs}`).then(setD).catch((e) => setError(e.message));
@@ -125,12 +131,12 @@ function Statement({ customerId, go }) {
           {Object.entries(d.aging).map(([k, v]) => <span key={k} style={{ marginRight: 10, color: k.startsWith("Over") && v > 0 ? "var(--alert-red)" : undefined }}>{k}: <b>{money(v)}</b></span>)}
         </div>
       </div>
-      <Table minWidth={760} head={<>
+      <Table minWidth={canFix ? 840 : 760} head={<>
         <th style={TH}>Date</th><th style={TH}>Particulars</th><th style={TH}>Details</th>
-        <th style={{ ...TH, textAlign: "right" }}>Debit</th><th style={{ ...TH, textAlign: "right" }}>Credit</th><th style={{ ...TH, textAlign: "right" }}>Balance</th>
+        <th style={{ ...TH, textAlign: "right" }}>Debit</th><th style={{ ...TH, textAlign: "right" }}>Credit</th><th style={{ ...TH, textAlign: "right" }}>Balance</th>{canFix && <th style={TH} />}
       </>}>
         {d.opening_balance != null && (
-          <tr style={row}><td style={TD}>{fmtDate(range.from)}</td><td style={{ ...TD, fontWeight: 600 }} colSpan={4}>Balance brought forward</td><td style={NUM}>{inr2(d.opening_balance)}</td></tr>
+          <tr style={row}><td style={TD}>{fmtDate(range.from)}</td><td style={{ ...TD, fontWeight: 600 }} colSpan={4}>Balance brought forward</td><td style={NUM}>{inr2(d.opening_balance)}</td>{canFix && <td style={TD} />}</tr>
         )}
         {d.lines.map((l) => (
           <tr key={`${l.kind}-${l.id}`} style={row}>
@@ -140,10 +146,21 @@ function Statement({ customerId, go }) {
             <td style={NUM}>{Number(l.debit) ? inr2(l.debit) : ""}</td>
             <td style={{ ...NUM, color: "var(--signal-green)" }}>{Number(l.credit) ? inr2(l.credit) : ""}</td>
             <td style={{ ...NUM, fontWeight: 600 }}>{l.balance < 0 ? `${inr2(-l.balance)} Cr` : inr2(l.balance)}</td>
+            {canFix && (
+              <td style={{ ...TD, whiteSpace: "nowrap" }}>
+                {(l.kind === "receipt" || l.kind === "payment") && <>
+                  {canFixEdit && <button type="button" style={{ fontSize: 12, padding: "3px 8px", marginRight: 4 }} onClick={() => setFix({ entry: l, mode: "edit" })}>Edit</button>}
+                  {canFixDelete && <button type="button" style={{ fontSize: 12, padding: "3px 8px", color: "var(--alert-red)" }} onClick={() => setFix({ entry: l, mode: "delete" })}>Delete</button>}
+                </>}
+              </td>
+            )}
           </tr>
         ))}
-        {!d.lines.length && <tr><td style={TD} colSpan={6}>No entries in this period.</td></tr>}
+        {!d.lines.length && <tr><td style={TD} colSpan={canFix ? 7 : 6}>No entries in this period.</td></tr>}
       </Table>
+      <CorrectionsLog customerId={customerId} tick={tick} />
+      {fix && <CorrectEntryModal entry={fix.entry} mode={fix.mode} canEdit={canFixEdit} canDelete={canFixDelete}
+        onClose={() => setFix(null)} onDone={(m) => { setFix(null); setError(""); setMsg(m); setTick((t) => t + 1); }} />}
       {receipt && <ReceiptModal customerId={customerId} onClose={() => setReceipt(false)} onDone={(r) => { setReceipt(false); setMsg(`Receipt saved${r.applied.length ? ` — set against ${r.applied.map((a) => a.label).join(", ")}` : ""}${r.advance ? `; ₹${inr2(r.advance)} kept as advance` : ""}.`); setTick((t) => t + 1); }} />}
     </>
   );
