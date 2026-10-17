@@ -842,6 +842,124 @@ function BookVsSilo() {
   );
 }
 
+// Round 214 — first in, first out for the refillable silos. From the start
+// date each silo begins with its OPENING layers (book stock at the start, in
+// the silo the material was last filled into); every draw then comes off the
+// oldest load still in, whatever the plant calls the silo. A draw past the
+// recorded loads is charged to the next load in and listed below; a batch
+// that drew from two loads is split between them automatically.
+function FifoCard({ data, busy, setBusy, setError, setNotice, reload, removeFill }) {
+  const fifo = data.fifo || { start_date: null, openings: [], overdraws: [], splits: [] };
+  const [month, setMonth] = useState(fifo.start_date ? fifo.start_date.slice(0, 7) : "");
+  const [add, setAdd] = useState({ slot: "", material_id: "", qty: "" });
+  const refill = (data.levels || []).filter((l) => l.is_refillable);
+  const label = (slot) => { const l = (data.levels || []).find((x) => x.slot === slot); return l ? (l.slot_name || l.label) : slot; };
+  const qty = (kg, o) => (o.purchase_unit && Number(o.kg_per_purchase_unit) > 0 ? `${purchaseQty(kg, o)} ${o.purchase_unit}` : fmtKg(kg));
+
+  async function rebuild(withMonth) {
+    if (!window.confirm("Rebuild the opening layers from book stock at the start date? Opening layers typed in by hand are replaced, and every batch since the start is re-charged first in, first out.")) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const body = withMonth && month ? { start_date: `${month}-01` } : {};
+      const r = await apiRequest("/plant/fifo", { method: "POST", body });
+      setNotice(`FIFO rebuilt: ${r.placed?.length || 0} opening layer(s); ${r.rows_updated} batch row(s) re-charged.`);
+      await reload();
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  }
+  async function addOpening(e) {
+    e.preventDefault();
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const r = await apiRequest("/plant/silo-fills", { method: "POST", body: { slot: add.slot, material_id: Number(add.material_id), qty_kg: Number(add.qty) * 1000, is_opening: true } });
+      setNotice(`Opening layer added. ${r.rows_updated} batch row(s) re-charged.`);
+      setAdd({ slot: "", material_id: "", qty: "" });
+      await reload();
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>First in, first out</h3>
+      <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--slate)", lineHeight: 1.55, maxWidth: 860 }}>
+        A refillable silo holding several brands (CEM3 with fly ash Thoothukudi, Udupi, JSW, Bellari…) gives out the
+        oldest load first, whatever the plant calls the silo. From the start date each silo begins with its opening
+        stock (book stock on that day); every load put in after that queues behind it.
+      </p>
+      <div className="card" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
+        <label style={{ fontSize: 11.5, color: "var(--slate)", display: "flex", flexDirection: "column", gap: 3 }}>FIFO from (1st of month)
+          <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={{ fontSize: 13 }} />
+        </label>
+        <button type="button" className="btn-primary" style={{ fontSize: 13 }} disabled={busy || !month} onClick={() => rebuild(true)}>
+          {busy ? "Working…" : "Save & rebuild from book stock"}
+        </button>
+        <span style={{ fontSize: 11.5, color: "var(--slate)", maxWidth: 380, lineHeight: 1.45 }}>
+          {fifo.start_date ? <>Running from <b>{fmtDay(fifo.start_date)} {fifo.start_date.slice(0, 4)}</b>. </> : "Not set. "}
+          Rebuilding replaces the opening layers below with book stock at that date.
+        </span>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflowX: "auto", marginBottom: 10 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ background: "var(--concrete)" }}>
+            <th style={TH}>Silo</th><th style={TH}>Opening layer (oldest first)</th><th style={{ ...TH, textAlign: "right" }}>Quantity</th><th style={TH} />
+          </tr></thead>
+          <tbody>
+            {fifo.openings.map((o) => (
+              <tr key={o.id} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={{ ...TD, fontWeight: 600 }}>{label(o.slot)} <span style={{ fontFamily: "ui-monospace, monospace", color: "var(--slate)", fontWeight: 400 }}>{o.slot}</span></td>
+                <td style={TD}>{o.material_name}</td>
+                <td style={{ ...TD, textAlign: "right", fontWeight: 600 }}>{qty(o.qty_kg, o)}</td>
+                <td style={{ ...TD, textAlign: "right" }}><button type="button" style={{ fontSize: 12 }} disabled={busy} onClick={() => removeFill(o.id)}>Remove</button></td>
+              </tr>
+            ))}
+            {!fifo.openings.length && <tr><td colSpan={4} style={{ ...TD, color: "var(--slate)" }}>No opening layers — every refillable silo starts empty at the start date.</td></tr>}
+          </tbody>
+        </table>
+        <form onSubmit={addOpening} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", padding: "10px 12px", borderTop: "1px solid var(--border)" }}>
+          <select required value={add.slot} onChange={(e) => setAdd({ ...add, slot: e.target.value })} style={{ fontSize: 13 }}>
+            <option value="">Silo…</option>
+            {refill.map((l) => <option key={l.slot} value={l.slot}>{l.slot_name || l.label} ({l.slot})</option>)}
+          </select>
+          <select required value={add.material_id} onChange={(e) => setAdd({ ...add, material_id: e.target.value })} style={{ fontSize: 13, minWidth: 186 }}>
+            <option value="">Material…</option>
+            {data.options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+          <input required type="number" min="0.01" step="0.01" placeholder="MT" value={add.qty} onChange={(e) => setAdd({ ...add, qty: e.target.value })} style={{ fontSize: 13, width: 90 }} />
+          <button type="submit" style={{ fontSize: 13 }} disabled={busy}>Add opening layer</button>
+          <span style={{ fontSize: 11.5, color: "var(--slate)" }}>Goes on top of the silo's existing opening layers.</span>
+        </form>
+      </div>
+
+      {fifo.overdraws.length > 0 && (
+        <div className="card" style={{ background: "var(--amber-bg)", marginBottom: 10, fontSize: 12.5 }}>
+          <b>Drawn past the recorded loads</b> — the plant weighed out more than was recorded going in, so the
+          extra was charged to the next load into that silo (or, with none, the last one). A load missing its
+          silo on the receipt, or stock in the silo before the start date, usually explains it.
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+            <thead><tr><th style={TH}>Date</th><th style={TH}>Silo</th><th style={{ ...TH, textAlign: "right" }}>Drawn ahead</th><th style={TH}>Charged to</th></tr></thead>
+            <tbody>
+              {fifo.overdraws.map((o, i) => (
+                <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={TD}>{fmtDay(o.on_date)}</td><td style={TD}>{label(o.slot)}</td>
+                  <td style={{ ...TD, textAlign: "right" }}>{fmtKg(o.qty_kg)}</td>
+                  <td style={TD}>{o.material_name}{o.kind === "no_later_load" ? <span style={{ color: "var(--alert-red)" }}> · no later load recorded</span> : <span style={{ color: "var(--slate)" }}> · next load in</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {fifo.splits.length > 0 && (
+        <div style={{ fontSize: 12, color: "var(--slate)", lineHeight: 1.6 }}>
+          Batches that drew from two loads, split automatically (shown as transfers in Consumption):{" "}
+          {fifo.splits.map((t, i) => <span key={i}>{i ? " · " : ""}{label(t.slot)}: {t.from_name} → {t.to_name} {fmtKg(t.qty_kg)}</span>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Silos() {
   const [data, setData] = useState(null);
   const [fills, setFills] = useState([]);
@@ -953,7 +1071,14 @@ function Silos() {
         </div>
         <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
           <div style={{ fontSize: 10, color: "var(--slate)", textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{l.slot_name || l.label}</div>
-          <div style={{ fontSize: 11.5, color: "var(--slate)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.material_name || "—"}</div>
+          {(l.contents || []).length > 1 ? (
+            // Round 214 — several brands in one silo: what is left of each, oldest first.
+            <div style={{ fontSize: 11, color: "var(--slate)", lineHeight: 1.35 }}>
+              {l.contents.map((c) => <div key={c.material_id} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name} · {levelQty(c.qty_kg, l)} {levelUnit(l)}</div>)}
+            </div>
+          ) : (
+            <div style={{ fontSize: 11.5, color: "var(--slate)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.material_name || "—"}</div>
+          )}
           <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.05, marginTop: 3, color: neg ? "var(--alert-red)" : "inherit" }}>
             {hasLevel
               ? <>{levelQty(l.level_kg, l)} <span style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>{levelUnit(l)}</span></>
@@ -1010,6 +1135,8 @@ function Silos() {
       )}
 
       <BookVsSilo />
+
+      <FifoCard data={data} busy={busy} setBusy={setBusy} setError={setError} setNotice={setNotice} reload={load} removeFill={removeFill} />
 
       {notInSilo.length > 0 && (
         <div style={{ marginBottom: 20 }}>
@@ -1100,7 +1227,7 @@ function Silos() {
                   {f.until ? fmtWhen(f.until) : <span style={{ color: "var(--signal-green)", fontWeight: 600 }}>still in</span>}
                 </td>
                 <td style={{ ...TD, fontSize: 11.5, color: "var(--slate)" }}>
-                  {f.was_empty ? "empty silo" : `${fmtKg(f.balance_before_kg)} remaining`}
+                  {f.is_opening ? <b style={{ color: "#4E6E8E" }}>opening stock</b> : f.was_empty ? "empty silo" : `${fmtKg(f.balance_before_kg)} remaining`}
                 </td>
                 <td style={{ ...TD, textAlign: "right" }}>
                   <button type="button" style={{ fontSize: 12 }} onClick={() => removeFill(f.id)}>Remove</button>

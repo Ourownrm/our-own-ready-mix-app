@@ -4,6 +4,7 @@ import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { SLOT_BY_KEY } from "../lib/plantSlots.js";
 // Round 187 — re-attribute refillable-silo batches after a receipt's fill moves.
 import { reresolveSilos } from "./plant.js";
+import { SILO_LEVELS_SQL } from "../lib/siloFifo.js";
 // Round 146 — every route below now carries BOTH its original requireRole and
 // a requirePermission. A request must satisfy both, so granting somebody a
 // permission can never let them past a role guard: this can only tighten
@@ -2261,14 +2262,7 @@ router.get("/book-vs-silo", requireAnyPermission(["material.stock", "production.
   const [book, aliases, fills, notIn, noSilo] = await Promise.all([
     bookStockRows(),
     query(`SELECT slot, slot_name, material_id, is_refillable FROM plant_silo_aliases WHERE is_ignored = false`),
-    query(
-      `SELECT f.slot,
-              (array_agg(f.material_id ORDER BY f.filled_at DESC))[1] AS current_material_id,
-              to_char(min(f.filled_at) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS first_fill,
-              sum(f.qty_kg)::numeric AS filled_kg,
-              COALESCE((SELECT sum(pm.actual_kg) FROM plant_batch_materials pm JOIN plant_batches pb ON pb.id = pm.batch_id
-                         WHERE pm.slot = f.slot AND COALESCE(pb.batched_at, pb.batch_date::timestamptz) >= min(f.filled_at)), 0)::numeric AS used_kg
-         FROM plant_silo_fills f GROUP BY f.slot`),
+    query(SILO_LEVELS_SQL),   // Round 214 — a refillable silo counts from the FIFO start
     query(
       `SELECT o.material_id, sum(r.accepted_qty_kg)::numeric AS kg
          FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id   -- receipts-raw: not_in_silo is newer than the view; pending filtered
@@ -2283,8 +2277,24 @@ router.get("/book-vs-silo", requireAnyPermission(["material.stock", "production.
   ]);
   const fillBy = new Map(fills.rows.map((f) => [f.slot, f]));
   const silosOf = new Map();
+  // Round 214 — a refillable silo holding several brands counts, per brand,
+  // what FIFO says is left of it (not the whole silo for the last brand in).
+  const { rows: contents } = await query(`SELECT slot, material_id, qty_kg FROM plant_silo_contents`).catch(() => ({ rows: [] }));
+  const contentsBy = new Map();
+  for (const c of contents) { if (!contentsBy.has(c.slot)) contentsBy.set(c.slot, []); contentsBy.get(c.slot).push(c); }
   for (const a of aliases.rows) {
     const f = fillBy.get(a.slot);
+    const parts = a.is_refillable ? (contentsBy.get(a.slot) || []) : [];
+    if (parts.length && f && Number(f.filled_kg) - Number(f.used_kg) > 0) {
+      for (const c of parts) {
+        if (!silosOf.has(c.material_id)) silosOf.set(c.material_id, []);
+        silosOf.get(c.material_id).push({
+          slot: a.slot, name: a.slot_name || SLOT_BY_KEY[a.slot]?.label || a.slot, refillable: true,
+          level_kg: Math.round(Number(c.qty_kg) * 100) / 100, first_fill: f.first_fill || null,
+        });
+      }
+      continue;
+    }
     const mid = a.is_refillable ? f?.current_material_id : a.material_id;
     if (!mid) continue;
     if (!silosOf.has(mid)) silosOf.set(mid, []);
@@ -2666,6 +2676,7 @@ router.get("/consumption-transfers", requirePermission("material.consumption-tra
        JOIN rm_materials tm ON tm.id = t.to_material_id
        LEFT JOIN users u ON u.id = t.created_by
       WHERE t.transfer_date >= $1::date AND t.transfer_date < $2::date
+        AND t.fifo_slot IS NULL   -- Round 214: the silo FIFO's automatic splits are listed on the Silos screen
       ORDER BY t.created_at DESC`,
     [b.start, b.next]
   );
@@ -2743,8 +2754,8 @@ router.post("/consumption-transfers", requirePermission("material.consumption-tr
 });
 
 router.delete("/consumption-transfers/:id", requirePermission("material.consumption-transfer", "delete"), async (req, res) => {
-  const { rowCount } = await query(`DELETE FROM plant_consumption_transfers WHERE id = $1`, [req.params.id]);
-  if (!rowCount) return res.status(404).json({ error: "No such transfer." });
+  const { rowCount } = await query(`DELETE FROM plant_consumption_transfers WHERE id = $1 AND fifo_slot IS NULL`, [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "No such transfer (the silo FIFO's own splits cannot be removed here)." });
   res.json({ ok: true });
 });
 

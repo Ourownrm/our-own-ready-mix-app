@@ -2822,10 +2822,30 @@ function WeighbridgeComparisonReport() {
   }
   useEffect(() => { run(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Round 214 — the same rows as on screen, one sheet (xlsx is loaded only when asked).
+  async function exportXlsx() {
+    const XLSX = await import("xlsx");
+    const n = (v) => (v == null || v === "" ? "" : Number(v));
+    const basis = (b) => (b === "weighed" ? "Weighbridge" : b === "supplier" ? "Billed" : "Entered");
+    const data = [["Date", "Material", "Source", "Supplier", "Vehicle", "Challan", "Unit", "Billed qty", "Weighbridge qty", "Weighbridge kg",
+      "Accepted qty", "Accepted from", "Short/Excess", "Debit note ₹", "Over tolerance"]];
+    for (const r of rows) {
+      data.push([String(r.received_date || "").slice(0, 10), r.material_name, r.source_name || "", r.supplier_name, r.vehicle_number || "", r.challan_number || "",
+        r.purchase_unit, n(r.supplier_qty), n(r.weighbridge_qty), n(r.weighbridge_weight_kg), n(r.accepted_qty), basis(r.accepted_basis),
+        Number(r.short_qty) ? n(r.short_qty) : "", n(r.debit_note_amount), r.tolerance_exceeded ? "Yes" : ""]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws["!cols"] = [11, 22, 16, 30, 13, 12, 7, 11, 14, 14, 12, 13, 12, 12, 11].map((wch) => ({ wch }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Weighbridge comparison");
+    XLSX.writeFile(wb, `Weighbridge comparison${from ? ` ${from}` : ""}${to ? ` to ${to}` : ""}.xlsx`);
+  }
+
   return (
     <div>
       <DateRangeBar from={from} to={to} setFrom={setFrom} setTo={setTo} />
       <button type="button" onClick={run} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10 }}>Run</button>
+      <button type="button" onClick={exportXlsx} disabled={!rows.length} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10, marginLeft: 6 }}>Export to Excel</button>
       <ReportShell error={error} loading={loading} empty={!loading && rows.length === 0}>
         <table>
           <thead><tr><th>Date</th><th>Material</th><th>Supplier</th><th>Billed qty</th><th>Weighbridge qty</th><th>Accepted</th><th>Short/Excess</th><th>Debit note</th></tr></thead>

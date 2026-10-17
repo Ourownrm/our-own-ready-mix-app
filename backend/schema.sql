@@ -4270,3 +4270,33 @@ CREATE TABLE IF NOT EXISTS customer_ledger_corrections (
 CREATE INDEX IF NOT EXISTS idx_ledger_corrections_customer ON customer_ledger_corrections(customer_id, done_at);
 -- (customer_receipts.edited_at / edited_by are added by round212Schema.js,
 -- after the Accounts tables exist.)
+
+-- Round 214 — silo FIFO: start date, opening layers, automatic splits, over-draws.
+CREATE TABLE IF NOT EXISTS plant_fifo_settings (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  start_date  DATE NOT NULL,
+  seeded_at   TIMESTAMPTZ,
+  updated_by  INTEGER REFERENCES users(id),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO plant_fifo_settings (id, start_date) VALUES (1, '2026-10-01') ON CONFLICT (id) DO NOTHING;
+ALTER TABLE plant_silo_fills ADD COLUMN IF NOT EXISTS is_opening BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE plant_consumption_transfers ADD COLUMN IF NOT EXISTS fifo_slot VARCHAR(20);
+ALTER TABLE plant_consumption_transfers ALTER COLUMN created_by DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_plant_consumption_transfers_fifo ON plant_consumption_transfers(fifo_slot) WHERE fifo_slot IS NOT NULL;
+CREATE TABLE IF NOT EXISTS plant_silo_overdraws (
+  id          SERIAL PRIMARY KEY,
+  slot        VARCHAR(20) NOT NULL,
+  on_date     DATE NOT NULL,
+  material_id INTEGER REFERENCES rm_materials(id),
+  kind        VARCHAR(14) NOT NULL CHECK (kind IN ('next_load','no_later_load')),
+  qty_kg      NUMERIC(14,2) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plant_silo_overdraws_slot ON plant_silo_overdraws(slot, on_date);
+-- What FIFO says is left in each refillable silo, per material (rebuilt on every re-run).
+CREATE TABLE IF NOT EXISTS plant_silo_contents (
+  slot        VARCHAR(20) NOT NULL,
+  material_id INTEGER NOT NULL REFERENCES rm_materials(id),
+  qty_kg      NUMERIC(14,2) NOT NULL,
+  PRIMARY KEY (slot, material_id)
+);

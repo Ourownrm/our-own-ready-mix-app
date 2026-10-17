@@ -32,6 +32,7 @@ import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { PLANT_SLOTS, SLOT_BY_KEY, RECIPE_TARGET_COLUMNS, normaliseSlot, isPlaceholderName } from "../lib/plantSlots.js";
 import { istDay } from "../lib/istDate.js";
 import { loadKept, TRUCK_KEY } from "../lib/plantLoadReview.js";
+import { fifoResolveSlot, seedOpeningLayers, fifoStart, openingStamp, SILO_LEVELS_SQL } from "../lib/siloFifo.js";
 
 const router = Router();
 
@@ -1996,52 +1997,8 @@ router.post("/load-reviews", requirePermission("production.load-review", "edit")
 // two layers is charged whole to the older one. The error is at most one
 // batch's weight at each changeover, which is far smaller than the old rule's
 // error and is what the month-end consumption transfer is for.
-export async function fifoResolveSlot(slot, q = query) {
-  const { rows: fills } = await q(
-    `SELECT material_id, qty_kg, filled_at, COALESCE(was_empty, false) AS was_empty
-       FROM plant_silo_fills WHERE slot = $1 ORDER BY filled_at, id`,
-    [slot]
-  );
-  const { rows: draws } = await q(
-    `SELECT pm.id, pm.actual_kg, pm.material_id,
-            COALESCE(pb.batched_at, pb.batch_date::timestamptz) AS at
-       FROM plant_batch_materials pm
-       JOIN plant_batches pb ON pb.id = pm.batch_id
-      WHERE pm.slot = $1
-      ORDER BY COALESCE(pb.batched_at, pb.batch_date::timestamptz), pm.id`,
-    [slot]
-  );
-  const layers = [];   // { mid, left }
-  let fi = 0, lastMid = null;
-  const ids = [], mids = [];
-  for (const d of draws) {
-    const at = new Date(d.at).getTime();
-    while (fi < fills.length && new Date(fills[fi].filled_at).getTime() <= at) {
-      const f = fills[fi++];
-      if (f.was_empty) layers.length = 0;
-      layers.push({ mid: f.material_id, left: Number(f.qty_kg) || 0 });
-      lastMid = f.material_id;
-    }
-    while (layers.length && layers[0].left <= 0.0005) layers.shift();
-    const want = layers.length ? layers[0].mid : lastMid;
-    let kg = Number(d.actual_kg) || 0;
-    while (kg > 0 && layers.length) {
-      const take = Math.min(kg, layers[0].left);
-      layers[0].left -= take;
-      kg -= take;
-      if (layers[0].left <= 0.0005) layers.shift();
-    }
-    if ((d.material_id ?? null) !== (want ?? null)) { ids.push(d.id); mids.push(want); }
-  }
-  if (!ids.length) return 0;
-  const { rowCount } = await q(
-    `UPDATE plant_batch_materials pm SET material_id = u.mid
-       FROM unnest($1::int[], $2::int[]) AS u(id, mid)
-      WHERE pm.id = u.id`,
-    [ids, mids]
-  );
-  return rowCount;
-}
+// Round 214 — moved to lib/siloFifo.js (opening layers, over-draws, split batches).
+export { fifoResolveSlot };
 
 export async function reresolveSilos() {
   const resolver = await loadSiloResolver();
@@ -2116,20 +2073,9 @@ router.get("/silos", requirePermission("production.plant-mapping", "view"), asyn
       // in minus out is a real running level. (Round 159 computed this for
       // refillable silos alone; Round 168 keeps the same query but the frontend
       // now shows a level for every silo, not just the refillable ones.)
-      query(
-        `SELECT f.slot,
-                (array_agg(f.material_id ORDER BY f.filled_at DESC))[1] AS current_material_id,
-                (array_agg(m.name       ORDER BY f.filled_at DESC))[1] AS current_material,
-                max(f.filled_at) AS last_filled_at,
-                sum(f.qty_kg)::numeric AS filled_kg,
-                COALESCE((SELECT sum(pm.actual_kg) FROM plant_batch_materials pm
-                           JOIN plant_batches pb ON pb.id = pm.batch_id
-                          WHERE pm.slot = f.slot
-                            AND COALESCE(pb.batched_at, pb.batch_date::timestamptz) >= min(f.filled_at)), 0)::numeric AS used_kg
-         FROM plant_silo_fills f
-         LEFT JOIN rm_materials m ON m.id = f.material_id
-         GROUP BY f.slot`
-      ),
+      // Round 214 — a refillable silo's level counts from the FIFO start
+      // (its opening layers); any other silo from its first fill, as before.
+      query(SILO_LEVELS_SQL),
       // ROUND 168 — receipts explicitly NOT put into a silo (admixture drums for
       // the lab or the store). Read from the raw table, not rm_receipts_effective:
       // not_in_silo was added after that view was defined, and a SELECT * view
@@ -2159,6 +2105,16 @@ router.get("/silos", requirePermission("production.plant-mapping", "view"), asyn
     };
 
     const balance = new Map(fills.rows.map((r) => [r.slot, r]));
+    const fifo = await fifoSummary();
+    // Round 214 — what FIFO says is left in each refillable silo, per material.
+    const { rows: contentRows } = await query(
+      `SELECT c.slot, c.material_id, m.name, c.qty_kg FROM plant_silo_contents c JOIN rm_materials m ON m.id = c.material_id`
+    ).catch(() => ({ rows: [] }));
+    const contentsBy = new Map();
+    for (const c of contentRows) {
+      if (!contentsBy.has(c.slot)) contentsBy.set(c.slot, []);
+      contentsBy.get(c.slot).push({ material_id: c.material_id, name: c.name, qty_kg: Number(c.qty_kg) });
+    }
 
     // One level card per mapped silo that is stock (fixed material or refillable
     // storage). "Not stock at all" hoppers are left out — there is nothing to
@@ -2180,7 +2136,12 @@ router.get("/silos", requirePermission("production.plant-mapping", "view"), asyn
           kind,
           is_refillable: a.is_refillable,
           material_id: a.is_refillable ? (b?.current_material_id || null) : a.material_id,
-          material_name: a.is_refillable ? (b?.current_material || null) : a.target,
+          material_name: a.is_refillable
+            ? ((contentsBy.get(a.slot) || []).length > 1
+                ? contentsBy.get(a.slot).map((c) => c.name).join(" + ")
+                : (contentsBy.get(a.slot)?.[0]?.name || b?.current_material || null))
+            : a.target,
+          contents: a.is_refillable ? (contentsBy.get(a.slot) || []) : [],
           ...unitOf(a.is_refillable ? (b?.current_material_id || null) : a.material_id),
           capacity_kg: capacity,
           filled_kg: b ? Number(b.filled_kg) : null,
@@ -2205,6 +2166,7 @@ router.get("/silos", requirePermission("production.plant-mapping", "view"), asyn
         receipts: r.receipts,
         last_received: r.last_received,
       })),
+      fifo,
     });
   } catch (err) {
     console.error(err);
@@ -2316,6 +2278,52 @@ router.get("/silo-fills", requirePermission("production.plant-mapping", "view"),
   }
 });
 
+// Round 214 — the FIFO start, each refillable silo's opening layers, the draws
+// past the recorded loads, and the automatic splits — for the Silos screen.
+async function fifoSummary() {
+  const start = await fifoStart();
+  if (!start) return { start_date: null, openings: [], overdraws: [], splits: [] };
+  const [settings, openings, overdraws, splits] = await Promise.all([
+    query(`SELECT seeded_at FROM plant_fifo_settings WHERE id = 1`),
+    query(`SELECT f.id, f.slot, f.material_id, m.name AS material_name, f.qty_kg, m.purchase_unit, m.kg_per_purchase_unit
+             FROM plant_silo_fills f JOIN rm_materials m ON m.id = f.material_id
+            WHERE f.is_opening ORDER BY f.slot, f.filled_at, f.id`),
+    query(`SELECT o.slot, to_char(o.on_date, 'YYYY-MM-DD') AS on_date, o.kind, o.qty_kg, m.name AS material_name
+             FROM plant_silo_overdraws o LEFT JOIN rm_materials m ON m.id = o.material_id
+            ORDER BY o.on_date DESC, o.slot LIMIT 200`),
+    query(`SELECT t.fifo_slot AS slot, fm.name AS from_name, tm.name AS to_name, sum(t.qty_kg)::numeric AS qty_kg, count(*)::int AS days
+             FROM plant_consumption_transfers t JOIN rm_materials fm ON fm.id = t.from_material_id JOIN rm_materials tm ON tm.id = t.to_material_id
+            WHERE t.fifo_slot IS NOT NULL GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC`),
+  ]);
+  return { start_date: start, seeded_at: settings.rows[0]?.seeded_at || null, openings: openings.rows, overdraws: overdraws.rows, splits: splits.rows };
+}
+
+// Set the FIFO start (a 1st of month) and/or rebuild the opening layers from
+// book stock at that date, then re-run FIFO. Rebuilding REPLACES the opening
+// layers, including any typed in by hand.
+router.post("/fifo", requirePermission("production.plant-mapping", "edit"), async (req, res) => {
+  const d = req.body?.start_date;
+  if (d !== undefined) {
+    if (!/^\d{4}-\d{2}-01$/.test(String(d))) return res.status(400).json({ error: "The FIFO start must be the 1st of a month." });
+    await query(
+      `INSERT INTO plant_fifo_settings (id, start_date, updated_by, updated_at) VALUES (1, $1, $2, now())
+       ON CONFLICT (id) DO UPDATE SET start_date = $1, updated_by = $2, updated_at = now()`,
+      [d, req.user.id]
+    );
+  }
+  try {
+    // Settle consumption before the start first — book stock at the start
+    // (the openings) depends on it — then lay the openings and re-run.
+    if (req.body?.reseed !== false) await reresolveSilos();
+    const seeded = req.body?.reseed === false ? null : await seedOpeningLayers(req.user.id);
+    const touched = await reresolveSilos();
+    res.json({ ok: true, placed: seeded?.placed || null, rows_updated: touched });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not rebuild the silo FIFO." });
+  }
+});
+
 router.post("/silo-fills", requirePermission("production.plant-mapping", "create"), async (req, res) => {
   const slot = String(req.body?.slot ?? "").trim();
   if (!Object.prototype.hasOwnProperty.call(SLOT_BY_KEY, slot)) return res.status(400).json({ error: "That is not a hopper this plant has." });
@@ -2328,7 +2336,15 @@ router.post("/silo-fills", requirePermission("production.plant-mapping", "create
   if (!Number.isFinite(qtyKg) || qtyKg <= 0) {
     return res.status(400).json({ error: "Enter how much went in." });
   }
-  const filledAt = String(req.body?.filled_at || "").trim();
+  // Round 214 — an opening layer: stock in the silo at the FIFO start. It sits
+  // one second before the start, whatever date was typed.
+  const isOpening = req.body?.is_opening === true;
+  let filledAt = String(req.body?.filled_at || "").trim();
+  if (isOpening) {
+    const start = await fifoStart();
+    if (!start) return res.status(400).json({ error: "Set the FIFO start date first." });
+    filledAt = new Date(new Date(openingStamp(start)).getTime() - 1000).toISOString();
+  }
   if (!filledAt) return res.status(400).json({ error: "Say when the silo was filled." });
 
   const receiptId = req.body?.receipt_id == null || req.body.receipt_id === ""
@@ -2362,10 +2378,11 @@ router.post("/silo-fills", requirePermission("production.plant-mapping", "create
 
     const { rows } = await query(
       `INSERT INTO plant_silo_fills
-         (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by)
-       VALUES ($1,$2,$3,$4::timestamptz,$5,$6,$7,$8,$9) RETURNING *`,
-      [slot, materialId, receiptId, filledAt, qtyKg, wasEmpty,
-       remaining > 0 ? remaining : 0, String(req.body?.notes || "").trim() || null, req.user.id]
+         (slot, material_id, receipt_id, filled_at, qty_kg, was_empty, balance_before_kg, notes, recorded_by, is_opening)
+       VALUES ($1,$2,$3,$4::timestamptz,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [slot, materialId, isOpening ? null : receiptId, filledAt, qtyKg, isOpening ? false : wasEmpty,
+       isOpening ? null : (remaining > 0 ? remaining : 0),
+       String(req.body?.notes || "").trim() || (isOpening ? "Opening stock (entered)" : null), req.user.id, isOpening]
     );
 
     // A fill changes what every batch after it was made from.
