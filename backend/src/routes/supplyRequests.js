@@ -4,6 +4,7 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
+import { chargeLubricantSoon } from "../lib/maintenanceGeneral.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -421,6 +422,9 @@ router.post("/:id/issue", requireRole("store", "administrator"), async (req, res
   // (deployments that haven't opened Store Stock at all), this silently
   // does nothing rather than blocking the issue.
   await deductStoreStock(existing[0], actual_quantity_issued, req.user.id, req.params.id);
+  // Round 215b — a lubricant issued to a vehicle goes on its monthly
+  // general-works job card (best-effort, never blocks the issue).
+  if (existing[0].request_type === "lubricant") chargeLubricantSoon(rows[0].id);
 
   res.json(rows[0]);
 });
@@ -733,6 +737,7 @@ router.post("/:id/close-outside", requirePermission("fuel.outside-close", "edit"
     [req.user.id, filledAt, litres, amount, billRef, note, r.id]
   );
   if (!rows.length) return res.status(409).json({ error: "Someone has just closed this request." });
+  if (rows[0].request_type === "lubricant") chargeLubricantSoon(rows[0].id);
   await pushToUser(r.requested_by, {
     title: "Outside fill closed by the office",
     body: `FR-${r.id} · ${r.unit_name || ""} · ${litres} L entered from the bill`,

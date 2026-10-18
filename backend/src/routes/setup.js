@@ -24,6 +24,7 @@ import { migrateRound211 } from "../lib/round211Schema.js";
 import { migrateRound212 } from "../lib/round212Schema.js";
 import { migrateRound214 } from "../lib/round214Schema.js";
 import { migrateRound215 } from "../lib/round215Schema.js";
+import { migrateRound215b } from "../lib/maintenanceGeneral.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4118,6 +4119,9 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // ROUND 214 — silo FIFO: opening layers, over-draws, split batches.
     await migrateRound214(pool, log);
     await migrateRound215(pool, log);
+    // ROUND 215b — lubricants issued to a vehicle go on its monthly
+    // general-works job card.
+    await migrateRound215b(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

@@ -8561,3 +8561,21 @@ Plant In Charge and Driver. `npm run check` green; vite build clean.
 **Not yet (Round 216):** tyres & batteries, certificates (moving Compliance in), retiring the old Maintenance /
 Breakdowns screens. Lubricants stay in the old Store module. No photos on inspections or complaints yet. Drivers
 pick from all assets when raising a complaint.
+
+## Round 215b — lubricants on the vehicle's job card (v10.46)
+
+**Deploy:** upload the files (on top of Round 215), let Render redeploy, then visit `/setup?key=…` once.
+
+- Lubricants are still requested, approved and issued in the Fuel & Store flow as before. Every **issued**
+  lubricant request now also lands, with its cost, on the vehicle's **monthly "General works" job card**
+  (one card per vehicle per month, one job "General works — lubricants & top-ups").
+- The card fills itself and **closes itself when the month ends** — nobody marks work done or verifies it, and no
+  repair jobs or parts can be added to it. Repairs stay on normal job cards, so a repair card's cost is the repair.
+- Cost = the amount Store entered at issue; if blank, quantity × the standing rate on Store stock; if neither, the
+  line shows "no rate". A cost worked out from the rate is fixed once set (a later rate change never rewrites a past
+  month); an amount Store corrects is picked up.
+- The vehicle is found through the Maintenance asset's linked truck / pump / equipment. Issues for a vehicle not
+  linked yet are picked up the moment it is linked. Issues from **1 Oct 2026** on are included.
+- General-works cards count in the vehicle's cost this FY and the dashboard's cost this month, but not in
+  "Open job cards", and they don't stop an asset being retired.
+- New table `mnt_card_charges`, `mnt_job_cards.general_month`; code in `backend/src/lib/maintenanceGeneral.js`.

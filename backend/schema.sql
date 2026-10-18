@@ -4587,3 +4587,34 @@ CREATE TABLE IF NOT EXISTS mnt_payments (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_mnt_payments_bill ON mnt_payments(bill_id);
+
+-- Round 215b — lubricants issued to a vehicle land on its monthly "General works"
+-- job card (lib/maintenanceGeneral.js). One card per vehicle per month, closed
+-- automatically when the month is over.
+ALTER TABLE mnt_job_cards ADD COLUMN IF NOT EXISTS general_month DATE;
+CREATE UNIQUE INDEX IF NOT EXISTS mnt_job_cards_general_month
+  ON mnt_job_cards (asset_id, general_month) WHERE general_month IS NOT NULL;
+
+ALTER TABLE mnt_jobs DROP CONSTRAINT IF EXISTS mnt_jobs_origin_check;
+ALTER TABLE mnt_jobs ADD CONSTRAINT mnt_jobs_origin_check
+  CHECK (origin IN ('not_ok','other','complaint','manual','general'));
+
+-- A cost on a job card that did not come through the maintenance store or an
+-- outside repair — today, lubricants issued in the Fuel & Store flow.
+CREATE TABLE IF NOT EXISTS mnt_card_charges (
+  id            SERIAL PRIMARY KEY,
+  job_card_id   INTEGER NOT NULL REFERENCES mnt_job_cards(id),
+  job_id        INTEGER REFERENCES mnt_jobs(id),
+  asset_id      INTEGER NOT NULL REFERENCES mnt_assets(id),
+  source_type   VARCHAR(20) NOT NULL CHECK (source_type IN ('lubricant')),
+  source_id     INTEGER NOT NULL,
+  description   TEXT NOT NULL,
+  qty           NUMERIC(10,2),
+  unit          VARCHAR(10),
+  amount        NUMERIC(12,2),
+  charged_at    TIMESTAMPTZ NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (source_type, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_card_charges_card ON mnt_card_charges(job_card_id);
+CREATE INDEX IF NOT EXISTS idx_mnt_card_charges_asset ON mnt_card_charges(asset_id, charged_at);

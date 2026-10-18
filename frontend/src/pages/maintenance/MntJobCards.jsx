@@ -74,9 +74,9 @@ function CardList({ go }) {
                 {list.data.map((c) => (
                   <tr key={c.id} onClick={() => go("job-cards", { card: c.id })} style={{ cursor: "pointer" }}>
                     <td><button type="button" style={{ background: "none", border: "none", padding: 0, fontWeight: 700, color: "var(--charcoal)" }}>{c.code}</button></td>
-                    <td>{c.asset_name}<div style={MUTED}>from {c.source}</div></td>
+                    <td>{c.asset_name}<div style={MUTED}>{c.general_label ? `General works · ${c.general_label}` : `from ${c.source}`}</div></td>
                     <td>{fmtWhen(c.opened_at)}</td>
-                    <td>{c.jobs} ({c.jobs_open} open{c.outside_jobs ? `, ${c.outside_jobs} outside` : ""})</td>
+                    <td>{c.general_label ? `${c.charges} lubricant issue(s)` : `${c.jobs} (${c.jobs_open} open${c.outside_jobs ? `, ${c.outside_jobs} outside` : ""})`}</td>
                     <td>{c.parts_waiting ? <span className="badge badge-warning">{c.parts_waiting} part(s)</span> : "—"}</td>
                     <td style={{ textAlign: "right" }}>{fmtRs(c.cost)}</td>
                     <td><Badge map={CARD_STATUS} value={c.status} /></td>
@@ -102,6 +102,7 @@ function CardDetail({ id, go }) {
 
   if (!card.data) return <Loading error={card.error} />;
   const c = card.data;
+  if (c.general_month) return <GeneralCard c={c} go={go} />;
   const open = c.status === "open";
   const canEdit = can("mnt.job-cards", "edit") && open;
   const insideJobs = c.jobs.filter((j) => j.kind === "inside" && j.status !== "cancelled");
@@ -306,6 +307,51 @@ function CardDetail({ id, go }) {
         {["open", "work_done"].includes(c.status) && can("mnt.job-verify", "edit") && c.issues.length === 0 && (
           <button type="button" className="btn-danger" disabled={act.busy} onClick={() => window.confirm("Cancel this job card?") && post(`/job-cards/${id}/cancel`, {}, "Job card cancelled.")}>Cancel card</button>
         )}
+      </section>
+    </>
+  );
+}
+
+// Round 215b — the vehicle's monthly general-works card. Lubricants issued in
+// the Fuel & Store flow land here automatically; it closes itself at month end.
+function GeneralCard({ c, go }) {
+  const noRate = c.charges.filter((x) => x.amount == null).length;
+  return (
+    <>
+      <div style={{ ...ROW, marginBottom: 12 }}>
+        <button type="button" style={SMALL_BTN} onClick={() => go("job-cards")}>&larr; All job cards</button>
+      </div>
+      <section className="card" style={{ marginBottom: 16 }}>
+        <div style={{ ...ROW, alignItems: "flex-start" }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ ...MUTED, textTransform: "uppercase", fontSize: 11.5 }}>Job card · {c.code} · General works</div>
+            <h1 style={{ fontSize: 21, margin: "2px 0 4px" }}>{c.asset_name}</h1>
+            <div style={MUTED}>Lubricants and top-ups for {c.general_label}. {c.status === "closed" ? "Closed at month end." : "Fills itself as Store issues; closes itself at month end."}</div>
+          </div>
+          <Badge map={CARD_STATUS} value={c.status} />
+          <div style={{ textAlign: "right" }}><div className="kpi-label">Cost this month</div><b style={{ fontSize: 19 }}>{fmtRs(c.cost)}</b></div>
+        </div>
+      </section>
+      <section className="card">
+        <h2 style={H2}>Lubricants issued</h2>
+        {c.charges.length === 0 ? <div style={MUTED}>Nothing issued yet.</div> : (
+          <Table minWidth={520}>
+            <thead><tr><th>When</th><th>Item</th><th style={{ textAlign: "right" }}>Qty</th><th style={{ textAlign: "right" }}>Cost</th></tr></thead>
+            <tbody>
+              {c.charges.map((x) => (
+                <tr key={x.id}>
+                  <td>{fmtWhen(x.charged_at)}</td>
+                  <td>{x.description}</td>
+                  <td style={{ textAlign: "right" }}>{x.qty == null ? "—" : `${fmtNum(x.qty, 2).replace(/\.00$/, "")} ${x.unit || ""}`}</td>
+                  <td style={{ textAlign: "right" }}>{x.amount == null ? <span className="badge badge-warning">no rate</span> : fmtRs(x.amount, 2)}</td>
+                </tr>
+              ))}
+              <tr><td colSpan={3}><b>Total</b></td><td style={{ textAlign: "right" }}><b>{fmtRs(c.cost, 2)}</b></td></tr>
+            </tbody>
+          </Table>
+        )}
+        {noRate > 0 && <p style={{ ...MUTED, marginBottom: 0 }}>{noRate} issue(s) had no amount entered and no standing rate — set the rate on Store stock, or the cost is left out.</p>}
+        <p style={{ ...MUTED, marginBottom: 0 }}>Repairs go on a normal job card — this card only collects lubricant issues.</p>
       </section>
     </>
   );
