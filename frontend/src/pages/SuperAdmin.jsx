@@ -22,7 +22,7 @@ const ROLE_LABEL = {
   super_admin: "Super Admin", administrator: "Administrator", manager: "Manager",
   plant_operator: "Plant Operator", qc_engineer: "QC Engineer", lab_technician: "Lab Technician",
   driver: "Driver", site_supervisor: "Site Supervisor", accountant: "Accountant",
-  sales_executive: "Sales Executive", store: "Store", loader_operator: "Loader Operator",
+  sales_executive: "Sales Executive", store: "Store", loader_operator: "Loader Operator", plant_in_charge: "Plant In Charge",
 };
 
 export default function SuperAdmin() {
@@ -635,7 +635,7 @@ function RolesTab({ catalogue, setError, setNotice }) {
 // role is shown faded: it is remembered, but does nothing until the module is
 // switched back on — the module switch always wins.
 const MODULE_ROLE_ORDER = ["manager", "lab_technician", "store", "accountant", "plant_operator", "qc_engineer",
-  "sales_executive", "site_supervisor", "driver", "loader_operator"];
+  "sales_executive", "site_supervisor", "driver", "loader_operator", "plant_in_charge"];
 
 function ModulesTab({ catalogue, setError, setNotice }) {
   const [data, setData] = useState(null);

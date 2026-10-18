@@ -36,7 +36,7 @@ import { usePermissions } from "../lib/PermissionContext.jsx";
 
 // super_admin is deliberately NOT here: an Administrator must not be able
 // to mint one. Only a Super Admin can, from the access-control page.
-const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive", "store", "loader_operator"];
+const ROLES = ["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive", "store", "loader_operator", "plant_in_charge"];
 const MAX_PINS = 8;
 
 // ===================== Small shared pieces =====================

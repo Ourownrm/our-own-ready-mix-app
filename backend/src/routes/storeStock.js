@@ -36,7 +36,7 @@ async function ensureStockItems() {
   `);
 }
 
-router.get("/items", requireRole("store", "manager", "administrator", "accountant"), async (req, res) => {
+router.get("/items", requireRole("store", "manager", "plant_in_charge", "administrator", "accountant"), async (req, res) => {
   await ensureStockItems();
   const { rows } = await query(
     `SELECT ssi.*,
@@ -52,7 +52,7 @@ router.get("/items", requireRole("store", "manager", "administrator", "accountan
 // Manager-only physical stock adjustment — correct the balance to match an
 // actual count, with a required reason. Recorded as a transaction, same as
 // every other change, so it shows up in the item's history below.
-router.post("/items/:id/adjust", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/items/:id/adjust", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { counted_qty, note } = req.body;
   if (counted_qty === undefined || counted_qty === null || counted_qty === "") {
     return res.status(400).json({ error: "Enter the counted quantity." });
@@ -86,7 +86,7 @@ router.post("/items/:id/adjust", requireRole("manager", "administrator"), async 
 // screens (StoreScan.jsx, FuelFilling.jsx's external-fill confirmation)
 // read this to pre-fill the cost field — still freely editable there, so
 // this rate is a convenience default, not an enforced price.
-router.patch("/items/:id/rate", requireRole("manager", "administrator"), async (req, res) => {
+router.patch("/items/:id/rate", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { rate_per_liter } = req.body;
   if (rate_per_liter === undefined || rate_per_liter === null || rate_per_liter === "" || Number(rate_per_liter) < 0) {
     return res.status(400).json({ error: "Enter a valid rate (₹ per liter)." });
@@ -108,7 +108,7 @@ router.patch("/items/:id/rate", requireRole("manager", "administrator"), async (
   res.json(rows[0]);
 });
 
-router.get("/items/:id/transactions", requireRole("store", "manager", "administrator", "accountant"), async (req, res) => {
+router.get("/items/:id/transactions", requireRole("store", "manager", "plant_in_charge", "administrator", "accountant"), async (req, res) => {
   const { rows } = await query(
     `SELECT sst.*, u.name AS created_by_name
      FROM store_stock_transactions sst
@@ -134,7 +134,7 @@ router.get("/items/:id/transactions", requireRole("store", "manager", "administr
 // admin" but not for an actual Manager account. Manager can now also
 // request and receive a purchase itself, same as Store — consistent with
 // Manager already being the one who approves/rejects/adjusts stock.
-const REQUESTER_ROLES = ["store", "manager", "administrator"];
+const REQUESTER_ROLES = ["store", "manager", "plant_in_charge", "administrator"];
 
 router.post("/purchases", requireRole(...REQUESTER_ROLES), async (req, res) => {
   const { stock_item_id, requested_qty, supplier_name, notes } = req.body;
@@ -178,7 +178,7 @@ router.get("/purchases/mine", requireRole(...REQUESTER_ROLES), async (req, res) 
   res.json(rows);
 });
 
-router.get("/purchases/pending", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/purchases/pending", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT sp.*, u.name AS requested_by_name,
             CASE WHEN ssi.item_type = 'fuel' THEN 'Diesel (Plant Store)' ELSE lt.name END AS item_name,
@@ -193,7 +193,7 @@ router.get("/purchases/pending", requireRole("manager", "administrator"), async 
   res.json(rows);
 });
 
-router.post("/purchases/:id/approve", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/purchases/:id/approve", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { approved_qty, approved_rate } = req.body;
   const { rows: existing } = await query(
     `SELECT sp.*, ssi.item_type FROM store_stock_purchases sp JOIN store_stock_items ssi ON ssi.id = sp.stock_item_id
@@ -223,7 +223,7 @@ router.post("/purchases/:id/approve", requireRole("manager", "administrator"), a
   res.json(rows[0]);
 });
 
-router.post("/purchases/:id/reject", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/purchases/:id/reject", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ error: "Give a reason for rejecting this." });
   const { rows: existing } = await query("SELECT * FROM store_stock_purchases WHERE id = $1 AND status = 'pending'", [req.params.id]);
@@ -238,7 +238,7 @@ router.post("/purchases/:id/reject", requireRole("manager", "administrator"), as
   res.json(rows[0]);
 });
 
-router.delete("/purchases/:id", requireRole("manager", "administrator"), async (req, res) => {
+router.delete("/purchases/:id", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { rowCount } = await query("DELETE FROM store_stock_purchases WHERE id = $1 AND status = 'pending'", [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "Request not found or already actioned." });
   res.json({ ok: true });

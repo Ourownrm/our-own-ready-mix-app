@@ -27,7 +27,7 @@ const ROLE_LABELS = {
   super_admin: "Super Admin", administrator: "Administrator", manager: "Manager", plant_operator: "Plant Operator",
   qc_engineer: "QC Engineer", driver: "Driver", site_supervisor: "Site Supervisor",
   accountant: "Accountant", sales_executive: "Sales Executive", store: "Store",
-  lab_technician: "Lab Technician", loader_operator: "Loader Operator",
+  lab_technician: "Lab Technician", loader_operator: "Loader Operator", plant_in_charge: "Plant In Charge",
 };
 
 // Round 145 — the header had six things competing for one line (app name,

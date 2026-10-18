@@ -241,6 +241,29 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 215 — the Maintenance module: equipment, PM schedules and
+    // inspections, job cards (inside / outside), store spares, PO, GRV and
+    // payments. Opens straight into its own tabbed page.
+    key: "maintenance-module",
+    label: "Maintenance",
+    icon: "wrench",
+    colour: "#A2552B",
+    tint: "#F6E7DD",
+    to: "/maintenance-module",
+    screens: [],
+  },
+  {
+    // Round 215 — raise a maintenance complaint (driver, store, manager,
+    // Plant In Charge).
+    key: "maintenance-complaint",
+    label: "Maintenance Complaint",
+    icon: "alert",
+    colour: "#B3412F",
+    tint: "#F8E4E0",
+    to: "/maintenance-complaint",
+    screens: [],
+  },
+  {
     key: "users-roles",
     label: "Users & Roles",
     icon: "people",
@@ -296,6 +319,8 @@ export const HUB = [
   { key: "hr", perm: ["module.hr"], to: "/hr" },
   { key: "fuel-module", perm: ["module.fuel"], to: "/fuel-module" },
   { key: "accounts-module", perm: ["module.accounts"], to: "/accounts" },
+  { key: "maintenance-module", perm: ["module.maintenance"], to: "/maintenance-module" },
+  { key: "maintenance-complaint", perm: ["mnt.complaints"], to: "/maintenance-complaint" },
   {
     key: "quality-control",
     screens: [

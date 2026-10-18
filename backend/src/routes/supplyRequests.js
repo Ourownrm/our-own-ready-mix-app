@@ -198,7 +198,7 @@ router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
 // or the reading has gone backwards (meter replaced, or simply mistyped) —
 // a wrong number here is worse than none, since the whole point is to catch
 // the wrong number.
-router.get("/pending", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/pending", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { rows } = await query(
     `SELECT sr.*, u.name AS requested_by_name,
             fs.name AS fuel_station_name, lt.name AS lubricant_type_name,
@@ -267,11 +267,11 @@ async function tankAvailability(excludeId = null) {
   return { current, committed, available: Math.round((current - committed) * 100) / 100, rate: rows[0].rate == null ? null : Number(rows[0].rate) };
 }
 
-router.get("/tank-available", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/tank-available", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   res.json(await tankAvailability());
 });
 
-router.post("/:id/approve", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:id/approve", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { approved_quantity, approved_station_id, approved_rate } = req.body;
   const { rows: existing } = await query("SELECT * FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Request not found or already actioned." });
@@ -339,7 +339,7 @@ router.post("/:id/cancel-approved", requirePermission("fuel.cancel-approved", "e
   res.json(rows[0]);
 });
 
-router.post("/:id/reject", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:id/reject", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ error: "Give a reason for rejecting this." });
   const { rows: existing } = await query("SELECT * FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
@@ -453,7 +453,7 @@ async function deductStoreStock(request, qty, userId, requestId) {
 // Manager can clear a pending request outright — distinct from reject
 // (which keeps a record and notifies the requester with a reason). This is
 // for duplicate or mistaken requests that don't need either.
-router.delete("/:id", requireRole("manager", "administrator"), async (req, res) => {
+router.delete("/:id", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
   const { rowCount } = await query("DELETE FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "Request not found or already actioned." });
   res.json({ ok: true });

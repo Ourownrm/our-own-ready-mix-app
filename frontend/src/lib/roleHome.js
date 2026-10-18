@@ -22,6 +22,9 @@ export const ROLE_HOME = {
   // (already shared by driver/site_supervisor/plant_operator) is their whole
   // job, so it's also their home.
   loader_operator: "/fuel",
+  // Round 215 — the Plant Manager's deputy: Production, Fuel and Maintenance
+  // live on the Modules page.
+  plant_in_charge: "/modules",
 };
 
 export const ROLE_LABEL = {
@@ -37,4 +40,5 @@ export const ROLE_LABEL = {
   store: "Store",
   lab_technician: "Lab Technician",
   loader_operator: "Loader Operator",
+  plant_in_charge: "Plant In Charge",
 };

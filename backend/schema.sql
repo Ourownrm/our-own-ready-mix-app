@@ -17,7 +17,9 @@ CREATE TYPE user_role AS ENUM (
   -- open the access-control page, reset a password, or reach /setup. See
   -- claude/super-admin-functions-list.md for why it is a role rather than a
   -- flag on an existing account.
-  'super_admin'
+  'super_admin',
+  -- Round 215 — Plant In Charge, deputy of the Plant Manager.
+  'plant_in_charge'
 );
 
 CREATE TYPE order_status AS ENUM (
@@ -4300,3 +4302,288 @@ CREATE TABLE IF NOT EXISTS plant_silo_contents (
   qty_kg      NUMERIC(14,2) NOT NULL,
   PRIMARY KEY (slot, material_id)
 );
+
+-- Round 215 — Maintenance module: equipment register, PM schedules + inspections,
+-- job cards (inside / outside jobs), outside repairs, maintenance store, POs, GRVs,
+-- bills and payments. Seed data and permission grants: src/lib/round215Schema.js.
+
+CREATE TABLE IF NOT EXISTS mnt_assets (
+  id            SERIAL PRIMARY KEY,
+  name          VARCHAR(150) NOT NULL,
+  asset_group   VARCHAR(40) NOT NULL DEFAULT 'Other',
+  make_model    VARCHAR(200),
+  year          INTEGER,
+  detail        TEXT,
+  truck_id      INTEGER REFERENCES trucks(id),
+  pump_id       INTEGER REFERENCES pumps(id),
+  equipment_id  INTEGER REFERENCES equipment(id),
+  seed_key      VARCHAR(40) UNIQUE,
+  is_active     BOOLEAN NOT NULL DEFAULT true,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_assets_truck ON mnt_assets(truck_id) WHERE truck_id IS NOT NULL AND is_active;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_assets_pump ON mnt_assets(pump_id) WHERE pump_id IS NOT NULL AND is_active;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_assets_equipment ON mnt_assets(equipment_id) WHERE equipment_id IS NOT NULL AND is_active;
+
+CREATE TABLE IF NOT EXISTS mnt_meter_readings (
+  id          SERIAL PRIMARY KEY,
+  asset_id    INTEGER NOT NULL REFERENCES mnt_assets(id),
+  read_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  km          NUMERIC(12,1),
+  hours       NUMERIC(10,1),
+  source      VARCHAR(20) NOT NULL DEFAULT 'manual',
+  note        TEXT,
+  entered_by  INTEGER REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_meter_readings_asset ON mnt_meter_readings(asset_id, read_at DESC);
+
+CREATE TABLE IF NOT EXISTS mnt_pm_schedules (
+  id            SERIAL PRIMARY KEY,
+  name          VARCHAR(150) NOT NULL,
+  trigger_type  VARCHAR(10) NOT NULL CHECK (trigger_type IN ('day','week','month','km','hours','m3','once_km')),
+  every         NUMERIC(12,2) NOT NULL CHECK (every > 0),
+  or_months     INTEGER,
+  or_days       INTEGER,
+  or_hours      INTEGER,
+  basis         VARCHAR(10) NOT NULL DEFAULT 'PRACTICE' CHECK (basis IN ('OEM','ENGINE','PRACTICE')),
+  note          TEXT,
+  sources       JSONB NOT NULL DEFAULT '[]',
+  checklist     JSONB NOT NULL DEFAULT '[]',
+  tasks         JSONB NOT NULL DEFAULT '[]',
+  is_active     BOOLEAN NOT NULL DEFAULT true,
+  seed_key      VARCHAR(120) UNIQUE,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    INTEGER REFERENCES users(id),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS mnt_pm_schedule_assets (
+  schedule_id     INTEGER NOT NULL REFERENCES mnt_pm_schedules(id) ON DELETE CASCADE,
+  asset_id        INTEGER NOT NULL REFERENCES mnt_assets(id),
+  last_done_date  DATE,
+  last_done_km    NUMERIC(12,1),
+  last_done_hours NUMERIC(10,1),
+  PRIMARY KEY (schedule_id, asset_id)
+);
+
+CREATE TABLE IF NOT EXISTS mnt_job_cards (
+  id              SERIAL PRIMARY KEY,
+  asset_id        INTEGER NOT NULL REFERENCES mnt_assets(id),
+  source          VARCHAR(20) NOT NULL DEFAULT 'manual',
+  source_id       INTEGER,
+  status          VARCHAR(12) NOT NULL DEFAULT 'open' CHECK (status IN ('open','work_done','closed','cancelled')),
+  km              NUMERIC(12,1),
+  notes           TEXT,
+  opened_by       INTEGER REFERENCES users(id),
+  opened_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  work_done_by    INTEGER REFERENCES users(id),
+  work_done_at    TIMESTAMPTZ,
+  verified_by     INTEGER REFERENCES users(id),
+  verified_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_job_cards_asset ON mnt_job_cards(asset_id, status);
+
+CREATE TABLE IF NOT EXISTS mnt_pm_inspections (
+  id            SERIAL PRIMARY KEY,
+  schedule_id   INTEGER NOT NULL REFERENCES mnt_pm_schedules(id),
+  asset_id      INTEGER NOT NULL REFERENCES mnt_assets(id),
+  km            NUMERIC(12,1),
+  hours         NUMERIC(10,1),
+  answers       JSONB NOT NULL DEFAULT '[]',
+  other_jobs    JSONB NOT NULL DEFAULT '[]',
+  tasks_done    JSONB NOT NULL DEFAULT '[]',
+  remarks       TEXT,
+  job_card_id   INTEGER REFERENCES mnt_job_cards(id),
+  done_by       INTEGER REFERENCES users(id),
+  done_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_pm_inspections_asset ON mnt_pm_inspections(asset_id, done_at DESC);
+
+CREATE TABLE IF NOT EXISTS mnt_outside_repairs (
+  id                SERIAL PRIMARY KEY,
+  job_card_id       INTEGER NOT NULL REFERENCES mnt_job_cards(id),
+  asset_id          INTEGER NOT NULL REFERENCES mnt_assets(id),
+  workshop          VARCHAR(150),
+  estimate_amount   NUMERIC(12,2) NOT NULL,
+  expected_days     INTEGER,
+  advance_amount    NUMERIC(12,2),
+  notes             TEXT,
+  status            VARCHAR(20) NOT NULL DEFAULT 'awaiting_approval'
+                    CHECK (status IN ('awaiting_approval','approved','rejected','sent_out','bill_hold','billed','cancelled')),
+  approved_amount   NUMERIC(12,2),
+  admin_note        TEXT,
+  approved_by       INTEGER REFERENCES users(id),
+  approved_at       TIMESTAMPTZ,
+  reject_reason     TEXT,
+  sent_out_at       TIMESTAMPTZ,
+  returned_at       TIMESTAMPTZ,
+  bill_no           VARCHAR(60),
+  bill_date         DATE,
+  bill_amount       NUMERIC(12,2),
+  final_amount      NUMERIC(12,2),
+  bill_approved_by  INTEGER REFERENCES users(id),
+  bill_approved_at  TIMESTAMPTZ,
+  requested_by      INTEGER REFERENCES users(id),
+  requested_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_outside_repairs_status ON mnt_outside_repairs(status);
+
+CREATE TABLE IF NOT EXISTS mnt_jobs (
+  id                 SERIAL PRIMARY KEY,
+  job_card_id        INTEGER NOT NULL REFERENCES mnt_job_cards(id),
+  description        TEXT NOT NULL,
+  origin             VARCHAR(12) NOT NULL DEFAULT 'manual' CHECK (origin IN ('not_ok','other','complaint','manual')),
+  kind               VARCHAR(8) NOT NULL DEFAULT 'inside' CHECK (kind IN ('inside','outside')),
+  status             VARCHAR(10) NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','cancelled')),
+  outside_repair_id  INTEGER REFERENCES mnt_outside_repairs(id),
+  urgency            VARCHAR(12),
+  machine_stopped    BOOLEAN NOT NULL DEFAULT false,
+  raised_by          INTEGER REFERENCES users(id),
+  raised_role        VARCHAR(30),
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  done_by            INTEGER REFERENCES users(id),
+  done_at            TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_jobs_card ON mnt_jobs(job_card_id);
+CREATE INDEX IF NOT EXISTS idx_mnt_jobs_raised_by ON mnt_jobs(raised_by, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS mnt_store_items (
+  id                  SERIAL PRIMARY KEY,
+  name                VARCHAR(150) NOT NULL,
+  part_no             VARCHAR(80),
+  category            VARCHAR(40) NOT NULL DEFAULT 'Vehicle spares',
+  unit                VARCHAR(20) NOT NULL DEFAULT 'Nos',
+  used_for_type       VARCHAR(8) NOT NULL DEFAULT 'general' CHECK (used_for_type IN ('asset','group','general')),
+  used_for_group      VARCHAR(40),
+  reorder_level       NUMERIC(12,2),
+  current_qty         NUMERIC(12,2) NOT NULL DEFAULT 0,
+  avg_rate            NUMERIC(12,2) NOT NULL DEFAULT 0,
+  last_price          NUMERIC(12,2),
+  prev_price          NUMERIC(12,2),
+  last_supplier       VARCHAR(150),
+  last_purchase_date  DATE,
+  is_active           BOOLEAN NOT NULL DEFAULT true,
+  created_by          INTEGER REFERENCES users(id),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS mnt_store_item_assets (
+  item_id   INTEGER NOT NULL REFERENCES mnt_store_items(id) ON DELETE CASCADE,
+  asset_id  INTEGER NOT NULL REFERENCES mnt_assets(id),
+  PRIMARY KEY (item_id, asset_id)
+);
+-- Append-only: every change to a spare's balance, whatever caused it.
+CREATE TABLE IF NOT EXISTS mnt_store_txns (
+  id             SERIAL PRIMARY KEY,
+  item_id        INTEGER NOT NULL REFERENCES mnt_store_items(id),
+  txn_type       VARCHAR(8) NOT NULL CHECK (txn_type IN ('receive','issue','adjust')),
+  qty_change     NUMERIC(12,2) NOT NULL,
+  balance_after  NUMERIC(12,2) NOT NULL,
+  rate           NUMERIC(12,2),
+  value          NUMERIC(14,2),
+  job_card_id    INTEGER REFERENCES mnt_job_cards(id),
+  asset_id       INTEGER REFERENCES mnt_assets(id),
+  ref_type       VARCHAR(20),
+  ref_id         INTEGER,
+  note           TEXT,
+  created_by     INTEGER REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_store_txns_item ON mnt_store_txns(item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mnt_store_txns_card ON mnt_store_txns(job_card_id) WHERE job_card_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS mnt_purchase_orders (
+  id             SERIAL PRIMARY KEY,
+  supplier_name  VARCHAR(150) NOT NULL,
+  status         VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','received','cancelled')),
+  credit_days    INTEGER NOT NULL DEFAULT 30,
+  notes          TEXT,
+  total          NUMERIC(14,2) NOT NULL DEFAULT 0,
+  created_by     INTEGER REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  approved_by    INTEGER REFERENCES users(id),
+  approved_at    TIMESTAMPTZ,
+  reject_reason  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mnt_part_requests (
+  id            SERIAL PRIMARY KEY,
+  job_card_id   INTEGER NOT NULL REFERENCES mnt_job_cards(id),
+  job_id        INTEGER REFERENCES mnt_jobs(id),
+  item_id       INTEGER REFERENCES mnt_store_items(id),
+  description   VARCHAR(200) NOT NULL,
+  qty           NUMERIC(12,2) NOT NULL CHECK (qty > 0),
+  status        VARCHAR(10) NOT NULL DEFAULT 'requested' CHECK (status IN ('requested','on_po','issued','cancelled')),
+  po_line_id    INTEGER,
+  issued_qty    NUMERIC(12,2),
+  issue_value   NUMERIC(14,2),
+  note          TEXT,
+  requested_by  INTEGER REFERENCES users(id),
+  requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  issued_by     INTEGER REFERENCES users(id),
+  issued_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_part_requests_status ON mnt_part_requests(status);
+
+CREATE TABLE IF NOT EXISTS mnt_po_lines (
+  id               SERIAL PRIMARY KEY,
+  po_id            INTEGER NOT NULL REFERENCES mnt_purchase_orders(id) ON DELETE CASCADE,
+  item_id          INTEGER NOT NULL REFERENCES mnt_store_items(id),
+  qty              NUMERIC(12,2) NOT NULL CHECK (qty > 0),
+  rate             NUMERIC(12,2) NOT NULL CHECK (rate >= 0),
+  gst_pct          NUMERIC(5,2) NOT NULL DEFAULT 18,
+  amount           NUMERIC(14,2) NOT NULL,
+  job_card_id      INTEGER REFERENCES mnt_job_cards(id),
+  part_request_id  INTEGER REFERENCES mnt_part_requests(id),
+  received_qty     NUMERIC(12,2) NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_po_lines_po ON mnt_po_lines(po_id);
+
+CREATE TABLE IF NOT EXISTS mnt_grvs (
+  id           SERIAL PRIMARY KEY,
+  po_id        INTEGER NOT NULL REFERENCES mnt_purchase_orders(id),
+  grv_date     DATE NOT NULL DEFAULT CURRENT_DATE,
+  bill_no      VARCHAR(60),
+  bill_date    DATE,
+  bill_amount  NUMERIC(14,2),
+  created_by   INTEGER REFERENCES users(id),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS mnt_grv_lines (
+  id           SERIAL PRIMARY KEY,
+  grv_id       INTEGER NOT NULL REFERENCES mnt_grvs(id) ON DELETE CASCADE,
+  po_line_id   INTEGER NOT NULL REFERENCES mnt_po_lines(id),
+  qty          NUMERIC(12,2) NOT NULL CHECK (qty > 0),
+  rate         NUMERIC(12,2) NOT NULL,
+  value        NUMERIC(14,2) NOT NULL,
+  job_card_id  INTEGER REFERENCES mnt_job_cards(id)
+);
+
+CREATE TABLE IF NOT EXISTS mnt_bills (
+  id           SERIAL PRIMARY KEY,
+  source_type  VARCHAR(16) NOT NULL CHECK (source_type IN ('grv','outside_repair')),
+  source_id    INTEGER NOT NULL,
+  payee        VARCHAR(150) NOT NULL,
+  bill_no      VARCHAR(60),
+  bill_date    DATE,
+  amount       NUMERIC(14,2) NOT NULL,
+  due_date     DATE,
+  on_hold      BOOLEAN NOT NULL DEFAULT false,
+  is_estimate  BOOLEAN NOT NULL DEFAULT false,
+  note         TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (source_type, source_id)
+);
+CREATE TABLE IF NOT EXISTS mnt_payments (
+  id          SERIAL PRIMARY KEY,
+  bill_id     INTEGER NOT NULL REFERENCES mnt_bills(id),
+  amount      NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  tds         NUMERIC(14,2) NOT NULL DEFAULT 0,
+  paid_on     DATE NOT NULL DEFAULT CURRENT_DATE,
+  mode        VARCHAR(20),
+  reference   VARCHAR(100),
+  created_by  INTEGER REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_payments_bill ON mnt_payments(bill_id);

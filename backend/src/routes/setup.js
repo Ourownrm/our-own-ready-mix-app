@@ -23,6 +23,7 @@ import { migrateRound210 } from "../lib/round210Schema.js";
 import { migrateRound211 } from "../lib/round211Schema.js";
 import { migrateRound212 } from "../lib/round212Schema.js";
 import { migrateRound214 } from "../lib/round214Schema.js";
+import { migrateRound215 } from "../lib/round215Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -2154,6 +2155,10 @@ router.get("/setup", async (req, res) => {
     // The enum value first: ADD VALUE cannot run inside a transaction block in
     // older Postgres and cannot be repeated, hence IF NOT EXISTS.
     await pool.query(`ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'super_admin'`);
+    // Round 215 — Plant In Charge (deputy of the Plant Manager). Added here,
+    // before the role-default seeding loop below, because that loop inserts
+    // rows for every catalogue role and the enum value must already exist.
+    await pool.query(`ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'plant_in_charge'`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS role_default_permissions (
         role user_role NOT NULL,
@@ -4112,6 +4117,7 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound212(pool, log);
     // ROUND 214 — silo FIFO: opening layers, over-draws, split batches.
     await migrateRound214(pool, log);
+    await migrateRound215(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

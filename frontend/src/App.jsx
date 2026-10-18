@@ -52,6 +52,8 @@ import CustomerTracking from "./pages/CustomerTracking.jsx";
 import SolitaireLogin from "./pages/Solitaire/SolitaireLogin.jsx";
 import SolitaireApp from "./pages/Solitaire/SolitaireApp.jsx";
 import Maintenance from "./pages/Maintenance.jsx";
+import MaintenanceModule from "./pages/MaintenanceModule.jsx";
+import MaintenanceComplaint from "./pages/MaintenanceComplaint.jsx";
 import CustomerBooking from "./pages/CustomerBooking.jsx";
 import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
 import PublicInquiry from "./pages/PublicInquiry.jsx";
@@ -212,6 +214,13 @@ export default function App() {
           <Route path="/accounts" element={
             <ProtectedRoute perm="module.accounts"><AccountsModule /></ProtectedRoute>
           } />
+          {/* Round 215 — the Maintenance module and the complaint page. */}
+          <Route path="/maintenance-module" element={
+            <ProtectedRoute perm="module.maintenance"><MaintenanceModule /></ProtectedRoute>
+          } />
+          <Route path="/maintenance-complaint" element={
+            <ProtectedRoute perm="mnt.complaints"><MaintenanceComplaint /></ProtectedRoute>
+          } />
           <Route path="/fuel-module" element={
             <ProtectedRoute perm="module.fuel"><FuelModule /></ProtectedRoute>
           } />
@@ -237,7 +246,7 @@ export default function App() {
             <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator", "loader_operator"]}><FuelFilling /></ProtectedRoute>
           } />
           <Route path="/supply-approvals" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><SupplyApprovals /></ProtectedRoute>
+            <ProtectedRoute roles={["manager", "plant_in_charge", "administrator"]}><SupplyApprovals /></ProtectedRoute>
           } />
           <Route path="/store" element={
             <ProtectedRoute roles={["store", "administrator"]}><StoreHome /></ProtectedRoute>
@@ -246,7 +255,7 @@ export default function App() {
             <ProtectedRoute roles={["store", "administrator"]}><StoreScan /></ProtectedRoute>
           } />
           <Route path="/store-stock" element={
-            <ProtectedRoute roles={["store", "manager", "administrator"]}><StoreStock /></ProtectedRoute>
+            <ProtectedRoute roles={["store", "manager", "plant_in_charge", "administrator"]}><StoreStock /></ProtectedRoute>
           } />
           {/* Round 139 — Raw Material Module (purchase -> approve -> receive
               -> consume -> physical count -> reports). No Manager access yet

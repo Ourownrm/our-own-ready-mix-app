@@ -38,6 +38,8 @@ export const GROUPS = [
   { key: "fleet", label: "Fleet, fuel & maintenance" },
   // Round 199
   { key: "fuel", label: "Fuel module" },
+  // Round 215
+  { key: "maintenance", label: "Maintenance module" },
   { key: "sales", label: "Sales & CRM" },
   { key: "accounts", label: "Accounts" },
   { key: "masters", label: "Masters" },
@@ -436,6 +438,49 @@ export const CATALOGUE = [
   f("fuel.cancel-approved", "fuel", "Cancel an approved fuel issue request or diesel purchase", E,
     { administrator: E }),
 
+  // ---------- Maintenance module (Round 215) ----------
+  // Preventive schedules, PM inspections, job cards (inside / outside jobs),
+  // outside repairs, the maintenance store, purchase orders + GRV, payments.
+  // Defaults: Manager runs it, Plant In Charge works in it, Store keeps the
+  // spares and POs, Accountant pays, Administrator approves outside repairs.
+  f("module.maintenance", "modules", "Maintenance module", V,
+    { administrator: V, manager: V, plant_in_charge: V, store: V, accountant: V }, { screen: "maintenance-module" }),
+  f("mnt.dashboard", "maintenance", "Maintenance dashboard", V,
+    { administrator: V, manager: V, plant_in_charge: V, store: V, accountant: V }),
+  f("mnt.equipment", "maintenance", "Equipment register — vehicles & plant, meter readings", VCED,
+    { administrator: VCED, manager: VCE, plant_in_charge: VC, store: V }),
+  f("mnt.schedules", "maintenance", "PM schedules (checklists, tasks, intervals)", VCED,
+    { administrator: VCED, manager: V, plant_in_charge: V }),
+  f("mnt.inspections", "maintenance", "PM Inspection — fill a checklist", VC,
+    { administrator: VC, manager: VC, plant_in_charge: VC }),
+  f("mnt.job-cards", "maintenance", "Job cards — jobs, inside / outside, work done", VCE,
+    { administrator: VCE, manager: VCE, plant_in_charge: VCE, store: V, accountant: V }),
+  f("mnt.job-verify", "maintenance", "Verify and close a job card", E,
+    { administrator: E, manager: E }),
+  f("mnt.outside-repairs", "maintenance", "Outside repairs — estimate, sent out, returned, bill", VCE,
+    { administrator: VCE, manager: VCE, plant_in_charge: VCE, accountant: V }),
+  f("mnt.outside-approve", "maintenance", "Approve an outside repair estimate, or a bill above the approved amount", E,
+    { administrator: E }),
+  f("mnt.store", "maintenance", "Maintenance store — spares, used-for, stock ledger", VCE,
+    { administrator: VCE, manager: V, plant_in_charge: V, store: VCE, accountant: V }),
+  f("mnt.store-adjust", "maintenance", "Adjust maintenance store stock (physical count)", E,
+    { administrator: E, manager: E }),
+  f("mnt.parts-issue", "maintenance", "Issue parts from store against a job card", E,
+    { administrator: E, store: E }),
+  f("mnt.purchase-orders", "maintenance", "Maintenance purchase orders", VCE,
+    { administrator: VCE, manager: V, store: VCE, accountant: V }),
+  f("mnt.po-approve", "maintenance", "Approve or reject a maintenance purchase order", E,
+    { administrator: E, manager: E }),
+  f("mnt.grv", "maintenance", "Make a GRV against an approved purchase order", VC,
+    { administrator: VC, store: VC, manager: V, accountant: V }),
+  f("mnt.payments", "maintenance", "Maintenance payments — bills and payments made", VC,
+    { administrator: VC, accountant: VC, manager: V }),
+  // Outside the module on purpose: drivers and Store raise complaints without
+  // opening the Maintenance module (the user's list: Plant In Charge, drivers,
+  // Store and Manager).
+  f("mnt.complaints", "maintenance", "Raise a maintenance complaint", VC,
+    { administrator: VC, manager: VC, plant_in_charge: VC, store: VC, driver: VC }),
+
   // ---------- Sales & CRM ----------
   f("sales.leads", "sales", "Browse Leads", VCE,
     { administrator: VCE, manager: VCE, sales_executive: VCE }, { screen: "browse-leads" }),
@@ -817,6 +862,23 @@ export const MODULES = [
     support: ["fuel.exception-review", "fuel.outside-close", "fuel.outside-cancel", "fuel.cancel-approved"],
   },
   {
+    // Round 215 — the Maintenance module. Roles are set on each function above.
+    key: "maintenance", label: "Maintenance", gate: "module.maintenance", to: "/maintenance-module",
+    matrixRoles: [],
+    menus: [
+      { key: "mnt.dashboard", label: "Dashboard" },
+      { key: "mnt.equipment", label: "Equipment" },
+      { key: "mnt.schedules", label: "PM schedules" },
+      { key: "mnt.inspections", label: "PM Inspection" },
+      { key: "mnt.job-cards", label: "Job cards" },
+      { key: "mnt.outside-repairs", label: "Outside repairs" },
+      { key: "mnt.store", label: "Store stock" },
+      { key: "mnt.purchase-orders", label: "Parts, PO & GRV" },
+      { key: "mnt.payments", label: "Payments" },
+    ],
+    support: ["mnt.job-verify", "mnt.outside-approve", "mnt.store-adjust", "mnt.parts-issue", "mnt.po-approve", "mnt.grv"],
+  },
+  {
     // Round 204 — the Accounts module. Roles are set on each function above.
     key: "accounts", label: "Accounts", gate: "module.accounts", to: "/accounts",
     matrixRoles: [],
@@ -919,6 +981,8 @@ export const ROLES = [
   "super_admin", "administrator", "manager", "plant_operator", "qc_engineer",
   "lab_technician", "driver", "site_supervisor", "accountant", "sales_executive",
   "store", "loader_operator",
+  // Round 215 — deputy of the Plant Manager.
+  "plant_in_charge",
 ];
 
 // The user's decision, 19 Sep: Administrator keeps everything except the
@@ -930,6 +994,21 @@ export const CATALOGUE_BY_KEY = Object.fromEntries(CATALOGUE.map((c) => [c.key, 
 
 // Round 192 — fold the user's role × module table into the defaults above.
 applyMatrix(CATALOGUE_BY_KEY);
+
+// Round 215 — Plant In Charge is the Plant Manager's deputy with the Plant
+// Manager's access to the Plant Production and Fuel modules (the user, 17 Oct
+// 2026). Copied from the manager column so the two can never drift apart in
+// the defaults; a Super Admin can still tune either role afterwards.
+export const PLANT_IN_CHARGE_COPIED_MODULES = ["plant-production", "fuel"];
+for (const mk of PLANT_IN_CHARGE_COPIED_MODULES) {
+  const m = MODULE_BY_KEY[mk];
+  if (!m) continue;
+  for (const k of [m.gate, ...moduleKeys(m)]) {
+    const c = CATALOGUE_BY_KEY[k];
+    if (!c || c.locked || !c.roles.manager) continue;
+    c.roles.plant_in_charge = [...new Set([...(c.roles.plant_in_charge || []), ...c.roles.manager])];
+  }
+}
 
 // A module's gate and everything inside it, for the Super Admin page.
 export function functionsOfModule(moduleKey) {

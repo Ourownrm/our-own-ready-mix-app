@@ -8510,3 +8510,54 @@ block the plant from batching. No 90-day cement retest card yet.
 - The Print dialog pre-fills the terms (payment from the supplier's credit days, freight from delivered / ex-factory) and saves them with the order so a reprint matches. Store can save terms on orders; anyone who can see orders can print.
 - **PO settings** (Administrator, Orders tab): addresses, contact, our GST No., validity days, default terms, standard remarks. New permission `material.po-settings`.
 - Supplier address, GSTIN and contact print from the Suppliers master — fill them in there.
+
+## Round 215 — Maintenance module, part 1 + Plant In Charge role (v10.45)
+
+**Deploy:** upload the files, let Render redeploy, then visit `/setup?key=…` once. It adds the `plant_in_charge`
+role, the maintenance tables, the 10 researched assets with their 40 PM schedules, and the default grants.
+After that, on **Maintenance → Equipment**, link each transit mixer and pickup to its truck row (the pump, loader
+and batching plant are linked automatically when there is only one of each).
+
+- **New role "Plant In Charge"** — deputy of the Plant Manager. Gets the Manager's access to Plant Production and
+  Fuel, plus Maintenance (equipment, inspections, job cards, outside repairs, complaints). Lands on the Modules page.
+  Supply approvals and Store stock screens accept the role too.
+- **Maintenance module** (`/maintenance-module`, tile on the Modules page), tabs each with its own permission:
+  - **Dashboard** — PM overdue / due soon, open cards, to verify, at workshop, spares below re-order, payable,
+    cost this month; approvals waiting; PM due list with Start.
+  - **Equipment** — register linked to the existing truck / pump / equipment rows; meter readings (km / hours,
+    taken as the highest of manual readings, supply requests, fuel logs and inspections); schedules due, history
+    and cost this FY per asset. Delete retires (refused while a job card is open).
+  - **PM schedules** — the 40 manufacturer / engine-maker / practice schedules for the 10 assets with sources;
+    day / week / month / km / hours / m³ / one-time-km triggers with an "or every N months" fallback; checklist and
+    task list; "last done" baseline per asset. Administrator edits / deletes (with Undo).
+  - **PM Inspection** — OK / Not OK per check (Not OK needs a note), tasks done, other jobs noticed. On submit every
+    Not OK and every other job goes onto **one job card** for the vehicle (or its already-open card).
+  - **Job cards** — each job is **Inside or Outside**. Inside: request parts from Store. Outside: send an estimate
+    to the Administrator. Work done → Manager verifies and closes (or reopens). Cost = parts issued + outside bills.
+  - **Complaints** (`/maintenance-complaint`) — Driver, Store, Manager, Plant In Charge; inside / outside, urgency,
+    machine stopped; lands as a job on the vehicle's job card. Urgent / breakdown notifies the Manager.
+  - **Outside repairs** — Administrator approves (amount, advance) or rejects; sent to workshop; back with bill.
+    A bill **above the approved amount is held** until the Administrator accepts the full bill or only the approved
+    amount.
+  - **Parts, PO & GRV** — Store issues requests from stock (cost to the card at average rate; a part meant for
+    another machine can be issued, with a note) or puts them on a PO → Manager / Administrator approves →
+    **Make GRV**: stock in at the landed rate, last purchase price updated, lines bought for a job card issued
+    straight to it. The supplier bill joins Payments with the PO's credit days.
+  - **Store stock** — spares with **Used for**: specific machine(s), a machine type, or general; re-order level,
+    average rate, last price (with up / down from the previous), last supplier; ledger and price history; Adjust
+    (opening stock / physical count, Administrator + Manager).
+  - **Payments** — GRV bills and workshop bills; advances against an approved estimate; held bills can't be paid.
+- **Access** (Super Admin → Maintenance module): `module.maintenance`, `mnt.dashboard`, `mnt.equipment`,
+  `mnt.schedules`, `mnt.inspections`, `mnt.job-cards`, `mnt.job-verify`, `mnt.outside-repairs`,
+  `mnt.outside-approve` (Administrator only), `mnt.store`, `mnt.store-adjust`, `mnt.parts-issue`,
+  `mnt.purchase-orders`, `mnt.po-approve`, `mnt.grv`, `mnt.payments`, `mnt.complaints`.
+
+**Verified.** Fresh database through /setup: 10 assets, 40 schedules, grants seeded. 50 API checks (permissions per
+role, inspection → one card and reuse, driver complaint, per-job outside repair with approval / hold / approve-bill,
+advance payment, adjust, issue, PO, GRV moving average and last price, card cost, verify, bills, dashboard,
+schedule delete / restore). Screens driven headless at 1280 px and 390 px as Administrator, Store, Accountant,
+Plant In Charge and Driver. `npm run check` green; vite build clean.
+
+**Not yet (Round 216):** tyres & batteries, certificates (moving Compliance in), retiring the old Maintenance /
+Breakdowns screens. Lubricants stay in the old Store module. No photos on inspections or complaints yet. Drivers
+pick from all assets when raising a complaint.
