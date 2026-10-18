@@ -26,6 +26,7 @@ import { migrateRound214 } from "../lib/round214Schema.js";
 import { migrateRound215 } from "../lib/round215Schema.js";
 import { migrateRound215b } from "../lib/maintenanceGeneral.js";
 import { migrateRound215c } from "../lib/maintenanceModels.js";
+import { migrateRound216 } from "../lib/round216Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4126,6 +4127,9 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // ROUND 215c — PM schedules planned per vehicle MODEL; each vehicle its
     // own asset (asset no. / registration) under a model.
     await migrateRound215c(pool, log);
+    // ROUND 216 — tyres & batteries, certificates (Statutory Compliance
+    // carried over), markers for records brought over from the old screens.
+    await migrateRound216(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

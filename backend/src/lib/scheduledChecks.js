@@ -2,6 +2,7 @@ import { query } from "../db.js";
 import { pushToRole, pushToUser } from "./push.js";
 import { pushText, actionLabel } from "./i18n.js";
 import { generateInvoiceForTicket, syncOrderCompletionStatus } from "./deliveryConfirmation.js";
+import { CERT_TYPES } from "./round216Schema.js";
 
 // Runs on a timer (see index.js) rather than being tied to a user action,
 // since nobody "does" anything at the 2-hour mark — it's a passive
@@ -130,37 +131,31 @@ const DOC_LABELS = {
 // (via the notifications table) means it only actually sends once a day no
 // matter how often the timer ticks.
 export async function checkComplianceExpiries() {
+  // Round 216 — Statutory Compliance moved into Maintenance → Certificates.
+  // Same rhythm as before: 30, 15 and 7 days before, on the day, then daily
+  // until renewed; once per certificate per day (mnt_cert_reminders).
   const { rows } = await query(
-    `SELECT cd.id, cd.document_type, cd.expiry_date, ca.name AS asset_name,
-            (cd.expiry_date - CURRENT_DATE) AS days_until_expiry
-     FROM compliance_documents cd
-     JOIN compliance_assets ca ON ca.id = cd.asset_id
-     WHERE ca.is_active
-       AND ((cd.expiry_date - CURRENT_DATE) IN (30, 15, 7, 0) OR (cd.expiry_date - CURRENT_DATE) < 0)
-       AND NOT EXISTS (
-         SELECT 1 FROM notifications n
-         WHERE n.compliance_document_id = cd.id AND n.created_at::date = CURRENT_DATE
-       )`
+    `SELECT c.id, c.cert_type, c.label, c.valid_to, a.name AS asset_name, (c.valid_to - CURRENT_DATE) AS days_until_expiry
+     FROM mnt_certificates c JOIN mnt_assets a ON a.id = c.asset_id
+     WHERE c.status = 'current' AND a.is_active
+       AND ((c.valid_to - CURRENT_DATE) IN (30, 15, 7, 0) OR (c.valid_to - CURRENT_DATE) < 0)
+       AND NOT EXISTS (SELECT 1 FROM mnt_cert_reminders r WHERE r.certificate_id = c.id AND r.sent_on = CURRENT_DATE)`
   );
 
   for (const d of rows) {
+    const ins = await query(`INSERT INTO mnt_cert_reminders (certificate_id, sent_on) VALUES ($1, CURRENT_DATE) ON CONFLICT DO NOTHING`, [d.id]);
+    if (!ins.rowCount) continue;
     const days = Number(d.days_until_expiry);
-    const docLabel = DOC_LABELS[d.document_type] || d.document_type;
+    const docLabel = d.label || CERT_TYPES[d.cert_type] || DOC_LABELS[d.cert_type] || d.cert_type;
     const message = days < 0
       ? `${d.asset_name} — ${docLabel} expired ${Math.abs(days)} day(s) ago`
       : days === 0
       ? `${d.asset_name} — ${docLabel} expires today`
       : `${d.asset_name} — ${docLabel} expires in ${days} day(s)`;
-    await query(
-      `INSERT INTO notifications (recipient_role, compliance_document_id, type, message) VALUES ('manager', $1, 'compliance_alert', $2)`,
-      [d.id, message]
-    );
-    await query(
-      `INSERT INTO notifications (recipient_role, compliance_document_id, type, message) VALUES ('administrator', $1, 'compliance_alert', $2)`,
-      [d.id, message]
-    );
-    await pushToRole("manager", { title: "Compliance alert", body: message, url: "/compliance" });
-    await pushToRole("administrator", { title: "Compliance alert", body: message, url: "/compliance" });
+    for (const role of ["manager", "administrator"]) {
+      await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ($1, 'compliance_alert', $2)`, [role, message]);
+      await pushToRole(role, { title: "Certificate expiry", body: message, url: "/maintenance-module?tab=certificates" });
+    }
   }
   return rows;
 }

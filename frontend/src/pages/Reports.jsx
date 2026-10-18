@@ -29,7 +29,8 @@ export default function Reports() {
         // no presence at all on this Director's Dashboard, so an
         // overdue/due-soon count was invisible unless someone happened to
         // go looking for it.
-        apiRequest("/maintenance/dashboard"),
+        // Round 216 — from the Maintenance module (PM schedules due).
+        apiRequest("/maintenance-module/dashboard").catch(() => ({ kpis: null })),
       ]);
       setData(d);
       setOnDutySales(s);
@@ -72,11 +73,10 @@ export default function Reports() {
               items={[
                 { label: "Production Report", to: "/production-report" },
                 { label: "Time cross check", to: "/trip-time-crosscheck" },
-                { label: "Equipment Breakdowns", to: "/breakdowns" },
-                { label: "Maintenance & Best Driver of the Month", to: "/maintenance" },
+                { label: "Maintenance module", to: "/maintenance-module" },
+                { label: "Best Driver & Site Efficiency", to: "/maintenance" },
                 { label: "Fuel and Lubricant report", to: "/fuel-report" },
                 { label: "Trip Allowance report", to: "/trip-allowance-report" },
-                { label: "Statutory Compliance", to: "/compliance" },
                 { label: "Delay justification report", to: "/delay-justification-report" },
                 { label: "Charts", to: "/charts" },
                 { label: "Cycle Time Report", to: "/cycle-time-report" },
@@ -150,8 +150,8 @@ export default function Reports() {
               <Kpi label="Total outstanding" value={inr(data.total_outstanding)} danger={Number(data.total_outstanding) > 0} to="/outstanding-collection-report" />
               {maintenanceKpis && (
                 <>
-                  <Kpi label="Maintenance overdue" value={maintenanceKpis.overdue} danger={maintenanceKpis.overdue > 0} to="/maintenance" />
-                  <Kpi label="Maintenance due this week" value={maintenanceKpis.due_soon} to="/maintenance" />
+                  <Kpi label="PM overdue" value={maintenanceKpis.overdue} danger={maintenanceKpis.overdue > 0} to="/maintenance-module?tab=inspection" />
+                  <Kpi label="PM due soon" value={maintenanceKpis.due_soon} to="/maintenance-module?tab=inspection" />
                 </>
               )}
             </div>

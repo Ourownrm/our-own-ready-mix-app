@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { pushToRole } from "../lib/push.js";
+import { raiseJobSafe } from "../lib/maintenanceJobs.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -37,6 +38,12 @@ router.post(
       const { rows: pumpRows } = await query("SELECT pump_code FROM pumps WHERE id = $1", [pump_id]);
       label = pumpRows[0]?.pump_code || "A pump";
     }
+    // Round 216 — onto the pump's / batching plant's job card in the Maintenance module.
+    const job = await raiseJobSafe(equipment_type === "pump" ? { pump_id } : { plant: true }, {
+      description: `Breakdown — ${remarks}`, origin: "complaint", kind: "inside", urgency: "breakdown", machine_stopped: true,
+      source_type: "breakdown", source_id: rows[0].id,
+    }, req.user, { source: "breakdown" });
+    if (job) await query(`UPDATE breakdown_reports SET moved_to_card = $1 WHERE id = $2`, [job.job_card_id, rows[0].id]);
     await query(
       `INSERT INTO notifications (recipient_role, type, message)
        VALUES ('manager', 'breakdown_reported', $1)`,

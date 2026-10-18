@@ -51,10 +51,14 @@ router.get("/summary", async (req, res) => {
     query(`SELECT COUNT(*)::int AS n FROM breakdown_reports WHERE NOT resolved`),
     query(`SELECT COUNT(*)::int AS n FROM bookings WHERE status = 'pending'`),
     query(`SELECT COUNT(*)::int AS n FROM leads WHERE assigned_to IS NULL AND status = 'new'`),
+    // Round 216 — the Maintenance tile: certificates expired or due within
+    // 30 days (Statutory Compliance moved there) plus approvals waiting.
     query(
-      `SELECT COUNT(*)::int AS n FROM compliance_documents
-       WHERE expiry_date <= CURRENT_DATE + INTERVAL '30 days'`
-    ),
+      `SELECT (SELECT COUNT(*) FROM mnt_certificates c JOIN mnt_assets a ON a.id = c.asset_id AND a.is_active
+               WHERE c.status = 'current' AND c.valid_to <= CURRENT_DATE + 30)
+            + (SELECT COUNT(*) FROM mnt_outside_repairs WHERE status IN ('awaiting_approval','bill_hold'))
+            + (SELECT COUNT(*) FROM mnt_purchase_orders WHERE status = 'pending') AS n`
+    ).catch(() => ({ rows: [{ n: 0 }] })),
     // Round 194 — lab tests waiting for an Administrator's approval. Caught so
     // the dashboard still loads on a database where /setup has not yet made
     // the table.
@@ -105,7 +109,7 @@ router.get("/summary", async (req, res) => {
       "equipment-breakdowns": breakdowns.rows[0].n,
       "booking-links": bookings.rows[0].n,
       "assign-lead": leads.rows[0].n,
-      "statutory-compliance": compliance.rows[0].n,
+      "maintenance-module": Number(compliance.rows[0].n),
       "outstanding-collection": overdue.rows[0].n,
       "rm-tests": rmApprovals.rows[0].n,
     },

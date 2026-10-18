@@ -15,20 +15,20 @@ export default function ComplianceAlertsCard() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    apiRequest("/compliance/alerts").then(setAlerts).catch((err) => setError(err.message));
+    apiRequest("/maintenance-module/certificates/alerts").then(setAlerts).catch((err) => setError(err.message));
   }, []);
 
   if (error) return null;
   if (alerts.length === 0) return null;
 
-  const expired = alerts.filter((a) => a.days_until_expiry < 0);
-  const thisWeek = alerts.filter((a) => a.days_until_expiry >= 0 && a.days_until_expiry <= 7);
-  const thisMonth = alerts.filter((a) => a.days_until_expiry > 7);
+  const expired = alerts.filter((a) => a.days_left < 0);
+  const thisWeek = alerts.filter((a) => a.days_left >= 0 && a.days_left <= 7);
+  const thisMonth = alerts.filter((a) => a.days_left > 7);
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 600 }}>Compliance alerts</div>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>Certificate expiry</div>
         <span className="badge badge-danger">{alerts.length}</span>
       </div>
 
@@ -51,13 +51,13 @@ export default function ComplianceAlertsCard() {
         </>
       )}
 
-      <Link to="/compliance"><button type="button" style={{ width: "100%", marginTop: 12 }}>View full compliance register</button></Link>
+      <Link to="/maintenance-module?tab=certificates"><button type="button" style={{ width: "100%", marginTop: 12 }}>Open Certificates</button></Link>
     </div>
   );
 }
 
 function AlertRow({ a, danger }) {
-  const days = a.days_until_expiry;
+  const days = a.days_left;
   const daysText = days < 0 ? `${Math.abs(days)} days overdue` : days === 0 ? "Expires today" : `${days} days left`;
   return (
     <div
@@ -70,7 +70,7 @@ function AlertRow({ a, danger }) {
     >
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>
-          {a.asset_name} <span style={{ fontWeight: 400, color: "var(--slate)" }}>— {DOC_LABEL[a.document_type] || a.document_type}</span>
+          {a.asset_name} <span style={{ fontWeight: 400, color: "var(--slate)" }}>— {a.type_label || DOC_LABEL[a.cert_type] || a.cert_type}</span>
         </div>
       </div>
       <div style={{ fontSize: 12, fontWeight: 600, color: danger ? "var(--alert-red)" : "var(--amber)", whiteSpace: "nowrap" }}>

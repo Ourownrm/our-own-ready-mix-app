@@ -3,6 +3,7 @@
 // onto ONE job card for the vehicle automatically when it is submitted.
 import { useState } from "react";
 import { apiRequest } from "../../lib/api.js";
+import { printInspectionPdf } from "../../lib/maintenancePdf.js";
 import { useLoad, useAction, Loading, Msg, Badge, PM_STATUS, fmtWhen, H2, MUTED, ROW, GRID, Field, Table, SMALL_BTN } from "./mntUi.jsx";
 
 const SEG = { padding: "7px 14px", fontSize: 12.5, minHeight: 38, border: "1px solid var(--border-strong)", cursor: "pointer" };
@@ -55,6 +56,7 @@ export default function MntInspection({ go, params }) {
         ) : <p style={{ fontSize: 13.5 }}>Everything OK — no job card needed.</p>}
         <div style={ROW}>
           {done.job_card_id && <button type="button" className="btn-primary" onClick={() => go("job-cards", { card: done.job_card_id })}>Open job card</button>}
+          <PrintInspection id={done.id} label="Print report" />
           <button type="button" onClick={() => { setForm(null); setDone(null); go("inspection"); }}>Back to due list</button>
         </div>
       </section>
@@ -169,7 +171,7 @@ export default function MntInspection({ go, params }) {
         <h2 style={H2}>Recent inspections</h2>
         {!recent.data ? <div style={MUTED}>Loading…</div> : recent.data.length === 0 ? <div style={MUTED}>None yet.</div> : (
           <Table minWidth={600}>
-            <thead><tr><th>When</th><th>Equipment</th><th>Schedule</th><th>Result</th><th>By</th></tr></thead>
+            <thead><tr><th>When</th><th>Equipment</th><th>Schedule</th><th>Result</th><th>By</th><th></th></tr></thead>
             <tbody>
               {recent.data.map((i) => (
                 <tr key={i.id}>
@@ -182,12 +184,29 @@ export default function MntInspection({ go, params }) {
                       : <span className="badge badge-success">All OK</span>}
                   </td>
                   <td>{i.done_by_name}</td>
+                  <td style={{ textAlign: "right" }}><PrintInspection id={i.id} label="Print" /></td>
                 </tr>
               ))}
             </tbody>
           </Table>
         )}
       </section>
+    </>
+  );
+}
+
+// Round 216 — the printed PM inspection report (A4 PDF).
+export function PrintInspection({ id, label = "Print" }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function go() {
+    setBusy(true); setErr("");
+    try { await printInspectionPdf(await apiRequest(`/maintenance-module/inspections/${id}`)); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  return (
+    <>
+      {err && <span style={{ ...MUTED, color: "var(--alert-red)" }}>{err}</span>}
+      <button type="button" style={SMALL_BTN} disabled={busy} onClick={go}>{busy ? "Preparing…" : label}</button>
     </>
   );
 }

@@ -14,6 +14,8 @@ import MntOutside from "./maintenance/MntOutside.jsx";
 import MntStore from "./maintenance/MntStore.jsx";
 import MntPurchase from "./maintenance/MntPurchase.jsx";
 import MntPayments from "./maintenance/MntPayments.jsx";
+import MntTyres from "./maintenance/MntTyres.jsx";
+import MntCertificates from "./maintenance/MntCertificates.jsx";
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", perm: "mnt.dashboard", Component: MntDashboard },
@@ -24,6 +26,8 @@ const TABS = [
   { key: "outside", label: "Outside repairs", perm: "mnt.outside-repairs", Component: MntOutside },
   { key: "purchase", label: "Parts, PO & GRV", perm: "mnt.purchase-orders", Component: MntPurchase },
   { key: "store", label: "Store stock", perm: "mnt.store", Component: MntStore },
+  { key: "tyres", label: "Tyres & batteries", perm: "mnt.tyres", Component: MntTyres },
+  { key: "certificates", label: "Certificates", perm: "mnt.certificates", Component: MntCertificates },
   { key: "payments", label: "Payments", perm: "mnt.payments", Component: MntPayments },
 ];
 

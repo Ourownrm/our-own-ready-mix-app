@@ -2,6 +2,7 @@
 // waiting for somebody's approval.
 import { usePermissions } from "../../lib/PermissionContext.jsx";
 import { useLoad, Loading, Kpi, Badge, PM_STATUS, fmtRs, H2, MUTED, Table, SMALL_BTN } from "./mntUi.jsx";
+import MntLegacy from "./MntLegacy.jsx";
 
 const APPROVAL_LABEL = {
   outside: "Outside repair estimate",
@@ -26,8 +27,13 @@ export default function MntDashboard({ go }) {
         <Kpi label="At outside workshop" value={k.at_workshop} onClick={can("mnt.outside-repairs", "view") ? () => go("outside") : undefined} />
         <Kpi label="Spares below re-order" value={k.low_stock} tone={k.low_stock ? "warn" : undefined} onClick={can("mnt.store", "view") ? () => go("store") : undefined} />
         <Kpi label="Payable" value={fmtRs(k.payable)} onClick={can("mnt.payments", "view") ? () => go("payments") : undefined} />
-        <Kpi label="Cost this month" value={fmtRs(k.cost_month)} sub="parts + outside bills" />
+        <Kpi label="Cost this month" value={fmtRs(k.cost_month)} sub="parts, outside bills, lubricants" />
+        <Kpi label="Certificates expired / ≤ 30 d" value={`${k.cert_expired ?? 0} / ${k.cert_due ?? 0}`} tone={k.cert_expired ? "bad" : k.cert_due ? "warn" : undefined}
+          onClick={can("mnt.certificates", "view") ? () => go("certificates") : undefined} />
+        <Kpi label="Tyres below 4 mm" value={k.tyres_low ?? 0} tone={k.tyres_low ? "bad" : undefined}
+          sub={k.battery_warranty ? `${k.battery_warranty} battery warranty ≤ 60 d` : undefined} onClick={can("mnt.tyres", "view") ? () => go("tyres") : undefined} />
       </div>
+      {can("mnt.legacy-import", "edit") && <MntLegacy />}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
         <section className="card" style={{ flex: "1 1 420px", minWidth: 0 }}>

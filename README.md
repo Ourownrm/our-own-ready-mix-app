@@ -8602,3 +8602,42 @@ model and (optionally) its asset number.
 - **Migration:** the ten seeded rows became the ten models with their schedules. Rows already in use (linked to a
   truck / pump / equipment record, or with readings / job cards / costs) stay as that model's first vehicle; the
   rest were placeholders and are removed. Spares meant for a removed row now say "for that model".
+
+## Round 216 — Tyres & batteries, Certificates, printed job card & PM inspection, old screens retired (v10.48)
+
+**Deploy:** upload the files, let Render redeploy, then visit `/setup?key=…` once (new tables; Statutory Compliance is
+carried over into Certificates once). Then, as Administrator, open **Maintenance → Dashboard → From the old
+maintenance screens → Bring everything over**.
+
+- **Tyres & batteries** (new tab): every tyre and battery by serial number. A tyre map per vehicle (transit mixer
+  10 + spare, light truck 6 + spare, pickup / car 4 + spare, loader 4, two-wheeler 2), coloured by tread (≥ 6 / 4–6 /
+  < 4 mm). Fit from store, rotate / swap, remove to store / retreading / scrap, tread readings, back from retread
+  (cost added to the tyre's life). Every move records the odometer, so km run follows a tyre across vehicles and
+  retreads; cost per km per tyre and for the fleet. Batteries per slot with warranty; a failed battery inside
+  warranty opens a warranty claim instead of a purchase. A tyre / battery bought through the maintenance store and
+  issued on a job card is registered against that issue, so its cost isn't counted twice. Permission `mnt.tyres`.
+- **Certificates** (new tab, replaces Statutory Compliance): insurance, fitness, permit, PUC, road tax, calibration,
+  AMC, legal metrology … per vehicle / machine. Renewing keeps the old one in history; upload the PDF / photo; the fee
+  goes to Payments (to be paid or paid now). The Administrator sets which certificates each machine type must have
+  (`mnt.cert-rules`) — a missing one shows as "Not on file". Reminders 30, 15, 7 days before, on the day and daily
+  after expiry. KPIs: expired, ≤ 30 d, 31–60 d, valid, not on file, renewal spend FY. Old compliance assets are
+  matched to the register by registration / asset no. / name; one with no match is added without a model.
+- **Printed job card and PM inspection report** (A4 PDF, company letterhead): vehicle block (asset no., registration,
+  model, odometer), jobs with source, inside / outside, status and who did them; parts issued with rates; outside work
+  with estimate / approved / bill; lubricants; cost summary; signature boxes (raised by, mechanic / Plant In Charge,
+  verified by, driver). The inspection report lists every check OK / NOT OK with remarks, tasks done, jobs raised on
+  the job card and next due. "Print / PDF" on the job card; "Print" on PM Inspection and the equipment history.
+- **Old screens retired into the module:**
+  - Equipment Breakdowns, Statutory Compliance and Maintenance Action Points tiles removed; `/breakdowns` and
+    `/compliance` open the module. The Maintenance page is now **Best Driver & Site Efficiency** only.
+  - A driver's / loader operator's breakdown, a pump or batching-plant breakdown, and a weekly-inspection "Action
+    required" item now go straight onto the vehicle's job card (breakdown = urgent, machine stopped). A driver's /
+    loader operator's outside-repair request becomes an Outside job (estimate → Administrator). Closing the job card
+    marks the breakdown repaired / the action item resolved. Vehicles not yet in the register keep the old record.
+  - "From the old maintenance screens" (Dashboard, Administrator): old action points → PM schedules on the models of
+    the vehicles they covered (each vehicle's last service carried over); open repair points, outside requests,
+    inspection action items and breakdowns → jobs on job cards. A truck at an outside workshop is hidden from the
+    delivery-ticket truck picker (old and new flow).
+- Dashboard: certificates expired / due and tyres below 4 mm; Director's dashboard PM KPIs and the Certificate expiry
+  card now read the module. Administrator grid: the Maintenance tile's badge counts approvals waiting and certificates
+  due.

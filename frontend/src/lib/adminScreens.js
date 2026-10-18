@@ -111,11 +111,10 @@ export const ADMIN_MODULES = [
     colour: "#2F7D6E",
     tint: "#E2F1EE",
     screens: [
-      { key: "statutory-compliance", label: "Statutory Compliance", icon: "shield", to: "/compliance" },
       { key: "trucks-pumps", label: "Trucks & Pumps", icon: "truck", view: "fleet" },
-      { key: "equipment-breakdowns", label: "Equipment Breakdowns", icon: "alert", to: "/breakdowns" },
-      { key: "maintenance", label: "Maintenance & Best Driver", icon: "star", to: "/maintenance" },
-      { key: "maintenance-action-points", label: "Maintenance Action Points", icon: "wrench", view: "maintenance-action-points" },
+      // Round 216 — Statutory Compliance, Equipment Breakdowns and the
+      // maintenance action points moved into the Maintenance module.
+      { key: "maintenance", label: "Best Driver & Site Efficiency", icon: "star", to: "/maintenance" },
       { key: "plant-locations", label: "Plant Location (Geofence)", icon: "globe", view: "plant-locations" },
     ],
   },

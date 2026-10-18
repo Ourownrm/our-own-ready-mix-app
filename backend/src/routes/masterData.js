@@ -216,7 +216,8 @@ router.get("/trucks", async (req, res) => {
   const { rows } = await query(
     excludeInRepair
       ? `SELECT id, truck_number FROM trucks
-         WHERE is_active AND id NOT IN (SELECT truck_id FROM external_repairs WHERE status = 'sent_out')
+         WHERE is_active AND id NOT IN (SELECT truck_id FROM external_repairs WHERE status = 'sent_out' AND truck_id IS NOT NULL)
+           AND id NOT IN (SELECT a.truck_id FROM mnt_outside_repairs o JOIN mnt_assets a ON a.id = o.asset_id WHERE o.status = 'sent_out' AND a.truck_id IS NOT NULL)
          ORDER BY truck_number`
       : "SELECT id, truck_number FROM trucks WHERE is_active ORDER BY truck_number"
   );

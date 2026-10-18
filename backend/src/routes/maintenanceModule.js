@@ -31,6 +31,7 @@ import { pushToRole } from "../lib/push.js";
 import { dueList, assetReadings, triggerText } from "../lib/maintenanceDue.js";
 import { syncGeneralCharges } from "../lib/maintenanceGeneral.js";
 import { refreshAssetNames } from "../lib/maintenanceModels.js";
+import { openCardFor, addJobs } from "../lib/maintenanceJobs.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -344,7 +345,7 @@ router.get("/assets/:id", requirePermission("mnt.equipment", "view"), async (req
   const { rows } = await query(`SELECT ${ASSET_COLS} ${ASSET_FROM} WHERE a.id = $1`, [id]);
   if (!rows.length) return bad(res, "Equipment not found.", 404);
   const a = rows[0];
-  const [readings, due, cards, insp, cost] = await Promise.all([
+  const [readings, due, cards, insp, cost, oldLogs, oldRepairs, certs] = await Promise.all([
     assetReadings([id]),
     dueList({ assetId: id }),
     query(`SELECT j.id, j.status, j.source, j.opened_at, j.verified_at, to_char(j.general_month, 'Mon YYYY') AS general_label,
@@ -358,14 +359,23 @@ router.get("/assets/:id", requirePermission("mnt.equipment", "view"), async (req
              COALESCE((SELECT SUM(value) FROM mnt_store_txns WHERE asset_id = $1 AND txn_type = 'issue' AND created_at >= date_trunc('year', now() - interval '3 months') + interval '3 months'), 0) AS parts_fy,
              COALESCE((SELECT SUM(final_amount) FROM mnt_outside_repairs WHERE asset_id = $1 AND final_amount IS NOT NULL AND returned_at >= date_trunc('year', now() - interval '3 months') + interval '3 months'), 0) AS outside_fy,
              COALESCE((SELECT SUM(amount) FROM mnt_card_charges WHERE asset_id = $1 AND charged_at >= date_trunc('year', now() - interval '3 months') + interval '3 months'), 0) AS general_fy`, [id]),
+    // Round 216 — what the old Maintenance screen recorded for the same truck / equipment.
+    query(`SELECT l.id, l.done_at, l.hours_at_service, l.notes, ap.name FROM maintenance_logs l JOIN maintenance_action_points ap ON ap.id = l.action_point_id
+           WHERE ($1::int IS NOT NULL AND l.truck_id = $1) OR ($2::int IS NOT NULL AND l.equipment_id = $2) ORDER BY l.done_at DESC LIMIT 20`, [a.truck_id, a.equipment_id]),
+    query(`SELECT id, requested_at, issue_description, status::text AS status, workshop_name FROM external_repairs
+           WHERE (($1::int IS NOT NULL AND truck_id = $1) OR ($2::int IS NOT NULL AND equipment_id = $2)) AND moved_to_card IS NULL ORDER BY requested_at DESC LIMIT 20`, [a.truck_id, a.equipment_id]),
+    query(`SELECT id, cert_type, label, number, valid_to::text AS valid_to, (valid_to - CURRENT_DATE) AS days_left FROM mnt_certificates
+           WHERE asset_id = $1 AND status = 'current' ORDER BY valid_to`, [id]),
   ]);
   const history = [
     ...cards.rows.map((c) => ({ kind: "job_card", date: c.opened_at, title: `${code("JC", c.id)} · ${c.general_label ? `General works · ${c.general_label}` : c.jobs || "No jobs"}`, status: c.status, id: c.id })),
     ...insp.rows.map((i) => ({ kind: "inspection", date: i.done_at, title: `PM inspection · ${i.schedule_name}`, meta: i.not_ok ? `${i.not_ok} Not OK → ${code("JC", i.job_card_id)}` : "All OK", id: i.id })),
+    ...oldLogs.rows.map((l) => ({ kind: "old", date: l.done_at, title: `${l.name} (old Maintenance screen)`, meta: [l.hours_at_service != null ? `${Number(l.hours_at_service)} h` : null, l.notes].filter(Boolean).join(" · "), id: `log-${l.id}` })),
+    ...oldRepairs.rows.map((o) => ({ kind: "old", date: o.requested_at, title: `Outside repair (old screen) · ${o.issue_description}`, meta: [o.workshop_name, o.status].filter(Boolean).join(" · "), id: `er-${o.id}` })),
   ].sort((x, y) => new Date(y.date) - new Date(x.date)).slice(0, 25);
   res.json({
     ...a, linked: linkedLabel(a), km: readings[id]?.km ?? null, hours: readings[id]?.hours ?? null,
-    due, history, cost_fy: money(Number(cost.rows[0].parts_fy) + Number(cost.rows[0].outside_fy) + Number(cost.rows[0].general_fy)),
+    due, history, certificates: certs.rows.map((x) => ({ ...x, days_left: Number(x.days_left) })), cost_fy: money(Number(cost.rows[0].parts_fy) + Number(cost.rows[0].outside_fy) + Number(cost.rows[0].general_fy)),
   });
 });
 
@@ -501,28 +511,8 @@ router.get("/due", requireAnyPermission(["mnt.dashboard", "mnt.inspections", "mn
 
 // ------------------------------------------------------------ job cards ---
 
-// The open card for an asset, or a new one. Locked so two submissions at the
-// same moment can't each open a card for the same vehicle.
-async function openCardFor(c, assetId, userId, source, sourceId, km) {
-  await c.query(`SELECT pg_advisory_xact_lock(215001, $1)`, [assetId]);
-  const { rows } = await c.query(`SELECT id FROM mnt_job_cards WHERE asset_id = $1 AND status = 'open' AND general_month IS NULL ORDER BY id LIMIT 1`, [assetId]);
-  if (rows.length) return { id: rows[0].id, created: false };
-  const ins = await c.query(
-    `INSERT INTO mnt_job_cards (asset_id, source, source_id, opened_by, km) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [assetId, source, sourceId, userId, km]
-  );
-  return { id: ins.rows[0].id, created: true };
-}
-
-async function addJobs(c, cardId, jobs, user) {
-  for (const j of jobs) {
-    await c.query(
-      `INSERT INTO mnt_jobs (job_card_id, description, origin, kind, urgency, machine_stopped, raised_by, raised_role)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [cardId, j.description, j.origin, j.kind === "outside" ? "outside" : "inside", j.urgency || null, !!j.machine_stopped, user.id, user.role]
-    );
-  }
-}
+// openCardFor / addJobs live in lib/maintenanceJobs.js (Round 216) — the older
+// screens (breakdowns, truck inspection, driver requests) use them too.
 
 // ----------------------------------------------------------- inspections ---
 
@@ -540,11 +530,26 @@ router.get("/inspections", requireAnyPermission(["mnt.inspections", "mnt.job-car
 
 router.get("/inspections/:id", requireAnyPermission(["mnt.inspections", "mnt.job-cards", "mnt.equipment"]), async (req, res) => {
   const { rows } = await query(`
-    SELECT i.*, a.name AS asset_name, s.name AS schedule_name, u.name AS done_by_name
+    SELECT i.*, a.name AS asset_name, a.asset_no, a.reg_no, a.asset_group, a.year AS asset_year, mm.name AS model_name,
+      t.truck_number, p.pump_code, e.name AS equipment_name,
+      s.name AS schedule_name, s.trigger_type, s.every, s.or_months, s.or_days, s.or_hours, s.basis, s.tasks AS schedule_tasks, s.checklist AS schedule_checklist,
+      u.name AS done_by_name, u.role AS done_by_role
     FROM mnt_pm_inspections i JOIN mnt_assets a ON a.id = i.asset_id JOIN mnt_pm_schedules s ON s.id = i.schedule_id
+    LEFT JOIN mnt_models mm ON mm.id = a.model_id
+    LEFT JOIN trucks t ON t.id = a.truck_id LEFT JOIN pumps p ON p.id = a.pump_id LEFT JOIN equipment e ON e.id = a.equipment_id
     LEFT JOIN users u ON u.id = i.done_by WHERE i.id = $1`, [req.params.id]);
   if (!rows.length) return bad(res, "Inspection not found.", 404);
-  res.json(rows[0]);
+  const i = rows[0];
+  // For the printed report: the schedule's interval, the jobs this inspection
+  // put on the job card, and when the schedule is next due for this vehicle.
+  const [jobs, due] = await Promise.all([
+    i.job_card_id ? query(`SELECT description, origin, kind, status FROM mnt_jobs WHERE job_card_id = $1 AND origin IN ('not_ok','other')
+                            AND created_at = (SELECT done_at FROM mnt_pm_inspections WHERE id = $2) ORDER BY id`, [i.job_card_id, i.id])
+      : { rows: [] },
+    dueList({ assetId: i.asset_id, scheduleId: i.schedule_id }),
+  ]);
+  res.json({ ...i, code: code("PMI", i.id), job_card_code: i.job_card_id ? code("JC", i.job_card_id) : null,
+    trigger: triggerText(i), jobs: jobs.rows, next_due: due[0] ? { next: due[0].next, left: due[0].left, status: due[0].status } : null });
 });
 
 router.post("/inspections", requirePermission("mnt.inspections", "create"), async (req, res) => {
@@ -640,14 +645,19 @@ router.get("/job-cards", requirePermission("mnt.job-cards", "view"), async (req,
 
 async function cardDetail(id) {
   const { rows } = await query(`
-    SELECT j.*, to_char(j.general_month, 'Mon YYYY') AS general_label, a.name AS asset_name, a.asset_group, ob.name AS opened_by_name, vb.name AS verified_by_name, ${CARD_COST_SQL} AS cost
+    SELECT j.*, to_char(j.general_month, 'Mon YYYY') AS general_label, a.name AS asset_name, a.asset_group,
+      a.asset_no, a.reg_no, a.year AS asset_year, mm.name AS model_name, t.truck_number, p.pump_code, e.name AS equipment_name,
+      ob.name AS opened_by_name, wb.name AS work_done_by_name, vb.name AS verified_by_name, ${CARD_COST_SQL} AS cost
     FROM mnt_job_cards j JOIN mnt_assets a ON a.id = j.asset_id
-    LEFT JOIN users ob ON ob.id = j.opened_by LEFT JOIN users vb ON vb.id = j.verified_by
+    LEFT JOIN mnt_models mm ON mm.id = a.model_id
+    LEFT JOIN trucks t ON t.id = a.truck_id LEFT JOIN pumps p ON p.id = a.pump_id LEFT JOIN equipment e ON e.id = a.equipment_id
+    LEFT JOIN users ob ON ob.id = j.opened_by LEFT JOIN users wb ON wb.id = j.work_done_by LEFT JOIN users vb ON vb.id = j.verified_by
     WHERE j.id = $1`, [id]);
   if (!rows.length) return null;
   const [jobs, parts, issues, outside, charges] = await Promise.all([
-    query(`SELECT m.*, u.name AS raised_by_name, o.status AS outside_status
-           FROM mnt_jobs m LEFT JOIN users u ON u.id = m.raised_by LEFT JOIN mnt_outside_repairs o ON o.id = m.outside_repair_id
+    query(`SELECT m.*, u.name AS raised_by_name, db.name AS done_by_name, o.status AS outside_status
+           FROM mnt_jobs m LEFT JOIN users u ON u.id = m.raised_by LEFT JOIN users db ON db.id = m.done_by
+           LEFT JOIN mnt_outside_repairs o ON o.id = m.outside_repair_id
            WHERE m.job_card_id = $1 ORDER BY m.id`, [id]),
     query(`SELECT p.*, i.name AS item_name, i.unit, i.current_qty, l.po_id
            FROM mnt_part_requests p LEFT JOIN mnt_store_items i ON i.id = p.item_id
@@ -750,6 +760,25 @@ router.post("/job-cards/:id/work-done", requirePermission("mnt.job-cards", "edit
   res.json({ ok: true });
 });
 
+// Round 216 — a closed card closes what put its jobs there on the older screens:
+// the breakdown report (repaired), the weekly-inspection action item
+// (resolved), an old repair point (completed), an old outside repair (returned).
+async function closeLinkedRecords(cardId, userId) {
+  const note = `Closed on ${code("JC", cardId)}`;
+  const { rows } = await query(`SELECT source_type, source_id FROM mnt_jobs WHERE job_card_id = $1 AND source_type IS NOT NULL AND status <> 'cancelled'`, [cardId]);
+  const ids = (t) => rows.filter((r) => r.source_type === t).map((r) => r.source_id);
+  if (ids("breakdown").length) await query(`UPDATE breakdown_reports SET repaired_at = now(), repaired_by = $1 WHERE id = ANY($2::int[]) AND repaired_at IS NULL`, [userId, ids("breakdown")]);
+  if (ids("inspection_item").length) {
+    await query(`UPDATE inspection_action_items SET status = 'resolved', resolved_by = $1, resolved_at = now(), resolution_notes = $2 WHERE id = ANY($3::int[]) AND status = 'open'`, [userId, note, ids("inspection_item")]);
+  }
+  if (ids("repair_point").length) {
+    await query(`UPDATE repair_action_points SET status = 'completed', completed_by = $1, completed_at = now() WHERE id = ANY($2::int[]) AND status <> 'completed'`, [userId, ids("repair_point")]);
+  }
+  if (ids("external_repair").length) {
+    await query(`UPDATE external_repairs SET status = 'returned', returned_at = COALESCE(returned_at, now()) WHERE id = ANY($1::int[]) AND status IN ('requested','approved','sent_out')`, [ids("external_repair")]);
+  }
+}
+
 router.post("/job-cards/:id/verify", requirePermission("mnt.job-verify", "edit"), async (req, res) => {
   const reopen = !!req.body.reopen;
   const { rows } = await query(`SELECT status, general_month FROM mnt_job_cards WHERE id = $1`, [req.params.id]);
@@ -760,6 +789,7 @@ router.post("/job-cards/:id/verify", requirePermission("mnt.job-verify", "edit")
     await query(`UPDATE mnt_job_cards SET status = 'open', work_done_by = NULL, work_done_at = NULL WHERE id = $1`, [req.params.id]);
   } else {
     await query(`UPDATE mnt_job_cards SET status = 'closed', verified_by = $1, verified_at = now() WHERE id = $2`, [req.user.id, req.params.id]);
+    await closeLinkedRecords(Number(req.params.id), req.user.id);
   }
   res.json({ ok: true });
 });
@@ -1415,6 +1445,7 @@ router.get("/bills", requirePermission("mnt.payments", "view"), async (req, res)
   const { rows } = await query(`
     SELECT b.*, b.due_date::text AS due_date, b.bill_date::text AS bill_date, COALESCE(SUM(p.amount + p.tds), 0) AS paid, CURRENT_DATE::text AS today,
       CASE b.source_type WHEN 'grv' THEN (SELECT 'GRV-' || LPAD(g.id::text, 4, '0') || ' / PO-' || LPAD(g.po_id::text, 4, '0') FROM mnt_grvs g WHERE g.id = b.source_id)
+        WHEN 'certificate' THEN (SELECT COALESCE(c.label, initcap(replace(c.cert_type, '_', ' '))) || ' · ' || a.name FROM mnt_certificates c JOIN mnt_assets a ON a.id = c.asset_id WHERE c.id = b.source_id)
         ELSE (SELECT 'ER-' || LPAD(o.id::text, 4, '0') || ' · ' || a.name FROM mnt_outside_repairs o JOIN mnt_assets a ON a.id = o.asset_id WHERE o.id = b.source_id) END AS against
     FROM mnt_bills b LEFT JOIN mnt_payments p ON p.bill_id = b.id
     GROUP BY b.id ORDER BY b.on_hold DESC, b.due_date NULLS LAST, b.id DESC LIMIT 300`);
@@ -1475,7 +1506,11 @@ router.get("/dashboard", requirePermission("mnt.dashboard", "view"), async (req,
          FROM mnt_bills b WHERE NOT b.is_estimate) AS payable,
       (SELECT COALESCE(SUM(value), 0) FROM mnt_store_txns WHERE txn_type = 'issue' AND created_at >= date_trunc('month', now()))
        + (SELECT COALESCE(SUM(final_amount), 0) FROM mnt_outside_repairs WHERE final_amount IS NOT NULL AND returned_at >= date_trunc('month', now()))
-       + (SELECT COALESCE(SUM(amount), 0) FROM mnt_card_charges WHERE charged_at >= date_trunc('month', now())) AS cost_month`),
+       + (SELECT COALESCE(SUM(amount), 0) FROM mnt_card_charges WHERE charged_at >= date_trunc('month', now())) AS cost_month,
+      (SELECT COUNT(*)::int FROM mnt_certificates c JOIN mnt_assets a ON a.id = c.asset_id AND a.is_active WHERE c.status = 'current' AND c.valid_to < CURRENT_DATE) AS cert_expired,
+      (SELECT COUNT(*)::int FROM mnt_certificates c JOIN mnt_assets a ON a.id = c.asset_id AND a.is_active WHERE c.status = 'current' AND c.valid_to BETWEEN CURRENT_DATE AND CURRENT_DATE + 30) AS cert_due,
+      (SELECT COUNT(*)::int FROM mnt_tyres WHERE status = 'fitted' AND last_tread_mm < 4) AS tyres_low,
+      (SELECT COUNT(*)::int FROM mnt_batteries WHERE status = 'fitted' AND warranty_until BETWEEN CURRENT_DATE AND CURRENT_DATE + 60) AS battery_warranty`),
     query(`
       SELECT 'outside' AS kind, o.id, o.estimate_amount AS amount, a.name AS asset_name, o.workshop AS detail, o.requested_at AS at
         FROM mnt_outside_repairs o JOIN mnt_assets a ON a.id = o.asset_id WHERE o.status = 'awaiting_approval'
@@ -1494,6 +1529,7 @@ router.get("/dashboard", requirePermission("mnt.dashboard", "view"), async (req,
       never: due.filter((d) => d.status === "never").length,
       open_cards: c.open_cards, to_verify: c.to_verify, parts_waiting: c.parts_waiting, at_workshop: c.at_workshop,
       low_stock: c.low_stock, payable: money(c.payable), cost_month: money(c.cost_month),
+      cert_expired: c.cert_expired, cert_due: c.cert_due, tyres_low: c.tyres_low, battery_warranty: c.battery_warranty,
     },
     approvals: approvals.rows.map((r) => ({ ...r, amount: Number(r.amount), code: code(r.kind === "po" ? "PO" : "ER", r.id) })),
     due: due.filter((d) => ["overdue", "due_soon"].includes(d.status)).slice(0, 25),

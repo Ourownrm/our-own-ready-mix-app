@@ -34,7 +34,6 @@ import TruckTimingReport from "./pages/TruckTimingReport.jsx";
 import FuelModule from "./pages/FuelModule.jsx";
 import AccountsModule from "./pages/AccountsModule.jsx";
 import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
-import Breakdowns from "./pages/Breakdowns.jsx";
 import FuelFilling from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
 import StoreHome from "./pages/StoreHome.jsx";
@@ -44,7 +43,6 @@ import SalesExecutive from "./pages/SalesExecutive.jsx";
 import SalesPerformance from "./pages/SalesPerformance.jsx";
 import LeadsBrowser from "./pages/LeadsBrowser.jsx";
 import CustomerFeedback from "./pages/CustomerFeedback.jsx";
-import ComplianceMonitoring from "./pages/ComplianceMonitoring.jsx";
 import NotificationsPage from "./pages/NotificationsPage.jsx";
 import SalesForecast from "./pages/SalesForecast.jsx";
 import TripTimeCrossCheckPage from "./pages/TripTimeCrossCheckPage.jsx";
@@ -228,7 +226,7 @@ export default function App() {
             <ProtectedRoute roles={["administrator", "manager", "accountant"]}><OutstandingCollectionReport /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><Breakdowns /></ProtectedRoute>
+            <Navigate to="/maintenance-module?tab=job-cards" replace />
           } />
           <Route path="/maintenance" element={
             <ProtectedRoute roles={["manager", "administrator"]}><Maintenance /></ProtectedRoute>
@@ -343,7 +341,7 @@ export default function App() {
             <ProtectedRoute roles={["manager", "administrator"]}><CustomerFeedback /></ProtectedRoute>
           } />
           <Route path="/compliance" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><ComplianceMonitoring /></ProtectedRoute>
+            <Navigate to="/maintenance-module?tab=certificates" replace />
           } />
           <Route path="/notifications" element={
             <ProtectedRoute roles={["manager", "administrator"]}><NotificationsPage /></ProtectedRoute>

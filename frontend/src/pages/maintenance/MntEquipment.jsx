@@ -11,6 +11,7 @@ import { usePermissions } from "../../lib/PermissionContext.jsx";
 import {
   useLoad, useAction, Loading, Msg, Badge, PM_STATUS, CARD_STATUS, fmtNum, fmtRs, fmtDate, H2, MUTED, ROW, GRID, Field, Table, SMALL_BTN,
 } from "./mntUi.jsx";
+import { PrintInspection } from "./MntInspection.jsx";
 
 const EMPTY = { model_id: "", asset_no: "", reg_no: "", year: "", detail: "", link: "" };
 
@@ -308,11 +309,25 @@ export default function MntEquipment({ go, params }) {
               )}
             </section>
 
+            {d.certificates?.length > 0 && (
+              <section className="card">
+                <div style={ROW}><h2 style={{ ...H2, flex: 1 }}>Certificates</h2>
+                  {can("mnt.certificates", "view") && <button type="button" style={SMALL_BTN} onClick={() => go("certificates")}>All certificates</button>}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {d.certificates.map((c) => (
+                    <span key={c.id} className={`badge ${c.days_left < 0 ? "badge-danger" : c.days_left <= 30 ? "badge-warning" : "badge-success"}`}>
+                      {c.label || c.cert_type.replace(/_/g, " ")} · {c.days_left < 0 ? "expired" : `to ${fmtDate(c.valid_to)}`}
+                    </span>
+                  ))}
+                </div>
+              </section>
+            )}
+
             <section className="card">
               <h2 style={H2}>History</h2>
               {d.history.length === 0 ? <div style={MUTED}>Nothing yet.</div> : d.history.map((h) => (
                 <div key={`${h.kind}-${h.id}`} style={{ display: "flex", gap: 12, padding: "9px 0", borderBottom: "1px solid var(--border)" }}>
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", marginTop: 5, flex: "none", background: h.kind === "inspection" ? "var(--signal-green)" : "var(--rebar)" }} />
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", marginTop: 5, flex: "none", background: h.kind === "inspection" ? "var(--signal-green)" : h.kind === "old" ? "#9AA1A9" : "var(--rebar)" }} />
                   <div style={{ flex: 1, fontSize: 13 }}>
                     <div style={{ ...MUTED, fontSize: 11.5 }}>{fmtDate(h.date)}</div>
                     {h.kind === "job_card"
@@ -320,6 +335,7 @@ export default function MntEquipment({ go, params }) {
                       : <b>{h.title}</b>}
                     {h.meta && <div style={MUTED}>{h.meta}</div>}
                   </div>
+                  {h.kind === "inspection" && <PrintInspection id={h.id} />}
                   {h.status && <Badge map={CARD_STATUS} value={h.status} />}
                 </div>
               ))}

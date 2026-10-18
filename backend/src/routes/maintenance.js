@@ -3,6 +3,7 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { CHECKLIST_SECTIONS, CHECKLIST_ITEM_KEYS, RATING_SCALE, scoreFromRatings } from "../lib/inspectionChecklist.js";
 import { istDay } from "../lib/istDate.js";
+import { raiseJobSafe } from "../lib/maintenanceJobs.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -521,11 +522,18 @@ router.post("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
   // most inspections need no action.
   for (const item of action_items || []) {
     if (!item.item_key || !item.remark || !item.remark.trim()) continue;
-    await query(
+    const { rows: ai } = await query(
       `INSERT INTO inspection_action_items (inspection_id, truck_id, item_key, item_label, remark, raised_by)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
       [rows[0].id, truck_id, item.item_key, item.item_label || item.item_key, item.remark.trim(), req.user.id]
     );
+    // Round 216 — and onto the truck's job card in the Maintenance module; the
+    // item is resolved when that card is verified and closed.
+    const job = await raiseJobSafe({ truck_id }, {
+      description: `${item.item_label || item.item_key} — ${item.remark.trim()} (weekly inspection)`, origin: "not_ok", kind: "inside",
+      source_type: "inspection_item", source_id: ai[0].id,
+    }, req.user, { source: "inspection" });
+    if (job) await query(`UPDATE inspection_action_items SET moved_to_card = $1 WHERE id = $2`, [job.job_card_id, ai[0].id]);
   }
 
   res.status(201).json(rows[0]);

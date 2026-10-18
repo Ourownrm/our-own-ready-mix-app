@@ -4654,3 +4654,136 @@ CREATE TABLE IF NOT EXISTS mnt_store_item_models (
 ALTER TABLE mnt_store_items DROP CONSTRAINT IF EXISTS mnt_store_items_used_for_type_check;
 ALTER TABLE mnt_store_items ADD CONSTRAINT mnt_store_items_used_for_type_check
   CHECK (used_for_type IN ('asset','model','group','general'));
+
+-- Round 216 — tyres & batteries, certificates & expiry (replaces Statutory
+-- Compliance), and markers for records brought over from the old maintenance
+-- screens (lib/round216Schema.js).
+-- Jobs remember what put them there (a breakdown report, an inspection
+-- action item, an old repair point …) so closing the card can close that too.
+ALTER TABLE mnt_jobs ADD COLUMN IF NOT EXISTS source_type VARCHAR(24);
+ALTER TABLE mnt_jobs ADD COLUMN IF NOT EXISTS source_id INTEGER;
+
+-- Which old record has been brought over into the module.
+ALTER TABLE external_repairs ADD COLUMN IF NOT EXISTS moved_to_card INTEGER;
+ALTER TABLE repair_action_points ADD COLUMN IF NOT EXISTS moved_to_card INTEGER;
+ALTER TABLE inspection_action_items ADD COLUMN IF NOT EXISTS moved_to_card INTEGER;
+ALTER TABLE breakdown_reports ADD COLUMN IF NOT EXISTS moved_to_card INTEGER;
+ALTER TABLE maintenance_action_points ADD COLUMN IF NOT EXISTS moved_to_schedule INTEGER;
+
+-- Tyres: one row per tyre (serial), wherever it is.
+CREATE TABLE IF NOT EXISTS mnt_tyres (
+  id             SERIAL PRIMARY KEY,
+  serial         VARCHAR(40) NOT NULL,
+  brand          VARCHAR(60),
+  size           VARCHAR(40),
+  pattern        VARCHAR(60),
+  kind           VARCHAR(8) NOT NULL DEFAULT 'new' CHECK (kind IN ('new','retread')),
+  status         VARCHAR(12) NOT NULL DEFAULT 'in_store' CHECK (status IN ('in_store','fitted','at_retread','scrapped')),
+  asset_id       INTEGER REFERENCES mnt_assets(id),
+  position       VARCHAR(10),
+  fitted_at      TIMESTAMPTZ,
+  fitted_km      NUMERIC(12,1),
+  km_run         NUMERIC(12,1) NOT NULL DEFAULT 0,
+  retread_count  INTEGER NOT NULL DEFAULT 0,
+  retread_vendor VARCHAR(100),
+  last_tread_mm  NUMERIC(5,1),
+  last_tread_at  DATE,
+  cost           NUMERIC(12,2),
+  retread_cost   NUMERIC(12,2) NOT NULL DEFAULT 0,
+  store_txn_id   INTEGER REFERENCES mnt_store_txns(id),
+  supplier       VARCHAR(120),
+  purchase_date  DATE,
+  notes          TEXT,
+  created_by     INTEGER REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_tyres_serial ON mnt_tyres (lower(serial));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_tyres_position ON mnt_tyres (asset_id, position) WHERE status = 'fitted';
+
+CREATE TABLE IF NOT EXISTS mnt_batteries (
+  id             SERIAL PRIMARY KEY,
+  serial         VARCHAR(40) NOT NULL,
+  make           VARCHAR(60),
+  spec           VARCHAR(60),
+  status         VARCHAR(12) NOT NULL DEFAULT 'in_store' CHECK (status IN ('in_store','fitted','claim','scrapped')),
+  asset_id       INTEGER REFERENCES mnt_assets(id),
+  position       VARCHAR(10),
+  fitted_at      TIMESTAMPTZ,
+  fitted_km      NUMERIC(12,1),
+  warranty_until DATE,
+  cost           NUMERIC(12,2),
+  store_txn_id   INTEGER REFERENCES mnt_store_txns(id),
+  supplier       VARCHAR(120),
+  purchase_date  DATE,
+  claim_note     TEXT,
+  claim_at       DATE,
+  notes          TEXT,
+  created_by     INTEGER REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_batteries_serial ON mnt_batteries (lower(serial));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_batteries_position ON mnt_batteries (asset_id, position) WHERE status = 'fitted';
+
+-- Every move of a tyre or battery, with the odometer, so its life follows it
+-- across vehicles and retreads.
+CREATE TABLE IF NOT EXISTS mnt_tb_moves (
+  id            SERIAL PRIMARY KEY,
+  kind          VARCHAR(8) NOT NULL CHECK (kind IN ('tyre','battery')),
+  item_id       INTEGER NOT NULL,
+  action        VARCHAR(16) NOT NULL,
+  asset_id      INTEGER REFERENCES mnt_assets(id),
+  position      VARCHAR(10),
+  from_position VARCHAR(10),
+  km            NUMERIC(12,1),
+  tread_mm      NUMERIC(5,1),
+  amount        NUMERIC(12,2),
+  job_card_id   INTEGER REFERENCES mnt_job_cards(id),
+  note          TEXT,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mnt_tb_moves_item ON mnt_tb_moves (kind, item_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_mnt_tb_moves_asset ON mnt_tb_moves (asset_id, id DESC);
+
+-- Certificates: renewing adds a new row and marks the old one superseded, so
+-- the history is kept (the old Statutory Compliance overwrote in place).
+CREATE TABLE IF NOT EXISTS mnt_certificates (
+  id                   SERIAL PRIMARY KEY,
+  asset_id             INTEGER NOT NULL REFERENCES mnt_assets(id),
+  cert_type            VARCHAR(40) NOT NULL,
+  label                VARCHAR(100),
+  number               VARCHAR(100),
+  valid_from           DATE,
+  valid_to             DATE NOT NULL,
+  authority            VARCHAR(150),
+  fee                  NUMERIC(12,2),
+  status               VARCHAR(12) NOT NULL DEFAULT 'current' CHECK (status IN ('current','superseded','retired')),
+  renewed_from_id      INTEGER REFERENCES mnt_certificates(id),
+  legacy_compliance_id INTEGER UNIQUE,
+  document             BYTEA,
+  document_name        VARCHAR(150),
+  document_mime        VARCHAR(80),
+  note                 TEXT,
+  created_by           INTEGER REFERENCES users(id),
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_certificates_current ON mnt_certificates (asset_id, cert_type, COALESCE(label, '')) WHERE status = 'current';
+CREATE INDEX IF NOT EXISTS idx_mnt_certificates_valid ON mnt_certificates (valid_to) WHERE status = 'current';
+
+-- Which certificates every machine of a type must have (Administrator).
+CREATE TABLE IF NOT EXISTS mnt_cert_rules (
+  asset_group  VARCHAR(40) NOT NULL,
+  cert_type    VARCHAR(40) NOT NULL,
+  PRIMARY KEY (asset_group, cert_type)
+);
+
+-- One reminder per certificate per day (30, 15, 7 days before, on the day,
+-- then daily until renewed).
+CREATE TABLE IF NOT EXISTS mnt_cert_reminders (
+  certificate_id INTEGER NOT NULL REFERENCES mnt_certificates(id),
+  sent_on        DATE NOT NULL,
+  PRIMARY KEY (certificate_id, sent_on)
+);
+
+ALTER TABLE mnt_bills DROP CONSTRAINT IF EXISTS mnt_bills_source_type_check;
+ALTER TABLE mnt_bills ADD CONSTRAINT mnt_bills_source_type_check CHECK (source_type IN ('grv','outside_repair','certificate'));

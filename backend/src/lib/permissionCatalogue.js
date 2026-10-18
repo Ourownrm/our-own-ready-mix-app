@@ -389,11 +389,13 @@ export const CATALOGUE = [
     { administrator: VCED }),
   f("fleet.driver-screen", "fleet", "Driver screen", VCE,
     { administrator: V, driver: VCE }),
-  f("fleet.breakdowns", "fleet", "Equipment Breakdowns", VCE,
+  // Round 216 — the Equipment Breakdowns, Maintenance and Statutory Compliance
+  // screens moved into the Maintenance module; reports land on job cards.
+  f("fleet.breakdowns", "fleet", "Report a breakdown (lands on the vehicle's job card)", VCE,
     { administrator: VCE, manager: VCE, driver: VC, site_supervisor: VC, plant_operator: VC }, { screen: "equipment-breakdowns" }),
-  f("fleet.maintenance", "fleet", "Maintenance & Best Driver", VCE,
+  f("fleet.maintenance", "fleet", "Best Driver & Site Efficiency (weekly truck inspection)", VCE,
     { administrator: VCE, manager: VCE }, { screen: "maintenance" }),
-  f("fleet.action-points", "fleet", "Maintenance Action Points", VCED,
+  f("fleet.action-points", "fleet", "Old Maintenance Action Points (replaced by PM schedules)", VCED,
     { administrator: VCED, manager: VCED }, { screen: "maintenance-action-points" }),
   f("fleet.external-repairs", "fleet", "External repairs", VCE,
     { administrator: VCE, manager: VCE }),
@@ -475,6 +477,15 @@ export const CATALOGUE = [
     { administrator: VC, store: VC, manager: V, accountant: V }),
   f("mnt.payments", "maintenance", "Maintenance payments — bills and payments made", VC,
     { administrator: VC, accountant: VC, manager: V }),
+  // Round 216 — tyres & batteries, certificates, bringing over the old screens.
+  f("mnt.tyres", "maintenance", "Tyres & batteries — fit, remove, rotate, retread, warranty", VCE,
+    { administrator: VCE, manager: VCE, plant_in_charge: VCE, store: VC }),
+  f("mnt.certificates", "maintenance", "Certificates & expiry — insurance, fitness, permit, PUC, calibration …", VCED,
+    { administrator: VCED, manager: VCE, plant_in_charge: V, accountant: V }),
+  f("mnt.cert-rules", "maintenance", "Set which certificates each machine type must have", E,
+    { administrator: E }),
+  f("mnt.legacy-import", "maintenance", "Bring records over from the old Maintenance, Breakdown and Compliance screens", E,
+    { administrator: E }),
   // Outside the module on purpose: drivers and Store raise complaints without
   // opening the Maintenance module (the user's list: Plant In Charge, drivers,
   // Store and Manager).
@@ -633,7 +644,7 @@ export const CATALOGUE = [
     { administrator: V, manager: V }),
   f("reports.site-efficiency", "reports", "Site efficiency / best driver", V,
     { administrator: V, manager: V }),
-  f("reports.compliance", "reports", "Statutory Compliance", VCE,
+  f("reports.compliance", "reports", "Old Statutory Compliance (replaced by Maintenance → Certificates)", VCE,
     { administrator: VCE, manager: VCE }, { screen: "statutory-compliance" }),
 
   // ---------- HR (Round 197 — stage 1) ----------
@@ -874,9 +885,12 @@ export const MODULES = [
       { key: "mnt.outside-repairs", label: "Outside repairs" },
       { key: "mnt.store", label: "Store stock" },
       { key: "mnt.purchase-orders", label: "Parts, PO & GRV" },
+      { key: "mnt.tyres", label: "Tyres & batteries" },
+      { key: "mnt.certificates", label: "Certificates" },
       { key: "mnt.payments", label: "Payments" },
     ],
-    support: ["mnt.job-verify", "mnt.outside-approve", "mnt.store-adjust", "mnt.parts-issue", "mnt.po-approve", "mnt.grv"],
+    support: ["mnt.job-verify", "mnt.outside-approve", "mnt.store-adjust", "mnt.parts-issue", "mnt.po-approve", "mnt.grv",
+      "mnt.cert-rules", "mnt.legacy-import"],
   },
   {
     // Round 204 — the Accounts module. Roles are set on each function above.

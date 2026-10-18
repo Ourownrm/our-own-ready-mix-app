@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
+import { printJobCardPdf } from "../../lib/maintenancePdf.js";
 import {
   useLoad, useAction, Loading, Msg, Badge, CARD_STATUS, OUTSIDE_STATUS, PART_STATUS, fmtRs, fmtNum, fmtWhen, fmtDate,
   H2, MUTED, ROW, GRID, Field, Table, SMALL_BTN,
@@ -116,6 +117,8 @@ function CardDetail({ id, go }) {
     <>
       <div style={{ ...ROW, marginBottom: 12 }}>
         <button type="button" style={SMALL_BTN} onClick={() => go("job-cards")}>&larr; All job cards</button>
+        <div style={{ flex: 1 }} />
+        <PrintButton c={c} />
       </div>
       <section className="card" style={{ marginBottom: 16 }}>
         <div style={{ ...ROW, alignItems: "flex-start" }}>
@@ -320,6 +323,8 @@ function GeneralCard({ c, go }) {
     <>
       <div style={{ ...ROW, marginBottom: 12 }}>
         <button type="button" style={SMALL_BTN} onClick={() => go("job-cards")}>&larr; All job cards</button>
+        <div style={{ flex: 1 }} />
+        <PrintButton c={c} />
       </div>
       <section className="card" style={{ marginBottom: 16 }}>
         <div style={{ ...ROW, alignItems: "flex-start" }}>
@@ -353,6 +358,21 @@ function GeneralCard({ c, go }) {
         {noRate > 0 && <p style={{ ...MUTED, marginBottom: 0 }}>{noRate} issue(s) had no amount entered and no standing rate — set the rate on Store stock, or the cost is left out.</p>}
         <p style={{ ...MUTED, marginBottom: 0 }}>Repairs go on a normal job card — this card only collects lubricant issues.</p>
       </section>
+    </>
+  );
+}
+
+// Round 216 — the printed job card (A4 PDF, opens in a new tab to print).
+function PrintButton({ c }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  return (
+    <>
+      {err && <span style={{ ...MUTED, color: "var(--alert-red)" }}>{err}</span>}
+      <button type="button" style={SMALL_BTN} disabled={busy}
+        onClick={() => { setBusy(true); setErr(""); printJobCardPdf(c).catch((e) => setErr(e.message)).finally(() => setBusy(false)); }}>
+        {busy ? "Preparing…" : "Print / PDF"}
+      </button>
     </>
   );
 }

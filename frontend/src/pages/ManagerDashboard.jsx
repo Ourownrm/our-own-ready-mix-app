@@ -174,7 +174,6 @@ export default function ManagerDashboard() {
             <button className={`btn-tab ${view === "correct-orders" ? "active" : ""}`} onClick={() => setView("correct-orders")}>Correct orders</button>
             <button className={`btn-tab ${view === "correct-tickets" ? "active" : ""}`} onClick={() => setView("correct-tickets")}>Correct tickets</button>
             <button className={`btn-tab ${view === "rates" ? "active" : ""}`} onClick={() => setView("rates")}>Concrete grades and rates</button>
-            <button className={`btn-tab ${view === "maintenance-action-points" ? "active" : ""}`} onClick={() => setView("maintenance-action-points")}>Maintenance Action Points</button>
             <button className={`btn-tab ${view === "mix-assignments" ? "active" : ""}`} onClick={() => setView("mix-assignments")}>Approved Mix Assignments</button>
             <button className={`btn-tab ${view === "mix-designs" ? "active" : ""}`} onClick={() => setView("mix-designs")}>Mix Designs (approve)</button>
           </div>
@@ -238,11 +237,10 @@ export default function ManagerDashboard() {
             items={allow([
               { label: "Production Report", to: "/production-report", perm: "reports.production" },
               { label: "Time cross check", to: "/trip-time-crosscheck", perm: "reports.trip-time-crosscheck" },
-              { label: "Equipment Breakdowns", to: "/breakdowns", perm: "fleet.breakdowns" },
-              { label: "Maintenance & Best Driver of the Month", to: "/maintenance", perm: "fleet.maintenance" },
+              { label: "Maintenance module", to: "/maintenance-module", perm: "module.maintenance" },
+              { label: "Best Driver & Site Efficiency", to: "/maintenance", perm: "fleet.maintenance" },
               { label: "Fuel and Lubricant report", to: "/fuel-report", perm: "reports.fuel" },
               { label: "Trip Allowance report", to: "/trip-allowance-report", perm: "reports.trip-allowance" },
-              { label: "Statutory Compliance", to: "/compliance", perm: "reports.compliance" },
               { label: "Delay justification report", to: "/delay-justification-report", perm: "reports.delay-justification" },
               { label: "Charts", to: "/charts", perm: "reports.charts" },
               { label: "Cycle Time Report", to: "/cycle-time-report", perm: "reports.cycle-time" },

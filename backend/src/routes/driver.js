@@ -7,6 +7,7 @@ import {
 } from "../lib/deliveryConfirmation.js";
 import { pushToRole } from "../lib/push.js";
 import { BREAKDOWN_ISSUE_LABELS } from "../lib/breakdownIssueTypes.js";
+import { raiseJobSafe } from "../lib/maintenanceJobs.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("driver"));
@@ -213,13 +214,20 @@ router.post("/breakdown", async (req, res) => {
   // (required by the frontend only when issue_type === 'other').
   const { truck_id, issue_type, latitude, longitude, remarks } = req.body;
   if (!issue_type) return res.status(400).json({ error: "Select what happened." });
-  await query(
+  const { rows: br } = await query(
     `INSERT INTO breakdown_reports (equipment_type, truck_id, driver_id, reported_by, issue_type, latitude, longitude, remarks)
-     VALUES ('truck', $1,$2,$2,$3,$4,$5,$6)`,
+     VALUES ('truck', $1,$2,$2,$3,$4,$5,$6) RETURNING id`,
     [truck_id, req.user.id, issue_type, latitude || null, longitude || null, remarks || null]
   );
   const { rows } = await query("SELECT truck_number FROM trucks WHERE id = $1", [truck_id]);
   const issueLabel = BREAKDOWN_ISSUE_LABELS[issue_type] || issue_type;
+  // Round 216 — the breakdown also lands on the truck's job card in the
+  // Maintenance module (when the truck is in its register).
+  const job = await raiseJobSafe({ truck_id }, {
+    description: `Breakdown — ${issueLabel}${remarks ? `: ${remarks}` : ""}`, origin: "complaint", kind: "inside",
+    urgency: "breakdown", machine_stopped: true, source_type: "breakdown", source_id: br[0].id,
+  }, req.user, { source: "breakdown" });
+  if (job) await query(`UPDATE breakdown_reports SET moved_to_card = $1 WHERE id = $2`, [job.job_card_id, br[0].id]);
   await query(
     `INSERT INTO notifications (recipient_role, type, message)
      VALUES ('manager', 'breakdown_reported', $1)`,
@@ -244,6 +252,13 @@ router.post("/external-repair", async (req, res) => {
   if (!truck_id || !issue_description) {
     return res.status(400).json({ error: "Truck and a description of the issue are required." });
   }
+  // Round 216 — goes to the Maintenance module as an Outside job on the
+  // truck's job card (the estimate then goes to the Administrator). Only a
+  // truck not in the maintenance register still uses the old request.
+  const job = await raiseJobSafe({ truck_id }, {
+    description: issue_description, origin: "complaint", kind: "outside", source_type: "driver_request",
+  }, req.user, { notifyManager: true });
+  if (job) return res.status(201).json({ id: job.job_id, status: "requested", job_card: job.code });
   const { rows } = await query(
     `INSERT INTO external_repairs (truck_id, requested_by, issue_description)
      VALUES ($1,$2,$3) RETURNING *`,
@@ -266,17 +281,38 @@ router.post("/external-repair", async (req, res) => {
 // Driver's own request history — so they can see whether a request they
 // made was approved/rejected, without needing Manager access.
 router.get("/external-repair", async (req, res) => {
-  const { rows } = await query(
-    `SELECT er.id, er.status, er.issue_description, er.requested_at, er.workshop_name,
-            er.sent_out_at, er.returned_at, er.rejection_reason, t.truck_number
-     FROM external_repairs er
-     JOIN trucks t ON t.id = er.truck_id
-     WHERE er.requested_by = $1
-     ORDER BY er.requested_at DESC LIMIT 20`,
-    [req.user.id]
-  );
-  res.json(rows);
+  const [old, mnt] = await Promise.all([
+    query(
+      `SELECT er.id, er.status, er.issue_description, er.requested_at, er.workshop_name,
+              er.sent_out_at, er.returned_at, er.rejection_reason, t.truck_number
+       FROM external_repairs er
+       JOIN trucks t ON t.id = er.truck_id
+       WHERE er.requested_by = $1 AND er.moved_to_card IS NULL
+       ORDER BY er.requested_at DESC LIMIT 20`,
+      [req.user.id]
+    ),
+    query(OUTSIDE_REQUESTS_SQL, [req.user.id]),
+  ]);
+  res.json([...old.rows, ...mnt.rows].sort((a, b) => new Date(b.requested_at) - new Date(a.requested_at)).slice(0, 20));
 });
+
+// Round 216 — the driver's outside requests that went to the Maintenance
+// module, in the shape the driver screen already shows.
+export const OUTSIDE_REQUESTS_SQL = `
+  SELECT 'm' || m.id AS id,
+    CASE WHEN m.status = 'cancelled' OR o.status IN ('rejected','cancelled') THEN 'rejected'
+         WHEN m.status = 'done' OR o.status IN ('billed','bill_hold') THEN 'returned'
+         WHEN o.status = 'sent_out' THEN 'sent_out'
+         WHEN o.status = 'approved' THEN 'approved'
+         ELSE 'requested' END AS status,
+    m.description AS issue_description, m.created_at AS requested_at, o.workshop AS workshop_name,
+    o.sent_out_at, o.returned_at, o.reject_reason AS rejection_reason,
+    COALESCE(t.truck_number, a.reg_no, a.name) AS truck_number, COALESCE(e.name, a.name) AS equipment_name
+  FROM mnt_jobs m JOIN mnt_job_cards j ON j.id = m.job_card_id JOIN mnt_assets a ON a.id = j.asset_id
+  LEFT JOIN trucks t ON t.id = a.truck_id LEFT JOIN equipment e ON e.id = a.equipment_id
+  LEFT JOIN mnt_outside_repairs o ON o.id = m.outside_repair_id
+  WHERE m.raised_by = $1 AND m.source_type = 'driver_request'
+  ORDER BY m.created_at DESC LIMIT 20`;
 
 // Driver's own app-language preference (round 96) — drives both the UI text
 // on driver-facing screens and the language used for push notifications sent
