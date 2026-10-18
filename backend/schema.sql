@@ -4618,3 +4618,39 @@ CREATE TABLE IF NOT EXISTS mnt_card_charges (
 );
 CREATE INDEX IF NOT EXISTS idx_mnt_card_charges_card ON mnt_card_charges(job_card_id);
 CREATE INDEX IF NOT EXISTS idx_mnt_card_charges_asset ON mnt_card_charges(asset_id, charged_at);
+
+-- Round 215c — vehicle models: PM schedules are planned per model; each vehicle
+-- (asset no. / registration) belongs to a model (lib/maintenanceModels.js).
+CREATE TABLE IF NOT EXISTS mnt_models (
+  id           SERIAL PRIMARY KEY,
+  name         VARCHAR(150) NOT NULL,
+  asset_group  VARCHAR(40) NOT NULL DEFAULT 'Other',
+  detail       TEXT,
+  seed_key     VARCHAR(40) UNIQUE,
+  is_active    BOOLEAN NOT NULL DEFAULT true,
+  created_by   INTEGER REFERENCES users(id),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_models_name ON mnt_models (lower(name)) WHERE is_active;
+
+ALTER TABLE mnt_assets ADD COLUMN IF NOT EXISTS model_id INTEGER REFERENCES mnt_models(id);
+ALTER TABLE mnt_assets ADD COLUMN IF NOT EXISTS asset_no VARCHAR(30);
+ALTER TABLE mnt_assets ADD COLUMN IF NOT EXISTS reg_no VARCHAR(30);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_assets_asset_no ON mnt_assets (lower(asset_no)) WHERE asset_no IS NOT NULL AND is_active;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mnt_assets_reg_no ON mnt_assets (lower(reg_no)) WHERE reg_no IS NOT NULL AND is_active;
+CREATE INDEX IF NOT EXISTS idx_mnt_assets_model ON mnt_assets (model_id);
+
+CREATE TABLE IF NOT EXISTS mnt_pm_schedule_models (
+  schedule_id  INTEGER NOT NULL REFERENCES mnt_pm_schedules(id) ON DELETE CASCADE,
+  model_id     INTEGER NOT NULL REFERENCES mnt_models(id),
+  PRIMARY KEY (schedule_id, model_id)
+);
+
+CREATE TABLE IF NOT EXISTS mnt_store_item_models (
+  item_id   INTEGER NOT NULL REFERENCES mnt_store_items(id) ON DELETE CASCADE,
+  model_id  INTEGER NOT NULL REFERENCES mnt_models(id),
+  PRIMARY KEY (item_id, model_id)
+);
+ALTER TABLE mnt_store_items DROP CONSTRAINT IF EXISTS mnt_store_items_used_for_type_check;
+ALTER TABLE mnt_store_items ADD CONSTRAINT mnt_store_items_used_for_type_check
+  CHECK (used_for_type IN ('asset','model','group','general'));

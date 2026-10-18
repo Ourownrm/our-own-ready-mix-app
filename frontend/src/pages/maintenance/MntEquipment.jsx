@@ -1,6 +1,10 @@
 // Round 215 — Equipment register: every vehicle and plant item, its linked
 // master record (where km / hours / m³ come from), meter readings, what is
 // due and its history.
+// Round 215c — each vehicle belongs to a MODEL (Tata Signa, Prima …) and is
+// identified by its asset number and / or registration; it gets every PM
+// schedule of its model. Vehicles are listed under their model, can be added
+// in one go from the fleet records, and models are managed here too.
 import { useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
@@ -8,7 +12,7 @@ import {
   useLoad, useAction, Loading, Msg, Badge, PM_STATUS, CARD_STATUS, fmtNum, fmtRs, fmtDate, H2, MUTED, ROW, GRID, Field, Table, SMALL_BTN,
 } from "./mntUi.jsx";
 
-const EMPTY = { name: "", asset_group: "Transit mixer", make_model: "", year: "", detail: "", link: "" };
+const EMPTY = { model_id: "", asset_no: "", reg_no: "", year: "", detail: "", link: "" };
 
 function linkValue(a) {
   if (a.truck_id) return `truck:${a.truck_id}`;
@@ -21,29 +25,63 @@ export default function MntEquipment({ go, params }) {
   const { can } = usePermissions();
   const list = useLoad("/maintenance-module/assets");
   const masters = useLoad("/maintenance-module/masters");
+  const modelsList = useLoad("/maintenance-module/models");
   const selId = Number(params.get("asset")) || null;
   const detail = useLoad(selId ? `/maintenance-module/assets/${selId}` : null, [selId]);
   const [form, setForm] = useState(null); // { id?, ...fields }
   const [reading, setReading] = useState(null);
   const [q, setQ] = useState("");
-  const act = useAction(() => { list.load(); masters.load(); if (selId) detail.load(); });
+  const [panel, setPanel] = useState(null); // "bulk" | "models"
+  const [bulk, setBulk] = useState({});     // "truck:3" -> { on, model_id, asset_no }
+  const [modelForm, setModelForm] = useState(null);
+  const act = useAction(() => { list.load(); masters.load(); modelsList.load(); if (selId) detail.load(); });
 
   if (!list.data || !masters.data) return <Loading error={list.error || masters.error} />;
   const m = masters.data;
-  const assets = list.data.filter((a) => !q || `${a.name} ${a.linked || ""} ${a.asset_group}`.toLowerCase().includes(q.toLowerCase()));
+  const assets = list.data.filter((a) => !q || `${a.name} ${a.linked || ""} ${a.asset_group} ${a.model_name || ""}`.toLowerCase().includes(q.toLowerCase()));
+  const byModel = [];
+  for (const a of assets) {
+    const key = a.model_name || "No model yet";
+    let g = byModel.find((x) => x.key === key);
+    if (!g) byModel.push((g = { key, items: [] }));
+    g.items.push(a);
+  }
+  byModel.sort((x, y) => (x.key === "No model yet") - (y.key === "No model yet") || x.key.localeCompare(y.key));
+  const unlinkedMasters = [
+    ...m.trucks.filter((r) => !r.asset).map((r) => ({ key: `truck:${r.id}`, label: r.label, kind: "Truck" })),
+    ...m.pumps.filter((r) => !r.asset).map((r) => ({ key: `pump:${r.id}`, label: r.label, kind: "Pump" })),
+    ...m.equipment.filter((r) => !r.asset).map((r) => ({ key: `equipment:${r.id}`, label: r.label, kind: r.type.replace("_", " ") })),
+  ];
   const d = selId && detail.data?.id === selId ? detail.data : null;
 
   function openForm(a) {
-    setForm(a ? { id: a.id, name: a.name, asset_group: a.asset_group, make_model: a.make_model || "", year: a.year || "", detail: a.detail || "", link: linkValue(a) } : { ...EMPTY });
+    setPanel(null);
+    setForm(a ? { id: a.id, model_id: a.model_id || "", asset_no: a.asset_no || "", reg_no: a.reg_no || "", year: a.year || "", detail: a.detail || "", link: linkValue(a), name: a.name } : { ...EMPTY });
   }
   function save() {
     const [kind, id] = (form.link || ":").split(":");
     const body = {
-      name: form.name, asset_group: form.asset_group, make_model: form.make_model, year: form.year, detail: form.detail,
+      name: form.name, model_id: form.model_id, asset_no: form.asset_no, reg_no: form.reg_no, year: form.year, detail: form.detail,
       truck_id: kind === "truck" ? id : null, pump_id: kind === "pump" ? id : null, equipment_id: kind === "equipment" ? id : null,
     };
     act.run(() => apiRequest(form.id ? `/maintenance-module/assets/${form.id}` : "/maintenance-module/assets", { method: form.id ? "PATCH" : "POST", body }),
-      form.id ? "Saved." : "Equipment added.").then((r) => { if (r) setForm(null); });
+      form.id ? "Saved." : "Vehicle added.").then((r) => { if (r) setForm(null); });
+  }
+  function saveBulk() {
+    const rows = Object.entries(bulk).filter(([, v]) => v.on).map(([key, v]) => {
+      const [kind, id] = key.split(":");
+      return { model_id: v.model_id, asset_no: v.asset_no, [`${kind}_id`]: id };
+    });
+    act.run(() => apiRequest("/maintenance-module/assets/bulk", { method: "POST", body: { rows } }), (o) => `${o.added} vehicle(s) added.`)
+      .then((r) => { if (r) { setBulk({}); setPanel(null); } });
+  }
+  function saveModel() {
+    act.run(() => apiRequest(modelForm.id ? `/maintenance-module/models/${modelForm.id}` : "/maintenance-module/models", { method: modelForm.id ? "PATCH" : "POST", body: modelForm }),
+      "Model saved.").then((r) => { if (r) { setModelForm(null); modelsList.load(); } });
+  }
+  function retireModel(x) {
+    if (!window.confirm(`Remove the model ${x.name}? Its PM schedules stop applying to it.`)) return;
+    act.run(() => apiRequest(`/maintenance-module/models/${x.id}`, { method: "DELETE" }), "Model removed.").then((r) => { if (r) modelsList.load(); });
   }
   function retire(a) {
     if (!window.confirm(`Remove ${a.name} from the register? Its history is kept.`)) return;
@@ -75,12 +113,19 @@ export default function MntEquipment({ go, params }) {
           <div className="field-input" style={{ flex: 1 }}><input placeholder="Find equipment" aria-label="Find equipment" value={q} onChange={(e) => setQ(e.target.value)} /></div>
           {can("mnt.equipment", "create") && <button type="button" style={SMALL_BTN} onClick={() => openForm(null)}>+ Add</button>}
         </div>
-        {assets.map((a) => (
+        <div style={{ ...ROW, marginBottom: 8 }}>
+          {can("mnt.equipment", "create") && <button type="button" style={SMALL_BTN} onClick={() => { setForm(null); setPanel(panel === "bulk" ? null : "bulk"); }}>Add vehicles from the fleet</button>}
+          <button type="button" style={SMALL_BTN} onClick={() => { setForm(null); setPanel(panel === "models" ? null : "models"); }}>Models</button>
+        </div>
+        {byModel.map((g) => (
+          <div key={g.key} style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--slate)", padding: "8px 4px 4px" }}>{g.key} · {g.items.length}</div>
+        {g.items.map((a) => (
           <button key={a.id} type="button" onClick={() => go("equipment", { asset: a.id })}
             style={{ display: "flex", gap: 8, alignItems: "center", width: "100%", textAlign: "left", padding: 10, borderRadius: 8,
               border: `1px solid ${a.id === selId ? "#E7C3A6" : "transparent"}`, background: a.id === selId ? "#FBF3EC" : "none", marginBottom: 2 }}>
             <span style={{ flex: 1, minWidth: 0 }}>
-              <b style={{ fontSize: 13 }}>{a.name}</b>
+              <b style={{ fontSize: 13 }}>{a.model_id ? a.name.replace(/ — .*$/, "") : a.name}</b>
               <span style={{ ...MUTED, fontSize: 11.5, display: "block" }}>
                 {a.linked || "Not linked"}{a.km != null ? ` · ${fmtNum(a.km)} km` : ""}{a.hours != null ? ` · ${fmtNum(a.hours)} h` : ""}
               </span>
@@ -90,21 +135,25 @@ export default function MntEquipment({ go, params }) {
                 : a.pm_status !== "ok" ? <Badge map={PM_STATUS} value={a.pm_status} /> : null}
           </button>
         ))}
+          </div>
+        ))}
       </aside>
 
       <main style={{ flex: "999 1 560px", minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
         <Msg msg={act.msg} err={act.err} />
         {form && (
           <section className="card" style={{ borderColor: "#E7C3A6" }}>
-            <h2 style={H2}>{form.id ? "Edit equipment" : "Add equipment"}</h2>
+            <h2 style={H2}>{form.id ? "Edit vehicle" : "Add a vehicle / machine"}</h2>
+            <p style={{ ...MUTED, marginTop: 0 }}>It gets every PM schedule of its model.</p>
             <div style={GRID(200)}>
-              <Field label="Name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Transit Mixer — Tata Signa 2825.K" /></Field>
-              <Field label="Type">
-                <select value={form.asset_group} onChange={(e) => setForm({ ...form, asset_group: e.target.value })}>
-                  {m.groups.map((g) => <option key={g}>{g}</option>)}
+              <Field label="Model">
+                <select value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })}>
+                  <option value="">Select…</option>
+                  {m.models.map((x) => <option key={x.id} value={x.id}>{x.name} ({x.asset_group})</option>)}
                 </select>
               </Field>
-              <Field label="Make / model"><input value={form.make_model} onChange={(e) => setForm({ ...form, make_model: e.target.value })} /></Field>
+              <Field label="Asset no."><input value={form.asset_no} onChange={(e) => setForm({ ...form, asset_no: e.target.value })} placeholder="TM-03" /></Field>
+              <Field label="Registration no."><input value={form.reg_no} onChange={(e) => setForm({ ...form, reg_no: e.target.value })} placeholder="from the linked truck if blank" /></Field>
               <Field label="Year"><input inputMode="numeric" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></Field>
               <Field label="Linked master record" style={{ gridColumn: "1 / -1" }}>
                 <select value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value })}>{linkOptions(form.id)}</select>
@@ -119,7 +168,81 @@ export default function MntEquipment({ go, params }) {
           </section>
         )}
 
-        {!selId && !form && (
+        {panel === "bulk" && (
+          <section className="card" style={{ borderColor: "#E7C3A6" }}>
+            <h2 style={H2}>Add vehicles from the fleet</h2>
+            <p style={{ ...MUTED, marginTop: 0 }}>Trucks, pumps and equipment already in the app that aren’t in this register yet. Tick each one, pick its model and give an asset number if you use one — the registration comes from the record.</p>
+            {unlinkedMasters.length === 0 ? <div style={MUTED}>Every fleet record is already in the register.</div> : (
+              <Table minWidth={560}>
+                <thead><tr><th aria-label="Add" /><th>Fleet record</th><th>Model</th><th>Asset no.</th></tr></thead>
+                <tbody>
+                  {unlinkedMasters.map((x) => {
+                    const v = bulk[x.key] || { on: false, model_id: "", asset_no: "" };
+                    const set = (patch) => setBulk({ ...bulk, [x.key]: { ...v, ...patch } });
+                    return (
+                      <tr key={x.key}>
+                        <td><input type="checkbox" aria-label={`Add ${x.label}`} checked={v.on} onChange={(e) => set({ on: e.target.checked })} /></td>
+                        <td><b>{x.label}</b><div style={MUTED}>{x.kind}</div></td>
+                        <td><div className="field-input"><select aria-label={`Model for ${x.label}`} value={v.model_id} onChange={(e) => set({ model_id: e.target.value, on: true })}>
+                          <option value="">Select…</option>{m.models.map((mm) => <option key={mm.id} value={mm.id}>{mm.name}</option>)}
+                        </select></div></td>
+                        <td><div className="field-input"><input aria-label={`Asset no. for ${x.label}`} value={v.asset_no} onChange={(e) => set({ asset_no: e.target.value })} placeholder="optional" /></div></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </Table>
+            )}
+            <div style={{ ...ROW, justifyContent: "flex-end", marginTop: 12 }}>
+              <button type="button" onClick={() => setPanel(null)}>Close</button>
+              <button type="button" className="btn-primary" disabled={act.busy || !Object.values(bulk).some((v) => v.on)} onClick={saveBulk}>
+                Add {Object.values(bulk).filter((v) => v.on).length || ""} vehicle(s)
+              </button>
+            </div>
+          </section>
+        )}
+
+        {panel === "models" && (
+          <section className="card">
+            <div style={ROW}>
+              <h2 style={{ ...H2, flex: 1 }}>Models</h2>
+              {can("mnt.equipment", "create") && <button type="button" style={SMALL_BTN} onClick={() => setModelForm({ name: "", asset_group: "Transit mixer", detail: "" })}>+ New model</button>}
+            </div>
+            <p style={{ ...MUTED, marginTop: 0 }}>PM schedules are planned per model (PM schedules tab); every vehicle of the model gets them.</p>
+            {modelForm && (
+              <div style={{ ...GRID(180), background: "var(--concrete)", padding: 12, borderRadius: 8, marginBottom: 10 }}>
+                <Field label="Model"><input value={modelForm.name} onChange={(e) => setModelForm({ ...modelForm, name: e.target.value })} placeholder="Tata Signa 2825.K" /></Field>
+                <Field label="Type"><select value={modelForm.asset_group} onChange={(e) => setModelForm({ ...modelForm, asset_group: e.target.value })}>{m.groups.map((g) => <option key={g}>{g}</option>)}</select></Field>
+                <Field label="Details"><input value={modelForm.detail || ""} onChange={(e) => setModelForm({ ...modelForm, detail: e.target.value })} placeholder="engine, emission norm…" /></Field>
+                <div style={{ ...ROW, alignItems: "flex-end" }}>
+                  <button type="button" onClick={() => setModelForm(null)}>Cancel</button>
+                  <button type="button" className="btn-primary" disabled={act.busy} onClick={saveModel}>Save</button>
+                </div>
+              </div>
+            )}
+            {!modelsList.data ? <div style={MUTED}>Loading…</div> : (
+              <Table minWidth={520}>
+                <thead><tr><th>Model</th><th>Type</th><th style={{ textAlign: "right" }}>Vehicles</th><th style={{ textAlign: "right" }}>PM schedules</th><th /></tr></thead>
+                <tbody>
+                  {modelsList.data.models.map((x) => (
+                    <tr key={x.id}>
+                      <td><b>{x.name}</b>{x.detail && <div style={MUTED}>{x.detail}</div>}</td>
+                      <td>{x.asset_group}</td>
+                      <td style={{ textAlign: "right" }}>{x.vehicles}</td>
+                      <td style={{ textAlign: "right" }}>{x.schedules}</td>
+                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                        {can("mnt.equipment", "edit") && <button type="button" style={SMALL_BTN} onClick={() => setModelForm({ id: x.id, name: x.name, asset_group: x.asset_group, detail: x.detail || "" })}>Edit</button>}{" "}
+                        {can("mnt.equipment", "delete") && x.vehicles === 0 && <button type="button" style={SMALL_BTN} onClick={() => retireModel(x)}>Remove</button>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            )}
+          </section>
+        )}
+
+        {!selId && !form && !panel && (
           <div className="card" style={MUTED}>
             Pick a vehicle or machine on the left. {list.data.filter((a) => !a.linked).length > 0 &&
               <><b>{list.data.filter((a) => !a.linked).length}</b> are not linked to a truck / pump / equipment record yet — link them so their km, hours and m³ are picked up automatically.</>}
@@ -134,7 +257,8 @@ export default function MntEquipment({ go, params }) {
                 <div style={{ flex: 1, minWidth: 240 }}>
                   <div style={{ ...MUTED, textTransform: "uppercase", fontSize: 11.5 }}>{d.asset_group}</div>
                   <h1 style={{ fontSize: 21, margin: "2px 0 4px" }}>{d.name}</h1>
-                  <div style={MUTED}>{[d.make_model, d.year, d.detail].filter(Boolean).join(" · ") || "—"} · {d.linked ? `Linked to ${d.linked}` : "Not linked to a master record"}</div>
+                  <div style={MUTED}>{[d.asset_no && `Asset ${d.asset_no}`, d.reg_no && `Reg. ${d.reg_no}`, d.model_name || d.make_model, d.year, d.detail].filter(Boolean).join(" · ") || "—"} · {d.linked ? `Linked to ${d.linked}` : "Not linked to a master record"}</div>
+                  {!d.model_id && <div style={{ ...MUTED, color: "var(--amber)" }}>No model yet — pick one (Edit) so its PM schedules apply.</div>}
                 </div>
                 {can("mnt.equipment", "edit") && <button type="button" style={SMALL_BTN} onClick={() => openForm(d)}>Edit</button>}
                 {can("mnt.equipment", "delete") && <button type="button" style={SMALL_BTN} onClick={() => retire(d)}>Remove</button>}

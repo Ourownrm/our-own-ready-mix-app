@@ -379,7 +379,7 @@ export async function migrateRound215(pool, log) {
     }
     const links = await autoLink(pool);
     await pool.query(`INSERT INTO app_migration_marks (mark) VALUES ('r215_mnt_seed') ON CONFLICT DO NOTHING`);
-    notes.push(`seeded ${Object.keys(ids).length} assets and ${n} PM schedules${links.length ? `; linked ${links.join(", ")}` : ""} — link the transit mixers and pickups to their truck / equipment rows on Maintenance → Equipment`);
+    notes.push(`seeded ${Object.keys(ids).length} vehicle models and ${n} PM schedules${links.length ? `; linked ${links.join(", ")}` : ""}`);
   }
 
   // The new functions' defaults for roles that already had rows. The seeding

@@ -2,6 +2,8 @@
 // manufacturers' guidance for the owner's fleet (18 Oct 2026); each carries
 // where its interval came from. Only the Administrator edits or deletes
 // (mnt.schedules edit / delete), with an Undo straight after a delete.
+// Round 215c — schedules are planned per MODEL (Tata Signa, Prima …); every
+// vehicle of the model gets them, and "last done" is kept per vehicle.
 import { useMemo, useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
@@ -12,15 +14,17 @@ const TRIGGERS = [
   ["km", "Every N km"], ["hours", "Every N hours"], ["m3", "Every N m³ carried"], ["once_km", "Once at N km"],
 ];
 
-function blank(assetId) {
-  return { name: "", trigger_type: "km", every: "", or_months: "", or_days: "", or_hours: "", basis: "PRACTICE", note: "", checklist: [""], tasks: [{ task: "", parts: "" }], asset_ids: assetId ? [assetId] : [] };
+function blank(modelId) {
+  return { name: "", trigger_type: "km", every: "", or_months: "", or_days: "", or_hours: "", basis: "PRACTICE", note: "", checklist: [""], tasks: [{ task: "", parts: "" }], model_ids: modelId ? [modelId] : [] };
 }
+const lastDoneText = (sa) => `${sa?.last_done_date ? fmtDate(sa.last_done_date) : "not recorded"}${sa?.last_done_km != null ? ` · ${fmtNum(sa.last_done_km)} km` : ""}${sa?.last_done_hours != null ? ` · ${fmtNum(sa.last_done_hours)} h` : ""}`;
 
 export default function MntSchedules() {
   const { can } = usePermissions();
   const sched = useLoad("/maintenance-module/schedules");
-  const assets = useLoad("/maintenance-module/asset-options");
-  const [assetId, setAssetId] = useState(null);
+  const models = useLoad("/maintenance-module/models");
+  const [modelId, setModelId] = useState(null);
+  const [open, setOpen] = useState(null); // schedule id showing its vehicles
   const [edit, setEdit] = useState(null);       // form object
   const [baseline, setBaseline] = useState(null); // { schedule_id, asset_id, ... }
   const [deleted, setDeleted] = useState(null);
@@ -29,24 +33,25 @@ export default function MntSchedules() {
   const canCreate = can("mnt.schedules", "create");
   const canDelete = can("mnt.schedules", "delete");
 
-  const byAsset = useMemo(() => {
+  const byModel = useMemo(() => {
     const m = {};
-    for (const s of sched.data || []) for (const a of s.assets) (m[a.asset_id] = m[a.asset_id] || []).push(s);
+    for (const s of sched.data || []) for (const x of s.models) (m[x.model_id] = m[x.model_id] || []).push(s);
     return m;
   }, [sched.data]);
 
-  if (!sched.data || !assets.data) return <Loading error={sched.error || assets.error} />;
-  const aId = assetId || assets.data[0]?.id;
-  const asset = assets.data.find((a) => a.id === aId);
-  const list = byAsset[aId] || [];
+  if (!sched.data || !models.data) return <Loading error={sched.error || models.error} />;
+  const allModels = models.data.models;
+  const mId = modelId || allModels[0]?.id;
+  const model = allModels.find((x) => x.id === mId);
+  const list = byModel[mId] || [];
 
   function openEdit(s) {
     setBaseline(null);
     setEdit(s ? {
       id: s.id, name: s.name, trigger_type: s.trigger_type, every: s.every, or_months: s.or_months || "", or_days: s.or_days || "", or_hours: s.or_hours || "",
       basis: s.basis, note: s.note || "", checklist: s.checklist.length ? s.checklist : [""], tasks: s.tasks.length ? s.tasks : [{ task: "", parts: "" }],
-      asset_ids: s.assets.map((a) => a.asset_id), sources: s.sources,
-    } : blank(aId));
+      model_ids: s.models.map((x) => x.model_id), sources: s.sources,
+    } : blank(mId));
   }
   function save() {
     const body = { ...edit, checklist: edit.checklist.filter((x) => x.trim()), tasks: edit.tasks.filter((t) => t.task.trim()) };
@@ -54,7 +59,7 @@ export default function MntSchedules() {
       "Schedule saved.").then((r) => { if (r) setEdit(null); });
   }
   function del(s) {
-    if (!window.confirm(`Delete "${s.name}"? It applies to ${s.assets.length} machine(s).`)) return;
+    if (!window.confirm(`Delete "${s.name}"? It applies to ${s.models.length} model(s), ${s.assets.length} vehicle(s).`)) return;
     act.run(() => apiRequest(`/maintenance-module/schedules/${s.id}`, { method: "DELETE" }), `Deleted "${s.name}".`).then((r) => { if (r) { setDeleted(s); setEdit(null); } });
   }
   function undo() {
@@ -82,40 +87,51 @@ export default function MntSchedules() {
       )}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
         <aside className="card" style={{ flex: "1 1 250px", maxWidth: 320, padding: 10 }}>
-          {assets.data.map((a) => (
-            <button key={a.id} type="button" onClick={() => { setAssetId(a.id); setEdit(null); setBaseline(null); }}
+          {allModels.map((a) => (
+            <button key={a.id} type="button" onClick={() => { setModelId(a.id); setEdit(null); setBaseline(null); setOpen(null); }}
               style={{ display: "block", width: "100%", textAlign: "left", padding: 10, borderRadius: 8, marginBottom: 2,
-                border: `1px solid ${a.id === aId ? "#E7C3A6" : "transparent"}`, background: a.id === aId ? "#FBF3EC" : "none" }}>
+                border: `1px solid ${a.id === mId ? "#E7C3A6" : "transparent"}`, background: a.id === mId ? "#FBF3EC" : "none" }}>
               <b style={{ fontSize: 13 }}>{a.name}</b>
-              <span style={{ ...MUTED, fontSize: 11.5, display: "block" }}>{(byAsset[a.id] || []).length} schedules</span>
+              <span style={{ ...MUTED, fontSize: 11.5, display: "block" }}>{a.asset_group} · {(byModel[a.id] || []).length} schedules · {a.vehicles} vehicle{a.vehicles === 1 ? "" : "s"}</span>
             </button>
           ))}
         </aside>
 
         <section className="card" style={{ flex: "1 1 380px", minWidth: 0 }}>
           <div style={{ ...ROW, marginBottom: 6 }}>
-            <h2 style={{ ...H2, flex: 1, margin: 0 }}>{asset?.name}</h2>
+            <h2 style={{ ...H2, flex: 1, margin: 0 }}>{model?.name}</h2>
             {canCreate && <button type="button" style={SMALL_BTN} onClick={() => openEdit(null)}>+ New schedule</button>}
           </div>
-          {list.length === 0 && <div style={MUTED}>No schedules for this equipment.</div>}
+          <div style={{ ...MUTED, marginBottom: 6 }}>
+            {model?.vehicles ? `Applies to its ${model.vehicles} vehicle(s).` : "No vehicles of this model yet — add them on the Equipment tab."}
+          </div>
+          {list.length === 0 && <div style={MUTED}>No schedules for this model.</div>}
           {list.map((s) => {
-            const sa = s.assets.find((x) => x.asset_id === aId);
+            const vehicles = s.assets.filter((x) => x.model_id === mId);
+            const shown = open === s.id;
             return (
               <div key={s.id} style={{ padding: "11px 0", borderBottom: "1px solid var(--border)" }}>
                 <div style={{ ...ROW }}>
                   <div style={{ flex: 1, minWidth: 180 }}>
                     <b style={{ fontSize: 13.5 }}>{s.name}</b>
                     <div style={MUTED}>{s.trigger}</div>
-                    <div style={{ ...MUTED, fontSize: 11.5 }}>
-                      Last done: {sa?.last_done_date ? fmtDate(sa.last_done_date) : "not recorded"}{sa?.last_done_km != null ? ` · ${fmtNum(sa.last_done_km)} km` : ""}{sa?.last_done_hours != null ? ` · ${fmtNum(sa.last_done_hours)} h` : ""}
-                      {s.assets.length > 1 && ` · applies to ${s.assets.length} machines`}
-                    </div>
+                    {s.models.length > 1 && <div style={{ ...MUTED, fontSize: 11.5 }}>Also for {s.models.filter((x) => x.model_id !== mId).map((x) => x.name).join(", ")}</div>}
                   </div>
                   <Badge map={BASIS} value={s.basis} />
                   {canEdit && <button type="button" style={SMALL_BTN} onClick={() => openEdit(s)}>Edit</button>}
-                  {canEdit && <button type="button" style={SMALL_BTN} onClick={() => { setEdit(null); setBaseline({ schedule_id: s.id, asset_id: aId, name: s.name, last_done_date: sa?.last_done_date ? String(sa.last_done_date).slice(0, 10) : "", last_done_km: sa?.last_done_km ?? "", last_done_hours: sa?.last_done_hours ?? "" }); }}>Last done</button>}
+                  {vehicles.length > 0 && <button type="button" style={SMALL_BTN} aria-expanded={shown} onClick={() => setOpen(shown ? null : s.id)}>Last done ({vehicles.length})</button>}
                   {canDelete && <button type="button" className="btn-danger" style={SMALL_BTN} onClick={() => del(s)}>Delete</button>}
                 </div>
+                {shown && (
+                  <div style={{ margin: "8px 0 0 12px", borderLeft: "2px solid var(--border)", paddingLeft: 10 }}>
+                    {vehicles.map((sa) => (
+                      <div key={sa.asset_id} style={{ ...ROW, padding: "4px 0", fontSize: 12.5 }}>
+                        <span style={{ flex: 1, minWidth: 160 }}><b>{sa.name.replace(/ — .*$/, "")}</b> <span style={MUTED}>· last done {lastDoneText(sa)}</span></span>
+                        {canEdit && <button type="button" style={SMALL_BTN} onClick={() => { setEdit(null); setBaseline({ schedule_id: s.id, asset_id: sa.asset_id, vehicle: sa.name, name: s.name, last_done_date: sa.last_done_date ? String(sa.last_done_date).slice(0, 10) : "", last_done_km: sa.last_done_km ?? "", last_done_hours: sa.last_done_hours ?? "" }); }}>Set</button>}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -126,7 +142,7 @@ export default function MntSchedules() {
             {baseline && (
               <>
                 <h2 style={H2}>Last done — {baseline.name}</h2>
-                <p style={{ ...MUTED, marginTop: 0 }}>The starting point for {asset?.name}. After this, each PM inspection updates it automatically.</p>
+                <p style={{ ...MUTED, marginTop: 0 }}>The starting point for {baseline.vehicle}. After this, each PM inspection updates it automatically.</p>
                 <div style={GRID(150)}>
                   <Field label="Date"><input type="date" value={baseline.last_done_date} onChange={(e) => setBaseline({ ...baseline, last_done_date: e.target.value })} /></Field>
                   <Field label="At km"><input inputMode="decimal" value={baseline.last_done_km} onChange={(e) => setBaseline({ ...baseline, last_done_km: e.target.value })} /></Field>
@@ -153,14 +169,14 @@ export default function MntSchedules() {
                     <Field label="…or months"><input inputMode="numeric" value={edit.or_months} onChange={(e) => setEdit({ ...edit, or_months: e.target.value })} /></Field>
                     <Field label="…or hours"><input inputMode="numeric" value={edit.or_hours} onChange={(e) => setEdit({ ...edit, or_hours: e.target.value })} /></Field>
                   </div>
-                  <Field label="Applies to">
+                  <Field label="Applies to models">
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      {assets.data.map((a) => {
-                        const on = edit.asset_ids.includes(a.id);
+                      {allModels.map((a) => {
+                        const on = edit.model_ids.includes(a.id);
                         return (
-                          <button key={a.id} type="button" aria-pressed={on} onClick={() => setEdit({ ...edit, asset_ids: on ? edit.asset_ids.filter((x) => x !== a.id) : [...edit.asset_ids, a.id] })}
+                          <button key={a.id} type="button" aria-pressed={on} onClick={() => setEdit({ ...edit, model_ids: on ? edit.model_ids.filter((x) => x !== a.id) : [...edit.model_ids, a.id] })}
                             style={{ padding: "5px 10px", fontSize: 12, borderRadius: 20, background: on ? "var(--charcoal)" : "#fff", color: on ? "#fff" : "var(--charcoal)" }}>
-                            {a.name.replace(/^.*—\s*/, "")}
+                            {a.name}
                           </button>
                         );
                       })}

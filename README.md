@@ -8579,3 +8579,26 @@ pick from all assets when raising a complaint.
 - General-works cards count in the vehicle's cost this FY and the dashboard's cost this month, but not in
   "Open job cards", and they don't stop an asset being retired.
 - New table `mnt_card_charges`, `mnt_job_cards.general_month`; code in `backend/src/lib/maintenanceGeneral.js`.
+
+## Round 215c — PM schedules per vehicle model; each vehicle its own asset (v10.47)
+
+**Deploy:** upload the files (on top of 215 / 215b), let Render redeploy, then visit `/setup?key=…` once. Then on
+**Maintenance → Equipment → Add vehicles from the fleet**, tick each truck / pump / equipment record, pick its
+model and (optionally) its asset number.
+
+- The ten machines researched in Round 215 are **models** (Tata Signa 2825.K, Tata Prima 2830.K, Ashok Leyland
+  CE2820 …), not the fleet. New `mnt_models`; the 40 PM schedules are now planned **against models**
+  (`mnt_pm_schedule_models`).
+- Each **vehicle** is its own asset: model + asset number and / or registration number (taken from the linked
+  truck / pump if left blank). Its name reads "TM-03 · KL60F2213 — Tata Signa 2825.K". It gets every schedule of its
+  model; last-done, what is due, inspections, job cards and costs are per vehicle.
+- **Equipment tab:** vehicles listed under their model; add / edit with model, asset no., registration; "Add
+  vehicles from the fleet" adds many at once from the existing truck / pump / equipment records; **Models** panel to
+  add, rename or remove a model (renaming updates its vehicles' names; a model with vehicles can't be removed).
+- **PM schedules tab:** models on the left; each schedule lists the model's vehicles with their own "last done"
+  (Set per vehicle). Editing a schedule picks the models it applies to (Administrator only, as before).
+- **Store:** a spare can be "used for" a model (all its vehicles) besides specific vehicles, a machine type or general;
+  the part picker on a job card sorts the vehicle's own parts, then its model's, then its type's, then general.
+- **Migration:** the ten seeded rows became the ten models with their schedules. Rows already in use (linked to a
+  truck / pump / equipment record, or with readings / job cards / costs) stay as that model's first vehicle; the
+  rest were placeholders and are removed. Spares meant for a removed row now say "for that model".

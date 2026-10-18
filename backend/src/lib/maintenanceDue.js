@@ -11,6 +11,11 @@
 // pump) since the schedule was last done — the same rule the old Maintenance
 // tab used (Round 136).
 //
+// WHICH PAIRS (Round 215c). A schedule is planned against vehicle MODELS
+// (mnt_pm_schedule_models); every active vehicle of those models gets it.
+// mnt_pm_schedule_assets only holds each vehicle's "last done" record, and a
+// vehicle with no row there simply has not been done yet.
+//
 // DUE. Each (schedule, asset) pair is classified on whichever of its triggers
 // is worst. "Never done" pairs have no baseline yet: they show as "Not done
 // yet" until someone completes an inspection or the Administrator sets the
@@ -180,10 +185,11 @@ export async function dueList({ assetId = null, scheduleId = null } = {}, q = db
              WHERE dt.status NOT IN ('cancelled', 'rejected') AND dt.ticket_date > sa.last_done_date
                AND ((a.truck_id IS NOT NULL AND dt.truck_id = a.truck_id) OR (a.pump_id IS NOT NULL AND dt.pump_id = a.pump_id))
            ) END AS m3_since
-    FROM mnt_pm_schedule_assets sa
-    JOIN mnt_pm_schedules s ON s.id = sa.schedule_id AND s.is_active
-    JOIN mnt_assets a ON a.id = sa.asset_id AND a.is_active
-    WHERE ($1::int IS NULL OR a.id = $1) AND ($2::int IS NULL OR s.id = $2)`, [assetId, scheduleId]);
+    FROM mnt_pm_schedules s
+    JOIN mnt_pm_schedule_models sm ON sm.schedule_id = s.id
+    JOIN mnt_assets a ON a.model_id = sm.model_id AND a.is_active
+    LEFT JOIN mnt_pm_schedule_assets sa ON sa.schedule_id = s.id AND sa.asset_id = a.id
+    WHERE s.is_active AND ($1::int IS NULL OR a.id = $1) AND ($2::int IS NULL OR s.id = $2)`, [assetId, scheduleId]);
   if (!rows.length) return [];
   const readings = await assetReadings([...new Set(rows.map((r) => r.asset_id))], q);
   const today = rows[0].today;

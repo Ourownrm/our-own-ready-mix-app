@@ -30,6 +30,7 @@ import { requirePermission, requireAnyPermission, can } from "../lib/permissions
 import { pushToRole } from "../lib/push.js";
 import { dueList, assetReadings, triggerText } from "../lib/maintenanceDue.js";
 import { syncGeneralCharges } from "../lib/maintenanceGeneral.js";
+import { refreshAssetNames } from "../lib/maintenanceModels.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -78,8 +79,10 @@ export function code(prefix, id) {
 // ---------------------------------------------------------------- assets ---
 
 const ASSET_COLS = `a.id, a.name, a.asset_group, a.make_model, a.year, a.detail, a.truck_id, a.pump_id, a.equipment_id, a.is_active,
+  a.model_id, a.asset_no, a.reg_no, mm.name AS model_name,
   t.truck_number, p.pump_code, e.name AS equipment_name`;
 const ASSET_FROM = `FROM mnt_assets a
+  LEFT JOIN mnt_models mm ON mm.id = a.model_id
   LEFT JOIN trucks t ON t.id = a.truck_id
   LEFT JOIN pumps p ON p.id = a.pump_id
   LEFT JOIN equipment e ON e.id = a.equipment_id`;
@@ -95,7 +98,7 @@ function linkedLabel(a) {
 // including complaints (drivers and Store raise those without the module).
 router.get("/asset-options", requireAnyPermission(ANY_MNT), async (req, res) => {
   const { rows } = await query(`SELECT ${ASSET_COLS} ${ASSET_FROM} WHERE a.is_active ORDER BY a.asset_group, a.name`);
-  res.json(rows.map((a) => ({ id: a.id, name: a.name, asset_group: a.asset_group, linked: linkedLabel(a) })));
+  res.json(rows.map((a) => ({ id: a.id, name: a.name, asset_group: a.asset_group, model_id: a.model_id, model_name: a.model_name, linked: linkedLabel(a) })));
 });
 
 router.get("/assets", requirePermission("mnt.equipment", "view"), async (req, res) => {
@@ -120,11 +123,12 @@ router.get("/assets", requirePermission("mnt.equipment", "view"), async (req, re
 // Master rows (trucks / pumps / equipment) and which asset each is linked to,
 // for the "Linked master record" picker.
 router.get("/masters", requirePermission("mnt.equipment", "view"), async (req, res) => {
-  const [t, p, e, a] = await Promise.all([
+  const [t, p, e, a, models] = await Promise.all([
     query(`SELECT id, truck_number AS label FROM trucks WHERE is_active ORDER BY truck_number`),
     query(`SELECT id, pump_code AS label FROM pumps WHERE is_active ORDER BY pump_code`),
     query(`SELECT id, name AS label, equipment_type::text AS type FROM equipment WHERE is_active ORDER BY name`),
     query(`SELECT id, name, truck_id, pump_id, equipment_id FROM mnt_assets WHERE is_active`),
+    query(`SELECT id, name, asset_group FROM mnt_models WHERE is_active ORDER BY asset_group, name`),
   ]);
   const owner = (col, id) => a.rows.find((x) => x[col] === id) || null;
   res.json({
@@ -132,12 +136,18 @@ router.get("/masters", requirePermission("mnt.equipment", "view"), async (req, r
     pumps: p.rows.map((r) => ({ ...r, asset: owner("pump_id", r.id) })),
     equipment: e.rows.map((r) => ({ ...r, asset: owner("equipment_id", r.id) })),
     groups: GROUPS,
+    models: models.rows,
   });
 });
 
+// Round 215c — each vehicle is its own asset: a model, an asset number and / or
+// a registration number. Its name is built from those (see refreshAssetNames).
 function assetBody(b) {
   const out = {
     name: String(b.name || "").trim(),
+    model_id: num(b.model_id),
+    asset_no: b.asset_no ? String(b.asset_no).trim().toUpperCase().slice(0, 30) : null,
+    reg_no: b.reg_no ? String(b.reg_no).replace(/\s+/g, "").toUpperCase().slice(0, 30) : null,
     asset_group: GROUPS.includes(b.asset_group) ? b.asset_group : "Other",
     make_model: b.make_model ? String(b.make_model).trim() : null,
     year: num(b.year),
@@ -147,27 +157,56 @@ function assetBody(b) {
   return out;
 }
 function assetError(a) {
-  if (!a.name) return "Give the equipment a name.";
+  if (Number.isNaN(a.model_id)) return "Pick the model.";
+  if (a.model_id && !a.asset_no && !a.reg_no) return "Enter the asset number or the registration number.";
+  if (!a.model_id && !a.name) return "Pick the model.";
   if (Number.isNaN(a.year) || (a.year != null && (a.year < 1950 || a.year > 2100))) return "Year doesn't look right.";
   if ([a.truck_id, a.pump_id, a.equipment_id].some((v) => Number.isNaN(v))) return "Pick a valid master record.";
   if ([a.truck_id, a.pump_id, a.equipment_id].filter((v) => v != null).length > 1) return "Link to one master record only — a truck, a pump or an equipment row.";
   return null;
 }
 function uniqueLinkError(err, res) {
+  if (err.code === "23505" && /asset_no/.test(err.constraint || "")) return bad(res, "Another vehicle already has that asset number.", 409);
+  if (err.code === "23505" && /reg_no/.test(err.constraint || "")) return bad(res, "Another vehicle already has that registration number.", 409);
   if (err.code === "23505") return bad(res, "That master record is already linked to another piece of equipment.", 409);
   throw err;
 }
 
+// The model must exist; a vehicle linked to a truck / pump and given no
+// registration takes the truck number / pump code.
+async function prepAsset(a) {
+  if (a.model_id) {
+    const m = await query(`SELECT name, asset_group FROM mnt_models WHERE id = $1 AND is_active`, [a.model_id]);
+    if (!m.rows.length) return "That model isn't on the list.";
+    a.asset_group = m.rows[0].asset_group;
+    a.make_model = m.rows[0].name;
+    if (!a.name) a.name = m.rows[0].name;
+  }
+  if (!a.reg_no && (a.truck_id || a.pump_id)) {
+    const r = a.truck_id
+      ? await query(`SELECT truck_number AS n FROM trucks WHERE id = $1`, [a.truck_id])
+      : await query(`SELECT pump_code AS n FROM pumps WHERE id = $1`, [a.pump_id]);
+    if (r.rows[0]?.n) a.reg_no = String(r.rows[0].n).replace(/\s+/g, "").toUpperCase();
+  }
+  return null;
+}
+
+async function insertAsset(a, userId, q = query) {
+  const { rows } = await q(
+    `INSERT INTO mnt_assets (name, asset_group, make_model, year, detail, truck_id, pump_id, equipment_id, model_id, asset_no, reg_no, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+    [a.name, a.asset_group, a.make_model, a.year, a.detail, a.truck_id, a.pump_id, a.equipment_id, a.model_id, a.asset_no, a.reg_no, userId]
+  );
+  if (a.model_id) await refreshAssetNames(q, { assetId: rows[0].id });
+  return rows[0];
+}
+
 router.post("/assets", requirePermission("mnt.equipment", "create"), async (req, res) => {
   const a = assetBody(req.body);
-  const e = assetError(a);
+  const e = (await prepAsset(a)) || assetError(a);
   if (e) return bad(res, e);
   try {
-    const { rows } = await query(
-      `INSERT INTO mnt_assets (name, asset_group, make_model, year, detail, truck_id, pump_id, equipment_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-      [a.name, a.asset_group, a.make_model, a.year, a.detail, a.truck_id, a.pump_id, a.equipment_id, req.user.id]
-    );
+    const rows = [await insertAsset(a, req.user.id)];
     // A newly linked vehicle picks up its lubricant issues since the start.
     await syncGeneralCharges().catch((err) => console.error("general-works sync:", err.message));
     res.status(201).json(rows[0]);
@@ -176,18 +215,98 @@ router.post("/assets", requirePermission("mnt.equipment", "create"), async (req,
 
 router.patch("/assets/:id", requirePermission("mnt.equipment", "edit"), async (req, res) => {
   const a = assetBody(req.body);
-  const e = assetError(a);
+  const e = (await prepAsset(a)) || assetError(a);
   if (e) return bad(res, e);
   try {
     const r = await query(
-      `UPDATE mnt_assets SET name=$1, asset_group=$2, make_model=$3, year=$4, detail=$5, truck_id=$6, pump_id=$7, equipment_id=$8
-       WHERE id=$9 AND is_active`,
-      [a.name, a.asset_group, a.make_model, a.year, a.detail, a.truck_id, a.pump_id, a.equipment_id, req.params.id]
+      `UPDATE mnt_assets SET name=$1, asset_group=$2, make_model=$3, year=$4, detail=$5, truck_id=$6, pump_id=$7, equipment_id=$8,
+         model_id=$9, asset_no=$10, reg_no=$11
+       WHERE id=$12 AND is_active`,
+      [a.name, a.asset_group, a.make_model, a.year, a.detail, a.truck_id, a.pump_id, a.equipment_id, a.model_id, a.asset_no, a.reg_no, req.params.id]
     );
     if (!r.rowCount) return bad(res, "Equipment not found.", 404);
+    if (a.model_id) await refreshAssetNames(query, { assetId: Number(req.params.id) });
     await syncGeneralCharges().catch((err) => console.error("general-works sync:", err.message));
     res.json({ ok: true });
   } catch (err) { uniqueLinkError(err, res); }
+});
+
+// Several vehicles at once from the fleet records (trucks / pumps /
+// equipment): each row picks its model and may carry an asset number. All or
+// nothing, so a clash on one row leaves nothing half-added.
+router.post("/assets/bulk", requirePermission("mnt.equipment", "create"), async (req, res) => {
+  const rowsIn = Array.isArray(req.body.rows) ? req.body.rows : [];
+  if (!rowsIn.length) return bad(res, "Pick at least one vehicle.");
+  const prepared = [];
+  for (const [i, raw] of rowsIn.entries()) {
+    const a = assetBody(raw);
+    if (!a.model_id) return bad(res, `Row ${i + 1}: pick the model.`);
+    const e = (await prepAsset(a)) || assetError(a);
+    if (e) return bad(res, `Row ${i + 1}: ${e}`);
+    prepared.push(a);
+  }
+  try {
+    const ids = await tx(async (c) => {
+      const out = [];
+      for (const a of prepared) out.push((await insertAsset(a, req.user.id, (t, p) => c.query(t, p))).id);
+      return out;
+    });
+    await syncGeneralCharges().catch((err) => console.error("general-works sync:", err.message));
+    res.status(201).json({ added: ids.length, ids });
+  } catch (err) { uniqueLinkError(err, res); }
+});
+
+// ---- models (Round 215c): the make / model a vehicle belongs to. PM
+// schedules are planned against models.
+router.get("/models", requireAnyPermission(["mnt.equipment", "mnt.schedules", "mnt.store"]), async (req, res) => {
+  const { rows } = await query(`
+    SELECT m.id, m.name, m.asset_group, m.detail,
+      (SELECT COUNT(*)::int FROM mnt_assets a WHERE a.model_id = m.id AND a.is_active) AS vehicles,
+      (SELECT COUNT(*)::int FROM mnt_pm_schedule_models sm JOIN mnt_pm_schedules s ON s.id = sm.schedule_id AND s.is_active WHERE sm.model_id = m.id) AS schedules
+    FROM mnt_models m WHERE m.is_active ORDER BY m.asset_group, m.name`);
+  res.json({ models: rows, groups: GROUPS });
+});
+
+function modelBody(b) {
+  return {
+    name: String(b.name || "").trim().slice(0, 150),
+    asset_group: GROUPS.includes(b.asset_group) ? b.asset_group : "Other",
+    detail: b.detail ? String(b.detail).trim() : null,
+  };
+}
+function modelUnique(err, res) {
+  if (err.code === "23505") return bad(res, "There is already a model with that name.", 409);
+  throw err;
+}
+
+router.post("/models", requirePermission("mnt.equipment", "create"), async (req, res) => {
+  const m = modelBody(req.body);
+  if (!m.name) return bad(res, "Name the model (e.g. Tata Signa 2825.K).");
+  try {
+    const { rows } = await query(`INSERT INTO mnt_models (name, asset_group, detail, created_by) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [m.name, m.asset_group, m.detail, req.user.id]);
+    res.status(201).json(rows[0]);
+  } catch (err) { modelUnique(err, res); }
+});
+
+router.patch("/models/:id", requirePermission("mnt.equipment", "edit"), async (req, res) => {
+  const m = modelBody(req.body);
+  if (!m.name) return bad(res, "Name the model.");
+  try {
+    const r = await query(`UPDATE mnt_models SET name = $1, asset_group = $2, detail = $3 WHERE id = $4 AND is_active`,
+      [m.name, m.asset_group, m.detail, req.params.id]);
+    if (!r.rowCount) return bad(res, "Model not found.", 404);
+    await refreshAssetNames(query, { modelId: Number(req.params.id) });
+    res.json({ ok: true });
+  } catch (err) { modelUnique(err, res); }
+});
+
+router.delete("/models/:id", requirePermission("mnt.equipment", "delete"), async (req, res) => {
+  const { rows } = await query(`SELECT COUNT(*)::int AS n FROM mnt_assets WHERE model_id = $1 AND is_active`, [req.params.id]);
+  if (rows[0].n) return bad(res, `${rows[0].n} vehicle(s) are of this model — move or remove them first.`, 409);
+  await query(`UPDATE mnt_models SET is_active = false WHERE id = $1`, [req.params.id]);
+  await query(`DELETE FROM mnt_pm_schedule_models WHERE model_id = $1`, [req.params.id]);
+  res.json({ ok: true });
 });
 
 // Retire, never delete: job cards, inspections and costs point at it.
@@ -263,7 +382,7 @@ function schedBody(b) {
     basis: ["OEM", "ENGINE", "PRACTICE"].includes(b.basis) ? b.basis : "PRACTICE",
     note: b.note ? String(b.note).trim() : null,
     checklist: list(b.checklist), tasks,
-    asset_ids: (Array.isArray(b.asset_ids) ? b.asset_ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0),
+    model_ids: (Array.isArray(b.model_ids) ? b.model_ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0),
   };
 }
 function schedError(s) {
@@ -271,29 +390,44 @@ function schedError(s) {
   if (!TRIGGERS.includes(s.trigger_type)) return "Pick when it is due.";
   if (!s.every || Number.isNaN(s.every) || s.every <= 0) return "Enter the interval.";
   for (const k of ["or_months", "or_days", "or_hours"]) if (Number.isNaN(s[k]) || (s[k] != null && s[k] <= 0)) return "The 'or after' limit must be a positive number.";
-  if (!s.asset_ids.length) return "Pick at least one vehicle or machine it applies to.";
+  if (!s.model_ids.length) return "Pick at least one model it applies to.";
   if (!s.checklist.length && !s.tasks.length) return "Add at least one check or task.";
   return null;
 }
 
+// Each schedule with the models it is planned for, and every vehicle of
+// those models with its own "last done".
 router.get("/schedules", requireAnyPermission(["mnt.schedules", "mnt.inspections"]), async (req, res) => {
   const { rows } = await query(`
-    SELECT s.*, COALESCE(json_agg(json_build_object('asset_id', a.id, 'name', a.name, 'last_done_date', sa.last_done_date,
-             'last_done_km', sa.last_done_km, 'last_done_hours', sa.last_done_hours) ORDER BY a.name)
-             FILTER (WHERE a.id IS NOT NULL), '[]') AS assets
+    SELECT s.*,
+      COALESCE((SELECT json_agg(json_build_object('model_id', m.id, 'name', m.name) ORDER BY m.name)
+                FROM mnt_pm_schedule_models sm JOIN mnt_models m ON m.id = sm.model_id AND m.is_active
+                WHERE sm.schedule_id = s.id), '[]') AS models,
+      COALESCE((SELECT json_agg(json_build_object('asset_id', a.id, 'name', a.name, 'model_id', a.model_id,
+                  'last_done_date', sa.last_done_date::text, 'last_done_km', sa.last_done_km, 'last_done_hours', sa.last_done_hours) ORDER BY a.name)
+                FROM mnt_pm_schedule_models sm JOIN mnt_assets a ON a.model_id = sm.model_id AND a.is_active
+                LEFT JOIN mnt_pm_schedule_assets sa ON sa.schedule_id = s.id AND sa.asset_id = a.id
+                WHERE sm.schedule_id = s.id), '[]') AS assets
     FROM mnt_pm_schedules s
-    LEFT JOIN mnt_pm_schedule_assets sa ON sa.schedule_id = s.id
-    LEFT JOIN mnt_assets a ON a.id = sa.asset_id AND a.is_active
     WHERE s.is_active
-    GROUP BY s.id ORDER BY s.name`);
+    ORDER BY s.name`);
   res.json(rows.map((s) => ({ ...s, trigger: triggerText(s) })));
 });
 
-async function setScheduleAssets(client, id, assetIds) {
-  await client.query(`DELETE FROM mnt_pm_schedule_assets WHERE schedule_id = $1 AND NOT (asset_id = ANY($2::int[]))`, [id, assetIds]);
-  for (const a of assetIds) {
-    await client.query(`INSERT INTO mnt_pm_schedule_assets (schedule_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, a]);
+async function setScheduleModels(client, id, modelIds) {
+  await client.query(`DELETE FROM mnt_pm_schedule_models WHERE schedule_id = $1 AND NOT (model_id = ANY($2::int[]))`, [id, modelIds]);
+  for (const m of modelIds) {
+    await client.query(`INSERT INTO mnt_pm_schedule_models (schedule_id, model_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, m]);
   }
+}
+
+// Does this schedule apply to this vehicle (through its model)?
+async function scheduleApplies(q, scheduleId, assetId) {
+  const { rows } = await q(
+    `SELECT 1 FROM mnt_pm_schedule_models sm JOIN mnt_assets a ON a.model_id = sm.model_id AND a.is_active
+     JOIN mnt_pm_schedules s ON s.id = sm.schedule_id AND s.is_active
+     WHERE sm.schedule_id = $1 AND a.id = $2`, [scheduleId, assetId]);
+  return rows.length > 0;
 }
 
 router.post("/schedules", requirePermission("mnt.schedules", "create"), async (req, res) => {
@@ -306,7 +440,7 @@ router.post("/schedules", requirePermission("mnt.schedules", "create"), async (r
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$11) RETURNING id`,
       [s.name, s.trigger_type, s.every, s.or_months, s.or_days, s.or_hours, s.basis, s.note, JSON.stringify(s.checklist), JSON.stringify(s.tasks), req.user.id]
     );
-    await setScheduleAssets(c, rows[0].id, s.asset_ids);
+    await setScheduleModels(c, rows[0].id, s.model_ids);
     return rows[0].id;
   });
   res.status(201).json({ id });
@@ -324,7 +458,7 @@ router.patch("/schedules/:id", requirePermission("mnt.schedules", "edit"), async
       [s.name, s.trigger_type, s.every, s.or_months, s.or_days, s.or_hours, s.basis, s.note, JSON.stringify(s.checklist), JSON.stringify(s.tasks), req.user.id, req.params.id]
     );
     if (!r.rowCount) return false;
-    await setScheduleAssets(c, Number(req.params.id), s.asset_ids);
+    await setScheduleModels(c, Number(req.params.id), s.model_ids);
     return true;
   });
   if (!ok) return bad(res, "Schedule not found.", 404);
@@ -351,11 +485,12 @@ router.patch("/schedules/:id/assets/:assetId", requirePermission("mnt.schedules"
   const km = num(req.body.last_done_km);
   const hours = num(req.body.last_done_hours);
   if (Number.isNaN(km) || Number.isNaN(hours)) return bad(res, "Readings must be numbers.");
-  const r = await query(
-    `UPDATE mnt_pm_schedule_assets SET last_done_date=$1, last_done_km=$2, last_done_hours=$3 WHERE schedule_id=$4 AND asset_id=$5`,
+  if (!(await scheduleApplies(query, req.params.id, req.params.assetId))) return bad(res, "That schedule doesn't apply to this vehicle's model.", 404);
+  await query(
+    `INSERT INTO mnt_pm_schedule_assets (schedule_id, asset_id, last_done_date, last_done_km, last_done_hours) VALUES ($4,$5,$1,$2,$3)
+     ON CONFLICT (schedule_id, asset_id) DO UPDATE SET last_done_date=$1, last_done_km=$2, last_done_hours=$3`,
     [d, km, hours, req.params.id, req.params.assetId]
   );
-  if (!r.rowCount) return bad(res, "That schedule doesn't apply to this equipment.", 404);
   res.json({ ok: true });
 });
 
@@ -418,10 +553,8 @@ router.post("/inspections", requirePermission("mnt.inspections", "create"), asyn
   const km = num(req.body.km);
   const hours = num(req.body.hours);
   if (Number.isNaN(km) || Number.isNaN(hours)) return bad(res, "Readings must be numbers.");
-  const { rows: sr } = await query(
-    `SELECT s.*, sa.asset_id FROM mnt_pm_schedules s JOIN mnt_pm_schedule_assets sa ON sa.schedule_id = s.id
-     WHERE s.id = $1 AND sa.asset_id = $2 AND s.is_active`, [scheduleId, assetId]);
-  if (!sr.length) return bad(res, "That schedule doesn't apply to this equipment.");
+  const { rows: sr } = await query(`SELECT s.* FROM mnt_pm_schedules s WHERE s.id = $1 AND s.is_active`, [scheduleId]);
+  if (!sr.length || !(await scheduleApplies(query, scheduleId, assetId))) return bad(res, "That schedule doesn't apply to this vehicle's model.");
   const s = sr[0];
   if (["km", "once_km"].includes(s.trigger_type) && km == null) return bad(res, "Enter the odometer reading — this schedule runs on km.");
   if (s.trigger_type === "hours" && hours == null) return bad(res, "Enter the hour-meter reading — this schedule runs on hours.");
@@ -454,9 +587,11 @@ router.post("/inspections", requirePermission("mnt.inspections", "create"), asyn
         [assetId, km, hours, `PM inspection ${inspId}`, req.user.id]);
     }
     await c.query(
-      `UPDATE mnt_pm_schedule_assets SET last_done_date = CURRENT_DATE,
-         last_done_km = COALESCE($1, last_done_km), last_done_hours = COALESCE($2, last_done_hours)
-       WHERE schedule_id = $3 AND asset_id = $4`, [km, hours, scheduleId, assetId]);
+      `INSERT INTO mnt_pm_schedule_assets (schedule_id, asset_id, last_done_date, last_done_km, last_done_hours)
+       VALUES ($3, $4, CURRENT_DATE, $1, $2)
+       ON CONFLICT (schedule_id, asset_id) DO UPDATE SET last_done_date = CURRENT_DATE,
+         last_done_km = COALESCE($1, mnt_pm_schedule_assets.last_done_km), last_done_hours = COALESCE($2, mnt_pm_schedule_assets.last_done_hours)`,
+      [km, hours, scheduleId, assetId]);
     const jobs = [
       ...answers.filter((a) => !a.ok).map((a) => ({ description: `${a.label} — ${a.note}`, origin: "not_ok" })),
       ...otherJobs.map((t) => ({ description: t, origin: "other" })),
@@ -845,27 +980,36 @@ const CATEGORIES = ["Vehicle spares", "Plant spares", "Filters", "Lubricants", "
 router.get("/store/items", requireAnyPermission(["mnt.store", "mnt.job-cards", "mnt.purchase-orders"]), async (req, res) => {
   const assetId = req.query.asset_id ? Number(req.query.asset_id) : null;
   const { rows } = await query(`
-    SELECT i.*, COALESCE(json_agg(json_build_object('id', a.id, 'name', a.name) ORDER BY a.name) FILTER (WHERE a.id IS NOT NULL), '[]') AS assets
+    SELECT i.*,
+      COALESCE((SELECT json_agg(json_build_object('id', a.id, 'name', a.name) ORDER BY a.name)
+                FROM mnt_store_item_assets ia JOIN mnt_assets a ON a.id = ia.asset_id WHERE ia.item_id = i.id), '[]') AS assets,
+      COALESCE((SELECT json_agg(json_build_object('id', m.id, 'name', m.name) ORDER BY m.name)
+                FROM mnt_store_item_models im JOIN mnt_models m ON m.id = im.model_id WHERE im.item_id = i.id), '[]') AS models
     FROM mnt_store_items i
-    LEFT JOIN mnt_store_item_assets ia ON ia.item_id = i.id LEFT JOIN mnt_assets a ON a.id = ia.asset_id
-    WHERE i.is_active GROUP BY i.id ORDER BY i.name`);
+    WHERE i.is_active ORDER BY i.name`);
   let group = null;
+  let modelId = null;
   if (assetId) {
-    const g = await query(`SELECT asset_group FROM mnt_assets WHERE id = $1`, [assetId]);
+    const g = await query(`SELECT asset_group, model_id FROM mnt_assets WHERE id = $1`, [assetId]);
     group = g.rows[0]?.asset_group || null;
+    modelId = g.rows[0]?.model_id || null;
   }
+  // How well the item fits the vehicle: its own part (0), its model (1), its
+  // type (2), general (3), meant for something else (4).
   const out = rows.map((i) => {
-    let fit = 3;
+    let fit = 4;
     if (assetId) {
       if (i.used_for_type === "asset" && i.assets.some((a) => a.id === assetId)) fit = 0;
-      else if (i.used_for_type === "group" && i.used_for_group === group) fit = 1;
-      else if (i.used_for_type === "general") fit = 2;
+      else if (i.used_for_type === "model" && i.models.some((m) => m.id === modelId)) fit = 1;
+      else if (i.used_for_type === "group" && i.used_for_group === group) fit = 2;
+      else if (i.used_for_type === "general") fit = 3;
     }
     return {
       ...i, current_qty: Number(i.current_qty), avg_rate: Number(i.avg_rate),
       last_price: i.last_price == null ? null : Number(i.last_price), prev_price: i.prev_price == null ? null : Number(i.prev_price),
       reorder_level: i.reorder_level == null ? null : Number(i.reorder_level),
-      used_for_label: i.used_for_type === "general" ? "General" : i.used_for_type === "group" ? `All ${String(i.used_for_group || "").toLowerCase()}s` : (i.assets.map((a) => a.name).join(", ") || "—"),
+      used_for_label: i.used_for_type === "general" ? "General" : i.used_for_type === "group" ? `All ${String(i.used_for_group || "").toLowerCase()}s`
+        : i.used_for_type === "model" ? (i.models.map((m) => `All ${m.name}`).join(", ") || "—") : (i.assets.map((a) => a.name).join(", ") || "—"),
       fit,
     };
   });
@@ -877,17 +1021,19 @@ function itemBody(b) {
   return {
     name: String(b.name || "").trim(), part_no: b.part_no ? String(b.part_no).trim() : null,
     category: CATEGORIES.includes(b.category) ? b.category : "Other", unit: String(b.unit || "Nos").trim() || "Nos",
-    used_for_type: ["asset", "group", "general"].includes(b.used_for_type) ? b.used_for_type : "general",
+    used_for_type: ["asset", "model", "group", "general"].includes(b.used_for_type) ? b.used_for_type : "general",
     used_for_group: b.used_for_type === "group" && GROUPS.includes(b.used_for_group) ? b.used_for_group : null,
     reorder_level: num(b.reorder_level),
     asset_ids: b.used_for_type === "asset" ? (Array.isArray(b.asset_ids) ? b.asset_ids : []).map(Number).filter(Boolean) : [],
+    model_ids: b.used_for_type === "model" ? (Array.isArray(b.model_ids) ? b.model_ids : []).map(Number).filter(Boolean) : [],
   };
 }
 function itemError(i) {
   if (!i.name) return "Give the item a name.";
   if (Number.isNaN(i.reorder_level) || (i.reorder_level != null && i.reorder_level < 0)) return "Re-order level must be 0 or more.";
   if (i.used_for_type === "group" && !i.used_for_group) return "Pick the machine type.";
-  if (i.used_for_type === "asset" && !i.asset_ids.length) return "Pick the machine(s) it is used for.";
+  if (i.used_for_type === "asset" && !i.asset_ids.length) return "Pick the vehicle(s) it is used for.";
+  if (i.used_for_type === "model" && !i.model_ids.length) return "Pick the model(s) it is used for.";
   return null;
 }
 
@@ -901,6 +1047,7 @@ router.post("/store/items", requirePermission("mnt.store", "create"), async (req
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
       [i.name, i.part_no, i.category, i.unit, i.used_for_type, i.used_for_group, i.reorder_level, req.user.id]);
     for (const a of i.asset_ids) await c.query(`INSERT INTO mnt_store_item_assets (item_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [rows[0].id, a]);
+    for (const m of i.model_ids) await c.query(`INSERT INTO mnt_store_item_models (item_id, model_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [rows[0].id, m]);
     return rows[0].id;
   });
   res.status(201).json({ id });
@@ -917,6 +1064,8 @@ router.patch("/store/items/:id", requirePermission("mnt.store", "edit"), async (
     if (!r.rowCount) return false;
     await c.query(`DELETE FROM mnt_store_item_assets WHERE item_id = $1`, [req.params.id]);
     for (const a of i.asset_ids) await c.query(`INSERT INTO mnt_store_item_assets (item_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [req.params.id, a]);
+    await c.query(`DELETE FROM mnt_store_item_models WHERE item_id = $1`, [req.params.id]);
+    for (const m of i.model_ids) await c.query(`INSERT INTO mnt_store_item_models (item_id, model_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [req.params.id, m]);
     return true;
   });
   if (!ok) return bad(res, "Item not found.", 404);
@@ -1001,7 +1150,8 @@ router.get("/part-requests", requireAnyPermission(["mnt.store", "mnt.purchase-or
     SELECT p.*, i.name AS item_name, i.unit, i.current_qty, i.last_price, i.used_for_type, a.id AS asset_id, a.name AS asset_name, a.asset_group,
       u.name AS requested_by_name, l.po_id,
       (i.used_for_type = 'asset' AND NOT EXISTS (SELECT 1 FROM mnt_store_item_assets x WHERE x.item_id = i.id AND x.asset_id = a.id))
-        OR (i.used_for_type = 'group' AND i.used_for_group IS DISTINCT FROM a.asset_group) AS other_machine
+        OR (i.used_for_type = 'group' AND i.used_for_group IS DISTINCT FROM a.asset_group)
+        OR (i.used_for_type = 'model' AND NOT EXISTS (SELECT 1 FROM mnt_store_item_models x WHERE x.item_id = i.id AND x.model_id = a.model_id)) AS other_machine
     FROM mnt_part_requests p
     JOIN mnt_job_cards j ON j.id = p.job_card_id JOIN mnt_assets a ON a.id = j.asset_id
     LEFT JOIN mnt_store_items i ON i.id = p.item_id LEFT JOIN users u ON u.id = p.requested_by

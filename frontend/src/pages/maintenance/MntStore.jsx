@@ -3,6 +3,7 @@
 // transit mixers), or general. Stock moves only by GRV (in), issue to a job
 // card (out), or an adjustment (opening stock / physical count). The last
 // purchase price is kept per item.
+// Round 215c — also "used for" one or more MODELS (all Tata Signas).
 import { useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
@@ -10,12 +11,13 @@ import { useLoad, useAction, Loading, Msg, fmtRs, fmtNum, fmtDate, fmtWhen, H2, 
 
 const qty = (v) => fmtNum(v, 2).replace(/\.00$/, "");
 const TXN = { receive: ["In (GRV)", "badge-success"], issue: ["Issued", "badge-info"], adjust: ["Adjusted", "badge-neutral"] };
-const BLANK = { name: "", part_no: "", category: "Vehicle spares", unit: "Nos", used_for_type: "general", used_for_group: "", asset_ids: [], reorder_level: "" };
+const BLANK = { name: "", part_no: "", category: "Vehicle spares", unit: "Nos", used_for_type: "general", used_for_group: "", asset_ids: [], model_ids: [], reorder_level: "" };
 
 export default function MntStore() {
   const { can } = usePermissions();
   const list = useLoad("/maintenance-module/store/items");
   const assets = useLoad("/maintenance-module/asset-options");
+  const models = useLoad("/maintenance-module/models");
   const [q, setQ] = useState("");
   const [usedFor, setUsedFor] = useState("");
   const [lowOnly, setLowOnly] = useState(false);
@@ -27,7 +29,10 @@ export default function MntStore() {
   const { items, categories, groups } = list.data;
   const shown = items.filter((i) =>
     (!q || `${i.name} ${i.part_no || ""} ${i.used_for_label}`.toLowerCase().includes(q.toLowerCase())) &&
-    (!usedFor || (usedFor === "general" ? i.used_for_type === "general" : usedFor.startsWith("g:") ? i.used_for_type === "group" && i.used_for_group === usedFor.slice(2) : i.used_for_type === "asset" && i.assets.some((a) => `a:${a.id}` === usedFor))) &&
+    (!usedFor || (usedFor === "general" ? i.used_for_type === "general"
+      : usedFor.startsWith("g:") ? i.used_for_type === "group" && i.used_for_group === usedFor.slice(2)
+        : usedFor.startsWith("m:") ? i.used_for_type === "model" && i.models.some((x) => `m:${x.id}` === usedFor)
+          : i.used_for_type === "asset" && i.assets.some((a) => `a:${a.id}` === usedFor))) &&
     (!lowOnly || (i.reorder_level != null && i.current_qty <= i.reorder_level)));
   const value = items.reduce((s, i) => s + Math.max(0, i.current_qty) * i.avg_rate, 0);
 
@@ -45,6 +50,7 @@ export default function MntStore() {
           <select aria-label="Used for" value={usedFor} onChange={(e) => setUsedFor(e.target.value)}>
             <option value="">Used for: any</option>
             <option value="general">General</option>
+            <optgroup label="Model">{(models.data?.models || []).map((x) => <option key={x.id} value={`m:${x.id}`}>All {x.name}</option>)}</optgroup>
             <optgroup label="Machine type">{groups.map((g) => <option key={g} value={`g:${g}`}>All {g.toLowerCase()}s</option>)}</optgroup>
             <optgroup label="Specific machine">{(assets.data || []).map((a) => <option key={a.id} value={`a:${a.id}`}>{a.name}</option>)}</optgroup>
           </select>
@@ -69,7 +75,7 @@ export default function MntStore() {
           <div style={{ marginTop: 12 }}>
             <span style={{ ...MUTED, display: "block", marginBottom: 6 }}>Used for</span>
             <div style={ROW}>
-              {[["asset", "Specific machine(s)"], ["group", "A machine type"], ["general", "General"]].map(([k, l]) => (
+              {[["asset", "Specific vehicle(s)"], ["model", "A model (all its vehicles)"], ["group", "A machine type"], ["general", "General"]].map(([k, l]) => (
                 <label key={k} style={{ display: "flex", gap: 6, fontSize: 13 }}>
                   <input type="radio" name="used_for" checked={form.used_for_type === k} onChange={() => setForm({ ...form, used_for_type: k })} /> {l}
                 </label>
@@ -81,6 +87,17 @@ export default function MntStore() {
                   <option value="">Select…</option>{groups.map((g) => <option key={g}>{g}</option>)}
                 </select>
               </Field>
+            )}
+            {form.used_for_type === "model" && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                {(models.data?.models || []).map((x) => {
+                  const on = form.model_ids.includes(x.id);
+                  return (
+                    <button key={x.id} type="button" aria-pressed={on} onClick={() => setForm({ ...form, model_ids: on ? form.model_ids.filter((y) => y !== x.id) : [...form.model_ids, x.id] })}
+                      style={{ padding: "5px 11px", fontSize: 12.5, borderRadius: 16, background: on ? "var(--charcoal)" : "#fff", color: on ? "#fff" : "var(--charcoal)" }}>{x.name}</button>
+                  );
+                })}
+              </div>
             )}
             {form.used_for_type === "asset" && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
@@ -135,7 +152,7 @@ export default function MntStore() {
           )}
         </section>
         {sel && items.find((i) => i.id === sel) && (
-          <ItemPanel key={sel} item={items.find((i) => i.id === sel)} onEdit={(it) => setForm({ ...it, asset_ids: it.assets.map((a) => a.id), reorder_level: it.reorder_level ?? "" })}
+          <ItemPanel key={sel} item={items.find((i) => i.id === sel)} onEdit={(it) => setForm({ ...it, asset_ids: it.assets.map((a) => a.id), model_ids: it.models.map((x) => x.id), reorder_level: it.reorder_level ?? "" })}
             onClose={() => setSel(null)} onChanged={() => list.load()} />
         )}
       </div>

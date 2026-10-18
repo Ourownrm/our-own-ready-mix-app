@@ -205,7 +205,7 @@ function CardDetail({ id, go }) {
                 <select value={part.item_id} onChange={(e) => setPart({ ...part, item_id: e.target.value })}>
                   <option value="">Not in the item list — describe it</option>
                   {allItems.map((i) => (
-                    <option key={i.id} value={i.id}>{i.name} · {fmtNum(i.current_qty, 2).replace(/\.00$/, "")} {i.unit}{i.fit === 3 ? ` · for ${i.used_for_label}` : ""}</option>
+                    <option key={i.id} value={i.id}>{i.name} · {fmtNum(i.current_qty, 2).replace(/\.00$/, "")} {i.unit}{i.fit === 4 ? ` · for ${i.used_for_label}` : ""}</option>
                   ))}
                 </select>
               </Field>
