@@ -2781,11 +2781,32 @@ router.get("/reports/open-orders", requirePermission("material.report.open-order
 // query serves both report items from the notes doc, since they're the same
 // underlying receipt fields viewed two ways (the frontend can filter to
 // short-only for the debit-notes view).
+// Round 221 — the materials and suppliers the comparison can be filtered by:
+// those with at least one receipt, under the report's own permission (the
+// masters lists need other grants).
+router.get("/reports/weighbridge-comparison/options", requirePermission("material.report.weighbridge-comparison", "view"), async (req, res) => {
+  const [materials, suppliers] = await Promise.all([
+    query(`SELECT DISTINCT m.id, m.name FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
+             JOIN rm_materials m ON m.id = o.material_id ORDER BY m.name`),
+    query(`SELECT DISTINCT s.id, s.name, o.material_id FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
+             JOIN rm_suppliers s ON s.id = o.supplier_id ORDER BY s.name`),
+  ]);
+  const sup = new Map();
+  for (const r of suppliers.rows) {
+    if (!sup.has(r.id)) sup.set(r.id, { id: r.id, name: r.name, material_ids: [] });
+    sup.get(r.id).material_ids.push(r.material_id);
+  }
+  res.json({ materials: materials.rows, suppliers: [...sup.values()] });
+});
+
 router.get("/reports/weighbridge-comparison", requirePermission("material.report.weighbridge-comparison", "view"), async (req, res) => {
   const params = [];
   let where = "true";
   if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
   if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
+  // Round 221 — filter by material and by supplier (owner, 21 Oct 2026).
+  if (/^\d+$/.test(String(req.query.material_id || ""))) { params.push(Number(req.query.material_id)); where += ` AND o.material_id = $${params.length}`; }
+  if (/^\d+$/.test(String(req.query.supplier_id || ""))) { params.push(Number(req.query.supplier_id)); where += ` AND o.supplier_id = $${params.length}`; }
   const { rows } = await query(
     `SELECT r.id, r.received_at, to_char(r.received_date,'YYYY-MM-DD') AS received_date, m.name AS material_name,
             COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit, m.tolerance_pct,

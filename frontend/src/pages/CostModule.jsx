@@ -8,12 +8,15 @@ import { usePermissions } from "../lib/PermissionContext.jsx";
 import CostDashboardTab from "./cost/CostDashboardTab.jsx";
 import CostPLTab from "./cost/CostPLTab.jsx";
 import CostBSTab from "./cost/CostBSTab.jsx";
+import CostBreakEvenTab from "./cost/CostBreakEvenTab.jsx";
 import { currentMonth, addMonths } from "./cost/costUi.jsx";
 
 const TABS = [
   { key: "dashboard", label: "Cost dashboard", perm: "cost.dashboard", Component: CostDashboardTab },
   { key: "pl", label: "Profit & Loss", perm: "cost.pl", Component: CostPLTab },
   { key: "balance-sheet", label: "Balance Sheet", perm: "cost.balance-sheet", Component: CostBSTab },
+  // Round 221
+  { key: "break-even", label: "Break-even", perm: "cost.break-even", Component: CostBreakEvenTab },
 ];
 
 export default function CostModule() {

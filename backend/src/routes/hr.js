@@ -130,7 +130,9 @@ router.get("/employees", requirePermission("hr.employees", "view"), async (req, 
       `SELECT e.*, to_char(e.date_of_joining, 'YYYY-MM-DD') AS date_of_joining, to_char(e.date_of_leaving, 'YYYY-MM-DD') AS date_of_leaving,
               to_char(e.dl_valid_till, 'YYYY-MM-DD') AS dl_valid_till,
               d.name AS department, s.name AS default_shift_name, u.name AS app_user_name,
-              (SELECT max(name_on_machine) FROM attendance_device_users du WHERE du.machine_user_id = e.machine_user_id) AS name_on_machine
+              (SELECT max(name_on_machine) FROM attendance_device_users du WHERE du.machine_user_id = e.machine_user_id) AS name_on_machine,
+              (SELECT p.updated_at FROM hr_employee_photos p WHERE p.employee_id = e.id) AS photo_at,
+              (SELECT 'data:image/jpeg;base64,' || encode(p.thumb, 'base64') FROM hr_employee_photos p WHERE p.employee_id = e.id) AS photo_thumb
        FROM hr_employees e
        LEFT JOIN hr_departments d ON d.id = e.department_id
        LEFT JOIN hr_shifts s ON s.id = e.default_shift_id
@@ -235,6 +237,41 @@ router.patch("/employees/:id", requirePermission("hr.employees", "edit"), async 
   } catch (err) {
     friendly(err, res, "Could not save the employee.");
   }
+});
+
+// Round 221 — the employee's photo. Sent and returned as a data URL (the
+// screen resizes it to at most 600 px first); JPEG / PNG / WebP up to 1 MB.
+const PHOTO_RE = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/;
+router.get("/employees/:id/photo", requirePermission("hr.employees", "view"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid employee." });
+  const { rows } = await query(`SELECT photo, mime, updated_at FROM hr_employee_photos WHERE employee_id = $1`, [id]);
+  if (!rows[0]) return res.json({ data_url: null });
+  res.json({ data_url: `data:${rows[0].mime};base64,${rows[0].photo.toString("base64")}`, updated_at: rows[0].updated_at });
+});
+router.put("/employees/:id/photo", requirePermission("hr.employees", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid employee." });
+  const m = PHOTO_RE.exec(String(req.body?.data_url || ""));
+  if (!m) return res.status(400).json({ error: "Choose a JPEG, PNG or WebP photo." });
+  const buf = Buffer.from(m[2], "base64");
+  if (buf.length > 1024 * 1024) return res.status(400).json({ error: "The photo is larger than 1 MB." });
+  const t = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body?.thumb_url || ""));
+  const thumb = t ? Buffer.from(t[1], "base64") : null;
+  if (thumb && thumb.length > 64 * 1024) return res.status(400).json({ error: "The thumbnail is too large." });
+  const { rowCount } = await query(`SELECT 1 FROM hr_employees WHERE id = $1`, [id]);
+  if (!rowCount) return res.status(404).json({ error: "Employee not found." });
+  await query(
+    `INSERT INTO hr_employee_photos (employee_id, photo, mime, thumb, updated_by, updated_at) VALUES ($1, $2, $3, $4, $5, now())
+     ON CONFLICT (employee_id) DO UPDATE SET photo = EXCLUDED.photo, mime = EXCLUDED.mime, thumb = EXCLUDED.thumb, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [id, buf, m[1], thumb, req.user.id]);
+  res.json({ ok: true });
+});
+router.delete("/employees/:id/photo", requirePermission("hr.employees", "edit"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid employee." });
+  await query(`DELETE FROM hr_employee_photos WHERE employee_id = $1`, [id]);
+  res.json({ ok: true });
 });
 
 // ============================================================ settings
@@ -1324,6 +1361,7 @@ router.get("/payroll", requirePermission("hr.payroll", "view"), async (req, res)
       query(`SELECT r.*, cu.name AS computed_by_name, lu.name AS locked_by_name FROM hr_payroll_runs r
              LEFT JOIN users cu ON cu.id = r.computed_by LEFT JOIN users lu ON lu.id = r.locked_by WHERE r.month = $1`, [month]),
       query(`SELECT l.*, to_char(l.paid_on, 'YYYY-MM-DD') AS paid_on, e.name, e.emp_code, e.designation, e.employment_type,
+                    to_char(e.date_of_joining, 'YYYY-MM-DD') AS date_of_joining, e.machine_user_id,
                     e.contractor_name, e.contractor_id, d.name AS department
              FROM hr_payroll_lines l JOIN hr_employees e ON e.id = l.employee_id LEFT JOIN hr_departments d ON d.id = e.department_id
              WHERE l.month = $1 ORDER BY e.employment_type, d.sort_order NULLS LAST, e.name`, [month]),
@@ -1339,7 +1377,20 @@ router.get("/payroll", requirePermission("hr.payroll", "view"), async (req, res)
                AND NOT EXISTS (SELECT 1 FROM hr_employees e WHERE e.app_user_id = u.id AND e.is_active)
              GROUP BY u.id, u.name ORDER BY u.name`, [from, to]),
     ]);
-    res.json({ month, run: run.rows[0] || null, lines: lines.rows, month_finished: to < istToday(), pending_requests: pending.rows[0].n,
+    // Round 221 — bank details for the statement and payslips, to those allowed.
+    const bank = await can(req.user, "hr.payroll-bank", "view");
+    if (bank && lines.rows.length) {
+      const { rows: b } = await query(
+        `SELECT id, bank_account_name, bank_name, bank_account_no, bank_ifsc, pan_no FROM hr_employees WHERE id = ANY($1::int[])`,
+        [lines.rows.map((l) => l.employee_id)]);
+      const by = new Map(b.map((r) => [r.id, r]));
+      for (const l of lines.rows) {
+        const r = by.get(l.employee_id) || {};
+        l.bank = { account_name: r.bank_account_name || null, bank_name: r.bank_name || null, account_no: r.bank_account_no || null,
+          ifsc: r.bank_ifsc || null, pan: r.pan_no || null };
+      }
+    }
+    res.json({ month, run: run.rows[0] || null, lines: lines.rows, month_finished: to < istToday(), pending_requests: pending.rows[0].n, bank_details: bank,
       unlinked_trips: orphanTrips.rows });
   } catch (err) {
     console.error(err);

@@ -467,7 +467,10 @@ function LineDetail({ line, locked, canEdit, month, onChanged, onClose }) {
     <div className="card" style={{ marginTop: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
         <div><div style={{ fontWeight: 700, fontSize: 15 }}>{line.name}</div><div style={{ fontSize: 12, color: "var(--slate)" }}>{line.emp_code} · {line.department || ""}{c.contract ? ` · contract${line.contractor_name ? " — " + line.contractor_name : ""}` : ""}</div></div>
-        <button onClick={onClose}>Close</button>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <button onClick={() => import("../lib/hrPdf.js").then((m) => m.printPayslips([line], month)).catch((e) => setError(e.message))}>Payslip (PDF)</button>
+          <button onClick={onClose}>Close</button>
+        </div>
       </div>
       {c.warnings.length > 0 && <div style={{ background: "var(--amber-bg)", color: "var(--amber)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, marginTop: 10 }}>{c.warnings.join(" · ")}</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 20, marginTop: 12 }}>
@@ -574,6 +577,9 @@ export function PayrollTab() {
         "Service charge": c.service_charge, "Cost to company": Number(l.cost_to_company),
         "Paid amount": l.paid_amount != null ? Number(l.paid_amount) : "", "Paid on": l.paid_on || "", Mode: l.paid_mode ? MODES[l.paid_mode] : "", Reference: l.paid_ref || "",
         Remarks: l.remarks || "",
+        // Round 221 — bank details, for those allowed to see them.
+        ...(data.bank_details ? { "Account name": l.bank?.account_name || "", Bank: l.bank?.bank_name || "", "Account no.": l.bank?.account_no || "",
+          IFSC: l.bank?.ifsc || "", PAN: l.bank?.pan || "" } : {}),
       };
     });
     const wb = XLSX.utils.book_new();
@@ -597,6 +603,8 @@ export function PayrollTab() {
         {locked && can("hr.payroll", "delete") && <button disabled={busy} onClick={() => run(() => apiRequest(`/hr/payroll/${month}/unlock`, { method: "POST" }))}>Unlock</button>}
         {locked && canEdit && !payAll && <button onClick={() => setPayAll({ paid_on: istDay(), paid_mode: "bank_transfer", paid_ref: "", only: "" })}>Mark all unpaid as paid…</button>}
         {data?.lines.length > 0 && <button onClick={exportXlsx}>Download Excel</button>}
+        {data?.lines.length > 0 && <button onClick={() => import("../lib/hrPdf.js").then((m) => m.printPayrollStatement(data, month)).catch((e) => setError(e.message))}>Payroll statement (PDF)</button>}
+        {data?.lines.length > 0 && <button onClick={() => import("../lib/hrPdf.js").then((m) => m.printPayslips(data.lines, month)).catch((e) => setError(e.message))}>All payslips (PDF)</button>}
       </div>
       {data && !data.month_finished && <div style={{ fontSize: 12.5, color: "var(--amber)", marginBottom: 8 }}>This month has not finished — figures so far only. It can be locked after the last day.</div>}
       {data?.unlinked_trips?.length > 0 && (
@@ -641,7 +649,7 @@ export function PayrollTab() {
           <div className="card" style={{ padding: "4px 12px" }}>
             <div style={{ overflowX: "auto" }}>
               <table style={{ fontSize: 12.5 }}>
-                <thead><tr><th>Employee</th><th style={{ textAlign: "right" }}>Paid days</th><th style={{ textAlign: "right" }}>Earned</th><th style={{ textAlign: "right" }}>OT</th><th style={{ textAlign: "right" }}>Trip</th><th style={{ textAlign: "right" }}>Incentive</th><th style={{ textAlign: "right" }}>Deductions</th><th style={{ textAlign: "right" }}>Advance</th><th style={{ textAlign: "right" }}>Net pay</th><th>Paid</th></tr></thead>
+                <thead><tr><th>Employee</th><th style={{ textAlign: "right" }}>Paid days</th><th style={{ textAlign: "right" }}>Earned</th><th style={{ textAlign: "right" }}>OT</th><th style={{ textAlign: "right" }}>Trip</th><th style={{ textAlign: "right" }}>Incentive</th><th style={{ textAlign: "right" }}>Deductions</th><th style={{ textAlign: "right" }}>Advance</th><th style={{ textAlign: "right" }}>Net pay</th>{data.bank_details && <th>Bank</th>}<th>Paid</th></tr></thead>
                 <tbody>
                   {data.lines.map((l) => {
                     const c = l.calc;
@@ -656,12 +664,17 @@ export function PayrollTab() {
                         <td style={{ textAlign: "right" }}>{rs(c.total_deductions - c.advance)}</td>
                         <td style={{ textAlign: "right" }}>{c.advance ? rs(c.advance) : "—"}</td>
                         <td style={{ textAlign: "right", fontWeight: 700 }}>{rs(l.net_pay)}</td>
+                        {data.bank_details && (
+                          <td style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>
+                            {l.bank?.account_no ? <>{l.bank.bank_name || "—"}<div style={{ color: "var(--slate)" }}>{l.bank.account_no} · {l.bank.ifsc || "no IFSC"}</div></> : <span className="badge badge-warning">no bank details</span>}
+                          </td>
+                        )}
                         <td>{l.paid_amount != null ? <span className="badge badge-success">{rs(l.paid_amount)} · {fmtDay(l.paid_on)}</span> : locked ? <span className="badge badge-warning">unpaid</span> : <span style={{ color: "var(--slate)" }}>—</span>}</td>
                       </tr>
                     );
                   })}
                 </tbody>
-                <tfoot><tr><td><b>Total · {data.lines.length}</b></td><td></td><td></td><td style={{ textAlign: "right" }}>{rs(totals.ot)}</td><td style={{ textAlign: "right" }}>{rs(totals.trip)}</td><td style={{ textAlign: "right" }}>{rs(totals.inc)}</td><td style={{ textAlign: "right" }}>{rs(totals.ded - totals.adv)}</td><td style={{ textAlign: "right" }}>{rs(totals.adv)}</td><td style={{ textAlign: "right" }}>{rs(totals.net)}</td><td>{rs(totals.paid)}</td></tr></tfoot>
+                <tfoot><tr><td><b>Total · {data.lines.length}</b></td><td></td><td></td><td style={{ textAlign: "right" }}>{rs(totals.ot)}</td><td style={{ textAlign: "right" }}>{rs(totals.trip)}</td><td style={{ textAlign: "right" }}>{rs(totals.inc)}</td><td style={{ textAlign: "right" }}>{rs(totals.ded - totals.adv)}</td><td style={{ textAlign: "right" }}>{rs(totals.adv)}</td><td style={{ textAlign: "right" }}>{rs(totals.net)}</td>{data.bank_details && <td />}<td>{rs(totals.paid)}</td></tr></tfoot>
               </table>
             </div>
           </div>

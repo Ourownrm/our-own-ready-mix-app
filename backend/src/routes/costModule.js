@@ -14,6 +14,7 @@ import {
   MONTH_RE, PL_ENTERED, PL_ENTERED_KEYS, BS_ENTERED, BS_ENTERED_KEYS,
   costDashboard, fuelDetail, profitLoss, balanceSheet, monthEntries, balancesOn, addMonths, monthLabel, newContext, monthCore, withTotals,
 } from "../lib/costDashboard.js";
+import { breakEven, lineKinds, BE_KEYS } from "../lib/breakEven.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -56,6 +57,28 @@ router.get("/balance-sheet", requirePermission("cost.balance-sheet", "view"), as
   if (!ym) return;
   const compare = req.query.compare === "prev" ? "prev" : "fy_start";
   res.json(await balanceSheet(ym, { compare }));
+});
+
+// Round 221 — Break-even: fixed and variable costs, and the day each month
+// covered its fixed costs.
+router.get("/break-even", requirePermission("cost.break-even", "view"), async (req, res) => {
+  const ym = pickMonth(req, res);
+  if (!ym) return;
+  res.json(await breakEven(ym));
+});
+
+// Which group each cost is in (one setting for every month).
+router.put("/line-kinds", requirePermission("cost.classify", "edit"), async (req, res) => {
+  const kinds = req.body?.kinds || {};
+  const entries = Object.entries(kinds).filter(([k, v]) => BE_KEYS.has(k) && ["fixed", "variable"].includes(v));
+  if (!entries.length) return res.status(400).json({ error: "Nothing to change." });
+  for (const [k, v] of entries) {
+    await query(
+      `INSERT INTO cost_line_kinds (line_key, kind, changed_by, changed_at) VALUES ($1, $2, $3, now())
+       ON CONFLICT (line_key) DO UPDATE SET kind = EXCLUDED.kind, changed_by = EXCLUDED.changed_by, changed_at = now()`,
+      [k, v, req.user.id]);
+  }
+  res.json({ ok: true, kinds: await lineKinds() });
 });
 
 // ------------------------------------------------- the month's expenses ---

@@ -604,6 +604,11 @@ export const CATALOGUE = [
     { administrator: V }),
   f("cost.balance-sheet", "cost", "Balance Sheet", V,
     { administrator: V }),
+  // Round 221 — the Break-even page and which costs are fixed / variable.
+  f("cost.break-even", "cost", "Break-even — fixed and variable costs, when each month breaks even", V,
+    { administrator: V }),
+  f("cost.classify", "cost", "Set which costs are fixed and which are variable (break-even)", E,
+    { administrator: E }),
   f("cost.entries", "cost", "Enter the month's expenses and Balance Sheet figures (power, rent, depreciation, loans, bank …)", VE,
     { administrator: VE }),
 
@@ -690,6 +695,11 @@ export const CATALOGUE = [
   // file. Personal data: Administrator only by default.
   f("hr.employee-ids", "hr", "Employees — Aadhaar, PAN, driving licence, bank account", VE,
     { administrator: VE }),
+  // Round 221 — employees' bank details on the payroll statement and payslips
+  // (owner, 21 Oct 2026). Separate from hr.employee-ids so whoever pays
+  // salaries can be given the bank details without Aadhaar / PAN.
+  f("hr.payroll-bank", "hr", "Bank details on the payroll statement and payslips", V,
+    { administrator: V }),
   f("hr.roster", "hr", "Shift roster for operations staff", VE,
     { administrator: VE, manager: VE }),
   f("hr.settings", "hr", "HR settings — departments, shifts, holidays", VCED,
@@ -871,10 +881,10 @@ export const MODULES = [
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
-    support: ["hr.salary", "hr.employee-ids", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction"],
+    support: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction"],
     // Round 211 — hr.gang-attendance is deliberately NOT in this module: the
     // Site Supervisor confirms gang crews without having the HR module.
-    noAutoView: ["hr.salary", "hr.employee-ids", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs"],
+    noAutoView: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs"],
   },
   {
     // Round 199 — the Fuel module. Roles are set on each function above rather
@@ -939,8 +949,9 @@ export const MODULES = [
       { key: "cost.dashboard", label: "Cost dashboard" },
       { key: "cost.pl", label: "Profit & Loss" },
       { key: "cost.balance-sheet", label: "Balance Sheet" },
+      { key: "cost.break-even", label: "Break-even" },
     ],
-    support: ["cost.entries"],
+    support: ["cost.entries", "cost.classify"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",

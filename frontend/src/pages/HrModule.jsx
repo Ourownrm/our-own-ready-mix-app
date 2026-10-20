@@ -14,6 +14,7 @@ import { LeaveForm, LeaveTab, LeaveTypesCard } from "./HrLeave.jsx";
 import { FacePanel, WorkLocationsCard, PhonePunchReview } from "./HrPhone.jsx";
 import { TodayTab, CompOffTab } from "./HrToday.jsx";
 import { ContractLabourTab, ContractorBillsTab } from "./HrContract.jsx";
+import { EmployeeDetails, PhotoPanel, Avatar } from "./HrEmployeeCard.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CODE_STYLE = {
@@ -533,6 +534,10 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
       <div style={{ ...grid, marginTop: 12 }}>
         <Field label="Notes" span><textarea rows={2} value={f.notes} onChange={set("notes")} /></Field>
       </div>
+      {/* Round 221 — the employee's photo (saved straight away, separately from the form). */}
+      <div style={section}>Photo</div>
+      {initial?.id ? <PhotoPanel employee={initial} canEdit={can("hr.employees", "edit")} />
+        : <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Add the employee first — the photo can be added from Edit or View straight after.</div>}
       {initial?.id && f.app_user_id && f.app_punch !== "off" && <FacePanel employee={initial} canEdit={can("hr.employees", "edit")} />}
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 10 }}>{error}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
@@ -548,6 +553,7 @@ function EmployeesTab({ meta, reloadMeta }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(null); // null | {} (new) | row
+  const [viewing, setViewing] = useState(null); // Round 221 — the details card
   const [showLeft, setShowLeft] = useState(false);
   const load = () => apiRequest("/hr/employees").then(setRows).catch((e) => setError(e.message));
   useEffect(() => { load(); }, []);
@@ -557,6 +563,10 @@ function EmployeesTab({ meta, reloadMeta }) {
 
   return (
     <>
+      {viewing && !editing && (
+        <EmployeeDetails employee={viewing} canSalary={meta.can_salary}
+          onEdit={() => { setEditing(viewing); setViewing(null); }} onClose={() => setViewing(null)} onChanged={load} />
+      )}
       {editing ? (
         <EmployeeForm meta={meta} initial={editing.id ? editing : editing.prefill ? { ...EMPTY, ...editing.prefill } : null}
           onCancel={() => setEditing(null)}
@@ -594,7 +604,13 @@ function EmployeesTab({ meta, reloadMeta }) {
                 {list.map((r) => (
                   <tr key={r.id} style={{ opacity: r.is_active ? 1 : 0.55 }}>
                     <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.emp_code}</td>
-                    <td><div style={{ fontWeight: 600 }}>{r.name}</div><div style={{ fontSize: 11, color: "var(--slate)" }}>{r.designation || ""}{r.employment_type === "contract" ? ` · contract${r.contractor_name ? " — " + r.contractor_name : ""}` : ""}{!r.is_active ? " · left" : ""}</div></td>
+                    <td>
+                      <button type="button" onClick={() => { setViewing(r); setEditing(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+                        style={{ display: "flex", gap: 10, alignItems: "center", background: "none", border: "none", padding: 0, textAlign: "left", minHeight: 40, cursor: "pointer", color: "inherit" }}>
+                        <Avatar src={r.photo_thumb} name={r.name} />
+                        <span><span style={{ fontWeight: 600, display: "block" }}>{r.name}</span><span style={{ fontSize: 11, color: "var(--slate)" }}>{r.designation || ""}{r.employment_type === "contract" ? ` · contract${r.contractor_name ? " — " + r.contractor_name : ""}` : ""}{!r.is_active ? " · left" : ""}</span></span>
+                      </button>
+                    </td>
                     <td style={{ fontSize: 12.5 }}>{r.department || "—"}</td>
                     <td style={{ fontSize: 12.5 }}>
                       {r.attendance_source === "machine" ? (r.machine_user_id ? <>Machine #{r.machine_user_id}{r.name_on_machine ? <span style={{ color: "var(--slate)" }}> · {r.name_on_machine}</span> : null}</> : <span className="badge badge-danger">not linked</span>)
@@ -608,7 +624,10 @@ function EmployeesTab({ meta, reloadMeta }) {
                         {r.incentive_basis && r.incentive_basis !== "none" && <div style={{ fontSize: 11, color: "var(--slate)" }}>+ incentive</div>}
                       </td>
                     )}
-                    <td>{can("hr.employees", "edit") && <button style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => { setEditing(r); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Edit</button>}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <button style={{ padding: "6px 10px", fontSize: 12, marginRight: 6 }} onClick={() => { setViewing(r); setEditing(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>View</button>
+                      {can("hr.employees", "edit") && <button style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => { setEditing(r); setViewing(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Edit</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -2807,20 +2807,41 @@ function OpenOrdersReport() {
 function WeighbridgeComparisonReport() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  // Round 221 — filter by material and supplier.
+  const [materialId, setMaterialId] = useState("");
+  const [supplierId, setSupplierId] = useState("");
+  const [options, setOptions] = useState({ materials: [], suppliers: [] });
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function run() {
+  async function run(over = {}) {
     setLoading(true); setError("");
     try {
       const qs = new URLSearchParams();
       if (from) qs.set("from_date", from);
       if (to) qs.set("to_date", to);
+      const m = over.materialId ?? materialId, sp = over.supplierId ?? supplierId;
+      if (m) qs.set("material_id", m);
+      if (sp) qs.set("supplier_id", sp);
       setRows(await apiRequest(`/material-module/reports/weighbridge-comparison?${qs}`));
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   }
-  useEffect(() => { run(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    run();
+    apiRequest("/material-module/reports/weighbridge-comparison/options").then(setOptions).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Suppliers of the chosen material only (all of them when no material is chosen).
+  const supplierChoices = materialId ? options.suppliers.filter((x) => x.material_ids.includes(Number(materialId))) : options.suppliers;
+  const pickMaterial = (v) => {
+    setMaterialId(v);
+    const keep = !supplierId || !v || options.suppliers.find((x) => String(x.id) === supplierId)?.material_ids.includes(Number(v));
+    const sp = keep ? supplierId : "";
+    if (!keep) setSupplierId("");
+    run({ materialId: v, supplierId: sp });
+  };
+  const pickSupplier = (v) => { setSupplierId(v); run({ supplierId: v }); };
+  const filterName = [options.materials.find((x) => String(x.id) === materialId)?.name, options.suppliers.find((x) => String(x.id) === supplierId)?.name].filter(Boolean).join(" ");
 
   // Round 214 — the same rows as on screen, one sheet (xlsx is loaded only when asked).
   async function exportXlsx() {
@@ -2838,13 +2859,27 @@ function WeighbridgeComparisonReport() {
     ws["!cols"] = [11, 22, 16, 30, 13, 12, 7, 11, 14, 14, 12, 13, 12, 12, 11].map((wch) => ({ wch }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Weighbridge comparison");
-    XLSX.writeFile(wb, `Weighbridge comparison${from ? ` ${from}` : ""}${to ? ` to ${to}` : ""}.xlsx`);
+    XLSX.writeFile(wb, `Weighbridge comparison${filterName ? ` ${filterName}` : ""}${from ? ` ${from}` : ""}${to ? ` to ${to}` : ""}.xlsx`.replace(/[\\/:*?"<>|]/g, "-"));
   }
 
   return (
     <div>
       <DateRangeBar from={from} to={to} setFrom={setFrom} setTo={setTo} />
-      <button type="button" onClick={run} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10 }}>Run</button>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <div style={{ flex: "1 1 180px" }}><Field label="Material">
+          <select value={materialId} onChange={(e) => pickMaterial(e.target.value)} style={inputStyle}>
+            <option value="">All materials</option>
+            {options.materials.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          </select>
+        </Field></div>
+        <div style={{ flex: "1 1 180px" }}><Field label="Supplier">
+          <select value={supplierId} onChange={(e) => pickSupplier(e.target.value)} style={inputStyle}>
+            <option value="">{materialId ? "All suppliers of this material" : "All suppliers"}</option>
+            {supplierChoices.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          </select>
+        </Field></div>
+      </div>
+      <button type="button" onClick={() => run()} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10 }}>Run</button>
       <button type="button" onClick={exportXlsx} disabled={!rows.length} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10, marginLeft: 6 }}>Export to Excel</button>
       <ReportShell error={error} loading={loading} empty={!loading && rows.length === 0}>
         <table>
