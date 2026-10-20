@@ -51,6 +51,7 @@ import SolitaireLogin from "./pages/Solitaire/SolitaireLogin.jsx";
 import SolitaireApp from "./pages/Solitaire/SolitaireApp.jsx";
 import Maintenance from "./pages/Maintenance.jsx";
 import MaintenanceModule from "./pages/MaintenanceModule.jsx";
+import CostModule from "./pages/CostModule.jsx";
 import MaintenanceComplaint from "./pages/MaintenanceComplaint.jsx";
 import CustomerBooking from "./pages/CustomerBooking.jsx";
 import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
@@ -215,6 +216,10 @@ export default function App() {
           {/* Round 215 — the Maintenance module and the complaint page. */}
           <Route path="/maintenance-module" element={
             <ProtectedRoute perm="module.maintenance"><MaintenanceModule /></ProtectedRoute>
+          } />
+          {/* Round 218 — Cost dashboard, Profit & Loss, Balance Sheet (Administrator only by default). */}
+          <Route path="/cost" element={
+            <ProtectedRoute perm="module.cost"><CostModule /></ProtectedRoute>
           } />
           <Route path="/maintenance-complaint" element={
             <ProtectedRoute perm="mnt.complaints"><MaintenanceComplaint /></ProtectedRoute>

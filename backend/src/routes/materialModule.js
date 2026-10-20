@@ -2141,7 +2141,7 @@ router.post("/production", requirePermission("material.consumption", "create"), 
 // its own opening_stock_rate_per_kg, or has no valuation until its first
 // receipt. Computed live from rm_receipts every time, not stored, so a
 // correction to an old receipt is always reflected everywhere that reads it.
-async function monthlyWeightedAvgRates(materialId) {
+export async function monthlyWeightedAvgRates(materialId) {
   const { rows } = await query(
     `SELECT to_char(date_trunc('month', r.received_date), 'YYYY-MM') AS ym,
             SUM(r.accepted_qty_kg * r.landed_rate_per_kg) AS value_sum,
@@ -2156,7 +2156,7 @@ async function monthlyWeightedAvgRates(materialId) {
   return map;
 }
 
-function effectiveAvgForMonth(rateMap, yearMonth, openingRate) {
+export function effectiveAvgForMonth(rateMap, yearMonth, openingRate) {
   if (rateMap.has(yearMonth)) return rateMap.get(yearMonth);
   let candidate = null;
   for (const ym of [...rateMap.keys()].sort()) {
@@ -2166,7 +2166,7 @@ function effectiveAvgForMonth(rateMap, yearMonth, openingRate) {
   return openingRate != null ? Number(openingRate) : null;
 }
 
-async function bookStockRows() {
+export async function bookStockRows() {
   // Round 185 (#1) — book stock is anchored to the latest APPROVED physical
   // count per material: once a month is approved, that counted figure is the
   // opening for the NEXT month, and book stock is derived forward from there

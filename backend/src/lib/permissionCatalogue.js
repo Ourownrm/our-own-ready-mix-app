@@ -42,6 +42,8 @@ export const GROUPS = [
   { key: "maintenance", label: "Maintenance module" },
   { key: "sales", label: "Sales & CRM" },
   { key: "accounts", label: "Accounts" },
+  // Round 218
+  { key: "cost", label: "Cost, Profit & Loss, Balance Sheet" },
   { key: "masters", label: "Masters" },
   { key: "reports", label: "Reports" },
   { key: "hr", label: "HR" },
@@ -586,6 +588,21 @@ export const CATALOGUE = [
   f("production.load-review", "production", "Omit a JCB / no-vehicle load from production totals", E,
     { administrator: E }),
 
+  // ---------- Cost module (Round 218) ----------
+  // The monthly Cost dashboard, Profit & Loss and Balance Sheet, and the
+  // figures Accounts keys in for them. Owner, 20 Oct 2026: "only with admin
+  // access" — Administrator only; a Super Admin can switch it on for others.
+  f("module.cost", "modules", "Cost module (Cost dashboard, P&L, Balance Sheet)", V,
+    { administrator: V }, { screen: "cost-module" }),
+  f("cost.dashboard", "cost", "Cost dashboard — cost per m³, material, fuel, maintenance, manpower", V,
+    { administrator: V }),
+  f("cost.pl", "cost", "Profit & Loss", V,
+    { administrator: V }),
+  f("cost.balance-sheet", "cost", "Balance Sheet", V,
+    { administrator: V }),
+  f("cost.entries", "cost", "Enter the month's expenses and Balance Sheet figures (power, rent, depreciation, loans, bank …)", VE,
+    { administrator: VE }),
+
   // ---------- Masters ----------
   f("masters.customers", "masters", "Customer", VCED,
     { administrator: VCED, manager: VCED }, { screen: "customers" }),
@@ -908,6 +925,17 @@ export const MODULES = [
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
       "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
       "accounts.quotation-costing", "accounts.price-list-enable"],
+  },
+  {
+    // Round 218 — the Cost module. Administrator only by default.
+    key: "cost", label: "Cost", gate: "module.cost", to: "/cost",
+    matrixRoles: [],
+    menus: [
+      { key: "cost.dashboard", label: "Cost dashboard" },
+      { key: "cost.pl", label: "Profit & Loss" },
+      { key: "cost.balance-sheet", label: "Balance Sheet" },
+    ],
+    support: ["cost.entries"],
   },
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",

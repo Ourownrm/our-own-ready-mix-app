@@ -366,7 +366,7 @@ function ledgerRow(r) {
 // Opening / in / out / adjusted / closing for the tank over a date range.
 // Closing on a day = today's balance minus every change logged after it, so
 // it is right even for ranges far in the past.
-async function tankSummary(from, to) {
+export async function tankSummary(from, to) {
   const item = await fuelItem();
   const { rows } = await query(
     `SELECT

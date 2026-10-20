@@ -240,6 +240,17 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 218 — the Cost module: Cost dashboard, Profit & Loss, Balance
+    // Sheet. Administrator only by default.
+    key: "cost-module",
+    label: "Cost, P&L & Balance Sheet",
+    icon: "rupee",
+    colour: "#1D6A4B",
+    tint: "#E4F2EC",
+    to: "/cost",
+    screens: [],
+  },
+  {
     // Round 215 — the Maintenance module: equipment, PM schedules and
     // inspections, job cards (inside / outside), store spares, PO, GRV and
     // payments. Opens straight into its own tabbed page.
@@ -319,6 +330,7 @@ export const HUB = [
   { key: "fuel-module", perm: ["module.fuel"], to: "/fuel-module" },
   { key: "accounts-module", perm: ["module.accounts"], to: "/accounts" },
   { key: "maintenance-module", perm: ["module.maintenance"], to: "/maintenance-module" },
+  { key: "cost-module", perm: ["module.cost"], to: "/cost" },
   { key: "maintenance-complaint", perm: ["mnt.complaints"], to: "/maintenance-complaint" },
   {
     key: "quality-control",
