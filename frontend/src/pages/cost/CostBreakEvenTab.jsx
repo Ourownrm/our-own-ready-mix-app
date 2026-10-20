@@ -3,6 +3,12 @@
 // and variable (rise with every m³) — the m³ needed to cover the fixed costs,
 // and the day each month got there. Which group a cost is in is an
 // Administrator setting (cost.classify), applied to every month.
+// Round 222 (owner): break-even is the point in the month where what each m³
+// sold leaves after its variable costs, added up day by day from each day's
+// own sales and material, has paid the month's fixed costs; everything sold
+// after that day carries only variable cost and is profit. Salaries, pump
+// gangs and contract labour are always in — estimated from the employee
+// records until the payroll is locked.
 import { useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
@@ -11,6 +17,9 @@ import {
   lakh, rsL, rs, num, pct, C, H2, SUB, MUTED, R, NUM, GRID, ROW, panel,
 } from "./costUi.jsx";
 
+// m³ sold when the fixed costs were covered; this month, sold so far + the m³
+// still needed; a month that never got there, fixed ÷ left per m³.
+const beVol = (m) => (m.reached ? m.reached.m3 : m.projection?.need_m3 != null ? Math.round(m.qty + m.projection.need_m3) : m.be_m3);
 const dayShort = (ymd) => (ymd ? new Date(`${ymd}T00:00:00+05:30`).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" }) : "—");
 
 export default function CostBreakEvenTab({ month, setMonth }) {
@@ -63,14 +72,15 @@ export default function CostBreakEvenTab({ month, setMonth }) {
         <Tile label="Fixed costs" value={rsL(s.fixed)} sub={`${rsL(s.fixed / s.days)} a day`} note={prev ? `${prev.short}: ${rsL(prev.fixed)}` : null} />
         <Tile label="Left per m³ after variable costs" value={rs(s.cm_m3)} sub={`${pct(s.cm_pct)} of ${rs(s.rev_m3)} revenue`}
           note={`variable ${rs(s.var_m3)} / m³${prev ? ` · ${prev.short} ${rs(prev.cm_m3)}` : ""}`} />
-        <Tile label="Break-even volume" value={s.be_m3 == null ? "—" : `${num(s.be_m3)} m³`} sub={s.be_sales == null ? null : `${rsL(s.be_sales)} of sales`}
-          note={prev?.be_m3 != null ? `${prev.short}: ${num(prev.be_m3)} m³` : null} />
+        <Tile label="Break-even volume" value={beVol(s) == null ? "—" : `${num(beVol(s))} m³`}
+          sub={s.reached ? `sold by ${dayShort(s.reached.day)}` : s.projection ? `${num(s.qty)} sold + ${num(s.projection.need_m3)} more` : s.be_m3 != null ? `needed at ${rs(s.cm_m3)} left per m³` : null}
+          note={prev && beVol(prev) != null ? `${prev.short}: ${num(beVol(prev))} m³` : null} />
         <Tile dark label={s.reached || !s.is_current ? "Break-even reached" : "Break-even expected"} value={reachedText}
-          sub={s.reached ? `day ${s.reached.n} of ${s.days}` : s.projection ? `${num(s.projection.need_m3)} m³ more at ${num(s.projection.pace)} m³ a day` : `sold ${num(s.qty)} of ${num(s.be_m3)} m³`}
+          sub={s.reached ? `day ${s.reached.n} of ${s.days}` : s.projection ? `${num(s.projection.need_m3)} m³ more at ${num(s.projection.pace)} m³ a day` : `sold ${num(s.qty)} of ${num(beVol(s))} m³`}
           note={prev?.reached ? `${prev.short}: ${dayShort(prev.reached.day)} (day ${prev.reached.n})` : null} />
         <Tile label={s.reached ? "Safety margin" : "Still to cover"} value={s.safety_m3 == null ? "—" : `${num(Math.abs(s.safety_m3))} m³`}
           sub={s.safety_pct == null ? null : s.safety_m3 >= 0 ? `${pct(s.safety_pct)} above break-even` : "short of break-even"}
-          note={s.safety_m3 >= 0 ? "sales could fall this far before a loss" : `fixed costs not yet covered: ${rsL(Math.max(0, s.fixed - s.qty * (s.cm_m3 || 0)))}`} />
+          note={s.safety_m3 >= 0 ? "sales could fall this far before a loss" : `fixed costs not yet covered: ${rsL(Math.max(0, s.fixed - s.covered))}`} />
       </div>
 
       <div style={ROW}>
@@ -93,9 +103,8 @@ export default function CostBreakEvenTab({ month, setMonth }) {
       <History d={d} />
 
       <div style={{ ...MUTED, lineHeight: 1.6 }}>
-        How it is worked out — the same figures as the Profit &amp; Loss, sorted into two groups. Left per m³ = revenue per invoiced m³ (incl. pumping and part-load charges) − variable costs per m³ sold.
-        Break-even m³ = fixed costs ÷ left per m³. The day it is reached = the first day the month’s m³ sold, added up day by day, reach the break-even m³.
-        Tax on profit is left out — it only arises after break-even. A figure not in yet (payroll not locked, the month’s power or rent not entered) is borrowed from the latest month that has it — a fixed cost as it was, a variable one per m³ — and named above.
+        How it is worked out — the same figures as the Profit &amp; Loss, sorted into two groups. For each day: that day’s sales (incl. pumping and part-load charges) − that day’s raw material − the other variable costs for the m³ sold that day = what the day left. Those are added up day by day; break-even is the day, and the m³ sold, at which the total reaches the month’s fixed costs. After that, what we sell carries only its variable cost and the rest is profit.
+        It is a guide to whether the month will end in profit or loss, not an exact figure. Salaries, pump gangs and contract labour are always counted — until the month’s payroll is locked they are estimated from the employee records (monthly salary or daily rate × working days, employer PF / ESI). Other figures not in yet (power, rent, incentives) are borrowed from the latest month that has them and named above. Tax on profit is left out — it only arises after break-even.
         {mayClassify ? " Change a cost’s group with its Fixed / Variable switch; the setting applies to every month." : ""}
         {s.held_m3 > 0 ? ` ${num(s.held_m3, 1)} m³ held with no price are counted at the month’s average revenue per m³.` : ""}
       </div>
@@ -133,7 +142,7 @@ function Chart({ s }) {
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span aria-hidden="true" style={{ width: 14, height: 0, borderTop: `2px dashed ${C.bad}`, display: "inline-block" }} />Fixed costs {rsL(s.fixed)}</span>
         </div>
       </div>
-      <div style={SUB}>Every m³ sold leaves {rs(s.cm_m3)} after its variable costs. Once that adds up to the month’s fixed costs, the rest of the month is profit.</div>
+      <div style={SUB}>Each day’s sales less that day’s material and other variable costs, added up. Once the total pays the month’s fixed costs, every m³ after that carries only its variable cost — the rest is profit. (Month average: {rs(s.cm_m3)} left per m³.)</div>
       <div style={{ position: "relative", marginTop: 14 }}>
         <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" role="img" aria-label={label}>
           {[0.25, 0.5, 0.75].map((f) => <line key={f} x1="0" x2={W} y1={TOP + (H - TOP) * f} y2={TOP + (H - TOP) * f} stroke="#ECEAE4" />)}
@@ -147,7 +156,7 @@ function Chart({ s }) {
         {beX != null && (
           <div style={{ position: "absolute", ...(beX / W > 0.5 ? { right: `${Math.max(0, 100 - (beX / W) * 100)}%` } : { left: `${(beX / W) * 100}%` }),
             top: 10, background: "var(--charcoal)", color: "#fff", fontSize: 12, fontWeight: 600, padding: "5px 9px", borderRadius: 6, whiteSpace: "nowrap" }}>
-            Break-even {dayShort(s.reached.day)} · {num(s.be_m3)} m³</div>
+            Break-even {dayShort(s.reached.day)} · {num(s.reached.m3)} m³</div>
         )}
         {s.reached && s.profit_since != null && (
           <div style={{ position: "absolute", right: 8, bottom: 10, fontSize: 12, color: "#1D4F3A", fontWeight: 600, textAlign: "right", background: "rgba(255,255,255,.75)", borderRadius: 6, padding: "2px 6px" }}>
@@ -162,7 +171,7 @@ function Chart({ s }) {
       </div>
       <div style={{ ...GRID(170), marginTop: 14 }}>
         <Mini label="Fixed costs a day" value={rsL(s.fixed / s.days)} sub={`${rsL(s.fixed)} ÷ ${s.days} days, sales or not`} />
-        <Mini label="Needed to break even" value={s.be_m3 == null ? "—" : `${num(s.be_m3 / s.days)} m³ a day`} sub={s.be_m3 == null ? "" : `${num(s.be_m3)} m³ over the month`} />
+        <Mini label="Needed to break even" value={beVol(s) == null ? "—" : `${num(beVol(s) / s.days)} m³ a day`} sub={beVol(s) == null ? "" : `${num(beVol(s))} m³ over the month`} />
         <Mini label="Actually sold" value={s.days_so_far ? `${num(s.qty / s.days_so_far)} m³ a day` : "—"} sub={`${num(s.qty)} m³ in ${s.days_so_far} days`} />
       </div>
     </div>
@@ -180,7 +189,8 @@ function Mini({ label, value, sub }) {
 }
 
 function SoFar({ c }) {
-  const pctCovered = c.be_m3 ? Math.min(100, (Math.min(c.qty, c.be_m3) / Math.max(c.qty, c.be_m3)) * 100) : 0;
+  const need = beVol(c);
+  const pctCovered = c.fixed > 0 ? Math.min(100, (c.covered / c.fixed) * 100) : 0;
   return (
     <div style={panel("0 0 auto")}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -188,12 +198,12 @@ function SoFar({ c }) {
         <span className={`badge ${c.reached ? "badge-success" : "badge-warning"}`}>{c.reached ? "Break-even reached" : "Covering fixed costs"}</span>
       </div>
       <div style={SUB}>1–{c.days_so_far} {c.short.split(" ")[0]} · live, updates as loads are delivered</div>
-      {c.be_m3 != null && (
+      {need != null && (
         <div style={{ marginTop: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", ...MUTED }}><span>Sold {num(c.qty)} m³</span><span>needed {num(c.be_m3)} m³</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", ...MUTED }}><span>Sold {num(c.qty)} m³</span><span>needed {num(need)} m³</span></div>
           <div style={{ position: "relative", height: 14, borderRadius: 7, background: "var(--concrete)", overflow: "hidden", marginTop: 5 }}>
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${c.reached ? (c.be_m3 / c.qty) * 100 : pctCovered}%`, background: C.soft }} />
-            {c.reached && <div style={{ position: "absolute", left: `${(c.be_m3 / c.qty) * 100}%`, top: 0, bottom: 0, right: 0, background: C.left }} />}
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${c.reached ? (need / c.qty) * 100 : pctCovered}%`, background: C.soft }} />
+            {c.reached && <div style={{ position: "absolute", left: `${(need / c.qty) * 100}%`, top: 0, bottom: 0, right: 0, background: C.left }} />}
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--slate)", marginTop: 4 }}><span>covering fixed costs</span>{c.reached && <span>profit</span>}</div>
         </div>
@@ -203,8 +213,8 @@ function SoFar({ c }) {
           <div style={{ fontSize: 20, fontWeight: 700, ...NUM }}>{c.reached ? dayShort(c.reached.day) : c.projection?.on ? `~${dayShort(c.projection.on)}` : c.projection ? "Not this month" : "—"}</div>
           <div style={{ ...MUTED }}>{c.reached ? `day ${c.reached.n} of ${c.days}` : c.projection ? `${num(c.projection.need_m3)} m³ more · about ${num(c.projection.days_more)} days at this pace` : ""}</div></div>
         <div><div style={{ ...MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{c.reached ? "Profit since" : "Fixed costs to cover"}</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: c.reached ? "var(--signal-green)" : undefined, ...NUM }}>{c.reached ? rsL(c.profit_since) : rsL(Math.max(0, c.fixed - c.qty * (c.cm_m3 || 0)))}</div>
-          <div style={MUTED}>{c.reached ? `${num(c.qty - c.be_m3)} m³ × ${rs(c.cm_m3)}` : `of ${rsL(c.fixed)}`}</div></div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: c.reached ? "var(--signal-green)" : undefined, ...NUM }}>{c.reached ? rsL(c.profit_since) : rsL(Math.max(0, c.fixed - c.covered))}</div>
+          <div style={MUTED}>{c.reached ? `on ${num(c.qty - c.reached.m3)} m³ sold after` : `${rsL(c.covered)} of ${rsL(c.fixed)} covered`}</div></div>
       </div>
       {c.estimated.length > 0 && (
         <div style={{ marginTop: 14 }}><Note>Estimated until entered: {c.estimated.map((e) => e.label).join(", ")}.</Note></div>
@@ -218,7 +228,7 @@ function Levers({ levers, s }) {
   return (
     <div style={panel("0 0 auto")}>
       <h2 style={H2}>What moves break-even</h2>
-      <div style={SUB}>At {s.label}’s figures ({num(s.be_m3)} m³)</div>
+      <div style={SUB}>At {s.label}’s figures ({num(beVol(s))} m³)</div>
       <div style={{ display: "flex", flexDirection: "column", marginTop: 10, fontSize: 13 }}>
         {levers.map((l) => (
           <div key={l.what} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
@@ -289,8 +299,9 @@ function LinesTable({ title, sub, total, totalNote, lines, kind, s, mayClassify,
 }
 
 function History({ d }) {
-  const rows = [...d.history];
+  const rows = d.history.map((m) => ({ ...m }));
   if (d.current) rows.push({ ...d.current, so_far: true });
+  for (const m of rows) if (m.is_current) m.so_far = true;
   return (
     <div style={panel("1 1 100%")}>
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
@@ -312,7 +323,7 @@ function History({ d }) {
                   <td style={R}>{num(m.qty)}</td>
                   <td style={R}>{lakh(m.fixed)}</td>
                   <td style={R}>{rs(m.cm_m3)}</td>
-                  <td style={{ ...R, fontWeight: 700 }}>{num(m.be_m3)}</td>
+                  <td style={{ ...R, fontWeight: 700 }}>{num(beVol(m))}</td>
                   <td style={{ fontWeight: 600, ...NUM }}>{at ? `${dayShort(m.reached.day)} · day ${at}` : m.so_far ? (m.projection?.on ? `expected ~${dayShort(m.projection.on)}` : "not yet") : <span style={{ color: "var(--alert-red)" }}>not reached</span>}</td>
                   <td>
                     <div style={{ position: "relative", height: 12, borderRadius: 6, background: "var(--concrete)", overflow: "hidden" }}>
@@ -322,7 +333,7 @@ function History({ d }) {
                     </div>
                   </td>
                   <td style={R}>{m.safety_m3 == null ? "—" : m.so_far && !at ? "—" : `${num(m.safety_m3)} m³ · ${pct(m.safety_pct, 0)}`}</td>
-                  <td style={{ ...R, fontWeight: 700, color: m.pbt < 0 ? "var(--alert-red)" : "var(--signal-green)" }}>{m.so_far && at ? lakh(m.profit_since) : lakh(m.pbt)}</td>
+                  <td style={{ ...R, fontWeight: 700, color: m.pbt < 0 ? "var(--alert-red)" : "var(--signal-green)" }}>{m.so_far ? lakh(at ? m.profit_since : m.earned - m.fixed) : lakh(m.pbt)}</td>
                 </tr>
               );
             })}
@@ -332,7 +343,7 @@ function History({ d }) {
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", ...MUTED, marginTop: 10 }}>
         <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 2, background: "#E7D8AE", display: "inline-block" }} />days covering fixed costs</span>
         <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 2, background: C.soft, display: "inline-block" }} />days in profit</span>
-        <span>Safety margin = how far sales could fall before a loss.{d.current ? " This month’s profit is the profit since break-even." : ""}</span>
+        <span>Safety margin = how far sales could fall before a loss.{rows.some((m) => m.so_far) ? " This month: profit since break-even, or (minus) the fixed costs still to cover." : ""}</span>
       </div>
     </div>
   );
@@ -343,12 +354,13 @@ function exportBE(d) {
   const L = (v) => (v == null ? "" : Math.round(v) / 100000);
   const rows = [[`Break-even — ${s.label}`], ["₹ lakh excl. GST"], [],
     ["Revenue per m³", s.rev_m3], ["Variable cost per m³", s.var_m3], ["Left per m³", s.cm_m3], ["Fixed costs ₹ L", L(s.fixed)],
-    ["Break-even m³", s.be_m3], ["Reached on", s.reached ? s.reached.day : ""], ["Sold m³", s.qty], ["Safety margin m³", s.safety_m3], [],
+    ["Break-even m³", beVol(s)], ["Reached on", s.reached ? s.reached.day : ""], ["Sold m³", s.qty], ["Safety margin m³", s.safety_m3], [],
     ["Cost", "Group", "₹ L", "₹ / m³", "Note"],
     ...s.lines.map((l) => [l.label, l.kind === "fixed" ? "Fixed" : "Variable", L(l.amount), l.per_m3, l.estimated ? `estimated — ${l.estimated.label}` : ""])];
   const hist = [["Month", "Sold m³", "Fixed ₹ L", "Variable ₹ L", "Revenue ₹ L", "Left per m³", "Break-even m³", "Reached on", "Day", "Safety margin m³", "Profit before tax ₹ L"],
-    ...[...d.history, ...(d.current ? [d.current] : [])].map((m) => [m.label, m.qty, L(m.fixed), L(m.variable), L(m.revenue), m.cm_m3, m.be_m3, m.reached ? m.reached.day : "", m.reached ? m.reached.n : "", m.safety_m3, L(m.pbt)])];
-  const daily = [["Day", "m³ sold", "m³ to date", "Contribution to date ₹ L"], ...s.daily.map((x) => [x.day, x.qty, x.cum_qty, L(x.cum_contribution)])];
+    ...[...d.history, ...(d.current ? [d.current] : [])].map((m) => [m.label, m.qty, L(m.fixed), L(m.variable), L(m.revenue), m.cm_m3, beVol(m), m.reached ? m.reached.day : "", m.reached ? m.reached.n : "", m.safety_m3, L(m.pbt)])];
+  const daily = [["Day", "m³ sold", "Sales ₹", "Raw material ₹", "Left after variable costs ₹", "m³ to date", "Left to date ₹ L"],
+    ...s.daily.map((x) => [x.day, x.qty, Math.round(x.revenue), Math.round(x.material), Math.round(x.balance), x.cum_qty, L(x.cum_contribution)])];
   downloadExcel(`Break-even ${d.month}.xlsx`, [{ name: "Break-even", rows }, { name: "Month by month", rows: hist }, { name: "Day by day", rows: daily }]);
 }
 
