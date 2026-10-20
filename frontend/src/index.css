@@ -491,3 +491,7 @@ a { color: var(--rebar); }
   #root { border-top: none; padding-bottom: 0 !important; }
   body { background: #fff; }
 }
+
+/* Round 219 — Cost dashboard tiles that open "how it's worked out". */
+.cost-tile-click { transition: border-color .15s, box-shadow .15s; }
+.cost-tile-click:hover, .cost-tile-click:focus-visible { border-color: var(--rebar) !important; box-shadow: 0 0 0 2px rgba(199, 91, 18, .15), var(--shadow) !important; outline: none; }

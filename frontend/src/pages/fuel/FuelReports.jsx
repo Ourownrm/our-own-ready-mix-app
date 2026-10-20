@@ -23,10 +23,10 @@ function Waterfall({ s }) {
     { label: `Opening`, from: 0, to: a, colour: "#8A8478", val: fmtL(a) },
     { label: `+ Delivered into tank (${s.deliveries})`, from: a, to: b, colour: "var(--signal-green)", val: `+${fmtNum(s.received)}` },
     { label: `+ Bought outside (${s.outside.fills})`, from: b, to: c, colour: "#5FA382", val: `+${fmtNum(o)}` },
-    { label: "+ Stock added (adjustment)", from: c, to: d, colour: "var(--violet)", val: `+${fmtNum(s.adj_in)}` },
+    { label: "+ Stock added (adj., net)", from: c, to: d, colour: "var(--violet)", val: `+${fmtNum(s.adj_in)}` },
     { label: "− Issued from tank", from: d, to: e, colour: "var(--info)", val: `−${fmtNum(s.issued)}` },
     { label: "− Issued at outside stations", from: e, to: f, colour: "#6E9FBD", val: `−${fmtNum(o)}` },
-    { label: "− Issued (adjustment)", from: f, to: s.closing, colour: "var(--alert-red)", val: `−${fmtNum(s.adj_out)}` },
+    { label: "− Issued (adj., net)", from: f, to: s.closing, colour: "var(--alert-red)", val: `−${fmtNum(s.adj_out)}` },
     { label: "= Closing", from: 0, to: s.closing, colour: "var(--charcoal)", val: fmtL(s.closing) },
   ];
   const max = Math.max(1, ...steps.map((x) => Math.max(x.from, x.to)));
@@ -180,7 +180,7 @@ export default function FuelReports({ go }) {
             </div>
             <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 10 }}>
               Outside-station fills are bought and issued at the same moment, straight into the vehicle — they appear under both In and Issued and never change the tank balance.
-              An adjustment that lowers the stock is counted as fuel issued; one that raises it is counted as stock added.
+              Adjustments are taken net for each period: a net fall in stock is counted as fuel issued, a net rise as stock added — so a wrong count and its correction cancel out.
             </div>
           </section>
         )}

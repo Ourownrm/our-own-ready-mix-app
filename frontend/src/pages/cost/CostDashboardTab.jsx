@@ -4,6 +4,8 @@ import {
   useCostData, Loading, MonthSelect, Actions, BTN, Tile, Tone, Swatch, Note, Bar, downloadExcel,
   lakh, rsL, rs, num, pct, signed, C, H2, SUB, MUTED, R, NUM, GRID, ROW, panel, fmtDay,
 } from "./costUi.jsx";
+import { useState } from "react";
+import CostExplain from "./CostExplain.jsx";
 
 function pctChange(now, before) {
   if (now == null || !before) return null;
@@ -12,6 +14,8 @@ function pctChange(now, before) {
 
 export default function CostDashboardTab({ month, setMonth }) {
   const { data: d, error } = useCostData(`/cost/dashboard?month=${month}`);
+  // Round 219 — which tile's "how it's worked out" is open.
+  const [explain, setExplain] = useState(null);
   const head = (
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 14 }}>
       <div>
@@ -46,25 +50,27 @@ export default function CostDashboardTab({ month, setMonth }) {
       {k.qty === 0 && <Note>No delivery tickets in {d.month_label}. Pick another month.</Note>}
 
       <div style={GRID(200)}>
-        <Tile label="Sales quantity" value={`${num(k.qty, 1)} m³`} sub={`${num(d.ops.loads)} loads · ${num(d.ops.avg_load, 1)} m³ avg`}
+        <Tile label="Sales quantity" onClick={() => setExplain("qty")} value={`${num(k.qty, 1)} m³`} sub={`${num(d.ops.loads)} loads · ${num(d.ops.avg_load, 1)} m³ avg`}
           delta={qtyCh == null ? null : signed(qtyCh)} good={qtyCh == null ? null : qtyCh >= 0} note={`vs ${num(k.prev_qty, 1)} m³ in ${d.prev_label}`} />
-        <Tile label="Sales amount" value={rsL(k.sales)} sub={`${rs(k.realisation)} / m³`}
+        <Tile label="Sales amount" onClick={() => setExplain("sales")} value={rsL(k.sales)} sub={`${rs(k.realisation)} / m³`}
           delta={realCh == null ? null : `${signed(realCh)} /m³`} good={realCh == null ? null : realCh >= 0} note="realisation, invoices excl. GST" />
-        <Tile label="RM purchase" value={rsL(k.rm_purchase)} sub={`${rs(k.qty ? k.rm_purchase / k.qty : null)} / m³`}
+        <Tile label="RM purchase" onClick={() => setExplain("rm_purchase")} value={rsL(k.rm_purchase)} sub={`${rs(k.qty ? k.rm_purchase / k.qty : null)} / m³`}
           delta={`${stockDelta >= 0 ? "+" : "−"}₹${lakh(Math.abs(stockDelta))} L stock`} good={null}
           note={stockDelta >= 0 ? "bought more than used" : "used more than bought"} />
-        <Tile label="RM consumption" value={rsL(k.rm_consumed)} sub={`${rs(p.rm)} / m³`}
+        <Tile label="RM consumption" onClick={() => setExplain("rm_consumed")} value={rsL(k.rm_consumed)} sub={`${rs(p.rm)} / m³`}
           delta={rmCh == null ? null : `${signed(rmCh)} /m³`} good={rmCh == null ? null : rmCh <= 0} note={k.prev_rm_m3 ? `vs ${rs(k.prev_rm_m3)} in ${d.prev_label}` : null} />
-        <Tile label="Diesel bought · issued" value={`₹${lakh(k.fuel_bought)} · ₹${lakh(k.fuel_issued)} L`}
+        <Tile label="Diesel bought · issued" onClick={() => setExplain("fuel")} value={`₹${lakh(k.fuel_bought)} · ₹${lakh(k.fuel_issued)} L`}
           sub={`${rs(k.qty ? k.fuel_bought / k.qty : null)} · ${rs(p.fuel)} / m³`}
           delta={fuelCh == null ? null : `${signed(fuelCh)} /m³`} good={fuelCh == null ? null : fuelCh <= 0} note="incl. outside fills" />
-        <Tile label="Contribution" value={rsL(k.contribution)} sub={`${rs(p.contribution)} / m³ · ${pct(k.sales ? (k.contribution / k.sales) * 100 : null)}`}
+        <Tile label="Contribution" onClick={() => setExplain("contribution")} value={rsL(k.contribution)} sub={`${rs(p.contribution)} / m³ · ${pct(k.sales ? (k.contribution / k.sales) * 100 : null)}`}
           delta={conCh == null ? null : `${signed(conCh)} /m³`} good={conCh == null ? null : conCh >= 0} note="sales − RM − fuel" />
-        <Tile label="Maintenance" value={rsL(k.maintenance)} sub={`${rs(p.maintenance)} / m³`}
+        <Tile label="Maintenance" onClick={() => setExplain("maintenance")} value={rsL(k.maintenance)} sub={`${rs(p.maintenance)} / m³`}
           delta={mntCh == null ? null : signed(mntCh)} good={mntCh == null ? null : mntCh <= 0} note={`job cards · ${d.prev_label} ₹${lakh(k.prev_maintenance)} L`} />
-        <Tile label="Manpower" value={rsL(k.manpower)} sub={`${rs(p.manpower)} / m³`}
+        <Tile label="Manpower" onClick={() => setExplain("manpower")} value={rsL(k.manpower)} sub={`${rs(p.manpower)} / m³`}
           delta={manCh == null ? null : `${signed(manCh)} /m³`} good={manCh == null ? null : manCh <= 0} note="payroll + contractor bills" />
       </div>
+
+      {explain && <CostExplain kind={explain} d={d} month={month} onClose={() => setExplain(null)} />}
 
       <div style={ROW}>
         <WhereItGoes d={d} />
@@ -93,7 +99,7 @@ export default function CostDashboardTab({ month, setMonth }) {
       <div style={{ ...MUTED, lineHeight: 1.6 }}>
         Sources: Sales — tax invoices (one per delivery note), GST taken out (rate × 100 / 118; the total itself when GST is switched off) ·
         RM purchase — Raw Material receipts at landed rate · RM consumption — plant batch weights (hand-keyed before Sept 2026) × the month’s weighted average rate,
-        shared silos first in, first out · Fuel — Fuel module: tank issues, outside-station fills, adjustments down ·
+        shared silos first in, first out · Fuel — Fuel module: tank issues, outside-station fills, net stock adjustment down ·
         Maintenance — Maintenance module job cards · Manpower — HR payroll and approved contractor bills.
         Accounts → Settings → Costing reads the same material, fuel and salary per m³ when it proposes a quotation rate.
       </div>
@@ -327,7 +333,7 @@ function Diesel({ d }) {
           </tbody>
         </table>
       </div>
-      <div style={{ ...MUTED, marginTop: 8, lineHeight: 1.5 }}>Outside-station fills count as bought and issued at once and never go through the tank. An adjustment down counts as issued; one up as added.</div>
+      <div style={{ ...MUTED, marginTop: 8, lineHeight: 1.5 }}>Outside-station fills count as bought and issued at once and never go through the tank. Adjustments are taken net for the month: a net fall counts as issued, a net rise as added.</div>
       <div style={{ ...GRID(150), marginTop: 12 }}>
         <div><div style={{ ...MUTED, textTransform: "uppercase", letterSpacing: 0.4 }}>Tank opening → closing</div>
           <div style={{ fontSize: 18, fontWeight: 700, ...NUM }}>{num(t.opening)} → {num(t.closing)} L</div>

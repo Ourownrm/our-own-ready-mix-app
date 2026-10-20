@@ -354,7 +354,7 @@ function ledgerRow(r) {
       balance_before: out.balance_after != null && qty != null ? Math.round((out.balance_after - qty) * 100) / 100 : null,
     };
   } else {
-    out.unit_label = qty < 0 ? "Adjustment — counted as issued" : "Adjustment — added to stock";
+    out.unit_label = qty < 0 ? "Adjustment — stock down" : "Adjustment — stock up";
     out.unit_sub = r.note || "Physical count";
     out.adjust_dir = qty < 0 ? "out" : "in";
     out.trail = [{ step: "Adjusted", who: r.done_by_name, at: r.at, note: r.note || "" }];
@@ -378,8 +378,13 @@ export async function tankSummary(from, to) {
        COUNT(*) FILTER (WHERE txn_type = 'issue_deduct' AND created_at::date BETWEEN $2 AND $3) AS issues,
        COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3), 0) AS adjusted,
        COUNT(*) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3) AS adjustments,
-       COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND qty_change > 0 AND created_at::date BETWEEN $2 AND $3), 0) AS adj_in,
-       COALESCE(-SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND qty_change < 0 AND created_at::date BETWEEN $2 AND $3), 0) AS adj_out
+       -- Round 219 (owner, 20 Oct 2026) — adjustments are taken NET over the
+       -- period: a wrong count and its correction cancel out. Counting each
+       -- one on its own put a 16,909 L reversal into October as fuel issued.
+       GREATEST(COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3), 0), 0) AS adj_in,
+       GREATEST(-COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3), 0), 0) AS adj_out,
+       COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND qty_change > 0 AND created_at::date BETWEEN $2 AND $3), 0) AS adj_up_gross,
+       COALESCE(-SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND qty_change < 0 AND created_at::date BETWEEN $2 AND $3), 0) AS adj_down_gross
      FROM store_stock_transactions WHERE stock_item_id = $1`,
     [item.id, from, to]
   );
@@ -415,7 +420,7 @@ export async function tankSummary(from, to) {
     received: n(r.received), deliveries: Number(r.deliveries), received_value: n(values.rows[0].received_value),
     issued: n(r.issued), issues: Number(r.issues), issued_value: n(values.rows[0].issued_value),
     adjusted: n(r.adjusted), adjustments: Number(r.adjustments),
-    adj_in: n(r.adj_in), adj_out: n(r.adj_out),
+    adj_in: n(r.adj_in), adj_out: n(r.adj_out), adj_up_gross: n(r.adj_up_gross), adj_down_gross: n(r.adj_down_gross),
     closing: n(current - Number(r.after_to)),
     outside,
     purchased_total: n(Number(r.received) + outside.litres),
@@ -794,12 +799,13 @@ router.get("/stock-statement", requirePermission("fuel.reports", "view"), async 
               COALESCE((SELECT SUM(qty_change) FROM store_stock_transactions
                          WHERE stock_item_id = $1 AND txn_type = 'adjustment'
                            AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS adjusted,
-              COALESCE((SELECT SUM(qty_change) FROM store_stock_transactions
-                         WHERE stock_item_id = $1 AND txn_type = 'adjustment' AND qty_change > 0
-                           AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS adj_in,
-              COALESCE((SELECT -SUM(qty_change) FROM store_stock_transactions
-                         WHERE stock_item_id = $1 AND txn_type = 'adjustment' AND qty_change < 0
-                           AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS adj_out,
+              -- Round 219 — net per period (see tankSummary).
+              GREATEST(COALESCE((SELECT SUM(qty_change) FROM store_stock_transactions
+                         WHERE stock_item_id = $1 AND txn_type = 'adjustment'
+                           AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0), 0) AS adj_in,
+              GREATEST(-COALESCE((SELECT SUM(qty_change) FROM store_stock_transactions
+                         WHERE stock_item_id = $1 AND txn_type = 'adjustment'
+                           AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0), 0) AS adj_out,
               COALESCE((SELECT SUM(sp.total_cost) FROM store_stock_purchases sp
                          WHERE sp.stock_item_id = $1 AND sp.status = 'received'
                            AND sp.received_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS received_value,

@@ -64,7 +64,7 @@ function Detail({ r }) {
               <span style={{ color: "var(--slate)" }}>Book before</span><span style={{ fontWeight: 600 }}>{fmtL(c.balance_before)}</span>
               <span style={{ color: "var(--slate)" }}>Counted</span><span style={{ fontWeight: 600 }}>{fmtL(r.balance_after)}</span>
               <span style={{ color: "var(--slate)" }}>Change</span><span style={{ fontWeight: 600 }}>{c.change > 0 ? "+" : ""}{fmtL(c.change)}</span>
-              <span style={{ color: "var(--slate)" }}>Reported as</span><span style={{ fontWeight: 600 }}>{c.change < 0 ? "Fuel issued" : "Stock added"}</span>
+              <span style={{ color: "var(--slate)" }}>Reported as</span><span style={{ fontWeight: 600 }}>Netted with the period&rsquo;s other adjustments — a net fall counts as issued, a net rise as stock added</span>
             </>
           )}
           {r.rate != null && (<><span style={{ color: "var(--slate)" }}>Rate</span><span style={{ fontWeight: 600 }}>{fmtRs(r.rate, 2)}/L{r.value != null ? ` · ${fmtRs(r.value)}` : ""}</span></>)}
@@ -231,7 +231,7 @@ export default function FuelTransactions({ params }) {
               // adjustment down counts as issued, up as stock added.
               ["Opening", fmtL(s.opening), null, "var(--charcoal)"],
               ["+ Bought", fmtL(s.purchased_total), `tank ${fmtNum(s.received)} L (${s.deliveries}) · outside ${fmtNum(s.outside.litres)} L (${s.outside.fills})`, "var(--signal-green)"],
-              ["+ Stock added", fmtL(s.adj_in), "adjustments up", "var(--violet)"],
+              ["+ Stock added", fmtL(s.adj_in), `adjustments, net · ${fmtNum(s.adj_up_gross ?? 0)} up / ${fmtNum(s.adj_down_gross ?? 0)} down`, "var(--violet)"],
               ["− Issued", fmtL(s.issued_total), `tank ${fmtNum(s.issued)} · outside ${fmtNum(s.outside.litres)} · adj. ${fmtNum(s.adj_out)}`, "var(--info)"],
               ["= Closing", fmtL(s.closing), "tank balance", "var(--charcoal)"],
             ].map(([label, value, sub, colour], i) => (
@@ -302,7 +302,7 @@ export default function FuelTransactions({ params }) {
         </section>
       )}
       <div style={{ fontSize: 11.5, color: "var(--slate)" }}>
-        Consumption is worked out fill to fill from the meter reading at each fill: L/100km for trucks, L/hr for pumps and machines. Outside-station fills are shown in brackets under both In and Out: each is a purchase and an issue at once, filled straight into the vehicle, so the tank balance does not change. An adjustment down counts as fuel issued; an adjustment up as stock added.
+        Consumption is worked out fill to fill from the meter reading at each fill: L/100km for trucks, L/hr for pumps and machines. Outside-station fills are shown in brackets under both In and Out: each is a purchase and an issue at once, filled straight into the vehicle, so the tank balance does not change. Adjustments are taken net for the period: a net fall counts as fuel issued, a net rise as stock added.
       </div>
     </div>
   );

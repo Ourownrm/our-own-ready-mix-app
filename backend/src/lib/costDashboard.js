@@ -582,8 +582,8 @@ export async function costDashboard(ym) {
       value: r2(c.value), per_m3: per(c.value), efficiency: eff,
       change_pct: nowM3 != null && prevM3 ? r2(((nowM3 - prevM3) / prevM3) * 100) : null };
   });
-  if (cur.fuel.tank.adj_out > 0) fuelRows.push({ kind: "adjustment", label: "Stock adjustment down", units: 0, litres: cur.fuel.tank.adj_out,
-    outside_litres: 0, value: cur.fuel.adj_value, per_m3: per(cur.fuel.adj_value), efficiency: null, change_pct: null, note: "belongs to no vehicle" });
+  if (cur.fuel.tank.adj_out > 0) fuelRows.push({ kind: "adjustment", label: "Stock adjustments, net down", units: 0, litres: cur.fuel.tank.adj_out,
+    outside_litres: 0, value: cur.fuel.adj_value, per_m3: per(cur.fuel.adj_value), efficiency: null, change_pct: null, note: "physical count below book, net for the month · belongs to no vehicle" });
   const { rows: settingsRows } = await query(`SELECT capacity_l FROM fuel_settings WHERE id = 1`).catch(() => ({ rows: [] }));
   const { rows: openFills } = await query(
     `SELECT COUNT(*)::int AS n FROM supply_requests sr LEFT JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
@@ -684,7 +684,7 @@ const PL_LINES = [
   { total: "revenue", label: "Total revenue", band: "soft" },
   { head: "Direct costs" },
   { key: "rm", label: "Raw material consumed", src: "app", hint: "plant consumption × weighted average rate", cost: true },
-  { key: "fuel", label: "Fuel issued", src: "app", hint: "tank, outside fills, adjustments down", cost: true },
+  { key: "fuel", label: "Fuel issued", src: "app", hint: "tank, outside fills, net stock adjustment down", cost: true },
   { key: "power", label: "Plant power (electricity)", src: "entered", cost: true },
   { key: "repairs", label: "Repairs & maintenance", src: "app", hint: "Maintenance job cards", cost: true },
   { key: "hired_vehicles", label: "Hired vehicles & pumps", src: "entered", cost: true },
@@ -1093,5 +1093,103 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
       ...(!now.ent.retained_opening ? ["Retained profit at the start has not been entered — profit is counted from the start of this financial year only"] : []),
     ],
     missing: BS_ENTERED.filter((e) => !now.ent[e.key]).map((e) => e.label),
+  };
+}
+
+// ---------------------------------------------------- fuel, line by line ---
+// Round 219 (owner, 20 Oct 2026: "better if I can click and see how this cost
+// is calculated and its details"). Every entry behind the Diesel bought ·
+// issued tile for one month, each with the value the dashboard gave it and
+// why, so the totals can be checked one line at a time. Same rules as
+// fuelMonth() above — nothing here may disagree with the tile.
+export async function fuelDetail(ym) {
+  const ctx = await newContext();
+  const { from, toEx, end } = monthBounds(ym);
+  const rate = ctx.dieselRate(end);
+  const [core, receipts, issues, adjustments] = await Promise.all([
+    monthCore(ym, ctx),
+    query(
+      `SELECT sp.id, sp.received_at, sp.supplier_name, sp.received_qty AS litres, sp.unit_cost AS rate, sp.total_cost AS value,
+              u.name AS by_name
+         FROM store_stock_purchases sp
+         JOIN store_stock_items i ON i.id = sp.stock_item_id AND i.item_type = 'fuel'
+         LEFT JOIN users u ON u.id = sp.received_by
+        WHERE sp.status = 'received' AND sp.received_at::date >= $1::date AND sp.received_at::date < $2::date
+        ORDER BY sp.received_at`, [from, toEx]),
+    query(
+      `SELECT sr.id, sr.issued_at, sr.actual_quantity_issued AS litres, sr.fuel_cost,
+              COALESCE(t.truck_number, p.pump_code, e.name) AS unit,
+              CASE WHEN sr.truck_id IS NOT NULL THEN 'truck' WHEN sr.pump_id IS NOT NULL THEN 'pump'
+                   ELSE COALESCE(e.equipment_type::text, sr.equipment_type::text, 'other') END AS kind,
+              fs.name AS station, COALESCE(fs.is_plant, false) AS is_plant,
+              EXISTS (SELECT 1 FROM store_stock_transactions x WHERE x.reference_type = 'supply_request' AND x.reference_id = sr.id) AS from_tank,
+              u.name AS by_name, sr.bill_ref
+         FROM supply_requests sr
+         LEFT JOIN trucks t ON t.id = sr.truck_id
+         LEFT JOIN pumps p ON p.id = sr.pump_id
+         LEFT JOIN equipment e ON e.id = sr.equipment_id
+         LEFT JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
+         LEFT JOIN users u ON u.id = sr.issued_by
+        WHERE sr.request_type = 'fuel' AND sr.status = 'issued' AND sr.actual_quantity_issued > 0
+          AND sr.issued_at::date >= $1::date AND sr.issued_at::date < $2::date
+        ORDER BY sr.issued_at`, [from, toEx]),
+    query(
+      `SELECT x.id, x.created_at, x.qty_change, x.balance_after, x.note, u.name AS by_name
+         FROM store_stock_transactions x
+         JOIN store_stock_items i ON i.id = x.stock_item_id AND i.item_type = 'fuel'
+         LEFT JOIN users u ON u.id = x.created_by
+        WHERE x.txn_type = 'adjustment' AND x.created_at::date >= $1::date AND x.created_at::date < $2::date
+        ORDER BY x.created_at, x.id`, [from, toEx]),
+  ]);
+  const f = core.fuel;
+  const issueRows = issues.rows.map((r) => {
+    const litres = n0(r.litres);
+    const entered = r.fuel_cost != null;
+    const value = entered ? n0(r.fuel_cost) : litres * (rate || 0);
+    const outside = !r.from_tank && !r.is_plant;
+    return {
+      ref: `FR-${r.id}`, at: r.issued_at, unit: r.unit || "—", kind: FUEL_KINDS[r.kind] ? FUEL_KINDS[r.kind].label : FUEL_KINDS.other.label,
+      where: outside ? (r.station || "Outside station") : "Plant tank", outside, litres: r2(litres), value: r2(value),
+      rate: litres > 0 ? r2(value / litres) : null,
+      basis: entered ? (outside ? "amount on the station bill" : "amount entered at issue") : `no amount entered — ${r2(litres)} L × ₹${rate ?? 0}`,
+      by: r.by_name || null, bill_ref: r.bill_ref || null,
+      // A rate far from the standing rate usually means the amount was keyed wrong.
+      odd_rate: entered && rate && litres > 0 ? Math.abs(value / litres - rate) / rate > 0.25 : false,
+    };
+  });
+  // Adjustments are taken net over the month (Round 219): only what is left
+  // after the ups and downs cancel counts — net down as issued, net up as
+  // stock added — so no single row carries a value of its own.
+  const adjRows = adjustments.rows.map((r) => {
+    const q = n0(r.qty_change);
+    return {
+      ref: `ADJ-${r.id}`, at: r.created_at, change: r2(q), before: r2(n0(r.balance_after) - q), after: r2(n0(r.balance_after)),
+      note: r.note || null, by: r.by_name || null,
+    };
+  });
+  const sum = (list, k) => r2(list.reduce((t, x) => t + n0(x[k]), 0));
+  const tankIssues = issueRows.filter((r) => !r.outside);
+  const outside = issueRows.filter((r) => r.outside);
+  const recRows = receipts.rows.map((r) => ({ ref: `FPR-${r.id}`, at: r.received_at, supplier: r.supplier_name || "—",
+    litres: r2(n0(r.litres)), rate: r.rate != null ? r2(n0(r.rate)) : null, value: r2(n0(r.value)), by: r.by_name || null }));
+  return {
+    month: ym, month_label: monthLabel(ym, true),
+    rate, rate_basis: rate == null ? "no diesel rate set" : `standing diesel rate on ${end} (Fuel → Settings rate history)`,
+    tile: { bought: f.bought_value, issued: f.issued_value },
+    bought: {
+      receipts: recRows, outside,
+      total: f.bought_value,
+      tank_value: sum(recRows, "value"), outside_value: sum(outside, "value"),
+    },
+    issued: {
+      tank: tankIssues, outside, adjustments: adjRows,
+      tank_value: sum(tankIssues, "value"), outside_value: sum(outside, "value"),
+      adj_value: f.adj_value, adj_net: r2(adjRows.reduce((t, a) => t + a.change, 0)),
+      adj_out_litres: f.tank.adj_out, adj_in_litres: f.tank.adj_in,
+      adj_down_gross: r2(adjRows.filter((a) => a.change < 0).reduce((t, a) => t - a.change, 0)),
+      adj_up_gross: r2(adjRows.filter((a) => a.change > 0).reduce((t, a) => t + a.change, 0)),
+      total: f.issued_value,
+    },
+    tank: f.tank,
   };
 }

@@ -101,10 +101,15 @@ export function Tone({ value, good, children }) {
   return <span style={{ display: "inline-block", fontSize: 11.5, padding: "2px 9px", borderRadius: 20, fontWeight: 600, background: bg, color: fg, ...NUM }}>{children ?? value}</span>;
 }
 
-export function Tile({ label, value, sub, delta, good, note, dark }) {
+// Round 219 — a tile with onClick opens how its figure is worked out.
+export function Tile({ label, value, sub, delta, good, note, dark, onClick }) {
+  const clickable = typeof onClick === "function";
   return (
-    <div style={{ background: dark ? "var(--charcoal)" : "var(--surface)", color: dark ? "#fff" : "var(--charcoal)", border: "1px solid var(--border)",
-      borderRadius: 10, boxShadow: "var(--shadow)", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+    <div role={clickable ? "button" : undefined} tabIndex={clickable ? 0 : undefined} onClick={onClick}
+      onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
+      className={clickable ? "cost-tile-click" : undefined}
+      style={{ background: dark ? "var(--charcoal)" : "var(--surface)", color: dark ? "#fff" : "var(--charcoal)", border: "1px solid var(--border)",
+      borderRadius: 10, boxShadow: "var(--shadow)", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 6, minWidth: 0, cursor: clickable ? "pointer" : undefined }}>
       <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, opacity: dark ? 0.85 : 1, color: dark ? "#fff" : "var(--slate)" }}>{label}</div>
       <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.1, ...NUM }}>{value}</div>
       {sub && <div style={{ fontSize: 13, fontWeight: 600, ...NUM }}>{sub}</div>}
@@ -114,6 +119,7 @@ export function Tile({ label, value, sub, delta, good, note, dark }) {
           {note && <span style={{ fontSize: 11, opacity: dark ? 0.85 : 1, color: dark ? "#fff" : "var(--slate)" }}>{note}</span>}
         </div>
       )}
+      {clickable && <div className="no-print" style={{ fontSize: 11.5, fontWeight: 600, color: dark ? "#fff" : "var(--rebar)", marginTop: "auto" }}>How it&rsquo;s worked out ›</div>}
     </div>
   );
 }

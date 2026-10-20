@@ -8684,3 +8684,21 @@ P&L: the month, quarter to date (Apr–Jun, Jul–Sep …) or year to date, comp
 Verified on a local database with three months of test data (Aug–Oct 2026, ~470 loads, receipts, fuel tank/outside/adjustment, job cards, outside repair, road tax and insurance certificates, payroll, contractor bill, receipts): road tax 21,000 for Jul–Sep → Sept 6,847.83 (30/92 days); insurance 96,000 from 15 Jul + 73,000 from 18 Sep → Sept 10,490.41; contractor bill for Sept counted in Sept and owed at 30 Sept; retained profit = 31 Mar figure + YTD PAT; manager and accountant get 403 on every Cost endpoint; screens at 1280 px and 390 px with no overflow or page errors; entry forms save and the P&L updates; `npm run check` green; build clean; lint clean on the new files. Each endpoint answers in under 0.2 s on the test data.
 
 Files (18) — backend: src/index.js; src/lib/{costDashboard (new), round218Schema (new), permissionCatalogue}.js; src/routes/{costModule (new), fuelModule, materialModule, setup}.js · frontend: src/App.jsx; src/index.css; src/lib/{adminScreens, version}.js; src/pages/CostModule.jsx (new); src/pages/cost/{costUi, CostDashboardTab, CostPLTab, CostBSTab}.jsx (new) · root: README.md
+
+## Round 219 — Cost dashboard: fuel adjustments taken net, "How it's worked out" on every tile (v10.51)
+
+Owner, 20 Oct 2026: October's Cost dashboard showed diesel issued ₹22.41 L against ₹11.49 L bought — wrong — and asked to be able to click a figure and see how it is calculated.
+
+**Cause.** Round 217 counted every adjustment on its own: each one down as fuel issued, each one up as stock added. October's live data has six adjustments, including ADJ-173 (−16,909 L, "adjusting earlier adjustments") followed by ADJ-174 (+7,767 L, physical stock 300 L). Taken one by one, 16,909 L went in as issued (₹16.59 L at ₹98.13/L) and 11,875 L as added — a correction and the entries it corrected were both counted.
+
+**Fix.** Adjustments are now taken **net over the period** (`tankSummary` and the stock statement buckets in routes/fuelModule.js): only a net fall counts as fuel issued, only a net rise as stock added, so a wrong count and its correction cancel out. October becomes: tank issues 5,926.5 L ₹5,81,567 + net adjustment down 5,034 L ₹4,93,986 = **₹10,75,554 issued** against ₹11,49,004 bought — and opening −711 + 11,709 − 10,960.5 = closing 37.5 L, so the figures agree with the tank. `tankSummary` also returns `adj_up_gross` / `adj_down_gross` for display. Fuel module wording updated to match (transactions summary, stock statement, ledger detail).
+
+**How it's worked out.** Every tile on the Cost dashboard is clickable (lib/costUi.jsx `Tile onClick`, pages/cost/CostExplain.jsx):
+- **Diesel** — new `GET /api/cost/fuel-detail?month=` (lib/costDashboard.js `fuelDetail`, `cost.dashboard` view): the issued and bought sums step by step, then every tank issue, outside fill, adjustment (book before → counted, change, reason, who) and tank delivery, with how each fill was valued (amount entered, station bill, or litres × standing rate). Flags fills whose rate is more than 25 % off the standing rate, and months with adjustments both up and down. Excel export of all four lists.
+- Sales quantity, sales amount, RM purchase, RM consumption (by material: kg × rate), contribution (sales − RM − fuel), maintenance (by kind and by vehicle), manpower (staff / gangs / contract, and what is inside the staff figure) — from the dashboard's own data.
+
+Note for the plant: October's book opening is −711 L, so September's tank entries are also incomplete (issues recorded before the deliveries that fed them). The net rule keeps each month consistent with the tank, but the September split between purchases and adjustments is only as good as those entries.
+
+Verified on a local database reproducing October's live tank entries (receipt 11,709 L, issues 5,926.5 L, the six adjustments): dashboard and detail both give ₹10,75,553.87 issued, ₹11,49,004.17 bought; screens at 1280 px and 390 px with no overflow or page errors; `npm run check` green; build clean.
+
+Files (11) — backend: src/lib/costDashboard.js; src/routes/{costModule, fuelModule}.js · frontend: src/index.css; src/lib/version.js; src/pages/cost/{costUi, CostDashboardTab, CostExplain (new)}.jsx; src/pages/fuel/{FuelReports, FuelTransactions}.jsx · root: README.md

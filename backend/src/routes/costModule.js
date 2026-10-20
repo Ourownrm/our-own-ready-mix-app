@@ -12,7 +12,7 @@ import { requirePermission } from "../lib/permissions.js";
 import { istMonth, istDay } from "../lib/istDate.js";
 import {
   MONTH_RE, PL_ENTERED, PL_ENTERED_KEYS, BS_ENTERED, BS_ENTERED_KEYS,
-  costDashboard, profitLoss, balanceSheet, monthEntries, balancesOn, addMonths, monthLabel, newContext, monthCore, withTotals,
+  costDashboard, fuelDetail, profitLoss, balanceSheet, monthEntries, balancesOn, addMonths, monthLabel, newContext, monthCore, withTotals,
 } from "../lib/costDashboard.js";
 
 const router = Router();
@@ -34,6 +34,13 @@ router.get("/dashboard", requirePermission("cost.dashboard", "view"), async (req
   const ym = pickMonth(req, res);
   if (!ym) return;
   res.json(await costDashboard(ym));
+});
+
+// Round 219 — every entry behind the Diesel tile, with how each was valued.
+router.get("/fuel-detail", requirePermission("cost.dashboard", "view"), async (req, res) => {
+  const ym = pickMonth(req, res);
+  if (!ym) return;
+  res.json(await fuelDetail(ym));
 });
 
 router.get("/pl", requirePermission("cost.pl", "view"), async (req, res) => {
