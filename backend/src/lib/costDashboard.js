@@ -1134,7 +1134,7 @@ export async function fuelDetail(ym) {
           AND sr.issued_at::date >= $1::date AND sr.issued_at::date < $2::date
         ORDER BY sr.issued_at`, [from, toEx]),
     query(
-      `SELECT x.id, x.created_at, x.qty_change, x.balance_after, x.note, u.name AS by_name
+      `SELECT x.id, x.created_at, x.qty_change, x.balance_after, x.note, u.name AS by_name, x.voided_at, x.original_qty_change
          FROM store_stock_transactions x
          JOIN store_stock_items i ON i.id = x.stock_item_id AND i.item_type = 'fuel'
          LEFT JOIN users u ON u.id = x.created_by
@@ -1165,6 +1165,7 @@ export async function fuelDetail(ym) {
     return {
       ref: `ADJ-${r.id}`, at: r.created_at, change: r2(q), before: r2(n0(r.balance_after) - q), after: r2(n0(r.balance_after)),
       note: r.note || null, by: r.by_name || null,
+      voided: !!r.voided_at, entered: r.original_qty_change != null ? r2(n0(r.original_qty_change)) : null,
     };
   });
   const sum = (list, k) => r2(list.reduce((t, x) => t + n0(x[k]), 0));

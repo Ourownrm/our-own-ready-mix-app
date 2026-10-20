@@ -9,6 +9,11 @@ import { fmtL, fmtRs, fmtWhen, exportXlsx } from "./fuelUi.jsx";
 // /store-stock endpoints underneath; receiving is still the step that adds
 // litres to the tank.
 
+// Round 220 — now, in IST, for a datetime-local input.
+function nowLocal() {
+  return new Date(Date.now() + 330 * 60000).toISOString().slice(0, 16); // ist-ok: shifted to IST before slicing
+}
+
 const STATUS = {
   pending: ["Waiting for approval", "badge-warning"],
   approved: ["Approved — awaiting delivery", "badge-info"],
@@ -60,7 +65,7 @@ export default function FuelPurchases() {
     if (a.mode === "approve") return run(() => apiRequest(`/store-stock/purchases/${a.id}/approve`, { method: "POST", body: { approved_qty: a.qty, approved_rate: a.rate } }), "Purchase approved.");
     if (a.mode === "cancel") return run(() => apiRequest(`/fuel-module/purchases/${a.id}/cancel`, { method: "POST", body: { note: a.reason } }), "Approved purchase cancelled.");
     if (a.mode === "reject") return run(() => apiRequest(`/store-stock/purchases/${a.id}/reject`, { method: "POST", body: { reason: a.reason } }), "Purchase rejected.");
-    if (a.mode === "receive") return run(() => apiRequest(`/store-stock/purchases/${a.id}/receive`, { method: "POST", body: { received_qty: a.qty, unit_cost: a.rate } }), "Delivery received — the litres are now in the tank.");
+    if (a.mode === "receive") return run(() => apiRequest(`/store-stock/purchases/${a.id}/receive`, { method: "POST", body: { received_qty: a.qty, unit_cost: a.rate, received_at: a.when ? `${a.when}:00+05:30` : undefined } }), "Delivery received — the litres are now in the tank.");
     return null;
   }
 
@@ -104,7 +109,7 @@ export default function FuelPurchases() {
             {p.status === "pending" && canDelete && <button type="button" style={{ fontSize: 12, padding: "6px 10px" }} disabled={busy}
               onClick={() => run(() => apiRequest(`/store-stock/purchases/${p.id}`, { method: "DELETE" }), "Request deleted.")}>Delete</button>}
             {p.status === "approved" && canReceive && <button type="button" className="btn-primary" style={{ fontSize: 12, padding: "6px 10px" }}
-              onClick={() => setActing({ id: p.id, mode: "receive", qty: p.approved_qty ?? p.requested_qty, rate: p.approved_rate ?? data.item.rate_per_liter ?? "" })}>Receive delivery</button>}
+              onClick={() => setActing({ id: p.id, mode: "receive", qty: p.approved_qty ?? p.requested_qty, rate: p.approved_rate ?? data.item.rate_per_liter ?? "", when: nowLocal() })}>Receive delivery</button>}
             {p.status === "approved" && canCancelApproved && <button type="button" style={{ fontSize: 12, padding: "6px 10px", marginLeft: 6 }}
               onClick={() => setActing({ id: p.id, mode: "cancel", reason: "" })}>Cancel</button>}
           </td>
@@ -121,6 +126,11 @@ export default function FuelPurchases() {
                 <label style={{ fontSize: 12, color: "var(--slate)" }}>Rate (₹ per litre) — required
                   <input type="number" min="0" step="0.01" value={acting.rate ?? ""} placeholder={data.item.rate_per_liter != null ? `last ${data.item.rate_per_liter}` : ""}
                     onChange={(e) => setActing({ ...acting, rate: e.target.value })} style={{ display: "block", marginTop: 4, width: 150 }} />
+                </label>
+              )}
+              {acting.mode === "receive" && (
+                <label style={{ fontSize: 12, color: "var(--slate)" }}>Received on (date the diesel came)
+                  <input type="datetime-local" value={acting.when || ""} max={nowLocal()} onChange={(e) => setActing({ ...acting, when: e.target.value })} style={{ display: "block", marginTop: 4, width: 200 }} />
                 </label>
               )}
               {acting.mode === "receive" && (

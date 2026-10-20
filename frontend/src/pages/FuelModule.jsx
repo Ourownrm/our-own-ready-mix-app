@@ -13,6 +13,7 @@ import FuelPurchases from "./fuel/FuelPurchases.jsx";
 import FuelAnalysis360 from "./fuel/FuelAnalysis360.jsx";
 import FuelReports from "./fuel/FuelReports.jsx";
 import FuelSettings from "./fuel/FuelSettings.jsx";
+import FuelCorrections from "./fuel/FuelCorrections.jsx";
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", perm: "fuel.dashboard", Component: FuelDashboard },
@@ -22,6 +23,7 @@ const TABS = [
   { key: "analysis", label: "360° Analysis", perm: "reports.fuel-analysis", Component: FuelAnalysis360 },
   { key: "reports", label: "Reports", perm: "fuel.reports", Component: FuelReports },
   { key: "settings", label: "Settings", perm: "fuel.settings", Component: FuelSettings },
+  { key: "corrections", label: "Corrections", perm: "fuel.corrections", Component: FuelCorrections },
 ];
 
 export default function FuelModule() {

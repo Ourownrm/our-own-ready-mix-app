@@ -441,6 +441,10 @@ export const CATALOGUE = [
     { administrator: E, manager: E }),
   f("fuel.cancel-approved", "fuel", "Cancel an approved fuel issue request or diesel purchase", E,
     { administrator: E }),
+  // Round 220 — put deliveries on their real date, void adjustments that were
+  // not physical counts, recalculate the rest. Administrator only.
+  f("fuel.corrections", "fuel", "Fuel corrections — delivery dates, void and recalculate adjustments", VE,
+    { administrator: VE }),
 
   // ---------- Maintenance module (Round 215) ----------
   // Preventive schedules, PM inspections, job cards (inside / outside jobs),
@@ -886,6 +890,7 @@ export const MODULES = [
       { key: "reports.fuel-analysis", label: "360° Analysis" },
       { key: "fuel.reports", label: "Reports" },
       { key: "fuel.settings", label: "Settings" },
+      { key: "fuel.corrections", label: "Corrections" },
     ],
     support: ["fuel.exception-review", "fuel.outside-close", "fuel.outside-cancel", "fuel.cancel-approved"],
   },

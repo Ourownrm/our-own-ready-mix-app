@@ -8702,3 +8702,26 @@ Note for the plant: October's book opening is −711 L, so September's tank entr
 Verified on a local database reproducing October's live tank entries (receipt 11,709 L, issues 5,926.5 L, the six adjustments): dashboard and detail both give ₹10,75,553.87 issued, ₹11,49,004.17 bought; screens at 1280 px and 390 px with no overflow or page errors; `npm run check` green; build clean.
 
 Files (11) — backend: src/lib/costDashboard.js; src/routes/{costModule, fuelModule}.js · frontend: src/index.css; src/lib/version.js; src/pages/cost/{costUi, CostDashboardTab, CostExplain (new)}.jsx; src/pages/fuel/{FuelReports, FuelTransactions}.jsx · root: README.md
+
+## Round 220 — Fuel corrections: delivery dates, void and recalculate adjustments (v10.52)
+
+Owner, 20 Oct 2026: diesel deliveries were not received in the app when they came, so the tank book went below zero while there was diesel in the tank; stock was adjusted to the physical count many times, and the old deliveries were then all received on one day (11 Oct, 03:01–05:38). "First I need an option to change the receipts date, then the adjustments calculations to correct."
+
+After deploying, visit **/setup once** (adds columns on `store_stock_transactions` — `counted_qty`, `original_created_at`, `original_qty_change`, `voided_at/by`, `void_reason` — `store_stock_purchases.original_received_at`, and the `fuel_corrections` log; gives every existing adjustment its physical count = the balance it set). Then, as Administrator: **Fuel → Corrections**.
+
+**Fuel → Corrections** (new tab, permission `fuel.corrections`, Administrator only; lib/fuelCorrections.js, pages/fuel/FuelCorrections.jsx):
+1. **Delivery dates** — every received delivery with its request, approval and in-app received dates; set the real date and time. Deliveries received in the app with two or more others on one day are highlighted; "Use their approval dates" fills in every delivery received a day or more after approval in one click, then any can be changed.
+2. **Adjustments** — void one that was not a physical count (ADJ-173, "Adjusting Earlier Adjustments", −16,909 L), restore a voided one. Every other adjustment is a **physical count**: its change is recalculated as *counted − book stock just before it*, in date order with the deliveries on their new dates. The last count still sets today's stock.
+3. **Preview by month** — deliveries and net adjustments per month now → after, entries that would change, tank stock now → after, and the **lowest book stock after** (negative = a delivery still missing or on the wrong date).
+Nothing is written until **Apply corrections** (reason required): dates, voids, every recalculated change and running balance in one transaction, logged as a batch in `fuel_corrections` (shown under "Show corrections log"). Original dates and quantities are kept on each row.
+
+On the live entries (simulated locally from an exact copy of the tank history): deliveries on their approval dates + ADJ-173 voided → September adjustments net +5,244 L → +544 L, October −5,034 L → −334 L; ADJ-174 +7,767 → −253 L, ADJ-67 +3,591 → +771 L; today's stock unchanged at 37.5 L. The book still dips to −725 L on 14 Sep with approval dates, so at least one September delivery came before its approval date (or is missing) — set the real dates and the preview shows it.
+
+**Also:**
+- Receive delivery (Fuel → Purchases) has a **Received on** date and time (default now; not future, at most 60 days back). A delivery received back-dated by more than 6 hours notifies the Administrator to recalculate in Corrections.
+- New physical-count adjustments store their count (`counted_qty`).
+- Fuel ledger shows voided adjustments, recalculated ones (with the entered figure) and corrected delivery dates; the Cost dashboard's diesel detail marks them too; voided adjustments are not counted.
+
+Verified: preview with no edits changes nothing; apply needs a reason; applying twice changes nothing the second time; balances and stock unchanged at 37.5 L; Cost dashboard month figures follow the new dates; screens at 1280 px and 390 px with no overflow or page errors; `npm run check` green; build clean.
+
+Files (12) — backend: src/lib/{fuelCorrections (new), costDashboard, permissionCatalogue}.js; src/routes/{fuelModule, setup, storeStock}.js · frontend: src/lib/version.js; src/pages/FuelModule.jsx; src/pages/fuel/{FuelCorrections (new), FuelPurchases}.jsx; src/pages/cost/CostExplain.jsx · root: README.md

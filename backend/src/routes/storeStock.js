@@ -72,8 +72,8 @@ router.post("/items/:id/adjust", requireRole("manager", "plant_in_charge", "admi
   );
   await query(
     `INSERT INTO store_stock_transactions
-     (stock_item_id, txn_type, qty_change, balance_after, reference_type, note, created_by)
-     VALUES ($1, 'adjustment', $2, $3, 'manual_adjustment', $4, $5)`,
+     (stock_item_id, txn_type, qty_change, balance_after, reference_type, note, created_by, counted_qty)
+     VALUES ($1, 'adjustment', $2, $3, 'manual_adjustment', $4, $5, $3)`,
     [req.params.id, change, after, note, req.user.id]
   );
   res.json(rows[0]);
@@ -250,6 +250,17 @@ router.delete("/purchases/:id", requireRole("manager", "plant_in_charge", "admin
 router.post("/purchases/:id/receive", requireRole(...REQUESTER_ROLES), async (req, res) => {
   const { received_qty, unit_cost } = req.body;
   if (!received_qty || Number(received_qty) <= 0) return res.status(400).json({ error: "Enter the quantity received." });
+  // Round 220 — the date the delivery really came (owner: old deliveries were
+  // all received on one day). Optional; now when blank; never in the future,
+  // at most 60 days back.
+  let receivedAt = new Date();
+  if (req.body.received_at) {
+    const d = new Date(req.body.received_at);
+    if (Number.isNaN(+d)) return res.status(400).json({ error: "The received date is not valid." });
+    if (+d > Date.now() + 5 * 60000) return res.status(400).json({ error: "The received date can't be in the future." });
+    if (+d < Date.now() - 60 * 86400000) return res.status(400).json({ error: "That is more than 60 days back — ask Admin to correct it in Fuel → Corrections." });
+    receivedAt = d;
+  }
 
   const { rows: existing } = await query("SELECT * FROM store_stock_purchases WHERE id = $1 AND status = 'approved'", [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Request not found or not in a receivable state." });
@@ -261,9 +272,9 @@ router.post("/purchases/:id/receive", requireRole(...REQUESTER_ROLES), async (re
   const { rows } = await query(
     `UPDATE store_stock_purchases SET
        status = 'received', received_qty = $1, unit_cost = $2, total_cost = $3,
-       received_by = $4, received_at = now()
+       received_by = $4, received_at = $6
      WHERE id = $5 RETURNING *`,
-    [received_qty, rateUsed, totalCost, req.user.id, req.params.id]
+    [received_qty, rateUsed, totalCost, req.user.id, req.params.id, receivedAt]
   );
 
   const { rows: item } = await query(
@@ -272,10 +283,20 @@ router.post("/purchases/:id/receive", requireRole(...REQUESTER_ROLES), async (re
   );
   await query(
     `INSERT INTO store_stock_transactions
-     (stock_item_id, txn_type, qty_change, balance_after, reference_type, reference_id, created_by)
-     VALUES ($1, 'purchase_receive', $2, $3, 'store_stock_purchase', $4, $5)`,
-    [existing[0].stock_item_id, received_qty, item[0].current_qty, req.params.id, req.user.id]
+     (stock_item_id, txn_type, qty_change, balance_after, reference_type, reference_id, created_by, created_at)
+     VALUES ($1, 'purchase_receive', $2, $3, 'store_stock_purchase', $4, $5, $6)`,
+    [existing[0].stock_item_id, received_qty, item[0].current_qty, req.params.id, req.user.id, receivedAt]
   );
+  // A back-dated delivery changes the book from that date on, so a physical
+  // count taken after it no longer matches. Not recalculated here — the
+  // Administrator reviews it in Fuel → Corrections (lib/fuelCorrections.js).
+  if (+receivedAt < Date.now() - 6 * 3600000) {
+    const { rows: it } = await query(`SELECT item_type FROM store_stock_items WHERE id = $1`, [existing[0].stock_item_id]);
+    if (it[0]?.item_type === "fuel") {
+      const msg = `Diesel delivery FPR-${req.params.id} (${received_qty} L) was received back-dated to ${receivedAt.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })}. Recalculate the adjustments after it in Fuel → Corrections.`;
+      await query(`INSERT INTO notifications (recipient_role, type, message) VALUES ('administrator', 'fuel_backdated', $1)`, [msg]).catch(() => {});
+    }
+  }
 
   res.json(rows[0]);
 });

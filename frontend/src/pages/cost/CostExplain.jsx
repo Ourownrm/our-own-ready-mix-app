@@ -151,7 +151,7 @@ function FuelExplain({ month, d }) {
                 <td style={{ fontWeight: 600 }}>{a.ref}</td><td style={{ whiteSpace: "nowrap" }}>{when(a.at)}</td>
                 <td style={R}>{num(a.before)} → {num(a.after)}</td>
                 <td style={{ ...R, fontWeight: 700, color: a.change < 0 ? "var(--alert-red)" : "var(--signal-green)" }}>{a.change > 0 ? "+" : "−"}{num(Math.abs(a.change))} L</td>
-                <td style={MUTED}>{a.note || "—"}{a.by ? ` · ${a.by}` : ""}</td>
+                <td style={MUTED}>{a.voided ? <b style={{ color: "var(--slate)" }}>Voided · </b> : a.entered != null ? `recalculated (entered ${a.entered > 0 ? "+" : ""}${num(a.entered)} L) · ` : ""}{a.note || "—"}{a.by ? ` · ${a.by}` : ""}</td>
               </tr>
             ))}
             foot={<tr><td colSpan={3} style={{ fontWeight: 700 }}>Down {num(iss.adj_down_gross)} L · up {num(iss.adj_up_gross)} L</td>

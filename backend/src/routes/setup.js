@@ -28,6 +28,7 @@ import { migrateRound215b } from "../lib/maintenanceGeneral.js";
 import { migrateRound215c } from "../lib/maintenanceModels.js";
 import { migrateRound216 } from "../lib/round216Schema.js";
 import { migrateRound217 } from "../lib/round217Schema.js";
+import { migrateRound220 } from "../lib/fuelCorrections.js";
 import { migrateRound218 } from "../lib/round218Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -4136,6 +4137,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound217(pool, log);
     // ROUND 218 — Cost module: entered month expenses and Balance Sheet figures.
     await migrateRound218(pool, log);
+    // ROUND 220 — fuel corrections: receipt dates, void and recalculate adjustments.
+    await migrateRound220(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

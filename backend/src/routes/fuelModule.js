@@ -4,6 +4,7 @@ import { loadKept } from "../lib/plantLoadReview.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { istDay, istDaysAgo } from "../lib/istDate.js";
+import { previewCorrections, applyCorrections, correctionsLog } from "../lib/fuelCorrections.js";
 
 // ===========================================================================
 // Round 199 — the Fuel module.
@@ -246,6 +247,7 @@ function ledgerSql(extraWhere = "", tail = "") {
                                WHEN 'issue_deduct' THEN 'issue'
                                ELSE 'adjustment' END AS kind,
              sst.id AS txn_id, sst.created_at AS at, sst.qty_change, sst.balance_after, sst.note,
+             sst.voided_at, sst.void_reason, sst.original_qty_change, sst.original_created_at,
              CASE WHEN sst.reference_type = 'supply_request' THEN sst.reference_id END AS sr_id,
              CASE WHEN sst.reference_type = 'store_stock_purchase' THEN sst.reference_id END AS sp_id,
              sst.created_by
@@ -253,7 +255,9 @@ function ledgerSql(extraWhere = "", tail = "") {
     ),
     ext AS (
       SELECT 'external' AS kind, NULL::int AS txn_id, s.issued_at AS at, -s.actual_quantity_issued AS qty_change,
-             NULL::numeric AS balance_after, NULL::text AS note, s.id AS sr_id, NULL::int AS sp_id, s.issued_by AS created_by
+             NULL::numeric AS balance_after, NULL::text AS note,
+             NULL::timestamptz AS voided_at, NULL::text AS void_reason, NULL::numeric AS original_qty_change, NULL::timestamptz AS original_created_at,
+             s.id AS sr_id, NULL::int AS sp_id, s.issued_by AS created_by
         FROM sr_all s
         LEFT JOIN fuel_stations fs ON fs.id = s.station_id
        WHERE NOT COALESCE(fs.is_plant, false)
@@ -262,6 +266,7 @@ function ledgerSql(extraWhere = "", tail = "") {
     led AS (SELECT * FROM tank UNION ALL SELECT * FROM ext),
     ledger_rows AS (
       SELECT led.kind, led.txn_id, led.at, led.qty_change, led.balance_after, led.note, led.sr_id, led.sp_id,
+        led.voided_at, led.void_reason, led.original_qty_change, led.original_created_at,
         to_char(led.at, 'YYYY-MM-DD') AS day,
         uc.name AS done_by_name,
         s.category, s.unit_id, s.truck_id, s.pump_id, s.equipment_id,
@@ -342,6 +347,7 @@ function ledgerRow(r) {
   } else if (r.kind === "receipt") {
     out.unit_label = r.supplier_name || "Supplier not named";
     out.unit_sub = r.purchase_notes || "Delivery received";
+    if (r.original_created_at) out.unit_sub += ` · date corrected (entered ${new Date(r.original_created_at).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short" })})`;
     out.value = n(r.total_cost);
     out.rate = n(r.unit_cost);
     out.trail = [
@@ -354,8 +360,10 @@ function ledgerRow(r) {
       balance_before: out.balance_after != null && qty != null ? Math.round((out.balance_after - qty) * 100) / 100 : null,
     };
   } else {
-    out.unit_label = qty < 0 ? "Adjustment — stock down" : "Adjustment — stock up";
-    out.unit_sub = r.note || "Physical count";
+    out.unit_label = r.voided_at ? "Adjustment — voided" : qty < 0 ? "Adjustment — stock down" : "Adjustment — stock up";
+    out.unit_sub = r.voided_at ? `${r.note || ""} · voided: ${r.void_reason || ""}` : (r.note || "Physical count");
+    // Round 220 — recalculated from its physical count after a correction.
+    if (r.original_qty_change != null && !r.voided_at) out.unit_sub += ` · recalculated (entered as ${Number(r.original_qty_change) > 0 ? "+" : ""}${Number(r.original_qty_change)} L)`;
     out.adjust_dir = qty < 0 ? "out" : "in";
     out.trail = [{ step: "Adjusted", who: r.done_by_name, at: r.at, note: r.note || "" }];
     out.calc = { balance_before: out.balance_after != null ? Math.round((out.balance_after - qty) * 100) / 100 : null, change: qty };
@@ -377,7 +385,7 @@ export async function tankSummary(from, to) {
        COALESCE(-SUM(qty_change) FILTER (WHERE txn_type = 'issue_deduct' AND created_at::date BETWEEN $2 AND $3), 0) AS issued,
        COUNT(*) FILTER (WHERE txn_type = 'issue_deduct' AND created_at::date BETWEEN $2 AND $3) AS issues,
        COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3), 0) AS adjusted,
-       COUNT(*) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3) AS adjustments,
+       COUNT(*) FILTER (WHERE txn_type = 'adjustment' AND voided_at IS NULL AND created_at::date BETWEEN $2 AND $3) AS adjustments,
        -- Round 219 (owner, 20 Oct 2026) — adjustments are taken NET over the
        -- period: a wrong count and its correction cancel out. Counting each
        -- one on its own put a 16,909 L reversal into October as fuel issued.
@@ -759,6 +767,35 @@ router.post("/purchases/:id/cancel", requirePermission("fuel.cancel-approved", "
     console.error("POST /fuel-module/purchases/:id/cancel failed:", err);
     res.status(500).json({ error: "Could not cancel the purchase." });
   }
+});
+
+// ===================== Corrections (Round 220) =====================
+// Administrator only. The body names the staged edits:
+//   { receipt_dates: [{ id, received_at }], voids: [txnId], restores: [txnId] }
+// Preview never writes; apply writes everything in one transaction.
+function editsFrom(b = {}) {
+  return {
+    receipt_dates: Array.isArray(b.receipt_dates) ? b.receipt_dates.filter((e) => e && e.id && e.received_at).slice(0, 300) : [],
+    voids: Array.isArray(b.voids) ? b.voids.map(Number).filter(Number.isInteger).slice(0, 300) : [],
+    restores: Array.isArray(b.restores) ? b.restores.map(Number).filter(Number.isInteger).slice(0, 300) : [],
+  };
+}
+router.post("/corrections/preview", requirePermission("fuel.corrections", "view"), async (req, res) => {
+  try { res.json(await previewCorrections(editsFrom(req.body))); }
+  catch (err) { console.error("POST /fuel-module/corrections/preview failed:", err); res.status(500).json({ error: "Could not work out the corrections." }); }
+});
+router.post("/corrections/apply", requirePermission("fuel.corrections", "edit"), async (req, res) => {
+  const reason = String(req.body?.reason || "").trim().slice(0, 500);
+  if (!reason) return res.status(400).json({ error: "Say why these corrections are made." });
+  try { res.json(await applyCorrections(editsFrom(req.body), req.user.id, reason)); }
+  catch (err) {
+    if (err.expose) return res.status(400).json({ error: err.message });
+    console.error("POST /fuel-module/corrections/apply failed:", err); res.status(500).json({ error: "Could not apply the corrections." });
+  }
+});
+router.get("/corrections/log", requirePermission("fuel.corrections", "view"), async (req, res) => {
+  try { res.json(await correctionsLog()); }
+  catch (err) { console.error(err); res.status(500).json({ error: "Could not load the corrections log." }); }
 });
 
 // ===================== Reports: stock statement =====================
