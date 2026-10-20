@@ -160,9 +160,13 @@ export function resolveOne(map, raw) {
  *   * Anything the operator explicitly mapped to "ignore" resolves cleanly to
  *     null and is not a problem.
  */
-export function resolveTicket(resolver, ticket) {
+export function resolveTicket(resolver, ticket, opts = {}) {
   // Supplier first, because it is an INPUT to resolving the material now.
-  const supplier = resolveOne(resolver.suppliers, ticket.raw_supplier);
+  // Round 217 — a supplier corrected by hand on one ticket (the weighbridge
+  // operator picked the wrong one) wins over whatever the raw name says.
+  const supplier = opts.supplierId
+    ? { id: Number(opts.supplierId), status: "matched" }
+    : resolveOne(resolver.suppliers, ticket.raw_supplier);
 
   // ROUND 156 — the material lookup is supplier-aware.
   //

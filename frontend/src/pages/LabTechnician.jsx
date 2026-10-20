@@ -4,8 +4,8 @@
 // from. Single-file, internal-view-state dashboard, matching the pattern
 // used by every other role's own screen (QcEngineer.jsx, Accountant.jsx, etc).
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { IfCan } from "../lib/PermissionContext.jsx";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { IfCan, usePermissions } from "../lib/PermissionContext.jsx";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { generateMixDesignPdf } from "../lib/mixDesignPdf.js";
@@ -53,82 +53,92 @@ const STATUS_COLOR = {
   upcoming: "badge-neutral",
 };
 
+// Round 217 (owner, 20 Oct 2026) — the screen laid out like the HR, Material
+// and Accounts modules: one menu row (the tab kept in the URL, ?tab=...),
+// the screens that live elsewhere after it, and a full-width web layout whose
+// cards arrange themselves into columns on a wide screen (one column on a
+// phone, exactly as before).
+const LAB_TABS = [
+  { key: "cube", label: "Cube testing" },
+  { key: "site-cast", label: "Site-cast cubes" },
+  { key: "mix-designs", label: "Mix designs" },
+  { key: "assignments", label: "Assignments" },
+  { key: "delivery-notes", label: "Delivery notes", perm: "orders.challan-print" },
+];
+const LAB_LINKS = [
+  { to: "/lab-technician/due-today", label: "Samples due", perm: "quality.lab-due-today" },
+  { to: "/lab-technician/cube-test-report", label: "Cube test report", perm: "quality.cube-test-report" },
+  { to: "/rm-tests", label: "Raw material tests", perm: "quality.rm-tests" },
+  { to: "/lab-technician/raw-material-stock", label: "Raw material stock", perm: "quality.raw-material-stock" },
+  { to: "/plant-production", label: "Plant production & consumption", perm: "module.plant-production" },
+  { to: "/mix-designs", label: "Mix designs & recipes", perm: "quality.mix-designs-view" },
+];
+const OLD_TAB_KEYS = { batches: "cube" };
+
 export default function LabTechnician() {
-  const [tab, setTab] = useState("batches"); // batches | site-cast | mix-designs | assignments
+  const { can, ready } = usePermissions();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  // Round 134, item 7 — jumping straight to a specific pour/cast (originally
-  // from the inline due-testing panel; Round 135 moved that panel to its own
-  // "Samples Due for Testing" page, so this is now driven off URL query
-  // params instead — see LabDueToday.jsx's "Enter results"/"Open" links,
-  // which navigate here as /lab-technician?focusOrder=<id> or ?focusCast=<id>.
+  // Round 134, item 7 — jumping straight to a specific pour/cast, driven off
+  // URL query params (LabDueToday.jsx's "Enter results"/"Open" links navigate
+  // here as /lab-technician?focusOrder=<id> or ?focusCast=<id>).
   const [focusPlantOrderId, setFocusPlantOrderId] = useState(null);
   const [focusSiteCastId, setFocusSiteCastId] = useState(null);
-  const [searchParams, setSearchParams] = useSearchParams();
+
+  const tabs = LAB_TABS.filter((t) => !t.perm || (ready && can(t.perm, "view")));
+  const links = LAB_LINKS.filter((l) => ready && can(l.perm, "view"));
+  const wanted = OLD_TAB_KEYS[searchParams.get("tab")] || searchParams.get("tab");
+  const tab = tabs.some((t) => t.key === wanted) ? wanted : "cube";
+
+  function go(key) {
+    setError(""); setNotice("");
+    setSearchParams({ tab: key }, { replace: true });
+  }
 
   useEffect(() => {
     const focusOrder = searchParams.get("focusOrder");
     const focusCast = searchParams.get("focusCast");
     if (focusOrder) {
       setFocusPlantOrderId(Number(focusOrder));
-      setTab("batches");
+      setSearchParams({ tab: "cube" }, { replace: true });
     } else if (focusCast) {
       setFocusSiteCastId(Number(focusCast));
-      setTab("site-cast");
+      setSearchParams({ tab: "site-cast" }, { replace: true });
     }
-    if (focusOrder || focusCast) setSearchParams({}, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
       <TopBar title="Lab Technician" />
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}>
-        {/* Round 134, item 7 / Round 135 redesign — a compact KPI card
-            (matching the app's own .se-strip pattern, e.g. SalesExecutive.jsx)
-            replacing the old inline list, which grew into a wall of one-line
-            rows above the tabs. Opens the full "Samples Due for Testing" page
-            (LabDueToday.jsx) — everything the old panel's rows linked to is
-            still reachable, plus what that page now shows that the panel
-            never did: sample/cube count, both 7-day and 28-day due dates
-            together, the poured/cast date, and a "Close — not testing"
-            action right on each card. */}
-        <IfCan perm="quality.lab-due-today"><DueTestingCard setError={setError} /></IfCan>
-        <IfCan perm="quality.rm-tests"><RmTestsDueCard /></IfCan>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          <button className={`btn-tab ${tab === "batches" ? "active" : ""}`} onClick={() => setTab("batches")}>Cube Testing</button>
-          {/* Round 120, items 4b/4e — cubes prepared at the customer's site,
-              not plant-cast; a separate workflow since there's no delivery
-              ticket to anchor it to. */}
-          <button className={`btn-tab ${tab === "site-cast" ? "active" : ""}`} onClick={() => setTab("site-cast")}>Site-Cast Cubes</button>
-          <button className={`btn-tab ${tab === "mix-designs" ? "active" : ""}`} onClick={() => setTab("mix-designs")}>Mix Designs</button>
-          {/* Round 132, follow-up — read-only: which customer is assigned
-              which design, and since when. Assigning/removing stays an
-              Administrator/Manager action (Masters → Mix Design Assignments). */}
-          <button className={`btn-tab ${tab === "assignments" ? "active" : ""}`} onClick={() => setTab("assignments")}>Assignments</button>
-          <IfCan perm="quality.cube-test-report"><Link to="/lab-technician/cube-test-report"><button type="button" className="btn-tab">Cube Test Report</button></Link></IfCan>
-          {/* Round 194 — raw material test cards, issued when Store books a material in. */}
-          <IfCan perm="quality.rm-tests"><Link to="/rm-tests"><button type="button" className="btn-tab">Raw Material Tests</button></Link></IfCan>
-          <IfCan perm="quality.raw-material-stock"><Link to="/lab-technician/raw-material-stock"><button type="button" className="btn-tab">Raw Material Stock</button></Link></IfCan>
-          {/* Round 172 — plant production/consumption and the mix-design/recipe
-              screens are reachable from here too, once a Super Admin grants the
-              plant-data permission. Both gate on production.plant-data. */}
-          <IfCan perm="module.plant-production"><Link to="/plant-production"><button type="button" className="btn-tab">Plant Production &amp; Consumption</button></Link></IfCan>
-          <IfCan perm="quality.mix-designs-view"><Link to="/mix-designs"><button type="button" className="btn-tab">Mix Designs &amp; Recipes</button></Link></IfCan>
+      <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 16px 32px" }}>
+        {/* Round 134/135 — samples due; Round 194 — raw material tests to do.
+            Side by side on a wide screen, stacked on a phone. */}
+        <div className="lab-alerts">
+          <IfCan perm="quality.lab-due-today"><DueTestingCard setError={setError} /></IfCan>
+          <IfCan perm="quality.rm-tests"><RmTestsDueCard /></IfCan>
         </div>
-        {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
-        {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
 
-        {tab === "batches" && <CubeTestingTab setError={setError} setNotice={setNotice} focusOrderId={focusPlantOrderId} />}
+        <nav aria-label="Lab Technician" style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          {tabs.map((t) => (
+            <button key={t.key} type="button" className={`btn-tab${tab === t.key ? " active" : ""}`} aria-current={tab === t.key ? "page" : undefined} onClick={() => go(t.key)}>{t.label}</button>
+          ))}
+          {links.length > 0 && <span aria-hidden="true" className="lab-sep" />}
+          {links.map((l) => (
+            <button key={l.to} type="button" className="btn-tab" onClick={() => navigate(l.to)}>{l.label} &rarr;</button>
+          ))}
+        </nav>
+        {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+        {notice && <div style={{ background: "var(--signal-green-bg)", color: "var(--signal-green)", borderRadius: 8, padding: "10px 12px", fontSize: 13, marginBottom: 12 }}>{notice}</div>}
+
+        {tab === "cube" && <CubeTestingTab setError={setError} setNotice={setNotice} focusOrderId={focusPlantOrderId} />}
         {tab === "site-cast" && <SiteCubeTestingTab setError={setError} setNotice={setNotice} focusCastId={focusSiteCastId} />}
         {tab === "mix-designs" && <MixDesignsTab setError={setError} setNotice={setNotice} />}
         {tab === "assignments" && <AssignmentsTab setError={setError} />}
-
-        {/* Round 153, item 1 — the lab gets asked about a specific load hours
-            after it went out. Same list and same document the Plant Operator
-            and QC see; hidden entirely if Super Admin revokes challan
-            printing from this role. */}
-        <TodaysDeliveryNotes />
+        {/* Round 153, item 1 — the same list and document the Plant Operator
+            and QC see; now its own menu item instead of the foot of the page. */}
+        {tab === "delivery-notes" && <TodaysDeliveryNotes />}
       </div>
     </>
   );
@@ -217,13 +227,12 @@ function AssignmentsTab({ setError }) {
         no row here just uses that grade's standard design. Assigning or removing one is done from
         Administrator → Masters → Mix Design Assignments.
       </div>
-      <input
-        type="text" placeholder="Search customer, grade, or design ref..."
-        value={search} onChange={(e) => setSearch(e.target.value)}
-        style={{ marginBottom: 10, width: "100%", maxWidth: 320 }}
-      />
-      <div className="card">
-        <table>
+      <div className="lab-toolbar field-input">
+        <input type="search" placeholder="Search customer, grade, or design ref…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <span style={{ fontSize: 12, color: "var(--slate)" }}>{filtered.length} assignment{filtered.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="card" style={{ overflowX: "auto" }}>
+        <table style={{ minWidth: 520 }}>
           <thead><tr><th>Customer</th><th>Grade</th><th>Assigned mix design</th><th>Since</th></tr></thead>
           <tbody>
             {filtered.map((a) => (
@@ -259,6 +268,7 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
   const [viewBucket, setViewBucket] = useState("active"); // active | completed | closed
   const [addingMissed, setAddingMissed] = useState(false); // Round 209
   const [pours, setPours] = useState([]);
+  const [search, setSearch] = useState("");
   const [openOrderId, setOpenOrderId] = useState(null);
   const [highlightOrderId, setHighlightOrderId] = useState(null);
   const cardRefs = useRef({});
@@ -310,6 +320,11 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
     } catch (err) { setError(err.message); }
   }
 
+  const sq = search.trim().toLowerCase();
+  const shown = sq
+    ? pours.filter((p) => [formatOrderNumber(p.order_id), p.customer_name, p.site_name, p.mix_grade_name].some((v) => String(v || "").toLowerCase().includes(sq)))
+    : pours;
+
   const EMPTY_LABEL = {
     active: "No active pours — cubes are cast and identified by QC Engineer at plant QC entry.",
     completed: "No completed pours yet — a pour moves here once both 7-day and 28-day results are entered.",
@@ -317,37 +332,43 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
   };
 
   if (addingMissed) {
-    return <MissedPlantSampleForm setError={setError} setNotice={setNotice} onCancel={() => setAddingMissed(false)}
-      onDone={(orderId) => { setAddingMissed(false); setViewBucket("active"); load(); setOpenOrderId(orderId); }} />;
+    return <div className="lab-form"><MissedPlantSampleForm setError={setError} setNotice={setNotice} onCancel={() => setAddingMissed(false)}
+      onDone={(orderId) => { setAddingMissed(false); setViewBucket("active"); load(); setOpenOrderId(orderId); }} /></div>;
   }
 
   return (
     <div>
-      <IfCan perm="quality.cube-tests" action="create">
-        <button type="button" className="btn-primary" style={{ marginBottom: 10 }} onClick={() => setAddingMissed(true)}>+ Add a missed plant sample</button>
-      </IfCan>
-      <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-        <button className={`btn-tab ${viewBucket === "active" ? "active" : ""}`} onClick={() => setViewBucket("active")}>Active</button>
-        <button className={`btn-tab ${viewBucket === "completed" ? "active" : ""}`} onClick={() => setViewBucket("completed")}>Completed</button>
-        <button className={`btn-tab ${viewBucket === "closed" ? "active" : ""}`} onClick={() => setViewBucket("closed")}>Closed</button>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div className="lab-seg" role="tablist" aria-label="Which pours">
+          {[["active", "Active"], ["completed", "Completed"], ["closed", "Closed"]].map(([k, l]) => (
+            <button key={k} type="button" role="tab" aria-selected={viewBucket === k} className={viewBucket === k ? "on" : ""} onClick={() => setViewBucket(k)}>{l}</button>
+          ))}
+        </div>
+        <span style={{ flex: 1 }} />
+        <IfCan perm="quality.cube-tests" action="create">
+          <button type="button" className="btn-primary" onClick={() => setAddingMissed(true)}>+ Add a missed plant sample</button>
+        </IfCan>
       </div>
       {/* Round 122 — cube testing moved from per-DN to per-pour; every DN
           that contributed cubes to a pour shows up as a reference inside its
           own test card (see "Open" below) instead of being its own card. */}
-      <div style={{ fontSize: 12, color: "var(--charcoal)", background: "var(--info-bg, #E3EEF4)", borderRadius: 8, padding: "8px 10px", margin: "8px 0 12px", lineHeight: 1.5 }}>
-        Cube tests are grouped <b>by pour (order)</b>, not by delivery note. Every DN that contributed cubes to a pour
-        shows up as a reference inside its test card.
+      <div className="lab-toolbar field-input">
+        <input type="search" placeholder="Search order, customer, site or grade…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <span style={{ fontSize: 12, color: "var(--slate)" }}>{shown.length} pour{shown.length === 1 ? "" : "s"}</span>
+        <span style={{ fontSize: 12, color: "var(--slate)", flex: "1 1 260px" }}>
+          Grouped <b>by pour (order)</b>, not by delivery note — every DN that contributed cubes shows up inside the pour&rsquo;s card.
+        </span>
       </div>
-      {pours.map((p) => {
+      <div className="lab-grid">
+      {shown.map((p) => {
         const strength7 = p.result_7day_strength ?? p.legacy_7day_strength;
         const strength28 = p.result_28day_strength ?? p.legacy_28day_strength;
         return (
           <div
             key={p.order_id}
             ref={(el) => { cardRefs.current[p.order_id] = el; }}
-            className="card"
+            className={`card${openOrderId === p.order_id && viewBucket !== "closed" ? " lab-open" : ""}`}
             style={{
-              marginBottom: 10,
               transition: "background-color 0.4s ease, box-shadow 0.4s ease",
               background: highlightOrderId === p.order_id ? "var(--amber-bg)" : undefined,
               boxShadow: highlightOrderId === p.order_id ? "0 0 0 2px var(--amber)" : undefined,
@@ -396,7 +417,9 @@ function CubeTestingTab({ setError, setNotice, focusOrderId }) {
           </div>
         );
       })}
+      </div>
       {pours.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>{EMPTY_LABEL[viewBucket]}</div>}
+      {pours.length > 0 && shown.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No pour matches &ldquo;{search}&rdquo;.</div>}
     </div>
   );
 }
@@ -831,6 +854,7 @@ function PourDetail({ orderId, setError, setNotice, onSaved }) {
 
 function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
   const [casts, setCasts] = useState([]);
+  const [search, setSearch] = useState("");
   const [openCastId, setOpenCastId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [highlightCastId, setHighlightCastId] = useState(null);
@@ -860,24 +884,36 @@ function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
 
   if (creating) {
     return (
-      <NewSiteCastForm
-        setError={setError} setNotice={setNotice}
-        onDone={(castId) => { setCreating(false); load(); setOpenCastId(castId); }}
-        onCancel={() => setCreating(false)}
-      />
+      <div className="lab-form">
+        <NewSiteCastForm
+          setError={setError} setNotice={setNotice}
+          onDone={(castId) => { setCreating(false); load(); setOpenCastId(castId); }}
+          onCancel={() => setCreating(false)}
+        />
+      </div>
     );
   }
 
+  const sq = search.trim().toLowerCase();
+  const shown = sq
+    ? casts.filter((b) => [formatOrderNumber(b.order_id), b.customer_name, b.site_name, b.mix_grade_name, b.sample_ids].some((v) => String(v || "").toLowerCase().includes(sq)))
+    : casts;
+
   return (
     <div>
-      <button type="button" className="btn-primary" style={{ marginBottom: 12 }} onClick={() => setCreating(true)}>+ Record a site cast</button>
-      {casts.map((b) => (
+      <div className="lab-toolbar field-input">
+        <input type="search" placeholder="Search order, customer, site, grade or sample ID…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <span style={{ fontSize: 12, color: "var(--slate)" }}>{shown.length} cast{shown.length === 1 ? "" : "s"}</span>
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn-primary" onClick={() => setCreating(true)}>+ Record a site cast</button>
+      </div>
+      <div className="lab-grid">
+      {shown.map((b) => (
         <div
           key={b.cast_id}
           ref={(el) => { cardRefs.current[b.cast_id] = el; }}
-          className="card"
+          className={`card${openCastId === b.cast_id ? " lab-open" : ""}`}
           style={{
-            marginBottom: 10,
             transition: "background-color 0.4s ease, box-shadow 0.4s ease",
             background: highlightCastId === b.cast_id ? "var(--amber-bg)" : undefined,
             boxShadow: highlightCastId === b.cast_id ? "0 0 0 2px var(--amber)" : undefined,
@@ -902,7 +938,9 @@ function SiteCubeTestingTab({ setError, setNotice, focusCastId }) {
           )}
         </div>
       ))}
+      </div>
       {casts.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No site-cast cube batches recorded yet.</div>}
+      {casts.length > 0 && shown.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No cast matches &ldquo;{search}&rdquo;.</div>}
     </div>
   );
 }
@@ -1342,6 +1380,8 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
 function MixDesignsTab({ setError, setNotice }) {
   const { user } = useAuth();
   const [designs, setDesigns] = useState([]);
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("all");
   const [creating, setCreating] = useState(false);
   const [editingDesign, setEditingDesign] = useState(null); // full design + admixtures, or null
   const [me, setMe] = useState(null);
@@ -1401,24 +1441,41 @@ function MixDesignsTab({ setError, setNotice }) {
   }
 
   if (creating) {
-    return <MixDesignForm setError={setError} setNotice={setNotice} onDone={() => { setCreating(false); load(); }} onCancel={() => setCreating(false)} />;
+    return <div className="lab-form"><MixDesignForm setError={setError} setNotice={setNotice} onDone={() => { setCreating(false); load(); }} onCancel={() => setCreating(false)} /></div>;
   }
   if (editingDesign) {
     return (
-      <MixDesignForm
-        setError={setError} setNotice={setNotice}
-        editingDesign={editingDesign}
-        onDone={() => { setEditingDesign(null); load(); }}
-        onCancel={() => setEditingDesign(null)}
-      />
+      <div className="lab-form">
+        <MixDesignForm
+          setError={setError} setNotice={setNotice}
+          editingDesign={editingDesign}
+          onDone={() => { setEditingDesign(null); load(); }}
+          onCancel={() => setEditingDesign(null)}
+        />
+      </div>
     );
   }
 
+  const sq = search.trim().toLowerCase();
+  const shown = designs.filter((d) => (status === "all" || (status === "approved" ? d.status === "approved" : d.status !== "approved"))
+    && (!sq || [d.design_ref_code, d.mix_grade_name, d.mix_description].some((v) => String(v || "").toLowerCase().includes(sq))));
+  const drafts = designs.filter((d) => d.status !== "approved").length;
+
   return (
     <div>
-      <button type="button" className="btn-primary" style={{ marginBottom: 12 }} onClick={() => setCreating(true)}>+ New mix design</button>
-      {designs.map((d) => (
-        <div key={d.id} className="card" style={{ marginBottom: 10 }}>
+      <div className="lab-toolbar field-input">
+        <input type="search" placeholder="Search design ref, grade or description…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="lab-seg" role="tablist" aria-label="Which designs">
+          {[["all", `All (${designs.length})`], ["approved", "Approved"], ["draft", `Pending approval${drafts ? ` (${drafts})` : ""}`]].map(([k, l]) => (
+            <button key={k} type="button" role="tab" aria-selected={status === k} className={status === k ? "on" : ""} onClick={() => setStatus(k)}>{l}</button>
+          ))}
+        </div>
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn-primary" onClick={() => setCreating(true)}>+ New mix design</button>
+      </div>
+      <div className="lab-grid">
+      {shown.map((d) => (
+        <div key={d.id} className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
               <div style={{ fontWeight: 600 }}>{d.design_ref_code} · {d.mix_grade_name}</div>
@@ -1454,7 +1511,9 @@ function MixDesignsTab({ setError, setNotice }) {
           </div>
         </div>
       ))}
+      </div>
       {designs.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No mix designs yet.</div>}
+      {designs.length > 0 && shown.length === 0 && <div style={{ fontSize: 13, color: "var(--slate)" }}>No design matches.</div>}
     </div>
   );
 }

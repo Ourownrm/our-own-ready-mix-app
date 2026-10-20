@@ -351,8 +351,18 @@ router.post("/sync", async (req, res) => {
       clean.push(row);
     }
 
+    // Round 217 — tickets whose supplier was corrected by hand keep it when the
+    // weighbridge re-sends them.
+    const overrides = new Map();
+    if (clean.length) {
+      const { rows: ov } = await query(
+        `SELECT ticket_number, supplier_override_id FROM weighbridge_tickets
+          WHERE ticket_number = ANY($1::int[]) AND supplier_override_id IS NOT NULL`,
+        [clean.map((r) => r.ticket_number)]);
+      for (const o of ov) overrides.set(Number(o.ticket_number), o.supplier_override_id);
+    }
     for (const row of clean) {
-      Object.assign(row, resolveTicket(resolver, row));
+      Object.assign(row, resolveTicket(resolver, row, { supplierId: overrides.get(Number(row.ticket_number)) }));
       // Round 156 — the vehicle registers itself. This is a write, so unlike
       // material and supplier it cannot come from the in-memory resolver: a
       // registration nobody has seen before has to become a row before the
@@ -495,6 +505,7 @@ router.get("/tickets", requirePermission("material.weighbridge", "view"), async 
               m.tolerance_pct,
               wb.ticket_date, wb.weighed_at, wb.match_status, wb.unresolved,
               wb.review_note, wb.revision, wb.last_synced_at,
+              wb.supplier_id, (wb.supplier_override_id IS NOT NULL) AS supplier_corrected,
               m.name AS material_name, s.name AS supplier_name, t.truck_number,
               -- Round 156 — the registry's view of the lorry. veh_owner says
               -- who it belongs to when somebody has said; it is blank for a
@@ -570,6 +581,7 @@ router.get("/report", requirePermission("weighbridge.records", "view"), async (r
               m.tolerance_pct,
               wb.ticket_date, wb.weighed_at, wb.match_status,
               m.name AS material_name, s.name AS supplier_name,
+              wb.supplier_id, (wb.supplier_override_id IS NOT NULL) AS supplier_corrected,
               v.registration AS vehicle_registration,
               r.id AS receipt_id
          FROM weighbridge_tickets wb
@@ -698,6 +710,88 @@ router.patch("/tickets/:id", requirePermission("material.weighbridge", "edit"), 
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not update the ticket." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUND 217 (owner, 20 Oct 2026) — "what if the supplier name is wrongly
+// selected in the weighbridge?". The operator picked the wrong supplier for a
+// load: the right one is set on THAT ticket only (the name mapping is not
+// touched, since the spelling itself is right for the other loads), with a
+// reason, and every change is kept in weighbridge_supplier_corrections. The
+// ticket keeps the corrected supplier when the weighbridge re-sends it.
+//
+// A ticket already on a receipt is refused: that receipt is booked against
+// the wrong supplier's order and is already in stock and in the supplier
+// ledger, so it is the receipt that has to be corrected (or deleted and
+// booked again against the right order) first.
+// ---------------------------------------------------------------------------
+router.get("/suppliers", requirePermission("material.weighbridge", "view"), async (req, res) => {
+  try {
+    const { rows } = await query(`SELECT id, name FROM rm_suppliers WHERE is_active = true ORDER BY name`);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load suppliers." });
+  }
+});
+
+router.get("/tickets/:id/supplier-corrections", requirePermission("material.weighbridge", "view"), async (req, res) => {
+  const ticketNumber = Number(req.params.id);
+  if (!Number.isInteger(ticketNumber)) return res.status(400).json({ error: "Invalid ticket number." });
+  try {
+    const { rows } = await query(
+      `SELECT c.id, c.old_name, c.new_name, c.reason, c.corrected_at, u.name AS corrected_by_name
+         FROM weighbridge_supplier_corrections c LEFT JOIN users u ON u.id = c.corrected_by
+        WHERE c.entry_id = $1 ORDER BY c.corrected_at DESC`, [ticketNumber]);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not load the corrections." });
+  }
+});
+
+router.post("/tickets/:id/supplier", requirePermission("material.weighbridge", "edit"), async (req, res) => {
+  const ticketNumber = Number(req.params.id);
+  if (!Number.isInteger(ticketNumber)) return res.status(400).json({ error: "Invalid ticket number." });
+  const supplierId = Number(req.body?.supplier_id);
+  const reason = String(req.body?.reason || "").trim().slice(0, 500);
+  if (!Number.isInteger(supplierId) || supplierId <= 0) return res.status(400).json({ error: "Choose the right supplier." });
+  if (!reason) return res.status(400).json({ error: "Say why the supplier is being changed." });
+  try {
+    const { rows: cur } = await query(
+      `SELECT wb.ticket_number, wb.raw_material, wb.raw_material_code, wb.raw_supplier, wb.supplier_id,
+              wb.match_status::text AS match_status, s.name AS supplier_name, r.id AS receipt_id
+         FROM weighbridge_tickets wb
+         LEFT JOIN rm_suppliers s ON s.id = wb.supplier_id
+         LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a pending receipt still claims its ticket
+        WHERE wb.ticket_number = $1`, [ticketNumber]);
+    const t = cur[0];
+    if (!t) return res.status(404).json({ error: "Ticket not found." });
+    if (t.receipt_id) {
+      return res.status(409).json({ error: `Ticket #${ticketNumber} is already on receipt #${t.receipt_id} under ${t.supplier_name || "the old supplier"}. Correct or delete that receipt in Material → Receipts first, then change the supplier here.` });
+    }
+    if (Number(t.supplier_id) === supplierId) return res.status(400).json({ error: "That is already the supplier on this ticket." });
+    const { rows: sup } = await query(`SELECT id, name FROM rm_suppliers WHERE id = $1 AND is_active = true`, [supplierId]);
+    if (!sup.length) return res.status(400).json({ error: "That supplier is not in the supplier list (or is inactive)." });
+    // The material is worked out again: a material rule can be written for
+    // one supplier only (Round 156), so the right supplier can change it.
+    const r = resolveTicket(await loadResolver(), t, { supplierId });
+    const status = t.match_status === "ignored" ? "ignored" : r.match_status;
+    await query(
+      `UPDATE weighbridge_tickets
+          SET supplier_id = $2, supplier_override_id = $2, material_id = $3,
+              match_status = $4::wb_match_status, unresolved = $5
+        WHERE ticket_number = $1`,
+      [ticketNumber, supplierId, r.material_id, status, r.unresolved]);
+    await query(
+      `INSERT INTO weighbridge_supplier_corrections (entry_id, old_supplier_id, new_supplier_id, old_name, new_name, reason, corrected_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [ticketNumber, t.supplier_id, supplierId, t.supplier_name || t.raw_supplier || null, sup[0].name, reason, req.user.id]);
+    res.json({ ticket_number: ticketNumber, supplier_id: supplierId, supplier_name: sup[0].name, match_status: status });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not change the supplier." });
   }
 });
 
@@ -846,7 +940,8 @@ async function reresolveOutstanding() {
   // silently moving it because somebody tidied a mapping would rewrite history
   // nobody asked to rewrite. Those are corrected by editing the receipt.
   const { rows } = await query(
-    `SELECT wb.ticket_number, wb.raw_material, wb.raw_material_code, wb.raw_supplier, wb.raw_vehicle, wb.vehicle_id
+    `SELECT wb.ticket_number, wb.raw_material, wb.raw_material_code, wb.raw_supplier, wb.raw_vehicle, wb.vehicle_id,
+            wb.supplier_override_id
      FROM weighbridge_tickets wb
      LEFT JOIN rm_receipts r ON r.weighbridge_ticket_id = wb.ticket_number   -- receipts-raw: a pending receipt still claims its ticket, so this must see them
      WHERE r.id IS NULL
@@ -859,7 +954,7 @@ async function reresolveOutstanding() {
   );
   let cleared = 0;
   for (const t of rows) {
-    const r = resolveTicket(resolver, t);
+    const r = resolveTicket(resolver, t, { supplierId: t.supplier_override_id });
     // Round 156 — the vehicle is resolved here too, which also registers any
     // lorry that arrived before the registry existed. That is why the query
     // above includes tickets with no vehicle_id even when everything else

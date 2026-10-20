@@ -10,11 +10,23 @@ import { fmtL, fmtRs, fmtNum, fmtDate, exportXlsx } from "./fuelUi.jsx";
 // readings (the user's decision) — the closing is the ledger's own balance.
 
 function Waterfall({ s }) {
+  // Round 217 — outside fills are bought and issued at once (in and out, the
+  // tank never sees them); an adjustment down counts as issued, up as added.
+  const o = s.outside.litres;
+  const a = s.opening;
+  const b = a + s.received;
+  const c = b + o;
+  const d = c + s.adj_in;
+  const e = d - s.issued;
+  const f = e - o;
   const steps = [
-    { label: `Opening`, from: 0, to: s.opening, colour: "#8A8478", val: fmtL(s.opening) },
-    { label: `+ Deliveries (${s.deliveries})`, from: s.opening, to: s.opening + s.received, colour: "var(--signal-green)", val: `+${fmtNum(s.received)}` },
-    { label: "− Issued from tank", from: s.opening + s.received, to: s.opening + s.received - s.issued, colour: "var(--info)", val: `−${fmtNum(s.issued)}` },
-    { label: "± Adjustments", from: s.opening + s.received - s.issued, to: s.closing, colour: "var(--violet)", val: `${s.adjusted >= 0 ? "+" : "−"}${fmtNum(Math.abs(s.adjusted))}` },
+    { label: `Opening`, from: 0, to: a, colour: "#8A8478", val: fmtL(a) },
+    { label: `+ Delivered into tank (${s.deliveries})`, from: a, to: b, colour: "var(--signal-green)", val: `+${fmtNum(s.received)}` },
+    { label: `+ Bought outside (${s.outside.fills})`, from: b, to: c, colour: "#5FA382", val: `+${fmtNum(o)}` },
+    { label: "+ Stock added (adjustment)", from: c, to: d, colour: "var(--violet)", val: `+${fmtNum(s.adj_in)}` },
+    { label: "− Issued from tank", from: d, to: e, colour: "var(--info)", val: `−${fmtNum(s.issued)}` },
+    { label: "− Issued at outside stations", from: e, to: f, colour: "#6E9FBD", val: `−${fmtNum(o)}` },
+    { label: "− Issued (adjustment)", from: f, to: s.closing, colour: "var(--alert-red)", val: `−${fmtNum(s.adj_out)}` },
     { label: "= Closing", from: 0, to: s.closing, colour: "var(--charcoal)", val: fmtL(s.closing) },
   ];
   const max = Math.max(1, ...steps.map((x) => Math.max(x.from, x.to)));
@@ -24,7 +36,7 @@ function Waterfall({ s }) {
         const lo = Math.min(x.from, x.to), w = Math.abs(x.to - x.from);
         return (
           <div key={x.label} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 160, flex: "none", fontSize: 12.5, fontWeight: 600 }}>{x.label}</div>
+            <div style={{ width: 190, flex: "none", fontSize: 12.5, fontWeight: 600 }}>{x.label}</div>
             <div style={{ flex: 1, position: "relative", height: 24, background: "var(--concrete)", borderRadius: 4 }}>
               <div style={{ position: "absolute", top: 0, bottom: 0, left: `${(Math.max(0, lo) / max) * 100}%`, width: `${Math.max(w > 0 ? 0.5 : 0, (w / max) * 100)}%`, background: x.colour, borderRadius: 4 }} />
             </div>
@@ -55,7 +67,8 @@ export default function FuelReports({ go }) {
   function preset(f, t, g) { setFrom(f); setTo(t); setGroup(g); load(f, t, g); }
 
   const s = data?.summary;
-  const totals = data?.rows.reduce((a, r) => ({ received: a.received + r.received, issued: a.issued + r.issued, adjusted: a.adjusted + r.adjusted, value: a.value + r.issued_value }), { received: 0, issued: 0, adjusted: 0, value: 0 });
+  const COLS = ["received", "outside", "adj_in", "purchased_total", "issued", "adj_out", "issued_total", "received_value", "outside_value", "issued_value"];
+  const totals = data?.rows.reduce((a, r) => Object.fromEntries(COLS.map((k) => [k, (a[k] || 0) + (r[k] || 0)])), {});
 
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
@@ -97,8 +110,10 @@ export default function FuelReports({ go }) {
           </label>
           <button type="button" className="btn-primary" disabled={loading} onClick={() => load()}>{loading ? "Loading…" : "Show"}</button>
           <button type="button" disabled={!data} onClick={() => exportXlsx(data.rows.map((r) => ({
-            From: r.from_date, To: r.to_date, "Opening (L)": r.opening, "Received (L)": r.received, "Issued (L)": r.issued,
-            "Adjusted (L)": r.adjusted, "Closing (L)": r.closing, "Value issued (Rs)": r.issued_value,
+            From: r.from_date, To: r.to_date, "Opening (L)": r.opening,
+            "Delivered into tank (L)": r.received, "Bought outside (L)": r.outside, "Stock added - adjustment (L)": r.adj_in, "Total in (L)": r.purchased_total + r.adj_in,
+            "Issued from tank (L)": r.issued, "Issued outside (L)": r.outside, "Issued - adjustment (L)": r.adj_out, "Total issued (L)": r.issued_total,
+            "Closing (L)": r.closing, "Purchase value (Rs)": r.received_value + r.outside_value, "Issue value (Rs)": r.issued_value + r.outside_value,
           })), "Stock statement", `Fuel_Stock_Statement_${from}_to_${to}.xlsx`)}>Export Excel</button>
         </div>
 
@@ -109,41 +124,64 @@ export default function FuelReports({ go }) {
             <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
               <div>
                 <h2 style={{ fontSize: 16 }}>Stock statement · {fmtDate(data.from_date)} – {fmtDate(data.to_date)}</h2>
-                <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 3 }}>Opening + deliveries − issues ± Manager adjustments = closing</div>
+                <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 3 }}>Opening + bought (tank and outside) + stock added − issued (tank, outside and adjustments down) = closing</div>
               </div>
-              {s.adjustments > 0 && <span className="badge badge-progress">{s.adjustments} adjustment{s.adjustments === 1 ? "" : "s"} · {s.adjusted >= 0 ? "+" : ""}{fmtL(s.adjusted)}</span>}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <span className="badge badge-success">Bought {fmtL(s.purchased_total)}</span>
+                <span className="badge badge-info">Issued {fmtL(s.issued_total)}</span>
+                {s.adjustments > 0 && <span className="badge badge-progress">{s.adjustments} adjustment{s.adjustments === 1 ? "" : "s"}</span>}
+              </div>
             </div>
             <Waterfall s={s} />
             <div style={{ overflowX: "auto", marginTop: 20 }}>
-              <table style={{ minWidth: 700 }}>
-                <thead><tr><th>Period</th><th style={{ textAlign: "right" }}>Opening</th><th style={{ textAlign: "right" }}>Received</th><th style={{ textAlign: "right" }}>Issued</th><th style={{ textAlign: "right" }}>Adjusted</th><th style={{ textAlign: "right" }}>Closing</th><th style={{ textAlign: "right" }}>Value issued</th></tr></thead>
+              <table style={{ minWidth: 1120 }}>
+                <thead>
+                  <tr>
+                    <th rowSpan={2}>Period</th><th rowSpan={2} style={{ textAlign: "right" }}>Opening</th>
+                    <th colSpan={3} style={{ textAlign: "center", borderBottom: "1px solid var(--border)" }}>In</th>
+                    <th colSpan={4} style={{ textAlign: "center", borderBottom: "1px solid var(--border)" }}>Issued</th>
+                    <th rowSpan={2} style={{ textAlign: "right" }}>Closing</th>
+                    <th rowSpan={2} style={{ textAlign: "right" }}>Purchase value</th><th rowSpan={2} style={{ textAlign: "right" }}>Issue value</th>
+                  </tr>
+                  <tr>
+                    <th style={{ textAlign: "right" }}>Into tank</th><th style={{ textAlign: "right" }}>Outside</th><th style={{ textAlign: "right" }}>Adj. +</th>
+                    <th style={{ textAlign: "right" }}>From tank</th><th style={{ textAlign: "right" }}>Outside</th><th style={{ textAlign: "right" }}>Adj. −</th><th style={{ textAlign: "right" }}>Total</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {data.rows.map((r) => (
                     <tr key={r.from_date}>
                       <td>{r.from_date === r.to_date ? fmtDate(r.from_date) : `${fmtDate(r.from_date)} – ${fmtDate(r.to_date)}`}</td>
                       <td style={{ textAlign: "right" }}>{fmtNum(r.opening)}</td>
                       <td style={{ textAlign: "right" }}>{r.received ? fmtNum(r.received) : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{r.outside ? fmtNum(r.outside) : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{r.adj_in ? fmtNum(r.adj_in) : "–"}</td>
                       <td style={{ textAlign: "right" }}>{r.issued ? fmtNum(r.issued) : "–"}</td>
-                      <td style={{ textAlign: "right" }}>{r.adjusted ? fmtNum(r.adjusted) : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{r.outside ? fmtNum(r.outside) : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{r.adj_out ? fmtNum(r.adj_out) : "–"}</td>
+                      <td style={{ textAlign: "right", fontWeight: 600 }}>{r.issued_total ? fmtNum(r.issued_total) : "–"}</td>
                       <td style={{ textAlign: "right", fontWeight: 600 }}>{fmtNum(r.closing)}</td>
-                      <td style={{ textAlign: "right" }}>{r.issued_value ? fmtRs(r.issued_value) : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{r.received_value + r.outside_value ? fmtRs(r.received_value + r.outside_value) : "–"}</td>
+                      <td style={{ textAlign: "right" }}>{r.issued_value + r.outside_value ? fmtRs(r.issued_value + r.outside_value) : "–"}</td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot>
                   <tr style={{ fontWeight: 700 }}>
-                    <td>Total</td><td style={{ textAlign: "right" }}>{fmtNum(s.opening)}</td><td style={{ textAlign: "right" }}>{fmtNum(totals.received)}</td>
-                    <td style={{ textAlign: "right" }}>{fmtNum(totals.issued)}</td><td style={{ textAlign: "right" }}>{fmtNum(totals.adjusted)}</td>
-                    <td style={{ textAlign: "right" }}>{fmtNum(s.closing)}</td><td style={{ textAlign: "right" }}>{fmtRs(totals.value)}</td>
+                    <td>Total</td><td style={{ textAlign: "right" }}>{fmtNum(s.opening)}</td>
+                    <td style={{ textAlign: "right" }}>{fmtNum(totals.received)}</td><td style={{ textAlign: "right" }}>{fmtNum(totals.outside)}</td><td style={{ textAlign: "right" }}>{fmtNum(totals.adj_in)}</td>
+                    <td style={{ textAlign: "right" }}>{fmtNum(totals.issued)}</td><td style={{ textAlign: "right" }}>{fmtNum(totals.outside)}</td><td style={{ textAlign: "right" }}>{fmtNum(totals.adj_out)}</td>
+                    <td style={{ textAlign: "right" }}>{fmtNum(totals.issued_total)}</td>
+                    <td style={{ textAlign: "right" }}>{fmtNum(s.closing)}</td>
+                    <td style={{ textAlign: "right" }}>{fmtRs(totals.received_value + totals.outside_value)}</td><td style={{ textAlign: "right" }}>{fmtRs(totals.issued_value + totals.outside_value)}</td>
                   </tr>
                 </tfoot>
               </table>
             </div>
-            {s.outside.litres > 0 && (
-              <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 10 }}>
-                Not in the tank figures: {fmtL(s.outside.litres)} filled at outside stations ({s.outside.fills} fills, {fmtRs(s.outside.value)}).
-              </div>
-            )}
+            <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 10 }}>
+              Outside-station fills are bought and issued at the same moment, straight into the vehicle — they appear under both In and Issued and never change the tank balance.
+              An adjustment that lowers the stock is counted as fuel issued; one that raises it is counted as stock added.
+            </div>
           </section>
         )}
       </div>

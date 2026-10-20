@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
@@ -160,6 +160,33 @@ function Receipts({ canEdit }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(null);
+  // Round 217 — correcting a supplier picked wrongly at the weighbridge.
+  const [fixing, setFixing] = useState(null);   // { ticket, supplier_id, reason, history }
+  const [suppliers, setSuppliers] = useState([]);
+  const [notice, setNotice] = useState("");
+
+  async function openFix(r) {
+    setError(""); setNotice("");
+    setFixing({ ticket: r.ticket_number, current: r.supplier_name || r.raw_supplier || "—", supplier_id: "", reason: "", history: null });
+    if (!suppliers.length) apiRequest("/weighbridge/suppliers").then(setSuppliers).catch((e) => setError(e.message));
+    apiRequest(`/weighbridge/tickets/${r.ticket_number}/supplier-corrections`)
+      .then((h) => setFixing((f) => (f && f.ticket === r.ticket_number ? { ...f, history: h } : f))).catch(() => {});
+  }
+  async function saveFix() {
+    setBusy(fixing.ticket);
+    try {
+      const out = await apiRequest(`/weighbridge/tickets/${fixing.ticket}/supplier`, {
+        method: "POST", body: { supplier_id: Number(fixing.supplier_id), reason: fixing.reason },
+      });
+      setNotice(`Ticket #${out.ticket_number} is now under ${out.supplier_name}.`);
+      setFixing(null);
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not change the supplier.");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function load() {
     setError("");
@@ -268,6 +295,7 @@ function Receipts({ canEdit }) {
       </div>
 
       {error && <div className="card" style={{ marginBottom: 14, color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}
+      {notice && <div style={{ marginBottom: 14, background: "var(--signal-green-bg)", color: "var(--signal-green)", borderRadius: 8, padding: "10px 12px", fontSize: 13 }}>{notice}</div>}
       {loading && <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>}
 
       {!loading && !rows.length && (
@@ -300,7 +328,7 @@ function Receipts({ canEdit }) {
                 // name, not instead of it. Store needs to see both: the name we
                 // matched to, and what the operator actually typed, because
                 // that is what they will compare against the paper slip.
-                const cell = (resolved, raw, key) => {
+                const cell = (resolved, raw, key, corrected = false) => {
                   // Nothing resolved AND nothing flagged means the backend
                   // recognised this as blank — the weighbridge has no concept
                   // of an empty field, so "the operator left it blank" arrives
@@ -316,14 +344,17 @@ function Receipts({ canEdit }) {
                       {resolved && raw && resolved !== raw && (
                         <div style={{ fontSize: 11, color: "var(--slate)" }}>slip says “{raw}”</div>
                       )}
+                      {corrected && <div style={{ fontSize: 11, color: "var(--info)", fontWeight: 600 }}>corrected by hand</div>}
                       {blank && raw && (
                         <div style={{ fontSize: 11, color: "var(--slate)" }}>slip says “{raw}”</div>
                       )}
                     </td>
                   );
                 };
+                const isFixing = fixing?.ticket === r.ticket_number;
                 return (
-                  <tr key={r.ticket_number} style={{ borderTop: "1px solid var(--border)" }}>
+                  <Fragment key={r.ticket_number}>
+                  <tr style={{ borderTop: "1px solid var(--border)", background: isFixing ? "#FFF8F2" : undefined }}>
                     <td style={{ padding: "9px 12px", fontWeight: 600 }}>
                       #{r.ticket_number}
                       {r.challan_number && r.challan_number !== "001" && (
@@ -333,7 +364,7 @@ function Receipts({ canEdit }) {
                     <td style={{ padding: "9px 12px", whiteSpace: "nowrap" }}>{fmtWhen(r.weighed_at)}</td>
                     {cell(r.truck_number, r.raw_vehicle, "vehicle")}
                     {cell(r.material_name, r.raw_material, "material")}
-                    {cell(r.supplier_name, r.raw_supplier, "supplier")}
+                    {cell(r.supplier_name, r.raw_supplier, "supplier", r.supplier_corrected)}
                     <td style={{ padding: "9px 12px", textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>
                       {fmtKg(r.net_weight_kg)}
                       <div style={{ fontSize: 11, color: "var(--slate)", fontWeight: 400 }}>
@@ -366,9 +397,50 @@ function Receipts({ canEdit }) {
                             Set aside
                           </button>
                         )}
+                        {!r.receipt_id && (
+                          <button type="button" style={{ fontSize: 12, marginLeft: 6 }}
+                                  disabled={busy === r.ticket_number}
+                                  onClick={() => (isFixing ? setFixing(null) : openFix(r))}>
+                            {isFixing ? "Close" : "Change supplier"}
+                          </button>
+                        )}
                       </td>
                     )}
                   </tr>
+                  {isFixing && (
+                    <tr>
+                      <td colSpan={9} style={{ padding: "10px 12px 14px", background: "#FFF8F2" }}>
+                        <div className="field-input" style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
+                          <div style={{ fontSize: 12.5, flex: "1 1 100%" }}>
+                            Ticket <b>#{r.ticket_number}</b> is under <b>{fixing.current}</b>. Choose the supplier this load really came from —
+                            only this ticket changes; the name mapping for other loads stays as it is.
+                          </div>
+                          <label style={{ fontSize: 12, color: "var(--slate)", flex: "1 1 220px" }}>Right supplier
+                            <select value={fixing.supplier_id} onChange={(e) => setFixing({ ...fixing, supplier_id: e.target.value })} style={{ display: "block", marginTop: 4, width: "100%" }}>
+                              <option value="">— choose —</option>
+                              {suppliers.filter((x) => x.id !== r.supplier_id).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                            </select>
+                          </label>
+                          <label style={{ fontSize: 12, color: "var(--slate)", flex: "2 1 260px" }}>Reason
+                            <input type="text" value={fixing.reason} placeholder="e.g. operator picked the wrong supplier — see the supplier's bill"
+                              onChange={(e) => setFixing({ ...fixing, reason: e.target.value })} style={{ display: "block", marginTop: 4, width: "100%" }} />
+                          </label>
+                          <button type="button" onClick={() => setFixing(null)}>Cancel</button>
+                          <button type="button" className="btn-primary" disabled={busy === r.ticket_number || !fixing.supplier_id || !fixing.reason.trim()} onClick={saveFix}>
+                            {busy === r.ticket_number ? "Saving…" : "Change supplier"}
+                          </button>
+                        </div>
+                        {fixing.history?.length > 0 && (
+                          <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 10 }}>
+                            {fixing.history.map((h) => (
+                              <div key={h.id}>{fmtWhen(h.corrected_at)} · {h.corrected_by_name || "—"}: {h.old_name || "—"} → <b>{h.new_name}</b> — {h.reason}</div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -378,7 +450,10 @@ function Receipts({ canEdit }) {
 
       <p style={{ fontSize: 12, color: "var(--slate)", marginTop: 14, lineHeight: 1.6 }}>
         Weights come straight from the weighbridge and are never edited here — a wrong weight is
-        corrected on the weighbridge and arrives on the next sync. The <b>billed qty</b> comes the
+        corrected on the weighbridge and arrives on the next sync. A <b>supplier picked wrongly</b> on
+        one load is corrected with <b>Change supplier</b> on that ticket (kept even when the weighbridge
+        re-sends it); if a spelling is mapped to the wrong supplier for every load, fix it on the Mapping tab.
+        A ticket already on a receipt is changed by correcting that receipt first. The <b>billed qty</b> comes the
         same way: the operator types the supplier's invoice quantity (in the material's purchase
         unit) into the weighing software's spare field, and the variance against the actual weight
         is shown above the moment it syncs. Moisture is not imported: the weighbridge stores it as

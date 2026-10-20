@@ -181,7 +181,12 @@ export default function CreateOrder({ onDone }) {
   // here: GST applies by default and the Accountant can switch it off.
   const pumpChargeAmount = form.pump_requirement === "boom_pump" ? Number(rateInfo?.boom_pump_charge || 0) || null : form.pump_requirement === "line_pump" ? Number(rateInfo?.line_pump_charge || 0) || null : null;
   const pumpMinQty = form.pump_requirement === "boom_pump" ? rateInfo?.boom_pump_min_qty_m3 : rateInfo?.line_pump_min_qty_m3;
-  const needsPumpDecision = form.pump_requirement !== "without_pump";
+  // Round 217 (owner, 20 Oct 2026) — a line pump order at or above the line
+  // pump minimum (20 m³ unless the price list says otherwise) can never carry
+  // the mobilization charge, so the question is not asked at all.
+  const linePumpAboveMin = form.pump_requirement === "line_pump" && Number(form.order_quantity_m3 || 0) > 0
+    && Number(form.order_quantity_m3 || 0) >= Number(rateInfo?.line_pump_min_qty_m3 ?? 20);
+  const needsPumpDecision = form.pump_requirement !== "without_pump" && !linePumpAboveMin;
   const pumpRuleApplies = !!pumpChargeAmount && Number(form.order_quantity_m3 || 0) < Number(pumpMinQty || 0);
   const partLoadThreshold = Number(rateInfo?.part_load_min_qty_m3 ?? 5);
   const partLoadRate = rateInfo?.part_load_charge_per_m3 ? Number(rateInfo.part_load_charge_per_m3) : null;
@@ -223,7 +228,7 @@ export default function CreateOrder({ onDone }) {
         method: "POST",
         body: {
           ...form,
-          pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : undefined,
+          pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : linePumpAboveMin ? false : undefined,
           pump_charge_amount: needsPumpDecision && pumpChargeDecision ? pumpChargeAmount : 0,
           price_option: priceOption || undefined,
           mix_design_id: mixMode && mixDesignId ? Number(mixDesignId) : undefined,
@@ -469,6 +474,11 @@ export default function CreateOrder({ onDone }) {
           )
         )}
 
+        {linePumpAboveMin && (
+          <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "var(--slate)", background: "var(--concrete)", borderRadius: 8, padding: "8px 10px" }}>
+            Line pump: no mobilization charge — the order is {Number(rateInfo?.line_pump_min_qty_m3 ?? 20)} m³ or more.
+          </div>
+        )}
         {needsPumpDecision && (
           <div style={{ gridColumn: "1 / -1", background: "var(--amber-bg)", border: "1px solid var(--amber)", borderRadius: 8, padding: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Pump mobilization charge (required)</div>

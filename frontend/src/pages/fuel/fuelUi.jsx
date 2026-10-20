@@ -161,7 +161,7 @@ export function Kpi({ label, value, sub, accent, children, valueStyle }) {
 
 export const KIND = {
   issue: { label: "Plant issue", cls: "badge-info" },
-  external: { label: "Outside fill", cls: "badge-neutral" },
+  external: { label: "Outside purchase + issue", cls: "badge-neutral" },
   receipt: { label: "Delivery received", cls: "badge-success" },
   adjustment: { label: "Adjustment", cls: "badge-progress" },
 };

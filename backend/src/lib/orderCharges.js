@@ -67,7 +67,12 @@ export async function resolveChargeDecisions(body, { customer_id, site_id, mix_g
     part_load_basis: "per_load",
   };
 
-  if (pump_requirement !== "without_pump") {
+  // Round 217 (owner, 20 Oct 2026) — a line pump order at or above the line
+  // pump minimum never carries the mobilization charge: no question, no reason.
+  const lineRule = pump_requirement === "line_pump" ? pumpRule(rate, pump_requirement) : null;
+  if (lineRule && qty > 0 && qty >= (lineRule.minQty || 0)) {
+    out.pump_charge_applicable = false;
+  } else if (pump_requirement !== "without_pump") {
     if (body.pump_charge_applicable === undefined || body.pump_charge_applicable === null) {
       return { error: "Confirm whether the pump mobilization charge applies to this order." };
     }

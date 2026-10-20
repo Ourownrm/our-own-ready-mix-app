@@ -64,6 +64,7 @@ function Detail({ r }) {
               <span style={{ color: "var(--slate)" }}>Book before</span><span style={{ fontWeight: 600 }}>{fmtL(c.balance_before)}</span>
               <span style={{ color: "var(--slate)" }}>Counted</span><span style={{ fontWeight: 600 }}>{fmtL(r.balance_after)}</span>
               <span style={{ color: "var(--slate)" }}>Change</span><span style={{ fontWeight: 600 }}>{c.change > 0 ? "+" : ""}{fmtL(c.change)}</span>
+              <span style={{ color: "var(--slate)" }}>Reported as</span><span style={{ fontWeight: 600 }}>{c.change < 0 ? "Fuel issued" : "Stock added"}</span>
             </>
           )}
           {r.rate != null && (<><span style={{ color: "var(--slate)" }}>Rate</span><span style={{ fontWeight: 600 }}>{fmtRs(r.rate, 2)}/L{r.value != null ? ` · ${fmtRs(r.value)}` : ""}</span></>)}
@@ -226,14 +227,15 @@ export default function FuelTransactions({ params }) {
         <section className="card" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
             {[
+              // Round 217 — outside fills are bought and issued at once; an
+              // adjustment down counts as issued, up as stock added.
               ["Opening", fmtL(s.opening), null, "var(--charcoal)"],
-              ["+ Received", fmtL(s.received), `${s.deliveries} deliver${s.deliveries === 1 ? "y" : "ies"} · ${fmtRs(s.received_value)}`, "var(--signal-green)"],
-              ["− Issued from tank", fmtL(s.issued), `${s.issues} fills · ${fmtRs(s.issued_value)}`, "var(--info)"],
-              ["± Adjustments", `${s.adjusted > 0 ? "+" : ""}${fmtL(s.adjusted)}`, `${s.adjustments} by Manager`, "var(--violet)"],
-              ["= Closing", fmtL(s.closing), null, "var(--charcoal)"],
-              ["Outside stations", fmtL(s.outside.litres), `${s.outside.fills} fills · not from tank`, "var(--slate)"],
+              ["+ Bought", fmtL(s.purchased_total), `tank ${fmtNum(s.received)} L (${s.deliveries}) · outside ${fmtNum(s.outside.litres)} L (${s.outside.fills})`, "var(--signal-green)"],
+              ["+ Stock added", fmtL(s.adj_in), "adjustments up", "var(--violet)"],
+              ["− Issued", fmtL(s.issued_total), `tank ${fmtNum(s.issued)} · outside ${fmtNum(s.outside.litres)} · adj. ${fmtNum(s.adj_out)}`, "var(--info)"],
+              ["= Closing", fmtL(s.closing), "tank balance", "var(--charcoal)"],
             ].map(([label, value, sub, colour], i) => (
-              <div key={label} style={{ padding: "13px 16px", borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", background: i >= 4 ? "#FAF9F6" : undefined }}>
+              <div key={label} style={{ padding: "13px 16px", borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", background: i === 4 ? "#FAF9F6" : undefined }}>
                 <div className="kpi-label">{label}</div>
                 <div style={{ fontSize: 21, fontWeight: 700, marginTop: 3, color: colour }}>{value}</div>
                 {sub && <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{sub}</div>}
@@ -274,7 +276,7 @@ export default function FuelTransactions({ params }) {
                         <td><b>{r.unit_label}</b><div style={{ fontSize: 11, color: "var(--slate)" }}>{r.unit_sub}{r.kind === "external" && r.station_name ? ` · ${r.station_name}` : ""}</div></td>
                         <td style={{ whiteSpace: "nowrap" }}>{r.reading ? `${fmtNum(r.reading.value, r.reading.unit === "hrs" ? 1 : 0)} ${r.reading.unit}` : "—"}</td>
                         <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>{r.consumption ? `${fmtNum(r.consumption.value, r.consumption.unit === "L/hr" ? 2 : 1)} ${r.consumption.unit}` : "—"}</td>
-                        <td style={{ textAlign: "right", color: "var(--signal-green)", fontWeight: 600 }}>{r.in_qty != null ? fmtNum(r.in_qty) : "—"}</td>
+                        <td style={{ textAlign: "right", color: "var(--signal-green)", fontWeight: 600 }}>{r.in_qty != null ? (r.kind === "external" ? `(${fmtNum(r.in_qty)})` : fmtNum(r.in_qty)) : "—"}</td>
                         <td style={{ textAlign: "right" }}>{r.out_qty != null ? (r.kind === "external" ? `(${fmtNum(r.out_qty)})` : fmtNum(r.out_qty)) : "—"}</td>
                         <td style={{ textAlign: "right", fontWeight: 700 }}>{r.balance_after != null ? fmtNum(r.balance_after) : "—"}</td>
                         <td style={{ textAlign: "right" }}>{r.value != null ? fmtRs(r.value) : "—"}</td>
@@ -300,7 +302,7 @@ export default function FuelTransactions({ params }) {
         </section>
       )}
       <div style={{ fontSize: 11.5, color: "var(--slate)" }}>
-        Consumption is worked out fill to fill from the meter reading at each fill: L/100km for trucks, L/hr for pumps and machines. Outside-station fills are shown in brackets; they count towards consumption but never change the tank balance.
+        Consumption is worked out fill to fill from the meter reading at each fill: L/100km for trucks, L/hr for pumps and machines. Outside-station fills are shown in brackets under both In and Out: each is a purchase and an issue at once, filled straight into the vehicle, so the tank balance does not change. An adjustment down counts as fuel issued; an adjustment up as stock added.
       </div>
     </div>
   );

@@ -190,8 +190,8 @@ export default function FuelDashboard({ go }) {
               {avgChange != null && <div style={{ fontSize: 11.5, fontWeight: 600, marginTop: 2, color: avgChange <= 0 ? "var(--signal-green)" : "var(--slate)" }}>
                 {avgChange > 0 ? "+" : "−"}{fmtNum(Math.abs(avgChange), 0)}% vs previous 7 days</div>}
             </Kpi>
-            <Kpi label="Received this month" value={fmtL(month.received)} sub={`${month.deliveries} deliver${month.deliveries === 1 ? "y" : "ies"} · ${fmtRs(month.received_value)}`} />
-            <Kpi label="Issued this month" value={fmtL(month.issued)} sub={`${fmtRs(month.issued_value)} · plus ${fmtL(month.outside.litres)} outside`} />
+            <Kpi label="Bought this month" value={fmtL(month.purchased_total)} sub={`tank ${fmtL(month.received)} (${month.deliveries}) · outside ${fmtL(month.outside.litres)} · ${fmtRs(month.purchased_value)}`} />
+            <Kpi label="Issued this month" value={fmtL(month.issued_total)} sub={`tank ${fmtL(month.issued)} · outside ${fmtL(month.outside.litres)}${month.adj_out ? ` · adj. ${fmtL(month.adj_out)}` : ""}`} />
             <Kpi label="Fuel per m³" value={month.litres_per_m3 != null ? `${fmtNum(month.litres_per_m3, 2)} L` : "—"}
               sub={month.cost_per_m3 != null ? `${fmtRs(month.cost_per_m3)}/m³ · ${fmtNum(month.m3_produced)} m³ produced` : "no production this month yet"} />
             <Kpi label="Waiting" value={`${pending.awaiting_approval + pending.awaiting_issue} · ${pending.purchases.length}`}
@@ -273,7 +273,7 @@ export default function FuelDashboard({ go }) {
                     {r.reading ? `${fmtNum(r.reading.value, r.reading.unit === "hrs" ? 1 : 0)} ${r.reading.unit}` : "—"}
                     {r.consumption && <> · <b>{fmtNum(r.consumption.value, 1)} {r.consumption.unit}</b></>}
                   </td>
-                  <td style={{ textAlign: "right" }}>{r.in_qty != null ? fmtNum(r.in_qty) : "—"}</td>
+                  <td style={{ textAlign: "right" }}>{r.in_qty != null ? (r.kind === "external" ? `(${fmtNum(r.in_qty)})` : fmtNum(r.in_qty)) : "—"}</td>
                   <td style={{ textAlign: "right" }}>{r.out_qty != null ? (r.kind === "external" ? `(${fmtNum(r.out_qty)})` : fmtNum(r.out_qty)) : "—"}</td>
                   <td style={{ textAlign: "right", fontWeight: 600 }}>{r.balance_after != null ? fmtNum(r.balance_after) : "not from tank"}</td>
                   <td>{r.done_by_name || "—"}</td>

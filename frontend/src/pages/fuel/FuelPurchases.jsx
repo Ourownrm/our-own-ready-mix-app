@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { useAuth } from "../../lib/AuthContext.jsx";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
-import { fmtL, fmtRs, fmtWhen } from "./fuelUi.jsx";
+import { fmtL, fmtRs, fmtWhen, exportXlsx } from "./fuelUi.jsx";
 
 // Round 199 — diesel purchases, moved here from Store Stock (lubricant
 // purchases stay there). Same request → approve → receive flow and the same
@@ -69,6 +69,17 @@ export default function FuelPurchases() {
 
   const open = data.purchases.filter((p) => p.status === "pending" || p.status === "approved");
   const done = data.purchases.filter((p) => p.status === "received" || p.status === "rejected");
+  // Round 217 — outside-station fills are purchases too (issued straight into
+  // the vehicle, never through the tank).
+  const outside = data.outside_fills || [];
+  const tankIn = done.filter((p) => p.status === "received");
+  const sum = (list, k) => list.reduce((a, x) => a + (Number(x[k]) || 0), 0);
+  const byStation = Object.values(outside.reduce((m, o) => {
+    const k = o.station_name || "Station not named";
+    m[k] = m[k] || { station: k, litres: 0, cost: 0, fills: 0 };
+    m[k].litres += Number(o.litres) || 0; m[k].cost += Number(o.cost) || 0; m[k].fills++;
+    return m;
+  }, {})).sort((a, b) => b.litres - a.litres);
 
   // A plain function, not a component: a component defined inside this one
   // would be a new type every render and remount, losing typing focus.
@@ -181,9 +192,63 @@ export default function FuelPurchases() {
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>Open <span className="chip" style={{ marginLeft: 6 }}>{open.length}</span></div>
         {open.length ? table(open) : <div style={{ fontSize: 13, color: "var(--slate)" }}>No purchase is waiting.</div>}
       </section>
+      <section className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" }}>
+          {[
+            ["Delivered into the tank", fmtL(sum(tankIn, "received_qty")), `${tankIn.length} deliver${tankIn.length === 1 ? "y" : "ies"} · ${fmtRs(sum(tankIn, "total_cost"))}`, "var(--signal-green)"],
+            ["Bought at outside stations", fmtL(sum(outside, "litres")), `${outside.length} fill${outside.length === 1 ? "" : "s"} · ${fmtRs(sum(outside, "cost"))}`, "var(--info)"],
+            ["Total diesel bought", fmtL(sum(tankIn, "received_qty") + sum(outside, "litres")), fmtRs(sum(tankIn, "total_cost") + sum(outside, "cost")), "var(--charcoal)"],
+          ].map(([label, value, sub, colour]) => (
+            <div key={label} style={{ padding: "13px 16px", borderRight: "1px solid var(--border)" }}>
+              <div className="kpi-label">{label} <span style={{ textTransform: "none", fontWeight: 400 }}>· last 6 months</span></div>
+              <div style={{ fontSize: 21, fontWeight: 700, marginTop: 3, color: colour }}>{value}</div>
+              <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{sub}</div>
+            </div>
+          ))}
+        </div>
+      </section>
       <section className="card">
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>Last 6 months</div>
         {done.length ? table(done) : <div style={{ fontSize: 13, color: "var(--slate)" }}>No deliveries in the last 6 months.</div>}
+      </section>
+      <section className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Bought at outside stations <span className="chip" style={{ marginLeft: 6 }}>{outside.length}</span></div>
+            <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 2 }}>Each fill is a purchase and an issue at the same time — filled straight into the vehicle, so the tank balance does not change.</div>
+          </div>
+          <button type="button" disabled={!outside.length} onClick={() => exportXlsx(outside.map((o) => ({
+            Ref: `FR-${o.id}`, Date: o.issued_at ? new Date(o.issued_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) : "",
+            Station: o.station_name || "", Vehicle: o.unit_label || "", "Litres": o.litres, "Rate (Rs/L)": o.rate ?? "", "Amount (Rs)": o.cost ?? "",
+            "Bill ref": o.bill_ref || "", "Confirmed by": o.issued_by_name || "",
+          })), "Outside purchases", "Fuel_Outside_Purchases.xlsx")}>Export Excel</button>
+        </div>
+        {byStation.length > 1 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "6px 0 10px" }}>
+            {byStation.map((b) => <span key={b.station} className="chip">{b.station}: {fmtL(b.litres)} · {fmtRs(b.cost)}</span>)}
+          </div>
+        )}
+        {outside.length ? (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ minWidth: 760 }}>
+              <thead><tr><th>Ref</th><th>Filled</th><th>Station</th><th>Vehicle / machine</th><th style={{ textAlign: "right" }}>Litres</th><th style={{ textAlign: "right" }}>Rate</th><th style={{ textAlign: "right" }}>Amount</th><th>Bill</th></tr></thead>
+              <tbody>
+                {outside.map((o) => (
+                  <tr key={o.id}>
+                    <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>FR-{o.id}</td>
+                    <td style={{ fontSize: 12 }}>{fmtWhen(o.issued_at)}<div style={{ color: "var(--slate)" }}>{o.closed_via === "office" ? "from the station bill" : "confirmed by driver"}{o.issued_by_name ? ` · ${o.issued_by_name}` : ""}</div></td>
+                    <td>{o.station_name || "—"}</td>
+                    <td><b>{o.unit_label || "—"}</b><div style={{ fontSize: 11, color: "var(--slate)" }}>{o.unit_sub}</div></td>
+                    <td style={{ textAlign: "right" }}>{fmtL(o.litres)}</td>
+                    <td style={{ textAlign: "right" }}>{o.rate != null ? `${fmtRs(o.rate, 2)}/L` : "—"}</td>
+                    <td style={{ textAlign: "right" }}>{o.cost != null ? fmtRs(o.cost) : "—"}</td>
+                    <td style={{ fontSize: 12 }}>{o.bill_ref || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <div style={{ fontSize: 13, color: "var(--slate)" }}>No outside-station fills in the last 6 months.</div>}
       </section>
     </div>
   );

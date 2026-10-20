@@ -655,12 +655,27 @@ const LEAVE_SELECT = `
   LEFT JOIN users db ON db.id = l.decided_by`;
 
 // Working days a leave covers: weekly off and holidays are not leave.
-async function leaveDays(emp, from, to, half) {
-  if (half) return 0.5;
+async function leaveWorkDates(emp, from, to) {
   const { rows } = await query(`SELECT to_char(holiday_date, 'YYYY-MM-DD') AS d FROM hr_holidays WHERE holiday_date BETWEEN $1 AND $2`, [from, to]);
   const hol = new Set(rows.map((r) => r.d));
   const off = emp.weekly_off == null ? null : Number(emp.weekly_off);
-  return datesBetween(from, to).filter((d) => !hol.has(d) && new Date(d + "T00:00:00Z").getUTCDay() !== off).length;
+  return datesBetween(from, to).filter((d) => !hol.has(d) && new Date(d + "T00:00:00Z").getUTCDay() !== off);
+}
+async function leaveDays(emp, from, to, half) {
+  if (half) return 0.5;
+  return (await leaveWorkDates(emp, from, to)).length;
+}
+// Round 217 — consecutive working days grouped into runs (a weekly off or a
+// holiday between two working days does not break a run).
+function workRuns(work, picked) {
+  const runs = [];
+  let cur = null;
+  work.forEach((d, i) => {
+    if (!picked.has(d)) { cur = null; return; }
+    if (cur && cur.lastIdx === i - 1) { cur.to = d; cur.days++; cur.lastIdx = i; }
+    else { cur = { from: d, to: d, days: 1, lastIdx: i }; runs.push(cur); }
+  });
+  return runs;
 }
 
 // Balances per type for employees on a date (lib/hrLeave.js has the rules).
@@ -795,8 +810,16 @@ router.get("/leaves", requirePermission("hr.requests", "view"), async (req, res)
       if (!bal.has(k)) bal.set(k, (await balancesFor([l.employee_id], l.from_date)).get(l.employee_id));
     }
     const admin = isAdmin(req.user);
+    // Round 217 — the working days of a waiting leave of more than one day, so
+    // the approver can approve only some of them.
+    const workDates = new Map();
+    for (const l of rows) {
+      if (l.status !== "pending" || l.half_day || l.compoff_claim_id || Number(l.days) < 2) continue;
+      workDates.set(l.id, await leaveWorkDates(await loadEmployee(l.employee_id), l.from_date, l.to_date));
+    }
     res.json({
       leaves: rows.map((l) => ({ ...l, days: Number(l.days), balance: bal.get(l.employee_id + "|" + l.from_date)?.find((b) => b.leave_type_id === l.leave_type_id) || null,
+        work_dates: workDates.get(l.id) || null,
         can_decide: l.status === "pending" && canDecideLeave(req.user, l),
         can_cancel: (l.status === "pending" && (l.raised_by === req.user.id || admin)) || (l.status === "approved" && admin) })),
     });
@@ -843,6 +866,34 @@ router.post("/leaves/:id/decide", requirePermission("hr.requests", "edit"), asyn
       // Round 205 — a comp-off request: the worked day and the day off together.
       await decideLinked({ claimId: l.compoff_claim_id, leaveId: id }, { status: approve ? "approved" : "rejected", days: null, userId: req.user.id, note });
       return res.json({ ok: true });
+    }
+    // Round 217 (owner, 20 Oct 2026) — approve only some of the days: the
+    // leave is split; the days approved stay approved (one record per run of
+    // consecutive working days) and the others become a rejected record.
+    if (approve && Array.isArray(req.body?.approve_dates) && !l.half_day) {
+      const emp = await loadEmployee(l.employee_id);
+      const work = await leaveWorkDates(emp, l.from_date, l.to_date);
+      const picked = new Set(req.body.approve_dates.map(String).filter((d) => work.includes(d)));
+      if (!picked.size) return res.status(400).json({ error: "Tick at least one day to approve, or reject the leave." });
+      if (picked.size < work.length) {
+        const rest = new Set(work.filter((d) => !picked.has(d)));
+        const ok = workRuns(work, picked);
+        const no = workRuns(work, rest);
+        const restNote = `Not approved — ${[...rest].length} of ${work.length} days${note ? `: ${note}` : ""}`.slice(0, 500);
+        const [first, ...more] = ok;
+        await query(`UPDATE hr_leaves SET status = 'approved', from_date = $1, to_date = $2, days = $3, decided_by = $4, decided_at = now(),
+                       decision_note = $5 WHERE id = $6`,
+          [first.from, first.to, first.days, req.user.id, `Approved ${picked.size} of ${work.length} days${note ? ` — ${note}` : ""}`.slice(0, 500), id]);
+        const copy = async (run, status, dnote) => query(
+          `INSERT INTO hr_leaves (employee_id, leave_type_id, from_date, to_date, half_day, days, reason, status, needs_admin, admin_reason,
+                                  raised_by, raised_at, decided_by, decided_at, decision_note, split_from_id)
+           SELECT employee_id, leave_type_id, $1, $2, false, $3, reason, $4, needs_admin, admin_reason,
+                  raised_by, raised_at, $5, now(), $6, id FROM hr_leaves WHERE id = $7`,
+          [run.from, run.to, run.days, status, req.user.id, dnote, id]);
+        for (const r of more) await copy(r, "approved", `Approved ${picked.size} of ${work.length} days${note ? ` — ${note}` : ""}`.slice(0, 500));
+        for (const r of no) await copy(r, "rejected", restNote);
+        return res.json({ ok: true, approved_days: picked.size, rejected_days: rest.size });
+      }
     }
     await query(`UPDATE hr_leaves SET status = $1, decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $4`,
       [approve ? "approved" : "rejected", req.user.id, note, id]);

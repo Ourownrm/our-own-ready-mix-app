@@ -102,6 +102,8 @@ export function LeaveTab({ meta }) {
   const [employees, setEmployees] = useState([]);
   const [recording, setRecording] = useState(false);
   const [notes, setNotes] = useState({});
+  // Round 217 — approving only some days of a leave: leave id → set of dates.
+  const [partial, setPartial] = useState({});
   const load = () => {
     const q = new URLSearchParams();
     if (status) q.set("status", status);
@@ -172,13 +174,39 @@ export function LeaveTab({ meta }) {
               {(l.can_decide && can("hr.requests", "edit")) || l.can_cancel ? (
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10 }} className="field-input">
                   <input style={{ flex: "1 1 220px" }} placeholder={l.can_decide ? "Note (required to reject)" : "Note"} value={notes[l.id] || ""} onChange={(e) => setNotes((n) => ({ ...n, [l.id]: e.target.value }))} />
-                  {l.can_decide && can("hr.requests", "edit") && <>
-                    <button className="btn-primary" onClick={() => act(`/hr/leaves/${l.id}/decide`, { approve: true, note: notes[l.id] || "" })}>Approve</button>
+                  {l.can_decide && can("hr.requests", "edit") && !partial[l.id] && <>
+                    <button className="btn-primary" onClick={() => act(`/hr/leaves/${l.id}/decide`, { approve: true, note: notes[l.id] || "" })}>Approve{l.work_dates ? " all" : ""}</button>
+                    {l.work_dates && <button onClick={() => setPartial((p) => ({ ...p, [l.id]: new Set(l.work_dates) }))}>Approve some days…</button>}
                     <button onClick={() => act(`/hr/leaves/${l.id}/decide`, { approve: false, note: notes[l.id] || "" })} style={{ color: "var(--alert-red)" }}>Reject</button>
                   </>}
-                  {l.can_cancel && <button onClick={() => { if (window.confirm(l.status === "approved" ? "Cancel this approved leave? Those days go back to what the punches show." : "Withdraw this leave?")) act(`/hr/leaves/${l.id}/cancel`, { note: notes[l.id] || "" }); }}>{l.status === "approved" ? "Cancel leave" : "Withdraw"}</button>}
+                  {l.can_cancel && !partial[l.id] && <button onClick={() => { if (window.confirm(l.status === "approved" ? "Cancel this approved leave? Those days go back to what the punches show." : "Withdraw this leave?")) act(`/hr/leaves/${l.id}/cancel`, { note: notes[l.id] || "" }); }}>{l.status === "approved" ? "Cancel leave" : "Withdraw"}</button>}
                 </div>
               ) : l.status === "pending" ? <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 8 }}>{l.needs_admin ? "Waiting for Admin." : "You cannot approve this one."}</div> : null}
+              {partial[l.id] && l.work_dates && (
+                <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "var(--concrete)" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Tick the days to approve — the rest are rejected</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {l.work_dates.map((d) => {
+                      const on = partial[l.id].has(d);
+                      return (
+                        <label key={d} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, padding: "6px 10px", borderRadius: 8, cursor: "pointer",
+                          border: `1px solid ${on ? "var(--signal-green)" : "var(--border-strong)"}`, background: on ? "var(--signal-green-bg)" : "var(--surface)" }}>
+                          <input type="checkbox" checked={on} onChange={() => setPartial((p) => { const n = new Set(p[l.id]); if (on) n.delete(d); else n.add(d); return { ...p, [l.id]: n }; })} />
+                          {new Date(d + "T00:00:00Z").toLocaleDateString("en-IN", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" })}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button className="btn-primary" disabled={!partial[l.id].size}
+                      onClick={async () => { await act(`/hr/leaves/${l.id}/decide`, { approve: true, approve_dates: [...partial[l.id]], note: notes[l.id] || "" }); setPartial((p) => { const n = { ...p }; delete n[l.id]; return n; }); }}>
+                      Approve {partial[l.id].size} of {l.work_dates.length} day{l.work_dates.length === 1 ? "" : "s"}
+                    </button>
+                    <button onClick={() => setPartial((p) => { const n = { ...p }; delete n[l.id]; return n; })}>Back</button>
+                    <span style={{ fontSize: 11.5, color: "var(--slate)" }}>The days not ticked are recorded as rejected, with your note.</span>
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </>

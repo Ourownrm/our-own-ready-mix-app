@@ -27,6 +27,7 @@ import { migrateRound215 } from "../lib/round215Schema.js";
 import { migrateRound215b } from "../lib/maintenanceGeneral.js";
 import { migrateRound215c } from "../lib/maintenanceModels.js";
 import { migrateRound216 } from "../lib/round216Schema.js";
+import { migrateRound217 } from "../lib/round217Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4130,6 +4131,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // ROUND 216 — tyres & batteries, certificates (Statutory Compliance
     // carried over), markers for records brought over from the old screens.
     await migrateRound216(pool, log);
+    // ROUND 217 — partial leave approval, weighbridge supplier corrections.
+    await migrateRound217(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

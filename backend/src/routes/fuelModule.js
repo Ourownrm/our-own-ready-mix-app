@@ -308,7 +308,8 @@ function ledgerRow(r) {
   const ref = r.kind === "receipt" ? `FPR-${r.sp_id}` : r.kind === "adjustment" ? `ADJ-${r.txn_id}` : `FR-${r.sr_id}`;
   const out = {
     kind: r.kind, at: r.at, ref, txn_id: r.txn_id, sr_id: r.sr_id, sp_id: r.sp_id,
-    in_qty: qty > 0 ? qty : null,
+    // Round 217 — an outside fill is bought and issued at once: shown both in and out.
+    in_qty: qty > 0 ? qty : r.kind === "external" && qty != null ? -qty : null,
     out_qty: qty < 0 ? -qty : null,
     balance_after: n(r.balance_after),
     category: r.category, unit_label: r.unit_label, unit_sub: r.unit_sub,
@@ -335,7 +336,7 @@ function ledgerRow(r) {
           `${n(r.actual_quantity_issued)} L`,
           r.kind === "external" && r.bill_ref ? `bill ${r.bill_ref}` : null,
           r.kind === "external" && r.close_note ? r.close_note : null,
-          r.kind === "external" ? "tank balance unchanged" : null,
+          r.kind === "external" ? "purchased and issued at once — tank balance unchanged" : null,
         ].filter(Boolean).join(" · ") },
     ].filter(Boolean);
   } else if (r.kind === "receipt") {
@@ -353,8 +354,9 @@ function ledgerRow(r) {
       balance_before: out.balance_after != null && qty != null ? Math.round((out.balance_after - qty) * 100) / 100 : null,
     };
   } else {
-    out.unit_label = "Tank adjustment";
+    out.unit_label = qty < 0 ? "Adjustment — counted as issued" : "Adjustment — added to stock";
     out.unit_sub = r.note || "Physical count";
+    out.adjust_dir = qty < 0 ? "out" : "in";
     out.trail = [{ step: "Adjusted", who: r.done_by_name, at: r.at, note: r.note || "" }];
     out.calc = { balance_before: out.balance_after != null ? Math.round((out.balance_after - qty) * 100) / 100 : null, change: qty };
   }
@@ -375,7 +377,9 @@ async function tankSummary(from, to) {
        COALESCE(-SUM(qty_change) FILTER (WHERE txn_type = 'issue_deduct' AND created_at::date BETWEEN $2 AND $3), 0) AS issued,
        COUNT(*) FILTER (WHERE txn_type = 'issue_deduct' AND created_at::date BETWEEN $2 AND $3) AS issues,
        COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3), 0) AS adjusted,
-       COUNT(*) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3) AS adjustments
+       COUNT(*) FILTER (WHERE txn_type = 'adjustment' AND created_at::date BETWEEN $2 AND $3) AS adjustments,
+       COALESCE(SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND qty_change > 0 AND created_at::date BETWEEN $2 AND $3), 0) AS adj_in,
+       COALESCE(-SUM(qty_change) FILTER (WHERE txn_type = 'adjustment' AND qty_change < 0 AND created_at::date BETWEEN $2 AND $3), 0) AS adj_out
      FROM store_stock_transactions WHERE stock_item_id = $1`,
     [item.id, from, to]
   );
@@ -400,13 +404,23 @@ async function tankSummary(from, to) {
   const r = rows[0];
   const current = Number(item.current_qty);
   const n = (v) => Math.round(Number(v) * 100) / 100;
+  const outside = { litres: n(ext.rows[0].litres), fills: Number(ext.rows[0].fills), value: n(ext.rows[0].value) };
+  // Round 217 (owner, 20 Oct 2026) — how the figures are reported:
+  //   * an outside-station fill is a purchase AND an issue at the same time;
+  //     it never goes through the tank, so the tank balance is unchanged;
+  //   * an adjustment that lowers the stock counts as fuel issued, one that
+  //     raises it as stock added.
   return {
     opening: n(current - Number(r.since_from)),
     received: n(r.received), deliveries: Number(r.deliveries), received_value: n(values.rows[0].received_value),
     issued: n(r.issued), issues: Number(r.issues), issued_value: n(values.rows[0].issued_value),
     adjusted: n(r.adjusted), adjustments: Number(r.adjustments),
+    adj_in: n(r.adj_in), adj_out: n(r.adj_out),
     closing: n(current - Number(r.after_to)),
-    outside: { litres: n(ext.rows[0].litres), fills: Number(ext.rows[0].fills), value: n(ext.rows[0].value) },
+    outside,
+    purchased_total: n(Number(r.received) + outside.litres),
+    purchased_value: n(Number(values.rows[0].received_value) + outside.value),
+    issued_total: n(Number(r.issued) + outside.litres + Number(r.adj_out)),
     current: n(current),
   };
 }
@@ -575,7 +589,7 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
 
     const i7 = issues7.rows[0];
     const avg7 = Number(i7.last7) / 7;
-    const monthUsedAll = month.issued + month.outside.litres;
+    const monthUsedAll = month.issued_total;
     const m3 = Number(monthM3.rows[0].m3) || 0;
     const monthCostAll = month.issued_value + month.outside.value;
 
@@ -598,6 +612,8 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
         received: month.received, deliveries: month.deliveries, received_value: month.received_value,
         issued: month.issued, issued_value: month.issued_value,
         outside: month.outside,
+        adj_in: month.adj_in, adj_out: month.adj_out,
+        purchased_total: month.purchased_total, purchased_value: month.purchased_value, issued_total: month.issued_total,
         m3_produced: Math.round(m3 * 10) / 10,
         litres_per_m3: m3 > 0 ? Math.round((monthUsedAll / m3) * 100) / 100 : null,
         cost_per_m3: m3 > 0 ? Math.round(monthCostAll / m3) : null,
@@ -687,8 +703,26 @@ router.get("/purchases", requirePermission("fuel.purchases", "view"), async (req
         LIMIT 200`,
       [item.id]
     );
+    // Round 217 (owner, 20 Oct 2026) — a fill at an outside station is a diesel
+    // purchase too, issued straight into the vehicle (never through the tank).
+    const { rows: outside } = await query(
+      `WITH ${ISSUED_FUEL_CTE}
+       SELECT s.id, s.issued_at, s.actual_quantity_issued AS litres, s.fuel_cost AS cost, s.bill_ref, s.closed_via,
+              ${UNIT_LABEL} AS unit_label, ${UNIT_SUB} AS unit_sub, fs.name AS station_name, ui.name AS issued_by_name
+         FROM sr_all s ${UNIT_JOINS}
+         LEFT JOIN fuel_stations fs ON fs.id = s.station_id
+         LEFT JOIN users ui ON ui.id = s.issued_by
+        WHERE NOT COALESCE(fs.is_plant, false) AND s.issued_at > now() - INTERVAL '180 days'
+          AND NOT EXISTS (SELECT 1 FROM store_stock_transactions sst
+                           WHERE sst.reference_type = 'supply_request' AND sst.reference_id = s.id)
+        ORDER BY s.issued_at DESC LIMIT 300`
+    );
     res.json({
       item: { id: item.id, current_qty: num(item.current_qty), rate_per_liter: num(item.rate_per_liter) },
+      outside_fills: outside.map((o) => ({
+        ...o, litres: num(o.litres), cost: num(o.cost),
+        rate: o.cost != null && Number(o.litres) > 0 ? Math.round((Number(o.cost) / Number(o.litres)) * 100) / 100 : null,
+      })),
       purchases: rows.map((r) => ({
         ...r,
         requested_qty: num(r.requested_qty), approved_qty: num(r.approved_qty), received_qty: num(r.received_qty),
@@ -732,7 +766,15 @@ router.get("/stock-statement", requirePermission("fuel.reports", "view"), async 
     const step = group === "day" ? "1 day" : group === "week" ? "1 week" : "1 month";
     const start = group === "week" ? `date_trunc('week', $2::date)::date` : group === "month" ? `date_trunc('month', $2::date)::date` : `$2::date`;
     const { rows } = await query(
-      `WITH buckets AS (
+      `WITH ${ISSUED_FUEL_CTE},
+       outside AS (
+         SELECT s.issued_at, s.actual_quantity_issued, s.fuel_cost
+           FROM sr_all s LEFT JOIN fuel_stations fs ON fs.id = s.station_id
+          WHERE NOT COALESCE(fs.is_plant, false)
+            AND NOT EXISTS (SELECT 1 FROM store_stock_transactions sst
+                             WHERE sst.reference_type = 'supply_request' AND sst.reference_id = s.id)
+       ),
+       buckets AS (
          SELECT b::date AS b_start,
                 LEAST((b + interval '${step}' - interval '1 day')::date, $3::date) AS b_end
            FROM generate_series(${start}, $3::date, interval '${step}') b
@@ -752,6 +794,19 @@ router.get("/stock-statement", requirePermission("fuel.reports", "view"), async 
               COALESCE((SELECT SUM(qty_change) FROM store_stock_transactions
                          WHERE stock_item_id = $1 AND txn_type = 'adjustment'
                            AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS adjusted,
+              COALESCE((SELECT SUM(qty_change) FROM store_stock_transactions
+                         WHERE stock_item_id = $1 AND txn_type = 'adjustment' AND qty_change > 0
+                           AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS adj_in,
+              COALESCE((SELECT -SUM(qty_change) FROM store_stock_transactions
+                         WHERE stock_item_id = $1 AND txn_type = 'adjustment' AND qty_change < 0
+                           AND created_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS adj_out,
+              COALESCE((SELECT SUM(sp.total_cost) FROM store_stock_purchases sp
+                         WHERE sp.stock_item_id = $1 AND sp.status = 'received'
+                           AND sp.received_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS received_value,
+              COALESCE((SELECT SUM(o.actual_quantity_issued) FROM outside o
+                         WHERE o.issued_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS outside,
+              COALESCE((SELECT SUM(o.fuel_cost) FROM outside o
+                         WHERE o.issued_at::date BETWEEN GREATEST(b.b_start, $2::date) AND b.b_end), 0) AS outside_value,
               COALESCE((SELECT SUM(sr.fuel_cost) FROM store_stock_transactions sst
                           JOIN supply_requests sr ON sst.reference_type = 'supply_request' AND sr.id = sst.reference_id
                          WHERE sst.stock_item_id = $1 AND sst.txn_type = 'issue_deduct'
@@ -767,6 +822,10 @@ router.get("/stock-statement", requirePermission("fuel.reports", "view"), async 
         from_date: r.from_date, to_date: r.to_date,
         opening: r2(current - Number(r.since_start)),
         received: r2(r.received), issued: r2(r.issued), adjusted: r2(r.adjusted),
+        adj_in: r2(r.adj_in), adj_out: r2(r.adj_out),
+        outside: r2(r.outside), outside_value: r2(r.outside_value), received_value: r2(r.received_value),
+        purchased_total: r2(Number(r.received) + Number(r.outside)),
+        issued_total: r2(Number(r.issued) + Number(r.outside) + Number(r.adj_out)),
         closing: r2(current - Number(r.after_end)),
         issued_value: r2(r.issued_value),
       })),
