@@ -33,6 +33,7 @@ import fuelModuleRoutes from "./routes/fuelModule.js";
 import maintenanceModuleRoutes from "./routes/maintenanceModule.js";
 import maintenanceModule2Routes from "./routes/maintenanceModule2.js";
 import costModuleRoutes from "./routes/costModule.js";
+import costBankRoutes from "./routes/costBank.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
 import weighbridgeRoutes from "./routes/weighbridge.js";
 // Round 195 — attendance machine (eSSL) punches; /sync is API-key, the rest is session.
@@ -194,6 +195,8 @@ app.use("/api/maintenance-module", maintenanceModuleRoutes);
 // Round 216 — tyres & batteries, certificates, bringing over the old screens.
 app.use("/api/maintenance-module", maintenanceModule2Routes);
 // Round 218 — Cost dashboard, Profit & Loss, Balance Sheet.
+// Round 223 — Cost → Bank statements.
+app.use("/api/cost/bank", costBankRoutes);
 app.use("/api/cost", costModuleRoutes);
 // Round 153, item 1 — today's delivery notes, for the Plant Operator, the lab
 // and QC. Gated by the orders.challan-print permission, not by role alone.

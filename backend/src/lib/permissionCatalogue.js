@@ -609,6 +609,10 @@ export const CATALOGUE = [
     { administrator: V }),
   f("cost.classify", "cost", "Set which costs are fixed and which are variable (break-even)", E,
     { administrator: E }),
+  // Round 223 — bank statements: upload, give each line a cost head or leave
+  // it out, loans (EMI split), rules.
+  f("cost.bank", "cost", "Bank statements — upload, categorise lines into cost heads, loans", VE,
+    { administrator: VE }),
   f("cost.entries", "cost", "Enter the month's expenses and Balance Sheet figures (power, rent, depreciation, loans, bank …)", VE,
     { administrator: VE }),
 
@@ -950,6 +954,7 @@ export const MODULES = [
       { key: "cost.pl", label: "Profit & Loss" },
       { key: "cost.balance-sheet", label: "Balance Sheet" },
       { key: "cost.break-even", label: "Break-even" },
+      { key: "cost.bank", label: "Bank statements" },
     ],
     support: ["cost.entries", "cost.classify"],
   },

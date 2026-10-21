@@ -9,6 +9,7 @@ import CostDashboardTab from "./cost/CostDashboardTab.jsx";
 import CostPLTab from "./cost/CostPLTab.jsx";
 import CostBSTab from "./cost/CostBSTab.jsx";
 import CostBreakEvenTab from "./cost/CostBreakEvenTab.jsx";
+import CostBankTab from "./cost/CostBankTab.jsx";
 import { currentMonth, addMonths } from "./cost/costUi.jsx";
 
 const TABS = [
@@ -17,6 +18,8 @@ const TABS = [
   { key: "balance-sheet", label: "Balance Sheet", perm: "cost.balance-sheet", Component: CostBSTab },
   // Round 221
   { key: "break-even", label: "Break-even", perm: "cost.break-even", Component: CostBreakEvenTab },
+  // Round 223
+  { key: "bank", label: "Bank statements", perm: "cost.bank", Component: CostBankTab },
 ];
 
 export default function CostModule() {

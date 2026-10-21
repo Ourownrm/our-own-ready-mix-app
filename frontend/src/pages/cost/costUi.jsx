@@ -78,10 +78,12 @@ export function Src({ src }) {
   if (!src) return null;
   const app = src === "app";
   const gap = src === "gap";
+  const bank = src === "bank"; // Round 223 — from the bank statements
   return (
     <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 20, whiteSpace: "nowrap",
-      background: gap ? "var(--alert-red-bg)" : app ? "var(--signal-green-bg)" : "#ECEAE4", color: gap ? "var(--alert-red)" : app ? "#1D6A4B" : "#4A525C" }}>
-      {gap ? "Check" : app ? "App" : "Entered"}
+      background: gap ? "var(--alert-red-bg)" : app ? "var(--signal-green-bg)" : bank ? "#E2EAF6" : "#ECEAE4",
+      color: gap ? "var(--alert-red)" : app ? "#1D6A4B" : bank ? "#1F4A82" : "#4A525C" }}>
+      {gap ? "Check" : app ? "App" : bank ? "Bank" : "Entered"}
     </span>
   );
 }
@@ -90,6 +92,7 @@ export function SrcLegend() {
     <div style={{ display: "flex", gap: 12, fontSize: 11.5, color: "var(--slate)", flexWrap: "wrap" }}>
       <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Src src="app" />from what the app records</span>
       <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Src src="entered" />keyed in by Accounts</span>
+      <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Src src="bank" />from the bank statements</span>
     </div>
   );
 }

@@ -52,6 +52,7 @@ import { buildTransporterLedgers } from "./transporterLedger.js";
 import { AGE_GROUPS, ageGroup } from "./receivables.js";
 import { tankSummary } from "../routes/fuelModule.js";
 import { bookStockRows } from "../routes/materialModule.js";
+import { bankHeadsMonth, bankBalancesOn } from "./bankBook.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -444,8 +445,9 @@ export function monthCore(ym, ctx) {
 }
 async function computeMonth(ym, ctx) {
   const { from, toEx, end } = monthBounds(ym);
-  const [tickets, rm, fuel, mntRows, man, entries] = await Promise.all([
+  const [tickets, rm, fuel, mntRows, man, entries, bank] = await Promise.all([
     salesTickets(from, toEx), rawMaterial(ym, ctx), fuelMonth(ym, ctx), maintenanceRows(from, toEx), manpower(ym), monthEntries(ym),
+    bankHeadsMonth(ym),
   ]);
   const sales = salesSummary(tickets);
   const mnt = maintenanceTotals(mntRows);
@@ -458,7 +460,10 @@ async function computeMonth(ym, ctx) {
     road_tax: certs.road_tax, insurance: certs.insurance, other_certs: certs.other_certs, rent_rates: e("rent_rates"),
     depreciation: e("depreciation"), interest: e("interest"), tax: e("tax"),
   };
-  return { ym, sales, tickets, rm, fuel, mntRows, mnt, man, certs, entries, amounts: withTotals(a) };
+  // Round 223 — bank statement lines given a cost head are ADDED to that head
+  // (a payment the app does not record, e.g. a repair paid outside a job card).
+  for (const [k, v] of Object.entries(bank.heads)) if (k in a) a[k] = r2(a[k] + v);
+  return { ym, sales, tickets, rm, fuel, mntRows, mnt, man, certs, entries, bank: bank.heads, amounts: withTotals(a) };
 }
 
 export function withTotals(a) {
@@ -744,7 +749,8 @@ export async function profitLoss(ym, { period = "month", compare = "prev" } = {}
   for (const m of months) {
     if (idle(m)) continue;
     const ent = cores.get(m).entries;
-    const miss = PL_ENTERED.filter((e) => !ent[e.key]).map((e) => e.label);
+    const bk = cores.get(m).bank || {};
+    const miss = PL_ENTERED.filter((e) => !ent[e.key] && !bk[e.key]).map((e) => e.label);
     if (miss.length) missing.push({ month: m, label: monthLabel(m), lines: miss });
   }
   const flags = [];
@@ -755,6 +761,8 @@ export async function profitLoss(ym, { period = "month", compare = "prev" } = {}
     if (idle(m)) continue;
     if (c.man.payroll_status !== "locked") flags.push(`${monthLabel(m)} payroll ${c.man.payroll_status === "none" ? "not made yet" : "not locked yet"} — salaries may change`);
     if (c.man.bills_draft) flags.push(`${monthLabel(m)}: ${c.man.bills_draft} contractor bill(s) not approved — payroll figures used meanwhile`);
+    const both = PL_ENTERED.filter((e) => c.entries[e.key] && c.bank?.[e.key]).map((e) => e.label);
+    if (both.length) flags.push(`${monthLabel(m)}: ${both.join(", ")} — typed in AND from bank statements; both are counted — check it is not twice`);
     if (c.rm.no_rate.length) flags.push(`${monthLabel(m)}: no rate yet for ${c.rm.no_rate.join(", ")} — its consumption is not valued`);
   }
   const { rows: hold } = await query(`SELECT COUNT(*)::int AS n FROM mnt_outside_repairs WHERE status = 'bill_hold'`).catch(() => ({ rows: [{ n: 0 }] }));
@@ -766,11 +774,15 @@ export async function profitLoss(ym, { period = "month", compare = "prev" } = {}
     const key = l.key || l.total;
     if (l.hideZero && !cur[key] && !cmp[key] && !ytd[key]) continue;
     const v = cur[key] || 0, c = cmp[key] || 0;
-    const lineMissing = l.src === "entered" && months.some((m) => !idle(m) && !cores.get(m).entries[key]);
+    const fromBank = r2(months.reduce((t, m) => t + (cores.get(m).bank?.[key] || 0), 0));
+    const lineMissing = l.src === "entered" && months.some((m) => !idle(m) && !cores.get(m).entries[key] && !cores.get(m).bank?.[key]);
     const change = c && !lineMissing ? r2(((v - c) / Math.abs(c)) * 100) : null;
     const better = change == null ? null : l.cost ? change < 0 : change > 0;
     rows.push({
-      kind: l.total ? "total" : "line", key, label: l.label, hint: l.hint || "", src: l.src || null, band: l.band || null,
+      kind: l.total ? "total" : "line", key, label: l.label, band: l.band || null,
+      src: l.src === "entered" && fromBank && !months.some((m) => cores.get(m).entries[key]) ? "bank" : l.src || null,
+      hint: [l.hint, fromBank ? `incl. ₹${fromBank.toLocaleString("en-IN", { maximumFractionDigits: 0 })} from bank statements` : null].filter(Boolean).join(" · "),
+      bank: fromBank || null,
       cur: v, per_m3: per(v), pct: cur.revenue ? r2((v / cur.revenue) * 100) : null, cmp: c, change, better: Math.abs(change ?? 0) < 0.05 ? null : better,
       ytd: ytd[key] || 0,
       missing: lineMissing,
@@ -967,11 +979,13 @@ async function sideBalances(ym, ctx) {
   const neg = (list) => r2(list.reduce((t, l) => t + Math.max(0, -n0(l.balance)), 0));
   const rate = ctx.dieselRate(day);
   const prepaid = certPrepaid(ctx, day);
+  // Round 223 — loans from the loan list, cash credit from the CC statements.
+  const bank = await bankBalancesOn(day).catch(() => ({}));
   return {
-    day, ent, retained: { opening: ro ? ro.amount : 0, opening_as_on: ro ? ro.as_on : null, pat: r2(pat), from: startYm },
+    day, ent, bank, retained: { opening: ro ? ro.amount : 0, opening_as_on: ro ? ro.as_on : null, pat: r2(pat), from: startYm },
     v: {
       capital: E("capital"), retained: r2((ro ? ro.amount : 0) + pat),
-      term_loans: E("term_loans"), cash_credit: E("cash_credit"),
+      term_loans: bank.term_loans ?? E("term_loans"), cash_credit: bank.cash_credit ?? E("cash_credit"),
       rm_suppliers: pos(sup), transporters: pos(trn), maintenance_creditors: mnt.payable, contractors: con.payable,
       other_creditors: E("other_creditors"), salaries_payable: sal.payable, customer_advances: cust.advance,
       gst_tds_payable: E("gst_tds_payable"), tax_provision: r2(tax),
@@ -1038,8 +1052,11 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
       if (l.head) { rows.push({ kind: "head", label: l.head }); continue; }
       const a = now.v[l.key] || 0, b = then.v[l.key] || 0;
       tn += a; tt += b;
-      rows.push({ kind: "line", key: l.key, label: l.label, src: l.src, hint: l.hint || "", now: r2(a), then: r2(b), change: r2(a - b),
-        missing: l.src === "entered" && !now.ent[l.key] });
+      const viaBank = now.bank?.[l.key] != null;
+      rows.push({ kind: "line", key: l.key, label: l.label, src: viaBank ? "bank" : l.src,
+        hint: viaBank ? (l.key === "term_loans" ? "Cost → Bank statements → Loans: balance less principal repaid" : "closing balance of the cash credit statements") : l.hint || "",
+        now: r2(a), then: r2(b), change: r2(a - b),
+        missing: !viaBank && l.src === "entered" && !now.ent[l.key] });
     }
     return { rows, now: r2(tn), then: r2(tt) };
   };
@@ -1092,7 +1109,7 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
       ...(now.detail.rm_unvalued.length ? [`No rate yet for ${now.detail.rm_unvalued.join(", ")} — its stock is not valued`] : []),
       ...(!now.ent.retained_opening ? ["Retained profit at the start has not been entered — profit is counted from the start of this financial year only"] : []),
     ],
-    missing: BS_ENTERED.filter((e) => !now.ent[e.key]).map((e) => e.label),
+    missing: BS_ENTERED.filter((e) => !now.ent[e.key] && now.bank?.[e.key] == null).map((e) => e.label),
   };
 }
 

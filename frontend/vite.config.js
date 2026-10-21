@@ -18,7 +18,10 @@ export default defineConfig({
         // Round 202 — the face-check library (~1.3 MB) and its models are only
         // for the Mark attendance / face enrolment screens: fetched when those
         // open, never pushed to every phone with the app.
-        globIgnores: ["**/face-api*.js", "**/face-models/**"],
+        globIgnores: ["**/face-api*.js", "**/face-models/**",
+          // Round 223 — the PDF reader for bank statements (~1 MB, plus its
+          // worker): only fetched when a statement is uploaded.
+          "**/pdf-*.js", "**/pdf.worker*"],
         // Round 203 — the main app bundle reached 2.09 MB in v10.32, a few KB
         // under the plugin's 2 MiB default, and any growth past it made the
         // whole build FAIL (and so the Render deploy). 4 MiB keeps the app

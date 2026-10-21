@@ -92,8 +92,8 @@ function rawLines(core) {
   const inc = n0(m.incentive), trip = n0(m.trip), ot = n0(m.overtime);
   return {
     rm: a.rm, fuel: a.fuel, power: a.power, repairs: a.repairs, hired_vehicles: a.hired_vehicles,
-    incentive: inc, trip, overtime: ot, salaries_base: r2(n0(m.staff) - inc - trip - ot),
-    pump_gangs: n0(m.gangs), contract: n0(m.contract),
+    incentive: inc, trip, overtime: ot, salaries_base: r2(n0(m.staff) - inc - trip - ot + n0(core.bank?.salaries)),
+    pump_gangs: n0(m.gangs), contract: r2(n0(m.contract) + n0(core.bank?.contract_labour)),
     admin_office: a.admin_office, selling: a.selling, rent_rates: a.rent_rates,
     road_tax: a.road_tax, insurance: a.insurance, other_certs: a.other_certs,
     depreciation: a.depreciation, interest: a.interest,
@@ -104,7 +104,7 @@ function rawLines(core) {
 // (Salaries, crews and contract labour are never borrowed — they are estimated
 // from the employee records instead, see estimateManpower.)
 function hasFigure(core, key) {
-  if (ENTERED.has(key)) return !!core.entries[key];
+  if (ENTERED.has(key)) return !!core.entries[key] || !!core.bank?.[key]; // Round 223 — or from the bank statements
   if (PAYROLL_VAR.includes(key)) return core.man.payroll_status !== "none";
   return true;
 }
@@ -190,7 +190,8 @@ async function monthBE(ym, ctx, kinds) {
       // Locked payroll (and approved bills / closed gang months) is used as
       // it is; otherwise the employee records give the whole month.
       if (!locked) {
-        amount = est[def.key];
+        // Round 223 — plus wages paid from the bank that the app does not record.
+        amount = est[def.key] + (def.key === "salaries_base" ? n0(core.bank?.salaries) : def.key === "contract" ? n0(core.bank?.contract_labour) : 0);
         estimated = { from: null, label: def.key === "salaries_base" ? `from ${est.staff_n} staff salaries on the employee records — payroll not locked`
           : def.key === "pump_gangs" ? `from ${est.gang_members} crew members' monthly rates` : `from ${est.contract_n} contract workers' rates` };
         if (!amount) {
