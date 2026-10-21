@@ -8830,3 +8830,12 @@ Owner, 21 Oct 2026. Built on v10.58. After deploying, visit **/setup once** (add
 Verified on the local test data on top of v10.58: Sale of concrete ₹1,14,335.59 (the ₹26,500 unlinked record no longer in); bank line saved, accepted, dated, in no wallet, editable (balance ₹500 after correcting to ₹6,000); supplier payment ₹10,000 → raw material unchanged, PK cash ₹33,820; scrap ₹5,900 flagged + used oil ₹2,000 (accepted by AK) + ₹1,000 to bank → Other income +₹8,000, after unflagging +₹8,900; PK can't record income for others or to the bank; AK can't delete PK's income; no C Ledger mention in the P&L; Round 224 tests still pass; screens at 1366 / 390 px with no page errors; `npm run check` green; build clean.
 
 Files (7) — backend: src/lib/{cLedger, costDashboard}.js; src/routes/{cLedger, setup}.js · frontend: src/lib/version.js; src/pages/cost/CostCLedgerTab.jsx · root: README.md
+
+## Round 228 — Bank statements: a fresh upload no longer looks like "no records" (v10.60)
+
+Owner, 21 Oct 2026: "after upload it was showing no records found". The upload itself was fine — the page stayed on the month it was showing (it opens on the last full month), and the statement's lines are dated in another month (e.g. this month), so that month's list was empty. Built on v10.59. No /setup needed.
+- After **Save and sort** the page now opens the month the statement ends in (this month at most) and says so in the message ("… Showing October 2026 — the month the statement ends in"); filters and search are cleared.
+- A statement whose every line was already uploaded says so ("every line of this statement was already uploaded").
+- A month with no lines now says "No statement lines dated in <month>" and offers buttons for the months the uploaded statements cover.
+- Verified: on August (empty) the page offers Sept 2026; uploading an October ICICI PDF from August opened October with both lines sorted; no page errors; build clean.
+- Files (3): frontend src/pages/cost/CostBankTab.jsx, src/lib/version.js · root README.md

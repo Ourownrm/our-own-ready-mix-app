@@ -179,7 +179,19 @@ export default function CostBankTab({ month, setMonth }) {
                     <td style={{ whiteSpace: "normal", minWidth: 280, maxWidth: 340 }}><Treat l={l} d={d} canEdit={canEdit} onDone={(m) => { setMsg(m || ""); reload(); }} /></td>
                   </tr>
                 ))}
-                {lines.length === 0 && <tr><td colSpan={6} style={{ color: "var(--slate)" }}>{d.lines.length ? "No lines here." : "No statement lines in this month yet — upload a statement."}</td></tr>}
+                {lines.length === 0 && (
+                  <tr><td colSpan={6} style={{ color: "var(--slate)", whiteSpace: "normal" }}>
+                    {d.lines.length ? "No lines here." : (() => {
+                      // Round 228 — say where the uploaded lines are, with a way there.
+                      const months = [...new Set(d.uploads.flatMap((u) => [u.period_from, u.period_to]).filter(Boolean).map((x) => x.slice(0, 7)))].filter((m) => m !== d.month).sort().reverse().slice(0, 6);
+                      return (
+                        <>No statement lines dated in {d.label}.{months.length ? <> Uploaded statements have lines in:{" "}
+                          {months.map((m) => <button key={m} type="button" onClick={() => setMonth(m)} style={{ fontSize: 12, padding: "3px 10px", minHeight: 30, marginRight: 6 }}>
+                            {new Date(`${m}-15T00:00:00`).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</button>)}</> : " Upload a statement."}</>
+                      );
+                    })()}
+                  </td></tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -230,7 +242,16 @@ export default function CostBankTab({ month, setMonth }) {
         A line given a cost head is added to that head of the P&amp;L and the Cost dashboard for the month of its date.
       </div>
 
-      {modal === "upload" && <UploadModal d={d} onClose={() => setModal(null)} onDone={(m) => { setModal(null); setMsg(m); reload(); }} />}
+      {modal === "upload" && <UploadModal d={d} onClose={() => setModal(null)} onDone={(m, to) => {
+        // Round 227 — open the month the statement ends in (the page was on
+        // another month, so a fresh upload looked like "no lines").
+        setModal(null); setFilter("all"); setAcc(""); setQ("");
+        const ym = to ? to.slice(0, 7) : month;
+        const now = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }).slice(0, 7);
+        const target = ym > now ? now : ym;
+        setMsg(target !== month ? `${m} Showing ${new Date(`${target}-15T00:00:00`).toLocaleDateString("en-IN", { month: "long", year: "numeric" })} — the month the statement ends in.` : m);
+        if (target !== month) setMonth(target); else reload();
+      }} />}
       {modal === "accounts" && <AccountsModal d={d} onClose={() => { setModal(null); reload(); }} />}
       {modal === "rule" && <RuleModal d={d} onClose={() => setModal(null)} onDone={() => { setModal(null); reload(); }} />}
       {modal?.loan && <LoanModal d={d} loan={modal.loan} onClose={() => setModal(null)} onDone={() => { setModal(null); reload(); }} />}
@@ -570,7 +591,7 @@ function UploadModal({ d, onClose, onDone }) {
       const c = r.counts || {};
       const parts = [["omit", "left out (in the app)"], ["own", "own transfers"], ["loan", "loan EMIs"], ["cost", "costs by rule"], ["tax", "tax"], ["check", "to check"], ["todo", "to categorise"]]
         .filter(([k]) => c[k]).map(([k, l]) => `${c[k]} ${l}`);
-      onDone(`${r.added} line(s) added${r.duplicates ? `, ${r.duplicates} already uploaded before — skipped` : ""}. ${parts.join(" · ")}.`);
+      onDone(`${r.added} line(s) added${r.duplicates ? `, ${r.duplicates} already uploaded before — skipped` : ""}${r.added ? `. ${parts.join(" · ")}.` : " — every line of this statement was already uploaded."}`, r.to);
     } catch (e) { setErr(e.message); setBusy(false); }
   }
   const p = parsed;
