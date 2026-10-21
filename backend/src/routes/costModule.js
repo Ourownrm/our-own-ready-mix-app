@@ -14,7 +14,7 @@ import {
   MONTH_RE, PL_ENTERED, PL_ENTERED_KEYS, BS_ENTERED, BS_ENTERED_KEYS,
   costDashboard, fuelDetail, profitLoss, balanceSheet, monthEntries, balancesOn, addMonths, monthLabel, newContext, monthCore, withTotals,
 } from "../lib/costDashboard.js";
-import { breakEven, lineKinds, BE_KEYS } from "../lib/breakEven.js";
+import { breakEven, lineKinds, BE_KEYS, ensureMixedKinds } from "../lib/breakEven.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -70,13 +70,21 @@ router.get("/break-even", requirePermission("cost.break-even", "view"), async (r
 // Which group each cost is in (one setting for every month).
 router.put("/line-kinds", requirePermission("cost.classify", "edit"), async (req, res) => {
   const kinds = req.body?.kinds || {};
-  const entries = Object.entries(kinds).filter(([k, v]) => BE_KEYS.has(k) && ["fixed", "variable"].includes(v));
+  const fixedAmounts = req.body?.fixed_amounts || {};
+  const entries = Object.entries(kinds).filter(([k, v]) => BE_KEYS.has(k) && ["fixed", "variable", "mixed"].includes(v));
   if (!entries.length) return res.status(400).json({ error: "Nothing to change." });
+  // Round 225 — "mixed": a fixed ₹ a month, the rest variable.
+  for (const [k, v] of entries) {
+    if (v !== "mixed") continue;
+    const amt = Number(fixedAmounts[k]);
+    if (!(amt >= 0) || amt > 1e9) return res.status(400).json({ error: "Part fixed: give the fixed ₹ a month (e.g. the power bill's fixed / demand charge)." });
+  }
+  await ensureMixedKinds();
   for (const [k, v] of entries) {
     await query(
-      `INSERT INTO cost_line_kinds (line_key, kind, changed_by, changed_at) VALUES ($1, $2, $3, now())
-       ON CONFLICT (line_key) DO UPDATE SET kind = EXCLUDED.kind, changed_by = EXCLUDED.changed_by, changed_at = now()`,
-      [k, v, req.user.id]);
+      `INSERT INTO cost_line_kinds (line_key, kind, fixed_amount, changed_by, changed_at) VALUES ($1, $2, $3, $4, now())
+       ON CONFLICT (line_key) DO UPDATE SET kind = EXCLUDED.kind, fixed_amount = EXCLUDED.fixed_amount, changed_by = EXCLUDED.changed_by, changed_at = now()`,
+      [k, v, v === "mixed" ? Math.round(Number(fixedAmounts[k]) * 100) / 100 : null, req.user.id]);
   }
   res.json({ ok: true, kinds: await lineKinds() });
 });

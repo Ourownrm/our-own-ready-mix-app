@@ -76,13 +76,36 @@ CREATE TABLE IF NOT EXISTS cost_line_kinds (
 );
 `;
 
+// Round 225 (owner, 21 Oct 2026: "some charges have both fixed and variable
+// cost, like electricity — a fixed charge and a charge on usage"): a cost can
+// also be PART FIXED — a fixed ₹ a month (e.g. the power bill's demand /
+// fixed charge), the rest of that month's figure variable. Widened in place,
+// once, the first time it is read (no /setup needed).
+let mixedReady = null;
+export function ensureMixedKinds() {
+  if (!mixedReady) {
+    mixedReady = query(`
+      ALTER TABLE cost_line_kinds ADD COLUMN IF NOT EXISTS fixed_amount NUMERIC(14,2);
+      ALTER TABLE cost_line_kinds DROP CONSTRAINT IF EXISTS cost_line_kinds_kind_check;
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cost_line_kinds_kind_check2') THEN
+          ALTER TABLE cost_line_kinds ADD CONSTRAINT cost_line_kinds_kind_check2 CHECK (kind IN ('fixed','variable','mixed'));
+        END IF;
+      END $$;`).catch((e) => { mixedReady = null; throw e; });
+  }
+  return mixedReady;
+}
+
 export async function lineKinds() {
+  await ensureMixedKinds().catch(() => {});
   const { rows } = await query(
-    `SELECT k.line_key, k.kind, k.changed_at, u.name AS by_name FROM cost_line_kinds k LEFT JOIN users u ON u.id = k.changed_by`).catch(() => ({ rows: [] }));
+    `SELECT k.line_key, k.kind, k.fixed_amount, k.changed_at, u.name AS by_name FROM cost_line_kinds k LEFT JOIN users u ON u.id = k.changed_by`).catch(() => ({ rows: [] }));
   const set = new Map(rows.map((r) => [r.line_key, r]));
   return Object.fromEntries(BE_LINES.map((l) => {
     const s = set.get(l.key);
-    return [l.key, { kind: s ? s.kind : l.kind, default_kind: l.kind, changed: s && s.kind !== l.kind ? { at: s.changed_at, by: s.by_name } : null }];
+    const kind = s ? s.kind : l.kind;
+    return [l.key, { kind, fixed_amount: kind === "mixed" ? n0(s.fixed_amount) : null, default_kind: l.kind,
+      changed: s && s.kind !== l.kind ? { at: s.changed_at, by: s.by_name } : null }];
   }));
 }
 
@@ -184,6 +207,7 @@ async function monthBE(ym, ctx, kinds) {
   const lines = [];
   for (const def of BE_LINES) {
     const kind = kinds[def.key].kind;
+    const fixedAmt = kinds[def.key].fixed_amount || 0;   // mixed: the fixed ₹ a month
     let amount = raw[def.key] || 0, estimated = null;
     if (idle(core)) { /* nothing recorded in this month */ }
     else if (["salaries_base", "pump_gangs", "contract"].includes(def.key)) {
@@ -220,21 +244,26 @@ async function monthBE(ym, ctx, kinds) {
         if (PAYROLL_VAR.includes(def.key) && pc.man.payroll_status !== "locked") continue;
         const pv = rawLines(pc)[def.key] || 0;
         if (kind === "variable" && pc.sales.qty > 0) amount = r2((pv / pc.sales.qty) * qty);
+        else if (kind === "mixed" && pc.sales.qty > 0) amount = r2(Math.min(fixedAmt, pv) + (Math.max(0, pv - fixedAmt) / pc.sales.qty) * qty);
         else amount = pv;
-        estimated = { from: pm, label: `${kind === "variable" ? "per m³ of" : "as in"} ${monthLabel(pm)}` };
+        estimated = { from: pm, label: `${kind === "variable" ? "per m³ of" : kind === "mixed" ? "fixed part + usage per m³ of" : "as in"} ${monthLabel(pm)}` };
         break;
       }
       if (!estimated) estimated = { from: null, label: "not entered — counted as 0" };
     } else if (PAYROLL_VAR.includes(def.key) && core.man.payroll_status === "draft") {
       estimated = { from: null, label: "from the draft payroll" };
     }
+    // Round 225 — each line's fixed part and variable part.
+    const fixedPart = kind === "fixed" ? amount : kind === "mixed" ? Math.min(Math.max(0, fixedAmt), Math.max(0, amount)) : 0;
+    const varPart = amount - fixedPart;
     lines.push({ key: def.key, label: def.label, hint: def.hint, src: def.src, kind, amount: r2(amount),
-      per_m3: qty > 0 ? Math.round(amount / qty) : null, estimated });
+      fixed_amount: kind === "mixed" ? r2(fixedAmt) : null, fixed_part: r2(fixedPart), var_part: r2(varPart),
+      per_m3: qty > 0 ? Math.round(varPart / qty) : null, estimated });
   }
   const a = core.amounts;
   const revenue = r2(a.concrete + a.pumping + a.part_load + a.other_income);
-  const fixed = r2(lines.filter((l) => l.kind === "fixed").reduce((t, l) => t + l.amount, 0));
-  const variable = r2(lines.filter((l) => l.kind === "variable").reduce((t, l) => t + l.amount, 0));
+  const fixed = r2(lines.reduce((t, l) => t + l.fixed_part, 0));
+  const variable = r2(lines.reduce((t, l) => t + l.var_part, 0));
   const invoiced = core.sales.invoiced_m3;
   const revM3 = invoiced > 0 ? revenue / invoiced : null;
   const varM3 = qty > 0 ? variable / qty : null;
@@ -247,8 +276,8 @@ async function monthBE(ym, ctx, kinds) {
   const avgInv = invoiced > 0 ? (n0(a.concrete) + n0(a.pumping) + n0(a.part_load)) / invoiced : 0;
   const otherIncomeM3 = qty > 0 ? n0(a.other_income) / qty : 0;
   const rmLine = lines.find((l) => l.key === "rm");
-  const rmVariable = rmLine && rmLine.kind === "variable";
-  const otherVarM3 = qty > 0 ? (variable - (rmVariable ? rmLine.amount : 0)) / qty : 0;
+  const rmVar = rmLine ? rmLine.var_part : 0;          // raw material's variable part
+  const otherVarM3 = qty > 0 ? (variable - rmVar) / qty : 0;
   const dayStat = new Map();
   const ds = (d) => { if (!dayStat.has(d)) dayStat.set(d, { qty: 0, rev: 0, rm: 0 }); return dayStat.get(d); };
   for (const t of core.tickets) {
@@ -258,7 +287,8 @@ async function monthBE(ym, ctx, kinds) {
   }
   // Raw material by day: the day's consumption valued at the month's rates,
   // scaled so the month adds up to the raw-material figure above.
-  if (rmVariable && rmLine.amount) {
+  let rmByDayUsed = false;
+  if (rmVar) {
     const byDay = await rmByDay(ym, from, toEx, ctx);
     const tot = [...byDay.values()].reduce((t, v) => t + v, 0);
     // Only when consumption is recorded day by day (the days with a figure
@@ -266,8 +296,8 @@ async function monthBE(ym, ctx, kinds) {
     // over the m³ sold instead, or it would show as one very bad day.
     let covQty = 0;
     for (const [d, x] of dayStat) if (byDay.get(d) > 0) covQty += x.qty;
-    if (tot > 0 && qty > 0 && covQty / qty >= 0.8) for (const [d, v] of byDay) ds(d).rm += (v / tot) * rmLine.amount;
-    else for (const x of dayStat.values()) x.rm += qty > 0 ? (x.qty / qty) * rmLine.amount : 0;
+    if (tot > 0 && qty > 0 && covQty / qty >= 0.8) { rmByDayUsed = true; for (const [d, v] of byDay) ds(d).rm += (v / tot) * rmVar; }
+    else for (const x of dayStat.values()) x.rm += qty > 0 ? (x.qty / qty) * rmVar : 0;
   }
   const today = istDay();
   const lastDay = ym === istMonth() ? today : end;
@@ -285,7 +315,9 @@ async function monthBE(ym, ctx, kinds) {
       const f = bal > 0 ? (fixed - before) / bal : 1;
       reached = { day, n: d, m3: Math.round(beforeQty + Math.max(0, Math.min(1, f)) * x.qty) };
     }
-    daily.push({ day, n: d, qty: r2(x.qty), revenue: r2(x.rev), material: r2(x.rm), balance: r2(bal), cum_qty: r2(cumQty), cum_contribution: r2(cum) });
+    daily.push({ day, n: d, qty: r2(x.qty), revenue: r2(x.rev), other_income: r2(x.qty * otherIncomeM3), material: r2(x.rm),
+      other_var: r2(x.qty * otherVarM3), balance: r2(bal), cum_qty: r2(cumQty), cum_contribution: r2(cum),
+      reached: !!reached && reached.day === day, before_qty: r2(beforeQty), before_cum: r2(before) });
   }
   const daysSoFar = daily.length;
   const covered = r2(Math.min(cum, fixed));
@@ -313,6 +345,15 @@ async function monthBE(ym, ctx, kinds) {
     profit_since: reached ? r2(cum - fixed) : null,
     pbt: r2(revenue - fixed - variable),
     estimated: lines.filter((l) => l.estimated).map((l) => ({ label: l.label, how: l.estimated.label })),
+    // Round 225 — the working, so the page can show every step.
+    calc: {
+      concrete: r2(a.concrete), pumping: r2(a.pumping), part_load: r2(a.part_load), other_income: r2(a.other_income),
+      avg_inv_m3: r2(avgInv), other_income_m3: r2(otherIncomeM3), rm_var: r2(rmVar), rm_by_day: rmByDayUsed,
+      other_var: r2(variable - rmVar), other_var_m3: r2(otherVarM3),
+      held_value: r2(core.sales.held_m3 * avgInv), day_sales: r2(daily.reduce((t, x) => t + x.revenue, 0)),
+      day_material: r2(daily.reduce((t, x) => t + x.material, 0)), day_other_var: r2(daily.reduce((t, x) => t + x.other_var, 0)),
+      day_other_income: r2(daily.reduce((t, x) => t + x.other_income, 0)),
+    },
     lines, daily, core,
   };
 }
