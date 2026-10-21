@@ -539,8 +539,11 @@ function UploadModal({ d, onClose, onDone }) {
   async function read(f = file, password = pw) {
     if (!f) return;
     setErr(""); setParsed(null); setBusy(true); setAnyway(false);
+    let mod;
+    try { mod = await import("../../lib/bankStatementParse.js"); }
+    catch (e) { setErr(`The statement reader could not load (${e.message}). Reload the page and try again.`); setBusy(false); return; }
     try {
-      const { readFile, PdfPasswordError } = await import("../../lib/bankStatementParse.js");
+      const { readFile, PdfPasswordError } = mod;
       try {
         const r = await readFile(f, password);
         setParsed(r); setNeedPw(false);
@@ -555,7 +558,7 @@ function UploadModal({ d, onClose, onDone }) {
         if (hit) { setAccount(String(hit.id)); setFound(`Account found on the statement: ${hit.name}`); } else setFound("");
       } catch (e) {
         if (e instanceof PdfPasswordError) { setNeedPw(true); setErr(e.wrong ? "That password did not open the PDF." : "This PDF is locked — type its password (banks often use the customer ID or a date of birth)."); }
-        else setErr(e.message);
+        else setErr(`${e.message}${/\.pdf$/i.test(f.name) ? " — if this keeps happening, download the statement as Excel instead, or send the PDF to have the reader checked." : ""}`);
       }
     } finally { setBusy(false); }
   }

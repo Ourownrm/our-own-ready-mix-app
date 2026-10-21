@@ -3,6 +3,15 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
+  // Round 226 — the PDF reader's worker ships as .mjs; a static host may serve
+  // .mjs with a type the browser refuses for a worker, so it goes out as .js.
+  build: {
+    rollupOptions: {
+      output: {
+        assetFileNames: (info) => (/\.mjs$/.test(info.name || (info.names && info.names[0]) || "") ? "assets/[name]-[hash].js" : "assets/[name]-[hash][extname]"),
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({

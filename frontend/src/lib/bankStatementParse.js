@@ -131,7 +131,11 @@ const HEAD_WORDS = {
 };
 
 // Column positions from the header line (the words may wrap onto 2 lines).
+// Round 226 — a summary block above the table ("Opening Balance · Total
+// Withdrawals · Total Deposits · Closing Balance") has the same words; the
+// real header also names the narration column, so that one is preferred.
 function findHeader(rows) {
+  let fallback = null;
   for (let i = 0; i < rows.length; i++) {
     const near = rows.slice(i, i + 3).filter((r) => r.page === rows[i].page && rows[i].y - r.y < rows[i].h * 3.2);
     const items = near.flatMap((r) => r.items);
@@ -143,12 +147,16 @@ function findHeader(rows) {
     if (date && bal && (dr || cr)) {
       const centre = (it) => (it ? it.x + it.w / 2 : null);
       const right = (it) => (it ? it.x + it.w : null);
-      return { index: i, lines: near.length, page: rows[i].page, y: rows[i].y, debit: dr ? { c: centre(dr), r: right(dr) } : null,
+      const narr = col(HEAD_WORDS.narration)[0];
+      const h = { index: i, lines: near.length, page: rows[i].page, y: rows[i].y, debit: dr ? { c: centre(dr), r: right(dr) } : null,
         credit: cr ? { c: centre(cr), r: right(cr) } : null, balance: { c: centre(bal), r: right(bal) },
+        narr: narr ? { x: narr.x } : null, date: { x: date.x },
         ref: col(HEAD_WORDS.ref)[0] ? { x: col(HEAD_WORDS.ref)[0].x, r: right(col(HEAD_WORDS.ref)[0]) } : null };
+      if (narr) return h;
+      if (!fallback) fallback = h;
     }
   }
-  return null;
+  return fallback;
 }
 
 const SKIP_LINE = /opening balance|closing balance|balance (b\/?f|brought|carried|c\/?f)|brought forward|carried forward|page \d+ of|statement of account|^total|grand total|\*\*\*/i;
@@ -169,8 +177,13 @@ function txnsFromRows(rows) {
       cur = null; continue;
     }
     if (SKIP_LINE.test(r.text)) { cur = null; continue; }
-    const first = r.items.slice(0, 2).map((it) => ({ it, d: parseDate(it.str) ?? parseDate(it.str.split(" ")[0]) })).find((x) => x.d);
-    if (first && first.it.x < (head ? head.balance.c * 0.45 : 200)) {
+    // The transaction date: the left-most date in the date columns — which
+    // may come after a serial no. or a transaction id (ICICI: "Sl No · Tran
+    // Id · Value Date · Transaction Date …"), never one inside the narration.
+    const dateLimit = head ? (head.narr && head.narr.x > (head.date?.x ?? 0) ? head.narr.x - 2 : Math.min(head.balance.c, head.debit?.c ?? Infinity, head.credit?.c ?? Infinity) * 0.5) : 200;
+    const first = r.items.filter((it) => it.x < dateLimit).slice(0, 6)
+      .map((it) => ({ it, d: parseDate(it.str) ?? parseDate(it.str.split(" ")[0]) })).find((x) => x.d);
+    if (first) {
       cur = { date: first.d, parts: [], amounts: [], ref: [], page: r.page, y: r.y };
       txns.push(cur);
       // the rest of the piece holding the date may already be narration
@@ -185,6 +198,7 @@ function txnsFromRows(rows) {
       if (parseDate(it.str)) continue;            // value date
       if (/^(cr|dr)\.?$/i.test(it.str) && cur.amounts.length) { cur.amounts[cur.amounts.length - 1] = { ...cur.amounts[cur.amounts.length - 1], str: `${cur.amounts[cur.amounts.length - 1].str} ${it.str}` }; continue; }
       if (head?.ref && it.x >= head.ref.x - 4 && it.x + it.w <= head.ref.r + 40 && /\d/.test(it.str) && !/\s/.test(it.str)) { cur.ref.push(it.str); continue; }
+      if (head?.narr && it.x < dateLimit) continue;  // serial no., transaction id, posted date …
       cur.parts.push(it.str);
     }
   }
@@ -200,7 +214,10 @@ function txnsFromRows(rows) {
     } else if (head && am.length === 1 && dist(am[0].x + am[0].w, head.balance.r) < dist(am[0].x + am[0].w, (head.debit || head.credit).r) * 0.5) {
       continue; // only a balance — not a transaction
     }
-    const a = rest[rest.length - 1];
+    // Some banks print 0.00 in the column not used ("0.00 | 1,000.00 | balance").
+    const nonZero = rest.filter((x) => Math.abs(parseAmount(x.str) || 0) > 0);
+    if (!nonZero.length) continue;
+    const a = nonZero[nonZero.length - 1];
     const value = Math.abs(parseAmount(a.str) || 0);
     if (!(value > 0)) continue;
     let side = null;

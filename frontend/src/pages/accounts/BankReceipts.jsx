@@ -114,16 +114,44 @@ function ImportModal({ onClose, onDone }) {
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [file, setFile] = useState(null);
+  const [pw, setPw] = useState("");
+  const [needPw, setNeedPw] = useState(false);
   useEffect(() => {
     apiRequest("/quotations/meta").then((m) => {
       const a = (m.bank_accounts || []).filter((x) => x.number).map((x) => `${x.bank || x.label} · ${String(x.number).slice(-4)}`);
       setAccounts(a); if (a[0]) setAccount(a[0]);
     }).catch(() => {});
   }, []);
+  // Round 226 — the PDF e-statement too (same reader as Cost → Bank statements);
+  // only its credits come here.
+  async function readPdf(f, password) {
+    setError(""); setParsed(null); setBusy(true);
+    try {
+      const { readFile, PdfPasswordError } = await import("../../lib/bankStatementParse.js");
+      try {
+        const r = await readFile(f, password);
+        const rows = r.rows.filter((x) => x.credit > 0).map((x) => ({ date: x.date, credit: x.credit, narration: x.narration, reference: x.reference, balance: x.balance == null ? "" : String(x.balance) }));
+        setNeedPw(false);
+        // The account printed on the statement (its own number comes first).
+        for (const n of r.account_numbers) {
+          const hit = accounts.find((x) => x.endsWith(String(n).replace(/\D/g, "").slice(-4)));
+          if (hit) { setAccount(hit); break; }
+        }
+        if (!rows.length) setError("No credits found in this statement.");
+        else setParsed({ rows, skipped: r.rows.length - rows.length });
+      } catch (err) {
+        if (err instanceof PdfPasswordError) { setNeedPw(true); setError(err.wrong ? "That password did not open the PDF." : "This PDF is locked — type its password."); }
+        else setError(`Could not read the PDF: ${err.message}`);
+      }
+    } catch (err) { setError(`The PDF reader could not start: ${err.message}. Reload the page and try again.`); }
+    finally { setBusy(false); }
+  }
   async function pick(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    setError(""); setParsed(null); setFileName(file.name);
+    setError(""); setParsed(null); setFileName(file.name); setFile(file); setPw(""); setNeedPw(false);
+    if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") { readPdf(file, ""); return; }
     try {
       const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
       let got = null;
@@ -150,7 +178,14 @@ function ImportModal({ onClose, onDone }) {
           <select value={account} onChange={(e) => setAccount(e.target.value)}>{accounts.map((a) => <option key={a}>{a}</option>)}</select>
         ) : <input value={account} onChange={(e) => setAccount(e.target.value)} placeholder="e.g. ICICI · 3275" />}
       </Field>
-      <Field label="Statement file (Excel or CSV, as downloaded from the bank)"><input type="file" accept=".xls,.xlsx,.csv" onChange={pick} /></Field>
+      <Field label="Statement file (PDF e-statement, Excel or CSV, as downloaded from the bank)"><input type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf" onChange={pick} /></Field>
+      {needPw && (
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
+          <Field label="PDF password"><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && pw) readPdf(file, pw); }} autoComplete="off" /></Field>
+          <button type="button" disabled={busy || !pw} onClick={() => readPdf(file, pw)}>Open</button>
+        </div>
+      )}
+      {busy && !parsed && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 8 }}>Reading the statement…</div>}
       {parsed && (
         <>
           <div style={{ fontSize: 13, marginBottom: 6 }}><b>{parsed.rows.length}</b> credits · {money(total, 2)} · {fmtDate(parsed.rows.map((r) => r.date).sort()[0])} to {fmtDate(parsed.rows.map((r) => r.date).sort().slice(-1)[0])}</div>
