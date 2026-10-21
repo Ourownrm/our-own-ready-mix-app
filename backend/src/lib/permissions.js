@@ -33,6 +33,7 @@
 // modules still carry both guards, and the old rule above still holds there.
 import { query } from "../db.js";
 import { CATALOGUE, CATALOGUE_BY_KEY, ADMIN_HAS_EVERYTHING, isLocked, MODULES, MODULE_OF_KEY } from "./permissionCatalogue.js";
+import { clAccess } from "./cLedger.js";
 
 const CACHE_MS = 5000;
 const cache = new Map(); // userId -> { at, perms: Set<"key:action"> }
@@ -166,5 +167,11 @@ export async function permissionsForClient(user) {
     const key = p.slice(0, i);
     (out[key] = out[key] || []).push(p.slice(i + 1));
   }
+  // Round 224 — C Ledger is not in the role catalogue (Administrator would
+  // hold it); each person's own rights are added here so the app can show the
+  // Cost module and its C Ledger tab to exactly them. The routes check
+  // cl_access themselves (lib/cLedger.js).
+  const cl = await clAccess(user.id).catch(() => ({ any: false }));
+  if (cl.any) out["cledger.access"] = ["view"];
   return out;
 }

@@ -330,7 +330,7 @@ export const HUB = [
   { key: "fuel-module", perm: ["module.fuel"], to: "/fuel-module" },
   { key: "accounts-module", perm: ["module.accounts"], to: "/accounts" },
   { key: "maintenance-module", perm: ["module.maintenance"], to: "/maintenance-module" },
-  { key: "cost-module", perm: ["module.cost"], to: "/cost" },
+  { key: "cost-module", perm: ["module.cost", "cledger.access"], to: "/cost" },
   { key: "maintenance-complaint", perm: ["mnt.complaints"], to: "/maintenance-complaint" },
   {
     key: "quality-control",

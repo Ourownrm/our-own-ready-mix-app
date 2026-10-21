@@ -219,7 +219,7 @@ export default function App() {
           } />
           {/* Round 218 — Cost dashboard, Profit & Loss, Balance Sheet (Administrator only by default). */}
           <Route path="/cost" element={
-            <ProtectedRoute perm="module.cost"><CostModule /></ProtectedRoute>
+            <ProtectedRoute perm={["module.cost", "cledger.access"]}><CostModule /></ProtectedRoute>
           } />
           <Route path="/maintenance-complaint" element={
             <ProtectedRoute perm="mnt.complaints"><MaintenanceComplaint /></ProtectedRoute>

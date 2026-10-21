@@ -54,7 +54,7 @@ export default function SuperAdmin() {
         </div>
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
-          {[["modules", "Module access"], ["people", "People"], ["roles", "Role defaults"], ["plugins", "Plugins"], ["log", "Change log"]].map(([k, l]) => (
+          {[["modules", "Module access"], ["people", "People"], ["roles", "Role defaults"], ["cledger", "C Ledger users"], ["plugins", "Plugins"], ["log", "Change log"]].map(([k, l]) => (
             <button key={k} type="button" className={`btn-tab${tab === k ? " active" : ""}`}
                     onClick={() => { setTab(k); setError(""); setNotice(""); }}
                     style={{ fontSize: 12, padding: "6px 12px", borderRadius: 999 }}>{l}</button>
@@ -69,6 +69,8 @@ export default function SuperAdmin() {
           <PeopleTab catalogue={catalogue} me={user} setError={setError} setNotice={setNotice} />
         ) : tab === "roles" ? (
           <RolesTab catalogue={catalogue} setError={setError} setNotice={setNotice} />
+        ) : tab === "cledger" ? (
+          <CLedgerUsersTab setError={setError} setNotice={setNotice} />
         ) : tab === "plugins" ? (
           <PluginsTab setError={setError} setNotice={setNotice} />
         ) : (
@@ -772,6 +774,108 @@ function ModulesTab({ catalogue, setError, setNotice }) {
 
 function FragmentRows({ children }) {
   return <>{children}</>;
+}
+
+// ===================== C Ledger users (Round 224) =====================
+// C Ledger (Cost module) is closed to everyone — Administrator and Super Admin
+// included — unless ticked here by name. Kept apart from the role catalogue on
+// purpose: Administrator holds every catalogue function. Owner, 21 Oct 2026.
+const CL_RIGHTS = [
+  ["entry", "Entry", "Add and edit delivery records and collections, reassign rejected collections, flag, change an expense's category. Includes View entry data."],
+  ["view_entries", "View entry data", "See delivery records, collections, balances due. Read only."],
+  ["cash_holder", "Cash holder", "Own wallet: accept or reject collections sent to them, transfer, deposit to bank, add expenses. Sees only their own."],
+  ["view_txns", "View transactions", "See every cash holder's balance, transfers, bank deposits and expenses. Read only."],
+];
+function CLedgerUsersTab({ setError, setNotice }) {
+  const [d, setD] = useState(null);
+  const [rows, setRows] = useState({});
+  const [busy, setBusy] = useState(null);
+  const [q, setQ] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const load = () => apiRequest("/cost/c-ledger/access").then((r) => {
+    setD(r); setRows(Object.fromEntries(r.users.map((u) => [u.id, u])));
+  }).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!d) return <div className="card" style={{ fontSize: 12.5, color: "var(--slate)" }}>Loading…</div>;
+  const has = (u) => u.entry || u.view_entries || u.cash_holder || u.view_txns;
+  const qq = q.trim().toLowerCase();
+  const list = d.users.filter((u) => (showAll || has(u) || qq) && (!qq || `${u.name} ${u.phone}`.toLowerCase().includes(qq)));
+  const changed = (u) => { const o = d.users.find((x) => x.id === u.id); return ["entry", "view_entries", "cash_holder", "view_txns", "short_name"].some((k) => o[k] !== u[k]); };
+  async function save(u) {
+    setBusy(u.id); setError(""); setNotice("");
+    try {
+      await apiRequest(`/cost/c-ledger/access/${u.id}`, { method: "PUT", body: u });
+      setNotice(`C Ledger access saved for ${u.name}.`);
+      await load();
+    } catch (e) { setError(e.message); } finally { setBusy(null); }
+  }
+  const set = (id, k, v) => setRows((r) => {
+    const u = { ...r[id], [k]: v };
+    if (k === "entry" && v) u.view_entries = true;
+    return { ...r, [id]: u };
+  });
+  return (
+    <>
+      <div className="card" style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+        <b>C Ledger is closed to everyone, Administrator included</b>, unless ticked here by name. Roles give no C Ledger access.
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {CL_RIGHTS.map(([k, l, h]) => <li key={k}><b>{l}</b> — {h}</li>)}
+        </ul>
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", margin: "4px 0 10px" }}>
+        <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a person to add" aria-label="Find a person"
+          style={{ padding: "8px 10px", fontSize: 13, border: "1px solid var(--border-strong)", borderRadius: 7, minWidth: 220 }} />
+        <label style={{ fontSize: 12.5, display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} style={{ width: 16, height: 16, margin: 0 }} />Show everyone
+        </label>
+      </div>
+      <div className="card" style={{ overflowX: "auto" }}>
+        <table>
+          <thead><tr><th>Person</th><th>Role</th><th>Short name</th>{CL_RIGHTS.map(([k, l]) => <th key={k} style={{ textAlign: "center" }}>{l}</th>)}<th /></tr></thead>
+          <tbody>
+            {list.map((u0) => {
+              const u = rows[u0.id] || u0;
+              return (
+                <tr key={u.id}>
+                  <td style={{ fontWeight: 600 }}>{u.name}<div style={{ fontSize: 11, color: "var(--slate)", fontWeight: 400 }}>{u.phone}{u.is_active ? "" : " · inactive"}</div></td>
+                  <td style={{ color: "var(--slate)" }}>{ROLE_LABEL[u.role] || u.role}</td>
+                  <td><input value={u.short_name} maxLength={12} onChange={(e) => set(u.id, "short_name", e.target.value)} aria-label={`Short name for ${u.name}`} placeholder="e.g. PK"
+                    style={{ width: 70, padding: "6px 8px", fontSize: 13, border: "1px solid var(--border-strong)", borderRadius: 6 }} /></td>
+                  {CL_RIGHTS.map(([k, l]) => (
+                    <td key={k} style={{ textAlign: "center" }}>
+                      <input type="checkbox" checked={!!u[k]} disabled={k === "view_entries" && u.entry} aria-label={`${l} for ${u.name}`}
+                        onChange={(e) => set(u.id, k, e.target.checked)} style={{ width: 20, height: 20, margin: 0 }} />
+                    </td>
+                  ))}
+                  <td><button type="button" className={changed(u) ? "btn-primary" : undefined} disabled={!changed(u) || busy === u.id}
+                    onClick={() => save(u)} style={{ padding: "6px 12px", fontSize: 12.5 }}>{busy === u.id ? "Saving…" : "Save"}</button></td>
+                </tr>
+              );
+            })}
+            {list.length === 0 && <tr><td colSpan={8} style={{ fontSize: 12.5, color: "var(--slate)", padding: 14 }}>Nobody has C Ledger access yet. Find a person above, or tick “Show everyone”.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {d.log.length > 0 && (
+        <div className="card" style={{ overflowX: "auto" }}>
+          <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>Changes</div>
+          <table>
+            <thead><tr><th>When</th><th>Who</th><th>For</th><th>Now</th></tr></thead>
+            <tbody>
+              {d.log.map((l, i) => (
+                <tr key={i}>
+                  <td style={{ whiteSpace: "nowrap" }}>{new Date(l.changed_at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
+                  <td>{l.by_name}</td><td>{l.user_name}</td>
+                  <td style={{ fontSize: 12 }}>{CL_RIGHTS.filter(([k]) => l.after?.[k]).map(([, n]) => n).join(", ") || "no access"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
 }
 
 // ===================== Change log =====================
