@@ -53,7 +53,7 @@ import { AGE_GROUPS, ageGroup } from "./receivables.js";
 import { tankSummary } from "../routes/fuelModule.js";
 import { bookStockRows } from "../routes/materialModule.js";
 import { bankHeadsMonth, bankBalancesOn } from "./bankBook.js";
-import { clTicketSales, clUnlinkedSalesMonth, clExpenseHeadsMonth } from "./cLedger.js";
+import { clTicketSales, clOtherIncomeMonth, clExpenseHeadsMonth } from "./cLedger.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -446,14 +446,14 @@ export function monthCore(ym, ctx) {
 }
 async function computeMonth(ym, ctx) {
   const { from, toEx, end } = monthBounds(ym);
-  const [tickets, rm, fuel, mntRows, man, entries, bank, clUnlinked, clHeads] = await Promise.all([
+  const [tickets, rm, fuel, mntRows, man, entries, bank, clIncome, clHeads] = await Promise.all([
     salesTickets(from, toEx), rawMaterial(ym, ctx), fuelMonth(ym, ctx), maintenanceRows(from, toEx), manpower(ym), monthEntries(ym),
-    bankHeadsMonth(ym), clUnlinkedSalesMonth(ym), clExpenseHeadsMonth(ym),
+    bankHeadsMonth(ym), clOtherIncomeMonth(ym), clExpenseHeadsMonth(ym),
   ]);
   // Round 224 — C Ledger. A delivery note tied to a C Ledger record takes its
   // sale value from that record (in place of the invoice, so it is counted
-  // once); a record with no delivery note is added to the month's sales. No
-  // separate line or mark anywhere (owner).
+  // once). A record with no delivery note is not a sale (Round 227, owner: it
+  // is only a collection). No separate line or mark anywhere (owner).
   const clSales = await clTicketSales(tickets.map((t) => t.id));
   for (const t of tickets) {
     const c = clSales.get(t.id);
@@ -462,12 +462,6 @@ async function computeMonth(ym, ctx) {
     t.concrete = c.concrete; t.pumping = c.pumping; t.part_load = 0; t.gross = c.gross;
   }
   const sales = salesSummary(tickets);
-  if (clUnlinked.qty || clUnlinked.concrete || clUnlinked.pumping) {
-    sales.qty = r2(sales.qty + clUnlinked.qty); sales.invoiced_m3 = r2(sales.invoiced_m3 + clUnlinked.qty);
-    sales.concrete = r2(sales.concrete + clUnlinked.concrete); sales.pumping = r2(sales.pumping + clUnlinked.pumping);
-    sales.gross = r2(sales.gross + clUnlinked.gross);
-    sales.realisation = sales.invoiced_m3 > 0 ? r2(sales.concrete / sales.invoiced_m3) : null;
-  }
   const mnt = maintenanceTotals(mntRows);
   const certs = certExpense(ctx, from, end);
   const e = (k) => (entries[k] ? entries[k].amount : 0);
@@ -483,6 +477,8 @@ async function computeMonth(ym, ctx) {
   for (const [k, v] of Object.entries(bank.heads)) if (k in a) a[k] = r2(a[k] + v);
   // Round 224 — C Ledger expenses, added straight into the head of their category.
   for (const [k, v] of Object.entries(clHeads)) if (k in a) a[k] = r2(a[k] + v);
+  // Round 227 — C Ledger other income (scrap, used oil …).
+  if (clIncome) a.other_income = r2(a.other_income + clIncome);
   return { ym, sales, tickets, rm, fuel, mntRows, mnt, man, certs, entries, bank: bank.heads, amounts: withTotals(a) };
 }
 

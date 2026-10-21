@@ -9,7 +9,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { istMonth, istDay } from "../lib/istDate.js";
 import { MONTH_RE, monthBounds, monthLabel } from "../lib/costDashboard.js";
 import {
-  CL_CATEGORIES, CL_CATEGORY_KEYS, CL_FACTOR, clAccess, requireCl, clLog, holderBalances, clDeliveryTotal,
+  CL_CATEGORIES, CL_CATEGORY_KEYS, CL_INCOME_KINDS, CL_INCOME_KEYS, CL_FACTOR, clAccess, requireCl, clLog, holderBalances, clDeliveryTotal,
 } from "../lib/cLedger.js";
 
 const router = Router();
@@ -44,7 +44,7 @@ router.get("/me", async (req, res) => {
   const { rows } = await query(
     `SELECT a.user_id AS id, COALESCE(a.short_name, u.name) AS short, u.name FROM cl_access a JOIN users u ON u.id = a.user_id
       WHERE a.is_cash_holder AND u.is_active ORDER BY COALESCE(a.short_name, u.name)`);
-  res.json({ access: a, me: req.user.id, holders: rows, categories: CL_CATEGORIES, today: istDay(), month: istMonth() });
+  res.json({ access: a, me: req.user.id, holders: rows, categories: CL_CATEGORIES, income_kinds: CL_INCOME_KINDS, today: istDay(), month: istMonth() });
 });
 
 // ---------------------------------------------------- delivery records ---
@@ -53,9 +53,10 @@ async function deliveriesFor(where, params) {
     `SELECT d.id, d.entry_date::text AS entry_date, d.customer_name, d.location, d.grade, d.qty_m3, d.rate, d.other_charges,
             d.sales_rep, d.flagged, d.note, d.created_at, cu.name AS created_by_name, uu.name AS updated_by_name, d.updated_at,
             COALESCE((SELECT json_agg(json_build_object('id', c.id, 'amount', c.amount, 'holder_id', c.holder_id,
-                        'holder', COALESCE(ca.short_name, hu.name), 'mode', c.mode, 'status', c.status, 'reject_reason', c.reject_reason)
+                        'holder', COALESCE(ca.short_name, hu.name, 'Bank'), 'mode', c.mode, 'status', c.status, 'reject_reason', c.reject_reason,
+                        'paid_on', c.paid_on::text, 'bank', c.holder_id IS NULL)
                         ORDER BY c.id)
-                        FROM cl_collections c JOIN users hu ON hu.id = c.holder_id LEFT JOIN cl_access ca ON ca.user_id = c.holder_id
+                        FROM cl_collections c LEFT JOIN users hu ON hu.id = c.holder_id LEFT JOIN cl_access ca ON ca.user_id = c.holder_id
                        WHERE c.delivery_id = d.id), '[]') AS collections,
             COALESCE((SELECT json_agg(json_build_object('id', t.id, 'number', t.ticket_number, 'date', t.ticket_date::text,
                         'loaded', t.loaded_quantity_m3) ORDER BY t.ticket_date, t.id)
@@ -74,7 +75,8 @@ async function deliveriesFor(where, params) {
       total, collected, balance: r2(total - collected),
       rejected: r2(colls.filter((c) => c.status === "rejected").reduce((t, c) => t + c.amount, 0)),
       pending: r2(colls.filter((c) => c.status === "pending").reduce((t, c) => t + c.amount, 0)),
-      sales_value: r2(total * (d.flagged ? CL_FACTOR : 1)),
+      // Round 227 — a record with no delivery note is not a sale (owner).
+      sales_value: d.tickets.length ? r2(total * (d.flagged ? CL_FACTOR : 1)) : 0,
     };
   });
 }
@@ -91,6 +93,7 @@ router.get("/deliveries", requireCl("view_entries"), async (req, res) => {
       count: list.length, m3: sum("qty_m3"), billed: sum("total"), collected: sum("collected"), balance: sum("balance"),
       pending: sum("pending"), rejected: sum("rejected"), sales_value: sum("sales_value"),
       flagged: list.filter((d) => d.flagged).length, unlinked: list.filter((d) => !d.tickets.length).length,
+      unlinked_total: r2(list.filter((d) => !d.tickets.length).reduce((t, d) => t + d.total, 0)),
     },
     rejected_lines: list.flatMap((d) => d.collections.filter((c) => c.status === "rejected")
       .map((c) => ({ ...c, delivery_id: d.id, customer_name: d.customer_name, entry_date: d.entry_date }))),
@@ -140,7 +143,10 @@ function cleanDelivery(b) {
   for (const c of Array.isArray(b.collections) ? b.collections : []) {
     const amount = Number(c.amount);
     if (!c.amount || !Number.isFinite(amount) || amount <= 0) continue;
-    lines.push({ id: Number(c.id) || null, amount: r2(amount), holder_id: Number(c.holder_id), mode: ["cash", "upi", "cheque"].includes(c.mode) ? c.mode : "cash" });
+    // Round 227 — "Paid to bank": no cash holder, the day it reached the bank.
+    const bank = c.holder_id === "bank" || c.mode === "bank";
+    lines.push({ id: Number(c.id) || null, amount: r2(amount), holder_id: bank ? null : Number(c.holder_id),
+      mode: bank ? "bank" : ["cash", "upi", "cheque"].includes(c.mode) ? c.mode : "cash", paid_on: bank ? (cleanDay(c.paid_on) || entry_date) : null });
   }
   return {
     entry_date, customer_name, location: txt(b.location, 200), grade, qty_m3: r2(qty), rate: r2(rate), other_charges: r2(oth),
@@ -162,33 +168,43 @@ async function writeLinksAndLines(client, id, d, holders) {
     await client.query(`INSERT INTO cl_delivery_tickets (delivery_id, ticket_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [id, t]);
   }
   const { rows: existing } = await client.query(`SELECT * FROM cl_collections WHERE delivery_id = $1 FOR UPDATE`, [id]);
-  const accepted = existing.filter((c) => c.status === "accepted");
+  // Locked: accepted by a cash holder. A "paid to bank" line stays editable.
+  const isLocked = (c) => c.status === "accepted" && c.holder_id != null;
+  const accepted = existing.filter(isLocked);
   const total = clDeliveryTotal(d);
   const sum = accepted.reduce((t, c) => t + n0(c.amount), 0) + d.lines.reduce((t, c) => t + c.amount, 0);
   if (sum > total + 0.5) return `Collections (₹${r2(sum).toLocaleString("en-IN")}) are more than the total (₹${total.toLocaleString("en-IN")}).`;
-  for (const l of d.lines) if (!holders.has(l.holder_id)) return "Each collection line needs a cash holder.";
+  for (const l of d.lines) if (l.mode !== "bank" && !holders.has(l.holder_id)) return "Each collection line needs a cash holder, or Bank.";
   // Accepted lines are locked; every other line is replaced by what was sent.
   const keep = new Set();
   for (const l of d.lines) {
-    const old = l.id ? existing.find((c) => c.id === l.id && c.status !== "accepted") : null;
-    if (old) {
+    const old = l.id ? existing.find((c) => c.id === l.id && !isLocked(c)) : null;
+    if (old && l.mode === "bank") {
+      await client.query(
+        `UPDATE cl_collections SET amount = $2, holder_id = NULL, mode = 'bank', paid_on = $3, status = 'accepted', reject_reason = NULL,
+                responded_at = COALESCE(responded_at, now()) WHERE id = $1`, [old.id, l.amount, l.paid_on]);
+      keep.add(old.id);
+    } else if (old) {
       const changed = n0(old.amount) !== l.amount || old.holder_id !== l.holder_id || old.mode !== l.mode;
       // A rejected line that is saved again goes back to the cash holder.
       await client.query(
         `UPDATE cl_collections SET amount = $2, holder_id = $3, mode = $4,
                 status = CASE WHEN status = 'rejected' OR $5 THEN 'pending' ELSE status END,
                 reject_reason = CASE WHEN status = 'rejected' OR $5 THEN NULL ELSE reject_reason END,
-                responded_at = CASE WHEN status = 'rejected' OR $5 THEN NULL ELSE responded_at END
+                responded_at = CASE WHEN status = 'rejected' OR $5 THEN NULL ELSE responded_at END, paid_on = NULL
           WHERE id = $1`, [old.id, l.amount, l.holder_id, l.mode, changed]);
       keep.add(old.id);
     } else {
+      const bank = l.mode === "bank";
       const { rows } = await client.query(
-        `INSERT INTO cl_collections (delivery_id, amount, holder_id, mode) VALUES ($1, $2, $3, $4) RETURNING id`, [id, l.amount, l.holder_id, l.mode]);
+        `INSERT INTO cl_collections (delivery_id, amount, holder_id, mode, paid_on, status, responded_at)
+         VALUES ($1, $2, $3, $4, $5, $6::varchar, CASE WHEN $6::varchar = 'accepted' THEN now() END) RETURNING id`,
+        [id, l.amount, l.holder_id, l.mode, l.paid_on, bank ? "accepted" : "pending"]);
       keep.add(rows[0].id);
     }
   }
   for (const c of existing) {
-    if (c.status !== "accepted" && !keep.has(c.id)) await client.query(`DELETE FROM cl_collections WHERE id = $1`, [c.id]);
+    if (!isLocked(c) && !keep.has(c.id)) await client.query(`DELETE FROM cl_collections WHERE id = $1`, [c.id]);
   }
   return null;
 }
@@ -249,7 +265,7 @@ router.delete("/deliveries/:id", requireCl("entry"), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query(`SELECT COUNT(*)::int AS n FROM cl_collections WHERE delivery_id = $1 AND status = 'accepted'`, [id]);
+    const { rows } = await client.query(`SELECT COUNT(*)::int AS n FROM cl_collections WHERE delivery_id = $1 AND status = 'accepted' AND holder_id IS NOT NULL`, [id]);
     if (rows[0].n) { await client.query("ROLLBACK"); return bad(res, "A cash holder has already accepted cash on this record, so it can't be deleted. Edit it instead."); }
     const { rowCount } = await client.query(`UPDATE cl_deliveries SET deleted_at = now(), deleted_by = $2 WHERE id = $1 AND deleted_at IS NULL`, [id, req.user.id]);
     if (!rowCount) { await client.query("ROLLBACK"); return res.status(404).json({ error: "That record is not there any more." }); }
@@ -279,13 +295,24 @@ async function transfersFor(where, params) {
       WHERE t.deleted_at IS NULL AND ${where} ORDER BY t.txn_date DESC, t.id DESC`, params);
   return rows.map((t) => ({ ...t, amount: n0(t.amount) }));
 }
+// Round 227 — other income.
+async function incomesFor(where, params) {
+  const { rows } = await query(
+    `SELECT i.id, i.txn_date::text AS txn_date, i.kind, i.source, i.amount, i.received_by, i.status, i.reject_reason, i.flagged,
+            i.created_by, COALESCE(ra.short_name, ru.name, 'Bank') AS received_name, cu.name AS created_by_name
+       FROM cl_incomes i LEFT JOIN users ru ON ru.id = i.received_by LEFT JOIN cl_access ra ON ra.user_id = i.received_by
+       LEFT JOIN users cu ON cu.id = i.created_by
+      WHERE i.deleted_at IS NULL AND ${where} ORDER BY i.txn_date DESC, i.id DESC`, params);
+  return rows.map((i) => ({ ...i, amount: n0(i.amount), kind_label: CL_INCOME_KINDS.find((k) => k.key === i.kind)?.label || i.kind,
+    counted: i.status === "rejected" ? 0 : r2(n0(i.amount) * (i.flagged ? CL_FACTOR : 1)) }));
+}
 
 router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
   const ym = pickMonth(req, res);
   if (!ym) return;
   const { from, end } = monthBounds(ym);
   const me = req.user.id;
-  const [bal, incoming, incomingT, colls, transfers, expenses] = await Promise.all([
+  const [bal, incoming, incomingT, colls, transfers, expenses, incomes, incomingI] = await Promise.all([
     holderBalances(),
     query(`SELECT c.id, c.amount, c.mode, c.created_at, d.id AS delivery_id, d.entry_date::text AS entry_date, d.customer_name, d.location, d.flagged,
                   (SELECT string_agg(t.ticket_number, ', ') FROM cl_delivery_tickets l JOIN delivery_tickets t ON t.id = l.ticket_id WHERE l.delivery_id = d.id) AS tickets
@@ -297,6 +324,8 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
             WHERE c.holder_id = $1 AND c.status <> 'pending' AND d.deleted_at IS NULL AND d.entry_date BETWEEN $2::date AND $3::date`, [me, from, end]),
     transfersFor(`(t.from_id = $1 OR t.to_id = $1) AND t.txn_date BETWEEN $2::date AND $3::date`, [me, from, end]),
     expensesFor(`x.holder_id = $1 AND x.txn_date BETWEEN $2::date AND $3::date`, [me, from, end]),
+    incomesFor(`i.received_by = $1 AND i.status <> 'pending' AND i.txn_date BETWEEN $2::date AND $3::date`, [me, from, end]),
+    incomesFor(`i.received_by = $1 AND i.status = 'pending'`, [me]),
   ]);
   const mine = bal.find((b) => b.id === me) || { id: me, balance: 0, collected: 0, transfer_in: 0, transfer_out: 0, deposited: 0, expenses: 0, awaiting: 0 };
   // One list of everything that moved this person's cash, newest first.
@@ -314,6 +343,9 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
   for (const x of expenses) tx.push({ kind: "expense", id: x.id, date: x.txn_date, amount: x.amount, sign: -1,
     desc: `Expense · ${x.where_spent}`, meta: CL_CATEGORIES.find((c) => c.key === x.category)?.label || "", status: "done", flagged: x.flagged,
     category: x.category, where_spent: x.where_spent });
+  for (const i of incomes) tx.push({ kind: "income", id: i.id, date: i.txn_date, amount: i.amount, sign: i.status === "accepted" ? 1 : 0,
+    desc: `${i.kind_label} · ${i.source}`, meta: i.status === "rejected" ? `rejected${i.reject_reason ? `: ${i.reject_reason}` : ""}` : "",
+    status: i.status === "accepted" ? "done" : i.status, flagged: i.flagged, can_edit: i.created_by === me, income: i });
   tx.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
   res.json({
     month: ym, label: monthLabel(ym, true), balance: mine,
@@ -321,6 +353,8 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
       ...incoming.rows.map((c) => ({ type: "collection", id: c.id, amount: n0(c.amount), date: c.entry_date, title: `Collection · ${c.customer_name}`,
         meta: [c.location, c.tickets].filter(Boolean).join(" · "), flagged: c.flagged })),
       ...incomingT.map((t) => ({ type: "transfer", id: t.id, amount: t.amount, date: t.txn_date, title: `Transfer from ${t.from_name}`, meta: t.note || "" })),
+      ...incomingI.map((i) => ({ type: "income", id: i.id, amount: i.amount, date: i.txn_date, title: `${i.kind_label} · ${i.source}`,
+        meta: i.created_by_name ? `entered by ${i.created_by_name}` : "", flagged: i.flagged })),
     ],
     transactions: tx,
   });
@@ -436,6 +470,101 @@ router.delete("/expenses/:id", requireCl("cash_holder"), async (req, res) => {
   res.json({ ok: true });
 });
 
+// ------------------------------------------------ other income (227) ---
+// A cash holder records what they received themselves (in their cash at
+// once); an Entry person may record it for a cash holder (they accept it, as
+// with a collection) or as received straight into the bank.
+function cleanIncome(b) {
+  const day = cleanDay(b.txn_date);
+  if (!day) return { error: "Pick the date (not in the future)." };
+  const amount = Number(b.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return { error: "Enter the amount." };
+  const source = txt(b.source, 300);
+  if (!source) return { error: "Write what was sold, and to whom." };
+  return { txn_date: day, amount: r2(amount), source, kind: CL_INCOME_KEYS.has(b.kind) ? b.kind : "other", flagged: !!b.flagged };
+}
+async function incomeTarget(req, raw) {
+  // → { received_by, status } or { error }
+  if (raw === "bank") {
+    if (!req.cl.entry) return { error: "Only an Entry person can record income received in the bank." };
+    return { received_by: null, status: "accepted" };
+  }
+  const id = raw == null || raw === "" || raw === "me" ? req.user.id : Number(raw);
+  if (id === req.user.id) {
+    if (!req.cl.cash_holder) return { error: "Pick the cash holder who received it, or Bank." };
+    return { received_by: id, status: "accepted" };
+  }
+  if (!req.cl.entry) return { error: "You can record only what you received yourself." };
+  if (!(await cashHolderIds()).has(id)) return { error: "Pick the cash holder who received it, or Bank." };
+  return { received_by: id, status: "pending" };
+}
+
+router.post("/incomes", requireCl("cash_holder", "entry"), async (req, res) => {
+  const x = cleanIncome(req.body || {});
+  if (x.error) return bad(res, x.error);
+  const t = await incomeTarget(req, req.body?.received_by);
+  if (t.error) return bad(res, t.error);
+  const { rows } = await query(
+    `INSERT INTO cl_incomes (txn_date, kind, source, amount, received_by, status, responded_at, flagged, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6::varchar, CASE WHEN $6::varchar = 'accepted' THEN now() END, $7, $8) RETURNING id`,
+    [x.txn_date, x.kind, x.source, x.amount, t.received_by, t.status, x.flagged, req.user.id]);
+  await clLog(null, "income", rows[0].id, "added", { ...x, received_by: t.received_by }, req.user.id);
+  res.json({ ok: true, id: rows[0].id });
+});
+
+// Whoever entered it may change it while it is theirs to change (not yet
+// accepted by someone else); an Entry person may always change the kind,
+// what it was and the flag.
+router.put("/incomes/:id", requireCl("cash_holder", "entry"), async (req, res) => {
+  const id = Number(req.params.id);
+  const { rows } = await query(`SELECT *, txn_date::text AS day FROM cl_incomes WHERE id = $1 AND deleted_at IS NULL`, [id]);
+  if (!rows.length) return res.status(404).json({ error: "That income is not there any more." });
+  const cur = rows[0];
+  const x = cleanIncome({ ...cur, amount: Number(cur.amount), txn_date: cur.day, ...req.body });
+  if (x.error) return bad(res, x.error);
+  const mine = cur.created_by === req.user.id;
+  const lockedByOther = cur.received_by && cur.received_by !== req.user.id && cur.status === "accepted";
+  if (mine && !lockedByOther) {
+    let t = { received_by: cur.received_by, status: cur.status };
+    if (req.body?.received_by !== undefined) { t = await incomeTarget(req, req.body.received_by); if (t.error) return bad(res, t.error); }
+    const changedTarget = t.received_by !== cur.received_by;
+    await query(
+      `UPDATE cl_incomes SET txn_date = $2, kind = $3, source = $4, amount = $5, flagged = $6, received_by = $7,
+              status = $8, reject_reason = CASE WHEN $9 THEN NULL ELSE reject_reason END, updated_by = $10, updated_at = now() WHERE id = $1`,
+      [id, x.txn_date, x.kind, x.source, x.amount, x.flagged, t.received_by, changedTarget || cur.status === "rejected" ? t.status : cur.status,
+        changedTarget || cur.status === "rejected", req.user.id]);
+  } else if (req.cl.entry) {
+    await query(`UPDATE cl_incomes SET kind = $2, source = $3, flagged = $4, updated_by = $5, updated_at = now() WHERE id = $1`,
+      [id, x.kind, x.source, x.flagged, req.user.id]);
+  } else {
+    return res.status(403).json({ error: "Only the person who entered it can change this." });
+  }
+  await clLog(null, "income", id, "edited", { before: cur, after: x }, req.user.id);
+  res.json({ ok: true });
+});
+
+router.delete("/incomes/:id", requireCl("cash_holder", "entry"), async (req, res) => {
+  const { rowCount } = await query(
+    `UPDATE cl_incomes SET deleted_at = now() WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL
+        AND NOT (received_by IS NOT NULL AND received_by <> $2 AND status = 'accepted')`, [Number(req.params.id), req.user.id]);
+  if (!rowCount) return bad(res, "Only the person who entered it can delete it, and not once someone else has accepted it.");
+  await clLog(null, "income", Number(req.params.id), "deleted", null, req.user.id);
+  res.json({ ok: true });
+});
+
+router.post("/incomes/:id/respond", requireCl("cash_holder"), async (req, res) => {
+  const decision = req.body?.decision === "accept" ? "accepted" : req.body?.decision === "reject" ? "rejected" : null;
+  if (!decision) return bad(res, "Accept or reject?");
+  const reason = txt(req.body?.reason, 300);
+  if (decision === "rejected" && !reason) return bad(res, "Say why you are rejecting it.");
+  const { rowCount } = await query(
+    `UPDATE cl_incomes SET status = $3, reject_reason = $4, responded_at = now()
+      WHERE id = $1 AND received_by = $2 AND status = 'pending' AND deleted_at IS NULL`, [Number(req.params.id), req.user.id, decision, reason]);
+  if (!rowCount) return bad(res, "That is not waiting for you any more.");
+  await clLog(null, "income", Number(req.params.id), decision, reason ? { reason } : null, req.user.id);
+  res.json({ ok: true });
+});
+
 // ------------------------------------------------- all transactions ---
 // Everyone's cash: balances, transfers, deposits and expenses. Entry people
 // also see the expenses (to set categories) through this, read-only otherwise.
@@ -443,10 +572,11 @@ router.get("/transactions", requireCl("view_txns", "entry"), async (req, res) =>
   const ym = pickMonth(req, res);
   if (!ym) return;
   const { from, end } = monthBounds(ym);
-  const [expenses, transfers, balances] = await Promise.all([
+  const [expenses, transfers, balances, incomes] = await Promise.all([
     expensesFor(`x.txn_date BETWEEN $1::date AND $2::date`, [from, end]),
     req.cl.view_txns ? transfersFor(`t.txn_date BETWEEN $1::date AND $2::date`, [from, end]) : [],
     req.cl.view_txns ? holderBalances() : [],
+    incomesFor(`i.txn_date BETWEEN $1::date AND $2::date`, [from, end]),
   ]);
   const byCat = {};
   for (const x of expenses) {
@@ -455,13 +585,15 @@ router.get("/transactions", requireCl("view_txns", "entry"), async (req, res) =>
   }
   res.json({
     month: ym, label: monthLabel(ym, true), full: req.cl.view_txns,
-    expenses, transfers, balances,
+    expenses, transfers, balances, incomes,
     by_category: Object.values(byCat).map((c) => ({ ...c, paid: r2(c.paid), cost: r2(c.cost) })).sort((a, b) => b.paid - a.paid),
     summary: {
       paid: r2(expenses.reduce((t, x) => t + x.amount, 0)), cost: r2(expenses.reduce((t, x) => t + x.cost, 0)),
       flagged: expenses.filter((x) => x.flagged).length, todo: expenses.filter((x) => x.category === "todo").length,
       cash_in_hand: r2(balances.reduce((t, b) => t + b.balance, 0)),
       deposited: r2(transfers.filter((t) => t.kind === "bank").reduce((s, t) => s + t.amount, 0)),
+      income: r2(incomes.filter((i) => i.status !== "rejected").reduce((t, i) => t + i.amount, 0)),
+      income_counted: r2(incomes.reduce((t, i) => t + i.counted, 0)),
     },
   });
 });
@@ -492,8 +624,9 @@ router.put("/access/:userId", requireRole("super_admin"), async (req, res) => {
     short_name: txt(b.short_name, 12) };
   const { rows: cur } = await query(`SELECT can_entry, can_view_entries, is_cash_holder, can_view_txns, short_name FROM cl_access WHERE user_id = $1`, [uid]);
   if (!next.cash_holder && cur[0]?.is_cash_holder) {
-    const { rows: p } = await query(`SELECT COUNT(*)::int AS n FROM cl_collections WHERE holder_id = $1 AND status = 'pending'`, [uid]);
-    if (p[0].n) return bad(res, `This person still has ${p[0].n} collection(s) waiting to be accepted. Have them accept or reject those first, or have Entry move them to another cash holder.`);
+    const { rows: p } = await query(`SELECT (SELECT COUNT(*) FROM cl_collections WHERE holder_id = $1 AND status = 'pending')
+                                          + (SELECT COUNT(*) FROM cl_incomes WHERE received_by = $1 AND status = 'pending' AND deleted_at IS NULL) AS n`, [uid]);
+    if (Number(p[0].n)) return bad(res, `This person still has ${p[0].n} collection(s) or income waiting to be accepted. Have them accept or reject those first, or have Entry move them to another cash holder.`);
   }
   await query(
     `INSERT INTO cl_access (user_id, can_entry, can_view_entries, is_cash_holder, can_view_txns, short_name, updated_by, updated_at)

@@ -26,9 +26,16 @@
 //     one in full. Cash in hand always uses the full amount.
 //   * Sales: a delivery record tied to its delivery note(s) SETS the sale value
 //     of those notes (it replaces the invoice figure for them, so the load is
-//     never counted twice); a record with no delivery note is added to the
-//     month's sales on its own date.
+//     never counted twice). Round 227 (owner): a record with NO delivery note is
+//     NOT counted in Sales — every delivery has a challan in the app, so an
+//     unlinked record is only a collection (e.g. an old outstanding amount).
+//   * Other income (Round 227 — scrap sale, used oil sale …): added to the P&L's
+//     Other income for the month of its date, flag rule applied.
 //   * Expenses: added to the head of their category for the month of their date.
+//     "Supplier payment" is not a cost: the material is already costed through
+//     the Raw Material receipts (Round 227).
+//   * A collection line may be "Paid to bank" (Round 227): counted as collected,
+//     in nobody's cash in hand, nothing to accept.
 import { query } from "../db.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -41,18 +48,26 @@ export const CL_CATEGORIES = [
   { key: "repairs", label: "Repairs & maintenance" },
   { key: "contract_labour", label: "Contract labour / pump gangs" },
   { key: "hired_vehicles", label: "Hired vehicles & pumps" },
-  { key: "rm", label: "Raw material" },
+  { key: "rm", label: "Raw material — bought for cash, not in receipts" },
   { key: "power", label: "Plant power" },
   { key: "salaries", label: "Salaries & wages" },
   { key: "admin_office", label: "Admin & office" },
   { key: "selling", label: "Selling & marketing" },
   { key: "rent_rates", label: "Rent & rates" },
+  { key: "supplier_payment", label: "Supplier payment — not a cost", notCost: true },
   { key: "staff_advance", label: "Not a cost — staff advance", notCost: true },
   { key: "personal", label: "Not a cost — owner / personal", notCost: true },
   { key: "todo", label: "To categorise", notCost: true },
 ];
 export const CL_CATEGORY_KEYS = new Set(CL_CATEGORIES.map((c) => c.key));
 const COST_KEYS = new Set(CL_CATEGORIES.filter((c) => !c.notCost).map((c) => c.key));
+// Round 227 — other income kinds.
+export const CL_INCOME_KINDS = [
+  { key: "scrap", label: "Scrap sale" },
+  { key: "used_oil", label: "Used oil sale" },
+  { key: "other", label: "Other income" },
+];
+export const CL_INCOME_KEYS = new Set(CL_INCOME_KINDS.map((k) => k.key));
 
 export const ROUND224_SQL = `
 CREATE TABLE IF NOT EXISTS cl_access (
@@ -164,6 +179,39 @@ export async function migrateRound224(pool, log) {
   log?.push?.("Round 224: C Ledger (Cost module).");
 }
 
+// Round 227 — "Paid to bank" collection lines (no cash holder, mode 'bank',
+// accepted at once, the day it reached the bank), and other income.
+export const ROUND227_SQL = `
+ALTER TABLE cl_collections ALTER COLUMN holder_id DROP NOT NULL;
+ALTER TABLE cl_collections DROP CONSTRAINT IF EXISTS cl_collections_mode_check;
+ALTER TABLE cl_collections ADD CONSTRAINT cl_collections_mode_check CHECK (mode IN ('cash','upi','cheque','bank'));
+ALTER TABLE cl_collections ADD COLUMN IF NOT EXISTS paid_on DATE;
+-- received_by NULL = straight into the bank. Received by a cash holder: it is
+-- in their cash once accepted (at once when they entered it themselves).
+CREATE TABLE IF NOT EXISTS cl_incomes (
+  id            SERIAL PRIMARY KEY,
+  txn_date      DATE NOT NULL,
+  kind          VARCHAR(12) NOT NULL DEFAULT 'other',
+  source        TEXT NOT NULL,
+  amount        NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  received_by   INTEGER REFERENCES users(id),
+  status        VARCHAR(10) NOT NULL DEFAULT 'accepted' CHECK (status IN ('pending','accepted','rejected')),
+  reject_reason TEXT,
+  responded_at  TIMESTAMPTZ,
+  flagged       BOOLEAN NOT NULL DEFAULT false,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    INTEGER REFERENCES users(id),
+  updated_at    TIMESTAMPTZ,
+  deleted_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_cl_incomes_date ON cl_incomes(txn_date) WHERE deleted_at IS NULL;
+`;
+export async function migrateRound227(pool, log) {
+  await pool.query(ROUND227_SQL);
+  log?.push?.("Round 227: C Ledger — paid to bank, other income.");
+}
+
 // ------------------------------------------------------------ access ---
 const NONE = { entry: false, view_entries: false, cash_holder: false, view_txns: false, short_name: null };
 export async function clAccess(userId) {
@@ -220,15 +268,18 @@ export async function holderBalances(upToDay = null) {
             COALESCE((SELECT SUM(t.amount) FROM cl_transfers t WHERE t.from_id = a.user_id AND t.kind = 'bank'
                        AND t.deleted_at IS NULL AND ($1::date IS NULL OR t.txn_date <= $1::date)), 0) AS deposited,
             COALESCE((SELECT SUM(x.amount) FROM cl_expenses x WHERE x.holder_id = a.user_id AND x.deleted_at IS NULL
-                       AND ($1::date IS NULL OR x.txn_date <= $1::date)), 0) AS expenses
+                       AND ($1::date IS NULL OR x.txn_date <= $1::date)), 0) AS expenses,
+            COALESCE((SELECT SUM(i.amount) FROM cl_incomes i WHERE i.received_by = a.user_id AND i.status = 'accepted' AND i.deleted_at IS NULL
+                       AND ($1::date IS NULL OR i.txn_date <= $1::date)), 0) AS income,
+            COALESCE((SELECT SUM(i.amount) FROM cl_incomes i WHERE i.received_by = a.user_id AND i.status = 'pending' AND i.deleted_at IS NULL), 0) AS pending_income
        FROM cl_access a JOIN users u ON u.id = a.user_id
       WHERE a.is_cash_holder OR EXISTS (SELECT 1 FROM cl_collections c WHERE c.holder_id = a.user_id)
       ORDER BY COALESCE(a.short_name, u.name)`, [d]);
   return rows.map((r) => {
     const o = { id: r.id, name: r.name, short: r.short, is_active: r.is_active };
-    for (const k of ["collected", "pending_collections", "transfer_in", "pending_in", "transfer_out", "deposited", "expenses"]) o[k] = r2(r[k]);
-    o.balance = r2(o.collected + o.transfer_in - o.transfer_out - o.deposited - o.expenses);
-    o.awaiting = r2(o.pending_collections + o.pending_in);
+    for (const k of ["collected", "pending_collections", "transfer_in", "pending_in", "transfer_out", "deposited", "expenses", "income", "pending_income"]) o[k] = r2(r[k]);
+    o.balance = r2(o.collected + o.income + o.transfer_in - o.transfer_out - o.deposited - o.expenses);
+    o.awaiting = r2(o.pending_collections + o.pending_in + o.pending_income);
     return o;
   });
 }
@@ -265,19 +316,13 @@ export async function clTicketSales(ticketIds) {
   return out;
 }
 
-// Records with no delivery note, on their own date.
-export async function clUnlinkedSalesMonth(ym) {
+// Round 227 — other income for a month (scrap, used oil …), flag rule applied.
+export async function clOtherIncomeMonth(ym) {
   const { rows } = await query(
-    `SELECT COALESCE(SUM(d.qty_m3), 0) AS qty,
-            COALESCE(SUM(d.qty_m3 * d.rate * CASE WHEN d.flagged THEN $2::numeric ELSE 1 END), 0) AS concrete,
-            COALESCE(SUM(d.other_charges * CASE WHEN d.flagged THEN $2::numeric ELSE 1 END), 0) AS pumping,
-            COALESCE(SUM(d.qty_m3 * d.rate + d.other_charges), 0) AS gross
-       FROM cl_deliveries d
-      WHERE d.deleted_at IS NULL AND to_char(d.entry_date, 'YYYY-MM') = $1
-        AND NOT EXISTS (SELECT 1 FROM cl_delivery_tickets l WHERE l.delivery_id = d.id)`,
-    [ym, CL_FACTOR]).catch(() => ({ rows: [] }));
-  const r = rows[0] || {};
-  return { qty: r2(r.qty), concrete: n0(r.concrete), pumping: n0(r.pumping), gross: n0(r.gross) };
+    `SELECT COALESCE(SUM(amount * CASE WHEN flagged THEN $2::numeric ELSE 1 END), 0) AS v
+       FROM cl_incomes WHERE deleted_at IS NULL AND status <> 'rejected' AND to_char(txn_date, 'YYYY-MM') = $1`,
+    [ym, CL_FACTOR]).catch(() => ({ rows: [{ v: 0 }] }));
+  return r2(rows[0].v);
 }
 
 // Expenses by Cost dashboard head for a month.

@@ -7,6 +7,9 @@
 // users) — Administrator included. What each person sees follows their four
 // rights: Entry, View entry data, Cash holder, View transactions.
 //
+// Round 227: "Paid to bank" collection lines; other income (scrap, used oil);
+// a record with no delivery note is a collection only, not a sale.
+//
 // The flag: the owner's rule decides how a flagged / not-flagged record is
 // counted in Sales and Cost. That rule is applied in the backend
 // (lib/cLedger.js) and is deliberately NOT written on any screen.
@@ -149,7 +152,7 @@ function EntriesView({ me, month }) {
         <Tile label="Billed" value={rs(s.billed)} note={`${s.count} deliveries · ${num(s.m3, 1)} m³`} />
         <Tile label="Collected" value={rs(s.collected)} note={s.pending ? `${rs(s.pending)} awaiting acceptance` : "all accepted"} />
         <Tile label="Balance due" value={rs(s.balance)} note={s.rejected ? `incl. ${rs(s.rejected)} rejected, to reassign` : null} />
-        <Tile label="Sales value" value={rs(s.sales_value)} note={`${s.flagged} flagged · ${s.count - s.flagged} not flagged`} dark />
+        <Tile label="Sales value" value={rs(s.sales_value)} note={`${s.flagged} flagged · ${s.count - s.flagged} not flagged${s.unlinked ? ` · ${s.unlinked} without a delivery note not counted` : ""}`} dark />
       </div>
 
       {err && <Note tone="bad">{err}</Note>}
@@ -163,7 +166,7 @@ function EntriesView({ me, month }) {
           ))}
         </Note>
       )}
-      {s.unlinked > 0 && canEdit && <Note>{s.unlinked} record{s.unlinked > 1 ? "s have" : " has"} no delivery note picked yet — open {s.unlinked > 1 ? "them" : "it"} and pick the challan.</Note>}
+      {s.unlinked > 0 && <Note>{s.unlinked} record{s.unlinked > 1 ? "s have" : " has"} no delivery note ({rs(s.unlinked_total)}). {s.unlinked > 1 ? "They are" : "It is"} kept for collections only and not counted in Sales{canEdit ? " — if there is a challan, open the record and pick it" : ""}.</Note>}
 
       <div style={panel("1 1 100%")}>
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
@@ -190,12 +193,12 @@ function EntriesView({ me, month }) {
                   <td style={{ minWidth: 150 }}>
                     {r.collections.length === 0 ? <span style={MUTED}>—</span> : r.collections.map((c) => (
                       <div key={c.id} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, whiteSpace: "nowrap", padding: "1px 0" }}>
-                        <b style={NUM}>{rs(c.amount)}</b><span>→ {c.holder}</span><Badge status={c.status} />
+                        <b style={NUM}>{rs(c.amount)}</b><span>→ {c.holder}</span>{c.bank ? <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 20, background: "#E2EAF6", color: "#1F4A82" }}>Paid to bank</span> : <Badge status={c.status} />}
                       </div>
                     ))}
                   </td>
                   <td style={{ ...R, fontWeight: 600, color: r.balance > 0.5 ? "var(--alert-red)" : "var(--signal-green)" }}>{rs(r.balance)}</td>
-                  <td style={{ ...R, fontWeight: 600 }}>{rs(r.sales_value)}</td>
+                  <td style={{ ...R, fontWeight: 600 }}>{r.tickets.length ? rs(r.sales_value) : <span style={MUTED} title="No delivery note — not a sale">—</span>}</td>
                   <td>{canEdit ? <FlagButton on={r.flagged} disabled={busy} onClick={() => flag(r)} label={`${r.flagged ? "Remove flag on" : "Flag"} ${r.customer_name}`} /> : r.flagged ? <FlagPill /> : null}</td>
                   {canEdit && (
                     <td style={{ whiteSpace: "nowrap" }}>
@@ -222,8 +225,10 @@ function DeliveryForm({ me, rec, onClose, onSaved }) {
     rate: String(rec.rate), other_charges: rec.other_charges ? String(rec.other_charges) : "", sales_rep: rec.sales_rep || "", note: rec.note || "", flagged: rec.flagged,
   } : { entry_date: today(), customer_name: "", location: "", grade: "", qty_m3: "", rate: "", other_charges: "", sales_rep: "", note: "", flagged: false });
   const [picked, setPicked] = useState(() => rec ? rec.tickets.map((t) => ({ id: t.id, number: t.number, date: t.date, loaded: t.loaded })) : []);
-  const locked = rec ? rec.collections.filter((c) => c.status === "accepted") : [];
-  const [lines, setLines] = useState(() => rec ? rec.collections.filter((c) => c.status !== "accepted").map((c) => ({ ...c, amount: String(c.amount) })) : []);
+  // Locked: accepted by a cash holder. "Paid to bank" lines stay editable.
+  const locked = rec ? rec.collections.filter((c) => c.status === "accepted" && !c.bank) : [];
+  const [lines, setLines] = useState(() => rec ? rec.collections.filter((c) => !(c.status === "accepted" && !c.bank))
+    .map((c) => ({ ...c, amount: String(c.amount), holder_id: c.bank ? "bank" : c.holder_id, paid_on: c.paid_on || "" })) : []);
   const [noNote, setNoNote] = useState(rec ? rec.tickets.length === 0 : false);
   const [tq, setTq] = useState("");
   const [cands, setCands] = useState(null);
@@ -268,7 +273,8 @@ function DeliveryForm({ me, rec, onClose, onSaved }) {
   async function save() {
     setBusy(true); setErr("");
     const body = { ...f, ticket_ids: noNote ? [] : picked.map((p) => p.id),
-      collections: lines.map((l) => ({ id: l.id, amount: l.amount, holder_id: Number(l.holder_id), mode: l.mode })) };
+      collections: lines.map((l) => ({ id: l.id, amount: l.amount, holder_id: l.holder_id === "bank" ? "bank" : Number(l.holder_id), mode: l.mode,
+        paid_on: l.holder_id === "bank" ? (l.paid_on || f.entry_date) : null })) };
     try {
       await apiRequest(rec ? `/cost/c-ledger/deliveries/${rec.id}` : "/cost/c-ledger/deliveries", { method: rec ? "PUT" : "POST", body });
       onSaved();
@@ -332,14 +338,21 @@ function DeliveryForm({ me, rec, onClose, onSaved }) {
                 <select aria-label="Cash holder" value={l.holder_id || ""} onChange={(e) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, holder_id: e.target.value } : x)))} style={INPUT}>
                   <option value="">Cash holder…</option>
                   {holders.map((h) => <option key={h.id} value={h.id}>{h.short}</option>)}
+                  <option value="bank">Paid to bank</option>
                 </select>
-                <select aria-label="Mode" value={l.mode || "cash"} onChange={(e) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, mode: e.target.value } : x)))} style={INPUT}>
-                  {MODES.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                {l.holder_id === "bank" ? (
+                  <input type="date" aria-label="Date it reached the bank" value={l.paid_on || f.entry_date} max={today()}
+                    onChange={(e) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, paid_on: e.target.value } : x)))} style={INPUT} />
+                ) : (
+                  <select aria-label="Mode" value={l.mode === "bank" ? "cash" : l.mode || "cash"} onChange={(e) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, mode: e.target.value } : x)))} style={INPUT}>
+                    {MODES.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                )}
                 <button type="button" onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))} style={{ minHeight: 42 }}>Remove</button>
               </div>
               {l.status === "rejected" && <div style={{ fontSize: 12, color: "var(--alert-red)" }}>Rejected by {l.holder}{l.reject_reason ? `: “${l.reject_reason}”` : ""} — change the cash holder (or keep) and save to send it again.</div>}
               {l.status === "pending" && l.id && <div style={MUTED}>Waiting for {l.holder} to accept.</div>}
+              {l.holder_id === "bank" && <div style={MUTED}>Paid straight into the bank — counted as collected, in nobody&rsquo;s cash.</div>}
             </div>
           ))}
           <button type="button" onClick={() => setLines((ls) => [...ls, { amount: "", holder_id: holders[0]?.id || "", mode: "cash" }])}
@@ -388,6 +401,7 @@ function WalletView({ me, month }) {
     catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
   const tx = w.transactions.filter((t) => filter === "all" || (filter === "flagged" ? t.flagged : !t.flagged));
+  const respondPath = (i) => `/cost/c-ledger/${i.type === "collection" ? "collections" : i.type === "income" ? "incomes" : "transfers"}/${i.id}/respond`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 720 }}>
@@ -395,15 +409,16 @@ function WalletView({ me, month }) {
         <div style={{ ...LBL, display: "block" }}>Cash in hand</div>
         <div style={{ fontSize: 30, fontWeight: 700, color: b.balance < 0 ? "var(--alert-red)" : "var(--signal-green)", ...NUM }}>{rs(b.balance)}</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13, marginTop: 6 }}>
-          {[["Collections accepted", b.collected], ["Transfers in", b.transfer_in], ["Transfers out", -b.transfer_out], ["Deposited to bank", -b.deposited], ["Expenses", -b.expenses]].map(([k, v]) => (
+          {[["Collections accepted", b.collected], ["Other income", b.income || 0], ["Transfers in", b.transfer_in], ["Transfers out", -b.transfer_out], ["Deposited to bank", -b.deposited], ["Expenses", -b.expenses]].map(([k, v]) => (
             <div key={k} style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: "var(--slate)" }}>{k}</span><span style={NUM}>{rs(v)}</span></div>
           ))}
         </div>
         {b.awaiting > 0 && <div style={{ fontSize: 12.5, color: "#1F4A82", fontWeight: 600, marginTop: 6 }}>+ {rs(b.awaiting)} awaiting your acceptance</div>}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
         <button type="button" style={{ minHeight: 48, fontWeight: 600 }} onClick={() => setModal("transfer")}>Transfer</button>
         <button type="button" style={{ minHeight: 48, fontWeight: 600 }} onClick={() => setModal("bank")}>Deposit to bank</button>
+        <button type="button" style={{ minHeight: 48, fontWeight: 600 }} onClick={() => setModal("income")}>Other income</button>
         <button type="button" className="btn-primary" style={{ minHeight: 48, fontWeight: 600 }} onClick={() => setModal("expense")}>Add expense</button>
       </div>
       {err && <Note tone="bad">{err}</Note>}
@@ -421,16 +436,16 @@ function WalletView({ me, month }) {
             </div>
             {rejecting === `${i.type}${i.id}` ? (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {i.type === "collection" && <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why? e.g. cash not received" aria-label="Reason" style={{ ...INPUT, flex: "1 1 200px" }} />}
+                {i.type !== "transfer" && <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why? e.g. cash not received" aria-label="Reason" style={{ ...INPUT, flex: "1 1 200px" }} />}
                 <button type="button" className="btn-danger" disabled={busy} style={{ minHeight: 44 }}
-                  onClick={() => act(i.type === "collection" ? `/cost/c-ledger/collections/${i.id}/respond` : `/cost/c-ledger/transfers/${i.id}/respond`, { decision: "reject", reason })}>Reject</button>
+                  onClick={() => act(respondPath(i), { decision: "reject", reason })}>Reject</button>
                 <button type="button" onClick={() => setRejecting(null)} style={{ minHeight: 44 }}>Back</button>
               </div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                 <button type="button" style={{ minHeight: 46, color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => { setRejecting(`${i.type}${i.id}`); setReason(""); }}>Reject</button>
                 <button type="button" disabled={busy} style={{ minHeight: 46, background: "var(--signal-green)", borderColor: "var(--signal-green)", color: "#fff", fontWeight: 600 }}
-                  onClick={() => act(i.type === "collection" ? `/cost/c-ledger/collections/${i.id}/respond` : `/cost/c-ledger/transfers/${i.id}/respond`, { decision: "accept" })}>Accept</button>
+                  onClick={() => act(respondPath(i), { decision: "accept" })}>Accept</button>
               </div>
             )}
           </div>
@@ -452,6 +467,7 @@ function WalletView({ me, month }) {
                 <div style={{ display: "flex", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
                   {t.flagged && <FlagPill />}
                   {t.kind === "expense" && <button type="button" style={{ padding: "3px 9px", fontSize: 12 }} onClick={() => setModal({ expense: t })}>Edit</button>}
+                  {t.kind === "income" && t.can_edit && <button type="button" style={{ padding: "3px 9px", fontSize: 12 }} onClick={() => setModal({ income: t.income })}>Edit</button>}
                   {t.can_cancel && <button type="button" style={{ padding: "3px 9px", fontSize: 12 }} disabled={busy}
                     onClick={() => window.confirm("Take this back?") && act(`/cost/c-ledger/transfers/${t.id}`, null, "DELETE")}>Take back</button>}
                 </div>
@@ -467,6 +483,7 @@ function WalletView({ me, month }) {
         </div>
       </div>
       {(modal === "transfer" || modal === "bank") && <TransferForm me={me} kind={modal === "bank" ? "bank" : "holder"} onClose={() => setModal(null)} onSaved={() => { setModal(null); reload(); }} />}
+      {(modal === "income" || modal?.income) && <IncomeForm me={me} rec={modal?.income || null} onClose={() => setModal(null)} onSaved={() => { setModal(null); reload(); }} />}
       {(modal === "expense" || modal?.expense) && <ExpenseForm me={me} rec={modal?.expense || null} onClose={() => setModal(null)} onSaved={() => { setModal(null); reload(); }} />}
     </div>
   );
@@ -557,6 +574,69 @@ function ExpenseForm({ me, rec, onClose, onSaved }) {
   );
 }
 
+// Round 227 — other income: scrap sale, used oil sale … A cash holder records
+// what they received; an Entry person may record it for a cash holder (who
+// accepts it) or as received in the bank.
+function IncomeForm({ me, rec, onClose, onSaved }) {
+  const a = me.access;
+  const [f, setF] = useState(() => rec
+    ? { txn_date: rec.txn_date, amount: String(rec.amount), kind: rec.kind, source: rec.source, flagged: !!rec.flagged,
+      received_by: rec.received_by == null ? "bank" : rec.received_by === me.me ? "me" : String(rec.received_by) }
+    : { txn_date: today(), amount: "", kind: "scrap", source: "", flagged: false, received_by: a.cash_holder ? "me" : "bank" });
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const others = me.holders.filter((h) => h.id !== me.me);
+  async function save() {
+    setBusy(true); setErr("");
+    try { await apiRequest(rec ? `/cost/c-ledger/incomes/${rec.id}` : "/cost/c-ledger/incomes", { method: rec ? "PUT" : "POST", body: f }); onSaved(); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  }
+  async function del() {
+    if (!window.confirm("Delete this income?")) return;
+    setBusy(true);
+    try { await apiRequest(`/cost/c-ledger/incomes/${rec.id}`, { method: "DELETE" }); onSaved(); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  }
+  return (
+    <Modal title={rec ? "Edit other income" : "Other income"} onClose={onClose} width={520}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {me.income_kinds.map((k) => (
+            <button key={k.key} type="button" className={`btn-tab${f.kind === k.key ? " active" : ""}`} onClick={() => setF({ ...f, kind: k.key })}
+              style={{ padding: "8px 12px", minHeight: 40, borderRadius: 999, fontSize: 13 }}>{k.label}</button>
+          ))}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+          <label style={LBL}>Date<input type="date" value={f.txn_date} max={today()} onChange={(e) => setF({ ...f, txn_date: e.target.value })} style={INPUT} /></label>
+          <label style={LBL}>Amount (₹)<input type="number" inputMode="decimal" min="0" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} style={INPUT} /></label>
+        </div>
+        <label style={LBL}>What was sold, to whom<input value={f.source} onChange={(e) => setF({ ...f, source: e.target.value })} placeholder="e.g. 400 kg scrap steel to …" style={INPUT} /></label>
+        {a.entry && (
+          <label style={LBL}>Received by
+            <select value={f.received_by} onChange={(e) => setF({ ...f, received_by: e.target.value })} style={INPUT}>
+              {a.cash_holder && <option value="me">Me (in my cash)</option>}
+              {others.map((h) => <option key={h.id} value={String(h.id)}>{h.short} (they accept it)</option>)}
+              <option value="bank">Straight into the bank</option>
+            </select>
+          </label>
+        )}
+        <label style={{ display: "flex", gap: 9, alignItems: "center", fontSize: 14, fontWeight: 600, background: "var(--amber-bg)", border: "1px solid #E7D8AE", borderRadius: 8, padding: "10px 12px" }}>
+          <input type="checkbox" checked={f.flagged} onChange={(e) => setF({ ...f, flagged: e.target.checked })} style={{ width: 20, height: 20, margin: 0 }} />
+          <span style={{ color: "#7A4F00", display: "inline-flex" }}><FlagIcon size={14} /></span>Flag this income
+        </label>
+        {err && <Note tone="bad">{err}</Note>}
+        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
+          <div>{rec && <button type="button" onClick={del} disabled={busy} style={BTN}>Delete</button>}</div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button type="button" onClick={onClose} style={BTN}>Cancel</button>
+            <button type="button" className="btn-primary" onClick={save} disabled={busy} style={BTN}>{busy ? "Saving…" : "Save income"}</button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ================================================ expenses & transactions ===
 function TxnsView({ me, month }) {
   const canEdit = me.access.entry;
@@ -565,6 +645,7 @@ function TxnsView({ me, month }) {
   const [who, setWho] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [incomeForm, setIncomeForm] = useState(null);
   if (!d) return <Loading error={error} />;
   const s = d.summary;
   const exp = d.expenses.filter((x) => (filter === "all" || (filter === "flagged" ? x.flagged : filter === "todo" ? x.category === "todo" : !x.flagged)) && (!who || String(x.holder_id) === who));
@@ -578,6 +659,8 @@ function TxnsView({ me, month }) {
     const cat = (k) => me.categories.find((c) => c.key === k)?.label || k;
     const sheets = [{ name: "Expenses", rows: [["Date", "Paid by", "Where spent", "Category", "Paid", "Flagged"],
       ...d.expenses.map((x) => [x.txn_date, x.holder, x.where_spent, cat(x.category), x.amount, x.flagged ? "Yes" : ""])] }];
+    sheets.push({ name: "Other income", rows: [["Date", "Kind", "What, to whom", "Received by", "Amount", "Status", "Flagged"],
+      ...d.incomes.map((i) => [i.txn_date, i.kind_label, i.source, i.received_name, i.amount, i.received_by == null ? "in bank" : i.status, i.flagged ? "Yes" : ""])] });
     if (d.full) sheets.push({ name: "Transfers", rows: [["Date", "From", "To", "Amount", "Status", "Note"],
       ...d.transfers.map((t) => [t.txn_date, t.from_name, t.kind === "bank" ? "Bank" : t.to_name, t.amount, t.kind === "bank" ? "deposited" : t.status, t.note || ""])] });
     downloadExcel(`C-Ledger-transactions-${month}.xlsx`, sheets);
@@ -588,11 +671,15 @@ function TxnsView({ me, month }) {
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 12 }}>
         <div><h2 style={{ ...H2, fontSize: 18 }}>{d.full ? "Expenses & transactions" : "Expenses"} — {d.label}</h2>
           <div style={SUB}>Each expense goes into the cost head of its category.</div></div>
-        <Actions><button type="button" style={BTN} onClick={excel}>Export Excel</button></Actions>
+        <Actions>
+          {canEdit && <button type="button" style={BTN} onClick={() => setIncomeForm({})}>+ Other income</button>}
+          <button type="button" style={BTN} onClick={excel}>Export Excel</button>
+        </Actions>
       </div>
       <div style={GRID(190)}>
         <Tile label="Spent" value={rs(s.paid)} note={`${d.expenses.length} expenses`} />
         <Tile label="To the cost heads" value={rs(s.cost)} note="not-a-cost items left out" />
+        <Tile label="Other income" value={rs(s.income)} note={`${d.incomes.length} entr${d.incomes.length === 1 ? "y" : "ies"} · into Other income`} />
         {d.full && <Tile label="Cash with cash holders" value={rs(s.cash_in_hand)} note={`${rs(s.deposited)} deposited this month`} />}
         <Tile label="Flagged" value={num(s.flagged)} note={s.todo ? `${s.todo} to categorise` : null} dark />
       </div>
@@ -657,6 +744,30 @@ function TxnsView({ me, month }) {
           </table>
         </div>
       </div>
+
+      <div style={panel("1 1 100%")}>
+        <h2 style={H2}>Other income</h2>
+        <div style={SUB}>Scrap, used oil and other sales — goes into Other income</div>
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
+          <table>
+            <thead><tr><th>Date</th><th>Kind</th><th>What, to whom</th><th>Received by</th><th style={R}>Amount</th><th>Status</th><th>Flag</th>{canEdit && <th />}</tr></thead>
+            <tbody>
+              {d.incomes.map((i) => (
+                <tr key={i.id} style={{ background: i.flagged ? "#FFFBF2" : undefined }}>
+                  <td style={{ whiteSpace: "nowrap" }}>{fmtDay(i.txn_date)}</td><td>{i.kind_label}</td><td style={{ minWidth: 180 }}>{i.source}</td>
+                  <td>{i.received_name}</td><td style={{ ...R, fontWeight: 600 }}>{rs(i.amount)}</td>
+                  <td>{i.received_by == null ? <span style={MUTED}>in bank</span> : <Badge status={i.status} />}</td>
+                  <td>{i.flagged ? <FlagPill /> : null}</td>
+                  {canEdit && <td><button type="button" style={{ padding: "6px 10px", minHeight: 36, fontSize: 12 }} onClick={() => setIncomeForm(i)}>Edit</button></td>}
+                </tr>
+              ))}
+              {d.incomes.length === 0 && <tr><td colSpan={8} style={{ ...MUTED, padding: 16 }}>None this month.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {incomeForm && <IncomeForm me={me} rec={incomeForm.id ? incomeForm : null} onClose={() => setIncomeForm(null)} onSaved={() => { setIncomeForm(null); reload(); }} />}
 
       {d.full && (
         <div style={panel("1 1 100%")}>
