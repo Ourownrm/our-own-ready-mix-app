@@ -161,12 +161,63 @@ function findHeader(rows) {
 
 const SKIP_LINE = /opening balance|closing balance|balance (b\/?f|brought|carried|c\/?f)|brought forward|carried forward|page \d+ of|statement of account|^total|grand total|\*\*\*/i;
 
-function txnsFromRows(rows) {
-  const head = findHeader(rows);
+// Round 231 — a date printed over two lines in its column ("05-09-" / "2026"
+// on CSB, "01-Sep-" / "2026" on ICICI): the year on the line below is joined
+// back onto the day and month, so the line is recognised as a transaction.
+const PART_DATE = /^\d{1,2}[-/. ](?:\d{1,2}|[A-Za-z]{3,4})[-/. ]?$/;
+function joinSplitDates(rows, dateLimit) {
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    for (const it of r.items) {
+      if (it.x >= dateLimit || parseDate(it.str) || !PART_DATE.test(it.str)) continue;
+      for (let j = i + 1; j < Math.min(rows.length, i + 4); j++) {
+        const n = rows[j];
+        // An entry that starts on the last line of a page carries its year
+        // on the first line of the next (CSB).
+        const overPage = n.page === r.page + 1 && rows[j - 1].page === r.page;
+        if (!overPage && (n.page !== r.page || r.y - n.y > Math.max(r.h, it.h) * 2.6)) break;
+        const k = n.items.findIndex((x) => Math.abs(x.x - it.x) < 8 && /^\d{2,4}$/.test(x.str));
+        if (k < 0) continue;
+        const joined = `${it.str}${/[-/. ]$/.test(it.str) ? "" : "-"}${n.items[k].str}`;
+        if (!parseDate(joined)) continue;
+        it.str = joined;
+        n.items.splice(k, 1);
+        n.text = n.items.map((x) => x.str).join(" ");
+        break;
+      }
+    }
+    r.text = r.items.map((x) => x.str).join(" ");
+  }
+  return rows.filter((r) => r.items.length);
+}
+
+// Left of the narration heading sit the serial no. and transaction id (short,
+// one word, with digits) — but some banks also start the narration there
+// (CSB, Federal), so only those short id-like pieces are left out.
+const isIdPiece = (str) => !/\s/.test(str) && /\d/.test(str) && str.length <= 12;
+
+// A clock time beside the date (Federal Bank prints "12:05:08 PM" under it).
+const TIME_RE = /^\d{1,2}:\d{2}(?::\d{2})?\s?(?:AM|PM)?$/i;
+
+function txnsFromRows(rowsIn) {
+  const head = findHeader(rowsIn);
   const txns = [];
   let opening = null;
   let cur = null;
   const dist = (a, b) => (a == null || b == null ? Infinity : Math.abs(a - b));
+  // The transaction date: the left-most date in the date columns — which
+  // may come after a serial no. or a transaction id (ICICI: "Sl No · Tran
+  // Id · Value Date · Transaction Date …"), never one inside the narration.
+  const dateLimit = head ? (head.narr && head.narr.x > (head.date?.x ?? 0) ? head.narr.x - 2 : Math.min(head.balance.c, head.debit?.c ?? Infinity, head.credit?.c ?? Infinity) * 0.5) : 200;
+  const rows = joinSplitDates(rowsIn, dateLimit);
+  // Round 231 — Federal Bank prints withdrawals and deposits in whole rupees
+  // ("28184", "360000"): a plain number standing right under the Withdrawal
+  // or Deposit heading is money too. Anywhere else a bare number is a cheque,
+  // account or reference number and is never taken.
+  const inMoneyCol = (it) => head && /^\d{1,3}(?:,\d{2,3})+$|^\d+$/.test(it.str)
+    && [head.debit, head.credit].some((c) => c && Math.abs(it.x + it.w - c.r) <= 14);
+  const isAmount = (it) => isMoney(it.str) || inMoneyCol(it);
+  const isDateRow = (r) => r.items.some((it) => it.x < dateLimit && (parseDate(it.str) ?? parseDate(it.str.split(" ")[0])));
   for (let i = head ? head.index + head.lines : 0; i < rows.length; i++) {
     const r = rows[i];
     // A repeated header on later pages.
@@ -177,28 +228,46 @@ function txnsFromRows(rows) {
       cur = null; continue;
     }
     if (SKIP_LINE.test(r.text)) { cur = null; continue; }
-    // The transaction date: the left-most date in the date columns — which
-    // may come after a serial no. or a transaction id (ICICI: "Sl No · Tran
-    // Id · Value Date · Transaction Date …"), never one inside the narration.
-    const dateLimit = head ? (head.narr && head.narr.x > (head.date?.x ?? 0) ? head.narr.x - 2 : Math.min(head.balance.c, head.debit?.c ?? Infinity, head.credit?.c ?? Infinity) * 0.5) : 200;
     const first = r.items.filter((it) => it.x < dateLimit).slice(0, 6)
       .map((it) => ({ it, d: parseDate(it.str) ?? parseDate(it.str.split(" ")[0]) })).find((x) => x.d);
+    // Round 231 — CSB centres each entry on its date line: the first line of
+    // the narration sits just ABOVE the date. A narration-only line that is
+    // nearer the next date line than the entry before it opens that entry.
+    if (!first && !r.items.some(isAmount)) {
+      const next = rows[i + 1];
+      const gapPrev = cur ? cur.y - r.y : Infinity;
+      if (next && next.page === r.page && isDateRow(next) && r.y - next.y <= r.h * 1.6 && r.y - next.y < gapPrev * 0.8) {
+        (rows[i + 1].prefix ||= []).push(...r.items.filter((it) => it.x >= dateLimit || !isIdPiece(it.str)).map((it) => it.str));
+        continue;
+      }
+    }
     if (first) {
-      cur = { date: first.d, parts: [], amounts: [], ref: [], page: r.page, y: r.y };
+      cur = { date: first.d, parts: [...(r.prefix || [])], amounts: [], ref: [], page: r.page, y: r.y };
       txns.push(cur);
       // the rest of the piece holding the date may already be narration
       const rest = first.it.str.replace(/^\S+\s?/, "");
       if (rest && parseDate(first.it.str.split(" ")[0])) cur.parts.push(rest);
     } else if (!cur) continue;
-    else if (r.page !== cur.page || cur.y - r.y > r.h * 3.5) { cur = null; continue; }  // a footer, not more narration
+    else if (r.page !== cur.page) {
+      // Round 231 — an entry begun at the foot of a page whose amount is on
+      // the next page (CSB): the first line of the new page continues it.
+      // Otherwise a new page never continues the last entry.
+      const firstOfPage = rows[i - 1]?.page !== r.page;
+      if (firstOfPage && r.page === cur.page + 1 && cur.amounts.length < 2) { cur.page = r.page; cur.y = r.y; }
+      else { cur = null; continue; }
+    }
+    else if (cur.y - r.y > r.h * 3.5) { cur = null; continue; }  // a footer, not more narration
     else cur.y = r.y;
     for (const it of r.items) {
       if (first && it === first.it) continue;
-      if (isMoney(it.str)) { cur.amounts.push(it); continue; }
+      if (isAmount(it)) { cur.amounts.push(it); continue; }
       if (parseDate(it.str)) continue;            // value date
+      if (TIME_RE.test(it.str)) continue;         // time of the transaction
+      if (/^[DC]$/.test(it.str) && head && it.x > (head.narr?.x ?? 0)) continue;   // Federal's "Tran Type" D / C
       if (/^(cr|dr)\.?$/i.test(it.str) && cur.amounts.length) { cur.amounts[cur.amounts.length - 1] = { ...cur.amounts[cur.amounts.length - 1], str: `${cur.amounts[cur.amounts.length - 1].str} ${it.str}` }; continue; }
-      if (head?.ref && it.x >= head.ref.x - 4 && it.x + it.w <= head.ref.r + 40 && /\d/.test(it.str) && !/\s/.test(it.str)) { cur.ref.push(it.str); continue; }
-      if (head?.narr && it.x < dateLimit) continue;  // serial no., transaction id, posted date …
+      if (head?.ref && it.x >= head.ref.x - 4 && it.x + it.w <= head.ref.r + 40 && /\d/.test(it.str) && !/\s/.test(it.str)) { if (!/^0+$/.test(it.str)) cur.ref.push(it.str); continue; }
+      if (/^0+$/.test(it.str)) continue;          // an empty column printed as 0
+      if (head?.narr && it.x < dateLimit && isIdPiece(it.str)) continue;  // serial no., transaction id, posted date …
       cur.parts.push(it.str);
     }
   }

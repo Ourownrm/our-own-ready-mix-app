@@ -81,6 +81,7 @@ router.get("/invoices/held", INV_VIEW, async (req, res) => {
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date::text AS ticket_date, dt.loaded_quantity_m3, dt.status,
             co.id AS order_id, co.order_date::text AS order_date, c.id AS customer_id, c.name AS customer_name,
             s.id AS site_id, s.name AS site_name, m.name AS grade_name,
+            s.customer_id AS site_customer_id, (SELECT name FROM customers sc WHERE sc.id = s.customer_id) AS site_customer_name,
             (SELECT json_build_object('id', q.id, 'quote_no', q.quote_no, 'status', q.status)
                FROM quotations q WHERE q.customer_id = co.customer_id AND q.site_id = co.site_id
                 AND q.status IN ('pending_approval', 'approved', 'sent') ORDER BY q.id DESC LIMIT 1) AS pending_quotation
@@ -182,6 +183,56 @@ router.post("/merge", async (req, res) => {
     customer: done.customer ? { from: done.customer.from.name, to: done.customer.to.name } : null,
     site: done.site ? { from: done.site.from.name, to: done.site.to.name } : null,
   });
+});
+
+// Round 231 — an order placed under one customer on a project that belongs to
+// another: move the order (and its unpaid invoices) to the project's owner.
+// For when they are really different customers; when they are the same
+// customer entered twice, the customer merge above is the fix.
+router.post("/held/move-order", async (req, res) => {
+  if (!(await can(req.user, "masters.site-merge", "delete")) && !(await can(req.user, "masters.customer-merge", "delete"))) {
+    return res.status(403).json({ error: "You don't have access to this." });
+  }
+  const orderId = Number(req.body?.order_id);
+  if (!Number.isInteger(orderId) || orderId <= 0) return res.status(400).json({ error: "Which order?" });
+  const client = await pool.connect();
+  let moved;
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT co.id, co.customer_id, s.customer_id AS site_customer_id, c.name AS from_name, sc.name AS to_name
+         FROM customer_orders co JOIN sites s ON s.id = co.site_id
+         JOIN customers c ON c.id = co.customer_id JOIN customers sc ON sc.id = s.customer_id
+        WHERE co.id = $1 FOR UPDATE OF co`, [orderId]);
+    const o = rows[0];
+    if (!o) throw Object.assign(new Error("Order not found."), { status: 404 });
+    if (o.customer_id === o.site_customer_id) throw Object.assign(new Error("This order is already under the project's customer."), { status: 409 });
+    const { rows: paid } = await client.query(
+      `SELECT count(*)::int AS n FROM payments p JOIN invoices i ON i.id = p.invoice_id JOIN delivery_tickets dt ON dt.id = i.ticket_id WHERE dt.order_id = $1`, [orderId]);
+    if (paid[0].n) throw Object.assign(new Error("A payment is recorded against this order's invoices — it can't be moved here."), { status: 409 });
+    await client.query(
+      `UPDATE customer_orders SET customer_id = $2,
+              billing_address_id = CASE WHEN billing_address_id IN (SELECT id FROM customer_billing_addresses WHERE customer_id = $2) THEN billing_address_id END
+        WHERE id = $1`, [orderId, o.site_customer_id]);
+    const inv = await client.query(
+      `UPDATE invoices i SET customer_id = $2 FROM delivery_tickets dt WHERE dt.id = i.ticket_id AND dt.order_id = $1`, [orderId, o.site_customer_id]);
+    await client.query(
+      `INSERT INTO record_merges (kind, from_id, to_id, from_name, to_name, moved, note, merged_by)
+       VALUES ('customer', $1, $2, $3, $4, $5, $6, $7)`,
+      [o.customer_id, o.site_customer_id, o.from_name, o.to_name, JSON.stringify([{ table: "customer_orders", column: "customer_id", rows: 1 }, { table: "invoices", column: "customer_id", rows: inv.rowCount }]),
+       `Order #${orderId} moved to the project's customer`, req.user.id]);
+    await client.query("COMMIT");
+    moved = o;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error("move-order", err);
+    return res.status(500).json({ error: "Could not move the order — nothing was changed." });
+  } finally {
+    client.release();
+  }
+  const held = await retryHeld();
+  res.json({ ok: true, from: moved.from_name, to: moved.to_name, ...held });
 });
 
 router.get("/merge/history", async (req, res) => {

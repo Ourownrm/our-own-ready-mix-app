@@ -93,13 +93,20 @@ export const normName = (s) => String(s || "").toUpperCase().replace(/&/g, " AND
 // 1 = same once M/S, PVT, LTD … are dropped; 0.85 = one contains the other;
 // 0.8 = every word of the shorter is in the longer; else the share of words
 // in common. 0.6 and up is shown as "already in the app?".
+// Round 231 — words almost every name has never make two names alike alone.
+const GENERIC = new Set(["CONSTRUCTION", "CONSTRUCTIONS", "BUILDERS", "BUILDER", "BUILDING", "BUILDINGS", "PROJECT", "PROJECTS", "ASSOCIATES",
+  "ASSOCIATE", "INFRA", "INFRASTRUCTURE", "ENTERPRISES", "ENTERPRISE", "DEVELOPERS", "ENGINEERS", "CONTRACTORS", "CONTRACTOR", "TRADERS",
+  "INDUSTRIES", "GROUP", "RESIDENTIAL", "COMMERCIAL", "RESIDENCE", "VILLA", "VILLAS", "HOUSE", "HOME", "HOMES", "SITE", "WORK", "WORKS",
+  "BLOCK", "COMPLEX", "APARTMENT", "APARTMENTS", "FLAT", "FLATS", "NEW", "FOR", "NEAR", "ROAD", "INDIA", "KERALA", "POWER", "SOLUTIONS"]);
 const nameWords = (s) => new Set(String(s || "").toUpperCase().replace(/&/g, " AND ").replace(/[.,()/\\-]/g, " ")
-  .replace(STRIP, " ").split(/[^A-Z0-9]+/).filter((w) => w.length >= 3));
+  .replace(STRIP, " ").split(/[^A-Z0-9]+/).filter((w) => w.length >= 3 && !GENERIC.has(w)));
+const coreName = (s) => [...nameWords(s)].join("");
 export function nameScore(a, b) {
   const x = normName(a), y = normName(b);
   if (!x || !y) return 0;
   if (x === y) return 1;
-  if (x.length >= 4 && y.length >= 4 && (x.includes(y) || y.includes(x))) return 0.85;
+  const cx = coreName(a), cy = coreName(b);
+  if (cx.length >= 4 && cy.length >= 4 && (cx.includes(cy) || cy.includes(cx))) return 0.85;
   const wa = nameWords(a), wb = nameWords(b);
   if (!wa.size || !wb.size) return 0;
   let common = 0;

@@ -156,8 +156,19 @@ function Held({ canRetry, go }) {
   for (const r of rows || []) {
     if (!r.look_alikes?.length) continue;
     let g = groups.find((x) => x.customer_id === r.customer_id && x.site_id === r.site_id);
-    if (!g) groups.push(g = { customer_id: r.customer_id, customer_name: r.customer_name, site_id: r.site_id, site_name: r.site_name, look_alikes: r.look_alikes, loads: 0, m3: 0, grades: new Set() });
-    g.loads++; g.m3 += Number(r.loaded_quantity_m3) || 0; g.grades.add(r.grade_name);
+    if (!g) groups.push(g = { customer_id: r.customer_id, customer_name: r.customer_name, site_id: r.site_id, site_name: r.site_name, look_alikes: r.look_alikes, loads: 0, m3: 0, grades: new Set(), orders: new Set() });
+    g.loads++; g.m3 += Number(r.loaded_quantity_m3) || 0; g.grades.add(r.grade_name); g.orders.add(r.order_id);
+  }
+  // Round 231 — the order is on a project that belongs to another customer:
+  // move the order(s) to that customer.
+  async function moveOrders(g, owner) {
+    if (!window.confirm(`Move ${g.orders.size === 1 ? "this order" : `these ${g.orders.size} orders`} from ${g.customer_name} to ${owner.customer_name}, the customer ${g.site_name} belongs to? Their invoices are raised under ${owner.customer_name}.`)) return;
+    setError(""); setMsg("");
+    try {
+      let last = null;
+      for (const id of g.orders) last = await apiRequest("/accounts/held/move-order", { method: "POST", body: { order_id: id } });
+      setMsg(`Moved to ${owner.customer_name}. ${last.created} invoice(s) raised; ${last.still_held} still without a price.`); setTick((t) => t + 1);
+    } catch (e) { setError(e.message); }
   }
   return (
     <>
@@ -172,8 +183,23 @@ function Held({ canRetry, go }) {
             <b>{g.customer_name} · {g.site_name}</b>
             <span style={{ color: "var(--slate)" }}> — {g.loads} load{g.loads === 1 ? "" : "s"}, {inr(g.m3, 2)} m³ held ({[...g.grades].join(", ")})</span>
           </div>
-          <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "4px 0 8px" }}>A price list is on a look-alike {g.look_alikes.every((a) => a.same_customer) ? "project" : "customer / project"} — probably the same one entered twice.</div>
-          {g.look_alikes.map((a) => {
+          {g.look_alikes.filter((a) => a.same_site).map((a) => (
+            <div key={`own-${a.customer_id}`} style={{ margin: "6px 0 8px" }}>
+              <div style={{ fontSize: 13 }}>
+                The project <b>{g.site_name}</b> belongs to <b>{a.customer_name}</b>, but the order was placed under <b>{g.customer_name}</b>.
+                {a.grades.length ? <> {a.customer_name} has prices for {a.grades.join(", ")}{a.quotation ? ` (${a.quotation.quote_no})` : ""}.</> : <> {a.customer_name} has no price for this project yet either.</>}
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                <button type="button" style={{ fontSize: 12.5, padding: "5px 12px" }} className={a.names_alike ? "btn-primary" : undefined} onClick={() => setMerging({ keep: g, merge: a })}>Same customer — merge</button>
+                <button type="button" style={{ fontSize: 12.5, padding: "5px 12px" }} className={a.names_alike ? undefined : "btn-primary"} onClick={() => moveOrders(g, a)}>Move order to {a.customer_name}</button>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 4 }}>
+                {a.names_alike ? "The names look like the same customer — merge them." : "Different names — if it is a different customer, move the order; merge only if it is really the same one."}
+              </div>
+            </div>
+          ))}
+          {g.look_alikes.some((a) => !a.same_site) && <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "4px 0 8px" }}>A price list is on a look-alike {g.look_alikes.filter((a) => !a.same_site).every((a) => a.same_customer) ? "project" : "customer / project"} — probably the same one entered twice.</div>}
+          {g.look_alikes.filter((a) => !a.same_site).map((a) => {
             const covers = [...g.grades].every((gr) => a.grades.includes(gr));
             return (
               <div key={a.site_id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "6px 0", borderTop: "1px solid var(--border)" }}>

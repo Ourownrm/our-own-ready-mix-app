@@ -8873,3 +8873,23 @@ Owner, 22 Oct 2026, five items. Built on v10.61. **Run /setup once** (new table 
 Verified on local test data: held delivery under "SKYLINE BUILDERS · KALPETTA VILLA" found its price on "M/S SKYLINE BUILDERS PVT LTD · VILLA, KALPETTA" (score 83); merge moved the quotation and price row, switched both duplicates off, and invoiced 6 m³ × ₹6,800 = ₹40,800; old site merge refuses across customers; gang advance ₹5,000 asked → ₹4,000 approved → paid into the contractor ledger (balance −₹4,000), shown on the October bill; deleting the payment returned it to approved; receipt status filters return the right rows; variance M SAND 0.9 m³ short = ₹1,080, ₹600 paid for not received; `npm run check` green; build clean. (No browser screenshots this round — the headless browser could not be downloaded here.)
 
 Files (19) — backend: src/lib/{recordMerge, round230Schema, permissionCatalogue}.js; src/routes/{accountsLedger, administrator, contractLabour, hrAdvances, materialModule, setup}.js · frontend: src/lib/{version, quotationImport}.js; src/pages/{HrStage2, HrContract, MaterialModule, ReceiptVariance}.jsx; src/pages/accounts/{Invoices, QuotationBuilder, MergeModal}.jsx · root: README.md
+
+## Round 231 — Held invoices: order under a different customer than its project; bank statement PDFs from CSB, Federal and ICICI read (v10.63)
+
+Owner, 22 Oct 2026, on v10.62: "rate not available — issue not solved: TRANSGLOBAL is in the quotation list and in held, but it is not asking to merge"; "uploading PDF bank statements still says: Found the columns but no transactions under them." No /setup needed.
+
+**1. Held — no price.** The real data: order #29 is under customer **TRANSGLOBAL**, but its project **PERUMBALA** belongs to **TRANSGLOBAL POWER LIMITED**, whose accepted quotation (M25 ₹6,950) is the price list on that same project. Round 230 looked only for look-alike *other* projects, so it skipped this. Now:
+- A held load whose project belongs to another customer gets a card: "The project PERUMBALA belongs to TRANSGLOBAL POWER LIMITED, but the order was placed under TRANSGLOBAL", with **Same customer — merge** (highlighted when the names look alike) and **Move order to <that customer>** (highlighted when they don't — e.g. RAMEZ VILLA on COMPASS 1 CONSTRUCTIONS's MOGRAL).
+- Merge on the same project merges the customers only; the name of the customer holding the price list is offered first.
+- Move order (`POST /accounts/held/move-order`): the order and its invoices go to the project's customer (refused when a payment is recorded on them); billing address cleared if it belongs to the old customer; logged in record_merges; held loads invoiced at once. Rights: Merge duplicate sites or Merge duplicate customers.
+- Name matching no longer pairs names on common words alone (CONSTRUCTION, BUILDERS, PROJECTS, VILLA, POWER …) — "L A CONSTRUCTION" was wrongly offered "SKILLED CONSTRUCTION COMPANY".
+
+**2. Bank statement PDFs** (frontend `lib/bankStatementParse.js`), checked on the owner's own statements:
+- CSB and ICICI print the date over two lines ("05-09-" / "2026", "01-Sep-" / "2026") — the year is joined back on, also when it falls on the next page.
+- Federal Bank prints withdrawals / deposits in whole rupees ("28184") — a plain number right under the Withdrawal / Deposit heading is read as money; elsewhere bare numbers are still never taken. Its time ("12:05:08 PM") and D / C type are kept out of the narration.
+- CSB starts each narration one line above the date and continues an entry over a page break — both handled; narrations that start left of the "Particulars" heading are kept (only short ids there are dropped); "0" in empty columns ignored.
+- Results (opening + credits − debits = printed closing, no line breaks the running balance): CSB Sept 12 lines → ₹47,338.93; CSB July 9 → ₹21,832.85; CSB June 11 → ₹2,35,632.85; Federal Sept 74 → ₹3,53,652.63; Federal Aug 6 → ₹75,353.63; ICICI Sept 196 → ₹1,794.70.
+
+Verified locally: TRANSGLOBAL case shows the same-project card; merge invoiced DT-2258/2260/2262 at ₹6,950; RAMEZ VILLA order moved to COMPASS 1 CONSTRUCTIONS; L A CONSTRUCTION no longer matched; `npm run check` green; build clean.
+
+Files (7) — backend: src/lib/recordMerge.js; src/routes/accountsLedger.js · frontend: src/lib/{version, bankStatementParse, quotationImport}.js; src/pages/accounts/{Invoices, MergeModal}.jsx · root: README.md

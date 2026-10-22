@@ -32,8 +32,16 @@ import { query } from "../db.js";
 const STRIP = /\b(M\/S|MS|MR|MRS|ENGR|DR|PVT|PRIVATE|LTD|LIMITED|CO|COMPANY|THE|AND)\b/g;
 export const normName = (s) => String(s || "").toUpperCase().replace(/&/g, " AND ").replace(/[.,()/\\-]/g, " ")
   .replace(STRIP, " ").replace(/[^A-Z0-9]/g, "");
+// Round 231 — words almost every customer or project has ("L A CONSTRUCTION"
+// was paired with "SKILLED CONSTRUCTION COMPANY" on "construction" alone).
+// They never make two names alike by themselves.
+const GENERIC = new Set(["CONSTRUCTION", "CONSTRUCTIONS", "BUILDERS", "BUILDER", "BUILDING", "BUILDINGS", "PROJECT", "PROJECTS", "ASSOCIATES",
+  "ASSOCIATE", "INFRA", "INFRASTRUCTURE", "ENTERPRISES", "ENTERPRISE", "DEVELOPERS", "ENGINEERS", "CONTRACTORS", "CONTRACTOR", "TRADERS",
+  "INDUSTRIES", "GROUP", "RESIDENTIAL", "COMMERCIAL", "RESIDENCE", "VILLA", "VILLAS", "HOUSE", "HOME", "HOMES", "SITE", "WORK", "WORKS",
+  "BLOCK", "COMPLEX", "APARTMENT", "APARTMENTS", "FLAT", "FLATS", "NEW", "FOR", "NEAR", "ROAD", "INDIA", "KERALA", "POWER", "SOLUTIONS"]);
 const words = (s) => new Set(String(s || "").toUpperCase().replace(/&/g, " AND ").replace(/[.,()/\\-]/g, " ")
-  .replace(STRIP, " ").split(/[^A-Z0-9]+/).filter((w) => w.length >= 3));
+  .replace(STRIP, " ").split(/[^A-Z0-9]+/).filter((w) => w.length >= 3 && !GENERIC.has(w)));
+const core = (s) => [...words(s)].join("");
 
 // 1 = the same name once the noise is gone; 0.85 = one contains the other
 // ("SKYLINE" / "SKYLINE BUILDERS"); otherwise the share of words in common
@@ -43,7 +51,8 @@ export function nameScore(a, b) {
   const x = normName(a), y = normName(b);
   if (!x || !y) return 0;
   if (x === y) return 1;
-  if (x.length >= 4 && y.length >= 4 && (x.includes(y) || y.includes(x))) return 0.85;
+  const cx = core(a), cy = core(b);
+  if (cx.length >= 4 && cy.length >= 4 && (cx.includes(cy) || cy.includes(cx))) return 0.85;
   const wa = words(a), wb = words(b);
   if (!wa.size || !wb.size) return 0;
   let common = 0;
@@ -176,6 +185,18 @@ export async function lookAlikePriceLists(held) {
     const key = `${h.customer_id}|${h.site_id}`;
     if (out.has(key)) continue;
     const hits = [];
+    // Round 231 — the order is on a project that belongs to ANOTHER customer
+    // (order under "TRANSGLOBAL", project PERUMBALA under "TRANSGLOBAL POWER
+    // LIMITED", whose price list it is). The price list is on the same
+    // project, so look-alike projects never found it.
+    if (h.site_customer_id && h.site_customer_id !== h.customer_id) {
+      const p = priced.find((x) => x.site_id === h.site_id);
+      hits.push({
+        customer_id: h.site_customer_id, customer_name: h.site_customer_name, site_id: h.site_id, site_name: h.site_name,
+        same_site: true, same_customer: false, names_alike: nameScore(h.customer_name, h.site_customer_name) >= 0.6,
+        grades: p?.grades || [], grade_ids: p?.grade_ids || [], quotation: p?.quotation || null, orders: p?.orders || 0, score: 100,
+      });
+    }
     for (const p of priced) {
       if (p.site_id === h.site_id) continue;
       const sameCustomer = p.customer_id === h.customer_id;
