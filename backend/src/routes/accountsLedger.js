@@ -82,6 +82,11 @@ router.get("/invoices/held", INV_VIEW, async (req, res) => {
             co.id AS order_id, co.order_date::text AS order_date, c.id AS customer_id, c.name AS customer_name,
             s.id AS site_id, s.name AS site_name, m.name AS grade_name,
             s.customer_id AS site_customer_id, (SELECT name FROM customers sc WHERE sc.id = s.customer_id) AS site_customer_name,
+            -- Round 232 — a price for this customer, project and grade that
+            -- starts AFTER the delivery (quotation accepted "rates from" later).
+            (SELECT min(rm.effective_from)::text FROM rate_master rm
+              WHERE rm.customer_id = co.customer_id AND (rm.site_id = co.site_id OR rm.site_id IS NULL)
+                AND rm.mix_grade_id = co.mix_grade_id AND rm.effective_from > co.order_date) AS later_price_from,
             (SELECT json_build_object('id', q.id, 'quote_no', q.quote_no, 'status', q.status)
                FROM quotations q WHERE q.customer_id = co.customer_id AND q.site_id = co.site_id
                 AND q.status IN ('pending_approval', 'approved', 'sent') ORDER BY q.id DESC LIMIT 1) AS pending_quotation

@@ -24,8 +24,13 @@ const CHARGE_FIELDS = [
 ];
 
 export default function QuotationBuilder({ meta, id, customerId, siteId, onCancel, onSaved }) {
-  const [customers, setCustomers] = useState(null);
-  const [sites, setSites] = useState([]);
+  const [customersList, setCustomers] = useState(null);
+  const [sitesList, setSites] = useState([]);
+  // Round 232 — the quotation's own customer / project, shown even when it
+  // has been switched off (the lists hold active records only).
+  const [own, setOwn] = useState(null);
+  const customers = useMemo(() => (!customersList || !own || customersList.some((c) => c.id === own.customer.id) ? customersList : [...customersList, own.customer]), [customersList, own]);
+  const sites = useMemo(() => (!own || sitesList.some((x) => x.id === own.site.id) ? sitesList : [...sitesList, own.site]), [sitesList, own]);
   const [grades, setGrades] = useState([]);
   const [salespersons, setSalespersons] = useState([]);
   const [billing, setBilling] = useState([]);
@@ -59,6 +64,9 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
     if (id) {
       apiRequest(`/quotations/${id}`).then(({ quotation: q }) => {
         setStatus(q.status); setQuoteNo(q.quote_no);
+        // Round 232 — the lists hold active records only; a quotation whose
+        // customer or project has since been switched off still shows it.
+        setOwn({ customer: { id: q.customer_id, name: `${q.customer_name} (inactive)` }, site: { id: q.site_id, name: `${q.site_name} (inactive)`, customer_id: q.customer_id } });
         setF({
           customer_id: String(q.customer_id), site_id: String(q.site_id), billing_address_id: q.billing_address_id ? String(q.billing_address_id) : "",
           kind_attention: q.kind_attention || "", agreement_type: q.agreement_type, quote_date: String(q.quote_date).slice(0, 10),
@@ -165,7 +173,7 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
       const s = sites.find((x) => String(x.id) === String(f.site_id));
       const b = billing.find((x) => String(x.id) === String(f.billing_address_id));
       const q = {
-        ...f, quote_no: quoteNo || "RMC-QTN-(number on saving)", customer_name: c?.name, site_name: s?.name, customer_address: custInfo?.billing_address,
+        ...f, quote_no: quoteNo || "RMC-QTN-(number on saving)", customer_name: c?.name?.replace(/ \(inactive\)$/, ""), site_name: s?.name?.replace(/ \(inactive\)$/, ""), customer_address: custInfo?.billing_address,
         billing_name: b?.name, billing_address: b?.address, billing_gstin: b?.gstin, terms: termsForType,
         lines: f.lines.filter((l) => Number(l.rate_total) > 0).map((l) => ({ ...l, grade_name: grades.find((g) => String(g.id) === String(l.mix_grade_id))?.name })),
       };

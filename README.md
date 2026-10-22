@@ -8893,3 +8893,23 @@ Owner, 22 Oct 2026, on v10.62: "rate not available — issue not solved: TRANSGL
 Verified locally: TRANSGLOBAL case shows the same-project card; merge invoiced DT-2258/2260/2262 at ₹6,950; RAMEZ VILLA order moved to COMPASS 1 CONSTRUCTIONS; L A CONSTRUCTION no longer matched; `npm run check` green; build clean.
 
 Files (7) — backend: src/lib/recordMerge.js; src/routes/accountsLedger.js · frontend: src/lib/{version, bankStatementParse, quotationImport}.js; src/pages/accounts/{Invoices, MergeModal}.jsx · root: README.md
+
+## Round 232 — Merged customer vanished; held loads explain a price on another project or starting later; bank-statement costs without GST (v10.64)
+
+Owner, 22 Oct 2026: "a merged customer is not showing its name while I revise the quote — it disappeared from the customer list"; and "the amount paid from bank includes GST (input tax) — how is it corrected in the P&L and break-even?" → yes, make the GST change. **Run /setup once.**
+
+**1. Merged customer disappeared.** The orders were on customer records already switched off (TRANSGLOBAL, RAMEZ VILLA). The merge kept those and switched off the active record merged into them, so no active record was left and the customer lists (active only) dropped them.
+- A merge now keeps the record that stays active when either was (customers and projects).
+- Repair, once, in /setup: customers / projects kept by a v10.62–10.63 merge but left switched off are switched back on.
+- The quotation screen always shows the quotation's own customer and project, marked "(inactive)" if switched off (never printed).
+
+**2. Held — no price.** Live check: the RAMEEZ VILLA / COMPASS loads (DT-2289, DT-2292, 30 Jul) are on project MOGRAL, the accepted M25 ₹6,650 is on project RAMEEZ VILLA — and starts 01 Sep 2026, after the deliveries.
+- The customer's other priced projects are now offered even when the names don't look alike ("has a price on another project — if it is the same job under another name, merge them").
+- A price that starts after the deliveries is said plainly, on the card and on each row ("Price on file starts 01-Sep-2026 — after this delivery. Revise the quotation and accept it with rates from … or earlier").
+
+**3. Bank statements — costs without GST.** Each line given a cost head has "GST in this payment" (0 / 5 / 12 / 18 / 28 %, default by head: 18 % raw material, repairs, hired vehicles, admin, selling, rent; 0 % fuel, power, salaries, contract labour, finance cost) and "no input credit (supplier not registered)". Only the amount without GST goes to the head — in the P&L, the cost dashboard and the break-even. Lines already categorised take their head's rate (once). Rules remember the rate. The bank page shows "cost ₹10,000 + GST ₹1,800 (18%)" per line and the input GST taken out per month; the Balance Sheet's GST input credit line shows it as a hint (its balance also depends on GST set off against sales, which only the GST return has, so it stays typed in).
+- Fix (since Round 223): "always" now sorts the other matching lines at once — it saved the rule inside a transaction the sorter could not see.
+
+Verified locally: merge with an inactive stayer → stayer active; repair switched the TRANSGLOBAL stayer back on; MOGRAL-type load shows the other-project offer and the 01-Sep start; bank lines ₹11,800 @18 % → ₹10,000 + ₹1,800, ₹2,000 no-credit → ₹2,000, power ₹50,000 @0 %; rule sorted the next ₹5,900 line → ₹5,000; P&L and break-even Repairs ₹17,000, Admin ₹3,000; BS hint ₹3,240; `npm run check` green; build clean.
+
+Files (12) — backend: src/lib/{recordMerge, round230Schema, bankBook, costDashboard}.js; src/routes/{accountsLedger, costBank, setup}.js · frontend: src/lib/version.js; src/pages/accounts/{Invoices, QuotationBuilder}.jsx; src/pages/cost/CostBankTab.jsx · root: README.md

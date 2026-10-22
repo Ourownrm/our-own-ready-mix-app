@@ -10,12 +10,22 @@ import { istMonth, istDay } from "../lib/istDate.js";
 import { MONTH_RE, monthBounds, addMonths, monthLabel } from "../lib/costDashboard.js";
 import {
   BANK_HEADS, HEAD_KEYS, TREATMENTS, dedupeKey, autoSort, recomputeLoans, loansSummary, keywordHit,
+  GST_RATES, headGst, gstSplit, ensureBankGst,
 } from "../lib/bankBook.js";
 
 const router = Router();
 router.use(requireAuth);
 const VIEW = requirePermission("cost.bank", "view");
 const EDIT = requirePermission("cost.bank", "edit");
+router.use(async (_req, _res, next) => { try { await ensureBankGst(); next(); } catch (e) { next(e); } });
+// Round 232 — the GST % a line or rule gives (null = the head's usual rate).
+function gstChoice(b, head) {
+  const claim = b.gst_claim !== false;
+  if (b.gst_pct === undefined || b.gst_pct === null || b.gst_pct === "") return { pct: headGst(head), claim };
+  const p = Number(b.gst_pct);
+  if (!GST_RATES.includes(p)) return { error: `GST: one of ${GST_RATES.join(", ")} %.` };
+  return { pct: p, claim };
+}
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -50,7 +60,8 @@ router.get("/", VIEW, async (req, res) => {
                   (SELECT COUNT(*)::int FROM cost_bank_lines b WHERE b.account_id = a.id AND b.txn_date BETWEEN $1::date AND $2::date) AS lines_month
              FROM cost_bank_accounts a ORDER BY a.is_active DESC, a.id`, [from, end]),
     query(`SELECT l.id, l.account_id, l.txn_date::text AS txn_date, l.narration, l.reference, l.debit, l.credit, l.balance, l.treatment, l.head,
-                  l.loan_id, ln.name AS loan_name, l.interest, l.principal, l.interest_fixed, l.match_kind, l.why, l.manual, l.note, u.name AS set_by_name
+                  l.loan_id, ln.name AS loan_name, l.interest, l.principal, l.interest_fixed, l.match_kind, l.why, l.manual, l.note, u.name AS set_by_name,
+                  l.gst_pct, l.gst_claim
              FROM cost_bank_lines l LEFT JOIN cost_bank_loans ln ON ln.id = l.loan_id LEFT JOIN users u ON u.id = l.set_by
             WHERE l.txn_date BETWEEN $1::date AND $2::date ORDER BY l.txn_date, l.account_id, l.seq, l.id`, [from, end]),
     query(`SELECT r.*, ln.name AS loan_name, (SELECT COUNT(*)::int FROM cost_bank_lines b WHERE b.rule_id = r.id) AS used
@@ -63,18 +74,25 @@ router.get("/", VIEW, async (req, res) => {
   const accById = new Map(accs.rows.map((a) => [a.id, a]));
   const L = lines.rows.map((l) => ({ ...l, debit: n0(l.debit), credit: n0(l.credit), balance: l.balance == null ? null : n0(l.balance),
     interest: l.interest == null ? null : n0(l.interest), principal: l.principal == null ? null : n0(l.principal),
-    account: accById.has(l.account_id) ? accLabel(accById.get(l.account_id)) : "—" }));
+    account: accById.has(l.account_id) ? accLabel(accById.get(l.account_id)) : "—",
+    // Round 232 — the cost part and the input GST inside a cost line.
+    ...(l.treatment === "cost" ? (() => {
+      const amt = l.head === "other_income" ? n0(l.credit) - n0(l.debit) : n0(l.debit) - n0(l.credit);
+      const g = l.head === "other_income" ? { net: r2(amt), gst: 0 } : gstSplit(amt, l.gst_pct, l.gst_claim !== false);
+      return { gst_pct: l.gst_pct == null ? null : n0(l.gst_pct), net: g.net, gst: g.gst };
+    })() : { gst_pct: null, net: null, gst: null }) }));
 
   // Summary
   const by = {};
   for (const t of TREATMENTS) by[t] = { n: 0, dr: 0, cr: 0 };
   const heads = Object.fromEntries(BANK_HEADS.map((h) => [h.key, { key: h.key, label: h.label, amount: 0, n: 0 }]));
   const omitted = new Map();
-  let loanInt = 0, loanPrin = 0;
+  let loanInt = 0, loanPrin = 0, gstIn = 0;
   for (const l of L) {
     const b = by[l.treatment]; b.n++; b.dr += l.debit; b.cr += l.credit;
     if (l.treatment === "cost" && heads[l.head]) {
-      heads[l.head].amount += l.head === "other_income" ? l.credit - l.debit : l.debit - l.credit; heads[l.head].n++;
+      heads[l.head].amount += l.net; heads[l.head].n++;
+      heads[l.head].gst = r2((heads[l.head].gst || 0) + l.gst); gstIn += l.gst;
     }
     if (l.treatment === "loan") { loanInt += n0(l.interest); loanPrin += n0(l.principal); }
     if (l.treatment === "omit") {
@@ -97,8 +115,9 @@ router.get("/", VIEW, async (req, res) => {
       lines: L.length, debits: r2(L.reduce((t, l) => t + l.debit, 0)), credits: r2(L.reduce((t, l) => t + l.credit, 0)),
       by, heads: headList, to_pl: toPl, other_income: r2(heads.other_income.amount),
       omitted: [...omitted.values()].map((o) => ({ ...o, amount: r2(o.amount) })).sort((a, b) => b.amount - a.amount),
-      loan_interest: r2(loanInt), loan_principal: r2(loanPrin),
+      loan_interest: r2(loanInt), loan_principal: r2(loanPrin), gst_input: r2(gstIn),
     },
+    gst_rates: GST_RATES,
     loans, rules: rules.rows, uploads: uploads.rows.map((u) => ({ ...u, account: accById.has(u.account_id) ? accLabel(accById.get(u.account_id)) : "—" })),
   });
 });
@@ -209,10 +228,12 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
   const l = cur[0];
   const t = req.body.treatment;
   if (!TREATMENTS.includes(t) || t === "check") return bad(res, "Choose what this line is.");
-  let head = null, loanId = null;
+  let head = null, loanId = null, gst = { pct: null, claim: true };
   if (t === "cost") {
     if (!HEAD_KEYS.has(req.body.head)) return bad(res, "Choose the cost head.");
     head = req.body.head;
+    gst = head === "other_income" || n0(l.credit) > 0 ? { pct: 0, claim: true } : gstChoice(req.body, head);
+    if (gst.error) return bad(res, gst.error);
   }
   if (t === "loan") {
     loanId = Number(req.body.loan_id);
@@ -227,6 +248,7 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
   }
   // Left out keeps its app record only while it stays left out.
   const keepMatch = t === "omit" && l.match_kind;
+  let applied = 0;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -235,10 +257,10 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
               interest_fixed = $7::boolean, interest = CASE WHEN $7::boolean THEN $8::numeric ELSE (CASE WHEN $2::varchar = 'loan' THEN interest ELSE NULL END) END,
               principal = CASE WHEN $2::varchar = 'loan' THEN principal ELSE NULL END, rule_id = NULL,
               match_kind = CASE WHEN $9::boolean THEN match_kind ELSE NULL END, match_id = CASE WHEN $9::boolean THEN match_id ELSE NULL END,
-              why = CASE WHEN $9::boolean THEN why ELSE NULL END
+              why = CASE WHEN $9::boolean THEN why ELSE NULL END, gst_pct = $10, gst_claim = $11
         WHERE id = $1`,
-      [l.id, t, head, loanId, req.user.id, String(req.body.note || "").trim().slice(0, 200) || null, fixed, interest, !!keepMatch]);
-    let applied = 0;
+      [l.id, t, head, loanId, req.user.id, String(req.body.note || "").trim().slice(0, 200) || null, fixed, interest, !!keepMatch,
+       t === "cost" ? gst.pct : null, gst.claim]);
     if (req.body.always) {
       const keyword = String(req.body.keyword || "").replace(/\s+/g, " ").trim().toUpperCase().slice(0, 80);
       if (keyword.length < 3) { await client.query("ROLLBACK"); return bad(res, "For “always”, give a word from the narration (3 letters or more)."); }
@@ -246,17 +268,23 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
       if (["omit", "check"].includes(t)) { await client.query("ROLLBACK"); return bad(res, "“Always leave out” can't be a rule — the app leaves a line out only when it finds the payment in its records."); }
       const side = n0(l.debit) > 0 ? "debit" : "credit";
       const { rows: rule } = await client.query(
-        `INSERT INTO cost_bank_rules (keyword, side, treatment, head, loan_id, created_by) VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (keyword, side) DO UPDATE SET treatment = EXCLUDED.treatment, head = EXCLUDED.head, loan_id = EXCLUDED.loan_id
-         RETURNING id`, [keyword, side, t, head, loanId, req.user.id]);
+        `INSERT INTO cost_bank_rules (keyword, side, treatment, head, loan_id, created_by, gst_pct, gst_claim) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (keyword, side) DO UPDATE SET treatment = EXCLUDED.treatment, head = EXCLUDED.head, loan_id = EXCLUDED.loan_id,
+                gst_pct = EXCLUDED.gst_pct, gst_claim = EXCLUDED.gst_claim
+         RETURNING id`, [keyword, side, t, head, loanId, req.user.id, t === "cost" ? gst.pct : null, gst.claim]);
       await client.query(`UPDATE cost_bank_lines SET rule_id = $2 WHERE id = $1`, [l.id, rule[0].id]);
-      const { rows: others } = await client.query(`SELECT id FROM cost_bank_lines WHERE NOT manual AND treatment IN ('todo') AND id <> $1`, [l.id]);
-      if (others.length) { const s = await autoSort({ ids: others.map((o) => o.id), client }); applied = others.length - (s.counts?.todo || 0); }
     }
     await recomputeLoans(client);
     await client.query("COMMIT");
-    res.json({ ok: true, applied });
   } catch (err) { await client.query("ROLLBACK"); throw err; } finally { client.release(); }
+  // Round 232 — the other unsorted lines are sorted AFTER the rule is saved:
+  // sorting reads the rules outside this transaction, so inside it the new
+  // rule was not seen and "always" sorted nothing until the next re-sort.
+  if (req.body.always) {
+    const { rows: others } = await query(`SELECT id FROM cost_bank_lines WHERE NOT manual AND treatment = 'todo' AND id <> $1`, [l.id]);
+    if (others.length) { const r = await autoSort({ ids: others.map((o) => o.id) }); applied = others.length - (r.counts?.todo || 0); }
+  }
+  res.json({ ok: true, applied });
 });
 
 // Undo a choice made by hand: the app sorts the line again.
@@ -287,10 +315,13 @@ router.post("/rules", EDIT, async (req, res) => {
   if (t === "cost" && !HEAD_KEYS.has(head)) return bad(res, "Choose the cost head.");
   const loanId = t === "loan" ? Number(req.body.loan_id) || null : null;
   if (t === "loan" && !loanId) return bad(res, "Choose the loan.");
+  const gst = t === "cost" && head !== "other_income" && side !== "credit" ? gstChoice(req.body, head) : { pct: t === "cost" ? 0 : null, claim: true };
+  if (gst.error) return bad(res, gst.error);
   await query(
-    `INSERT INTO cost_bank_rules (keyword, side, treatment, head, loan_id, created_by) VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (keyword, side) DO UPDATE SET treatment = EXCLUDED.treatment, head = EXCLUDED.head, loan_id = EXCLUDED.loan_id`,
-    [keyword, side, t, head, loanId, req.user.id]);
+    `INSERT INTO cost_bank_rules (keyword, side, treatment, head, loan_id, created_by, gst_pct, gst_claim) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (keyword, side) DO UPDATE SET treatment = EXCLUDED.treatment, head = EXCLUDED.head, loan_id = EXCLUDED.loan_id,
+            gst_pct = EXCLUDED.gst_pct, gst_claim = EXCLUDED.gst_claim`,
+    [keyword, side, t, head, loanId, req.user.id, gst.pct, gst.claim]);
   const { rows: todo } = await query(`SELECT id FROM cost_bank_lines WHERE NOT manual AND treatment = 'todo'`);
   if (todo.length) await autoSort({ ids: todo.map((x) => x.id) });
   res.json({ ok: true });

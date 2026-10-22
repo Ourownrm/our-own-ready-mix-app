@@ -202,7 +202,7 @@ export default function CostBankTab({ month, setMonth }) {
         <div style={{ flex: "1 1 340px", minWidth: 0, display: "flex", flexDirection: "column", gap: 18 }}>
           <div style={panel("0 0 auto")}>
             <h2 style={H2}>What goes to the Profit &amp; Loss</h2>
-            <div style={SUB}>{d.label} · added to what the app already records for each head</div>
+            <div style={SUB}>{d.label} · added to what the app already records for each head · without GST{s.gst_input ? ` (input GST ${rsL(s.gst_input)} taken out)` : ""}</div>
             <table style={{ marginTop: 8 }}>
               <thead><tr><th>P&amp;L line</th><th style={R}>₹ L</th><th style={R}>Lines</th></tr></thead>
               <tbody>
@@ -289,6 +289,11 @@ function Treat({ l, d, canEdit, onDone }) {
         <Badge t={l.treatment} /> {what && <b style={{ fontSize: 12.5 }}>{what}</b>}
       </div>
       {l.treatment === "loan" && l.interest != null && <div style={{ ...MUTED, ...NUM }}>interest {rs(l.interest)}{l.interest_fixed ? " (from the bank)" : ""} · principal {rs(l.principal)}</div>}
+      {l.treatment === "cost" && l.head !== "other_income" && l.debit > 0 && (
+        <div style={{ ...MUTED, ...NUM }}>
+          {l.gst > 0 ? <>cost {rs(l.net)} + GST {rs(l.gst)} ({Number(l.gst_pct)}%)</> : Number(l.gst_pct) > 0 && l.gst_claim === false ? <>GST {Number(l.gst_pct)}% — no input credit, all cost</> : <>no GST</>}
+        </div>
+      )}
       {l.why && <div style={MUTED}>{l.why}</div>}
       {l.manual && <div style={MUTED}>set by {l.set_by_name || "hand"}{l.note ? ` — ${l.note}` : ""}</div>}
       {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 12 }}>{err}</div>}
@@ -303,12 +308,37 @@ function Treat({ l, d, canEdit, onDone }) {
   );
 }
 
+// Round 232 — the GST inside a payment: only the amount without it goes to
+// the cost head (the P&L leaves GST out everywhere).
+const headGstOf = (d, head) => d.heads_meta.find((h) => h.key === head)?.gst ?? 0;
+function GstPicker({ d, head, amount, pct, setPct, claim, setClaim }) {
+  const rates = d.gst_rates || [0, 5, 12, 18, 28];
+  const p = pct === "" || pct == null ? headGstOf(d, head) : Number(pct);
+  const net = claim && p > 0 && amount ? Math.round((amount * 100 / (100 + p)) * 100) / 100 : amount;
+  return (
+    <div style={{ ...MUTED, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      GST in this payment
+      <select aria-label="GST included" value={String(p)} onChange={(e) => setPct(e.target.value)} style={{ fontSize: 12, minHeight: 30 }}>
+        {rates.map((r) => <option key={r} value={r}>{r === 0 ? "None (0%)" : `${r}%`}{r === headGstOf(d, head) ? " · usual" : ""}</option>)}
+      </select>
+      {p > 0 && (
+        <label style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+          <input type="checkbox" checked={!claim} onChange={(e) => setClaim(!e.target.checked)} /> no input credit (supplier not registered)
+        </label>
+      )}
+      {amount ? <span>→ cost {rs(net)}{amount - net > 0.004 ? ` + GST ${rs(Math.round((amount - net) * 100) / 100)}` : ""}</span> : null}
+    </div>
+  );
+}
+
 function Editor({ l, d, onCancel, onDone }) {
   const init = l.treatment === "cost" ? `cost:${l.head}` : l.treatment === "loan" && l.loan_id ? `loan:${l.loan_id}` : ["todo", "check"].includes(l.treatment) ? "" : l.treatment;
   const [v, setV] = useState(init);
   const [always, setAlways] = useState(false);
   const [kw, setKw] = useState(() => keywordFrom(l.narration));
   const [interest, setInterest] = useState(l.interest_fixed ? String(l.interest) : "");
+  const [gstPct, setGstPct] = useState(l.treatment === "cost" && l.gst_pct != null ? String(Number(l.gst_pct)) : "");
+  const [gstClaim, setGstClaim] = useState(l.gst_claim !== false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const credit = l.credit > 0;
@@ -318,7 +348,8 @@ function Editor({ l, d, onCancel, onDone }) {
     setBusy(true); setErr("");
     const [t, x] = v.split(":");
     const body = { treatment: t, head: t === "cost" ? x : undefined, loan_id: t === "loan" ? Number(x) : undefined,
-      interest: t === "loan" && interest !== "" ? Number(interest) : undefined, always: always && !["omit"].includes(t), keyword: kw };
+      interest: t === "loan" && interest !== "" ? Number(interest) : undefined, always: always && !["omit"].includes(t), keyword: kw,
+      gst_pct: t === "cost" && !credit ? Number(gstPct === "" ? headGstOf(d, x) : gstPct) : undefined, gst_claim: t === "cost" && !credit ? gstClaim : undefined };
     try {
       const r = await apiRequest(`/cost/bank/lines/${l.id}`, { method: "PUT", body });
       onDone(r.applied ? `Saved. The rule “${kw}” also sorted ${r.applied} other line(s).` : "");
@@ -327,7 +358,7 @@ function Editor({ l, d, onCancel, onDone }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {l.treatment === "check" && l.why && <div style={MUTED}>{l.why}</div>}
-      <select aria-label="What this line is" value={v} onChange={(e) => setV(e.target.value)}
+      <select aria-label="What this line is" value={v} onChange={(e) => { setV(e.target.value); setGstPct(""); }}
         style={{ fontSize: 12.5, minHeight: 34, border: `1px solid ${v ? "var(--border-strong)" : "#D9A93A"}`, background: v ? "var(--surface)" : "#FFF8E6" }}>
         <option value="">Choose…</option>
         <optgroup label={credit ? "Income / reduces a cost" : "Add to a cost"}>
@@ -339,6 +370,9 @@ function Editor({ l, d, onCancel, onDone }) {
           {loans.map((x) => <option key={x.id} value={`loan:${x.id}`}>Loan — {x.name}</option>)}
         </optgroup>
       </select>
+      {v.startsWith("cost:") && !credit && v !== "cost:other_income" && (
+        <GstPicker d={d} head={v.slice(5)} amount={l.debit} pct={gstPct} setPct={setGstPct} claim={gstClaim} setClaim={setGstClaim} />
+      )}
       {v.startsWith("loan:") && !credit && (
         <label style={{ ...MUTED, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>Interest in this EMI (only if the bank told you)
           <input type="number" min="0" step="0.01" value={interest} onChange={(e) => setInterest(e.target.value)} placeholder="worked out" style={{ width: 120, minHeight: 32 }} />
@@ -436,7 +470,7 @@ function LoanModal({ d, loan, onClose, onDone }) {
 
 // --------------------------------------------------------------- rules ---
 function treatLabel(d, r) {
-  if (r.treatment === "cost") return `Cost · ${headLabel(d, r.head)}`;
+  if (r.treatment === "cost") return `Cost · ${headLabel(d, r.head)}${r.gst_pct != null && Number(r.gst_pct) > 0 ? ` · GST ${Number(r.gst_pct)}%${r.gst_claim === false ? ", no credit" : ""}` : ""}`;
   if (r.treatment === "loan") return `Loan EMI · ${r.loan_name || ""}`;
   return T[r.treatment]?.label || r.treatment;
 }
@@ -478,12 +512,16 @@ function RuleModal({ d, onClose, onDone }) {
   const [kw, setKw] = useState("");
   const [side, setSide] = useState("debit");
   const [v, setV] = useState("");
+  const [gstPct, setGstPct] = useState("");
+  const [gstClaim, setGstClaim] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const costHead = v.startsWith("cost:") && v !== "cost:other_income" && side !== "credit" ? v.slice(5) : null;
   async function save() {
     setBusy(true); setErr("");
     const [t, x] = v.split(":");
-    try { await apiRequest("/cost/bank/rules", { method: "POST", body: { keyword: kw, side, treatment: t, head: t === "cost" ? x : undefined, loan_id: t === "loan" ? Number(x) : undefined } }); onDone(); }
+    try { await apiRequest("/cost/bank/rules", { method: "POST", body: { keyword: kw, side, treatment: t, head: t === "cost" ? x : undefined, loan_id: t === "loan" ? Number(x) : undefined,
+      gst_pct: costHead ? Number(gstPct === "" ? headGstOf(d, costHead) : gstPct) : undefined, gst_claim: costHead ? gstClaim : undefined } }); onDone(); }
     catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
@@ -493,12 +531,13 @@ function RuleModal({ d, onClose, onDone }) {
         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600 }}>On
           <select value={side} onChange={(e) => setSide(e.target.value)}><option value="debit">Debits (money out)</option><option value="credit">Credits (money in)</option><option value="any">Either</option></select></label>
         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600 }}>Treat as
-          <select value={v} onChange={(e) => setV(e.target.value)}>
+          <select value={v} onChange={(e) => { setV(e.target.value); setGstPct(""); }}>
             <option value="">Choose…</option>
             <optgroup label="Cost / income head">{d.heads_meta.map((h) => <option key={h.key} value={`cost:${h.key}`}>{h.label}</option>)}</optgroup>
             <optgroup label="Leave out">{LEAVE.filter(([k]) => k !== "omit").map(([k, label]) => <option key={k} value={k}>{label}</option>)}</optgroup>
             <optgroup label="Balance Sheet"><option value="asset">Fixed asset bought</option>{d.loans.map((x) => <option key={x.id} value={`loan:${x.id}`}>Loan — {x.name}</option>)}</optgroup>
           </select></label>
+        {costHead && <GstPicker d={d} head={costHead} amount={0} pct={gstPct} setPct={setGstPct} claim={gstClaim} setClaim={setGstClaim} />}
         <div style={MUTED}>“Already in the app” can’t be a rule — a line is left out only when its payment is found in the app’s records.</div>
         {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 13 }}>{err}</div>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>

@@ -135,6 +135,9 @@ export async function mergeSite(db, fromId, toId, userId, note = null) {
   await dropSiteCollisions(db, from.id, to.id);
   const moved = await moveRefs(db, "sites", from.id, to.id);
   await db.query(`UPDATE sites SET is_active = false, merged_into_id = $2 WHERE id = $1`, [from.id, to.id]);
+  // Round 232 — the project that stays is active when either was (the orders
+  // are often on an older record someone had already switched off).
+  if (from.is_active !== false || to.is_active !== false) await db.query(`UPDATE sites SET is_active = true WHERE id = $1`, [to.id]);
   await db.query(`UPDATE sites SET merged_into_id = $2 WHERE merged_into_id = $1`, [from.id, to.id]);
   await db.query(
     `INSERT INTO record_merges (kind, from_id, to_id, from_name, to_name, moved, note, merged_by) VALUES ('site', $1, $2, $3, $4, $5, $6, $7)`,
@@ -152,6 +155,10 @@ export async function mergeCustomer(db, fromId, toId, userId, note = null) {
   await dropCustomerCollisions(db, from.id, to.id);
   const moved = await moveRefs(db, "customers", from.id, to.id);
   await db.query(`UPDATE customers SET is_active = false, merged_into_id = $2 WHERE id = $1`, [from.id, to.id]);
+  // Round 232 — the customer that stays is active when either was. v10.62/63
+  // kept an already switched-off record and switched the other off too, so
+  // the merged customer vanished from every customer list.
+  if (from.is_active !== false || to.is_active !== false) await db.query(`UPDATE customers SET is_active = true WHERE id = $1`, [to.id]);
   await db.query(`UPDATE customers SET merged_into_id = $2 WHERE merged_into_id = $1`, [from.id, to.id]);
   await db.query(
     `INSERT INTO record_merges (kind, from_id, to_id, from_name, to_name, moved, note, merged_by) VALUES ('customer', $1, $2, $3, $4, $5, $6, $7)`,
@@ -174,7 +181,9 @@ export async function lookAlikePriceLists(held) {
             (SELECT json_build_object('id', q.id, 'quote_no', q.quote_no, 'status', q.status) FROM quotations q
               WHERE q.site_id = s.id AND q.status IN ('accepted', 'pending_approval', 'approved', 'sent')
               ORDER BY (q.status = 'accepted') DESC, q.id DESC LIMIT 1) AS quotation,
-            (SELECT count(*)::int FROM customer_orders co WHERE co.site_id = s.id) AS orders
+            (SELECT count(*)::int FROM customer_orders co WHERE co.site_id = s.id) AS orders,
+            (SELECT min(rm.effective_from)::text FROM rate_master rm
+              WHERE rm.site_id = s.id AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)) AS price_from
        FROM sites s JOIN customers c ON c.id = s.customer_id
       WHERE COALESCE(s.is_active, true) AND COALESCE(c.is_active, true)
         AND (EXISTS (SELECT 1 FROM rate_master rm WHERE rm.site_id = s.id AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE))
@@ -194,7 +203,7 @@ export async function lookAlikePriceLists(held) {
       hits.push({
         customer_id: h.site_customer_id, customer_name: h.site_customer_name, site_id: h.site_id, site_name: h.site_name,
         same_site: true, same_customer: false, names_alike: nameScore(h.customer_name, h.site_customer_name) >= 0.6,
-        grades: p?.grades || [], grade_ids: p?.grade_ids || [], quotation: p?.quotation || null, orders: p?.orders || 0, score: 100,
+        grades: p?.grades || [], grade_ids: p?.grade_ids || [], quotation: p?.quotation || null, orders: p?.orders || 0, price_from: p?.price_from || null, score: 100,
       });
     }
     for (const p of priced) {
@@ -205,11 +214,15 @@ export async function lookAlikePriceLists(held) {
       // Same customer: the project names must look alike. Another customer:
       // both must, or the customer name be all but the same and the project
       // close enough.
-      if (!(sameCustomer ? sScore >= 0.6 : (cScore >= 0.6 && sScore >= 0.6) || (cScore >= 0.85 && sScore >= 0.5))) continue;
-      hits.push({
+      // Round 232 — the same customer's other priced projects are offered
+      // even when the names don't look alike ("MOGRAL" is the place, "RAMEEZ
+      // VILLA" the job): the owner knows whether it is the same project.
+      const otherProject = sameCustomer && sScore < 0.6;
+      if (!otherProject && !(sameCustomer ? sScore >= 0.6 : (cScore >= 0.6 && sScore >= 0.6) || (cScore >= 0.85 && sScore >= 0.5))) continue;
+      hits.push({ other_project: otherProject, price_from: p.price_from || null,
         customer_id: p.customer_id, customer_name: p.customer_name, site_id: p.site_id, site_name: p.site_name,
         same_customer: sameCustomer, grades: p.grades || [], grade_ids: p.grade_ids || [], quotation: p.quotation, orders: p.orders,
-        score: Math.round((cScore + sScore) * 50),
+        score: otherProject ? 30 : Math.round((cScore + sScore) * 50),
       });
     }
     hits.sort((a, b) => b.score - a.score);

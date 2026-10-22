@@ -32,20 +32,53 @@ import { isOwnTransfer } from "../routes/accountsLedger.js";
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
 
+// Round 232 — gst: the GST % usually inside a payment under that head (owner,
+// 22 Oct 2026: "the amount paid from bank includes GST, which is input tax").
+// A cost line is counted WITHOUT that GST, like every other figure in the
+// P&L; each line can change the rate, or say no input credit can be taken.
 export const BANK_HEADS = [
-  { key: "rm", label: "Raw material" },
-  { key: "fuel", label: "Fuel" },
-  { key: "repairs", label: "Repairs & maintenance" },
-  { key: "salaries", label: "Salaries & wages" },
-  { key: "contract_labour", label: "Contract labour & pump gangs" },
-  { key: "hired_vehicles", label: "Hired vehicles & pumps" },
-  { key: "power", label: "Plant power (electricity)" },
-  { key: "admin_office", label: "Admin & office" },
-  { key: "selling", label: "Selling & marketing" },
-  { key: "rent_rates", label: "Rent & rates" },
-  { key: "interest", label: "Finance cost (interest, bank charges)" },
-  { key: "other_income", label: "Other income", income: true },
+  { key: "rm", label: "Raw material", gst: 18 },
+  { key: "fuel", label: "Fuel", gst: 0 },
+  { key: "repairs", label: "Repairs & maintenance", gst: 18 },
+  { key: "salaries", label: "Salaries & wages", gst: 0 },
+  { key: "contract_labour", label: "Contract labour & pump gangs", gst: 0 },
+  { key: "hired_vehicles", label: "Hired vehicles & pumps", gst: 18 },
+  { key: "power", label: "Plant power (electricity)", gst: 0 },
+  { key: "admin_office", label: "Admin & office", gst: 18 },
+  { key: "selling", label: "Selling & marketing", gst: 18 },
+  { key: "rent_rates", label: "Rent & rates", gst: 18 },
+  { key: "interest", label: "Finance cost (interest, bank charges)", gst: 0 },
+  { key: "other_income", label: "Other income", income: true, gst: 0 },
 ];
+export const GST_RATES = [0, 5, 12, 18, 28];
+export const headGst = (head) => BANK_HEADS.find((h) => h.key === head)?.gst ?? 0;
+// The cost part of a line and the input GST in it.
+export function gstSplit(amount, pct, claim = true) {
+  const a = Number(amount) || 0, p = Number(pct) || 0;
+  if (!claim || !(p > 0)) return { net: Math.round(a * 100) / 100, gst: 0 };
+  const net = Math.round((a * 100 / (100 + p)) * 100) / 100;
+  return { net, gst: Math.round((a - net) * 100) / 100 };
+}
+// SQL for the cost part of a line (alias l).
+export const NET_SQL = (col) => `CASE WHEN COALESCE(l.gst_claim, true) AND COALESCE(l.gst_pct, 0) > 0
+  THEN ROUND(${col} * 100 / (100 + l.gst_pct), 2) ELSE ${col} END`;
+export const ROUND232_SQL = `
+ALTER TABLE cost_bank_lines ADD COLUMN IF NOT EXISTS gst_pct NUMERIC(5,2);
+ALTER TABLE cost_bank_lines ADD COLUMN IF NOT EXISTS gst_claim BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE cost_bank_rules ADD COLUMN IF NOT EXISTS gst_pct NUMERIC(5,2);
+ALTER TABLE cost_bank_rules ADD COLUMN IF NOT EXISTS gst_claim BOOLEAN NOT NULL DEFAULT true;
+`;
+// The two columns are also made on first use, so the P&L never reads bank
+// costs from a database where /setup has not run yet.
+let gstReady = null;
+export function ensureBankGst() {
+  if (!gstReady) gstReady = query(ROUND232_SQL).catch((e) => { gstReady = null; throw e; });
+  return gstReady;
+}
+// Lines already given a cost head: the head's usual rate (once).
+export function headGstCaseSql(col = "head") {
+  return `CASE ${col} ${BANK_HEADS.map((h) => `WHEN '${h.key}' THEN ${h.gst}`).join(" ")} ELSE 0 END`;
+}
 export const HEAD_KEYS = new Set(BANK_HEADS.map((h) => h.key));
 export const TREATMENTS = ["todo", "check", "cost", "omit", "own", "loan", "tax", "asset", "capital", "personal"];
 
@@ -266,13 +299,15 @@ function suggest(line, ctx) {
   for (const r of ctx.rules) {
     if (r.side !== "any" && r.side !== side) continue;
     if (!keywordHit(narr, r.keyword)) continue;
-    return { treatment: r.treatment, head: r.head, loan_id: r.loan_id, rule_id: r.id, why: `rule: “${r.keyword}”` };
+    return { treatment: r.treatment, head: r.head, loan_id: r.loan_id, rule_id: r.id, why: `rule: “${r.keyword}”`,
+             gst_pct: r.gst_pct == null ? null : Number(r.gst_pct), gst_claim: r.gst_claim !== false };
   }
   return { treatment: "todo", why: null };
 }
 
 // Sort the lines given (ids) or every line not set by hand.
 export async function autoSort({ ids = null, client = null } = {}) {
+  await ensureBankGst();
   const db = client || { query };
   const { rows: lines } = await db.query(
     `SELECT id, account_id, txn_date::text AS txn_date, narration, debit, credit FROM cost_bank_lines
@@ -288,9 +323,11 @@ export async function autoSort({ ids = null, client = null } = {}) {
     counts[s.treatment] = (counts[s.treatment] || 0) + 1;
     await db.query(
       `UPDATE cost_bank_lines SET treatment = $2::varchar, head = $3, loan_id = $4, match_kind = $5, match_id = $6, why = $7, rule_id = $8,
-              interest = CASE WHEN $2::varchar = 'loan' THEN interest ELSE NULL END, principal = CASE WHEN $2::varchar = 'loan' THEN principal ELSE NULL END
+              interest = CASE WHEN $2::varchar = 'loan' THEN interest ELSE NULL END, principal = CASE WHEN $2::varchar = 'loan' THEN principal ELSE NULL END,
+              gst_pct = $9, gst_claim = $10
         WHERE id = $1`,
-      [l.id, s.treatment, s.head || null, s.loan_id || null, s.match_kind || null, s.match_id || null, s.why ? s.why.slice(0, 240) : null, s.rule_id || null]);
+      [l.id, s.treatment, s.head || null, s.loan_id || null, s.match_kind || null, s.match_id || null, s.why ? s.why.slice(0, 240) : null, s.rule_id || null,
+       s.treatment === "cost" ? (s.gst_pct ?? headGst(s.head)) : null, s.treatment === "cost" ? s.gst_claim !== false : true]);
   }
   await recomputeLoans(db);
   return { sorted: lines.length, counts };
@@ -360,21 +397,27 @@ function emisLeft(out, rate, emi) {
 // reduces the cost), other income = credits − debits; loan EMI interest goes
 // to Finance cost.
 export async function bankHeadsMonth(ym) {
+  await ensureBankGst().catch(() => {});
   const { rows } = await query(
-    `SELECT head, SUM(debit) AS dr, SUM(credit) AS cr, COUNT(*)::int AS n FROM cost_bank_lines
-      WHERE treatment = 'cost' AND head IS NOT NULL AND to_char(txn_date, 'YYYY-MM') = $1 GROUP BY head`, [ym]).catch(() => ({ rows: [] }));
+    // Round 232 — without the GST inside each payment.
+    `SELECT l.head, SUM(${NET_SQL("l.debit")}) AS dr, SUM(${NET_SQL("l.credit")}) AS cr, COUNT(*)::int AS n,
+            SUM(CASE WHEN l.debit > 0 THEN l.debit - ${NET_SQL("l.debit")} ELSE 0 END) AS gst_in
+       FROM cost_bank_lines l
+      WHERE l.treatment = 'cost' AND l.head IS NOT NULL AND to_char(l.txn_date, 'YYYY-MM') = $1 GROUP BY l.head`, [ym]).catch(() => ({ rows: [] }));
   const out = {}, count = {};
+  let gstInput = 0;
   for (const r of rows) {
     const income = r.head === "other_income";
     out[r.head] = r2(income ? n0(r.cr) - n0(r.dr) : n0(r.dr) - n0(r.cr));
     count[r.head] = r.n;
+    if (!income) gstInput += n0(r.gst_in);
   }
   const { rows: li } = await query(
     `SELECT COALESCE(SUM(interest), 0) AS i, COUNT(*)::int AS n FROM cost_bank_lines
       WHERE treatment = 'loan' AND to_char(txn_date, 'YYYY-MM') = $1`, [ym]).catch(() => ({ rows: [{ i: 0, n: 0 }] }));
   const loanInterest = r2(li[0].i);
   if (loanInterest) { out.interest = r2((out.interest || 0) + loanInterest); count.interest = (count.interest || 0) + li[0].n; }
-  return { heads: out, count, loan_interest: loanInterest };
+  return { heads: out, count, loan_interest: loanInterest, gst_input: r2(gstInput) };
 }
 
 // Balance Sheet: loans from the loan list; cash credit from the CC / OD

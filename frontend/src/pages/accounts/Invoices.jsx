@@ -158,6 +158,8 @@ function Held({ canRetry, go }) {
     let g = groups.find((x) => x.customer_id === r.customer_id && x.site_id === r.site_id);
     if (!g) groups.push(g = { customer_id: r.customer_id, customer_name: r.customer_name, site_id: r.site_id, site_name: r.site_name, look_alikes: r.look_alikes, loads: 0, m3: 0, grades: new Set(), orders: new Set() });
     g.loads++; g.m3 += Number(r.loaded_quantity_m3) || 0; g.grades.add(r.grade_name); g.orders.add(r.order_id);
+    if (!g.last_order || r.order_date > g.last_order) g.last_order = r.order_date;
+    if (!g.first_order || r.order_date < g.first_order) g.first_order = r.order_date;
   }
   // Round 231 — the order is on a project that belongs to another customer:
   // move the order(s) to that customer.
@@ -188,6 +190,7 @@ function Held({ canRetry, go }) {
               <div style={{ fontSize: 13 }}>
                 The project <b>{g.site_name}</b> belongs to <b>{a.customer_name}</b>, but the order was placed under <b>{g.customer_name}</b>.
                 {a.grades.length ? <> {a.customer_name} has prices for {a.grades.join(", ")}{a.quotation ? ` (${a.quotation.quote_no})` : ""}.</> : <> {a.customer_name} has no price for this project yet either.</>}
+                {a.price_from && g.last_order && a.price_from > g.last_order && <span style={{ color: "var(--alert-red)" }}> That price starts {fmtDate(a.price_from)}, after these deliveries.</span>}
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
                 <button type="button" style={{ fontSize: 12.5, padding: "5px 12px" }} className={a.names_alike ? "btn-primary" : undefined} onClick={() => setMerging({ keep: g, merge: a })}>Same customer — merge</button>
@@ -198,7 +201,8 @@ function Held({ canRetry, go }) {
               </div>
             </div>
           ))}
-          {g.look_alikes.some((a) => !a.same_site) && <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "4px 0 8px" }}>A price list is on a look-alike {g.look_alikes.filter((a) => !a.same_site).every((a) => a.same_customer) ? "project" : "customer / project"} — probably the same one entered twice.</div>}
+          {g.look_alikes.some((a) => !a.same_site && !a.other_project) && <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "4px 0 8px" }}>A price list is on a look-alike {g.look_alikes.filter((a) => !a.same_site && !a.other_project).every((a) => a.same_customer) ? "project" : "customer / project"} — probably the same one entered twice.</div>}
+          {g.look_alikes.some((a) => a.other_project) && <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "4px 0 8px" }}>{g.customer_name} has a price on another project — if it is the same job under another name, merge them.</div>}
           {g.look_alikes.filter((a) => !a.same_site).map((a) => {
             const covers = [...g.grades].every((gr) => a.grades.includes(gr));
             return (
@@ -211,6 +215,11 @@ function Held({ canRetry, go }) {
                     {a.orders ? ` · ${a.orders} order${a.orders === 1 ? "" : "s"} of its own` : ""}
                     {!covers && a.grades.length > 0 && <span style={{ color: "var(--amber)" }}> · not every held grade is priced there</span>}
                   </div>
+                  {a.price_from && g.last_order && a.price_from > g.last_order && (
+                    <div style={{ fontSize: 11.5, color: "var(--alert-red)" }}>
+                      Its price starts {fmtDate(a.price_from)} — after these deliveries ({fmtDate(g.last_order)}). After merging they stay held until the quotation is accepted with “rates from” on or before {fmtDate(g.first_order || g.last_order)}.
+                    </div>
+                  )}
                 </div>
                 <button type="button" style={{ fontSize: 12.5, padding: "5px 12px" }} onClick={() => setMerging({ keep: g, merge: a })}>Same project — merge</button>
               </div>
@@ -233,7 +242,10 @@ function Held({ canRetry, go }) {
               <td style={TD}>
                 {r.pending_quotation
                   ? <a href="#" onClick={(e) => { e.preventDefault(); go("quotations", { id: String(r.pending_quotation.id) }); }}>{r.pending_quotation.quote_no} ({r.pending_quotation.status.replace("_", " ")})</a>
+                  : r.later_price_from ? null
                   : <a href="#" onClick={(e) => { e.preventDefault(); go("quotations", { new: "1", customer_id: String(r.customer_id), site_id: String(r.site_id) }); }}>No quotation — make one</a>}
+                {/* Round 232 — a price exists but starts after this delivery. */}
+                {r.later_price_from && <div style={{ fontSize: 11.5, color: "var(--alert-red)" }}>Price on file starts {fmtDate(r.later_price_from)} — after this delivery ({fmtDate(r.order_date)}). Revise the quotation and accept it with “rates from” {fmtDate(r.order_date)} or earlier.</div>}
               </td>
             </tr>
           ))}

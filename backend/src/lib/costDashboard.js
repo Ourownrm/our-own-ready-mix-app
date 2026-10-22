@@ -1061,6 +1061,10 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
   const ctx = await newContext();
   const cmpYm = compare === "prev" ? addMonths(ym, -1) : addMonths(fyStart(ym), -1);
   const [now, then] = await Promise.all([sideBalances(ym, ctx), sideBalances(cmpYm, ctx)]);
+  // Round 232 — input GST taken out of bank-statement costs this month: a
+  // pointer for the GST input credit typed in (its balance also depends on
+  // what was set off against GST on sales, which only the GST return has).
+  const bankGst = await bankHeadsMonth(ym).then((b) => b.gst_input || 0).catch(() => 0);
   const side = (k) => {
     const rows = [];
     let tn = 0, tt = 0;
@@ -1070,7 +1074,9 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
       tn += a; tt += b;
       const viaBank = now.bank?.[l.key] != null;
       rows.push({ kind: "line", key: l.key, label: l.label, src: viaBank ? "bank" : l.src,
-        hint: viaBank ? (l.key === "term_loans" ? "Cost → Bank statements → Loans: balance less principal repaid" : "closing balance of the cash credit statements") : l.hint || "",
+        hint: viaBank ? (l.key === "term_loans" ? "Cost → Bank statements → Loans: balance less principal repaid" : "closing balance of the cash credit statements")
+          : l.key === "gst_input" && bankGst ? `${l.hint ? `${l.hint} · ` : ""}₹${bankGst.toLocaleString("en-IN", { maximumFractionDigits: 0 })} input GST in this month's bank-statement costs`
+          : l.hint || "",
         now: r2(a), then: r2(b), change: r2(a - b),
         missing: !viaBank && l.src === "entered" && !now.ent[l.key] });
     }
