@@ -436,28 +436,19 @@ router.post("/expenses", requireCl("cash_holder"), async (req, res) => {
   res.json({ ok: true, id: rows[0].id });
 });
 
-// The cash holder edits their own expense in full; an Entry person may
-// change only its category and flag.
-router.put("/expenses/:id", requireCl("cash_holder", "entry"), async (req, res) => {
+// Round 229 (owner): the four rights are independent — only the cash holder
+// who spent it changes an expense (Entry is deliveries only).
+router.put("/expenses/:id", requireCl("cash_holder"), async (req, res) => {
   const id = Number(req.params.id);
   const { rows } = await query(`SELECT * FROM cl_expenses WHERE id = $1 AND deleted_at IS NULL`, [id]);
   if (!rows.length) return res.status(404).json({ error: "That expense is not there any more." });
   const cur = rows[0];
-  const own = req.cl.cash_holder && cur.holder_id === req.user.id;
-  if (own) {
-    const x = cleanExpense(req.body || {});
-    if (x.error) return bad(res, x.error);
-    await query(`UPDATE cl_expenses SET txn_date = $2, amount = $3, where_spent = $4, category = $5, flagged = $6, updated_by = $7, updated_at = now() WHERE id = $1`,
-      [id, x.txn_date, x.amount, x.where_spent, x.category, x.flagged, req.user.id]);
-    await clLog(null, "expense", id, "edited", { before: cur, after: x }, req.user.id);
-  } else if (req.cl.entry) {
-    const category = CL_CATEGORY_KEYS.has(req.body?.category) ? req.body.category : cur.category;
-    const flagged = req.body?.flagged === undefined ? cur.flagged : !!req.body.flagged;
-    await query(`UPDATE cl_expenses SET category = $2, flagged = $3, updated_by = $4, updated_at = now() WHERE id = $1`, [id, category, flagged, req.user.id]);
-    await clLog(null, "expense", id, "category", { from: cur.category, to: category, flagged }, req.user.id);
-  } else {
-    return res.status(403).json({ error: "Only the person who spent it can change this expense." });
-  }
+  if (cur.holder_id !== req.user.id) return res.status(403).json({ error: "Only the person who spent it can change this expense." });
+  const x = cleanExpense(req.body || {});
+  if (x.error) return bad(res, x.error);
+  await query(`UPDATE cl_expenses SET txn_date = $2, amount = $3, where_spent = $4, category = $5, flagged = $6, updated_by = $7, updated_at = now() WHERE id = $1`,
+    [id, x.txn_date, x.amount, x.where_spent, x.category, x.flagged, req.user.id]);
+  await clLog(null, "expense", id, "edited", { before: cur, after: x }, req.user.id);
   res.json({ ok: true });
 });
 
@@ -471,9 +462,8 @@ router.delete("/expenses/:id", requireCl("cash_holder"), async (req, res) => {
 });
 
 // ------------------------------------------------ other income (227) ---
-// A cash holder records what they received themselves (in their cash at
-// once); an Entry person may record it for a cash holder (they accept it, as
-// with a collection) or as received straight into the bank.
+// Round 229 (owner): only a cash holder records other income, and only what
+// they received themselves — it is in their cash at once. Entry has no part in it.
 function cleanIncome(b) {
   const day = cleanDay(b.txn_date);
   if (!day) return { error: "Pick the date (not in the future)." };
@@ -483,75 +473,43 @@ function cleanIncome(b) {
   if (!source) return { error: "Write what was sold, and to whom." };
   return { txn_date: day, amount: r2(amount), source, kind: CL_INCOME_KEYS.has(b.kind) ? b.kind : "other", flagged: !!b.flagged };
 }
-async function incomeTarget(req, raw) {
-  // → { received_by, status } or { error }
-  if (raw === "bank") {
-    if (!req.cl.entry) return { error: "Only an Entry person can record income received in the bank." };
-    return { received_by: null, status: "accepted" };
-  }
-  const id = raw == null || raw === "" || raw === "me" ? req.user.id : Number(raw);
-  if (id === req.user.id) {
-    if (!req.cl.cash_holder) return { error: "Pick the cash holder who received it, or Bank." };
-    return { received_by: id, status: "accepted" };
-  }
-  if (!req.cl.entry) return { error: "You can record only what you received yourself." };
-  if (!(await cashHolderIds()).has(id)) return { error: "Pick the cash holder who received it, or Bank." };
-  return { received_by: id, status: "pending" };
-}
 
-router.post("/incomes", requireCl("cash_holder", "entry"), async (req, res) => {
+router.post("/incomes", requireCl("cash_holder"), async (req, res) => {
   const x = cleanIncome(req.body || {});
   if (x.error) return bad(res, x.error);
-  const t = await incomeTarget(req, req.body?.received_by);
-  if (t.error) return bad(res, t.error);
   const { rows } = await query(
     `INSERT INTO cl_incomes (txn_date, kind, source, amount, received_by, status, responded_at, flagged, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6::varchar, CASE WHEN $6::varchar = 'accepted' THEN now() END, $7, $8) RETURNING id`,
-    [x.txn_date, x.kind, x.source, x.amount, t.received_by, t.status, x.flagged, req.user.id]);
-  await clLog(null, "income", rows[0].id, "added", { ...x, received_by: t.received_by }, req.user.id);
+     VALUES ($1, $2, $3, $4, $5, 'accepted', now(), $6, $5) RETURNING id`,
+    [x.txn_date, x.kind, x.source, x.amount, req.user.id, x.flagged]);
+  await clLog(null, "income", rows[0].id, "added", x, req.user.id);
   res.json({ ok: true, id: rows[0].id });
 });
 
-// Whoever entered it may change it while it is theirs to change (not yet
-// accepted by someone else); an Entry person may always change the kind,
-// what it was and the flag.
-router.put("/incomes/:id", requireCl("cash_holder", "entry"), async (req, res) => {
+// Whoever received it may change or delete it, as long as it is theirs.
+router.put("/incomes/:id", requireCl("cash_holder"), async (req, res) => {
   const id = Number(req.params.id);
   const { rows } = await query(`SELECT *, txn_date::text AS day FROM cl_incomes WHERE id = $1 AND deleted_at IS NULL`, [id]);
   if (!rows.length) return res.status(404).json({ error: "That income is not there any more." });
   const cur = rows[0];
+  if (cur.created_by !== req.user.id || cur.received_by !== req.user.id) return res.status(403).json({ error: "Only the person who received it can change this." });
   const x = cleanIncome({ ...cur, amount: Number(cur.amount), txn_date: cur.day, ...req.body });
   if (x.error) return bad(res, x.error);
-  const mine = cur.created_by === req.user.id;
-  const lockedByOther = cur.received_by && cur.received_by !== req.user.id && cur.status === "accepted";
-  if (mine && !lockedByOther) {
-    let t = { received_by: cur.received_by, status: cur.status };
-    if (req.body?.received_by !== undefined) { t = await incomeTarget(req, req.body.received_by); if (t.error) return bad(res, t.error); }
-    const changedTarget = t.received_by !== cur.received_by;
-    await query(
-      `UPDATE cl_incomes SET txn_date = $2, kind = $3, source = $4, amount = $5, flagged = $6, received_by = $7,
-              status = $8, reject_reason = CASE WHEN $9 THEN NULL ELSE reject_reason END, updated_by = $10, updated_at = now() WHERE id = $1`,
-      [id, x.txn_date, x.kind, x.source, x.amount, x.flagged, t.received_by, changedTarget || cur.status === "rejected" ? t.status : cur.status,
-        changedTarget || cur.status === "rejected", req.user.id]);
-  } else if (req.cl.entry) {
-    await query(`UPDATE cl_incomes SET kind = $2, source = $3, flagged = $4, updated_by = $5, updated_at = now() WHERE id = $1`,
-      [id, x.kind, x.source, x.flagged, req.user.id]);
-  } else {
-    return res.status(403).json({ error: "Only the person who entered it can change this." });
-  }
+  await query(`UPDATE cl_incomes SET txn_date = $2, kind = $3, source = $4, amount = $5, flagged = $6, updated_by = $7, updated_at = now() WHERE id = $1`,
+    [id, x.txn_date, x.kind, x.source, x.amount, x.flagged, req.user.id]);
   await clLog(null, "income", id, "edited", { before: cur, after: x }, req.user.id);
   res.json({ ok: true });
 });
 
-router.delete("/incomes/:id", requireCl("cash_holder", "entry"), async (req, res) => {
+router.delete("/incomes/:id", requireCl("cash_holder"), async (req, res) => {
   const { rowCount } = await query(
-    `UPDATE cl_incomes SET deleted_at = now() WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL
-        AND NOT (received_by IS NOT NULL AND received_by <> $2 AND status = 'accepted')`, [Number(req.params.id), req.user.id]);
-  if (!rowCount) return bad(res, "Only the person who entered it can delete it, and not once someone else has accepted it.");
+    `UPDATE cl_incomes SET deleted_at = now() WHERE id = $1 AND created_by = $2 AND received_by = $2 AND deleted_at IS NULL`,
+    [Number(req.params.id), req.user.id]);
+  if (!rowCount) return bad(res, "Only the person who received it can delete it.");
   await clLog(null, "income", Number(req.params.id), "deleted", null, req.user.id);
   res.json({ ok: true });
 });
 
+// Income entered for someone else before Round 229 may still be waiting.
 router.post("/incomes/:id/respond", requireCl("cash_holder"), async (req, res) => {
   const decision = req.body?.decision === "accept" ? "accepted" : req.body?.decision === "reject" ? "rejected" : null;
   if (!decision) return bad(res, "Accept or reject?");
@@ -566,16 +524,16 @@ router.post("/incomes/:id/respond", requireCl("cash_holder"), async (req, res) =
 });
 
 // ------------------------------------------------- all transactions ---
-// Everyone's cash: balances, transfers, deposits and expenses. Entry people
-// also see the expenses (to set categories) through this, read-only otherwise.
-router.get("/transactions", requireCl("view_txns", "entry"), async (req, res) => {
+// Everyone's cash: balances, transfers, deposits, expenses and other income —
+// read only, View transactions alone (Round 229: Entry does not see it).
+router.get("/transactions", requireCl("view_txns"), async (req, res) => {
   const ym = pickMonth(req, res);
   if (!ym) return;
   const { from, end } = monthBounds(ym);
   const [expenses, transfers, balances, incomes] = await Promise.all([
     expensesFor(`x.txn_date BETWEEN $1::date AND $2::date`, [from, end]),
-    req.cl.view_txns ? transfersFor(`t.txn_date BETWEEN $1::date AND $2::date`, [from, end]) : [],
-    req.cl.view_txns ? holderBalances() : [],
+    transfersFor(`t.txn_date BETWEEN $1::date AND $2::date`, [from, end]),
+    holderBalances(),
     incomesFor(`i.txn_date BETWEEN $1::date AND $2::date`, [from, end]),
   ]);
   const byCat = {};
@@ -584,7 +542,7 @@ router.get("/transactions", requireCl("view_txns", "entry"), async (req, res) =>
     c.paid += x.amount; c.cost += x.cost; c.n += 1;
   }
   res.json({
-    month: ym, label: monthLabel(ym, true), full: req.cl.view_txns,
+    month: ym, label: monthLabel(ym, true), full: true,
     expenses, transfers, balances, incomes,
     by_category: Object.values(byCat).map((c) => ({ ...c, paid: r2(c.paid), cost: r2(c.cost) })).sort((a, b) => b.paid - a.paid),
     summary: {

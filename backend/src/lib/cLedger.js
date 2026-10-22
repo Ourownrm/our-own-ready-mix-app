@@ -9,8 +9,9 @@
 // cl_access and deliberately NOT in the role catalogue (Administrator holds
 // every catalogue function, so a catalogue key would hand it to them):
 //   entry         add / edit delivery records and collection lines, reassign
-//                 a rejected collection, flag, change an expense's category
-//                 (includes view_entries)
+//                 a rejected collection, flag (includes view_entries). Round
+//                 229 (owner): deliveries ONLY — no expenses, other income or
+//                 transactions; the four rights are independent.
 //   view_entries  delivery records, collections, balances due — read only
 //   cash_holder   own wallet: accept / reject collections sent to them,
 //                 transfer, deposit to bank, own expenses

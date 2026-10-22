@@ -8839,3 +8839,14 @@ Owner, 21 Oct 2026: "after upload it was showing no records found". The upload i
 - A month with no lines now says "No statement lines dated in <month>" and offers buttons for the months the uploaded statements cover.
 - Verified: on August (empty) the page offers Sept 2026; uploading an October ICICI PDF from August opened October with both lines sorted; no page errors; build clean.
 - Files (3): frontend src/pages/cost/CostBankTab.jsx, src/lib/version.js · root README.md
+
+## Round 229 — C Ledger: the four rights are independent; Entry is deliveries only (v10.61)
+
+Owner, 22 Oct 2026: "when I tick Entry only, the expenses view is also enabled — I want independent controls: Entry = data entry of deliveries and view of those entries; expenses should not show." Built on v10.60. No /setup needed.
+- **Entry**: add / edit delivery records and collection lines (incl. paid to bank), reassign a rejected collection, flag — and see those records. Nothing else: no Expenses & transactions tab, no expense changes, no other income.
+- **View entry data**: delivery records, read only. **Cash holder**: own wallet only — collections sent to them, transfers, deposits, own expenses and own other income. **View transactions**: every wallet, transfers, deposits, expenses, other income — read only.
+- Expenses and other income are changed only by the cash holder who spent / received them. Other income is recorded only by the cash holder who received it (into their cash); the "received by another cash holder / straight into the bank" choice is gone. Any such income already waiting for someone is still accepted or rejected from their wallet as before.
+- Enforced in the API (routes/cLedger.js), not only hidden on screen; the Super Admin → C Ledger users descriptions say the same.
+- Verified on the local test data: Entry-only → records and delivery notes 200; transactions, wallet, expense change, other income 403; View transactions-only → records 403, transactions 200 read only; View entry data-only → records only, can't flag; cash holder still edits own expense and adds own income; Round 224 suite passes; screens with no page errors; `npm run check` green; build clean.
+
+Files (6) — backend: src/lib/cLedger.js, src/routes/cLedger.js · frontend: src/lib/version.js; src/pages/SuperAdmin.jsx; src/pages/cost/CostCLedgerTab.jsx · root: README.md

@@ -777,14 +777,15 @@ function FragmentRows({ children }) {
 }
 
 // ===================== C Ledger users (Round 224) =====================
+// Round 229: the four rights are independent of each other (owner).
 // C Ledger (Cost module) is closed to everyone — Administrator and Super Admin
 // included — unless ticked here by name. Kept apart from the role catalogue on
 // purpose: Administrator holds every catalogue function. Owner, 21 Oct 2026.
 const CL_RIGHTS = [
-  ["entry", "Entry", "Add and edit delivery records and collections, reassign rejected collections, flag, change an expense's category. Includes View entry data."],
+  ["entry", "Entry", "Add and edit delivery records and collections, reassign rejected collections, flag them — and see those records. Nothing else: no expenses, income or transactions."],
   ["view_entries", "View entry data", "See delivery records, collections, balances due. Read only."],
-  ["cash_holder", "Cash holder", "Own wallet: accept or reject collections sent to them, transfer, deposit to bank, add expenses. Sees only their own."],
-  ["view_txns", "View transactions", "See every cash holder's balance, transfers, bank deposits and expenses. Read only."],
+  ["cash_holder", "Cash holder", "Own wallet only: accept or reject collections sent to them, transfer, deposit to bank, own expenses and other income."],
+  ["view_txns", "View transactions", "See every cash holder's balance, transfers, bank deposits, expenses and other income. Read only."],
 ];
 function CLedgerUsersTab({ setError, setNotice }) {
   const [d, setD] = useState(null);

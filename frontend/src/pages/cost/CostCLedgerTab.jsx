@@ -77,7 +77,8 @@ export default function CostCLedgerTab() {
   const views = [
     a.view_entries && ["entries", "Deliveries & collections"],
     a.cash_holder && ["wallet", "My wallet"],
-    (a.view_txns || a.entry) && ["txns", a.view_txns ? "Expenses & transactions" : "Expenses"],
+    // Round 229 (owner): independent rights — Entry is deliveries only.
+    a.view_txns && ["txns", "Expenses & transactions"],
   ].filter(Boolean);
   const cur = views.find((v) => v[0] === view)?.[0] || views[0][0];
   return (
@@ -611,15 +612,6 @@ function IncomeForm({ me, rec, onClose, onSaved }) {
           <label style={LBL}>Amount (₹)<input type="number" inputMode="decimal" min="0" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} style={INPUT} /></label>
         </div>
         <label style={LBL}>What was sold, to whom<input value={f.source} onChange={(e) => setF({ ...f, source: e.target.value })} placeholder="e.g. 400 kg scrap steel to …" style={INPUT} /></label>
-        {a.entry && (
-          <label style={LBL}>Received by
-            <select value={f.received_by} onChange={(e) => setF({ ...f, received_by: e.target.value })} style={INPUT}>
-              {a.cash_holder && <option value="me">Me (in my cash)</option>}
-              {others.map((h) => <option key={h.id} value={String(h.id)}>{h.short} (they accept it)</option>)}
-              <option value="bank">Straight into the bank</option>
-            </select>
-          </label>
-        )}
         <label style={{ display: "flex", gap: 9, alignItems: "center", fontSize: 14, fontWeight: 600, background: "var(--amber-bg)", border: "1px solid #E7D8AE", borderRadius: 8, padding: "10px 12px" }}>
           <input type="checkbox" checked={f.flagged} onChange={(e) => setF({ ...f, flagged: e.target.checked })} style={{ width: 20, height: 20, margin: 0 }} />
           <span style={{ color: "#7A4F00", display: "inline-flex" }}><FlagIcon size={14} /></span>Flag this income
@@ -639,7 +631,9 @@ function IncomeForm({ me, rec, onClose, onSaved }) {
 
 // ================================================ expenses & transactions ===
 function TxnsView({ me, month }) {
-  const canEdit = me.access.entry;
+  // Round 229: read only — expenses and income are changed only by the cash
+  // holder who spent / received them (My wallet).
+  const canEdit = false;
   const { data: d, error, reload } = useCostData(`/cost/c-ledger/transactions?month=${month}`);
   const [filter, setFilter] = useState("all");
   const [who, setWho] = useState("");
