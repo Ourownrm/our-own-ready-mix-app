@@ -1595,7 +1595,12 @@ function ReceiptsTab({ role }) {
   // Round 162 — the register's filters, plus the master lists that drive their
   // dropdowns. Materials and suppliers are loaded once; the receipt list
   // reloads whenever a filter changes.
-  const [filters, setFilters] = useState({ from_date: "", to_date: "", material_id: "", supplier_id: "" });
+  const [filters, setFilters] = useState({ from_date: "", to_date: "", material_id: "", supplier_id: "", status: "" });
+  // Round 230 — the awaiting-receipt orders and the register are two views,
+  // so a long list of open orders no longer pushes the register off-screen;
+  // the orders are a compact table with their own search.
+  const [view, setView] = useState("awaiting");
+  const [orderSearch, setOrderSearch] = useState("");
   const [materials, setMaterials] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   // Round 168 — the silos a receipt can be assigned to. Loaded once; the
@@ -1755,6 +1760,8 @@ function ReceiptsTab({ role }) {
     if (filters.from_date || filters.to_date) meta.push(`${filters.from_date || "…"} to ${filters.to_date || "…"}`);
     if (filters.material_id) meta.push(`Material: ${materials.find((m) => String(m.id) === String(filters.material_id))?.name || filters.material_id}`);
     if (filters.supplier_id) meta.push(`Supplier: ${suppliers.find((s) => String(s.id) === String(filters.supplier_id))?.name || filters.supplier_id}`);
+    const STATUS_NAME = { accepted: "Accepted", pending: "Pending — not accepted yet", no_ticket: "No ticket — waiting for Admin", rejected: "Rejected", short: "With short / excess", no_weighbridge: "Not weighed" };
+    if (filters.status) meta.push(`Status: ${STATUS_NAME[filters.status] || filters.status}`);
     if (!meta.length) meta.push("All receipts");
     printMaterialReport({
       title: "Material Receipts Register",
@@ -1772,34 +1779,91 @@ function ReceiptsTab({ role }) {
       {can("material.receipt-wb-approve", "view") && <NoTicketQueue onChanged={load} />}
       {can("material.receipts", "edit") && <UnassignedSiloLoads key={unassignedTick} silos={silos} onChanged={() => { setUnassignedTick((t) => t + 1); loadHistory().catch(() => {}); }} />}
 
-      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Approved orders — awaiting receipt</div>
-      {receivable.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 16 }}>Nothing outstanding right now.</div>}
-      {/* Round 163 — grouped by material, same as the Orders page. */}
-      {groupByMaterial(receivable).map((g) => (
-        <div key={g.material_name}>
-          <MaterialHeading name={g.material_name} count={g.items.length}
-            extra={`${fmtNum(g.items.reduce((s, o) => s + (Number(o.ordered_qty) - Number(o.received_qty)), 0))} ${g.items[0].purchase_unit} outstanding`} />
-          {g.items.map((o) => {
-            const outstanding = Number(o.ordered_qty) - Number(o.received_qty);
-            return (
-              <div key={o.id} className="card" style={{ marginBottom: 8 }}>
-                <div style={{ fontWeight: 600, fontSize: 13.5 }}>
-                  <span style={{ fontFamily: "monospace", color: "var(--info)", marginRight: 8 }}>{orderNo(o.id)}</span>
-                  {o.supplier_name}
-                </div>
-                <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
-                  {SCOPE_LABEL[o.scope]}{o.transporter_name ? ` via ${o.transporter_name}` : ""}
-                </div>
-                <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
-                  Ordered {fmtNum(o.ordered_qty)} {o.purchase_unit} · Received so far {fmtNum(o.received_qty)} · Outstanding {fmtNum(outstanding)}
-                </div>
-                {mayReceive && <button type="button" style={{ fontSize: 11.5, padding: "5px 10px", marginTop: 8 }} onClick={() => openReceive(o)}>Receive</button>}
-              </div>
-            );
-          })}
-        </div>
-      ))}
+      {/* Round 230 — two views instead of one long page. */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        <button type="button" className={`btn-tab ${view === "awaiting" ? "active" : ""}`} onClick={() => setView("awaiting")}>
+          Approved orders — awaiting receipt{receivable.length ? ` (${receivable.length})` : ""}
+        </button>
+        <button type="button" className={`btn-tab ${view === "register" ? "active" : ""}`} onClick={() => setView("register")}>Receipt register</button>
+      </div>
 
+      {view === "awaiting" && (() => {
+        const q = orderSearch.trim().toLowerCase();
+        const shown = q ? receivable.filter((o) => [orderNo(o.id), o.supplier_name, o.material_name, o.source_name, o.transporter_name]
+          .some((v) => String(v || "").toLowerCase().includes(q))) : receivable;
+        return (
+          <>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+              <input type="search" value={orderSearch} onChange={(e) => setOrderSearch(e.target.value)} placeholder="Search order no., supplier, material…"
+                style={{ fontSize: 12.5, flex: "1 1 220px", maxWidth: 360 }} />
+              {q && <span style={{ fontSize: 11.5, color: "var(--slate)" }}>{shown.length} of {receivable.length}</span>}
+            </div>
+            {receivable.length === 0 ? <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 16 }}>Nothing outstanding right now.</div>
+              : shown.length === 0 ? <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 16 }}>No order matches.</div>
+              : (
+                <div className="card" style={{ padding: 0, overflowX: "auto", marginBottom: 16 }}>
+                  <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 640 }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)", color: "var(--slate)", fontSize: 11 }}>
+                        <th style={thCell}>Order</th>
+                        <th style={thCell}>Supplier</th>
+                        <th style={{ ...thCell, textAlign: "right" }}>Ordered</th>
+                        <th style={{ ...thCell, textAlign: "right" }}>Received</th>
+                        <th style={{ ...thCell, textAlign: "right" }}>Outstanding</th>
+                        <th style={thCell}></th>
+                      </tr>
+                    </thead>
+                    {/* Grouped by material, as on the Orders page — a heading row per material. */}
+                    {groupByMaterial(shown).map((g) => {
+                      const unit = g.items[0].purchase_unit;
+                      const left = g.items.reduce((t, o) => t + (Number(o.ordered_qty) - Number(o.received_qty)), 0);
+                      return (
+                        <tbody key={g.material_name}>
+                          <tr style={{ background: "var(--concrete)" }}>
+                            <td colSpan={6} style={{ ...tdCell, fontWeight: 700, fontSize: 12.5 }}>
+                              {g.material_name} <span style={{ fontWeight: 400, color: "var(--slate)" }}>· {g.items.length} order{g.items.length === 1 ? "" : "s"} · {fmtNum(left)} {unit} outstanding</span>
+                            </td>
+                          </tr>
+                          {g.items.map((o) => {
+                            const outstanding = Number(o.ordered_qty) - Number(o.received_qty);
+                            const pct = Number(o.ordered_qty) > 0 ? Math.min(100, Math.max(0, (Number(o.received_qty) / Number(o.ordered_qty)) * 100)) : 0;
+                            return (
+                              <tr key={o.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                                <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
+                                  <span style={{ fontFamily: "monospace", color: "var(--info)", fontWeight: 600 }}>{orderNo(o.id)}</span>
+                                  {o.approved_at && <div style={{ fontSize: 10.5, color: "var(--slate)" }}>approved {fmtDate(o.approved_at)}</div>}
+                                </td>
+                                <td style={tdCell}>
+                                  {o.supplier_name}
+                                  <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
+                                    {[o.source_name, SCOPE_LABEL[o.scope], o.transporter_name ? `via ${o.transporter_name}` : null].filter(Boolean).join(" · ")}
+                                  </div>
+                                </td>
+                                <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(o.ordered_qty)} {o.purchase_unit}</td>
+                                <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>
+                                  {fmtNum(o.received_qty)}
+                                  <div style={{ height: 4, background: "var(--border)", borderRadius: 2, marginTop: 4, minWidth: 60 }} aria-hidden="true">
+                                    <div style={{ width: `${pct}%`, height: 4, background: "var(--signal-green)", borderRadius: 2 }} />
+                                  </div>
+                                </td>
+                                <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap", fontWeight: 600 }}>{fmtNum(outstanding)} {o.purchase_unit}</td>
+                                <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>
+                                  {mayReceive && <button type="button" style={{ fontSize: 11.5, padding: "4px 12px" }} onClick={() => openReceive(o)}>Receive</button>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      );
+                    })}
+                  </table>
+                </div>
+              )}
+          </>
+        );
+      })()}
+
+      {view === "register" && <>
       {/* ROUND 162 — the history is a proper register now, not a stack of
           cards: one row per receipt, with the receipt number, the arrival
           date, the weighbridge link, and the numbers lined up so a month of
@@ -1819,8 +1883,18 @@ function ReceiptsTab({ role }) {
             <option value="">All suppliers</option>
             {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
-          {(filters.from_date || filters.to_date || filters.material_id || filters.supplier_id) &&
-            <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setFilters({ from_date: "", to_date: "", material_id: "", supplier_id: "" })}>Clear</button>}
+          {/* Round 230 — receipt status. */}
+          <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })} style={{ fontSize: 11.5 }} aria-label="Receipt status">
+            <option value="">All statuses</option>
+            <option value="accepted">Accepted (in stock)</option>
+            <option value="pending">Pending — not accepted yet</option>
+            <option value="no_ticket">No ticket — waiting for Admin</option>
+            <option value="rejected">Rejected</option>
+            <option value="short">With short / excess</option>
+            <option value="no_weighbridge">Not weighed</option>
+          </select>
+          {(filters.from_date || filters.to_date || filters.material_id || filters.supplier_id || filters.status) &&
+            <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => setFilters({ from_date: "", to_date: "", material_id: "", supplier_id: "", status: "" })}>Clear</button>}
           {history.length > 0 &&
             <button type="button" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => printReceipts()}>Print (PDF)</button>}
         </div>
@@ -1920,6 +1994,8 @@ function ReceiptsTab({ role }) {
           </table>
         </div>
       )}
+
+      </>}
 
       {receiving && (
         <Modal title={`Receive — ${receiving.material_name}`} onClose={() => setReceiving(null)} wide>
@@ -2807,41 +2883,47 @@ function OpenOrdersReport() {
 function WeighbridgeComparisonReport() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
-  // Round 221 — filter by material and supplier.
+  // Round 221 — filter by material and supplier. Round 230 — the filters sit
+  // in one bar with the dates and apply as soon as they change; "short /
+  // excess only" and a totals row added.
   const [materialId, setMaterialId] = useState("");
   const [supplierId, setSupplierId] = useState("");
+  const [diffOnly, setDiffOnly] = useState(false);
   const [options, setOptions] = useState({ materials: [], suppliers: [] });
-  const [rows, setRows] = useState([]);
+  const [all, setAll] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function run(over = {}) {
-    setLoading(true); setError("");
-    try {
-      const qs = new URLSearchParams();
-      if (from) qs.set("from_date", from);
-      if (to) qs.set("to_date", to);
-      const m = over.materialId ?? materialId, sp = over.supplierId ?? supplierId;
-      if (m) qs.set("material_id", m);
-      if (sp) qs.set("supplier_id", sp);
-      setRows(await apiRequest(`/material-module/reports/weighbridge-comparison?${qs}`));
-    } catch (err) { setError(err.message); } finally { setLoading(false); }
-  }
   useEffect(() => {
-    run();
-    apiRequest("/material-module/reports/weighbridge-comparison/options").then(setOptions).catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    apiRequest("/material-module/reports/weighbridge-comparison/options").then(setOptions).catch((e) => setError(`Filters: ${e.message}`));
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setError("");
+    const qs = new URLSearchParams();
+    if (from) qs.set("from_date", from);
+    if (to) qs.set("to_date", to);
+    if (materialId) qs.set("material_id", materialId);
+    if (supplierId) qs.set("supplier_id", supplierId);
+    apiRequest(`/material-module/reports/weighbridge-comparison?${qs}`)
+      .then((r) => { if (alive) setAll(r); })
+      .catch((err) => { if (alive) setError(err.message); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [from, to, materialId, supplierId]);
+
   // Suppliers of the chosen material only (all of them when no material is chosen).
   const supplierChoices = materialId ? options.suppliers.filter((x) => x.material_ids.includes(Number(materialId))) : options.suppliers;
   const pickMaterial = (v) => {
     setMaterialId(v);
-    const keep = !supplierId || !v || options.suppliers.find((x) => String(x.id) === supplierId)?.material_ids.includes(Number(v));
-    const sp = keep ? supplierId : "";
-    if (!keep) setSupplierId("");
-    run({ materialId: v, supplierId: sp });
+    if (supplierId && v && !options.suppliers.find((x) => String(x.id) === supplierId)?.material_ids.includes(Number(v))) setSupplierId("");
   };
-  const pickSupplier = (v) => { setSupplierId(v); run({ supplierId: v }); };
   const filterName = [options.materials.find((x) => String(x.id) === materialId)?.name, options.suppliers.find((x) => String(x.id) === supplierId)?.name].filter(Boolean).join(" ");
+  const rows = diffOnly ? all.filter((r) => Number(r.short_qty) !== 0 || r.tolerance_exceeded) : all;
+  const anyFilter = from || to || materialId || supplierId || diffOnly;
+  // Totals add up only when every row is in one purchase unit.
+  const units = [...new Set(rows.map((r) => r.purchase_unit))];
+  const sum = (k) => rows.reduce((t, r) => t + (Number(r[k]) || 0), 0);
 
   // Round 214 — the same rows as on screen, one sheet (xlsx is loaded only when asked).
   async function exportXlsx() {
@@ -2862,25 +2944,33 @@ function WeighbridgeComparisonReport() {
     XLSX.writeFile(wb, `Weighbridge comparison${filterName ? ` ${filterName}` : ""}${from ? ` ${from}` : ""}${to ? ` to ${to}` : ""}.xlsx`.replace(/[\\/:*?"<>|]/g, "-"));
   }
 
+  const lbl = { fontSize: 10.5, color: "var(--slate)", display: "block", marginBottom: 2 };
   return (
     <div>
-      <DateRangeBar from={from} to={to} setFrom={setFrom} setTo={setTo} />
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-        <div style={{ flex: "1 1 180px" }}><Field label="Material">
+      <div className="card" style={{ marginBottom: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, alignItems: "end" }}>
+        <div><label style={lbl}>From</label><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={inputStyle} /></div>
+        <div><label style={lbl}>To</label><input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={inputStyle} /></div>
+        <div><label style={lbl}>Material</label>
           <select value={materialId} onChange={(e) => pickMaterial(e.target.value)} style={inputStyle}>
             <option value="">All materials</option>
             {options.materials.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
           </select>
-        </Field></div>
-        <div style={{ flex: "1 1 180px" }}><Field label="Supplier">
-          <select value={supplierId} onChange={(e) => pickSupplier(e.target.value)} style={inputStyle}>
+        </div>
+        <div><label style={lbl}>Supplier</label>
+          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} style={inputStyle}>
             <option value="">{materialId ? "All suppliers of this material" : "All suppliers"}</option>
             {supplierChoices.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
           </select>
-        </Field></div>
+        </div>
+        <label style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center", paddingBottom: 6 }}>
+          <input type="checkbox" checked={diffOnly} onChange={(e) => setDiffOnly(e.target.checked)} />Short / excess only
+        </label>
+        <div style={{ display: "flex", gap: 6, paddingBottom: 2 }}>
+          {anyFilter && <button type="button" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => { setFrom(""); setTo(""); setMaterialId(""); setSupplierId(""); setDiffOnly(false); }}>Clear</button>}
+          <button type="button" onClick={exportXlsx} disabled={!rows.length} style={{ fontSize: 12, padding: "6px 10px" }}>Export to Excel</button>
+        </div>
       </div>
-      <button type="button" onClick={() => run()} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10 }}>Run</button>
-      <button type="button" onClick={exportXlsx} disabled={!rows.length} style={{ fontSize: 12, padding: "6px 12px", marginBottom: 10, marginLeft: 6 }}>Export to Excel</button>
+      {!loading && rows.length > 0 && <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 6 }}>{rows.length} load{rows.length === 1 ? "" : "s"}{all.length >= 500 ? " — the latest 500; narrow the dates to see older ones" : ""}</div>}
       <ReportShell error={error} loading={loading} empty={!loading && rows.length === 0}>
         <table>
           <thead><tr><th>Date</th><th>Material</th><th>Supplier</th><th>Billed qty</th><th>Weighbridge qty</th><th>Accepted</th><th>Short/Excess</th><th>Debit note</th></tr></thead>
@@ -2889,7 +2979,7 @@ function WeighbridgeComparisonReport() {
               <tr key={r.id} style={r.tolerance_exceeded ? { background: "var(--alert-red-bg)" } : undefined}>
                 <td>{fmtDate(r.received_at)}</td>
                 <td>{r.material_name}{r.source_name ? <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{r.source_name} · {fmtNum(r.source_kg_per_unit, 2)} kg/{r.purchase_unit}</div> : null}</td>
-                <td>{r.supplier_name}</td>
+                <td>{r.supplier_name}{r.vehicle_number ? <div style={{ fontSize: 10.5, color: "var(--slate)" }}>{r.vehicle_number}</div> : null}</td>
                 {/* Round 213 — billed, weighbridge and accepted side by side in the
                     purchase unit; accepted is either the billed or our weighbridge figure. */}
                 <td>{fmtNum(r.supplier_qty)} {r.purchase_unit}</td>
@@ -2908,6 +2998,16 @@ function WeighbridgeComparisonReport() {
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr style={{ fontWeight: 700, borderTop: "2px solid var(--border)" }}>
+              <td colSpan={3}>Total · {rows.length} load{rows.length === 1 ? "" : "s"}{units.length > 1 ? <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--slate)" }}>quantities are in different units — choose one material to add them up</div> : null}</td>
+              <td>{units.length === 1 ? `${fmtNum(sum("supplier_qty"))} ${units[0]}` : ""}</td>
+              <td>{units.length === 1 ? `${fmtNum(sum("weighbridge_qty"))} ${units[0]}` : ""}</td>
+              <td>{units.length === 1 ? `${fmtNum(sum("accepted_qty"))} ${units[0]}` : ""}</td>
+              <td>{units.length === 1 ? fmtNum(sum("short_qty")) : ""}</td>
+              <td>{fmtMoney(sum("debit_note_amount"))}</td>
+            </tr>
+          </tfoot>
         </table>
       </ReportShell>
     </div>

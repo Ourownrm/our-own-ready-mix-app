@@ -8,6 +8,7 @@ import { usePermissions } from "../../lib/PermissionContext.jsx";
 import { inr, inr2, fmtDate } from "../../lib/quotationTerms.js";
 import { daysAgoStr, todayStr } from "../../lib/istDate.js";
 import { TH, TD, NUM, row, money, Banner, Empty, Table, Modal, Field } from "./ui.jsx";
+import MergeModal from "./MergeModal.jsx";
 
 export default function Invoices({ params, go }) {
   const view = params.get("view") || "invoices";
@@ -148,6 +149,16 @@ function Held({ canRetry, go }) {
     try { const r = await apiRequest("/accounts/invoices/held/retry", { method: "POST" }); setMsg(`${r.created} invoice(s) raised; ${r.still_held} still without a price.`); setTick((t) => t + 1); }
     catch (e) { setError(e.message); }
   }
+  // Round 230 — one card per customer · project whose price list looks to be
+  // on a duplicate record (same customer / project typed twice).
+  const [merging, setMerging] = useState(null);
+  const groups = [];
+  for (const r of rows || []) {
+    if (!r.look_alikes?.length) continue;
+    let g = groups.find((x) => x.customer_id === r.customer_id && x.site_id === r.site_id);
+    if (!g) groups.push(g = { customer_id: r.customer_id, customer_name: r.customer_name, site_id: r.site_id, site_name: r.site_name, look_alikes: r.look_alikes, loads: 0, m3: 0, grades: new Set() });
+    g.loads++; g.m3 += Number(r.loaded_quantity_m3) || 0; g.grades.add(r.grade_name);
+  }
   return (
     <>
       <Banner>{error}</Banner><Banner kind="ok">{msg}</Banner>
@@ -155,6 +166,36 @@ function Held({ canRetry, go }) {
         <span style={{ fontSize: 13, color: "var(--slate)" }}>Delivered loads with no price for the customer, site and grade on the order date. They invoice as soon as a quotation for the site is accepted.</span>
         {canRetry && <button type="button" style={{ marginLeft: "auto" }} onClick={retry}>Try again now</button>}
       </div>
+      {groups.map((g) => (
+        <div key={`${g.customer_id}|${g.site_id}`} className="card" style={{ marginBottom: 10, borderLeft: "4px solid var(--amber)" }}>
+          <div style={{ fontSize: 13.5 }}>
+            <b>{g.customer_name} · {g.site_name}</b>
+            <span style={{ color: "var(--slate)" }}> — {g.loads} load{g.loads === 1 ? "" : "s"}, {inr(g.m3, 2)} m³ held ({[...g.grades].join(", ")})</span>
+          </div>
+          <div style={{ fontSize: 12.5, color: "var(--slate)", margin: "4px 0 8px" }}>A price list is on a look-alike {g.look_alikes.every((a) => a.same_customer) ? "project" : "customer / project"} — probably the same one entered twice.</div>
+          {g.look_alikes.map((a) => {
+            const covers = [...g.grades].every((gr) => a.grades.includes(gr));
+            return (
+              <div key={a.site_id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+                <div style={{ flex: "1 1 260px", fontSize: 13 }}>
+                  {a.same_customer ? <span style={{ color: "var(--slate)" }}>same customer · </span> : <b>{a.customer_name} · </b>}<b>{a.site_name}</b>
+                  <div style={{ fontSize: 11.5, color: "var(--slate)" }}>
+                    {a.quotation ? `${a.quotation.quote_no} (${a.quotation.status.replace("_", " ")})` : "price list"}
+                    {a.grades.length ? ` · prices for ${a.grades.join(", ")}` : " · no live price yet"}
+                    {a.orders ? ` · ${a.orders} order${a.orders === 1 ? "" : "s"} of its own` : ""}
+                    {!covers && a.grades.length > 0 && <span style={{ color: "var(--amber)" }}> · not every held grade is priced there</span>}
+                  </div>
+                </div>
+                <button type="button" style={{ fontSize: 12.5, padding: "5px 12px" }} onClick={() => setMerging({ keep: g, merge: a })}>Same project — merge</button>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {merging && (
+        <MergeModal keep={merging.keep} merge={merging.merge} onClose={() => setMerging(null)}
+          onDone={(r) => { setMerging(null); setMsg(`Merged ${r.site?.from || r.customer?.from} into ${r.site?.to || r.customer?.to}. ${r.created} invoice(s) raised; ${r.still_held} still without a price.`); setTick((t) => t + 1); }} />
+      )}
       {!rows ? <Empty>Loading…</Empty> : !rows.length ? <Empty>Nothing held.</Empty> : (
         <Table head={<><th style={TH}>Ticket · date</th><th style={TH}>Customer · site</th><th style={TH}>Grade</th><th style={{ ...TH, textAlign: "right" }}>m³</th><th style={TH}>Quotation</th></>}>
           {rows.map((r) => (

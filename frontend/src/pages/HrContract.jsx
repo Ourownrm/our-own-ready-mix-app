@@ -578,7 +578,7 @@ export function ContractorBillsTab() {
                   <Fragment key={c.id}>
                     <tr style={{ borderTop: "1px solid var(--border)" }}>
                       <td style={TD}><b>{c.name}</b><div style={{ fontSize: 12, color: "var(--slate)" }}>{c.gst_registered ? `GST ${Number(c.gst_rate)}%` : "no GST"} · {c.pan ? (c.kind === "firm" ? "TDS 2%" : "TDS 1%") : "no PAN"}</div></td>
-                      <td style={TD}>{c.gangs.length ? c.gangs.map((g) => <div key={g.id} style={{ fontSize: 12 }}>{g.name} · <span style={{ color: g.closed ? "var(--signal-green)" : "#8A5A00" }}>{g.closed ? "closed" : "not closed"}</span></div>) : <span style={{ fontSize: 12, color: "var(--slate)" }}>—</span>}{c.workers ? <div style={{ fontSize: 12, color: "var(--slate)" }}>{c.workers} individual worker{c.workers > 1 ? "s" : ""}</div> : null}</td>
+                      <td style={TD}>{c.gangs.length ? c.gangs.map((g) => <div key={g.id} style={{ fontSize: 12 }}>{g.name} · <span style={{ color: g.closed ? "var(--signal-green)" : "#8A5A00" }}>{g.closed ? "closed" : "not closed"}</span></div>) : <span style={{ fontSize: 12, color: "var(--slate)" }}>—</span>}{c.workers ? <div style={{ fontSize: 12, color: "var(--slate)" }}>{c.workers} individual worker{c.workers > 1 ? "s" : ""}</div> : null}{c.gang_advances_total > 0 ? <div style={{ fontSize: 12, color: "var(--info)" }}>advances paid {money(c.gang_advances_total)}</div> : null}</td>
                       <td style={{ ...TD, textAlign: "right" }}>{b ? money(b.taxable) : "—"}</td>
                       <td style={{ ...TD, textAlign: "right" }}>{b ? (Number(b.gst_amount) ? money(b.gst_amount) : "—") : "—"}</td>
                       <td style={{ ...TD, textAlign: "right" }}>{b ? (Number(b.tds_amount) ? `− ${money(b.tds_amount)}` : "—") : "—"}</td>
@@ -630,6 +630,11 @@ function BillDetail({ bill, contractor, busy, run }) {
             {row(`TDS${Number(bill.tds_rate) ? ` @ ${Number(bill.tds_rate)}%` : ""}`, Number(bill.tds_amount) ? `− ${money(bill.tds_amount)}` : "—", { sub: bill.tds_note, red: Number(bill.tds_amount) > 0 })}
             {row("Payable for the month", money(bill.net_payable), { bold: true })}
             {bill.paid_against > 0 && row("Paid against this bill", `− ${money(bill.paid_against)}`)}
+            {/* Round 230 — gang advances paid against this month (already in the ledger as advances). */}
+            {contractor.gang_advances_total > 0 && row("Gang advances already paid", `− ${money(contractor.gang_advances_total)}`,
+              { sub: contractor.gang_advances.map((a) => `${a.gang_name} ${money(a.amount)} on ${a.paid_on}`).join(" · ") })}
+            {(bill.paid_against > 0 || contractor.gang_advances_total > 0) && row("Still to pay on this bill",
+              money(Math.max(0, Number(bill.net_payable) - Number(bill.paid_against || 0) - Number(contractor.gang_advances_total || 0))), { bold: true })}
           </tbody>
         </table>
         <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 6 }}>Financial year {d.fy}: this contractor's bills with this one {money(d.fy_total_with_this)}.</div>

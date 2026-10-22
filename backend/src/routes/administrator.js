@@ -1,7 +1,8 @@
 import { upperName } from "../lib/names.js";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { query } from "../db.js";
+import { pool, query } from "../db.js";
+import { mergeSite } from "../lib/recordMerge.js";
 import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 
@@ -408,26 +409,22 @@ router.get("/sites/duplicates", requireRole("administrator", "manager"), async (
 router.post("/sites/:duplicateId/merge-into/:canonicalId", requireRole("administrator", "manager"), async (req, res) => {
   const { duplicateId, canonicalId } = req.params;
   if (duplicateId === canonicalId) return res.status(400).json({ error: "Can't merge a site into itself." });
-  const { rows: both } = await query("SELECT id, customer_id FROM sites WHERE id IN ($1, $2)", [duplicateId, canonicalId]);
-  if (both.length !== 2) return res.status(404).json({ error: "One of these sites wasn't found." });
-  if (both[0].customer_id !== both[1].customer_id) {
-    return res.status(400).json({ error: "These sites belong to different customers — merging them would move records to the wrong customer." });
+  // Round 230 — the move is now lib/recordMerge.js: every table that refers
+  // to a site (found from the database's foreign keys), so quotations, C
+  // Ledger deliveries, visits, access links … move too, not just the five
+  // tables this route used to list by hand.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await mergeSite(client, Number(duplicateId), Number(canonicalId), req.user.id, "Duplicate sites review");
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
+  } finally {
+    client.release();
   }
-
-  await query("UPDATE customer_orders SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
-  await query("UPDATE rate_master SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
-  await query("UPDATE bookings SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
-  // A forecast is unique per site — if the canonical site already has one,
-  // the duplicate's would collide, so only move it over if there isn't one.
-  await query(
-    `UPDATE sales_forecasts SET site_id = $1 WHERE site_id = $2
-     AND NOT EXISTS (SELECT 1 FROM sales_forecasts WHERE site_id = $1)`,
-    [canonicalId, duplicateId]
-  );
-  await query("DELETE FROM sales_forecasts WHERE site_id = $2", [duplicateId]); // any leftover (collided) one
-  await query("UPDATE notifications SET site_id = $1 WHERE site_id = $2", [canonicalId, duplicateId]);
-  await query("UPDATE sites SET is_active = false WHERE id = $1", [duplicateId]);
-
   res.json({ ok: true });
 });
 

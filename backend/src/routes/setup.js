@@ -33,6 +33,7 @@ import { migrateRound218 } from "../lib/round218Schema.js";
 import { migrateRound221 } from "../lib/round221Schema.js";
 import { migrateRound223 } from "../lib/bankBook.js";
 import { migrateRound224, migrateRound227 } from "../lib/cLedger.js";
+import { migrateRound230 } from "../lib/round230Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4150,6 +4151,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound224(pool, log);
     // ROUND 227 — C Ledger: paid to bank, other income.
     await migrateRound227(pool, log);
+    // ROUND 230 — customer / project merge, pump gang advances.
+    await migrateRound230(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

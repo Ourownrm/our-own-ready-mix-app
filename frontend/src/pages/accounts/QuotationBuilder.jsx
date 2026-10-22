@@ -10,6 +10,7 @@ import { todayStr } from "../../lib/istDate.js";
 import { splitRate, inr2, filledTerms } from "../../lib/quotationTerms.js";
 import { quotationPdfBlobUrl } from "../../lib/quotationPdf.js";
 import { TH, TD, NUM, row, Banner, Field, Modal, Empty } from "./ui.jsx";
+import { lookAlikes } from "../../lib/quotationImport.js";
 
 const blankLine = () => ({ mix_grade_id: "", mix_design_id: "", item_label: "", specification: "", qty_m3: "", rate_total: "" });
 const money0 = (n) => (n == null ? "—" : `₹${Math.round(Number(n)).toLocaleString("en-IN")}`);
@@ -426,6 +427,12 @@ export default function QuotationBuilder({ meta, id, customerId, siteId, onCance
       )}
       {quick && (
         <QuickAdd kind={quick} customerId={f.customer_id} salespersons={salespersons} onClose={() => setQuick(null)}
+          existing={quick === "customer" ? customers : siteOptions}
+          onPick={(rec) => {
+            if (quick === "customer") setF((p) => ({ ...p, customer_id: String(rec.id), site_id: "", billing_address_id: "" }));
+            else chooseSite(String(rec.id));
+            setQuick(null);
+          }}
           onAdded={(rec) => {
             if (quick === "customer") { setCustomers((c) => [...c, rec].sort((a, b) => a.name.localeCompare(b.name))); setF((p) => ({ ...p, customer_id: String(rec.id), site_id: "" })); }
             else { setSites((s) => [...s, rec]); set("site_id", String(rec.id)); }
@@ -557,7 +564,7 @@ function AddressEditor({ customer, onClose, onSaved }) {
   );
 }
 
-function QuickAdd({ kind, customerId, salespersons, onClose, onAdded }) {
+function QuickAdd({ kind, customerId, salespersons, existing = [], onClose, onAdded, onPick }) {
   const [f, setF] = useState({ name: "", contact_number: "", billing_address: "", address: "", assigned_sales_representative_id: salespersons[0]?.id || "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -576,6 +583,24 @@ function QuickAdd({ kind, customerId, salespersons, onClose, onAdded }) {
       <form onSubmit={save}>
         <Banner>{error}</Banner>
         <Field label={kind === "customer" ? "Customer name" : "Site name"} hint="Saved in CAPITALS."><input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value.toUpperCase() })} /></Field>
+        {/* Round 230 — a near-copy of a name already in the app makes a second
+            record, and its price list then never matches the orders on the
+            first. Offer the existing one before adding. */}
+        {(() => {
+          const near = f.name.trim().length >= 3 ? lookAlikes(f.name, existing) : [];
+          if (!near.length) return null;
+          return (
+            <div style={{ border: "1px solid var(--amber)", background: "var(--amber-bg)", borderRadius: 8, padding: "8px 10px", marginBottom: 10, fontSize: 12.5 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Already in the app? A second {kind === "customer" ? "customer" : "project"} with a near-same name gets its own price list, and orders on the first one won't invoice.</div>
+              {near.map((x) => (
+                <div key={x.id} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                  <span style={{ flex: 1 }}>{x.name}{x.score === 1 ? " — same name" : ""}</span>
+                  <button type="button" style={{ fontSize: 12, padding: "3px 10px" }} onClick={() => onPick(x)}>Use this</button>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         {kind === "customer" ? <>
           <Field label="Contact number"><input value={f.contact_number} onChange={(e) => setF({ ...f, contact_number: e.target.value })} /></Field>
           <Field label="Address (printed on the quotation)"><textarea rows={3} value={f.billing_address} onChange={(e) => setF({ ...f, billing_address: e.target.value })} /></Field>

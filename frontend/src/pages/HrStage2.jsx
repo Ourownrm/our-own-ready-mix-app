@@ -349,12 +349,177 @@ function AdvanceRequests({ onPaid }) {
 export function AdvancesTab() {
   const { can } = usePermissions();
   const [tick, setTick] = useState(0);
+  // Round 230 — employees (salary advances) or pump gangs (an advance for the
+  // gang as a whole).
+  const [who, setWho] = useState("employees");
   const seesRequests = can("hr.advance-request", "view") || can("hr.advance-approve", "edit") || can("hr.advance-pay", "edit");
   return (
     <>
-      {seesRequests && <AdvanceRequests onPaid={() => setTick((t) => t + 1)} />}
-      {can("hr.advances", "view") && <AdvancesPaid key={tick} />}
+      {seesRequests && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+          {[["employees", "Employees"], ["gangs", "Pump gangs"]].map(([k, l]) => (
+            <button key={k} type="button" className={`btn-tab${who === k ? " active" : ""}`} onClick={() => setWho(k)}>{l}</button>
+          ))}
+        </div>
+      )}
+      {who === "gangs" && seesRequests ? <GangAdvances /> : (
+        <>
+          {seesRequests && <AdvanceRequests onPaid={() => setTick((t) => t + 1)} />}
+          {can("hr.advances", "view") && <AdvancesPaid key={tick} />}
+        </>
+      )}
     </>
+  );
+}
+
+// ============================================================ gang advances
+// Round 230 (owner, 22 Oct 2026): "Advance payment option required for Gang as
+// a whole." Raised for one gang, approved by the Plant Manager / Admin, paid by
+// the Accountant. The payment goes into the gang's contractor ledger as an
+// advance (on account), so it comes off what is still due on that month's
+// contractor bill.
+function GangAdvances() {
+  const [show, setShow] = useState("open");
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [form, setForm] = useState(null);
+  const [deciding, setDeciding] = useState(null); // { id, amount, note }
+  const [paying, setPaying] = useState(null);
+  const load = () => apiRequest(`/hr-advance-requests/gangs?show=${show}`).then(setData).catch((e) => setError(e.message));
+  useEffect(() => { setData(null); load(); }, [show]); // eslint-disable-line react-hooks/exhaustive-deps
+  const p = data?.perms || {};
+
+  async function raise(e) {
+    e.preventDefault(); setError(""); setNotice("");
+    try {
+      await apiRequest("/hr-advance-requests/gangs", { method: "POST", body: { ...form, gang_id: Number(form.gang_id), amount: Number(form.amount) } });
+      setForm(null); setNotice("Gang advance raised — it now waits for the Plant Manager or Admin."); load();
+    } catch (err) { setError(err.message); }
+  }
+  async function decide(a, action) {
+    setError(""); setNotice("");
+    try {
+      await apiRequest(`/hr-advance-requests/gangs/${a.id}/decide`, { method: "POST", body: { action, approved_amount: deciding.amount, note: deciding.note } });
+      setDeciding(null); setNotice(action === "approve" ? `Advance for ${a.gang_name} approved — the Accountant can pay it now.` : `Advance for ${a.gang_name} rejected.`); load();
+    } catch (err) { setError(err.message); }
+  }
+  async function cancel(a) {
+    if (!window.confirm(`Withdraw the advance for ${a.gang_name}?`)) return;
+    try { await apiRequest(`/hr-advance-requests/gangs/${a.id}/cancel`, { method: "POST" }); load(); } catch (err) { setError(err.message); }
+  }
+  async function pay(e) {
+    e.preventDefault(); setError("");
+    try {
+      await apiRequest(`/hr-advance-requests/gangs/${paying.a.id}/pay`, { method: "POST", body: { amount: Number(paying.amount), paid_on: paying.paid_on, mode: paying.mode, reference: paying.reference, paid_to: paying.paid_to } });
+      setNotice(`Paid ${rs(paying.amount)} to ${paying.a.gang_name} — entered in ${paying.a.contractor_name}'s ledger as an advance.`); setPaying(null); load();
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Pump gang advances</h3>
+        {[["open", "Open"], ["all", "All (6 months)"]].map(([k, l]) => <button key={k} className={`btn-tab${show === k ? " active" : ""}`} style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setShow(k)}>{l}</button>)}
+        {p.raise && !form && <button className="btn-primary" style={{ marginLeft: "auto" }} onClick={() => setForm({ gang_id: "", amount: "", recover_month: istMonth(), purpose: "" })}>+ New gang advance</button>}
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>For the gang as a whole. Once paid it is an advance in the contractor's ledger and comes off what is still due on that month's bill — the bill itself (GST, TDS) is not changed.</div>
+      {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+      {notice && <div className="card" style={{ color: "var(--signal-green)", background: "var(--signal-green-bg)", fontSize: 13, marginBottom: 10 }}>{notice}</div>}
+
+      {form && (
+        <form className="card" onSubmit={raise} style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>New gang advance</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+            <Field label="Gang">
+              <select required value={form.gang_id} onChange={(e) => setForm({ ...form, gang_id: e.target.value })}>
+                <option value="">—</option>
+                {(data?.gangs || []).map((g) => <option key={g.id} value={g.id}>{g.name}{g.location ? ` · ${g.location}` : ""} ({g.contractor_name})</option>)}
+              </select>
+            </Field>
+            <Field label="Amount asked (₹)"><input type="number" min="1" step="1" required value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Field>
+            <Field label="Against the bill of" hint="the gang month it comes off"><input type="month" required value={form.recover_month} onChange={(e) => setForm({ ...form, recover_month: e.target.value })} /></Field>
+          </div>
+          <div style={{ marginTop: 10 }}><Field label="Reason (optional)"><input value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })} placeholder="e.g. mess expenses, festival" /></Field></div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button type="submit" className="btn-primary">Raise request</button>
+            <button type="button" onClick={() => setForm(null)}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {!data ? <div className="card" style={{ fontSize: 13 }}>Loading…</div>
+        : !data.advances.length ? <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>{show === "open" ? "No open gang advances." : "No gang advances in the last 6 months."}</div>
+        : (
+          <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+            <table style={{ minWidth: 720 }}>
+              <thead><tr><th>Gang</th><th style={{ textAlign: "right" }}>Asked</th><th style={{ textAlign: "right" }}>Approved</th><th>Against</th><th>Status</th><th /></tr></thead>
+              <tbody>
+                {data.advances.map((a) => {
+                  const [label, badge] = ADV_STATUS[a.status] || [LINE_STATUS[a.status] || a.status, a.status === "paid" ? "badge-success" : "badge-neutral"];
+                  const dec = deciding?.id === a.id ? deciding : null;
+                  return (
+                    <tr key={a.id}>
+                      <td>
+                        <b>{a.gang_name}</b> <span style={{ color: "var(--slate)", fontSize: 12 }}>{a.contractor_name}</span>
+                        <div style={{ fontSize: 11.5, color: "var(--slate)" }}>#{a.id} · raised by {a.raised_by_name || "—"}{a.purpose ? ` · ${a.purpose}` : ""}</div>
+                        {a.decided_by_name && a.status !== "cancelled" && <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{a.status === "rejected" ? "Rejected" : "Approved"} by {a.decided_by_name}{a.decision_note ? ` — “${a.decision_note}”` : ""}</div>}
+                      </td>
+                      <td style={{ textAlign: "right" }}>{rs(a.amount)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {dec ? <input type="number" min="1" max={a.amount} step="1" style={{ width: 100 }} value={dec.amount} onChange={(e) => setDeciding({ ...dec, amount: e.target.value })} /> : rs(a.approved_amount)}
+                      </td>
+                      <td style={{ fontSize: 12.5 }}>{a.recover_month}</td>
+                      <td style={{ fontSize: 12.5 }}>
+                        {a.paid ? <span className="badge badge-success">paid {rs(a.paid.amount)} · {fmtDay(a.paid.paid_on)} · {MODES[a.paid.mode]}{a.paid_to ? ` · to ${a.paid_to}` : ""}</span>
+                          : <span className={`badge ${badge}`}>{label}</span>}
+                      </td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {dec ? (
+                          <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                            <input placeholder="Note (to reject)" value={dec.note} onChange={(e) => setDeciding({ ...dec, note: e.target.value })} style={{ width: 140 }} />
+                            <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => decide(a, "approve")}>Approve</button>
+                            <button className="btn-danger" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => decide(a, "reject")}>Reject</button>
+                            <button style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setDeciding(null)}>✕</button>
+                          </span>
+                        ) : (
+                          <span style={{ display: "inline-flex", gap: 6 }}>
+                            {a.can_decide && <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setDeciding({ id: a.id, amount: a.amount, note: "" })}>Decide</button>}
+                            {a.can_cancel && <button style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => cancel(a)}>Withdraw</button>}
+                            {p.pay && a.status === "approved" && <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setPaying({ a, amount: a.approved_amount, paid_on: istDay(), mode: "cash", reference: "", paid_to: "" })}>Record payment</button>}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+      {paying && (
+        <div onClick={() => setPaying(null)} role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 12 }}>
+          <form className="card" onClick={(e) => e.stopPropagation()} onSubmit={pay} style={{ width: "100%", maxWidth: 440 }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Record payment — {paying.a.gang_name}</div>
+            <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>Approved {rs(paying.a.approved_amount)}, against the {paying.a.recover_month} bill. Goes into {paying.a.contractor_name}'s ledger as an advance.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Amount paid (₹)"><input type="number" min="1" max={paying.a.approved_amount} step="1" required value={paying.amount} onChange={(e) => setPaying({ ...paying, amount: e.target.value })} /></Field>
+              <Field label="Paid on"><input type="date" required max={istDay()} value={paying.paid_on} onChange={(e) => setPaying({ ...paying, paid_on: e.target.value })} /></Field>
+              <Field label="Paid by">
+                <select value={paying.mode} onChange={(e) => setPaying({ ...paying, mode: e.target.value })}>{Object.entries(MODES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+              </Field>
+              <Field label="Reference"><input value={paying.reference} onChange={(e) => setPaying({ ...paying, reference: e.target.value })} placeholder="UTR / cheque no." /></Field>
+            </div>
+            <div style={{ marginTop: 10 }}><Field label="Handed to (optional)"><input value={paying.paid_to} onChange={(e) => setPaying({ ...paying, paid_to: e.target.value })} placeholder="e.g. the gang leader's name" /></Field></div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+              <button type="button" onClick={() => setPaying(null)}>Cancel</button>
+              <button type="submit" className="btn-primary">Save payment</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
   );
 }
 

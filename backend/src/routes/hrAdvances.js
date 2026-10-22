@@ -243,4 +243,138 @@ router.post("/lines/:lineId(\\d+)/pay", requirePermission("hr.advance-pay", "edi
   }
 });
 
+// =========================================================== pump gang advances
+// Round 230 (owner, 22 Oct 2026): "Advance payment option required for Gang as
+// a whole." A gang is paid as one monthly amount through its contractor, not
+// through payroll, so its advance is its own record:
+//   raise (hr.advance-request · create) → approve / reject (hr.advance-approve
+//   · edit, not by whoever raised it unless Administrator) → pay
+//   (hr.advance-pay · edit).
+// Paying it writes an on-account payment into the contractor's ledger (no
+// bill), so the month's bill keeps its full amount for GST and TDS and the
+// advance simply comes off the balance still to pay.
+const GANG_SELECT = `
+  SELECT a.id, a.gang_id, g.name AS gang_name, g.location, g.contractor_id, c.name AS contractor_name,
+         a.amount::float AS amount, a.approved_amount::float AS approved_amount, a.recover_month, a.purpose, a.status,
+         a.raised_by, ru.name AS raised_by_name, a.raised_at, du.name AS decided_by_name, a.decided_at, a.decision_note, a.paid_to,
+         CASE WHEN p.id IS NULL THEN NULL ELSE json_build_object('id', p.id, 'amount', p.amount, 'paid_on', to_char(p.paid_on, 'YYYY-MM-DD'),
+              'mode', p.mode, 'ref', p.ref) END AS paid
+    FROM hr_gang_advances a
+    JOIN hr_gangs g ON g.id = a.gang_id
+    JOIN hr_contractors c ON c.id = g.contractor_id
+    LEFT JOIN hr_contractor_payments p ON p.id = a.payment_id
+    LEFT JOIN users ru ON ru.id = a.raised_by LEFT JOIN users du ON du.id = a.decided_by`;
+
+router.get("/gangs", ANY, async (req, res) => {
+  const show = ["open", "all"].includes(req.query.show) ? req.query.show : "open";
+  const { rows } = await query(
+    `${GANG_SELECT}
+      WHERE ($1 = 'all' AND a.raised_at > now() - interval '180 days') OR a.status IN ('pending', 'approved')
+      ORDER BY CASE a.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, a.raised_at DESC LIMIT 200`, [show]);
+  const { rows: gangs } = await query(
+    `SELECT g.id, g.name, g.location, c.name AS contractor_name FROM hr_gangs g JOIN hr_contractors c ON c.id = g.contractor_id
+      WHERE g.is_active ORDER BY g.name`);
+  const p = await perms(req.user);
+  res.json({
+    perms: p, gangs,
+    advances: rows.map((a) => ({
+      ...a,
+      can_decide: p.approve && a.status === "pending" && (a.raised_by !== req.user.id || isAdmin(req.user)),
+      can_cancel: a.status === "pending" && (a.raised_by === req.user.id || isAdmin(req.user)),
+    })),
+  });
+});
+
+// Raise — { gang_id, amount, recover_month, purpose }
+router.post("/gangs", requirePermission("hr.advance-request", "create"), async (req, res) => {
+  const b = req.body || {};
+  const gang = Number(b.gang_id);
+  const amt = r2(b.amount);
+  const month = MONTH_RE.test(String(b.recover_month || "")) ? b.recover_month : istToday().slice(0, 7);
+  if (!Number.isInteger(gang) || gang <= 0) return bad(res, "Choose the gang.");
+  if (!(amt > 0) || amt > 1000000) return bad(res, "Enter the amount asked.");
+  const { rows: g } = await query(`SELECT id, name FROM hr_gangs WHERE id = $1 AND is_active`, [gang]);
+  if (!g.length) return bad(res, "That gang was not found or is closed.");
+  const { rows: closedBill } = await query(
+    `SELECT b.status FROM hr_contractor_bills b JOIN hr_gangs g ON g.contractor_id = b.contractor_id
+      WHERE g.id = $1 AND b.month = $2 AND b.status = 'approved'`, [gang, month]);
+  if (closedBill.length) return bad(res, `The contractor's bill for ${month} is already approved — take it against a later month.`, 409);
+  const { rows } = await query(
+    `INSERT INTO hr_gang_advances (gang_id, amount, recover_month, purpose, raised_by) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [gang, amt, month, String(b.purpose || "").trim().slice(0, 500) || null, req.user.id]);
+  await query(
+    `INSERT INTO notifications (recipient_role, type, message) VALUES ('manager', 'hr_advance_request', $1)`,
+    [`Gang advance #${rows[0].id}: ${g[0].name}, ₹${amt.toLocaleString("en-IN")} — waiting for approval.`]
+  ).catch(() => {});
+  res.status(201).json({ id: rows[0].id });
+});
+
+// Decide — { action: 'approve' | 'reject', approved_amount, note }
+router.post("/gangs/:id(\\d+)/decide", requirePermission("hr.advance-approve", "edit"), async (req, res) => {
+  const b = req.body || {};
+  const note = String(b.note || "").trim().slice(0, 500) || null;
+  const { rows } = await query(`SELECT a.*, g.name FROM hr_gang_advances a JOIN hr_gangs g ON g.id = a.gang_id WHERE a.id = $1`, [req.params.id]);
+  const a = rows[0];
+  if (!a) return bad(res, "Not found.", 404);
+  if (a.status !== "pending") return bad(res, "This advance has already been decided.", 409);
+  if (a.raised_by === req.user.id && !isAdmin(req.user)) return bad(res, "You raised this advance — another approver must decide it.", 403);
+  if (b.action === "approve") {
+    const amt = b.approved_amount === undefined || b.approved_amount === "" ? Number(a.amount) : r2(b.approved_amount);
+    if (!(amt > 0) || amt > Number(a.amount)) return bad(res, "The approved amount must be more than 0 and not more than asked.");
+    await query(`UPDATE hr_gang_advances SET status = 'approved', approved_amount = $1, decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $4`,
+      [amt, req.user.id, note, a.id]);
+  } else {
+    if (!note) return bad(res, "Say why it is rejected.");
+    await query(`UPDATE hr_gang_advances SET status = 'rejected', decided_by = $1, decided_at = now(), decision_note = $2 WHERE id = $3`, [req.user.id, note, a.id]);
+  }
+  await query(
+    `INSERT INTO notifications (recipient_role, type, message) VALUES ('accountant', 'hr_advance_decided', $1)`,
+    [b.action === "approve" ? `Gang advance #${a.id} (${a.name}) approved — record the payment.` : `Gang advance #${a.id} (${a.name}) was rejected: ${note}.`]
+  ).catch(() => {});
+  res.json({ ok: true });
+});
+
+router.post("/gangs/:id(\\d+)/cancel", ANY, async (req, res) => {
+  const { rows } = await query(`SELECT raised_by, status FROM hr_gang_advances WHERE id = $1`, [req.params.id]);
+  if (!rows[0]) return bad(res, "Not found.", 404);
+  if (rows[0].status !== "pending") return bad(res, "Only an advance still waiting for approval can be withdrawn.", 409);
+  if (rows[0].raised_by !== req.user.id && !isAdmin(req.user)) return bad(res, "Only the person who raised it can withdraw it.", 403);
+  await query(`UPDATE hr_gang_advances SET status = 'cancelled', decided_by = $2, decided_at = now() WHERE id = $1`, [req.params.id, req.user.id]);
+  res.json({ ok: true });
+});
+
+// Pay — { amount, paid_on, mode, reference, paid_to }
+router.post("/gangs/:id(\\d+)/pay", requirePermission("hr.advance-pay", "edit"), async (req, res) => {
+  const b = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT a.*, g.name AS gang_name, g.contractor_id FROM hr_gang_advances a JOIN hr_gangs g ON g.id = a.gang_id WHERE a.id = $1 FOR UPDATE OF a`, [req.params.id]);
+    const a = rows[0];
+    if (!a) { await client.query("ROLLBACK"); return bad(res, "Not found.", 404); }
+    if (a.status !== "approved") { await client.query("ROLLBACK"); return bad(res, a.status === "paid" ? "Already paid." : "Only an approved advance can be paid.", 409); }
+    const amt = b.amount === undefined || b.amount === "" ? Number(a.approved_amount) : r2(b.amount);
+    if (!(amt > 0) || amt > Number(a.approved_amount)) { await client.query("ROLLBACK"); return bad(res, `Pay more than 0 and not more than the ₹${Number(a.approved_amount).toLocaleString("en-IN")} approved.`); }
+    const day = DATE_RE.test(b.paid_on || "") ? b.paid_on : istToday();
+    if (day > istToday()) { await client.query("ROLLBACK"); return bad(res, "The date paid cannot be in the future."); }
+    const mode = PAY_MODES.includes(b.mode) ? b.mode : "cash";
+    const paidTo = String(b.paid_to || "").trim().slice(0, 100) || null;
+    const { rows: p } = await client.query(
+      `INSERT INTO hr_contractor_payments (contractor_id, bill_id, paid_on, amount, mode, ref, note, created_by)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [a.contractor_id, day, amt, mode, String(b.reference || "").trim().slice(0, 60) || null,
+       `Gang advance #${a.id} — ${a.gang_name}, against ${a.recover_month}${paidTo ? `, to ${paidTo}` : ""}`.slice(0, 200), req.user.id]);
+    await client.query(`UPDATE hr_gang_advances SET status = 'paid', payment_id = $1, paid_to = $2 WHERE id = $3`, [p[0].id, paidTo, a.id]);
+    await client.query("COMMIT");
+    res.status(201).json({ payment_id: p[0].id });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    bad(res, "Could not record the payment.", 500);
+  } finally {
+    client.release();
+  }
+});
+
 export default router;

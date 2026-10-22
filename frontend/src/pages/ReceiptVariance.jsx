@@ -168,63 +168,84 @@ function Waiting({ onSettled }) {
 
 // ---------------------------------------------------------------------------
 
+// Round 230 (owner, 22 Oct 2026): most loads are now accepted at the billed
+// figure, so billed − accepted was nearly always zero. The report now compares
+// what the supplier BILLED with what OUR WEIGHBRIDGE says arrived. Accepted is
+// kept alongside: billed − accepted is what was recovered (debit notes);
+// accepted − received is what was paid for and never arrived.
 function Variance() {
   const [from, setFrom] = useState(monthStartStr());
   const [to, setTo] = useState(todayStr());
+  const [materialId, setMaterialId] = useState("");
+  const [supplierId, setSupplierId] = useState("");
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let alive = true;
     setError("");
-    apiRequest(`/material-module/reports/variance?from_date=${from}&to_date=${to}`)
+    const qs = new URLSearchParams({ from_date: from, to_date: to });
+    if (materialId) qs.set("material_id", materialId);
+    if (supplierId) qs.set("supplier_id", supplierId);
+    apiRequest(`/material-module/reports/variance?${qs}`)
       .then((d) => { if (alive) setData(d); })
       .catch((e) => { if (alive) setError(e.message); });
     return () => { alive = false; };
-  }, [from, to]);
+  }, [from, to, materialId, supplierId]);
 
   if (error) return <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>;
 
   const t = data?.totals;
+  const signed = (v) => `${Number(v) > 0 ? "+" : ""}${Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  const kpi = (label, value, colour, sub) => (
+    <div>
+      <div className="kpi-label">{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: colour }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "var(--slate)" }}>{sub}</div>}
+    </div>
+  );
 
   return (
     <>
-      <div className="card" style={{ marginBottom: 16, display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+      <div className="card" style={{ marginBottom: 12, display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label style={{ fontSize: 12 }}>From<br />
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 13 }} />
         </label>
         <label style={{ fontSize: 12 }}>To<br />
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 13 }} />
         </label>
-        {t && (
-          <div style={{ marginLeft: "auto", display: "flex", gap: 22 }}>
-            <div>
-              <div className="kpi-label">Loads</div>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{t.loads}</div>
-            </div>
-            <div>
-              <div className="kpi-label">Net variance</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: varianceColour(t.net_variance_qty) }}>
-                {Number(t.net_variance_qty || 0) > 0 ? "+" : ""}{Number(t.net_variance_qty || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </div>
-            </div>
-            <div>
-              <div className="kpi-label">Worth</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: varianceColour(t.net_variance_value) }}>
-                {fmtMoney(t.net_variance_value)}
-              </div>
-            </div>
-          </div>
-        )}
+        <label style={{ fontSize: 12 }}>Material<br />
+          <select value={materialId} onChange={(e) => setMaterialId(e.target.value)} style={{ fontSize: 13 }}>
+            <option value="">All materials</option>
+            {(data?.options?.materials || []).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 12 }}>Supplier<br />
+          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} style={{ fontSize: 13 }}>
+            <option value="">All suppliers</option>
+            {(data?.options?.suppliers || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          </select>
+        </label>
       </div>
 
+      {t && (
+        <div className="card" style={{ marginBottom: 12, display: "flex", gap: 26, flexWrap: "wrap" }}>
+          {kpi("Loads weighed", t.loads || 0, undefined, t.not_weighed_loads ? `${t.not_weighed_loads} not weighed — left out` : null)}
+          {kpi("Billed − received", fmtMoney(t.net_variance_value), varianceColour(t.net_variance_value),
+            `${Number(t.net_variance_pct || 0).toFixed(2)}% of billed · ${t.short_loads || 0} short / ${t.over_loads || 0} over`)}
+          {kpi("Recovered (debit notes)", fmtMoney(t.recovered_value), "var(--signal-green)", "billed − accepted")}
+          {kpi("Paid for, not received", fmtMoney(t.unrecovered_value), varianceColour(t.unrecovered_value), "accepted − received")}
+          {kpi("Over tolerance", t.over_tolerance_loads || 0, Number(t.over_tolerance_loads) ? "var(--alert-red)" : undefined, "loads beyond the material's limit")}
+        </div>
+      )}
+
       <div className="card" style={{ marginBottom: 16, fontSize: 12.5, color: "var(--slate)", lineHeight: 1.6 }}>
-        <strong style={{ color: "var(--charcoal)" }}>Two columns worth understanding.</strong> <em>Net</em> is what
-        you are actually out of pocket by — short loads and over loads cancel. <em>Mean difference</em> ignores
-        direction and says how unreliable the weighing is. A supplier whose loads scatter either side nets out
-        to nothing while being thoroughly unreliable, and that is a different conversation from one who is
-        quietly light every single time. Which is why <em>short</em> against <em>over</em> matters: real
-        mis-weighing lands on both sides.
+        <strong style={{ color: "var(--charcoal)" }}>How to read this.</strong> <em>Billed − received</em> compares the
+        supplier's bill with what our weighbridge weighed, converted to the purchase unit — positive means the bill was
+        heavier than what arrived. Most loads are accepted at the billed figure, so <em>Paid for, not received</em> is the
+        money that went out for material that never came; <em>Recovered</em> is what debit notes took back. <em>Mean
+        difference</em> ignores direction and shows how unreliable a supplier's weights are; a supplier always short and
+        never over is not making mistakes.
       </div>
 
       {!data && <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>}
@@ -237,44 +258,47 @@ function Variance() {
                 {key === "by_supplier" ? "By supplier" : "By material"}
               </h3>
               <div className="card" style={{ padding: 0, overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 900 }}>
                   <thead>
                     <tr style={{ background: "var(--concrete)" }}>
                       <th style={TH}>{key === "by_supplier" ? "Supplier" : "Material"}</th>
                       <th style={{ ...TH, textAlign: "right" }}>Loads</th>
                       <th style={{ ...TH, textAlign: "right" }}>Billed</th>
-                      <th style={{ ...TH, textAlign: "right" }}>Accepted</th>
-                      <th style={{ ...TH, textAlign: "right" }}>Net</th>
+                      <th style={{ ...TH, textAlign: "right" }}>Received</th>
+                      <th style={{ ...TH, textAlign: "right" }}>Billed − received</th>
                       <th style={{ ...TH, textAlign: "right" }}>Mean difference</th>
                       <th style={{ ...TH, textAlign: "right" }}>Short / over</th>
                       <th style={{ ...TH, textAlign: "right" }}>Worth</th>
+                      <th style={{ ...TH, textAlign: "right" }}>Paid for, not received</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data[key].map((r) => (
-                      <tr key={r.supplier_id ?? r.material_id} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td style={{ ...TD, fontWeight: 600 }}>{r.supplier_name || r.material_name}</td>
-                        <td style={{ ...TD, textAlign: "right" }}>{r.loads}</td>
-                        <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{fmtQty(r.billed_qty, r.purchase_unit)}</td>
-                        <td style={{ ...TD, textAlign: "right" }}>{fmtQty(r.accepted_qty, r.purchase_unit)}</td>
-                        <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: varianceColour(r.net_variance_qty) }}>
-                          {Number(r.net_variance_qty) > 0 ? "+" : ""}{Number(r.net_variance_qty).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                          <div style={{ fontSize: 11, fontWeight: 400 }}>{Number(r.net_variance_pct).toFixed(2)}%</div>
-                        </td>
-                        <td style={{ ...TD, textAlign: "right" }}>{Number(r.mean_abs_variance_pct ?? 0).toFixed(2)}%</td>
-                        <td style={{ ...TD, textAlign: "right" }}>
-                          <span style={{ color: r.short_loads && !r.over_loads ? "var(--alert-red)" : "inherit", fontWeight: r.short_loads && !r.over_loads ? 700 : 400 }}>
-                            {r.short_loads}
-                          </span>
-                          {" / "}{r.over_loads}
-                        </td>
-                        <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: varianceColour(r.net_variance_value) }}>
-                          {fmtMoney(r.net_variance_value)}
-                        </td>
-                      </tr>
-                    ))}
+                    {data[key].map((r) => {
+                      const oneUnit = Number(r.units) <= 1;
+                      return (
+                        <tr key={r.supplier_id ?? r.material_id} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td style={{ ...TD, fontWeight: 600 }}>{r.supplier_name || r.material_name}</td>
+                          <td style={{ ...TD, textAlign: "right" }}>{r.loads}</td>
+                          <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{oneUnit ? fmtQty(r.billed_qty, r.purchase_unit) : "mixed units"}</td>
+                          <td style={{ ...TD, textAlign: "right" }}>{oneUnit ? fmtQty(r.received_qty, r.purchase_unit) : "—"}</td>
+                          <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: varianceColour(r.net_variance_qty) }}>
+                            {oneUnit ? signed(r.net_variance_qty) : ""}
+                            <div style={{ fontSize: 11, fontWeight: 400 }}>{Number(r.net_variance_pct).toFixed(2)}%</div>
+                          </td>
+                          <td style={{ ...TD, textAlign: "right" }}>{Number(r.mean_abs_variance_pct ?? 0).toFixed(2)}%</td>
+                          <td style={{ ...TD, textAlign: "right" }}>
+                            <span style={{ color: r.short_loads && !r.over_loads ? "var(--alert-red)" : "inherit", fontWeight: r.short_loads && !r.over_loads ? 700 : 400 }}>
+                              {r.short_loads}
+                            </span>
+                            {" / "}{r.over_loads}
+                          </td>
+                          <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: varianceColour(r.net_variance_value) }}>{fmtMoney(r.net_variance_value)}</td>
+                          <td style={{ ...TD, textAlign: "right", color: varianceColour(r.unrecovered_value) }}>{fmtMoney(r.unrecovered_value)}</td>
+                        </tr>
+                      );
+                    })}
                     {!data[key].length && (
-                      <tr><td colSpan={8} style={{ ...TD, color: "var(--slate)" }}>Nothing in this period.</td></tr>
+                      <tr><td colSpan={9} style={{ ...TD, color: "var(--slate)" }}>No weighed loads in this period.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -284,41 +308,44 @@ function Variance() {
 
           <h3 style={{ fontSize: 15, margin: "0 0 10px" }}>Biggest differences, load by load</h3>
           <div className="card" style={{ padding: 0, overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 900 }}>
               <thead>
                 <tr style={{ background: "var(--concrete)" }}>
                   <th style={TH}>When</th><th style={TH}>Material</th><th style={TH}>Supplier</th>
                   <th style={{ ...TH, textAlign: "right" }}>Billed</th>
+                  <th style={{ ...TH, textAlign: "right" }}>Received</th>
+                  <th style={{ ...TH, textAlign: "right" }}>Billed − received</th>
                   <th style={{ ...TH, textAlign: "right" }}>Accepted</th>
-                  <th style={{ ...TH, textAlign: "right" }}>Difference</th>
-                  <th style={TH}>Settled as</th><th style={TH}>Note</th>
+                  <th style={TH}>Note</th>
                 </tr>
               </thead>
               <tbody>
-                {data.detail.map((r) => (
-                  <tr key={r.id} style={{ borderTop: "1px solid var(--border)" }}>
-                    <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtWhen(r.received_at)}</td>
-                    <td style={TD}>{r.material_name}</td>
-                    <td style={TD}>{r.supplier_name}</td>
-                    <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{fmtQty(r.supplier_qty, r.purchase_unit)}</td>
-                    <td style={{ ...TD, textAlign: "right" }}>{fmtQty(r.accepted_qty, r.purchase_unit)}</td>
-                    <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: varianceColour(r.variance_qty) }}>
-                      {Number(r.variance_qty) > 0 ? "+" : ""}{Number(r.variance_qty).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                      {" "}({Number(r.variance_pct).toFixed(1)}%)
-                    </td>
-                    <td style={{ ...TD, fontSize: 12 }}>
-                      {r.accepted_basis === "weighed" ? "weighbridge"
-                        : r.accepted_basis === "supplier" ? "supplier's figure"
-                        : "entered by hand"}
-                      {r.confirmed_by_name && <div style={{ color: "var(--slate)" }}>{r.confirmed_by_name}</div>}
-                    </td>
-                    <td style={{ ...TD, fontSize: 12, color: "var(--slate)", maxWidth: 240 }}>
-                      {r.confirm_note || r.short_reason || ""}
-                    </td>
-                  </tr>
-                ))}
+                {data.detail.map((r) => {
+                  const over = r.tolerance_pct != null && Math.abs(Number(r.variance_pct)) > Number(r.tolerance_pct);
+                  return (
+                    <tr key={r.id} style={{ borderTop: "1px solid var(--border)", background: over ? "var(--alert-red-bg)" : undefined }}>
+                      <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtWhen(r.received_at)}{r.vehicle_number && <div style={{ fontSize: 11, color: "var(--slate)" }}>{r.vehicle_number}</div>}</td>
+                      <td style={TD}>{r.material_name}</td>
+                      <td style={TD}>{r.supplier_name}</td>
+                      <td style={{ ...TD, textAlign: "right", color: "var(--slate)" }}>{fmtQty(r.supplier_qty, r.purchase_unit)}</td>
+                      <td style={{ ...TD, textAlign: "right" }}>
+                        {fmtQty(r.received_qty, r.purchase_unit)}
+                        <div style={{ fontSize: 11, color: "var(--slate)" }}>{Number(r.weighbridge_weight_kg).toLocaleString()} kg</div>
+                      </td>
+                      <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: varianceColour(r.variance_qty) }}>
+                        {signed(r.variance_qty)} ({Number(r.variance_pct).toFixed(1)}%)
+                        <div style={{ fontSize: 11, fontWeight: 400 }}>{fmtMoney(r.variance_value)}</div>
+                      </td>
+                      <td style={{ ...TD, textAlign: "right", fontSize: 12 }}>
+                        {fmtQty(r.accepted_qty, r.purchase_unit)}
+                        <div style={{ color: "var(--slate)" }}>{r.accepted_basis === "weighed" ? "weighbridge" : r.accepted_basis === "supplier" ? "as billed" : "entered"}{r.confirmed_by_name ? ` · ${r.confirmed_by_name}` : ""}</div>
+                      </td>
+                      <td style={{ ...TD, fontSize: 12, color: "var(--slate)", maxWidth: 240 }}>{r.confirm_note || r.short_reason || ""}</td>
+                    </tr>
+                  );
+                })}
                 {!data.detail.length && (
-                  <tr><td colSpan={8} style={{ ...TD, color: "var(--slate)" }}>No receipts in this period.</td></tr>
+                  <tr><td colSpan={8} style={{ ...TD, color: "var(--slate)" }}>No weighed loads in this period.</td></tr>
                 )}
               </tbody>
             </table>

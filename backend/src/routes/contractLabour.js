@@ -416,7 +416,14 @@ router.get("/gangs/:id(\\d+)/month/:month", requirePermission("hr.gangs", "view"
   try {
     const m = await gangMonth(Number(req.params.id), month);
     if (!m.gang) return bad(res, "Gang not found.", 404);
-    res.json({ ...m, can_decide: await can(req.user, "hr.gang-deduction", "edit") });
+    // Round 230 — advances to this gang against this month.
+    const { rows: advances } = await query(
+      `SELECT a.id, a.status, a.amount::float AS amount, a.approved_amount::float AS approved_amount, a.paid_to,
+              p.amount::float AS paid_amount, to_char(p.paid_on, 'YYYY-MM-DD') AS paid_on
+         FROM hr_gang_advances a LEFT JOIN hr_contractor_payments p ON p.id = a.payment_id
+        WHERE a.gang_id = $1 AND a.recover_month = $2 AND a.status IN ('pending', 'approved', 'paid') ORDER BY a.id`,
+      [req.params.id, month]).catch(() => ({ rows: [] }));
+    res.json({ ...m, advances, can_decide: await can(req.user, "hr.gang-deduction", "edit") });
   } catch (err) { friendly(err, res, "Could not load the month."); }
 });
 
@@ -558,12 +565,23 @@ router.get("/bills", requirePermission("hr.contractor-bills", "view"), async (re
         WHERE EXISTS (SELECT 1 FROM hr_gang_members m WHERE m.gang_id = g.id AND m.from_date <= $3::date AND (m.to_date IS NULL OR m.to_date >= $2::date))`,
       [month, from, to]);
     const byC = new Map(bills.map((b) => [b.contractor_id, b]));
+    // Round 230 — gang advances paid against this month: already in the
+    // contractor's ledger as on-account payments, shown here so the balance
+    // still to pay on the bill is plain.
+    const { rows: adv } = await query(
+      `SELECT g.contractor_id, a.id, g.name AS gang_name, p.amount::float AS amount, to_char(p.paid_on, 'YYYY-MM-DD') AS paid_on
+         FROM hr_gang_advances a JOIN hr_gangs g ON g.id = a.gang_id JOIN hr_contractor_payments p ON p.id = a.payment_id
+        WHERE a.status = 'paid' AND a.recover_month = $1 ORDER BY p.paid_on`, [month]);
     res.json({
       month,
-      contractors: contractors.map((c) => ({
-        ...c, bill: byC.get(c.id) || null,
-        gangs: gangState.filter((g) => g.contractor_id === c.id),
-      })),
+      contractors: contractors.map((c) => {
+        const advances = adv.filter((a) => a.contractor_id === c.id);
+        return {
+          ...c, bill: byC.get(c.id) || null,
+          gangs: gangState.filter((g) => g.contractor_id === c.id),
+          gang_advances: advances, gang_advances_total: r2(advances.reduce((t, a) => t + a.amount, 0)),
+        };
+      }),
     });
   } catch (err) { friendly(err, res, "Could not load the bills."); }
 });
@@ -691,6 +709,9 @@ router.post("/contractors/:id(\\d+)/payments", requirePermission("hr.contractor-
 
 router.delete("/payments/:id(\\d+)", requirePermission("hr.contractor-bills", "delete"), async (req, res) => {
   try {
+    // Round 230 — a gang advance paid through this entry goes back to
+    // "approved, not paid" so it can be paid again correctly.
+    await query(`UPDATE hr_gang_advances SET status = 'approved', payment_id = NULL, paid_to = NULL WHERE payment_id = $1`, [req.params.id]);
     const { rowCount } = await query(`DELETE FROM hr_contractor_payments WHERE id = $1`, [req.params.id]);
     if (!rowCount) return bad(res, "Not found.", 404);
     res.json({ ok: true });

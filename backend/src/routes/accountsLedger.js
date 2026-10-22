@@ -14,6 +14,8 @@ import { requirePermission } from "../lib/permissions.js";
 import { generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { recomputeOrderCharges, rateFor } from "../lib/orderCharges.js";
 import { openItems, postReceipt, applyAdvances, positions, AGE_GROUPS } from "../lib/receivables.js";
+import { can } from "../lib/permissions.js";
+import { lookAlikePriceLists, mergeCustomer, mergeSite, referenceCounts } from "../lib/recordMerge.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -91,17 +93,109 @@ router.get("/invoices/held", INV_VIEW, async (req, res) => {
         AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.ticket_id = dt.id)
       ORDER BY dt.ticket_date, dt.id`
   );
-  res.json(rows);
+  // Round 230 — a price list sitting on a look-alike customer / project (the
+  // same one entered twice) is named on the row, with a merge to fix it.
+  const alikes = await lookAlikePriceLists(rows).catch((e) => { console.error("lookAlikePriceLists", e.message); return new Map(); });
+  res.json(rows.map((r) => ({ ...r, look_alikes: alikes.get(`${r.customer_id}|${r.site_id}`) || [] })));
 });
 
-router.post("/invoices/held/retry", requirePermission("accounts.invoice-gst", "edit"), async (req, res) => {
+async function retryHeld() {
   const { rows } = await query(
     `SELECT dt.id FROM delivery_tickets dt
       WHERE dt.status NOT IN ('cancelled', 'rejected') AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.ticket_id = dt.id)`
   );
   let created = 0;
   for (const r of rows) if (await generateInvoiceForTicket(r.id)) created++;
-  res.json({ created, still_held: rows.length - created });
+  return { created, still_held: rows.length - created };
+}
+
+// ===========================================================================
+// Round 230 — merge a customer / project entered twice
+// ===========================================================================
+// What each record has hanging off it, before anyone merges.
+router.get("/merge/preview", async (req, res) => {
+  const ids = (k) => (/^\d+$/.test(String(req.query[k] || "")) ? Number(req.query[k]) : null);
+  const fc = ids("from_customer_id"), tc = ids("to_customer_id"), fs = ids("from_site_id"), ts = ids("to_site_id");
+  if (!(await can(req.user, "masters.site-merge", "delete")) && !(await can(req.user, "masters.customer-merge", "delete"))) {
+    return res.status(403).json({ error: "You don't have access to this." });
+  }
+  const one = async (table, id) => {
+    if (!id) return null;
+    const { rows } = await query(
+      table === "customers" ? `SELECT id, name, is_active FROM customers WHERE id = $1`
+        : `SELECT s.id, s.name, s.is_active, s.customer_id, c.name AS customer_name FROM sites s JOIN customers c ON c.id = s.customer_id WHERE s.id = $1`, [id]);
+    if (!rows[0]) return null;
+    return { ...rows[0], refs: await referenceCounts({ query }, table, id) };
+  };
+  res.json({
+    from_customer: await one("customers", fc), to_customer: await one("customers", tc),
+    from_site: await one("sites", fs), to_site: await one("sites", ts),
+    can_merge_customers: await can(req.user, "masters.customer-merge", "delete"),
+    can_merge_sites: await can(req.user, "masters.site-merge", "delete"),
+  });
+});
+
+// { from_customer_id, to_customer_id, from_site_id, to_site_id, keep_names: 'to' | 'from', note }
+// The duplicate (from) is merged into the record that stays (to). Customers
+// first (the duplicate's projects come along), then the project. Held
+// deliveries are invoiced straight after.
+router.post("/merge", async (req, res) => {
+  const b = req.body || {};
+  const id = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
+  const fc = id(b.from_customer_id), tc = id(b.to_customer_id), fs = id(b.from_site_id), ts = id(b.to_site_id);
+  const doCustomers = fc && tc && fc !== tc;
+  const doSites = fs && ts && fs !== ts;
+  if (!doCustomers && !doSites) return res.status(400).json({ error: "Choose what to merge." });
+  if (doCustomers && !(await can(req.user, "masters.customer-merge", "delete"))) return res.status(403).json({ error: "Merging customers needs the \"Merge duplicate customers\" right." });
+  if (doSites && !(await can(req.user, "masters.site-merge", "delete"))) return res.status(403).json({ error: "Merging projects needs the \"Merge duplicate sites\" right." });
+  const note = String(b.note || "").trim().slice(0, 300) || null;
+  const keepFromNames = b.keep_names === "from";
+  const client = await pool.connect();
+  let done = {};
+  try {
+    await client.query("BEGIN");
+    if (doCustomers) {
+      if (doSites) {
+        const { rows } = await client.query(`SELECT id, customer_id FROM sites WHERE id = ANY($1::int[])`, [[fs, ts]]);
+        const f = rows.find((r) => r.id === fs), t = rows.find((r) => r.id === ts);
+        if (!f || !t || f.customer_id !== fc || t.customer_id !== tc) throw Object.assign(new Error("Each project must belong to its customer."), { status: 400 });
+      }
+      done.customer = await mergeCustomer(client, fc, tc, req.user.id, note);
+      if (keepFromNames) await client.query(`UPDATE customers SET name = $2 WHERE id = $1`, [tc, done.customer.from.name]);
+    }
+    if (doSites) {
+      done.site = await mergeSite(client, fs, ts, req.user.id, note);
+      if (keepFromNames) await client.query(`UPDATE sites SET name = $2 WHERE id = $1`, [ts, done.site.from.name]);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error("merge", err);
+    return res.status(500).json({ error: "Could not merge — nothing was changed." });
+  } finally {
+    client.release();
+  }
+  const held = await retryHeld();
+  res.json({
+    ok: true, ...held,
+    customer: done.customer ? { from: done.customer.from.name, to: done.customer.to.name } : null,
+    site: done.site ? { from: done.site.from.name, to: done.site.to.name } : null,
+  });
+});
+
+router.get("/merge/history", async (req, res) => {
+  if (!(await can(req.user, "masters.site-merge", "delete")) && !(await can(req.user, "masters.customer-merge", "delete"))) {
+    return res.status(403).json({ error: "You don't have access to this." });
+  }
+  const { rows } = await query(
+    `SELECT m.id, m.kind, m.from_name, m.to_name, m.moved, m.note, m.merged_at, u.name AS merged_by_name
+       FROM record_merges m LEFT JOIN users u ON u.id = m.merged_by ORDER BY m.id DESC LIMIT 100`);
+  res.json(rows);
+});
+
+router.post("/invoices/held/retry", requirePermission("accounts.invoice-gst", "edit"), async (req, res) => {
+  res.json(await retryHeld());
 });
 
 // The Accountant's switch. Same total either way.

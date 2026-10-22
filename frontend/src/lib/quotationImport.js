@@ -89,6 +89,27 @@ export function readQuotationSheet(wb, XLSX) {
 const STRIP = /\b(M\/S|MS|MR|MRS|ENGR|DR|PVT|PRIVATE|LTD|LIMITED|CO|COMPANY|THE|AND)\b/g;
 export const normName = (s) => String(s || "").toUpperCase().replace(/&/g, " AND ").replace(/[.,()/\\-]/g, " ")
   .replace(STRIP, " ").replace(/[^A-Z0-9]/g, "");
+// Round 230 — how alike two names are (mirrors backend lib/recordMerge.js):
+// 1 = same once M/S, PVT, LTD … are dropped; 0.85 = one contains the other;
+// 0.8 = every word of the shorter is in the longer; else the share of words
+// in common. 0.6 and up is shown as "already in the app?".
+const nameWords = (s) => new Set(String(s || "").toUpperCase().replace(/&/g, " AND ").replace(/[.,()/\\-]/g, " ")
+  .replace(STRIP, " ").split(/[^A-Z0-9]+/).filter((w) => w.length >= 3));
+export function nameScore(a, b) {
+  const x = normName(a), y = normName(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  if (x.length >= 4 && y.length >= 4 && (x.includes(y) || y.includes(x))) return 0.85;
+  const wa = nameWords(a), wb = nameWords(b);
+  if (!wa.size || !wb.size) return 0;
+  let common = 0;
+  for (const w of wa) if (wb.has(w)) common++;
+  return common / Math.min(wa.size, wb.size) >= 1 && common >= 1 ? 0.8 : common / Math.max(wa.size, wb.size);
+}
+export function lookAlikes(name, list, min = 0.6) {
+  return list.map((x) => ({ ...x, score: nameScore(name, x.name) })).filter((x) => x.score >= min).sort((a, b) => b.score - a.score).slice(0, 4);
+}
+
 const normGrade = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9.]/g, "");
 
 function matchOne(name, list) {

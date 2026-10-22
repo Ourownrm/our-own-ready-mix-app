@@ -634,6 +634,11 @@ export const CATALOGUE = [
     { administrator: ["create"], sales_executive: ["create"] }),
   f("masters.site-merge", "masters", "Merge duplicate sites", ["delete"],
     { administrator: ["delete"], manager: ["delete"] }),
+  // Round 230 — one customer entered twice (usually by a quotation): merge the
+  // duplicate into the real one. Moves every order, invoice, receipt and price
+  // list, so Administrator only by default.
+  f("masters.customer-merge", "masters", "Merge duplicate customers", ["delete"],
+    { administrator: ["delete"] }),
   f("masters.site-contacts", "masters", "Site Contacts", VCE,
     { administrator: VCE }, { screen: "site-contacts" }),
   f("masters.mix-grades", "masters", "Mix grades", VCE,

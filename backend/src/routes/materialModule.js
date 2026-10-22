@@ -1793,6 +1793,16 @@ router.get("/receipts", requirePermission("material.receipts", "view"), async (r
   if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
   if (req.query.material_id) { params.push(req.query.material_id); where += ` AND o.material_id = $${params.length}`; }
   if (req.query.supplier_id) { params.push(req.query.supplier_id); where += ` AND o.supplier_id = $${params.length}`; }
+  // Round 230 — the register's status filter (owner, 22 Oct 2026).
+  const STATUS_WHERE = {
+    accepted: `r.confirmation_status <> 'pending' AND r.wb_approval NOT IN ('pending', 'rejected')`,
+    pending: `r.confirmation_status = 'pending'`,
+    no_ticket: `r.wb_approval = 'pending'`,
+    rejected: `r.wb_approval = 'rejected'`,
+    short: `COALESCE(r.short_qty, 0) <> 0`,
+    no_weighbridge: `r.weighbridge_ticket_id IS NULL AND r.weighbridge_weight_kg IS NULL`,
+  };
+  if (STATUS_WHERE[req.query.status]) where += ` AND ${STATUS_WHERE[req.query.status]}`;
 
   const { rows } = await query(
     `SELECT r.*, to_char(r.received_date,'YYYY-MM-DD') AS received_date,
@@ -2852,73 +2862,87 @@ router.get("/reports/weighbridge-comparison", requirePermission("material.report
 //   short_loads vs over_loads. A supplier genuinely mis-weighing lands on both
 //   sides. One that is always short, never over, is not making mistakes.
 // ---------------------------------------------------------------------------
+// Round 230 (owner, 22 Oct 2026): "Variance over time is not logical now, as
+// mostly we accept the billed amount — it can show the variance between billed
+// and received qty (not accepted)." Since Round 213 most loads are accepted at
+// the supplier's billed figure, so billed − accepted is nearly always zero and
+// the report said nothing. It now measures billed against what OUR
+// weighbridge says arrived (converted to the purchase unit with the same kg
+// per unit the receipt used), loads with no weighbridge weight left out and
+// counted. Accepted stays alongside: billed − accepted is what was recovered
+// (debit notes), accepted − received is what was paid for and never arrived.
 router.get("/reports/variance", requirePermission("weighbridge.receipt-variance", "view"), async (req, res) => {
   try {
     const params = [];
-    let where = "r.variance_qty IS NOT NULL";
+    let where = "true";
     if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
     if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
-    if (req.query.supplier_id) { params.push(req.query.supplier_id); where += ` AND o.supplier_id = $${params.length}`; }
-    if (req.query.material_id) { params.push(req.query.material_id); where += ` AND o.material_id = $${params.length}`; }
+    if (/^\d+$/.test(String(req.query.supplier_id || ""))) { params.push(Number(req.query.supplier_id)); where += ` AND o.supplier_id = $${params.length}`; }
+    if (/^\d+$/.test(String(req.query.material_id || ""))) { params.push(Number(req.query.material_id)); where += ` AND o.material_id = $${params.length}`; }
 
+    // One row per counted receipt, with the received (weighed) quantity.
+    const BASE = `
+      SELECT r.id, r.received_at, r.received_date, r.supplier_qty, r.accepted_qty, r.weighbridge_weight_kg,
+             r.accepted_basis, r.short_reason, r.confirm_note, r.vehicle_number, r.challan_number, r.confirmed_by,
+             o.rate, o.supplier_id, o.material_id, s.name AS supplier_name, m.name AS material_name, m.tolerance_pct,
+             COALESCE(src.purchase_unit, m.purchase_unit) AS purchase_unit,
+             CASE WHEN r.weighbridge_weight_kg IS NOT NULL AND COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) > 0
+                  THEN r.weighbridge_weight_kg / COALESCE(src.kg_per_purchase_unit, m.kg_per_purchase_unit) END AS received_qty
+        FROM rm_receipts_effective r
+        JOIN rm_orders o ON o.id = r.order_id
+        JOIN rm_materials m ON m.id = o.material_id
+        LEFT JOIN rm_material_sources src ON src.id = o.source_id
+        JOIN rm_suppliers s ON s.id = o.supplier_id
+       WHERE ${where} AND r.supplier_qty > 0`;
+    const W = `(${BASE}) x WHERE x.received_qty IS NOT NULL`;
+    const sums = `
+             count(*)::int                                                AS loads,
+             sum(x.supplier_qty)::numeric                                 AS billed_qty,
+             sum(x.received_qty)::numeric                                 AS received_qty,
+             sum(x.accepted_qty)::numeric                                 AS accepted_qty,
+             sum(x.supplier_qty - x.received_qty)::numeric                AS net_variance_qty,
+             round(avg(abs(x.supplier_qty - x.received_qty) / x.supplier_qty * 100)::numeric, 2) AS mean_abs_variance_pct,
+             round((sum(x.supplier_qty - x.received_qty) / NULLIF(sum(x.supplier_qty), 0) * 100)::numeric, 2) AS net_variance_pct,
+             count(*) FILTER (WHERE x.supplier_qty - x.received_qty > 0.0005)::int AS short_loads,
+             count(*) FILTER (WHERE x.supplier_qty - x.received_qty < -0.0005)::int AS over_loads,
+             count(*) FILTER (WHERE x.tolerance_pct IS NOT NULL
+                                AND abs(x.supplier_qty - x.received_qty) / x.supplier_qty * 100 > x.tolerance_pct)::int AS over_tolerance_loads,
+             round(sum((x.supplier_qty - x.received_qty) * x.rate)::numeric, 2) AS net_variance_value,
+             round(sum((x.supplier_qty - x.accepted_qty) * x.rate)::numeric, 2) AS recovered_value,
+             round(sum((x.accepted_qty - x.received_qty) * x.rate)::numeric, 2) AS unrecovered_value`;
     const roll = (groupCols, labelCols) => `
-      SELECT ${labelCols},
-             count(*)::int                                   AS loads,
-             sum(r.supplier_qty)::numeric                     AS billed_qty,
-             sum(r.accepted_qty)::numeric                     AS accepted_qty,
-             sum(r.variance_qty)::numeric                     AS net_variance_qty,
-             round(avg(abs(r.variance_pct))::numeric, 2)      AS mean_abs_variance_pct,
-             round((CASE WHEN sum(r.supplier_qty) > 0
-                         THEN sum(r.variance_qty) / sum(r.supplier_qty) * 100
-                         ELSE 0 END)::numeric, 2)             AS net_variance_pct,
-             count(*) FILTER (WHERE r.variance_qty > 0)::int  AS short_loads,
-             count(*) FILTER (WHERE r.variance_qty < 0)::int  AS over_loads,
-             -- What the net shortfall is worth at the order's own rate, which
-             -- is the number that makes somebody pick up the phone.
-             round(sum(r.variance_qty * o.rate)::numeric, 2)  AS net_variance_value
-      FROM rm_receipts_effective r
-      JOIN rm_orders o ON o.id = r.order_id
-      JOIN rm_materials m ON m.id = o.material_id
-      JOIN rm_suppliers s ON s.id = o.supplier_id
-      WHERE ${where}
-      GROUP BY ${groupCols}
-      ORDER BY sum(r.variance_qty * o.rate) DESC NULLS LAST`;
+      SELECT ${labelCols}, ${sums}, count(DISTINCT x.purchase_unit)::int AS units
+        FROM ${W}
+       GROUP BY ${groupCols}
+       ORDER BY sum((x.supplier_qty - x.received_qty) * x.rate) DESC NULLS LAST`;
 
-    const [bySupplier, byMaterial, detail, totals] = await Promise.all([
-      query(roll("s.id, s.name", "s.id AS supplier_id, s.name AS supplier_name"), params),
-      query(roll("m.id, m.name, m.purchase_unit",
-                 "m.id AS material_id, m.name AS material_name, m.purchase_unit"), params),
+    const [bySupplier, byMaterial, detail, totals, notWeighed, mats, sups] = await Promise.all([
+      query(roll("x.supplier_id, x.supplier_name", "x.supplier_id, x.supplier_name, min(x.purchase_unit) AS purchase_unit"), params),
+      query(roll("x.material_id, x.material_name, x.purchase_unit", "x.material_id, x.material_name, x.purchase_unit"), params),
       query(
-        `SELECT r.id, r.received_at, to_char(r.received_date,'YYYY-MM-DD') AS received_date, r.supplier_qty, r.accepted_qty, r.weighbridge_weight_kg,
-                r.variance_qty, r.variance_pct, r.accepted_basis, r.confirmation_status,
-                r.short_reason, r.confirm_note, r.vehicle_number, r.challan_number,
-                m.name AS material_name, m.purchase_unit, m.tolerance_pct,
-                s.name AS supplier_name, cu.name AS confirmed_by_name
-         FROM rm_receipts_effective r
-         JOIN rm_orders o ON o.id = r.order_id
-         JOIN rm_materials m ON m.id = o.material_id
-         JOIN rm_suppliers s ON s.id = o.supplier_id
-         LEFT JOIN users cu ON cu.id = r.confirmed_by
-         WHERE ${where}
-         ORDER BY abs(r.variance_pct) DESC NULLS LAST, r.received_date DESC
-         LIMIT 300`, params),
-      query(
-        `SELECT count(*)::int AS loads,
-                sum(r.variance_qty)::numeric AS net_variance_qty,
-                round(sum(r.variance_qty * o.rate)::numeric, 2) AS net_variance_value,
-                count(*) FILTER (WHERE r.confirmation_status = 'confirmed')::int AS confirmed_loads
-         FROM rm_receipts_effective r
-         JOIN rm_orders o ON o.id = r.order_id
-         JOIN rm_materials m ON m.id = o.material_id
-         JOIN rm_suppliers s ON s.id = o.supplier_id
-         WHERE ${where}`, params),
+        `SELECT x.id, x.received_at, to_char(x.received_date,'YYYY-MM-DD') AS received_date, x.supplier_qty, x.accepted_qty,
+                round(x.received_qty::numeric, 3) AS received_qty, x.weighbridge_weight_kg,
+                round((x.supplier_qty - x.received_qty)::numeric, 3) AS variance_qty,
+                round(((x.supplier_qty - x.received_qty) / x.supplier_qty * 100)::numeric, 2) AS variance_pct,
+                round(((x.supplier_qty - x.received_qty) * x.rate)::numeric, 2) AS variance_value,
+                x.accepted_basis, x.short_reason, x.confirm_note, x.vehicle_number, x.challan_number,
+                x.material_name, x.purchase_unit, x.tolerance_pct, x.supplier_name, cu.name AS confirmed_by_name
+           FROM ${W.replace(" x WHERE", " x LEFT JOIN users cu ON cu.id = x.confirmed_by WHERE")}
+          ORDER BY abs(x.supplier_qty - x.received_qty) / x.supplier_qty DESC NULLS LAST, x.received_date DESC
+          LIMIT 300`, params),
+      query(`SELECT ${sums} FROM ${W}`, params),
+      query(`SELECT count(*)::int AS n FROM (${BASE}) x WHERE x.received_qty IS NULL`, params),
+      query(`SELECT DISTINCT m.id, m.name FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id JOIN rm_materials m ON m.id = o.material_id ORDER BY m.name`),
+      query(`SELECT DISTINCT s.id, s.name FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id JOIN rm_suppliers s ON s.id = o.supplier_id ORDER BY s.name`),
     ]);
 
     res.json({
+      basis: "billed_vs_weighbridge",
       by_supplier: bySupplier.rows,
       by_material: byMaterial.rows,
       detail: detail.rows,
-      totals: totals.rows[0],
+      totals: { ...totals.rows[0], not_weighed_loads: notWeighed.rows[0].n },
+      options: { materials: mats.rows, suppliers: sups.rows },
     });
   } catch (err) {
     console.error(err);
