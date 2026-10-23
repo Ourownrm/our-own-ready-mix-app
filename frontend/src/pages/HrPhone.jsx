@@ -142,6 +142,57 @@ export function WorkLocationsCard({ canEdit, canCreate }) {
   );
 }
 
+// ---------------------------------------------------------------- location warnings
+// Round 233 — taps from a working area that were NOT marked: location off, or
+// outside the area. Saved (not counted); HR looks and marks them seen.
+const WARN_LABEL = { no_location: "Location not available", outside_area: "Outside working area", inaccurate: "Location too rough" };
+export function PunchWarnings() {
+  const { can } = usePermissions();
+  const [show, setShow] = useState("open");
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const load = () => apiRequest(`/hr/app-punch-warnings?show=${show}`).then(setRows).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, [show]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!rows || (!rows.length && show === "open")) return null;
+  const open = rows.filter((r) => !r.seen_at);
+  const seen = async (ids) => {
+    setError("");
+    try { await apiRequest("/hr/app-punch-warnings/seen", { method: "POST", body: { ids } }); load(); } catch (e) { setError(e.message); }
+  };
+  const map = (r) => (r.lat != null ? `https://www.google.com/maps?q=${r.lat},${r.lng}` : null);
+  return (
+    <div className="card" style={{ marginBottom: 14, borderColor: "var(--amber)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 700 }}>Phone attendance not marked — location{open.length ? ` (${open.length})` : ""}</div>
+        {[["open", "Not seen"], ["all", "Last 2 months"]].map(([k, l]) => <button key={k} className={`btn-tab${show === k ? " active" : ""}`} style={{ fontSize: 12, padding: "3px 10px" }} onClick={() => setShow(k)}>{l}</button>)}
+        {can("hr.requests", "edit") && open.length > 1 && <button style={{ marginLeft: "auto", fontSize: 12, padding: "4px 10px" }} onClick={() => seen(open.map((r) => r.id))}>Mark all seen</button>}
+      </div>
+      <div style={{ fontSize: 12, color: "var(--slate)", margin: "2px 0 8px" }}>Working-area staff tapped Punch, but the location was off or outside their area, so attendance was NOT marked. If they were working, they can ask for a correction (On duty).</div>
+      {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ minWidth: 640 }}>
+          <thead><tr><th>Employee</th><th>When</th><th>Warning</th><th>Where</th><th /></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td><b>{r.employee_name}</b> <span style={{ fontSize: 12, color: "var(--slate)" }}>{r.emp_code}{r.department ? ` · ${r.department}` : ""}</span></td>
+                <td style={{ whiteSpace: "nowrap" }}>{new Date(r.date + "T12:00:00+05:30").toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · {r.time}{r.kind ? ` · ${r.kind.toUpperCase()}` : ""}</td>
+                <td><span className="badge badge-warning">{WARN_LABEL[r.warning] || r.warning}</span><div style={{ fontSize: 11.5, color: "var(--slate)" }}>{r.warning_note}</div></td>
+                <td style={{ fontSize: 12.5 }}>{map(r) ? <a href={map(r)} target="_blank" rel="noreferrer">Open map</a> : "—"}{r.accuracy_m ? <div style={{ fontSize: 11, color: "var(--slate)" }}>±{Math.round(r.accuracy_m)} m</div> : null}</td>
+                <td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
+                  {r.seen_at ? <span style={{ color: "var(--slate)" }}>seen · {r.seen_by_name}</span>
+                    : can("hr.requests", "edit") ? <button style={{ fontSize: 12, padding: "3px 10px" }} onClick={() => seen([r.id])}>Seen</button> : null}
+                </td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>None in the last 2 months.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- punches to check
 export function PhonePunchReview() {
   const { can } = usePermissions();

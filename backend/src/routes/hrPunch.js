@@ -26,9 +26,18 @@ import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 import { loadRules } from "../lib/hrRules.js";
+import { ROUND233_SQL } from "../lib/round233Schema.js";
 
 const router = Router();
 router.use(requireAuth);
+// Round 233 — the working-area columns are made on first use too, so a punch
+// never fails on a database where /setup has not run yet.
+let areaReady = null;
+router.use((req, _res, next) => {
+  if (!areaReady) areaReady = query(ROUND233_SQL).catch((e) => { areaReady = null; throw e; });
+  areaReady.then(() => next(), next);
+});
+const DEFAULT_AREA_KM = 50;
 
 const ADMIN_ROLES = ["administrator", "super_admin"];
 const isAdmin = (u) => ADMIN_ROLES.includes(u.role);
@@ -60,6 +69,7 @@ const deviceOk = (d) => typeof d === "string" && /^[A-Za-z0-9-]{16,64}$/.test(d)
 async function myEmployee(userId) {
   const { rows } = await query(
     `SELECT e.id, e.name, e.emp_code, e.app_punch, e.attendance_source, e.device_id, e.is_active, u.role,
+            e.work_area_km, e.work_area_location_id,
             (f.employee_id IS NOT NULL) AS enrolled
      FROM hr_employees e JOIN users u ON u.id = e.app_user_id
      LEFT JOIN hr_employee_faces f ON f.employee_id = e.id
@@ -70,12 +80,20 @@ const allowedFor = (emp) => !!emp && emp.app_punch !== "off" && emp.role !== "dr
 
 async function todaysPunches(empId) {
   const { rows } = await query(
-    `SELECT id, to_char(punched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI') AS t, status, distance_m, location_id
+    `SELECT id, to_char(punched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI') AS t, status, distance_m, location_id, kind, warning
      FROM hr_app_punches WHERE employee_id = $1
        AND punched_at >= ((((now() AT TIME ZONE 'Asia/Kolkata') - interval '4 hours')::date + time '04:00') AT TIME ZONE 'Asia/Kolkata')
      ORDER BY punched_at`, [empId]);
   return rows;
 }
+
+// The working area of an employee in 'area' mode: their chosen work location
+// (else the first active one) and their radius (else 50 km).
+function areaOf(emp, locs) {
+  const centre = locs.find((l) => l.id === emp.work_area_location_id) || locs[0] || null;
+  return centre ? { centre, km: Number(emp.work_area_km) || DEFAULT_AREA_KM } : null;
+}
+const fmtDist = (m) => (m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${m} m`);
 
 // ---------------------------------------------------------------- the phone
 // Everything the Mark attendance screen needs before it opens the camera.
@@ -91,6 +109,7 @@ router.get("/punch/setup", async (req, res) => {
     const { rows: locs } = await query(`SELECT id, name, lat, lng, radius_m FROM hr_work_locations WHERE is_active ORDER BY name`);
     res.json({
       allowed: true, employee: { name: emp.name, emp_code: emp.emp_code }, mode: emp.app_punch,
+      area: emp.app_punch === "area" ? (() => { const a = areaOf(emp, locs); return a ? { name: a.centre.name, km: a.km, lat: a.centre.lat, lng: a.centre.lng } : null; })() : null,
       enrolled: emp.enrolled, device_registered: !!emp.device_id,
       locations: locs, rules: { gps_accuracy_max: rules.gps_accuracy_max, face_tries: rules.face_tries },
       today: await todaysPunches(emp.id),
@@ -122,14 +141,46 @@ router.post("/punch", async (req, res) => {
 
     // 2. location
     const lat = Number(b.lat), lng = Number(b.lng), acc = Number(b.accuracy);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    const hasLoc = b.lat != null && b.lng != null && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+    // Round 233 (owner, 23 Oct 2026, revised) — in a working area, location
+    // off or outside the area: attendance is NOT marked. The tap is still
+    // saved (not counted) with what location there was, for HR to see.
+    if (!hasLoc && emp.app_punch !== "area") {
       return bad(res, 400, "Location is needed to mark attendance. Allow location for this app and try again.", { code: "no_location" });
     }
-    const { rows: locs } = await query(`SELECT id, name, lat, lng, radius_m FROM hr_work_locations WHERE is_active`);
+    const { rows: locs } = await query(`SELECT id, name, lat, lng, radius_m FROM hr_work_locations WHERE is_active ORDER BY id`);
     let nearest = null;
-    for (const l of locs) {
-      const dist = haversineM({ lat, lng }, l);
-      if (!nearest || dist < nearest.dist) nearest = { ...l, dist };
+    if (hasLoc) {
+      for (const l of locs) {
+        const dist = haversineM({ lat, lng }, l);
+        if (!nearest || dist < nearest.dist) nearest = { ...l, dist };
+      }
+    }
+    let warning = null, warningNote = null;
+    if (emp.app_punch === "area") {
+      const area = areaOf(emp, locs);
+      if (!area) return bad(res, 409, "No work location is set up yet. Ask HR to add the plant's location.", { code: "no_locations" });
+      if (!hasLoc) {
+        warning = "no_location";
+        warningNote = String(b.location_error || "Location was off or could not be read").slice(0, 200);
+      } else {
+        const d = haversineM({ lat, lng }, area.centre);
+        nearest = { ...area.centre, dist: d };
+        if (d > area.km * 1000) { warning = "outside_area"; warningNote = `${fmtDist(d)} from ${area.centre.name} — working area ${area.km} km`; }
+        else if (Number.isFinite(acc) && acc > 2000) { warning = "inaccurate"; warningNote = `GPS only ±${fmtDist(Math.round(acc))} — can't tell where you are`; }
+      }
+      if (warning) {
+        if (!deviceOk(b.device_id)) return bad(res, 400, "This phone could not be identified. Reload and try again.");
+        await query(
+          `INSERT INTO hr_app_punches (employee_id, lat, lng, accuracy_m, location_id, distance_m, live, tries, device_id, status, review_reason, user_id, kind, warning, warning_note)
+           VALUES ($1,$2,$3,$4,$5,$6,false,0,$7,'rejected',$8,$9,$10,$11,$12)`,
+          [emp.id, hasLoc ? lat : null, hasLoc ? lng : null, hasLoc && Number.isFinite(acc) ? acc : null, nearest?.id || null, nearest?.dist ?? null, b.device_id,
+           "attendance not marked — location", req.user.id, ["in", "out"].includes(b.kind) ? b.kind : null, warning, warningNote]);
+        const msg = warning === "outside_area"
+          ? "Attendance not marked — Location not inside the working area."
+          : "Attendance not marked — Location not available.";
+        return bad(res, 422, msg, { code: warning === "outside_area" ? "outside_area" : "no_location_area", detail: warningNote, distance_m: nearest?.dist ?? null, km: area.km, location: area.centre.name });
+      }
     }
     if (emp.app_punch === "plant") {
       if (!locs.length) return bad(res, 409, "No work location is set up yet. Ask HR to add the plant's location.", { code: "no_locations" });
@@ -168,16 +219,18 @@ router.post("/punch", async (req, res) => {
       await query(`UPDATE hr_employees SET device_id = $1, device_registered_at = now() WHERE id = $2 AND device_id IS NULL`, [b.device_id, emp.id]);
     }
     const { rows } = await query(
-      `INSERT INTO hr_app_punches (employee_id, lat, lng, accuracy_m, location_id, distance_m, face_distance, live, tries, device_id, photo, status, review_reason, user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, to_char(punched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI') AS t`,
-      [emp.id, lat, lng, Number.isFinite(acc) ? acc : null, nearest?.id || null, nearest?.dist ?? null, dist, live, tries, b.device_id, photo,
-        status, reviewReason, req.user.id]);
+      `INSERT INTO hr_app_punches (employee_id, lat, lng, accuracy_m, location_id, distance_m, face_distance, live, tries, device_id, photo, status, review_reason, user_id,
+                                   kind, warning, warning_note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id, to_char(punched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI') AS t`,
+      [emp.id, hasLoc ? lat : null, hasLoc ? lng : null, hasLoc && Number.isFinite(acc) ? acc : null, nearest?.id || null, nearest?.dist ?? null, dist, live, tries, b.device_id, photo,
+        status, reviewReason, req.user.id, ["in", "out"].includes(b.kind) ? b.kind : null, warning, warningNote]);
     // Old photos go after the keep period (the punch itself stays).
     query(`UPDATE hr_app_punches SET photo = NULL WHERE photo IS NOT NULL AND punched_at < now() - ($1 || ' days')::interval`, [String(rules.photo_keep_days)]).catch(() => {});
     res.status(201).json({
       ok: true, id: rows[0].id, time: rows[0].t, status,
       message: matched ? `Marked at ${rows[0].t}.` : `Saved at ${rows[0].t} for your manager to check — it counts once they approve.`,
       location: nearest ? { name: nearest.name, distance_m: nearest.dist } : null,
+      warning, warning_note: warningNote,
     });
   } catch (err) {
     console.error(err);
@@ -275,6 +328,29 @@ router.get("/app-punches", requirePermission("hr.requests", "view"), async (req,
      WHERE p.status = $1 ORDER BY p.punched_at DESC LIMIT 300`, [status]);
   const admin = isAdmin(req.user);
   res.json(rows.map((r) => ({ ...r, can_decide: r.status === "review" && r.app_user_id !== req.user.id && (admin || r.app_user_role !== "manager") })));
+});
+// Round 233 — taps from a working area that were NOT marked: location off,
+// or outside the area. Saved (not counted); HR sees them here and marks seen.
+router.get("/app-punch-warnings", requirePermission("hr.requests", "view"), async (req, res) => {
+  const show = req.query.show === "all" ? "all" : "open";
+  const { rows } = await query(
+    `SELECT p.id, p.employee_id, to_char(p.punched_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS date,
+            to_char(p.punched_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI') AS time, p.kind, p.lat, p.lng, p.accuracy_m, p.distance_m,
+            p.warning, p.warning_note, p.status, (p.photo IS NOT NULL) AS has_photo,
+            e.name AS employee_name, e.emp_code, d.name AS department, sb.name AS seen_by_name,
+            to_char(p.warning_seen_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon HH24:MI') AS seen_at
+       FROM hr_app_punches p JOIN hr_employees e ON e.id = p.employee_id
+       LEFT JOIN hr_departments d ON d.id = e.department_id LEFT JOIN users sb ON sb.id = p.warning_seen_by
+      WHERE p.warning IS NOT NULL AND ($1 = 'all' OR p.warning_seen_at IS NULL)
+        AND p.punched_at > now() - interval '62 days'
+      ORDER BY p.punched_at DESC LIMIT 300`, [show]);
+  res.json(rows);
+});
+router.post("/app-punch-warnings/seen", requirePermission("hr.requests", "edit"), async (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return bad(res, 400, "Nothing chosen.");
+  const r = await query(`UPDATE hr_app_punches SET warning_seen_by = $2, warning_seen_at = now() WHERE id = ANY($1::int[]) AND warning IS NOT NULL AND warning_seen_at IS NULL`, [ids, req.user.id]);
+  res.json({ ok: true, marked: r.rowCount });
 });
 router.get("/app-punches/:id/photo", requirePermission("hr.requests", "view"), async (req, res) => {
   const { rows } = await query(`SELECT photo FROM hr_app_punches WHERE id = $1`, [Number(req.params.id)]);

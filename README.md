@@ -8913,3 +8913,26 @@ Owner, 22 Oct 2026: "a merged customer is not showing its name while I revise th
 Verified locally: merge with an inactive stayer → stayer active; repair switched the TRANSGLOBAL stayer back on; MOGRAL-type load shows the other-project offer and the 01-Sep start; bank lines ₹11,800 @18 % → ₹10,000 + ₹1,800, ₹2,000 no-credit → ₹2,000, power ₹50,000 @0 %; rule sorted the next ₹5,900 line → ₹5,000; P&L and break-even Repairs ₹17,000, Admin ₹3,000; BS hint ₹3,240; `npm run check` green; build clean.
 
 Files (12) — backend: src/lib/{recordMerge, round230Schema, bankBook, costDashboard}.js; src/routes/{accountsLedger, costBank, setup}.js · frontend: src/lib/version.js; src/pages/accounts/{Invoices, QuotationBuilder}.jsx; src/pages/cost/CostBankTab.jsx · root: README.md
+
+## Round 233 — Phone attendance inside a working area (km), with location warnings (v10.65)
+
+Owner, 23 Oct 2026: "mark attendance with a punch-in button within a perimeter (e.g. 50 km radius) working area; location must be registered when they tap; if location is off show a warning, also if outside the working area." Built on v10.64. **Run /setup once** (the columns are also made on first use).
+- New phone-attendance mode **Working area** on the employee (HR → Employees → Attendance on the phone), beside "At the plant" and "Anywhere": a radius in km (blank = 50) around a work location (blank = the first one).
+- The Punch IN / OUT button records the location with every punch. In a working area a punch is never refused for location: **location off** or **outside the area** (or very rough GPS) is saved as a warning with the punch, and the punch counts. Face check and registered phone are unchanged. "At the plant" and "Anywhere" work exactly as before.
+- The phone shows "Inside your working area (50 km)", or the warning, and the day's punches show IN / OUT and any warning.
+- HR → Requests: **Phone punches with a location warning** — employee, time, IN/OUT, warning ("111 km from PLANT KASARAGOD — working area 50 km" / "Location is blocked"), map link, and Seen / Mark all seen. `GET /hr/app-punch-warnings`, `POST /hr/app-punch-warnings/seen`.
+- New: `hr_employees.work_area_km`, `work_area_location_id`; `hr_app_punches.kind`, `warning`, `warning_note`, `warning_seen_by/at` (lib/round233Schema.js).
+
+Verified locally: location off → counted, warning "Location is blocked."; 10 km → counted, no warning; 111 km → counted, warning with the distance; plant mode with location off still refused; warnings listed and marked seen; `npm run check` green; build clean.
+
+Files (10) — backend: src/lib/round233Schema.js (new), src/routes/{hr, hrPunch, setup}.js · frontend: src/lib/version.js; src/pages/{MarkAttendance, HrModule, HrPhone, HrEmployeeCard}.jsx · root: README.md
+
+## Round 234 — Working area: location off or outside → attendance NOT marked (v10.66)
+
+Owner, 23 Oct 2026, on v10.65: "if outside the area it should not mark attendance — a warning is given (location off or outside the area): Attendance not marked — Location not inside the working area / location not available." No /setup needed beyond Round 233.
+- Working-area mode now refuses the punch when location is off (or too rough, worse than ±2 km) or outside the area: **"Attendance not marked — Location not available."** / **"Attendance not marked — Location not inside the working area."** with the distance. The tap is still saved with whatever location there was (status rejected, not counted) for HR.
+- The phone checks location first; when it is refused the camera never opens. A "Working? Ask for On duty →" link follows the message.
+- HR → Requests: the list is now "Phone attendance not marked — location".
+- Verified locally: off → not marked; 111 km → not marked, saved with 13.5° lat; 10 km with face → marked; refused taps listed for HR; build clean.
+
+Files (5) — backend: src/routes/hrPunch.js · frontend: src/lib/version.js; src/pages/{MarkAttendance, HrPhone}.jsx · root: README.md
