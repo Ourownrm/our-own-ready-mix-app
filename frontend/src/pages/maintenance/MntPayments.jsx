@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
+import { useLedgerManual, LEDGER_PAY_NOTE } from "../../lib/useLedgerManual.js";
 import { useLoad, useAction, Loading, Msg, Kpi, fmtRs, fmtDate, todayIst, H2, MUTED, ROW, GRID, Field, Table, SMALL_BTN } from "./mntUi.jsx";
 
 const STATE = {
@@ -73,6 +74,7 @@ function BillPanel({ bill, canPay, onClose, onPaid }) {
   const pays = useLoad(`/maintenance-module/bills/${bill.id}/payments`, [bill.id, bill.paid]);
   const [f, setF] = useState({ amount: "", tds: "", paid_on: todayIst(), mode: "Bank transfer", reference: "" });
   const act = useAction(() => { pays.load(); onPaid(); setF({ ...f, amount: "", tds: "", reference: "" }); });
+  const manual = useLedgerManual();   // Round 235
 
   return (
     <section className="card" style={{ flex: "1 1 340px", minWidth: 0 }}>
@@ -89,7 +91,8 @@ function BillPanel({ bill, canPay, onClose, onPaid }) {
       {bill.state === "on_hold" && <div style={{ ...MUTED, color: "var(--alert-red)", marginBottom: 10 }}>The bill is above the approved amount — the Administrator has to approve it on the Outside tab before it can be paid.</div>}
       {bill.state === "estimate" && <div style={{ ...MUTED, marginBottom: 10 }}>Approved estimate — pay an advance here; the balance follows the real bill when the repair comes back.</div>}
       <Msg msg={act.msg} err={act.err} />
-      {canPay && bill.state !== "on_hold" && bill.balance > 0 && (
+      {canPay && !manual && bill.state !== "on_hold" && bill.balance > 0 && <div style={{ ...MUTED, marginBottom: 10 }}>{LEDGER_PAY_NOTE}</div>}
+      {canPay && manual && bill.state !== "on_hold" && bill.balance > 0 && (
         <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
           <div style={GRID(130)}>
             <Field label="Amount ₹"><input inputMode="decimal" placeholder={String(bill.balance)} value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></Field>

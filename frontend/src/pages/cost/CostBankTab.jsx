@@ -5,7 +5,7 @@
 // maintenance cost), left out because the app already has that exact payment,
 // own transfer, loan EMI (split into interest and principal), tax, asset …
 // Rules: lib/bankBook.js.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
 import {
@@ -24,7 +24,14 @@ const T = {
   asset: { label: "Fixed asset", bg: "#EDE6F4", fg: "#55357A" },
   capital: { label: "Capital", bg: "#EDE6F4", fg: "#55357A" },
   personal: { label: "Personal", bg: "#ECEAE4", fg: "#3F4750" },
+  // Round 235
+  pay: { label: "To a ledger", bg: "#E2EAF6", fg: "#1F4A82" },
+  cert: { label: "Vehicle certificate", bg: "#FCE9DC", fg: "#8A3E0B" },
 };
+const PAY_KINDS = [
+  ["supplier", "Supplier payment", "Supplier ledger"], ["transporter", "Transporter payment", "Transporter ledger"],
+  ["contractor", "Contractor / pump gang", "Contractor ledger (HR)"], ["maintenance", "Maintenance bill (repair, spares, PO)", "Maintenance → Payments"],
+];
 const LEAVE = [
   ["omit", "Already in the app"], ["own", "Own transfer (between our accounts)"], ["tax", "Tax — GST / TDS / income tax"],
   ["personal", "Owner’s / personal"], ["capital", "Capital brought in / taken out"],
@@ -33,6 +40,7 @@ const KIND = { current: "Current account", savings: "Savings account", cc: "Cash
 const FILTERS = [
   ["all", "All", () => true], ["open", "To categorise", (l) => l.treatment === "todo" || l.treatment === "check"],
   ["cost", "Costs", (l) => l.treatment === "cost"], ["loan", "Loan EMIs", (l) => l.treatment === "loan"],
+  ["posted", "To ledgers", (l) => l.treatment === "pay" || l.treatment === "cert"],
   ["omit", "Left out", (l) => l.treatment === "omit"], ["own", "Own transfers", (l) => l.treatment === "own"],
   ["other", "Tax, assets, other", (l) => ["tax", "asset", "capital", "personal"].includes(l.treatment)],
 ];
@@ -79,7 +87,7 @@ export default function CostBankTab({ month, setMonth }) {
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 14 }}>
       <div>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Bank statements — {d && d.month === month ? d.label : "Monthly"}</h1>
-        <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 4 }}>Every account’s statement in one list · each line added to a cost head, or left out because the app already has it</div>
+        <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 4 }}>Every account’s statement in one list · each line added to a cost head, posted to a party’s ledger, or left out because the app already has it</div>
       </div>
       <Actions>
         <MonthSelect value={month} onChange={setMonth} />
@@ -131,6 +139,7 @@ export default function CostBankTab({ month, setMonth }) {
         <Tile label="Statement lines" value={num(s.lines)} note={`${rsL(s.debits)} out · ${rsL(s.credits)} in`} />
         <Tile label="Left out — in the app" value={rsL((s.by.omit?.dr || 0) + (s.by.omit?.cr || 0))} note={`${num(s.by.omit?.n || 0)} lines matched to the app’s records`} />
         <Tile label="Own transfers" value={rsL((s.by.own?.dr || 0))} note={`${num(s.by.own?.n || 0)} lines between our accounts`} />
+        <Tile label="Posted to ledgers" value={rsL((s.by.pay?.dr || 0) + (s.by.cert?.dr || 0))} note={`${num((s.by.pay?.n || 0) + (s.by.cert?.n || 0))} payments to suppliers, transporters, contractors, bills, certificates`} />
         <Tile label="Loan EMIs" value={rsL(s.by.loan?.dr || 0)} note={`interest ${rsL(s.loan_interest)} · principal ${rsL(s.loan_principal)}`} />
         <Tile dark label="To the P&L" value={rsL(s.to_pl)} note={`${s.heads.filter((h) => h.amount && h.key !== "other_income").length} cost heads${s.other_income ? ` · other income ${rsL(s.other_income)}` : ""}`} />
         <Tile label="To categorise" value={num(open)} note={open ? `${rsL(openAmt)} not in any head yet` : "all lines sorted"} />
@@ -217,6 +226,20 @@ export default function CostBankTab({ month, setMonth }) {
             <div style={{ ...MUTED, marginTop: 8 }}>Repairs here are added to the job-card cost, fuel to the Fuel module’s, and so on. Power, rent, admin, selling and finance cost no longer need typing in — if they are typed in too, the P&amp;L warns that both are counted.</div>
           </div>
           <div style={panel("0 0 auto")}>
+            <h2 style={H2}>Posted to ledgers</h2>
+            <div style={SUB}>Payments given a party here go into that party’s ledger (not a cost — the material, freight, labour or repair cost comes from its own record). Road tax and insurance renew the certificate; the P&amp;L spreads the fee over the period it covers.</div>
+            <div style={{ display: "flex", flexDirection: "column", marginTop: 8, fontSize: 13 }}>
+              {(s.posted || []).map((o) => (
+                <div key={o.kind} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                  <span style={{ minWidth: 0 }}>{o.where}<span style={{ display: "block", ...MUTED }}>{o.n} line(s)</span></span>
+                  <b style={{ whiteSpace: "nowrap", ...NUM }}>{rsL(o.amount)}</b>
+                </div>
+              ))}
+              {!(s.posted || []).length && <div style={{ color: "var(--slate)" }}>Nothing posted this month.</div>}
+            </div>
+            <ManualSwitch d={d} reload={reload} />
+          </div>
+          <div style={panel("0 0 auto")}>
             <h2 style={H2}>Left out — already in the app</h2>
             <div style={SUB}>Only when the same payment is in the app’s records (amount, and the date within 3 days). Never because of the kind of payment.</div>
             <div style={{ display: "flex", flexDirection: "column", marginTop: 8, fontSize: 13 }}>
@@ -275,6 +298,7 @@ function Treat({ l, d, canEdit, onDone }) {
     catch (e) { setErr(e.message); setBusy(false); }
   }
   async function reset() {
+    if (l.post_kind && !window.confirm(`This takes the payment back out of the ${l.post_kind === "certificate" ? "compliance register" : "ledger"}. Go ahead?`)) return;
     setBusy(true); setErr("");
     try { await apiRequest(`/cost/bank/lines/${l.id}/reset`, { method: "POST" }); onDone(); }
     catch (e) { setErr(e.message); setBusy(false); }
@@ -282,7 +306,8 @@ function Treat({ l, d, canEdit, onDone }) {
   if (canEdit && (edit || l.treatment === "todo")) return <Editor l={l} d={d} onCancel={l.treatment === "todo" ? null : () => setEdit(false)} onDone={onDone} />;
   const what = l.treatment === "cost" ? headLabel(d, l.head)
     : l.treatment === "loan" ? (l.loan_name || "Loan")
-      : l.treatment === "omit" ? "Already in the app" : "";
+      : l.treatment === "omit" ? "Already in the app"
+        : l.treatment === "pay" || l.treatment === "cert" ? (l.party_label || "") : "";
   return (
     <div>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -332,7 +357,8 @@ function GstPicker({ d, head, amount, pct, setPct, claim, setClaim }) {
 }
 
 function Editor({ l, d, onCancel, onDone }) {
-  const init = l.treatment === "cost" ? `cost:${l.head}` : l.treatment === "loan" && l.loan_id ? `loan:${l.loan_id}` : ["todo", "check"].includes(l.treatment) ? "" : l.treatment;
+  const init = l.treatment === "cost" ? `cost:${l.head}` : l.treatment === "loan" && l.loan_id ? `loan:${l.loan_id}`
+    : l.treatment === "pay" && l.post_kind ? `pay:${l.post_kind}` : ["todo", "check"].includes(l.treatment) ? "" : l.treatment;
   const [v, setV] = useState(init);
   const [always, setAlways] = useState(false);
   const [kw, setKw] = useState(() => keywordFrom(l.narration));
@@ -341,12 +367,23 @@ function Editor({ l, d, onCancel, onDone }) {
   const [gstClaim, setGstClaim] = useState(l.gst_claim !== false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [post, setPost] = useState({});      // Round 235 — party / bills / certificate
   const credit = l.credit > 0;
   const loans = d.loans.filter((x) => x.is_active || String(x.id) === String(l.loan_id));
   async function save() {
     if (!v) { setErr("Choose what this line is."); return; }
     setBusy(true); setErr("");
     const [t, x] = v.split(":");
+    if (t === "pay" || t === "cert") {
+      const miss = t === "cert" ? (!post.asset_id ? "Choose the vehicle." : !post.cert_type ? "Choose the certificate." : !post.valid_to ? "Enter the valid-to date." : "")
+        : x === "maintenance" ? (!post.bill_id ? "Choose the bill this pays." : "") : !post.party_id ? "Choose who was paid." : "";
+      if (miss) { setErr(miss); setBusy(false); return; }
+      try {
+        await apiRequest(`/cost/bank/lines/${l.id}`, { method: "PUT", body: { treatment: t, party_kind: t === "pay" ? x : undefined, ...post } });
+        onDone(t === "cert" ? "Saved — the certificate is renewed in the compliance register." : "Saved — the payment is in the party’s ledger.");
+      } catch (e) { setErr(e.message); setBusy(false); }
+      return;
+    }
     const body = { treatment: t, head: t === "cost" ? x : undefined, loan_id: t === "loan" ? Number(x) : undefined,
       interest: t === "loan" && interest !== "" ? Number(interest) : undefined, always: always && !["omit"].includes(t), keyword: kw,
       gst_pct: t === "cost" && !credit ? Number(gstPct === "" ? headGstOf(d, x) : gstPct) : undefined, gst_claim: t === "cost" && !credit ? gstClaim : undefined };
@@ -358,12 +395,18 @@ function Editor({ l, d, onCancel, onDone }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {l.treatment === "check" && l.why && <div style={MUTED}>{l.why}</div>}
-      <select aria-label="What this line is" value={v} onChange={(e) => { setV(e.target.value); setGstPct(""); }}
+      <select aria-label="What this line is" value={v} onChange={(e) => { setV(e.target.value); setGstPct(""); setPost({}); setErr(""); }}
         style={{ fontSize: 12.5, minHeight: 34, border: `1px solid ${v ? "var(--border-strong)" : "#D9A93A"}`, background: v ? "var(--surface)" : "#FFF8E6" }}>
         <option value="">Choose…</option>
         <optgroup label={credit ? "Income / reduces a cost" : "Add to a cost"}>
           {d.heads_meta.filter((h) => credit || !h.income).map((h) => <option key={h.key} value={`cost:${h.key}`}>{h.label}</option>)}
         </optgroup>
+        {!credit && (
+          <optgroup label="Paid to a party → its ledger">
+            {PAY_KINDS.map(([k, label]) => <option key={k} value={`pay:${k}`}>{label}</option>)}
+            <option value="cert">Vehicle certificate — road tax, insurance, permit …</option>
+          </optgroup>
+        )}
         <optgroup label="Leave out">{LEAVE.map(([k, label]) => <option key={k} value={k}>{label}</option>)}</optgroup>
         <optgroup label="Balance Sheet">
           {!credit && <option value="asset">Fixed asset bought</option>}
@@ -373,12 +416,14 @@ function Editor({ l, d, onCancel, onDone }) {
       {v.startsWith("cost:") && !credit && v !== "cost:other_income" && (
         <GstPicker d={d} head={v.slice(5)} amount={l.debit} pct={gstPct} setPct={setGstPct} claim={gstClaim} setClaim={setGstClaim} />
       )}
+      {v.startsWith("pay:") && <PayFields key={v} l={l} kind={v.slice(4)} post={post} setPost={setPost} />}
+      {v === "cert" && <CertFields l={l} post={post} setPost={setPost} />}
       {v.startsWith("loan:") && !credit && (
         <label style={{ ...MUTED, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>Interest in this EMI (only if the bank told you)
           <input type="number" min="0" step="0.01" value={interest} onChange={(e) => setInterest(e.target.value)} placeholder="worked out" style={{ width: 120, minHeight: 32 }} />
         </label>
       )}
-      {v && v !== "omit" && (
+      {v && v !== "omit" && !v.startsWith("pay:") && v !== "cert" && (
         <label style={{ ...MUTED, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <input type="checkbox" checked={always} onChange={(e) => setAlways(e.target.checked)} /> always for narrations with
           <input value={kw} onChange={(e) => setKw(e.target.value.toUpperCase())} aria-label="Word to look for" style={{ width: 170, minHeight: 30, fontSize: 12 }} />
@@ -389,6 +434,190 @@ function Editor({ l, d, onCancel, onDone }) {
         <button type="button" className="btn-primary" disabled={busy || !v} onClick={save} style={{ fontSize: 12, padding: "4px 12px", minHeight: 32 }}>{busy ? "Saving…" : "Save"}</button>
         {onCancel && <button type="button" onClick={onCancel} style={{ fontSize: 12, padding: "4px 10px", minHeight: 32 }}>Cancel</button>}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------- Round 235: to a ledger ---
+let partiesCache = null;
+function useParties() {
+  const [p, setP] = useState(partiesCache);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (partiesCache) return;
+    apiRequest("/cost/bank/parties").then((x) => { partiesCache = x; setP(x); setTimeout(() => { partiesCache = null; }, 60000); }).catch((e) => setErr(e.message));
+  }, []);
+  return { p, err };
+}
+const squash = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const WEAK = new Set(["THE", "AND", "LTD", "LIMITED", "PVT", "PRIVATE", "CO", "COMPANY", "INDIA", "SERVICES", "SERVICE", "ENTERPRISES", "TRADERS", "AGENCIES", "SUPPLIERS", "SUPPLY", "TRANSPORT", "TRANSPORTS", "BROTHERS", "INDUSTRIES", "M/S", "MS", "&"]);
+// The party whose name is in the narration (all its main words, or the first one if it is long).
+function guessParty(narr, list) {
+  const n = ` ${String(narr || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ")} `;
+  let best = null;
+  for (const x of list || []) {
+    const words = String(x.name || "").toUpperCase().replace(/[^A-Z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length >= 3 && !WEAK.has(w));
+    if (!words.length) continue;
+    const hits = words.filter((w) => n.includes(` ${w} `)).length;
+    const score = hits === words.length ? 2 + words.length : words[0].length >= 5 && n.includes(` ${words[0]} `) ? 1 : 0;
+    if (score && (!best || score > best.score)) best = { id: x.id, score };
+  }
+  return best ? String(best.id) : "";
+}
+const FIELD = { display: "flex", flexDirection: "column", gap: 3, fontSize: 12, fontWeight: 600, color: "#4A525C" };
+function PayFields({ l, kind, post, setPost }) {
+  const { p, err } = useParties();
+  const [bills, setBills] = useState(null);
+  const list = p ? { supplier: p.suppliers, transporter: p.transporters, contractor: p.contractors }[kind] : null;
+  // First open: the party named in the narration (or the one already posted).
+  useEffect(() => {
+    if (!p || kind === "maintenance") return;
+    setPost((x) => {
+      if (x.party_id) return x;
+      const id = l.post_kind === kind && l.party_label ? String((list || []).find((y) => l.party_label.startsWith(y.name))?.id || "") : "";
+      return { ...x, party_id: id || guessParty(l.narration, list) };
+    });
+  }, [p, kind]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const pid = post.party_id;
+  useEffect(() => {
+    setBills(null);
+    if (!pid || !["supplier", "contractor"].includes(kind)) return;
+    apiRequest(`/cost/bank/party-bills?kind=${kind}&id=${pid}&line=${l.id}`).then(setBills).catch(() => setBills([]));
+  }, [pid, kind, l.id]);
+  if (err) return <div role="alert" style={{ color: "var(--alert-red)", fontSize: 12 }}>{err}</div>;
+  if (!p) return <div style={MUTED}>Loading…</div>;
+  if (kind === "maintenance") {
+    const open = p.mnt_bills;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <label style={FIELD}>The bill this pays
+          <select value={post.bill_id || ""} onChange={(e) => setPost({ ...post, bill_id: e.target.value })} style={{ fontSize: 12.5, minHeight: 34 }}>
+            <option value="">Choose…</option>
+            {open.map((b) => <option key={b.id} value={b.id}>{b.payee || "Bill"}{b.bill_no ? ` · ${b.bill_no}` : ""}{b.against ? ` · ${b.against}` : ""} — balance {rs(b.balance)}</option>)}
+          </select>
+        </label>
+        {!open.length && <div style={MUTED}>No maintenance bill is waiting for payment. A repair paid without a bill can go to the Repairs cost head instead.</div>}
+        <TdsField post={post} setPost={setPost} />
+        <div style={MUTED}>→ Maintenance → Payments, against that bill. The repair cost is already in the job card / PO.</div>
+      </div>
+    );
+  }
+  const word = { supplier: "supplier", transporter: "transporter", contractor: "contractor / gang" }[kind];
+  const amount = l.debit;
+  const picked = new Map((post.allocations || []).map((a) => [`${a.kind}:${a.id}`, a.amount]));
+  function tick(b, on) {
+    const others = (post.allocations || []).filter((a) => `${a.kind}:${a.id}` !== `${b.kind}:${b.id}`);
+    if (kind === "contractor") { setPost({ ...post, bill_id: on ? b.id : null, allocations: undefined }); return; }
+    const used = others.reduce((t, a) => t + Number(a.amount), 0);
+    const left = Math.max(0, Math.round((amount + Number(post.tds || 0) - used) * 100) / 100);
+    setPost({ ...post, allocations: on ? [...others, { kind: b.kind, id: b.id, amount: Math.min(b.outstanding, left) }] : others });
+  }
+  const allocated = (post.allocations || []).reduce((t, a) => t + Number(a.amount), 0);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <label style={FIELD}>Paid to ({word})
+        <select value={pid || ""} onChange={(e) => setPost({ ...post, party_id: e.target.value, allocations: undefined, bill_id: undefined })}
+          style={{ fontSize: 12.5, minHeight: 34, background: pid ? "var(--surface)" : "#FFF8E6" }}>
+          <option value="">Choose…</option>
+          {(list || []).map((x) => <option key={x.id} value={x.id}>{x.name}{x.is_active === false ? " (inactive)" : ""}</option>)}
+        </select>
+      </label>
+      {pid && guessParty(l.narration, list) === String(pid) && <div style={MUTED}>found from the narration</div>}
+      {bills && bills.length > 0 && (
+        <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px", maxHeight: 180, overflowY: "auto" }}>
+          <div style={{ ...MUTED, marginBottom: 4 }}>{kind === "contractor" ? "Against the bill (optional — else on account):" : "Against these bills (optional — else it settles the oldest):"}</div>
+          {bills.map((b) => {
+            const on = kind === "contractor" ? String(post.bill_id || "") === String(b.id) : picked.has(`${b.kind}:${b.id}`);
+            return (
+              <label key={`${b.kind}:${b.id}`} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, padding: "2px 0" }}>
+                <input type="checkbox" checked={on} onChange={(e) => tick(b, e.target.checked)} />
+                <span style={{ flex: 1 }}>{b.no} · {fmtDay(b.date)}</span>
+                <span style={NUM}>{rs(b.outstanding)}{on && kind !== "contractor" ? ` → ${rs(picked.get(`${b.kind}:${b.id}`))}` : ""}</span>
+              </label>
+            );
+          })}
+          {kind !== "contractor" && allocated > 0 && <div style={{ ...MUTED, marginTop: 4 }}>{rs(allocated)} against bills · {rs(Math.max(0, amount + Number(post.tds || 0) - allocated))} on account</div>}
+        </div>
+      )}
+      {bills && bills.length === 0 && pid && kind !== "transporter" && <div style={MUTED}>No open bills — it goes in as an on-account payment.</div>}
+      {kind !== "contractor" && <TdsField post={post} setPost={setPost} />}
+      <div style={MUTED}>→ {PAY_KINDS.find((k) => k[0] === kind)[2]}: payment of {rs(amount)} on {fmtDay(l.txn_date)}, source this bank line. Not a cost — the cost comes from the bills.</div>
+    </div>
+  );
+}
+function TdsField({ post, setPost }) {
+  return (
+    <label style={{ ...MUTED, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>TDS deducted (if any)
+      <input type="number" min="0" step="0.01" value={post.tds ?? ""} onChange={(e) => setPost({ ...post, tds: e.target.value })} placeholder="0" style={{ width: 110, minHeight: 30 }} />
+    </label>
+  );
+}
+const CERT_WORDS = [[/INSURANCE|ASSURANCE|POLICY|GIC\b|ICICI LOMBARD|BAJAJ ALLIANZ|TATA AIG|HDFC ERGO/, "insurance"], [/ROAD TAX|MVD|VAHAN|PARIVAHAN|RTO|TAX/, "road_tax"],
+  [/PERMIT/, "permit"], [/FITNESS/, "fitness_certificate"], [/PUC|POLLUTION/, "puc"]];
+const addDaysStr = (ymd, n) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };   // ist-ok: a calendar date shifted in UTC, no clock time
+const addMonthsStr = (ymd, n) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() + n); return addDaysStr(d.toISOString().slice(0, 10), -1); };   // ist-ok: a calendar date shifted in UTC, no clock time
+function CertFields({ l, post, setPost }) {
+  const { p, err } = useParties();
+  const set = (k, val) => setPost((x) => {
+    const n = { ...x, [k]: val };
+    if ((k === "asset_id" || k === "cert_type") && n.asset_id && n.cert_type && p) {
+      const cur = p.current_certs.find((c) => String(c.asset_id) === String(n.asset_id) && c.cert_type === n.cert_type);
+      const from = cur && cur.valid_to >= addDaysStr(l.txn_date, -60) ? addDaysStr(cur.valid_to, 1) : l.txn_date;
+      n.valid_from = from;
+      n.valid_to = addMonthsStr(from, n.cert_type === "road_tax" ? 3 : 12);
+    }
+    return n;
+  });
+  useEffect(() => {
+    if (!p || post.asset_id || post.cert_type) return;
+    const narr = squash(l.narration);
+    const a = p.assets.find((x) => x.reg_no && narr.includes(squash(x.reg_no))) || p.assets.find((x) => squash(x.name).length >= 4 && narr.includes(squash(x.name)));
+    const t = CERT_WORDS.find(([re]) => re.test(String(l.narration || "").toUpperCase()))?.[1] || "";
+    if (a) set("asset_id", String(a.id));
+    if (t) set("cert_type", t);
+  }, [p]);   // eslint-disable-line react-hooks/exhaustive-deps
+  if (err) return <div role="alert" style={{ color: "var(--alert-red)", fontSize: 12 }}>{err}</div>;
+  if (!p) return <div style={MUTED}>Loading…</div>;
+  const cur = p.current_certs.find((c) => String(c.asset_id) === String(post.asset_id) && c.cert_type === post.cert_type);
+  const days = post.valid_from && post.valid_to ? Math.round((Date.parse(post.valid_to) - Date.parse(post.valid_from)) / 86400000) + 1 : 0;
+  const months = days ? Math.max(1, Math.round(days / 30.4)) : 0;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <label style={{ ...FIELD, flex: "1 1 150px" }}>Vehicle / machine
+          <select value={post.asset_id || ""} onChange={(e) => set("asset_id", e.target.value)} style={{ fontSize: 12.5, minHeight: 34 }}>
+            <option value="">Choose…</option>
+            {p.assets.map((a) => <option key={a.id} value={a.id}>{a.name}{a.reg_no ? ` · ${a.reg_no}` : ""}</option>)}
+          </select>
+        </label>
+        <label style={{ ...FIELD, flex: "1 1 130px" }}>Certificate
+          <select value={post.cert_type || ""} onChange={(e) => set("cert_type", e.target.value)} style={{ fontSize: 12.5, minHeight: 34 }}>
+            <option value="">Choose…</option>
+            {p.cert_types.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+          </select>
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <label style={FIELD}>Valid from<input type="date" value={post.valid_from || ""} onChange={(e) => set("valid_from", e.target.value)} style={{ minHeight: 32 }} /></label>
+        <label style={FIELD}>Valid to<input type="date" value={post.valid_to || ""} onChange={(e) => set("valid_to", e.target.value)} style={{ minHeight: 32 }} /></label>
+        <label style={{ ...FIELD, flex: "1 1 120px" }}>Policy / receipt no.<input value={post.number || ""} onChange={(e) => set("number", e.target.value)} style={{ minHeight: 32 }} /></label>
+      </div>
+      {cur && <div style={MUTED}>On file: valid to {fmtDay(cur.valid_to)}.{post.valid_to && post.valid_to <= cur.valid_to ? " This one ends earlier — it is kept as history, the current one stays." : ""}</div>}
+      {days > 0 && <div style={MUTED}>→ Compliance register renewed · fee {rs(l.debit)} paid {fmtDay(l.txn_date)} · P&amp;L about {rs(Math.round(l.debit / months))} a month for {months} month(s) (vehicle taxes &amp; insurance), the unused part on the Balance Sheet as prepaid.</div>}
+    </div>
+  );
+}
+function ManualSwitch({ d, reload }) {
+  const [busy, setBusy] = useState(false);
+  const on = !!d.ledger?.manual_payments;
+  async function flip() {
+    setBusy(true);
+    try { await apiRequest("/cost/bank/ledger-settings", { method: "PUT", body: { manual_payments: !on } }); reload(); } finally { setBusy(false); }
+  }
+  return (
+    <div style={{ ...MUTED, marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <span style={{ flex: "1 1 200px" }}>“Record payment” in the ledgers: <b>{on ? "allowed (by hand too)" : "off — bank statement and C Ledger only"}</b></span>
+      {d.ledger?.can_change && <button type="button" disabled={busy} onClick={flip} style={{ fontSize: 12, padding: "4px 10px", minHeight: 30 }}>{on ? "Switch off" : "Allow by hand"}</button>}
     </div>
   );
 }
@@ -746,9 +975,9 @@ function AccountsModal({ d, onClose }) {
 
 function exportLines(d) {
   const head = (k) => d.heads_meta.find((h) => h.key === k)?.label || "";
-  const rows = [["Date", "Account", "Narration", "Reference", "Debit", "Credit", "Balance", "Treatment", "Head / loan", "Interest", "Principal", "Why", "Set by"],
+  const rows = [["Date", "Account", "Narration", "Reference", "Debit", "Credit", "Balance", "Treatment", "Head / loan / party", "Interest", "Principal", "Why", "Set by"],
     ...d.lines.map((l) => [l.txn_date, l.account, l.narration, l.reference || "", l.debit || "", l.credit || "", l.balance ?? "", T[l.treatment]?.label || l.treatment,
-      l.treatment === "cost" ? head(l.head) : l.loan_name || "", l.interest ?? "", l.principal ?? "", l.why || "", l.manual ? l.set_by_name || "hand" : "app"])];
+      l.treatment === "cost" ? head(l.head) : l.party_label || l.loan_name || "", l.interest ?? "", l.principal ?? "", l.why || "", l.manual ? l.set_by_name || "hand" : "app"])];
   const heads = [["P&L line", "₹", "Lines"], ...d.summary.heads.filter((h) => h.amount || h.n).map((h) => [h.label, h.amount, h.n])];
   downloadExcel(`Bank statements ${d.month}.xlsx`, [{ name: "Lines", rows }, { name: "To the P&L", rows: heads }]);
 }

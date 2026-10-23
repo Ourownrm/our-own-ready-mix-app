@@ -32,6 +32,7 @@ import { dueList, assetReadings, triggerText } from "../lib/maintenanceDue.js";
 import { syncGeneralCharges } from "../lib/maintenanceGeneral.js";
 import { refreshAssetNames } from "../lib/maintenanceModels.js";
 import { openCardFor, addJobs } from "../lib/maintenanceJobs.js";
+import { requireManualPayments } from "../lib/ledgerPost.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -1465,7 +1466,7 @@ router.get("/bills/:id/payments", requirePermission("mnt.payments", "view"), asy
   res.json(rows);
 });
 
-router.post("/bills/:id/payments", requirePermission("mnt.payments", "create"), async (req, res) => {
+router.post("/bills/:id/payments", requirePermission("mnt.payments", "create"), requireManualPayments, async (req, res) => {
   const amount = num(req.body.amount);
   const tds = num(req.body.tds) || 0;
   const paidOn = req.body.paid_on || null;

@@ -164,8 +164,15 @@ function group(rows, key = "supplier_id") {
 }
 
 // The ledger for each supplier as on `asOn` (YYYY-MM-DD).
-export async function buildLedgers({ supplierIds = null, asOn }) {
+export async function buildLedgers({ supplierIds = null, asOn, withoutPayments = null }) {
   const d = await load(supplierIds);
+  // Round 235 — a payment being replaced in a transaction not yet committed
+  // (a bank line posted again) is read as if it were already gone.
+  if (withoutPayments?.length) {
+    const skip = new Set(withoutPayments.map(Number));
+    d.payments = d.payments.filter((x) => !skip.has(Number(x.id)));
+    d.allocs = d.allocs.filter((x) => !skip.has(Number(x.payment_id)));
+  }
   const openingBy = new Map(d.openings.map((o) => [o.supplier_id, o]));
   const openingBillsBy = group(d.openingBills);
   const billsBy = group(d.bills);

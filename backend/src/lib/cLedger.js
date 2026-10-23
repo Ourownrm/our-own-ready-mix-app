@@ -55,7 +55,10 @@ export const CL_CATEGORIES = [
   { key: "admin_office", label: "Admin & office" },
   { key: "selling", label: "Selling & marketing" },
   { key: "rent_rates", label: "Rent & rates" },
-  { key: "supplier_payment", label: "Supplier payment — not a cost", notCost: true },
+  // Round 235 — a payment to a party names the party, and posts into its ledger.
+  { key: "supplier_payment", label: "Supplier payment — to the supplier's ledger", notCost: true, party: "supplier" },
+  { key: "transporter_payment", label: "Transporter payment — to the transporter's ledger", notCost: true, party: "transporter" },
+  { key: "contractor_payment", label: "Contractor / pump gang — to the contractor ledger", notCost: true, party: "contractor" },
   { key: "staff_advance", label: "Not a cost — staff advance", notCost: true },
   { key: "personal", label: "Not a cost — owner / personal", notCost: true },
   { key: "todo", label: "To categorise", notCost: true },

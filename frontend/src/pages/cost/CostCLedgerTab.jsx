@@ -524,13 +524,21 @@ function TransferForm({ me, kind, onClose, onSaved }) {
 
 function ExpenseForm({ me, rec, onClose, onSaved }) {
   const [f, setF] = useState(() => rec
-    ? { txn_date: rec.date, amount: String(rec.amount), where_spent: rec.where_spent, category: rec.category, flagged: !!rec.flagged }
-    : { txn_date: today(), amount: "", where_spent: "", category: "", flagged: false });
+    ? { txn_date: rec.date, amount: String(rec.amount), where_spent: rec.where_spent, category: rec.category, flagged: !!rec.flagged, party_id: rec.party_id ? String(rec.party_id) : "" }
+    : { txn_date: today(), amount: "", where_spent: "", category: "", flagged: false, party_id: "" });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const cats = me.categories.filter((c) => c.key !== "todo");
+  // Round 235 — a payment to a supplier / transporter / contractor names who; it posts into their ledger.
+  const partyKind = cats.find((c) => c.key === f.category)?.party || null;
+  const [parties, setParties] = useState(null);
+  useEffect(() => {
+    if (!partyKind || parties) return;
+    apiRequest("/cost/c-ledger/parties").then(setParties).catch(() => setParties({ supplier: [], transporter: [], contractor: [] }));
+  }, [partyKind, parties]);
   async function save() {
     if (!f.category) { setErr("Pick the category."); return; }
+    if (partyKind && !f.party_id && !rec) { setErr(`Choose the ${partyKind === "contractor" ? "contractor / gang" : partyKind} paid.`); return; }
     setBusy(true); setErr("");
     try { await apiRequest(rec ? `/cost/c-ledger/expenses/${rec.id}` : "/cost/c-ledger/expenses", { method: rec ? "PUT" : "POST", body: f }); onSaved(); }
     catch (e) { setErr(e.message); setBusy(false); }
@@ -552,11 +560,20 @@ function ExpenseForm({ me, rec, onClose, onSaved }) {
           <div style={LBL}>Category</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {cats.map((c) => (
-              <button key={c.key} type="button" className={`btn-tab${f.category === c.key ? " active" : ""}`} onClick={() => setF({ ...f, category: c.key })}
+              <button key={c.key} type="button" className={`btn-tab${f.category === c.key ? " active" : ""}`} onClick={() => setF({ ...f, category: c.key, party_id: c.party === partyKind ? f.party_id : "" })}
                 style={{ padding: "8px 12px", minHeight: 40, borderRadius: 999, fontSize: 13 }}>{c.label}</button>
             ))}
           </div>
         </div>
+        {partyKind && (
+          <label style={LBL}>Paid to
+            <select value={f.party_id} onChange={(e) => setF({ ...f, party_id: e.target.value })} style={INPUT}>
+              <option value="">{parties ? "Choose…" : "Loading…"}</option>
+              {(parties?.[partyKind] || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+            <span style={{ fontSize: 12, fontWeight: 400, color: "var(--slate)" }}>Goes into their ledger as a cash payment — no second entry there.</span>
+          </label>
+        )}
         <label style={LBL}>Where spent<input value={f.where_spent} onChange={(e) => setF({ ...f, where_spent: e.target.value })} placeholder="What it was for, and where" style={INPUT} /></label>
         <label style={{ display: "flex", gap: 9, alignItems: "center", fontSize: 14, fontWeight: 600, background: "var(--amber-bg)", border: "1px solid #E7D8AE", borderRadius: 8, padding: "10px 12px" }}>
           <input type="checkbox" checked={f.flagged} onChange={(e) => setF({ ...f, flagged: e.target.checked })} style={{ width: 20, height: 20, margin: 0 }} />

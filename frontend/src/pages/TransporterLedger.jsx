@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import { useLedgerManual, LEDGER_PAY_NOTE } from "../lib/useLedgerManual.js";
 
 const todayIst = () => new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 function amt(v) {
@@ -104,6 +105,7 @@ function Statement({ id, onBack }) {
   const { can } = usePermissions();
   const mayPay = can("material.transporter-payments", "create");
   const mayCancel = can("material.transporter-payments", "delete");
+  const manual = useLedgerManual();   // Round 235
   const mayEditMaster = can("material.transporters", "edit");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState(todayIst());
@@ -142,7 +144,8 @@ function Statement({ id, onBack }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
-          {mayPay && <button type="button" className="btn-primary" onClick={() => setForm("pay")}>Record payment</button>}
+          {mayPay && manual && <button type="button" className="btn-primary" onClick={() => setForm("pay")}>Record payment</button>}
+          {mayPay && !manual && <span style={{ fontSize: 12, color: "var(--slate)", maxWidth: 300 }}>{LEDGER_PAY_NOTE}</span>}
           {mayPay && <button type="button" onClick={() => setForm("opening")}>Opening balance</button>}
           <button type="button" onClick={exportXlsx}>Download Excel</button>
         </div>

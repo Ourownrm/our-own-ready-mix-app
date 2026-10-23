@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import { useLedgerManual, LEDGER_PAY_NOTE } from "../lib/useLedgerManual.js";
 import { printMaterialReport } from "../lib/materialReportPdf.js";
 
 // ---------- small helpers ----------
@@ -131,6 +132,7 @@ export default function SupplierLedgerTab() {
   const { can } = usePermissions();
   const mayPay = can("material.supplier-payments", "create");
   const mayCancel = can("material.supplier-payments", "delete");
+  const manual = useLedgerManual();   // Round 235
   const [asOn, setAsOn] = useState(todayIst());
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -225,7 +227,8 @@ export default function SupplierLedgerTab() {
           <Label text="As on"><input type="date" value={asOn} max={todayIst()} onChange={(e) => setAsOn(e.target.value || todayIst())} style={{ ...input, width: 150 }} /></Label>
           {mayPay && <button type="button" onClick={() => setOpening({ supplierId: "" })}>+ Opening balance</button>}
           <button type="button" onClick={printOverview} disabled={!data}>Print (PDF)</button>
-          {mayPay && <button type="button" className="btn-primary" onClick={() => setPaying({ supplierId: "" })}>Record payment</button>}
+          {mayPay && manual && <button type="button" className="btn-primary" onClick={() => setPaying({ supplierId: "" })}>Record payment</button>}
+          {mayPay && !manual && <span style={{ fontSize: 12, color: "var(--slate)", maxWidth: 300 }}>{LEDGER_PAY_NOTE}</span>}
         </div>
       </div>
 
@@ -347,6 +350,7 @@ export default function SupplierLedgerTab() {
 // ======================================================================
 // One supplier's statement
 function SupplierStatement({ supplierId, onBack, mayPay, mayCancel, setNotice }) {
+  const manual = useLedgerManual();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState(todayIst());
   const [kind, setKind] = useState("all");
@@ -442,7 +446,7 @@ function SupplierStatement({ supplierId, onBack, mayPay, mayCancel, setNotice })
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
           {mayPay && <button type="button" onClick={() => setOpening(true)}>Opening balance</button>}
           <button type="button" onClick={printStatement}>Print (PDF)</button>
-          {mayPay && <button type="button" className="btn-primary" onClick={() => setPaying(true)}>Record payment</button>}
+          {mayPay && manual && <button type="button" className="btn-primary" onClick={() => setPaying(true)}>Record payment</button>}
         </div>
       </div>
 

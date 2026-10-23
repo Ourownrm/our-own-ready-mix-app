@@ -16,6 +16,7 @@ import { issueCardsForReceipt } from "../lib/rmTestCards.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 import { buildLedgers, creditCheck, receiptBillAmount, addDays } from "../lib/supplierLedger.js";
 import { buildTransporterLedgers } from "../lib/transporterLedger.js";
+import { requireManualPayments, refuseIfSourced } from "../lib/ledgerPost.js";
 import { getPoSettings, cleanSettings, cleanTerms, defaultTerms } from "../lib/purchaseOrders.js";
 // Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
 // 185's bookStockRows() called it without importing it, so every caller (Stock
@@ -479,7 +480,7 @@ router.get("/supplier-ledger/:supplierId/credit-status", requireAnyPermission(["
   res.json(c);
 });
 
-router.post("/supplier-ledger/:supplierId/payments", requirePermission("material.supplier-payments", "create"), async (req, res) => {
+router.post("/supplier-ledger/:supplierId/payments", requirePermission("material.supplier-payments", "create"), requireManualPayments, async (req, res) => {
   const supplierId = Number(req.params.supplierId);
   const b = req.body || {};
   const amount = Number(String(b.amount ?? "").replace(/,/g, ""));
@@ -542,6 +543,8 @@ router.post("/supplier-ledger/:supplierId/payments", requirePermission("material
 });
 
 router.post("/supplier-payments/:id/cancel", requirePermission("material.supplier-payments", "delete"), async (req, res) => {
+  const sourced = await refuseIfSourced("rm_supplier_payments", req.params.id);
+  if (sourced) return res.status(409).json({ error: sourced });
   const reason = String(req.body?.reason || "").trim();
   if (!reason) return res.status(400).json({ error: "Say why the payment is being cancelled." });
   const { rows } = await query(
@@ -747,7 +750,7 @@ router.get("/transporter-ledger/:id", requirePermission("material.transporter-le
   });
 });
 
-router.post("/transporter-ledger/:id/payments", requirePermission("material.transporter-payments", "create"), async (req, res) => {
+router.post("/transporter-ledger/:id/payments", requirePermission("material.transporter-payments", "create"), requireManualPayments, async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
   const amount = Number(String(b.amount ?? "").replace(/,/g, ""));
@@ -772,6 +775,8 @@ router.post("/transporter-ledger/:id/payments", requirePermission("material.tran
 });
 
 router.post("/transporter-payments/:id/cancel", requirePermission("material.transporter-payments", "delete"), async (req, res) => {
+  const sourced = await refuseIfSourced("rm_transporter_payments", req.params.id);
+  if (sourced) return res.status(409).json({ error: sourced });
   const reason = String(req.body?.reason || "").trim();
   if (!reason) return res.status(400).json({ error: "Say why the payment is being cancelled." });
   const { rows } = await query(

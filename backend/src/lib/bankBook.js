@@ -80,7 +80,9 @@ export function headGstCaseSql(col = "head") {
   return `CASE ${col} ${BANK_HEADS.map((h) => `WHEN '${h.key}' THEN ${h.gst}`).join(" ")} ELSE 0 END`;
 }
 export const HEAD_KEYS = new Set(BANK_HEADS.map((h) => h.key));
-export const TREATMENTS = ["todo", "check", "cost", "omit", "own", "loan", "tax", "asset", "capital", "personal"];
+// Round 235 — pay: a payment to a party, posted into its ledger; cert: a
+// vehicle certificate (road tax, insurance …) renewed in the compliance register.
+export const TREATMENTS = ["todo", "check", "cost", "omit", "own", "loan", "tax", "asset", "capital", "personal", "pay", "cert"];
 
 export const ROUND223_SQL = `
 CREATE TABLE IF NOT EXISTS cost_bank_accounts (
@@ -222,11 +224,11 @@ async function appRecords(from, to) {
     .catch((e) => { console.error(`bank: ${kind}`, e.message); return []; });
   const parts = await Promise.all([
     q(`SELECT p.id, p.paid_on::text AS day, p.amount, s.name FROM rm_supplier_payments p JOIN rm_suppliers s ON s.id = p.supplier_id
-        WHERE p.cancelled_at IS NULL AND p.paid_on BETWEEN $1::date AND $2::date`, "supplier", (r) => `Raw material payment — ${r.name} (Supplier ledger)`),
+        WHERE p.cancelled_at IS NULL AND p.mode <> 'cash' AND p.paid_on BETWEEN $1::date AND $2::date`, "supplier", (r) => `Raw material payment — ${r.name} (Supplier ledger)`),
     q(`SELECT p.id, p.paid_on::text AS day, p.amount, t.name FROM rm_transporter_payments p JOIN rm_transporters t ON t.id = p.transporter_id
-        WHERE p.cancelled_at IS NULL AND p.paid_on BETWEEN $1::date AND $2::date`, "transporter", (r) => `Transporter payment — ${r.name} (Transporter ledger)`),
+        WHERE p.cancelled_at IS NULL AND p.mode <> 'cash' AND p.paid_on BETWEEN $1::date AND $2::date`, "transporter", (r) => `Transporter payment — ${r.name} (Transporter ledger)`),
     q(`SELECT p.id, p.paid_on::text AS day, p.amount, c.name FROM hr_contractor_payments p JOIN hr_contractors c ON c.id = p.contractor_id
-        WHERE p.paid_on BETWEEN $1::date AND $2::date`, "contractor", (r) => `Contractor payment — ${r.name} (HR)`),
+        WHERE p.mode <> 'cash' AND p.paid_on BETWEEN $1::date AND $2::date`, "contractor", (r) => `Contractor payment — ${r.name} (HR)`),
     q(`SELECT p.id, p.paid_on::text AS day, p.amount, b.payee AS name FROM mnt_payments p JOIN mnt_bills b ON b.id = p.bill_id
         WHERE p.paid_on BETWEEN $1::date AND $2::date`, "maintenance", (r) => `Maintenance payment${r.name ? ` — ${r.name}` : ""} (Maintenance → Payments)`),
     q(`SELECT (to_char(l.paid_on, 'YYYYMMDD'))::int AS id, l.paid_on::text AS day, SUM(l.paid_amount) AS amount, COUNT(*) AS n

@@ -11,9 +11,11 @@ import { MONTH_RE, monthBounds, monthLabel } from "../lib/costDashboard.js";
 import {
   CL_CATEGORIES, CL_CATEGORY_KEYS, CL_INCOME_KINDS, CL_INCOME_KEYS, CL_FACTOR, clAccess, requireCl, clLog, holderBalances, clDeliveryTotal,
 } from "../lib/cLedger.js";
+import { ensureRound235, postPayment, unpostPayment } from "../lib/ledgerPost.js";
 
 const router = Router();
 router.use(requireAuth);
+router.use(async (_req, _res, next) => { try { await ensureRound235(); next(); } catch (e) { next(e); } });
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -281,7 +283,10 @@ router.delete("/deliveries/:id", requireCl("entry"), async (req, res) => {
 async function expensesFor(where, params) {
   const { rows } = await query(
     `SELECT x.id, x.holder_id, COALESCE(a.short_name, u.name) AS holder, x.txn_date::text AS txn_date, x.amount, x.where_spent,
-            x.category, x.flagged, x.created_at
+            x.category, x.flagged, x.created_at, x.party_id, x.post_kind, x.post_id,
+            CASE x.post_kind WHEN 'supplier' THEN (SELECT name FROM rm_suppliers WHERE id = x.party_id)
+              WHEN 'transporter' THEN (SELECT name FROM rm_transporters WHERE id = x.party_id)
+              WHEN 'contractor' THEN (SELECT name FROM hr_contractors WHERE id = x.party_id) END AS party_name
        FROM cl_expenses x JOIN users u ON u.id = x.holder_id LEFT JOIN cl_access a ON a.user_id = x.holder_id
       WHERE x.deleted_at IS NULL AND ${where} ORDER BY x.txn_date DESC, x.id DESC`, params);
   return rows.map((x) => ({ ...x, amount: n0(x.amount), cost: CL_CATEGORIES.find((c) => c.key === x.category)?.notCost ? 0 : r2(n0(x.amount) * (x.flagged ? CL_FACTOR : 1)) }));
@@ -341,8 +346,8 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
       meta: t.note || "", status: t.kind === "bank" ? "done" : t.status, can_cancel: out && (t.kind === "bank" || t.status === "pending") });
   }
   for (const x of expenses) tx.push({ kind: "expense", id: x.id, date: x.txn_date, amount: x.amount, sign: -1,
-    desc: `Expense · ${x.where_spent}`, meta: CL_CATEGORIES.find((c) => c.key === x.category)?.label || "", status: "done", flagged: x.flagged,
-    category: x.category, where_spent: x.where_spent });
+    desc: `Expense · ${x.where_spent}`, meta: [CL_CATEGORIES.find((c) => c.key === x.category)?.label || "", x.party_name ? `→ ${x.party_name}` : null].filter(Boolean).join(" "),
+    status: "done", flagged: x.flagged, category: x.category, where_spent: x.where_spent, party_id: x.party_id, party_name: x.party_name });
   for (const i of incomes) tx.push({ kind: "income", id: i.id, date: i.txn_date, amount: i.amount, sign: i.status === "accepted" ? 1 : 0,
     desc: `${i.kind_label} · ${i.source}`, meta: i.status === "rejected" ? `rejected${i.reject_reason ? `: ${i.reject_reason}` : ""}` : "",
     status: i.status === "accepted" ? "done" : i.status, flagged: i.flagged, can_edit: i.created_by === me, income: i });
@@ -423,42 +428,105 @@ function cleanExpense(b) {
   const where_spent = txt(b.where_spent, 300);
   if (!where_spent) return { error: "Write where the money was spent." };
   const category = CL_CATEGORY_KEYS.has(b.category) ? b.category : "todo";
-  return { txn_date: day, amount: r2(amount), where_spent, category, flagged: !!b.flagged };
+  // Round 235 — a payment to a supplier / transporter / contractor names who.
+  const partyKind = CL_CATEGORIES.find((c) => c.key === category)?.party || null;
+  const party_id = partyKind ? Number(b.party_id) || null : null;
+  return { txn_date: day, amount: r2(amount), where_spent, category, flagged: !!b.flagged, party_kind: party_id ? partyKind : null, party_id };
+}
+const PARTY_WORD = { supplier: "supplier", transporter: "transporter", contractor: "contractor / pump gang" };
+// Post the cash payment into the party's ledger (inside the caller's transaction).
+async function postCash(client, id, x, user) {
+  if (!x.party_id) return null;
+  const { rows: who } = await client.query(`SELECT COALESCE(a.short_name, u.name) AS n FROM users u LEFT JOIN cl_access a ON a.user_id = u.id WHERE u.id = $1`, [user]);
+  const out = await postPayment(client, {
+    kind: x.party_kind, party_id: x.party_id, amount: x.amount, paid_on: x.txn_date, mode: "cash", reference: `C Ledger #${id}`,
+    notes: `Cash — ${who[0]?.n || "C Ledger"} · ${x.where_spent}`.slice(0, 200), user_id: user, source: "cledger", source_id: id,
+  });
+  await client.query(`UPDATE cl_expenses SET post_kind = $2, post_id = $3 WHERE id = $1`, [id, out.kind, out.id]);
+  return out;
 }
 
 router.post("/expenses", requireCl("cash_holder"), async (req, res) => {
   const x = cleanExpense(req.body || {});
   if (x.error) return bad(res, x.error);
-  const { rows } = await query(
-    `INSERT INTO cl_expenses (holder_id, txn_date, amount, where_spent, category, flagged) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [req.user.id, x.txn_date, x.amount, x.where_spent, x.category, x.flagged]);
-  await clLog(null, "expense", rows[0].id, "added", x, req.user.id);
-  res.json({ ok: true, id: rows[0].id });
+  const pk = CL_CATEGORIES.find((c) => c.key === x.category)?.party;
+  if (pk && !x.party_id) return bad(res, `Choose the ${PARTY_WORD[pk]} paid — it goes into their ledger.`);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO cl_expenses (holder_id, txn_date, amount, where_spent, category, flagged, party_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [req.user.id, x.txn_date, x.amount, x.where_spent, x.category, x.flagged, x.party_id]);
+    await postCash(client, rows[0].id, x, req.user.id);
+    await clLog(client, "expense", rows[0].id, "added", x, req.user.id);
+    await client.query("COMMIT");
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.status) return bad(res, err.message);
+    throw err;
+  } finally { client.release(); }
 });
 
 // Round 229 (owner): the four rights are independent — only the cash holder
 // who spent it changes an expense (Entry is deliveries only).
 router.put("/expenses/:id", requireCl("cash_holder"), async (req, res) => {
   const id = Number(req.params.id);
-  const { rows } = await query(`SELECT * FROM cl_expenses WHERE id = $1 AND deleted_at IS NULL`, [id]);
+  const { rows } = await query(`SELECT *, txn_date::text AS txn_day FROM cl_expenses WHERE id = $1 AND deleted_at IS NULL`, [id]);
   if (!rows.length) return res.status(404).json({ error: "That expense is not there any more." });
   const cur = rows[0];
   if (cur.holder_id !== req.user.id) return res.status(403).json({ error: "Only the person who spent it can change this expense." });
-  const x = cleanExpense(req.body || {});
+  // A change of one field (category, flag) keeps the rest as it was.
+  const x = cleanExpense({ txn_date: cur.txn_day,
+    amount: cur.amount, where_spent: cur.where_spent, category: cur.category, flagged: cur.flagged, party_id: cur.party_id, ...(req.body || {}) });
   if (x.error) return bad(res, x.error);
-  await query(`UPDATE cl_expenses SET txn_date = $2, amount = $3, where_spent = $4, category = $5, flagged = $6, updated_by = $7, updated_at = now() WHERE id = $1`,
-    [id, x.txn_date, x.amount, x.where_spent, x.category, x.flagged, req.user.id]);
-  await clLog(null, "expense", id, "edited", { before: cur, after: x }, req.user.id);
-  res.json({ ok: true });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // The ledger payment is replaced only when who / how much / when changed.
+    const same = cur.post_kind && cur.post_kind === x.party_kind && Number(cur.party_id) === Number(x.party_id)
+      && r2(cur.amount) === x.amount && cur.txn_day === x.txn_date;
+    if (cur.post_kind && !same) await unpostPayment(client, cur.post_kind, cur.post_id, req.user.id, "C Ledger expense changed");
+    await client.query(`UPDATE cl_expenses SET txn_date = $2, amount = $3, where_spent = $4, category = $5, flagged = $6, updated_by = $7, updated_at = now(),
+                               party_id = $8 ${same ? "" : ", post_kind = NULL, post_id = NULL"} WHERE id = $1`,
+      [id, x.txn_date, x.amount, x.where_spent, x.category, x.flagged, req.user.id, x.party_id]);
+    if (!same) await postCash(client, id, x, req.user.id);
+    await clLog(client, "expense", id, "edited", { before: cur, after: x }, req.user.id);
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.status) return bad(res, err.message);
+    throw err;
+  } finally { client.release(); }
 });
 
 router.delete("/expenses/:id", requireCl("cash_holder"), async (req, res) => {
-  const { rowCount } = await query(
-    `UPDATE cl_expenses SET deleted_at = now(), deleted_by = $2 WHERE id = $1 AND holder_id = $2 AND deleted_at IS NULL`,
-    [Number(req.params.id), req.user.id]);
+  const client = await pool.connect();
+  let rowCount = 0;
+  try {
+    await client.query("BEGIN");
+    const r = await client.query(
+      `UPDATE cl_expenses SET deleted_at = now(), deleted_by = $2 WHERE id = $1 AND holder_id = $2 AND deleted_at IS NULL RETURNING post_kind, post_id`,
+      [Number(req.params.id), req.user.id]);
+    rowCount = r.rowCount;
+    if (r.rows[0]?.post_kind) await unpostPayment(client, r.rows[0].post_kind, r.rows[0].post_id, req.user.id, "C Ledger expense deleted");
+    await client.query("COMMIT");
+  } catch (err) { await client.query("ROLLBACK"); throw err; } finally { client.release(); }
   if (!rowCount) return bad(res, "Only your own expense can be deleted.");
   await clLog(null, "expense", Number(req.params.id), "deleted", null, req.user.id);
   res.json({ ok: true });
+});
+
+// Round 235 — who a cash payment can be to.
+router.get("/parties", requireCl("cash_holder"), async (_req, res) => {
+  const list = (sql) => query(sql).then((r) => r.rows).catch(() => []);
+  const [supplier, transporter, contractor] = await Promise.all([
+    list(`SELECT id, name FROM rm_suppliers WHERE is_active ORDER BY name`),
+    list(`SELECT id, name FROM rm_transporters WHERE is_active ORDER BY name`),
+    list(`SELECT id, name FROM hr_contractors WHERE is_active ORDER BY name`),
+  ]);
+  res.json({ supplier, transporter, contractor });
 });
 
 // ------------------------------------------------ other income (227) ---

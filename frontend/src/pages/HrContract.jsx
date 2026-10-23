@@ -6,6 +6,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import { useLedgerManual, LEDGER_PAY_NOTE } from "../lib/useLedgerManual.js";
 import { todayStr } from "../lib/istDate.js";
 
 const money = (v) => (v == null || v === "" ? "—" : (Number(v) < 0 ? "−₹" : "₹") + Math.abs(Math.round(Number(v))).toLocaleString("en-IN"));
@@ -658,6 +659,7 @@ function BillDetail({ bill, contractor, busy, run }) {
 
 function LedgerView({ contractorId, onBack }) {
   const { can } = usePermissions();
+  const manual = useLedgerManual();   // Round 235
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [pay, setPay] = useState(null);
@@ -679,7 +681,8 @@ function LedgerView({ contractorId, onBack }) {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <div style={{ textAlign: "right", marginRight: 8 }}><div className="kpi-label">Balance owed</div><div style={{ fontSize: 20, fontWeight: 700, color: data.balance < 0 ? "var(--signal-green)" : undefined }}>{money(data.balance)}</div>{data.balance < 0 && <div style={{ fontSize: 11.5, color: "var(--slate)" }}>advance with them</div>}</div>
-          {can("hr.contractor-bills", "create") && !pay && <button className="btn-primary" onClick={() => setPay({ amount: data.balance > 0 ? String(data.balance) : "", paid_on: todayStr(), mode: "bank_transfer", ref: "", note: "", bill_id: data.bills[0] ? String(data.bills[0].id) : "" })}>Record payment</button>}
+          {can("hr.contractor-bills", "create") && !pay && !manual && <span style={{ fontSize: 12, color: "var(--slate)", maxWidth: 260 }}>{LEDGER_PAY_NOTE}</span>}
+          {can("hr.contractor-bills", "create") && !pay && manual && <button className="btn-primary" onClick={() => setPay({ amount: data.balance > 0 ? String(data.balance) : "", paid_on: todayStr(), mode: "bank_transfer", ref: "", note: "", bill_id: data.bills[0] ? String(data.bills[0].id) : "" })}>Record payment</button>}
           <button onClick={onBack}>← Bills</button>
         </div>
       </div>

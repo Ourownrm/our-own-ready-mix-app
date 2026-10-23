@@ -9,6 +9,7 @@ import { requirePermission, can } from "../lib/permissions.js";
 import { gangDays, gangMonth, gangMonthClosed, fyOf, tdsFor, MONTH_RE, DATE_RE } from "../lib/gangs.js";
 import { monthRange } from "../lib/hrPayroll.js";
 import { istDay, istDaysAgo } from "../lib/istDate.js";
+import { requireManualPayments, refuseIfSourced } from "../lib/ledgerPost.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -687,7 +688,7 @@ router.get("/contractors/:id(\\d+)/ledger", requirePermission("hr.contractor-bil
   } catch (err) { friendly(err, res, "Could not load the ledger."); }
 });
 
-router.post("/contractors/:id(\\d+)/payments", requirePermission("hr.contractor-bills", "create"), async (req, res) => {
+router.post("/contractors/:id(\\d+)/payments", requirePermission("hr.contractor-bills", "create"), requireManualPayments, async (req, res) => {
   const b = req.body || {};
   const amount = money(b.amount);
   const on = date(b.paid_on);
@@ -709,6 +710,8 @@ router.post("/contractors/:id(\\d+)/payments", requirePermission("hr.contractor-
 
 router.delete("/payments/:id(\\d+)", requirePermission("hr.contractor-bills", "delete"), async (req, res) => {
   try {
+    const sourced = await refuseIfSourced("hr_contractor_payments", req.params.id);
+    if (sourced) return bad(res, sourced, 409);
     // Round 230 — a gang advance paid through this entry goes back to
     // "approved, not paid" so it can be paid again correctly.
     await query(`UPDATE hr_gang_advances SET status = 'approved', payment_id = NULL, paid_to = NULL WHERE payment_id = $1`, [req.params.id]);

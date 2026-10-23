@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS hr_work_locations (
 
 ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS app_punch VARCHAR(10) NOT NULL DEFAULT 'off';
 ALTER TABLE hr_employees DROP CONSTRAINT IF EXISTS hr_employees_app_punch_check;
-ALTER TABLE hr_employees ADD CONSTRAINT hr_employees_app_punch_check CHECK (app_punch IN ('off','plant','anywhere'));
+ALTER TABLE hr_employees ADD CONSTRAINT hr_employees_app_punch_check CHECK (app_punch IN ('off','plant','anywhere','area'));  -- 'area': Round 233
 -- The enrolled face lives in its own table: hr_employees is read on every
 -- screen and must not carry a photo along.
 CREATE TABLE IF NOT EXISTS hr_employee_faces (

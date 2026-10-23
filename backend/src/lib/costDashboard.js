@@ -156,7 +156,12 @@ export async function newContext() {
     query(`SELECT c.id, c.cert_type, c.label, c.fee, c.valid_from::text AS valid_from, c.valid_to::text AS valid_to,
                   (c.created_at AT TIME ZONE 'Asia/Kolkata')::date::text AS made_on, c.status, a.name AS asset_name
              FROM mnt_certificates c LEFT JOIN mnt_assets a ON a.id = c.asset_id
-            WHERE c.fee > 0 AND c.status <> 'retired'`).catch(() => ({ rows: [] })),
+            WHERE c.fee > 0 AND c.status <> 'retired'`)
+      // Round 235 — a fee paid from a bank line counts from the day it was paid.
+      .then((r) => query(`SELECT id, paid_on::text AS paid_on FROM mnt_certificates WHERE paid_on IS NOT NULL`)
+        .then((p) => { const m = new Map(p.rows.map((x) => [x.id, x.paid_on])); for (const c of r.rows) if (m.has(c.id)) c.made_on = m.get(c.id); return r; })
+        .catch(() => r))
+      .catch(() => ({ rows: [] })),
     query(`SELECT rate_per_liter, (effective_from AT TIME ZONE 'Asia/Kolkata')::date::text AS from_day
              FROM fuel_rate_history ORDER BY effective_from`).catch(() => ({ rows: [] })),
   ]);
