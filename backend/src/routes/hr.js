@@ -176,7 +176,14 @@ function employeeFields(b, { withSalary }) {
     notes: text(b.notes, 2000),
   };
   // Round 202 — attendance on the phone: only with an app login (owner's rule).
-  if (b.app_punch !== undefined) f.app_punch = f.app_user_id && ["plant", "anywhere"].includes(b.app_punch) ? b.app_punch : "off";
+  if (b.app_punch !== undefined) f.app_punch = f.app_user_id && ["plant", "anywhere", "area"].includes(b.app_punch) ? b.app_punch : "off";
+  // Round 233 — working area: a radius in km around a work location.
+  if (b.work_area_km !== undefined) {
+    const km = b.work_area_km === "" || b.work_area_km == null ? null : Number(b.work_area_km);
+    if (km != null && !(km >= 1 && km <= 500)) throw Object.assign(new Error("Working area: 1 to 500 km."), { expose: true });
+    f.work_area_km = km;
+  }
+  if (b.work_area_location_id !== undefined) f.work_area_location_id = intOrNull(b.work_area_location_id);
   if (f.weekly_off !== null && (f.weekly_off < 0 || f.weekly_off > 6)) throw Object.assign(new Error("Weekly off must be a day of the week."), { expose: true });
   if (f.date_of_leaving && f.date_of_joining && f.date_of_leaving < f.date_of_joining) throw Object.assign(new Error("Leaving date is before joining date."), { expose: true });
   if (withSalary) {

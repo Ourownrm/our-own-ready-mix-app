@@ -11,7 +11,7 @@ import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { RequestForm, RequestsTab, PayrollTab, AdvancesTab, RulesCard } from "./HrStage2.jsx";
 import { LeaveForm, LeaveTab, LeaveTypesCard } from "./HrLeave.jsx";
-import { FacePanel, WorkLocationsCard, PhonePunchReview } from "./HrPhone.jsx";
+import { FacePanel, WorkLocationsCard, PhonePunchReview, PunchWarnings } from "./HrPhone.jsx";
 import { TodayTab, CompOffTab } from "./HrToday.jsx";
 import { ContractLabourTab, ContractorBillsTab } from "./HrContract.jsx";
 import { EmployeeDetails, PhotoPanel, Avatar } from "./HrEmployeeCard.jsx";
@@ -307,7 +307,7 @@ const EMPTY = {
   policy: "office", default_shift_id: "", weekly_off: "0", trip_allowance: false, notes: "",
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
   daily_rate: "", service_charge_pct: "", incentive_basis: "none", incentive_min_m3: "", incentive_rate: "",
-  salesperson_id: "", ot_eligible: false, app_punch: "off",
+  salesperson_id: "", ot_eligible: false, app_punch: "off", work_area_km: "", work_area_location_id: "",
   aadhaar_no: "", pan_no: "", dl_no: "", dl_valid_till: "", bank_account_name: "", bank_name: "", bank_account_no: "", bank_ifsc: "",
 };
 
@@ -316,6 +316,9 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
   // Round 211 — contractors are records (HR → Contract labour).
   const [contractors, setContractors] = useState([]);
   useEffect(() => { apiRequest("/contract-labour/contractors").then(setContractors).catch(() => {}); }, []);
+  // Round 233 — work locations, for the centre of a working area.
+  const [workLocs, setWorkLocs] = useState([]);
+  useEffect(() => { apiRequest("/hr/work-locations").then((r) => setWorkLocs(r.filter((l) => l.is_active))).catch(() => {}); }, []);
   const [f, setF] = useState(() => {
     const base = { ...EMPTY };
     if (initial) for (const k of Object.keys(EMPTY)) if (initial[k] !== undefined && initial[k] !== null) base[k] = typeof EMPTY[k] === "boolean" ? !!initial[k] : String(initial[k]);
@@ -339,7 +342,7 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
     setError(""); setSaving(true);
     try {
       const body = { ...f };
-      for (const k of ["department_id", "default_shift_id", "app_user_id", "salesperson_id"]) body[k] = body[k] === "" ? null : Number(body[k]);
+      for (const k of ["department_id", "default_shift_id", "app_user_id", "salesperson_id", "work_area_location_id", "work_area_km"]) body[k] = body[k] === "" ? null : Number(body[k]);
       body.weekly_off = body.weekly_off === "" ? null : Number(body.weekly_off);
       if (body.attendance_source !== "machine") body.machine_user_id = null;
       if (editing) await apiRequest(`/hr/employees/${initial.id}`, { method: "PATCH", body });
@@ -424,8 +427,23 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
             <option value="off">Off — gate machine only</option>
             <option value="plant">At the plant (inside a work location)</option>
             <option value="anywhere">Anywhere — field / sales (location saved)</option>
+            <option value="area">Working area — within a set km (warning outside / no location)</option>
           </select>
         </Field>
+        {/* Round 233 — working area: radius in km around a work location. */}
+        {f.app_user_id && f.app_punch === "area" && (
+          <>
+            <Field label="Working area (km)" hint="Punches outside, or with location off, are saved with a warning for HR.">
+              <input type="number" min="1" max="500" step="1" value={f.work_area_km ?? ""} placeholder="50" onChange={set("work_area_km")} />
+            </Field>
+            <Field label="Centre of the area" hint="A work location (HR settings). Blank = the first one.">
+              <select value={f.work_area_location_id ?? ""} onChange={set("work_area_location_id")}>
+                <option value="">— first work location —</option>
+                {workLocs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select>
+            </Field>
+          </>
+        )}
         <Field label="Timing">
           <select value={f.policy} onChange={set("policy")}>
             <option value="office">Office — fixed shift</option>
@@ -906,7 +924,7 @@ export default function HrModule() {
         {meta && current === "attendance" && <AttendanceTab meta={meta} />}
         {meta && current === "employees" && <EmployeesTab meta={meta} reloadMeta={loadMeta} />}
         {meta && current === "roster" && <RosterTab meta={meta} />}
-        {meta && current === "requests" && <><PhonePunchReview /><RequestsTab meta={meta} /></>}
+        {meta && current === "requests" && <><PunchWarnings /><PhonePunchReview /><RequestsTab meta={meta} /></>}
         {meta && current === "compoff" && <CompOffTab meta={meta} />}
         {meta && current === "leave" && <LeaveTab meta={meta} />}
         {meta && current === "payroll" && <PayrollTab meta={meta} />}

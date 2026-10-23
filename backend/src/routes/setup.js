@@ -34,6 +34,7 @@ import { migrateRound221 } from "../lib/round221Schema.js";
 import { migrateRound223 } from "../lib/bankBook.js";
 import { migrateRound224, migrateRound227 } from "../lib/cLedger.js";
 import { migrateRound230, migrateRound232 } from "../lib/round230Schema.js";
+import { migrateRound233 } from "../lib/round233Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4155,6 +4156,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound230(pool, log);
     // ROUND 232 — merged customers left switched off; bank-line GST.
     await migrateRound232(pool, log);
+    // ROUND 233 — phone attendance inside a working area.
+    await migrateRound233(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

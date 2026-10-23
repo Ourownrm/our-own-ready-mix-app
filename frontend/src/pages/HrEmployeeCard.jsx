@@ -167,7 +167,7 @@ export function EmployeeDetails({ employee: e, canSalary, onEdit, onClose, onCha
       <div style={GRID}>
         <Row label="Attendance">{e.attendance_source === "machine" ? `Machine${e.machine_user_id ? ` #${e.machine_user_id}` : ""}${e.name_on_machine ? ` · ${e.name_on_machine}` : ""}` : e.attendance_source === "app" ? "App" : "Not tracked"}</Row>
         <Row label="App login">{e.app_user_name}</Row>
-        <Row label="Phone attendance">{e.app_punch === "plant" ? "At the plant" : e.app_punch === "anywhere" ? "Anywhere" : "Off"}</Row>
+        <Row label="Phone attendance">{e.app_punch === "plant" ? "At the plant" : e.app_punch === "anywhere" ? "Anywhere" : e.app_punch === "area" ? `Working area · ${Number(e.work_area_km) || 50} km` : "Off"}</Row>
         <Row label="Timing">{e.policy === "office" ? `Office${e.default_shift_name ? ` · ${e.default_shift_name}` : ""}` : `Operations${e.default_shift_name ? ` · ${e.default_shift_name}` : ""}`}</Row>
         <Row label="Weekly off">{e.weekly_off == null ? null : WEEKDAY[e.weekly_off]}</Row>
         <Row label="Trip allowance">{e.trip_allowance ? "Yes" : "No"}</Row>
