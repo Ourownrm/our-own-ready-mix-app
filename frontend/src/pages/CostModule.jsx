@@ -11,6 +11,7 @@ import CostBSTab from "./cost/CostBSTab.jsx";
 import CostBreakEvenTab from "./cost/CostBreakEvenTab.jsx";
 import CostBankTab from "./cost/CostBankTab.jsx";
 import CostCLedgerTab from "./cost/CostCLedgerTab.jsx";
+import CostGstTab from "./cost/CostGstTab.jsx";
 import { currentMonth, addMonths } from "./cost/costUi.jsx";
 
 const TABS = [
@@ -21,6 +22,8 @@ const TABS = [
   { key: "break-even", label: "Break-even", perm: "cost.break-even", Component: CostBreakEvenTab },
   // Round 223
   { key: "bank", label: "Bank statements", perm: "cost.bank", Component: CostBankTab },
+  // Round 236
+  { key: "gst", label: "GST payable", perm: "cost.gst", Component: CostGstTab },
   // Round 224 — only for people given C Ledger rights by name (not by role).
   { key: "c-ledger", label: "C Ledger", perm: "cledger.access", Component: CostCLedgerTab },
 ];

@@ -34,6 +34,7 @@ import maintenanceModuleRoutes from "./routes/maintenanceModule.js";
 import maintenanceModule2Routes from "./routes/maintenanceModule2.js";
 import costModuleRoutes from "./routes/costModule.js";
 import costBankRoutes from "./routes/costBank.js";
+import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
 import weighbridgeRoutes from "./routes/weighbridge.js";
@@ -198,6 +199,7 @@ app.use("/api/maintenance-module", maintenanceModule2Routes);
 // Round 218 — Cost dashboard, Profit & Loss, Balance Sheet.
 // Round 223 — Cost → Bank statements.
 app.use("/api/cost/bank", costBankRoutes);
+app.use("/api/cost/gst", costGstRoutes);
 // Round 224 — Cost → C Ledger (gated by each person's own C Ledger rights).
 app.use("/api/cost/c-ledger", cLedgerRoutes);
 app.use("/api/cost", costModuleRoutes);

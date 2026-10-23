@@ -1070,6 +1070,9 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
   // pointer for the GST input credit typed in (its balance also depends on
   // what was set off against GST on sales, which only the GST return has).
   const bankGst = await bankHeadsMonth(ym).then((b) => b.gst_input || 0).catch(() => 0);
+  // Round 236 — the GST page's month-end figures, as a pointer for the two lines.
+  const gstPos = await import("./gstBook.js").then((m) => m.gstPosition(ym)).catch(() => null);
+  const fmt = (v) => `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
   const side = (k) => {
     const rows = [];
     let tn = 0, tt = 0;
@@ -1080,6 +1083,8 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
       const viaBank = now.bank?.[l.key] != null;
       rows.push({ kind: "line", key: l.key, label: l.label, src: viaBank ? "bank" : l.src,
         hint: viaBank ? (l.key === "term_loans" ? "Cost → Bank statements → Loans: balance less principal repaid" : "closing balance of the cash credit statements")
+          : l.key === "gst_input" && gstPos ? `GST payable page: credit carried ${fmt(gstPos.credit)}${gstPos.held ? ` + held (not in GSTR-2B yet) ${fmt(gstPos.held)}` : ""}`
+          : l.key === "gst_tds_payable" && gstPos && gstPos.due > 0 ? `${l.hint ? `${l.hint} · ` : ""}GST payable page: ${fmt(gstPos.due)} GST still to pay for this month`
           : l.key === "gst_input" && bankGst ? `${l.hint ? `${l.hint} · ` : ""}₹${bankGst.toLocaleString("en-IN", { maximumFractionDigits: 0 })} input GST in this month's bank-statement costs`
           : l.hint || "",
         now: r2(a), then: r2(b), change: r2(a - b),

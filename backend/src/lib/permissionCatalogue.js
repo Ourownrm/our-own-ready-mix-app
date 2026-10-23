@@ -613,6 +613,10 @@ export const CATALOGUE = [
   // it out, loans (EMI split), rules.
   f("cost.bank", "cost", "Bank statements — upload, categorise lines into cost heads, loans", VE,
     { administrator: VE }),
+  // Round 236 — GST payable: output vs input credit, GSTR-2B, challans, and
+  // the quiet "no tax on this bill" flag on purchases.
+  f("cost.gst", "cost", "GST payable — input credit, GSTR-2B, challans, the no-tax flag on purchases", VE,
+    { administrator: VE }),
   f("cost.entries", "cost", "Enter the month's expenses and Balance Sheet figures (power, rent, depreciation, loans, bank …)", VE,
     { administrator: VE }),
 
@@ -960,6 +964,7 @@ export const MODULES = [
       { key: "cost.balance-sheet", label: "Balance Sheet" },
       { key: "cost.break-even", label: "Break-even" },
       { key: "cost.bank", label: "Bank statements" },
+      { key: "cost.gst", label: "GST payable" },
     ],
     support: ["cost.entries", "cost.classify"],
   },
