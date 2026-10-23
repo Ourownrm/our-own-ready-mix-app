@@ -38,6 +38,7 @@ import { migrateRound233 } from "../lib/round233Schema.js";
 import { migrateRound235 } from "../lib/ledgerPost.js";
 import { migrateRound236 } from "../lib/gstBook.js";
 import { migrateRound237 } from "../lib/purchaseAnalysis.js";
+import { migrateRound238 } from "../lib/round238Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4167,6 +4168,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound236(pool, log);
     // ROUND 237 — Purchase Analysis Report.
     await migrateRound237(pool, log);
+    // ROUND 238 — bank statement lines saved with day and month swapped.
+    await migrateRound238(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

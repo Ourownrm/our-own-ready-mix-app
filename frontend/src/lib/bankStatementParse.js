@@ -423,7 +423,10 @@ export function readSheet(aoa) {
 export async function readFile(file, password) {
   if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") return readPdf(file, password);
   const XLSX = await import("xlsx");
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
+  // Round 238 — raw: CSV files and the ".xls" that banks send as a web page
+  // are text; without it the library reads "10/09/2026" the American way
+  // (9 October) before our day-first reading sees it.
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false, raw: true });
   let lastErr = null;
   for (const name of wb.SheetNames) {
     try { return readSheet(XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: "" })); }

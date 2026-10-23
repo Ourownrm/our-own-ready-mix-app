@@ -8982,3 +8982,13 @@ Owner, 23 Oct 2026 — mock-up approved with the name "Purchase Analysis Report"
 - Verified locally: the mock-up's cement figures reproduce (₹62,400 / 10.1 MT flagged, ₹4,800 not); a two-supplier M-Sand month flagged and a reason saved; `npm run check` green; build clean.
 
 Files — backend: src/lib/purchaseAnalysis.js (new), src/routes/{materialModule, setup}.js, src/lib/permissionCatalogue.js · frontend: src/pages/PurchaseAnalysisReport.jsx (new), src/pages/MaterialModule.jsx, src/lib/version.js · root: README.md. The zip also carries all of Round 236 (GST payable), so upload this one zip whether or not Round 236 went up first.
+
+## Round 238 — Bank statements: day and month swapped on CSV / web-page .xls files (v10.70)
+
+Owner, 23 Oct 2026: ICICI lines showed on 9 Oct that the October statement does not have. They were 10 September salary transfers (NEFT reference IN4 26 253… = day 253 = 10 Sep). **Run /setup once** — it repairs what was saved.
+- Cause: a CSV statement, or a bank ".xls" that is really a web page, is text; the spreadsheet library turned "10/09/2026" into a date the American way (9 October) before the app's day-first reading saw it. Days 13–31 were not affected (no such month), so a September file landed partly in January–December on the 9th-type dates and partly in September. PDFs and real Excel files were not affected.
+- Fix: such files are now read as plain text, so the app's own day-first reading decides (lib/bankStatementParse.js).
+- Repair (once, in /setup): for each non-PDF upload, its lines in file order should run in date order with none after the day it was uploaded; where the saved dates break that and swapping day ↔ month (days 1–12) mends it, the dates are swapped (with the dedupe key, the upload's period, and any ledger payment the line posted). A line whose corrected twin is already there (the same transaction from another upload, e.g. the PDF) is removed as a duplicate. The /setup message lists the files and counts.
+- Verified locally: a swapped upload (1 Sep → 9 Jan, 5 Sep → 9 May, 10 Sep → 9 Oct) repaired to 1, 5, 10 Sep; correct uploads untouched; an ICICI-style CSV now reads 10/09/2026 as 10 Sep; `npm run check` green; build clean.
+
+Files — backend: src/lib/round238Schema.js (new), src/routes/setup.js · frontend: src/lib/{bankStatementParse, version}.js · root: README.md. The zip also carries Rounds 236 and 237, so upload this one zip.
