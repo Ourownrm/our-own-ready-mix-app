@@ -8969,3 +8969,16 @@ Owner, 23 Oct 2026 — the mock-up "GST payable — Monthly" ("deployed, proceed
 - Verified locally: output split; receipts at 5% matched to a portal-format 2B (two-row heading) uploaded through the page; held and carried; inter-state supplier → IGST credit used first; flag → no credit; challan and still-to-pay; set aside; Balance Sheet pointers; `npm run check` green; build clean.
 
 Files — backend: src/lib/gstBook.js (new), src/routes/costGst.js (new), src/lib/{costDashboard, permissionCatalogue}.js, src/index.js, src/routes/setup.js · frontend: src/lib/{version, gstr2b (new)}.js, src/pages/CostModule.jsx, src/pages/cost/CostGstTab.jsx (new) · root: README.md
+
+## Round 237 — Purchase Analysis Report (v10.69)
+
+Owner, 23 Oct 2026 — mock-up approved with the name "Purchase Analysis Report". **Run /setup once** (one small table for the reasons). Raw Material → Reports → Purchase Analysis Report (permission `material.report.purchase-analysis`; Administrator: view + edit).
+- Date selection (From / To, quick This month · Last month · This FY) and rate basis: landed (material + freight) or material only — both without GST.
+- Grouped by material: total qty (in the material's purchase unit), average rate, amount; under it each supplier's loads, qty, share, average rate (weighted), amount.
+- Rates compared: each supplier against the cheapest supplier of the same material (“best rate”); +₹ and +% shown. One supplier → "nothing to compare".
+- Paid over best = (rate − best) × qty from that supplier; qty lost = that ÷ best rate. Flagged (orange) when the supplier is dearer AND supplied more than the cheapest one. A period over several months is compared month by month.
+- "Why" on each flagged row (no stock at the cheaper one, quality, credit terms, nearer/faster delivery, other) — saved per material, supplier and month.
+- Tiles (purchased, paid over best, from flagged suppliers, quantity lost), "Where the extra went", Excel export.
+- Verified locally: the mock-up's cement figures reproduce (₹62,400 / 10.1 MT flagged, ₹4,800 not); a two-supplier M-Sand month flagged and a reason saved; `npm run check` green; build clean.
+
+Files — backend: src/lib/purchaseAnalysis.js (new), src/routes/{materialModule, setup}.js, src/lib/permissionCatalogue.js · frontend: src/pages/PurchaseAnalysisReport.jsx (new), src/pages/MaterialModule.jsx, src/lib/version.js · root: README.md. The zip also carries all of Round 236 (GST payable), so upload this one zip whether or not Round 236 went up first.

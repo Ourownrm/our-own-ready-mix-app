@@ -294,6 +294,8 @@ export const CATALOGUE = [
   f("material.report.supplier-summary", "material", "Report — Supplier purchase summary", V, { administrator: V }),
   f("material.report.transporter-freight", "material", "Report — Transporter freight", V, { administrator: V }),
   f("material.report.cost-per-m3", "material", "Report — Cost per m³ (purchase)", V, { administrator: V }),
+  // Round 237 — rates compared between suppliers; edit = record why the dearer one was used.
+  f("material.report.purchase-analysis", "material", "Report — Purchase Analysis (rates compared between suppliers)", VE, { administrator: VE }),
   // Round 154 — the weighbridge sync. Two separate keys on purpose.
   //
   // "material.weighbridge" is the day-to-day screen: see what the weighbridge
@@ -832,6 +834,7 @@ export const MODULES = [
           { key: "material.report.supplier-summary", label: "Supplier Purchase Summary" },
           { key: "material.report.transporter-freight", label: "Transporter Freight" },
           { key: "material.report.cost-per-m3", label: "Cost per m³ – Purchase" },
+          { key: "material.report.purchase-analysis", label: "Purchase Analysis Report" },
         ],
       },
       { key: "material.consumption-transfer", label: "Consumption transfer" },

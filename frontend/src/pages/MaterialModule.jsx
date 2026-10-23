@@ -32,6 +32,7 @@ import { printMaterialReport } from "../lib/materialReportPdf.js";
 import SupplierLedgerTab from "./SupplierLedger.jsx";
 import TransporterLedgerTab from "./TransporterLedger.jsx";
 import ReceiptVariance from "./ReceiptVariance.jsx";
+import PurchaseAnalysisReport from "./PurchaseAnalysisReport.jsx";
 import { PrintPoModal, PoSettingsModal } from "./PurchaseOrderPrint.jsx";
 
 // ===================== Shared helpers =====================
@@ -2795,6 +2796,8 @@ const REPORT_LIST = [
   { key: "monthly-physical-stock", perm: "material.report.monthly-physical-stock", label: "Monthly physical stock" },
   { key: "rate-history", perm: "material.report.rate-history", label: "Weighted avg rate history" },
   { key: "supplier-summary", perm: "material.report.supplier-summary", label: "Supplier purchase summary" },
+  // Round 237
+  { key: "purchase-analysis", perm: "material.report.purchase-analysis", label: "Purchase Analysis Report" },
   { key: "transporter-freight", perm: "material.report.transporter-freight", label: "Transporter freight" },
   { key: "cost-per-m3", perm: "material.report.cost-per-m3", label: "Cost per m³" },
 ];
@@ -2831,6 +2834,7 @@ function ReportsTab() {
       {report === "monthly-physical-stock" && <MonthlyPhysicalStockReport />}
       {report === "rate-history" && <RateHistoryReport />}
       {report === "supplier-summary" && <SupplierSummaryReport />}
+      {report === "purchase-analysis" && <PurchaseAnalysisReport />}
       {report === "transporter-freight" && <TransporterFreightReport />}
       {report === "cost-per-m3" && <CostPerM3Report />}
     </div>

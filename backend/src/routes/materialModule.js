@@ -17,6 +17,7 @@ import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 import { buildLedgers, creditCheck, receiptBillAmount, addDays } from "../lib/supplierLedger.js";
 import { buildTransporterLedgers } from "../lib/transporterLedger.js";
 import { requireManualPayments, refuseIfSourced } from "../lib/ledgerPost.js";
+import { purchaseAnalysis, ensureRound237, REASONS } from "../lib/purchaseAnalysis.js";
 import { getPoSettings, cleanSettings, cleanTerms, defaultTerms } from "../lib/purchaseOrders.js";
 // Round 186 (v10.15 hotfix) — plantConsumptionByMaterialMonth added here. Round
 // 185's bookStockRows() called it without importing it, so every caller (Stock
@@ -3166,6 +3167,36 @@ router.get("/reports/weighted-average-rate-history", requirePermission("material
     });
   }
   res.json(results);
+});
+
+// Round 237 — Purchase Analysis Report: by material and supplier, rates
+// compared, what buying from the dearer supplier cost (lib/purchaseAnalysis.js).
+router.get("/reports/purchase-analysis", requirePermission("material.report.purchase-analysis", "view"), async (req, res) => {
+  const ISO = /^\d{4}-\d{2}-\d{2}$/;
+  const from = String(req.query.from || ""), to = String(req.query.to || "");
+  if (!ISO.test(from) || !ISO.test(to) || from > to) return res.status(400).json({ error: "Pick the From and To dates." });
+  res.json(await purchaseAnalysis({ from, to, basis: req.query.basis === "material" ? "material" : "landed" }));
+});
+// Why more was bought from the dearer supplier — one choice for the months given.
+router.put("/reports/purchase-analysis/reason", requirePermission("material.report.purchase-analysis", "edit"), async (req, res) => {
+  await ensureRound237();
+  const b = req.body || {};
+  const materialId = Number(b.material_id), supplierId = Number(b.supplier_id);
+  const months = (Array.isArray(b.months) ? b.months : []).filter((m) => /^\d{4}-\d{2}$/.test(m)).slice(0, 36);
+  if (!Number.isInteger(materialId) || !Number.isInteger(supplierId) || !months.length) return res.status(400).json({ error: "Which material, supplier and month?" });
+  const reason = String(b.reason || "");
+  const note = String(b.note || "").trim().slice(0, 200) || null;
+  for (const m of months) {
+    if (!reason) await query(`DELETE FROM rm_purchase_reasons WHERE material_id = $1 AND supplier_id = $2 AND month = $3`, [materialId, supplierId, m]);
+    else {
+      if (!REASONS.some(([k]) => k === reason)) return res.status(400).json({ error: "Choose a reason." });
+      await query(
+        `INSERT INTO rm_purchase_reasons (material_id, supplier_id, month, reason, note, set_by) VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (material_id, supplier_id, month) DO UPDATE SET reason = EXCLUDED.reason, note = EXCLUDED.note, set_by = EXCLUDED.set_by, set_at = now()`,
+        [materialId, supplierId, m, reason, note, req.user.id]);
+    }
+  }
+  res.json({ ok: true });
 });
 
 router.get("/reports/supplier-purchase-summary", requirePermission("material.report.supplier-summary", "view"), async (req, res) => {
