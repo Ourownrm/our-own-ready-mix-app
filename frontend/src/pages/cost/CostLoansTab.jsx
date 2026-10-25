@@ -83,7 +83,7 @@ export default function CostLoansTab() {
 
       <div style={{ ...MUTED, lineHeight: 1.6 }}>
         How it works — each loan is set up once with the balance (principal outstanding) on the day before the first bank statement uploaded. EMI loans: each instalment’s interest is the balance × rate × the days since the same date last month ÷ 365, as the lenders charge it; the rest of the EMI reduces the loan. Fixed-principal loans (e.g. KFC): the fixed principal reduces the loan and the rest of what was paid is interest — so any rebate or interest subsidy is already in. Interest typed on an EMI line (from the lender’s statement) is used as it is.
-        “The rest of the loan” is worked forward from today’s balance at today’s rate and EMI (a fixed-principal loan at the rate it actually cost lately) — a guide, not the lender’s schedule. Interest goes to the P&amp;L’s Finance cost in the month paid; the balance to the Balance Sheet’s Term &amp; vehicle loans.
+        “The rest of the loan” is worked forward from today’s balance at the rate and EMI entered on the loan — a guide, not the lender’s schedule. For a loan with a rebate or subsidy, enter the rate it really costs (e.g. 6.2%). Interest goes to the P&amp;L’s Finance cost in the month paid; the balance to the Balance Sheet’s Term &amp; vehicle loans.
       </div>
 
       {edit && <LoanModal d={{ accounts: d.accounts }} loan={edit} onClose={() => setEdit(null)} onDone={() => { setEdit(null); reload(); }} />}
@@ -117,7 +117,7 @@ function LoanCard({ l, color, open, onToggle, canEdit, onEdit }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginTop: 14 }}>
         <Fact label="Owed today" value={l.outstanding == null ? "—" : `₹${num(l.outstanding)}`} sub={l.loan_amount ? `of ₹${num(l.loan_amount)} borrowed` : `₹${num(l.opening_outstanding)} on ${fmtDay(l.opening_date)}`} />
-        <Fact label="Rate" value={`${num(l.rate_pct, 2)}%`} sub={l.effective_rate != null ? `costing ≈ ${num(l.effective_rate, 2)}% after rebate / subsidy` : l.interest_basis === "month" ? "rate ÷ 12 a month" : "interest by days"} />
+        <Fact label="Rate" value={`${num(l.rate_pct, 2)}%`} sub={l.effective_rate != null ? `last month it cost ≈ ${num(l.effective_rate, 2)}% (what was paid less the principal)` : l.interest_basis === "month" ? "rate ÷ 12 a month" : "interest by days"} />
         <Fact label={fixed ? "Principal a month" : "EMI"} value={`₹${num(fixed ? l.principal_amt : l.emi)}`} sub={fixed ? "plus that month’s interest" : null} />
         <Fact label="Next instalment" value={l.ahead.next_due ? fmtDay(l.ahead.next_due) : "—"} sub={l.ahead.next_amount ? `≈ ₹${num(l.ahead.next_amount)}` : null} />
         <Fact label="Closes" value={l.ahead.closes ? fmtDay(l.ahead.closes) : l.stalled ? "—" : "—"} sub={l.ahead.instalments ? `${l.ahead.instalments} instalment(s) left${l.end_date ? ` · lender: ${fmtDay(l.end_date)}` : ""}` : l.stalled ? "EMI does not cover the interest — check the EMI" : null} />
@@ -142,8 +142,8 @@ function LoanCard({ l, color, open, onToggle, canEdit, onEdit }) {
                 <thead><tr><th>Date</th><th style={R}>Paid ₹</th><th style={R}>Interest ₹</th><th style={R}>Principal ₹</th><th style={R}>Balance after ₹</th></tr></thead>
                 <tbody>
                   {l.history.map((h) => (
-                    <tr key={h.id} style={{ color: h.before_start ? "var(--slate)" : undefined }}>
-                      <td style={{ whiteSpace: "nowrap" }}>{fmtDay(h.date)}</td>
+                    <tr key={h.id} style={{ color: h.before_start ? "var(--slate)" : undefined, background: h.extra ? "#FFF6E0" : undefined }}>
+                      <td style={{ whiteSpace: "nowrap" }}>{fmtDay(h.date)}{h.extra ? " †" : ""}</td>
                       <td style={R}>{num(h.paid)}</td>
                       <td style={R}>{h.interest == null ? "—" : num(h.interest)}{h.typed ? " *" : ""}</td>
                       <td style={R}>{h.principal == null ? "—" : num(h.principal)}</td>
@@ -156,6 +156,7 @@ function LoanCard({ l, color, open, onToggle, canEdit, onEdit }) {
               </table>
             </div>
             {l.history.some((h) => h.typed) && <div style={MUTED}>* interest typed from the lender’s statement</div>}
+            {l.history.some((h) => h.extra) && <div style={{ ...MUTED, color: "var(--amber)" }}>† a second payment in the month after the principal was taken — all of it counted as interest. If it is another loan’s instalment (e.g. the other KFC loan), give it that loan on Bank statements (the line → Change → Loan EMI), or add that loan here so it is found by its amount.</div>}
           </div>
           <div style={{ flex: "1 1 460px", minWidth: 0 }}>
             <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>The rest of the loan (worked forward)</h3>

@@ -282,6 +282,20 @@ async function sortContext(lines) {
   };
 }
 
+// Does this debit look like the loan's instalment? The same EMI (± ₹1); for
+// a fixed-principal loan the principal plus up to about a month and a half's
+// interest (at 10% at least, so a low net rate still fits). Only from the
+// loan's account when one is set, and not before its start date.
+function amountFits(l, amount, line) {
+  if (line.txn_date < (l.opening_date || "")) return false;
+  if (l.account_id && l.account_id !== line.account_id) return false;
+  if (l.method === "fixed" && n0(l.principal_amt) > 0) {
+    const maxInt = (n0(l.opening_outstanding) * Math.max(10, n0(l.rate_pct))) / 1200 * 1.5 + 100;
+    return amount >= n0(l.principal_amt) - 1 && amount <= n0(l.principal_amt) + maxInt;
+  }
+  return n0(l.emi) > 0 && Math.abs(amount - n0(l.emi)) <= 1;
+}
+
 // The treatment the app suggests for one line.
 function suggest(line, ctx) {
   const side = n0(line.debit) > 0 ? "debit" : "credit";
@@ -290,10 +304,20 @@ function suggest(line, ctx) {
   // Our own name or another of our account numbers in the narration.
   const own = { ...ctx.own, nums: ctx.own.nums.filter((x) => !ctx.accNums.some((a) => a.id === line.account_id && a.num === x)) };
   if (isOwnTransfer(narr, own)) return { treatment: "own", why: "our own account in the narration" };
-  for (const l of ctx.loans) {
-    if (side === "debit" && keywordHit(narr, l.match_text)) {
-      ctx.loanMonths?.add(`${l.id}:${String(line.txn_date).slice(0, 7)}`);
-      return { treatment: "loan", loan_id: l.id, why: `EMI — ${l.name} (“${l.match_text}”)` };
+  // Round 240 — when the narration text fits more than one loan (two KFC
+  // loans both "KFC …"), the one whose instalment the amount fits, then the
+  // one without an instalment yet that month.
+  if (side === "debit") {
+    const ym = String(line.txn_date).slice(0, 7);
+    let byText = ctx.loans.filter((l) => keywordHit(narr, l.match_text));
+    if (byText.length > 1) {
+      const fit = byText.filter((l) => amountFits(l, amount, line));
+      if (fit.length) byText = fit;
+    }
+    if (byText.length) {
+      const l = byText.find((x) => !ctx.loanMonths?.has(`${x.id}:${ym}`)) || byText[0];
+      ctx.loanMonths?.add(`${l.id}:${ym}`);
+      return { treatment: "loan", loan_id: l.id, why: `EMI — ${l.name} (“${l.match_text}”${byText.length > 1 ? `; ${byText.length} loans have this text` : ""})` };
     }
   }
   // An app record: same amount, closest date; within 3 days left out, 4–15 days to check.
@@ -317,15 +341,7 @@ function suggest(line, ctx) {
   // with the same EMI: the one without an EMI yet that month.
   if (side === "debit") {
     const ym = String(line.txn_date).slice(0, 7);
-    const cands = (ctx.loansAll || []).filter((l) => {
-      if (l.match_amount === false || line.txn_date < (l.opening_date || "")) return false;
-      if (l.account_id && l.account_id !== line.account_id) return false;
-      if (l.method === "fixed" && n0(l.principal_amt) > 0) {
-        const maxInt = (n0(l.opening_outstanding) * n0(l.rate_pct)) / 1200 * 1.5 + 100;
-        return amount >= n0(l.principal_amt) - 1 && amount <= n0(l.principal_amt) + maxInt;
-      }
-      return n0(l.emi) > 0 && Math.abs(amount - n0(l.emi)) <= 1;
-    });
+    const cands = (ctx.loansAll || []).filter((l) => l.match_amount !== false && amountFits(l, amount, line));
     if (cands.length) {
       const pick = cands.find((l) => !ctx.loanMonths.has(`${l.id}:${ym}`)) || cands[0];
       ctx.loanMonths.add(`${pick.id}:${ym}`);
@@ -569,6 +585,8 @@ export async function loansInsight(today) {
       const before = b.d < l.opening_date;
       if (!before) bal = r2(bal - n0(b.principal));
       return { id: b.id, date: b.d, paid: r2(n0(b.debit) - n0(b.credit)), interest: before ? null : r2(b.interest), principal: before ? null : r2(b.principal),
+        // a second payment in a month on a fixed-principal loan: all interest — worth checking it is this loan's
+        extra: !before && l.method === "fixed" && n0(b.debit) > 0 && n0(b.principal) === 0,
         balance: before ? null : bal, typed: b.interest_fixed, before_start: before, account: b.bank ? `${b.bank} ••${String(b.number).slice(-4)}` : null };
     });
     const counted = history.filter((h) => !h.before_start);
@@ -594,10 +612,22 @@ export async function loansInsight(today) {
     // A fixed-principal loan's interest going forward: at the rate it has
     // actually cost lately (after any rebate / subsidy), from the last
     // instalment found; else the rate set on the loan.
-    const lastH = [...counted].reverse().find((h) => h.interest != null && h.balance != null);
-    const effRate = fixedP && lastH && lastH.balance + lastH.principal > 0
-      ? r2((lastH.interest * 1200) / (lastH.balance + lastH.principal)) : null;
-    const rateFwd = effRate != null && effRate > 0 ? { ...l, rate_pct: effRate, interest_basis: "month" } : l;
+    // Round 240 — what the loan actually cost in the latest month an
+    // instalment was found: that month's interest (all its payments) on the
+    // balance before it. Shown beside the rate; the loan is worked forward at
+    // the rate entered (owner: "even after I updated the rate to 6.2% the
+    // calculation is the same as for 10%").
+    let effRate = null;
+    const lastPrin = [...counted].reverse().find((h) => n0(h.principal) > 0);
+    if (fixedP && lastPrin) {
+      const ym = ymOf(lastPrin.date);
+      const inMonth = counted.filter((h) => ymOf(h.date) === ym);
+      const first = inMonth[0];
+      const before = first.balance + n0(first.principal);
+      const intM = inMonth.reduce((t, h) => t + n0(h.interest), 0);
+      if (before > 0) effRate = r2((intM * 1200) / before);
+    }
+    const rateFwd = l;
     let stalled = false;
     for (let i = 0; i < 360 && out > 0.5 && l.is_active; i++) {
       const interest = loanInterest(rateFwd, out, next);
