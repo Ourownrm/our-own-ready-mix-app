@@ -49,6 +49,7 @@ export default function CostLoansTab() {
       {s.closing_12m.length > 0 && <Note tone="good">Closing within a year: {s.closing_12m.map((c) => `${c.name} (${fmtDay(c.closes)})`).join(", ")} — that EMI stops after it.</Note>}
 
       <div style={GRID(190)}>
+        <Tile label="Borrowed (running loans)" value={rsL(s.taken)} note={`principal repaid ${rsL(s.principal_paid)} · interest paid ${rsL(s.interest_paid)}${s.life_missing.length ? ` · not known for ${s.life_missing.length}` : ""}`} />
         <Tile dark label="Owed on all loans" value={rsL(s.outstanding)} note={`${s.count} running loan${s.count === 1 ? "" : "s"} · average rate ${s.weighted_rate == null ? "—" : `${num(s.weighted_rate, 2)}%`}`} />
         <Tile label="Next month’s instalments" value={rsL(s.monthly)} note="all running loans, at today’s EMI / principal" />
         <Tile label={`Interest this year (FY ${fy(d.today)})`} value={rsL(s.fy_interest)} note={`principal repaid ${rsL(s.fy_principal)} · from ${fmtDay(d.fy_start)}`} />
@@ -117,12 +118,24 @@ function LoanCard({ l, color, open, onToggle, canEdit, onEdit }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginTop: 14 }}>
         <Fact label="Owed today" value={l.outstanding == null ? "—" : `₹${num(l.outstanding)}`} sub={l.loan_amount ? `of ₹${num(l.loan_amount)} borrowed` : `₹${num(l.opening_outstanding)} on ${fmtDay(l.opening_date)}`} />
-        <Fact label="Rate" value={`${num(l.rate_pct, 2)}%`} sub={l.effective_rate != null ? `last month it cost ≈ ${num(l.effective_rate, 2)}% (what was paid less the principal)` : l.interest_basis === "month" ? "rate ÷ 12 a month" : "interest by days"} />
-        <Fact label={fixed ? "Principal a month" : "EMI"} value={`₹${num(fixed ? l.principal_amt : l.emi)}`} sub={fixed ? "plus that month’s interest" : null} />
-        <Fact label="Next instalment" value={l.ahead.next_due ? fmtDay(l.ahead.next_due) : "—"} sub={l.ahead.next_amount ? `≈ ₹${num(l.ahead.next_amount)}` : null} />
+        <Fact label="Rate" value={`${num(l.rate_now ?? l.rate_pct, 2)}%`} sub={l.schedule?.irr != null ? `the instalments work out to ${num(l.schedule.irr, 2)}% a year${l.schedule.flat != null ? ` (flat ${num(l.schedule.flat, 2)}%)` : ""}` : l.effective_rate != null ? `last month it cost ≈ ${num(l.effective_rate, 2)}% (what was paid less the principal)` : l.interest_basis === "month" ? "rate ÷ 12 a month" : "interest by days"} />
+        <Fact label={fixed ? "Principal a month" : "EMI"} value={`₹${num(l.emi_now ?? (fixed ? l.principal_amt : l.emi))}`}
+          sub={[fixed ? "plus that month’s interest" : null, l.schedule?.inst_no ? `instalment ${Math.max(0, Math.min(l.schedule.inst_no, l.schedule.n))} of ${l.schedule.n}` : null].filter(Boolean).join(" · ") || null} />
+        <Fact label="Next instalment" value={l.ahead.next_due ? fmtDay(l.ahead.next_due) : "—"}
+          sub={l.ahead.next_amount ? `≈ ₹${num(l.ahead.next_amount)}${l.projection[0]?.overdue ? " · due, not found on the statements yet" : ""}` : null} />
         <Fact label="Closes" value={l.ahead.closes ? fmtDay(l.ahead.closes) : l.stalled ? "—" : "—"} sub={l.ahead.instalments ? `${l.ahead.instalments} instalment(s) left${l.end_date ? ` · lender: ${fmtDay(l.end_date)}` : ""}` : l.stalled ? "EMI does not cover the interest — check the EMI" : null} />
         <Fact label="Interest still to pay" value={`₹${num(l.ahead.interest)}`} sub={`this FY so far ₹${num(l.totals.fy_interest)}`} />
       </div>
+      {l.life && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border)" }}>
+          <Fact label="Loan taken" value={`₹${num(l.life.taken)}`} sub={l.life.on ? `on ${fmtDay(l.life.on)}` : null} />
+          <Fact label="Principal repaid" value={l.life.principal_paid == null ? "—" : `₹${num(l.life.principal_paid)}`} sub="loan taken − owed today" />
+          <Fact label="Interest paid" value={l.life.interest_paid == null ? "—" : `₹${num(l.life.interest_paid)}`}
+            sub={l.life.interest_paid == null ? "enter the interest paid up to the start date on the loan (Edit)" : `₹${num(l.life.interest_before)} up to ${fmtDay(l.opening_date)}${l.life.interest_before_how === "schedule" ? " (from the schedule)" : ""} + ₹${num(l.life.interest_since)} since`} />
+          <Fact label="Paid in all" value={l.life.interest_paid == null || l.life.principal_paid == null ? "—" : `₹${num(l.life.principal_paid + l.life.interest_paid)}`} sub="principal + interest" />
+          {l.schedule?.on_schedule && <Fact label="By the schedule today" value={`₹${num(l.schedule.on_schedule.balance)}`} sub={`owed if every instalment was paid on time · ${l.schedule.on_schedule.left_n} left`} />}
+        </div>
+      )}
       {l.repaid_pct != null && (
         <div style={{ marginTop: 12 }}>
           <div style={{ height: 10, background: "var(--concrete)", borderRadius: 5, overflow: "hidden" }}>
@@ -171,7 +184,7 @@ function LoanCard({ l, color, open, onToggle, canEdit, onEdit }) {
               <table style={{ minWidth: 420 }}>
                 <thead><tr><th>Due</th><th style={R}>Pay ₹</th><th style={R}>Interest ₹</th><th style={R}>Principal ₹</th><th style={R}>Balance ₹</th></tr></thead>
                 <tbody>{(all ? l.projection : l.projection.slice(0, 12)).map((p) => (
-                  <tr key={p.date}><td style={{ whiteSpace: "nowrap" }}>{fmtDay(p.date)}</td><td style={R}>{num(p.pay)}</td><td style={R}>{num(p.interest)}</td><td style={R}>{num(p.principal)}</td><td style={R}>{num(p.balance)}</td></tr>))}</tbody>
+                  <tr key={p.date} style={{ background: p.overdue ? "#FFF6E0" : undefined }}><td style={{ whiteSpace: "nowrap" }}>{fmtDay(p.date)}{p.overdue ? " · not found yet" : ""}</td><td style={R}>{num(p.pay)}</td><td style={R}>{num(p.interest)}</td><td style={R}>{num(p.principal)}</td><td style={R}>{num(p.balance)}</td></tr>))}</tbody>
               </table>
             </div>
             {l.projection.length > 12 && <button type="button" onClick={() => setAll(!all)} style={{ marginTop: 8 }}>{all ? "Show the next 12 only" : `Show all ${l.projection.length}`}</button>}

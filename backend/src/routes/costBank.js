@@ -3,6 +3,7 @@
 // because the app has it, own transfer, loan EMI …). The rules live in
 // lib/bankBook.js. Administrator only by default (cost.bank).
 import { Router } from "express";
+import { irr, flatRate, balanceOn, rateOn, amountOn, schedule as loanSchedule } from "../lib/loanMath.js";
 import { pool, query } from "../db.js";
 import { requireAuth, isAdminLevel } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
@@ -434,6 +435,18 @@ function cleanLoan(b) {
     loan_amount: b.loan_amount === "" || b.loan_amount == null || !(Number(b.loan_amount) > 0) ? null : r2(b.loan_amount),
     loan_no: String(b.loan_no || "").trim().slice(0, 40) || null, asset: String(b.asset || "").trim().slice(0, 100) || null,
     end_date: ISO.test(b.end_date || "") ? b.end_date : null,
+    // Round 241 — the schedule and rate history (lib/loanMath.js)
+    disbursed_on: ISO.test(b.disbursed_on || "") ? b.disbursed_on : null,
+    interest_before: b.interest_before === "" || b.interest_before == null || !(Number(b.interest_before) >= 0) ? null : r2(b.interest_before),
+    first_due: ISO.test(b.first_due || "") ? b.first_due : null,
+    n_instalments: Number(b.n_instalments) >= 1 && Number(b.n_instalments) <= 600 ? Math.round(Number(b.n_instalments)) : null,
+    steps: JSON.stringify((Array.isArray(b.steps) ? b.steps : [])
+      .map((x) => ({ from_no: Math.round(Number(x.from_no)), amount: r2(x.amount) }))
+      .filter((x) => x.from_no >= 1 && x.amount > 0).sort((a, c) => a.from_no - c.from_no)
+      .filter((x, i, a) => i === 0 || x.from_no !== a[i - 1].from_no).slice(0, 40)),
+    rates: JSON.stringify((Array.isArray(b.rates) ? b.rates : [])
+      .filter((x) => ISO.test(x.from || "") && Number(x.rate) >= 0 && Number(x.rate) < 40)
+      .map((x) => ({ from: x.from, rate: Math.round(Number(x.rate) * 1000) / 1000 })).sort((a, c) => (a.from < c.from ? -1 : 1)).slice(0, 40)),
     lender: String(b.lender || "").trim().slice(0, 80) || null, kind: ["term", "vehicle", "other"].includes(b.kind) ? b.kind : "term",
     account_id: Number(b.account_id) || null, match_text: String(b.match_text || "").replace(/\s+/g, " ").trim().toUpperCase().slice(0, 80) || null,
     is_active: b.is_active !== false, notes: String(b.notes || "").trim().slice(0, 300) || null };
@@ -450,15 +463,38 @@ router.get("/loans", VIEW, async (_req, res) => {
   res.json({ ...d, accounts: accs.map((a) => ({ id: a.id, name: accLabel(a) })) });
 });
 
+// Round 241 — work a loan out from its schedule (nothing saved): the rate the
+// instalments really cost (IRR), the flat rate, and the balance on a date.
+router.post("/loans/calc", VIEW, async (req, res) => {
+  const b = req.body || {};
+  const loan = {
+    method: b.method === "fixed" ? "fixed" : "emi", loan_amount: Number(b.loan_amount) || 0,
+    disbursed_on: ISO.test(b.disbursed_on || "") ? b.disbursed_on : null, first_due: ISO.test(b.first_due || "") ? b.first_due : null,
+    n_instalments: Math.round(Number(b.n_instalments)) || 0, steps: Array.isArray(b.steps) ? b.steps : [], rates: Array.isArray(b.rates) ? b.rates : [],
+    rate_pct: Number(b.rate_pct) || 0, emi: Number(b.emi) || 0, principal_amt: Number(b.principal_amt) || 0,
+  };
+  if (!loan.first_due || !loan.n_instalments || !loan.steps.length) return bad(res, "For the working: the first instalment date, the number of instalments and the instalment amount(s).");
+  if (!(loan.loan_amount > 0)) return bad(res, "For the working: the loan amount.");
+  const rate = irr(loan);
+  const useRate = b.use_rate === "irr" && rate != null ? rate : loan.rate_pct || rate || 0;
+  const on = ISO.test(b.on || "") ? b.on : istDay();
+  const bal = balanceOn({ ...loan, rate_pct: useRate }, on);
+  const sch = loanSchedule(loan);
+  res.json({ irr: rate, flat: flatRate(loan), rate_used: useRate, on, ...bal,
+    first: sch[0] || null, last: sch[sch.length - 1] || null, rate_on: rateOn({ ...loan, rate_pct: useRate }, on), amount_on: amountOn(loan, on) });
+});
+
 router.post("/loans", EDIT, async (req, res) => {
   const l = cleanLoan(req.body);
   if (l.error) return bad(res, l.error);
   const { rows } = await query(
     `INSERT INTO cost_bank_loans (name, lender, kind, account_id, match_text, rate_pct, emi, opening_outstanding, opening_date, is_active, notes, created_by,
-                                  method, principal_amt, interest_basis, match_amount, loan_amount, loan_no, asset, end_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+                                  method, principal_amt, interest_basis, match_amount, loan_amount, loan_no, asset, end_date,
+                                  disbursed_on, first_due, n_instalments, steps, rates, interest_before)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24::jsonb,$25::jsonb,$26) RETURNING id`,
     [l.name, l.lender, l.kind, l.account_id, l.match_text, l.rate, l.emi, l.out, l.date, l.is_active, l.notes, req.user.id,
-      l.method, l.principal_amt, l.interest_basis, l.match_amount, l.loan_amount, l.loan_no, l.asset, l.end_date]);
+      l.method, l.principal_amt, l.interest_basis, l.match_amount, l.loan_amount, l.loan_no, l.asset, l.end_date,
+      l.disbursed_on, l.first_due, l.n_instalments, l.steps, l.rates, l.interest_before]);
   await afterLoanChange();
   res.json({ id: rows[0].id });
 });
@@ -468,9 +504,11 @@ router.put("/loans/:id(\\d+)", EDIT, async (req, res) => {
   await query(
     `UPDATE cost_bank_loans SET name=$2, lender=$3, kind=$4, account_id=$5, match_text=$6, rate_pct=$7, emi=$8, opening_outstanding=$9,
             opening_date=$10, is_active=$11, notes=$12, method=$13, principal_amt=$14, interest_basis=$15, match_amount=$16,
-            loan_amount=$17, loan_no=$18, asset=$19, end_date=$20 WHERE id = $1`,
+            loan_amount=$17, loan_no=$18, asset=$19, end_date=$20,
+            disbursed_on=$21, first_due=$22, n_instalments=$23, steps=$24::jsonb, rates=$25::jsonb, interest_before=$26 WHERE id = $1`,
     [req.params.id, l.name, l.lender, l.kind, l.account_id, l.match_text, l.rate, l.emi, l.out, l.date, l.is_active, l.notes,
-      l.method, l.principal_amt, l.interest_basis, l.match_amount, l.loan_amount, l.loan_no, l.asset, l.end_date]);
+      l.method, l.principal_amt, l.interest_basis, l.match_amount, l.loan_amount, l.loan_no, l.asset, l.end_date,
+      l.disbursed_on, l.first_due, l.n_instalments, l.steps, l.rates, l.interest_before]);
   await afterLoanChange();
   res.json({ ok: true });
 });

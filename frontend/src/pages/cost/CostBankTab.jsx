@@ -632,9 +632,34 @@ export function LoanModal({ d, loan, onClose, onDone }) {
     match_text: loan.match_text || "", rate_pct: loan.rate_pct ?? "", emi: loan.emi ?? "", opening_outstanding: loan.opening_outstanding ?? "",
     opening_date: loan.opening_date || "", is_active: loan.is_active !== false, notes: loan.notes || "",
     method: loan.method || "emi", principal_amt: loan.principal_amt ?? "", interest_basis: loan.interest_basis || "days", match_amount: loan.match_amount !== false,
-    loan_amount: loan.loan_amount ?? "", loan_no: loan.loan_no || "", asset: loan.asset || "", end_date: loan.end_date || "" });
+    loan_amount: loan.loan_amount ?? "", loan_no: loan.loan_no || "", asset: loan.asset || "", end_date: loan.end_date || "",
+    // Round 241 — the schedule and rate history
+    disbursed_on: loan.disbursed_on || "", first_due: loan.first_due || "", n_instalments: loan.n_instalments ?? "",
+    steps: (loan.steps || []).map((x) => ({ from_no: x.from_no, amount: x.amount })), rates: (loan.rates || []).map((x) => ({ from: x.from, rate: x.rate })),
+    interest_before: loan.interest_before ?? "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [calc, setCalc] = useState(null);
+  const [showSched, setShowSched] = useState(!!(loan.first_due || (loan.steps || []).length));
+  const fixed = f.method === "fixed";
+  const setRow = (k, i, key, v) => setF({ ...f, [k]: f[k].map((r, j) => (j === i ? { ...r, [key]: v } : r)) });
+  const addRow = (k, row) => setF({ ...f, [k]: [...f[k], row] });
+  const delRow = (k, i) => setF({ ...f, [k]: f[k].filter((_, j) => j !== i) });
+  async function workOut(fill) {
+    setErr(""); setCalc(null);
+    try {
+      const r = await apiRequest("/cost/bank/loans/calc", { method: "POST", body: { ...f, on: f.opening_date || undefined, use_rate: fill === "rate" || !f.rate_pct ? "irr" : "entered" } });
+      setCalc(r);
+      const next = { ...f };
+      if (fill === "rate" && r.irr != null) next.rate_pct = r.irr;
+      if (fill === "balance") {
+        next.opening_outstanding = r.balance;
+        if (!fixed && r.interest_paid != null) next.interest_before = r.interest_paid;
+        if (!f.opening_date) next.opening_date = r.on;
+      }
+      setF(next);
+    } catch (e) { setErr(e.message); }
+  }
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   async function save() {
     setBusy(true); setErr("");
@@ -643,7 +668,7 @@ export function LoanModal({ d, loan, onClose, onDone }) {
   }
   const F = ({ label, children }) => <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600 }}>{label}{children}</label>;
   return (
-    <Modal title={loan.id ? `Loan — ${loan.name}` : "Add a loan"} onClose={onClose} width={620}>
+    <Modal title={loan.id ? `Loan — ${loan.name}` : "Add a loan"} onClose={onClose} width={760}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
         {F({ label: "Name", children: <input value={f.name} onChange={set("name")} placeholder="Term loan — plant machinery" /> })}
         {F({ label: "Bank / lender", children: <input value={f.lender} onChange={set("lender")} placeholder="HDFC Bank" /> })}
@@ -669,6 +694,65 @@ export function LoanModal({ d, loan, onClose, onDone }) {
       </div>
       <div style={{ ...MUTED, marginTop: 8 }}>Take the balance (principal outstanding) from the loan statement, on a date before the first EMI you will upload — the day before your first bank statement starts. EMIs after that date are split from it.
         {f.method === "fixed" ? " Each month the fixed principal reduces the loan and the rest of what was paid is interest — exact, whatever rebate or subsidy the lender gave." : " Interest is worked out on the balance outstanding; type the lender’s figure on an EMI line to use it instead."}</div>
+      <div style={{ marginTop: 10 }}>
+        {F({ label: "Interest paid up to that date ₹ (from the lender’s statement — for the loan’s total interest paid)", children:
+          <input type="number" step="0.01" value={f.interest_before} onChange={set("interest_before")} placeholder={fixed ? "e.g. the statement's interest charged" : "or work it out from the schedule below"} style={{ maxWidth: 260 }} /> })}
+      </div>
+
+      {/* Round 241 — the schedule: for stepped EMIs, flat-rate loans, changing principal, rate changes */}
+      <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+        <button type="button" onClick={() => setShowSched(!showSched)} aria-expanded={showSched} style={{ fontSize: 12.5 }}>
+          {showSched ? "▾" : "▸"} Schedule from the loan agreement / statement (optional)</button>
+        {showSched && (
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={MUTED}>Fill this when the instalment changes over the loan (Mahindra ₹28,000 then ₹7,300; Shriram ₹95,000 → ₹86,000 → ₹51,403; KFC principal ₹89,000 then ₹92,500), when the lender quotes only finance charges or a flat rate, or when the rate changed. The app then uses each month’s own instalment and rate, and can work out the real rate and the balance for you.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+              {F({ label: "Loan paid out on", children: <input type="date" value={f.disbursed_on} onChange={set("disbursed_on")} /> })}
+              {F({ label: "First instalment due", children: <input type="date" value={f.first_due} onChange={set("first_due")} /> })}
+              {F({ label: "Number of instalments", children: <input type="number" min="1" max="600" value={f.n_instalments} onChange={set("n_instalments")} placeholder="60" /> })}
+            </div>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>{fixed ? "Principal each month" : "Instalment (EMI)"} — from instalment no.</div>
+              {f.steps.map((r, i) => (
+                <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={MUTED}>from no.</span>
+                  <input type="number" min="1" value={r.from_no} onChange={(e) => setRow("steps", i, "from_no", e.target.value)} style={{ width: 80 }} aria-label="From instalment number" />
+                  <span style={MUTED}>₹</span>
+                  <input type="number" step="0.01" value={r.amount} onChange={(e) => setRow("steps", i, "amount", e.target.value)} style={{ width: 140 }} aria-label="Amount" />
+                  <button type="button" onClick={() => delRow("steps", i)} aria-label="Remove" style={{ padding: "4px 10px", minHeight: 30 }}>✕</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => addRow("steps", { from_no: f.steps.length ? Number(f.steps[f.steps.length - 1].from_no) + 1 : 1, amount: f.steps.length ? "" : (fixed ? f.principal_amt : f.emi) })} style={{ fontSize: 12, padding: "4px 10px", minHeight: 30 }}>+ Add a change</button>
+            </div>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>Rate changes (leave empty if the rate never changed)</div>
+              {f.rates.map((r, i) => (
+                <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={MUTED}>from</span>
+                  <input type="date" value={r.from} onChange={(e) => setRow("rates", i, "from", e.target.value)} aria-label="From date" />
+                  <input type="number" step="0.01" value={r.rate} onChange={(e) => setRow("rates", i, "rate", e.target.value)} style={{ width: 90 }} aria-label="Rate %" /><span style={MUTED}>% a year</span>
+                  <button type="button" onClick={() => delRow("rates", i)} aria-label="Remove" style={{ padding: "4px 10px", minHeight: 30 }}>✕</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => addRow("rates", { from: "", rate: "" })} style={{ fontSize: 12, padding: "4px 10px", minHeight: 30 }}>+ Add a rate change</button>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {!fixed && <button type="button" onClick={() => workOut("rate")}>Work out the rate from the instalments</button>}
+              <button type="button" onClick={() => workOut("balance")}>Work out the balance on {f.opening_date || "the start date"}</button>
+            </div>
+            {calc && (
+              <div style={{ background: "#F2F6FA", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.6, ...NUM }}>
+                {calc.irr != null && <div><b>The instalments cost {calc.irr}% a year</b> on the reducing balance{calc.flat != null ? ` — a flat ${calc.flat}% a year` : ""} (₹{num(calc.total)} repaid on ₹{num(f.loan_amount)}).</div>}
+                <div>On {calc.on}: <b>{calc.paid_n}</b> of {calc.n} instalments due{calc.last_due ? ` (last ${calc.last_due})` : ""} · principal owed <b>₹{num(calc.balance)}</b>
+                  {!fixed && calc.interest_paid != null ? ` · interest in the instalments so far ₹${num(calc.interest_paid)}` : ""}.</div>
+                <div>Left: {calc.left_n} instalment(s), ₹{num(calc.left_amount)}{calc.interest_left != null ? ` (₹${num(calc.interest_left)} of it interest)` : ""}{calc.next_due ? ` · next ${calc.next_due} ₹${num(calc.next_amount)}` : ""} · at {calc.rate_used}%.</div>
+                <div style={MUTED}>Worked out as if every instalment was paid on its date. If the loan was part-prepaid or paid late, use the lender’s statement balance instead.</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 10, fontSize: 13 }}><input type="checkbox" checked={f.match_amount} onChange={set("match_amount")} />
         Find the EMI by its amount too{f.account_id ? " (from the account above)" : ""}{f.method === "fixed" ? " — the principal plus up to about a month and a half’s interest" : ""}</label>
       <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 10, fontSize: 13 }}><input type="checkbox" checked={f.is_active} onChange={set("is_active")} /> Running (untick when closed)</label>
