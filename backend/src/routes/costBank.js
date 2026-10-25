@@ -9,7 +9,7 @@ import { requirePermission } from "../lib/permissions.js";
 import { istMonth, istDay } from "../lib/istDate.js";
 import { MONTH_RE, monthBounds, addMonths, monthLabel } from "../lib/costDashboard.js";
 import {
-  BANK_HEADS, HEAD_KEYS, TREATMENTS, dedupeKey, autoSort, recomputeLoans, loansSummary, keywordHit,
+  BANK_HEADS, HEAD_KEYS, TREATMENTS, dedupeKey, autoSort, recomputeLoans, loansSummary, keywordHit, loansInsight,
   GST_RATES, headGst, gstSplit, ensureBankGst,
 } from "../lib/bankBook.js";
 import {
@@ -424,7 +424,16 @@ function cleanLoan(b) {
   if (!ISO.test(b.opening_date || "")) return { error: "The date that balance is on." };
   const emi = b.emi === "" || b.emi == null ? null : Number(b.emi);
   if (emi != null && !(emi > 0)) return { error: "EMI: the monthly amount, or leave it blank." };
+  // Round 239 — EMI loan, or fixed principal + interest (KFC).
+  const method = b.method === "fixed" ? "fixed" : "emi";
+  const prin = b.principal_amt === "" || b.principal_amt == null ? null : Number(b.principal_amt);
+  if (method === "fixed" && !(prin > 0)) return { error: "Fixed principal: the principal repaid each month (e.g. 1,97,000)." };
   return { name, rate, out: r2(out), date: b.opening_date, emi: emi == null ? null : r2(emi),
+    method, principal_amt: method === "fixed" ? r2(prin) : null, interest_basis: b.interest_basis === "month" ? "month" : "days",
+    match_amount: b.match_amount !== false,
+    loan_amount: b.loan_amount === "" || b.loan_amount == null || !(Number(b.loan_amount) > 0) ? null : r2(b.loan_amount),
+    loan_no: String(b.loan_no || "").trim().slice(0, 40) || null, asset: String(b.asset || "").trim().slice(0, 100) || null,
+    end_date: ISO.test(b.end_date || "") ? b.end_date : null,
     lender: String(b.lender || "").trim().slice(0, 80) || null, kind: ["term", "vehicle", "other"].includes(b.kind) ? b.kind : "term",
     account_id: Number(b.account_id) || null, match_text: String(b.match_text || "").replace(/\s+/g, " ").trim().toUpperCase().slice(0, 80) || null,
     is_active: b.is_active !== false, notes: String(b.notes || "").trim().slice(0, 300) || null };
@@ -434,13 +443,22 @@ async function afterLoanChange() {
   const { rows } = await query(`SELECT id FROM cost_bank_lines WHERE NOT manual AND treatment IN ('todo', 'loan')`);
   if (rows.length) await autoSort({ ids: rows.map((r) => r.id) });
 }
+// Round 239 — the Loans page.
+router.get("/loans", VIEW, async (_req, res) => {
+  const d = await loansInsight(istDay());
+  const { rows: accs } = await query(`SELECT id, bank, number FROM cost_bank_accounts ORDER BY is_active DESC, id`);
+  res.json({ ...d, accounts: accs.map((a) => ({ id: a.id, name: accLabel(a) })) });
+});
+
 router.post("/loans", EDIT, async (req, res) => {
   const l = cleanLoan(req.body);
   if (l.error) return bad(res, l.error);
   const { rows } = await query(
-    `INSERT INTO cost_bank_loans (name, lender, kind, account_id, match_text, rate_pct, emi, opening_outstanding, opening_date, is_active, notes, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-    [l.name, l.lender, l.kind, l.account_id, l.match_text, l.rate, l.emi, l.out, l.date, l.is_active, l.notes, req.user.id]);
+    `INSERT INTO cost_bank_loans (name, lender, kind, account_id, match_text, rate_pct, emi, opening_outstanding, opening_date, is_active, notes, created_by,
+                                  method, principal_amt, interest_basis, match_amount, loan_amount, loan_no, asset, end_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+    [l.name, l.lender, l.kind, l.account_id, l.match_text, l.rate, l.emi, l.out, l.date, l.is_active, l.notes, req.user.id,
+      l.method, l.principal_amt, l.interest_basis, l.match_amount, l.loan_amount, l.loan_no, l.asset, l.end_date]);
   await afterLoanChange();
   res.json({ id: rows[0].id });
 });
@@ -449,8 +467,10 @@ router.put("/loans/:id(\\d+)", EDIT, async (req, res) => {
   if (l.error) return bad(res, l.error);
   await query(
     `UPDATE cost_bank_loans SET name=$2, lender=$3, kind=$4, account_id=$5, match_text=$6, rate_pct=$7, emi=$8, opening_outstanding=$9,
-            opening_date=$10, is_active=$11, notes=$12 WHERE id = $1`,
-    [req.params.id, l.name, l.lender, l.kind, l.account_id, l.match_text, l.rate, l.emi, l.out, l.date, l.is_active, l.notes]);
+            opening_date=$10, is_active=$11, notes=$12, method=$13, principal_amt=$14, interest_basis=$15, match_amount=$16,
+            loan_amount=$17, loan_no=$18, asset=$19, end_date=$20 WHERE id = $1`,
+    [req.params.id, l.name, l.lender, l.kind, l.account_id, l.match_text, l.rate, l.emi, l.out, l.date, l.is_active, l.notes,
+      l.method, l.principal_amt, l.interest_basis, l.match_amount, l.loan_amount, l.loan_no, l.asset, l.end_date]);
   await afterLoanChange();
   res.json({ ok: true });
 });

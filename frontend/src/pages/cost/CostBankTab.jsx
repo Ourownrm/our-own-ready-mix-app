@@ -255,7 +255,11 @@ export default function CostBankTab({ month, setMonth }) {
         </div>
       </div>
 
-      <Loans d={d} canEdit={canEdit} onEdit={(l) => setModal({ loan: l })} />
+      {/* Round 239 — loans have their own page (Cost → Loans). */}
+      <div style={{ ...panel("1 1 100%"), display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+        <div><h2 style={H2}>Loans</h2><div style={SUB}>{d.loans.filter((l) => l.is_active).length} running · EMIs found on these statements are split into interest and principal there.</div></div>
+        <a href="/cost?tab=loans" className="btn-link">Open Cost → Loans ›</a>
+      </div>
       <Rules d={d} canEdit={canEdit} reload={reload} onAdd={() => setModal("rule")} />
       <Uploads d={d} canEdit={canEdit} reload={reload} setMsg={setMsg} />
 
@@ -623,47 +627,12 @@ function ManualSwitch({ d, reload }) {
 }
 
 // --------------------------------------------------------------- loans ---
-function Loans({ d, canEdit, onEdit }) {
-  const list = d.loans;
-  const tot = (k) => list.reduce((t, l) => t + (l.month?.[k] || 0), 0);
-  return (
-    <div style={panel("1 1 100%")}>
-      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-        <h2 style={H2}>Loans — EMI split into interest and principal</h2>
-        {canEdit && <button type="button" onClick={() => onEdit({})}>Add a loan</button>}
-      </div>
-      <div style={SUB}>Set each loan up once. Every EMI: interest = balance outstanding × rate ÷ 12 → Finance cost; principal = EMI − interest → the loan comes down. The Balance Sheet’s “Term &amp; vehicle loans” is then worked out from here.</div>
-      <div style={{ overflowX: "auto", marginTop: 10 }}>
-        <table style={{ minWidth: 980 }}>
-          <thead><tr><th>Loan</th><th>EMI found by</th><th style={R}>Rate</th><th style={R}>EMI ₹</th><th style={R}>Interest ₹ (month)</th><th style={R}>Principal ₹ (month)</th><th style={R}>Outstanding ₹ on {fmtDay(d.day_end)}</th><th style={R}>EMIs left</th>{canEdit && <th />}</tr></thead>
-          <tbody>
-            {list.map((l) => (
-              <tr key={l.id} style={{ opacity: l.is_active ? 1 : 0.6 }}>
-                <td style={{ whiteSpace: "normal", fontWeight: 600 }}>{l.name}<div style={{ ...MUTED, fontWeight: 400 }}>{[l.lender, `${num(l.opening_outstanding)} on ${fmtDay(l.opening_date)}`, l.is_active ? null : "closed"].filter(Boolean).join(" · ")}</div></td>
-                <td style={{ fontSize: 12, whiteSpace: "normal" }}>{l.match_text ? `“${l.match_text}”` : "—"}{l.account ? <div style={MUTED}>{l.account}</div> : null}</td>
-                <td style={R}>{num(l.rate_pct, 2)}%</td>
-                <td style={R}>{l.emi ? num(l.emi) : "—"}</td>
-                <td style={{ ...R, color: "var(--alert-red)", fontWeight: 600 }}>{l.month ? num(l.month.interest) : "—"}</td>
-                <td style={R}>{l.month ? num(l.month.principal) : "—"}</td>
-                <td style={{ ...R, fontWeight: 700 }}>{l.outstanding == null ? "—" : num(l.outstanding)}</td>
-                <td style={R}>{l.emis_left ?? "—"}</td>
-                {canEdit && <td><button type="button" onClick={() => onEdit(l)} style={{ fontSize: 12, padding: "4px 10px", minHeight: 32 }}>Edit</button></td>}
-              </tr>
-            ))}
-            {!list.length && <tr><td colSpan={9} style={{ color: "var(--slate)" }}>No loans set up. Add each term and vehicle loan once — then their EMIs on the statements are split automatically.</td></tr>}
-          </tbody>
-          {list.length > 0 && <tfoot><tr><td colSpan={4}>This month</td><td style={R}>{num(tot("interest"))}</td><td style={R}>{num(tot("principal"))}</td><td style={R}>{num(list.reduce((t, l) => t + (l.outstanding || 0), 0))}</td><td />{canEdit && <td />}</tr></tfoot>}
-        </table>
-      </div>
-      <div style={{ ...MUTED, marginTop: 8 }}>When the bank changes the rate, edit the loan; when it sends the interest certificate, type the interest on that EMI line — the later EMIs are worked out again from it. Cash-credit interest is a normal line: give it the head Finance cost (or tick “always”).</div>
-    </div>
-  );
-}
-
-function LoanModal({ d, loan, onClose, onDone }) {
+export function LoanModal({ d, loan, onClose, onDone }) {
   const [f, setF] = useState({ name: loan.name || "", lender: loan.lender || "", kind: loan.kind || "term", account_id: loan.account_id || "",
     match_text: loan.match_text || "", rate_pct: loan.rate_pct ?? "", emi: loan.emi ?? "", opening_outstanding: loan.opening_outstanding ?? "",
-    opening_date: loan.opening_date || "", is_active: loan.is_active !== false, notes: loan.notes || "" });
+    opening_date: loan.opening_date || "", is_active: loan.is_active !== false, notes: loan.notes || "",
+    method: loan.method || "emi", principal_amt: loan.principal_amt ?? "", interest_basis: loan.interest_basis || "days", match_amount: loan.match_amount !== false,
+    loan_amount: loan.loan_amount ?? "", loan_no: loan.loan_no || "", asset: loan.asset || "", end_date: loan.end_date || "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
@@ -678,15 +647,30 @@ function LoanModal({ d, loan, onClose, onDone }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
         {F({ label: "Name", children: <input value={f.name} onChange={set("name")} placeholder="Term loan — plant machinery" /> })}
         {F({ label: "Bank / lender", children: <input value={f.lender} onChange={set("lender")} placeholder="HDFC Bank" /> })}
+        {F({ label: "Loan no.", children: <input value={f.loan_no} onChange={set("loan_no")} placeholder="as on the loan statement" /> })}
+        {F({ label: "Vehicle / asset", children: <input value={f.asset} onChange={set("asset")} placeholder="e.g. KL60U8257 transit mixer" /> })}
+        {F({ label: "Loan amount ₹ (sanctioned)", children: <input type="number" step="0.01" value={f.loan_amount} onChange={set("loan_amount")} /> })}
+        {F({ label: "Last instalment due", children: <input type="date" value={f.end_date} onChange={set("end_date")} /> })}
         {F({ label: "Kind", children: <select value={f.kind} onChange={set("kind")}><option value="term">Term loan</option><option value="vehicle">Vehicle loan</option><option value="other">Other</option></select> })}
         {F({ label: "EMI paid from", children: <select value={f.account_id} onChange={set("account_id")}><option value="">—</option>{d.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select> })}
         {F({ label: "Text in the EMI narration", children: <input value={f.match_text} onChange={(e) => setF({ ...f, match_text: e.target.value.toUpperCase() })} placeholder="e.g. TL 84519023 (the loan account no.)" /> })}
+        {F({ label: "How it is repaid", children: <select value={f.method} onChange={set("method")}>
+          <option value="emi">EMI — the same amount every month</option>
+          <option value="fixed">Fixed principal + that month’s interest (e.g. KFC)</option></select> })}
         {F({ label: "Interest rate, % a year", children: <input type="number" step="0.01" value={f.rate_pct} onChange={set("rate_pct")} placeholder="9.25" /> })}
-        {F({ label: "EMI ₹", children: <input type="number" step="0.01" value={f.emi} onChange={set("emi")} /> })}
+        {f.method === "fixed"
+          ? F({ label: "Principal repaid each month ₹", children: <input type="number" step="0.01" value={f.principal_amt} onChange={set("principal_amt")} placeholder="1,97,000" /> })
+          : F({ label: "EMI ₹", children: <input type="number" step="0.01" value={f.emi} onChange={set("emi")} /> })}
+        {f.method === "emi" && F({ label: "Interest worked out", children: <select value={f.interest_basis} onChange={set("interest_basis")}>
+          <option value="days">By days — rate × days ÷ 365 (as banks do)</option>
+          <option value="month">Rate ÷ 12, the same every month</option></select> })}
         {F({ label: "Balance outstanding ₹", children: <input type="number" step="0.01" value={f.opening_outstanding} onChange={set("opening_outstanding")} /> })}
         {F({ label: "…on this date", children: <input type="date" value={f.opening_date} onChange={set("opening_date")} /> })}
       </div>
-      <div style={{ ...MUTED, marginTop: 8 }}>Take the balance from the loan statement, on a date before the first EMI you will upload. EMIs after that date are split from it.</div>
+      <div style={{ ...MUTED, marginTop: 8 }}>Take the balance (principal outstanding) from the loan statement, on a date before the first EMI you will upload — the day before your first bank statement starts. EMIs after that date are split from it.
+        {f.method === "fixed" ? " Each month the fixed principal reduces the loan and the rest of what was paid is interest — exact, whatever rebate or subsidy the lender gave." : " Interest is worked out on the balance outstanding; type the lender’s figure on an EMI line to use it instead."}</div>
+      <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 10, fontSize: 13 }}><input type="checkbox" checked={f.match_amount} onChange={set("match_amount")} />
+        Find the EMI by its amount too{f.account_id ? " (from the account above)" : ""}{f.method === "fixed" ? " — the principal plus up to about a month and a half’s interest" : ""}</label>
       <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 10, fontSize: 13 }}><input type="checkbox" checked={f.is_active} onChange={set("is_active")} /> Running (untick when closed)</label>
       {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 8 }}>{err}</div>}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>

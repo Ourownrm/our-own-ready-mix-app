@@ -258,15 +258,25 @@ async function sortContext(lines) {
     appRecords(shiftDay(days[0], -16), shiftDay(days[days.length - 1], 16)),
     query(`SELECT match_kind, match_id, id FROM cost_bank_lines WHERE match_kind IS NOT NULL`),
     query(`SELECT * FROM cost_bank_rules ORDER BY length(keyword) DESC, id`),
-    query(`SELECT id, name, match_text, account_id FROM cost_bank_loans WHERE is_active AND COALESCE(match_text, '') <> ''`),
+    query(`SELECT id, name, match_text, account_id, emi, rate_pct, opening_outstanding, opening_date::text AS opening_date,
+                  COALESCE(method, 'emi') AS method, principal_amt, COALESCE(match_amount, true) AS match_amount
+             FROM cost_bank_loans WHERE is_active ORDER BY id`)
+      .catch(() => query(`SELECT id, name, match_text, account_id FROM cost_bank_loans WHERE is_active ORDER BY id`)),
     query(`SELECT id, number FROM cost_bank_accounts`),
     query(`SELECT bank_accounts FROM quotation_settings WHERE id = 1`).catch(() => ({ rows: [] })),
   ]);
   const nums = new Set(accs.rows.map((a) => String(a.number).replace(/\D/g, "")).filter((x) => x.length >= 6));
   for (const b of qs.rows[0]?.bank_accounts || []) { const x = String(b.number || "").replace(/\D/g, ""); if (x.length >= 6) nums.add(x); }
   const taken = new Map(claimed.rows.map((c) => [`${c.match_kind}:${c.match_id}`, c.id]));
+  // Round 239 — which loans already have an EMI in which month (lines not
+  // being sorted now), so two loans with the same EMI get one each.
+  const ids = lines.map((l) => l.id);
+  const { rows: used } = await query(
+    `SELECT DISTINCT loan_id, to_char(txn_date, 'YYYY-MM') AS ym FROM cost_bank_lines
+      WHERE treatment = 'loan' AND loan_id IS NOT NULL AND NOT (id = ANY($1::int[]))`, [ids]).catch(() => ({ rows: [] }));
   return {
-    records, taken, rules: rules.rows, loans: loans.rows,
+    records, taken, rules: rules.rows, loans: loans.rows.filter((l) => l.match_text), loansAll: loans.rows,
+    loanMonths: new Set(used.map((u) => `${u.loan_id}:${u.ym}`)),
     own: { names: ["OUR OWN READY MIX", "OUR OWN READYMIX", "OUROWN READY MIX", "OUR OWN READY-MIX"], nums: [...nums] },
     accNums: accs.rows.map((a) => ({ id: a.id, num: String(a.number).replace(/\D/g, "") })),
   };
@@ -281,7 +291,10 @@ function suggest(line, ctx) {
   const own = { ...ctx.own, nums: ctx.own.nums.filter((x) => !ctx.accNums.some((a) => a.id === line.account_id && a.num === x)) };
   if (isOwnTransfer(narr, own)) return { treatment: "own", why: "our own account in the narration" };
   for (const l of ctx.loans) {
-    if (side === "debit" && keywordHit(narr, l.match_text)) return { treatment: "loan", loan_id: l.id, why: `EMI — ${l.name} (“${l.match_text}”)` };
+    if (side === "debit" && keywordHit(narr, l.match_text)) {
+      ctx.loanMonths?.add(`${l.id}:${String(line.txn_date).slice(0, 7)}`);
+      return { treatment: "loan", loan_id: l.id, why: `EMI — ${l.name} (“${l.match_text}”)` };
+    }
   }
   // An app record: same amount, closest date; within 3 days left out, 4–15 days to check.
   let best = null;
@@ -297,6 +310,27 @@ function suggest(line, ctx) {
     const near = best.d <= 3;
     return { treatment: near ? "omit" : "check", match_kind: best.r.kind, match_id: best.r.id,
       why: near ? `${best.r.label} · ${best.r.day}` : `Possible match: ${best.r.label} · ${best.r.day} (${best.d} days apart)` };
+  }
+  // Round 239 — a loan's EMI found by its amount (the same EMI; for a fixed-
+  // principal loan, the principal plus up to about a month and a half's
+  // interest), from the account it is paid from when that is set. Two loans
+  // with the same EMI: the one without an EMI yet that month.
+  if (side === "debit") {
+    const ym = String(line.txn_date).slice(0, 7);
+    const cands = (ctx.loansAll || []).filter((l) => {
+      if (l.match_amount === false || line.txn_date < (l.opening_date || "")) return false;
+      if (l.account_id && l.account_id !== line.account_id) return false;
+      if (l.method === "fixed" && n0(l.principal_amt) > 0) {
+        const maxInt = (n0(l.opening_outstanding) * n0(l.rate_pct)) / 1200 * 1.5 + 100;
+        return amount >= n0(l.principal_amt) - 1 && amount <= n0(l.principal_amt) + maxInt;
+      }
+      return n0(l.emi) > 0 && Math.abs(amount - n0(l.emi)) <= 1;
+    });
+    if (cands.length) {
+      const pick = cands.find((l) => !ctx.loanMonths.has(`${l.id}:${ym}`)) || cands[0];
+      ctx.loanMonths.add(`${pick.id}:${ym}`);
+      return { treatment: "loan", loan_id: pick.id, why: `EMI — ${pick.name} (by the amount${cands.length > 1 ? `; ${cands.length} loans have this amount` : ""})` };
+    }
   }
   for (const r of ctx.rules) {
     if (r.side !== "any" && r.side !== side) continue;
@@ -336,23 +370,76 @@ export async function autoSort({ ids = null, client = null } = {}) {
 }
 
 // --------------------------------------------------------------- loans ---
-// Every EMI: interest = balance outstanding × rate ÷ 12 (unless typed in from
-// the bank's certificate), principal = EMI − interest. A credit to the loan
-// (a fresh disbursement) adds to the balance.
+// Round 239 (owner, 25 Oct 2026 — the IndusInd, Shriram and KFC statements):
+// two ways a loan is repaid —
+//   emi    the same amount every month (IndusInd, Shriram). Interest on the
+//          balance outstanding for the DAYS since the same date last month
+//          (rate × days ÷ 365, as the lenders charge it — so February's is
+//          smaller), or rate ÷ 12 if the loan is set so; principal = EMI −
+//          interest.
+//   fixed  a fixed principal every month plus that month's interest (KFC):
+//          principal = the fixed instalment (spread over the month's debits
+//          if paid in two), interest = the rest of what was paid — exact,
+//          whatever rebate or subsidy the lender gave.
+// Interest typed on an EMI line (from the lender's statement) always wins.
+// A credit to the loan (a fresh disbursement) adds to the balance.
+export const ROUND239_SQL = `
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS method VARCHAR(8) NOT NULL DEFAULT 'emi';
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS principal_amt NUMERIC(14,2);
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS interest_basis VARCHAR(8) NOT NULL DEFAULT 'days';
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS match_amount BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS loan_amount NUMERIC(16,2);
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS loan_no VARCHAR(40);
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS asset VARCHAR(100);
+ALTER TABLE cost_bank_loans ADD COLUMN IF NOT EXISTS end_date DATE;
+`;
+export async function migrateRound239(pool, log) {
+  await pool.query(ROUND239_SQL);
+  await recomputeLoans({ query: (t, p) => pool.query(t, p) }).catch(() => {});
+  log?.push?.("Round 239: loans — fixed-principal loans, interest by days, EMI found by amount.");
+}
+const dayN = (ymd) => Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)) - 1, Number(ymd.slice(8, 10))) / 86400000;
+// Days from the same date last month to this date (28–31) — the lender's
+// interest period for a monthly instalment.
+function monthDays(ymd) {
+  const y = Number(ymd.slice(0, 4)), m = Number(ymd.slice(5, 7)), d = Number(ymd.slice(8, 10));
+  const pm = m === 1 ? 12 : m - 1, py = m === 1 ? y - 1 : y;
+  const pd = Math.min(d, new Date(Date.UTC(py, pm, 0)).getUTCDate());
+  return dayN(ymd) - Date.UTC(py, pm - 1, pd) / 86400000;
+}
+export function loanInterest(loan, out, ymd) {
+  const rate = n0(loan.rate_pct);
+  return loan.interest_basis === "month" ? r2((out * rate) / 1200) : r2((out * rate * monthDays(ymd)) / 36500);
+}
 export async function recomputeLoans(db = { query }) {
-  const { rows: loans } = await db.query(`SELECT id, rate_pct, opening_outstanding, opening_date::text AS opening_date FROM cost_bank_loans`);
+  const { rows: loans } = await db.query(
+    `SELECT id, rate_pct, opening_outstanding, opening_date::text AS opening_date,
+            COALESCE(method, 'emi') AS method, principal_amt, COALESCE(interest_basis, 'days') AS interest_basis FROM cost_bank_loans`)
+    .catch(() => db.query(`SELECT id, rate_pct, opening_outstanding, opening_date::text AS opening_date, 'emi' AS method, NULL AS principal_amt, 'month' AS interest_basis FROM cost_bank_loans`));
   for (const loan of loans) {
     const { rows } = await db.query(
       `SELECT id, txn_date::text AS d, debit, credit, interest, interest_fixed FROM cost_bank_lines
         WHERE loan_id = $1 AND treatment = 'loan' ORDER BY txn_date, seq, id`, [loan.id]);
     let out = n0(loan.opening_outstanding);
+    const prinUsed = new Map();   // fixed: principal already taken in each month
     for (const l of rows) {
       let interest, principal;
       if (l.d < loan.opening_date) { interest = 0; principal = 0; }
       else if (n0(l.debit) > 0) {
-        interest = l.interest_fixed && l.interest != null ? n0(l.interest) : r2((out * n0(loan.rate_pct)) / 1200);
-        interest = Math.min(interest, n0(l.debit));
-        principal = r2(n0(l.debit) - interest);
+        const debit = n0(l.debit);
+        if (l.interest_fixed && l.interest != null) {
+          interest = Math.min(n0(l.interest), debit);
+          principal = r2(debit - interest);
+        } else if (loan.method === "fixed" && n0(loan.principal_amt) > 0) {
+          const ym = l.d.slice(0, 7);
+          const left = Math.max(0, Math.min(n0(loan.principal_amt) - (prinUsed.get(ym) || 0), out));
+          principal = r2(Math.min(debit, left));
+          prinUsed.set(ym, (prinUsed.get(ym) || 0) + principal);
+          interest = r2(debit - principal);
+        } else {
+          interest = Math.min(loanInterest(loan, out, l.d), debit);
+          principal = r2(debit - interest);
+        }
         out = r2(out - principal);
       } else { interest = 0; principal = r2(-n0(l.credit)); out = r2(out + n0(l.credit)); }
       await db.query(`UPDATE cost_bank_lines SET interest = $2, principal = $3 WHERE id = $1`, [l.id, r2(interest), r2(principal)]);
@@ -382,7 +469,10 @@ export async function loansSummary(day, ym = null) {
     const left = known && n0(l.emi) > 0 && n0(l.rate_pct) >= 0 ? emisLeft(outstanding, n0(l.rate_pct), n0(l.emi)) : null;
     return { id: l.id, name: l.name, lender: l.lender, kind: l.kind, account_id: l.account_id, account: l.account_bank ? `${l.account_bank} ••${String(l.account_number).slice(-4)}` : null,
       match_text: l.match_text, rate_pct: n0(l.rate_pct), emi: l.emi == null ? null : n0(l.emi), opening_outstanding: n0(l.opening_outstanding),
-      opening_date: l.opening_date, is_active: l.is_active, notes: l.notes, outstanding, emis: l.emis, last_emi: l.last_emi, emis_left: left,
+      opening_date: l.opening_date, is_active: l.is_active, notes: l.notes, outstanding, emis: l.emis, last_emi: l.last_emi,
+      emis_left: (l.method === "fixed" && n0(l.principal_amt) > 0) ? (known ? Math.ceil(Math.max(0, outstanding) / n0(l.principal_amt)) : null) : left,
+      method: l.method || "emi", principal_amt: l.principal_amt == null ? null : n0(l.principal_amt),
+      interest_basis: l.interest_basis || "days", match_amount: l.match_amount !== false,
       month: mm ? { emi: r2(mm.emi), interest: r2(mm.interest), principal: r2(mm.principal) } : null };
   });
 }
@@ -443,3 +533,103 @@ export async function bankBalancesOn(day) {
 }
 
 export { money, shiftDay };
+
+
+// ------------------------------------------------- Round 239: Loans page ---
+// Owner, 25 Oct 2026: "better to move loans into a new page and provide more
+// insights about each loan". For every loan: the instalments found on the
+// bank statements with the balance after each, what is left, the months with
+// no instalment found, and the rest of the loan worked forward (each month's
+// interest and principal until it closes, at today's rate and EMI).
+const ymOf = (d) => d.slice(0, 7);
+function addMonthsYmd(ymd, n) {
+  const y = Number(ymd.slice(0, 4)), m = Number(ymd.slice(5, 7)) - 1 + n, d = Number(ymd.slice(8, 10));
+  const yy = y + Math.floor(m / 12), mm = ((m % 12) + 12) % 12;
+  const last = new Date(Date.UTC(yy, mm + 1, 0)).getUTCDate();
+  return `${yy}-${String(mm + 1).padStart(2, "0")}-${String(Math.min(d, last)).padStart(2, "0")}`;
+}
+function fyStartOf(ymd) {
+  const y = Number(ymd.slice(0, 4)), m = Number(ymd.slice(5, 7));
+  return `${m >= 4 ? y : y - 1}-04-01`;
+}
+export async function loansInsight(today) {
+  const list = await loansSummary(today, ymOf(today));
+  const { rows: raw } = await query(`SELECT id, loan_amount, loan_no, asset, end_date::text AS end_date FROM cost_bank_loans`).catch(() => ({ rows: [] }));
+  const extra = new Map(raw.map((r) => [r.id, r]));
+  const { rows: lines } = await query(
+    `SELECT b.id, b.loan_id, b.txn_date::text AS d, b.debit, b.credit, b.interest, b.principal, b.interest_fixed, b.narration, a.bank, a.number
+       FROM cost_bank_lines b LEFT JOIN cost_bank_accounts a ON a.id = b.account_id
+      WHERE b.treatment = 'loan' AND b.loan_id IS NOT NULL ORDER BY b.txn_date, b.seq, b.id`);
+  const fy = fyStartOf(today);
+  const loans = list.map((l) => {
+    const x = extra.get(l.id) || {};
+    const mine = lines.filter((b) => b.loan_id === l.id);
+    let bal = l.opening_outstanding;
+    const history = mine.map((b) => {
+      const before = b.d < l.opening_date;
+      if (!before) bal = r2(bal - n0(b.principal));
+      return { id: b.id, date: b.d, paid: r2(n0(b.debit) - n0(b.credit)), interest: before ? null : r2(b.interest), principal: before ? null : r2(b.principal),
+        balance: before ? null : bal, typed: b.interest_fixed, before_start: before, account: b.bank ? `${b.bank} ••${String(b.number).slice(-4)}` : null };
+    });
+    const counted = history.filter((h) => !h.before_start);
+    const sum = (arr, k) => r2(arr.reduce((t, h) => t + n0(h[k]), 0));
+    const inFy = counted.filter((h) => h.date >= fy);
+    // Months from the start to last month (and this month once its due day
+    // has passed) with no instalment found on the uploaded statements.
+    const dueDay = l.last_emi ? Number(l.last_emi.slice(8, 10)) : null;
+    const missing = [];
+    if (l.is_active && counted.length) {
+      const seen = new Set(counted.map((h) => ymOf(h.date)));
+      let m = addMonthsYmd(`${ymOf(l.opening_date)}-01`, 1);
+      const limit = dueDay && Number(today.slice(8, 10)) > dueDay + 3 ? today : addMonthsYmd(`${ymOf(today)}-01`, -1);
+      for (let i = 0; i < 240 && ymOf(m) <= ymOf(limit); i++) { if (!seen.has(ymOf(m))) missing.push(ymOf(m)); m = addMonthsYmd(m, 1); }
+    }
+    // The rest of the loan, worked forward from today's balance.
+    const projection = [];
+    let out = l.outstanding ?? l.opening_outstanding;
+    let next = l.last_emi ? addMonthsYmd(l.last_emi, 1) : addMonthsYmd(l.opening_date, 1);
+    while (next <= today) next = addMonthsYmd(next, 1);
+    const fixedP = l.method === "fixed" && n0(l.principal_amt) > 0;
+    const emi = n0(l.emi);
+    // A fixed-principal loan's interest going forward: at the rate it has
+    // actually cost lately (after any rebate / subsidy), from the last
+    // instalment found; else the rate set on the loan.
+    const lastH = [...counted].reverse().find((h) => h.interest != null && h.balance != null);
+    const effRate = fixedP && lastH && lastH.balance + lastH.principal > 0
+      ? r2((lastH.interest * 1200) / (lastH.balance + lastH.principal)) : null;
+    const rateFwd = effRate != null && effRate > 0 ? { ...l, rate_pct: effRate, interest_basis: "month" } : l;
+    let stalled = false;
+    for (let i = 0; i < 360 && out > 0.5 && l.is_active; i++) {
+      const interest = loanInterest(rateFwd, out, next);
+      let principal = fixedP ? Math.min(n0(l.principal_amt), out) : Math.min(emi - interest, out);
+      if (!(principal > 0)) { stalled = true; break; }
+      out = r2(out - principal);
+      projection.push({ date: next, pay: r2(principal + interest), interest: r2(interest), principal: r2(principal), balance: out });
+      next = addMonthsYmd(next, 1);
+    }
+    const nextDue = projection[0] ? projection[0].date : null;
+    return { ...l, loan_amount: x.loan_amount == null ? null : n0(x.loan_amount), loan_no: x.loan_no || null, asset: x.asset || null, end_date: x.end_date || null,
+      history, missing, projection, stalled: stalled || (!fixedP && !emi), effective_rate: effRate,
+      totals: { paid: sum(counted, "paid"), interest: sum(counted, "interest"), principal: sum(counted, "principal"),
+        fy_interest: sum(inFy, "interest"), fy_principal: sum(inFy, "principal"), fy_paid: sum(inFy, "paid") },
+      ahead: { instalments: projection.length, interest: sum(projection, "interest"), paid: sum(projection, "pay"),
+        closes: projection.length ? projection[projection.length - 1].date : null, next_due: nextDue, next_amount: projection[0] ? projection[0].pay : null },
+      repaid_pct: x.loan_amount && n0(x.loan_amount) > 0 && l.outstanding != null ? r2((1 - l.outstanding / n0(x.loan_amount)) * 100) : null };
+  });
+  const active = loans.filter((l) => l.is_active);
+  const out = active.reduce((t, l) => t + (l.outstanding || 0), 0);
+  const nextYearEnd = addMonthsYmd(today, 12);
+  return {
+    today, fy_start: fy, loans,
+    summary: {
+      count: active.length, outstanding: r2(out),
+      monthly: r2(active.reduce((t, l) => t + (l.ahead.next_amount || 0), 0)),
+      weighted_rate: out > 0 ? r2(active.reduce((t, l) => t + (l.outstanding || 0) * l.rate_pct, 0) / out) : null,
+      fy_interest: r2(loans.reduce((t, l) => t + l.totals.fy_interest, 0)), fy_principal: r2(loans.reduce((t, l) => t + l.totals.fy_principal, 0)),
+      interest_ahead: r2(active.reduce((t, l) => t + l.ahead.interest, 0)),
+      next12_principal: r2(active.reduce((t, l) => t + l.projection.filter((p) => p.date <= nextYearEnd).reduce((s2, p) => s2 + p.principal, 0), 0)),
+      closing_12m: active.filter((l) => l.ahead.closes && l.ahead.closes <= nextYearEnd).map((l) => ({ name: l.name, closes: l.ahead.closes })),
+      missing: active.filter((l) => l.missing.length).map((l) => ({ name: l.name, months: l.missing })),
+    },
+  };
+}
