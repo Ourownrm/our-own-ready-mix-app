@@ -75,6 +75,8 @@ import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
 import Modules from "./pages/Modules.jsx";
 import SuperAdmin from "./pages/SuperAdmin.jsx";
 import { LockdownGate } from "./lib/Lockdown.jsx";
+import MyPmChecks from "./lib/MyPmChecks.jsx";
+import { TopBar } from "./lib/TopBar.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -307,6 +309,10 @@ export default function App() {
             <ProtectedRoute><MyAttendance /></ProtectedRoute>
           } />
           {/* Round 202 — attendance on the phone (face, location, registered phone). */}
+          {/* Round 243 — PM checks given to me (link from the push message). */}
+          <Route path="/my-pm" element={
+            <ProtectedRoute><><TopBar title="My PM checks" /><div style={{ maxWidth: 560, margin: "0 auto", padding: "0 16px 32px" }}><MyPmChecks showAll /></div></></ProtectedRoute>
+          } />
           <Route path="/mark-attendance" element={
             <ProtectedRoute><MarkAttendance /></ProtectedRoute>
           } />

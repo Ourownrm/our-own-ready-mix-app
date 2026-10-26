@@ -65,7 +65,7 @@ router.get("/fleet", requirePermission("reports.fuel-analysis", "view"), async (
            ROW_NUMBER() OVER (PARTITION BY sr.truck_id ORDER BY sr.odometer_reading ASC NULLS LAST) = 1 AS is_first_in_range
          FROM supply_requests sr
          LEFT JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
-         WHERE sr.request_type = 'fuel' AND sr.equipment_type = 'truck' AND sr.status = 'issued'
+         WHERE sr.request_type = 'fuel' AND COALESCE(sr.fuel_kind, 'diesel') = 'diesel' AND sr.equipment_type = 'truck' AND sr.status = 'issued'
            AND sr.truck_id IS NOT NULL
            AND sr.issued_at::date BETWEEN $1 AND $2
        ),
@@ -187,7 +187,7 @@ router.get("/truck/:id", requirePermission("reports.fuel-analysis", "view"), asy
              fs.name AS station_name, fs.is_plant
            FROM supply_requests sr
            LEFT JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
-           WHERE sr.request_type = 'fuel' AND sr.equipment_type = 'truck' AND sr.status = 'issued'
+           WHERE sr.request_type = 'fuel' AND COALESCE(sr.fuel_kind, 'diesel') = 'diesel' AND sr.equipment_type = 'truck' AND sr.status = 'issued'
              AND sr.truck_id = $1 AND sr.odometer_reading IS NOT NULL
              AND sr.issued_at::date BETWEEN $2 AND $3
          )
@@ -300,7 +300,7 @@ router.get("/equipment", requirePermission("reports.fuel-analysis", "view"), asy
            ) = 1 AS is_first_in_range
          FROM supply_requests sr
          LEFT JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
-         WHERE sr.request_type = 'fuel' AND sr.status = 'issued'
+         WHERE sr.request_type = 'fuel' AND COALESCE(sr.fuel_kind, 'diesel') = 'diesel' AND sr.status = 'issued'
            AND sr.equipment_type != 'truck'
            AND COALESCE(sr.pump_id, sr.equipment_id) IS NOT NULL
            AND sr.issued_at::date BETWEEN $1 AND $2
@@ -417,7 +417,7 @@ router.get("/equipment/:kind/:id", requirePermission("reports.fuel-analysis", "v
            fs.name AS station_name, fs.is_plant
          FROM supply_requests sr
          LEFT JOIN fuel_stations fs ON fs.id = COALESCE(sr.approved_station_id, sr.fuel_station_id)
-         WHERE sr.request_type = 'fuel' AND sr.status = 'issued'
+         WHERE sr.request_type = 'fuel' AND COALESCE(sr.fuel_kind, 'diesel') = 'diesel' AND sr.status = 'issued'
            AND sr.hour_meter_reading IS NOT NULL
            AND sr.issued_at::date BETWEEN $2 AND $3
            AND (($4 = 'pump' AND sr.pump_id = $1) OR ($4 = 'equipment' AND sr.equipment_id = $1))

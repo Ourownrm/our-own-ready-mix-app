@@ -325,7 +325,7 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
   useEffect(() => { apiRequest("/contract-labour/contractors").then(setContractors).catch(() => {}); }, []);
   // Round 233 — work locations, for the centre of a working area.
   const [workLocs, setWorkLocs] = useState([]);
-  useEffect(() => { apiRequest("/hr/work-locations").then((r) => setWorkLocs(r.filter((l) => l.is_active))).catch(() => {}); }, []);
+  useEffect(() => { apiRequest("/hr/work-locations").then(setWorkLocs).catch(() => {}); }, []); // Round 243: switched-off ones too
   const [f, setF] = useState(() => {
     const base = { ...EMPTY };
     if (initial) for (const k of Object.keys(EMPTY)) if (initial[k] !== undefined && initial[k] !== null) base[k] = typeof EMPTY[k] === "boolean" ? !!initial[k] : String(initial[k]);
@@ -454,7 +454,7 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
             <Field label="Centre of the area" hint="A work location (HR settings). Blank = the first one.">
               <select value={f.work_area_location_id ?? ""} onChange={set("work_area_location_id")}>
                 <option value="">— first work location —</option>
-                {workLocs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                {workLocs.map((l) => <option key={l.id} value={l.id}>{l.name}{l.is_active ? "" : " (off)"}</option>)}
               </select>
             </Field>
           </>

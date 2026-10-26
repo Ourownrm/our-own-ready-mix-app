@@ -9,6 +9,7 @@ import { usePermissions } from "./PermissionContext.jsx";
 import { visibleHub } from "./adminScreens.js";
 import { isAdminLevel } from "./roles.js";
 import { apiRequest } from "./api.js";
+import { useLocked } from "./lockContext.js";
 
 // Round 138, item 2 — a live clock so anyone using the app can see the current
 // date/time at a glance without switching away to check their phone. Ticks
@@ -57,6 +58,7 @@ export function TopBar({ title }) {
     && permsReady && visibleHub(can).length > 0;
   const [notifStatus, setNotifStatus] = useState(null);
   const now = useClock();
+  const locked = useLocked(); // Round 243 — locked: only the title in the header
 
   // Round 198 — "My attendance" for anyone whose login is linked to an HR
   // employee record. Round 201: only a YES is remembered for the session. A
@@ -129,7 +131,7 @@ export function TopBar({ title }) {
         <div className="topbar-title">
           Our Own Ready Mix <span className="topbar-page">&middot; {title}</span>
         </div>
-        <div className="topbar-nav">
+        {!locked && <div className="topbar-nav">
           {!onOwnDashboard && myHome && (
             <Link to={myHome} className="topbar-link">&larr; Dashboard</Link>
           )}
@@ -156,7 +158,7 @@ export function TopBar({ title }) {
               AND this person has been granted an account, so listing the roles
               here only decides who it is OFFERED to. */}
           {user?.role && SOLITAIRE_ROLES.includes(user.role) && <SolitaireButton />}
-        </div>
+        </div>}
       </div>
 
       <div className="app-footer">

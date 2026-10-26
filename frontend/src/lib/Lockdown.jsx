@@ -4,11 +4,18 @@
 // server refuses everything else on its own (backend lib/lockdown.js) — this
 // screen only says so plainly instead of showing errors everywhere.
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
+import { LockContext } from "./lockContext.js";
+import MarkAttendance from "../pages/MarkAttendance.jsx";
 import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 
-const OPEN_WHILE_LOCKED = ["/login", "/mark-attendance", "/my-attendance", "/services", "/rmc-vs-sitemix", "/technical-assistance", "/inquiry"];
+// Round 243 (owner, 26 Oct 2026): "when the app is locked, no need to show
+// the message — directly show the attendance screen, nothing else". Signed in
+// → Mark attendance, whatever the address (a Super Admin also gets the unlock
+// form under it). Not signed in → the sign-in page. The public website pages
+// stay as they are.
+const PUBLIC_WHILE_LOCKED = ["/services", "/rmc-vs-sitemix", "/technical-assistance", "/inquiry"];
 const fmtWhen = (t) => (t ? new Date(t).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "");
 
 export function LockdownGate({ children }) {
@@ -27,39 +34,15 @@ export function LockdownGate({ children }) {
     window.addEventListener("oorm-signed-out", onOut);
     return () => { clearInterval(t); window.removeEventListener("oorm-lockdown", onLock); window.removeEventListener("oorm-signed-out", onOut); };
   }, [refresh]);
-  if (!lock.locked || OPEN_WHILE_LOCKED.includes(pathname)) return children;
-  return <LockedScreen since={lock.since} user={user} onChange={refresh} />;
-}
-
-function LockedScreen({ since, user, onChange }) {
-  const { logout } = useAuth();
+  if (!lock.locked || PUBLIC_WHILE_LOCKED.includes(pathname)) return children;
+  if (!user) return pathname === "/login" ? children : <Navigate to="/login" replace />;
   return (
-    <div style={{ minHeight: "100vh", background: "var(--concrete, #F4F2EE)", padding: "40px 16px" }}>
-      <div style={{ maxWidth: 460, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-        <div className="card" style={{ borderTop: "4px solid var(--alert-red)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2" fill="var(--alert-red)" /><path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none" stroke="var(--alert-red)" strokeWidth="2" /></svg>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>The app is locked</div>
-          </div>
-          <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>
-            The Super Admin has locked the app{since ? ` since ${fmtWhen(since)}` : ""}. Nothing can be opened until it is unlocked.
-            {user ? " You can still mark your attendance." : " Sign in to mark your attendance."}
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
-            {user ? (
-              <>
-                <Link to="/mark-attendance" className="btn-primary" style={{ padding: "10px 14px", borderRadius: 8, textDecoration: "none", fontSize: 13.5, fontWeight: 600 }}>Mark attendance</Link>
-                <Link to="/my-attendance" style={{ padding: "10px 14px", borderRadius: 8, border: "1px solid var(--border-strong)", textDecoration: "none", fontSize: 13.5, color: "var(--charcoal)" }}>My attendance</Link>
-                <button type="button" onClick={logout} style={{ fontSize: 13 }}>Sign out</button>
-              </>
-            ) : (
-              <Link to="/login" className="btn-primary" style={{ padding: "10px 14px", borderRadius: 8, textDecoration: "none", fontSize: 13.5, fontWeight: 600 }}>Sign in</Link>
-            )}
-          </div>
-        </div>
-        {user?.role === "super_admin" && <UnlockPanel onDone={onChange} />}
-      </div>
-    </div>
+    <LockContext.Provider value={true}>
+      <MarkAttendance />
+      {user.role === "super_admin" && (
+        <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}><UnlockPanel onDone={refresh} /></div>
+      )}
+    </LockContext.Provider>
   );
 }
 

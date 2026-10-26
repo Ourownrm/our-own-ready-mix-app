@@ -16,6 +16,9 @@ export default function MntInspection({ go, params }) {
   const assetId = Number(params.get("asset")) || null;
   const [form, setForm] = useState(null);
   const [done, setDone] = useState(null);
+  // Round 243 — the due list grouped by vehicle or by period (owner, 26 Oct 2026).
+  const [groupBy, setGroupBy] = useState("vehicle");
+  const [only, setOnly] = useState("due");
   const act = useAction();
 
   if (!due.data || !sched.data) return <Loading error={due.error || sched.error} />;
@@ -145,27 +148,56 @@ export default function MntInspection({ go, params }) {
     );
   }
 
-  // The due list.
-  const shown = due.data.filter((d) => d.status !== "done");
+  // The due list — grouped by vehicle, or by how often (daily, weekly …).
+  const DUE = ["overdue", "due_soon", "never", "unknown"];
+  const shown = due.data.filter((d) => d.status !== "done" && (only === "all" || DUE.includes(d.status)));
+  const groups = groupDue(shown, groupBy);
   return (
     <>
       <section className="card" style={{ marginBottom: 16 }}>
-        <h2 style={H2}>Due list</h2>
-        <Table minWidth={680}>
-          <thead><tr><th>Equipment</th><th>Schedule</th><th>Left</th><th>Next</th><th>Status</th><th></th></tr></thead>
-          <tbody>
-            {shown.map((d) => (
-              <tr key={`${d.schedule_id}-${d.asset_id}`}>
-                <td><b>{d.asset_name}</b></td>
-                <td>{d.schedule_name}<div style={MUTED}>{d.trigger}</div></td>
-                <td>{d.left}</td>
-                <td>{d.next}</td>
-                <td><Badge map={PM_STATUS} value={d.status} /></td>
-                <td style={{ textAlign: "right" }}><button type="button" style={SMALL_BTN} onClick={() => go("inspection", { schedule: d.schedule_id, asset: d.asset_id })}>Start</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </Table>
+        <div style={{ ...ROW, justifyContent: "space-between", marginBottom: 8 }}>
+          <h2 style={{ ...H2, margin: 0 }}>Due list</h2>
+          <div style={ROW}>
+            <div role="tablist" aria-label="Group the due list" style={{ display: "flex", gap: 0 }}>
+              {[["vehicle", "By vehicle"], ["period", "By period"], ["none", "One list"]].map(([k, l], i) => (
+                <button key={k} type="button" role="tab" aria-selected={groupBy === k} onClick={() => setGroupBy(k)}
+                  style={{ ...SEG, borderRadius: i === 0 ? "8px 0 0 8px" : i === 2 ? "0 8px 8px 0" : 0, marginLeft: i ? -1 : 0,
+                    background: groupBy === k ? "var(--charcoal)" : "#fff", color: groupBy === k ? "#fff" : "var(--charcoal)" }}>{l}</button>
+              ))}
+            </div>
+            <select value={only} onChange={(e) => setOnly(e.target.value)} aria-label="Which to show" style={{ minHeight: 38 }}>
+              <option value="due">Due, overdue, not done yet</option>
+              <option value="all">Everything</option>
+            </select>
+          </div>
+        </div>
+        {!shown.length && <div style={MUTED}>Nothing due.</div>}
+        {groups.map((g) => (
+          <details key={g.key} open={groups.length <= 6 || g.overdue > 0} style={{ borderTop: "1px solid var(--border)", padding: "6px 0" }}>
+            <summary style={{ cursor: "pointer", padding: "6px 0", fontSize: 13.5 }}>
+              <b>{g.label}</b> <span style={MUTED}>· {g.rows.length} check{g.rows.length === 1 ? "" : "s"}</span>
+              {g.overdue > 0 && <b style={{ color: "var(--alert-red)", fontSize: 12.5 }}> · {g.overdue} overdue</b>}
+              {g.soon > 0 && <b style={{ color: "var(--amber)", fontSize: 12.5 }}> · {g.soon} due soon</b>}
+            </summary>
+            <Table minWidth={680}>
+              <thead><tr>{groupBy !== "vehicle" && <th>Equipment</th>}<th>Schedule</th><th>Left</th><th>Next</th><th>Status</th><th>Given to</th><th></th></tr></thead>
+              <tbody>
+                {g.rows.map((d) => (
+                  <tr key={`${d.schedule_id}-${d.asset_id}`}>
+                    {groupBy !== "vehicle" && <td><b>{d.asset_name}</b></td>}
+                    <td>{d.schedule_name}<div style={MUTED}>{d.trigger}</div></td>
+                    <td>{d.left}</td>
+                    <td>{d.next}</td>
+                    <td><Badge map={PM_STATUS} value={d.status} /></td>
+                    <td style={{ fontSize: 12.5 }}>{d.assignee_name || <span style={MUTED}>—</span>}
+                      {d.last_confirmation && <div style={{ fontSize: 11.5, color: d.last_confirmation.done ? "var(--signal-green)" : "var(--alert-red)" }}>{d.last_confirmation.done ? "done" : "not done"} · {fmtWhen(d.last_confirmation.at)}</div>}</td>
+                    <td style={{ textAlign: "right" }}><button type="button" style={SMALL_BTN} onClick={() => go("inspection", { schedule: d.schedule_id, asset: d.asset_id })}>Start</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </details>
+        ))}
       </section>
       <section className="card">
         <h2 style={H2}>Recent inspections</h2>
@@ -209,4 +241,35 @@ export function PrintInspection({ id, label = "Print" }) {
       <button type="button" style={SMALL_BTN} disabled={busy} onClick={go}>{busy ? "Preparing…" : label}</button>
     </>
   );
+}
+
+// Round 243 — how often a schedule comes round, for "By period".
+const PERIODS = [["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"], ["longer", "Every few months or more"], ["km", "By km"], ["hours", "By running hours"], ["m3", "By m³ carried"], ["once", "Once"]];
+function periodOf(d) {
+  const e = Number(d.every) || 1;
+  switch (d.trigger_type) {
+    case "day": return e <= 1 ? "daily" : e <= 7 ? "weekly" : e <= 31 ? "monthly" : "longer";
+    case "week": return e <= 1 ? "weekly" : e <= 4 ? "monthly" : "longer";
+    case "month": return e <= 1 ? "monthly" : "longer";
+    case "km": return "km";
+    case "hours": return "hours";
+    case "m3": return "m3";
+    case "once_km": return "once";
+    default: return "longer";
+  }
+}
+function groupDue(rows, by) {
+  const RANK = { overdue: 0, due_soon: 1, never: 2, unknown: 3, ok: 4, done: 5 };
+  const sorted = [...rows].sort((a, b) => RANK[a.status] - RANK[b.status] || (a.sort ?? 0) - (b.sort ?? 0));
+  const map = new Map();
+  for (const d of sorted) {
+    const key = by === "vehicle" ? `a${d.asset_id}` : by === "period" ? periodOf(d) : "all";
+    if (!map.has(key)) map.set(key, { key, label: by === "vehicle" ? d.asset_name : by === "period" ? PERIODS.find((p) => p[0] === key)[1] : "All checks", rows: [] });
+    map.get(key).rows.push(d);
+  }
+  const out = [...map.values()];
+  for (const g of out) { g.overdue = g.rows.filter((r) => r.status === "overdue").length; g.soon = g.rows.filter((r) => r.status === "due_soon").length; }
+  if (by === "period") out.sort((a, b) => PERIODS.findIndex((p) => p[0] === a.key) - PERIODS.findIndex((p) => p[0] === b.key));
+  else if (by === "vehicle") out.sort((a, b) => (b.overdue - a.overdue) || (b.soon - a.soon) || a.label.localeCompare(b.label, "en", { numeric: true }));
+  return out;
 }

@@ -88,6 +88,7 @@ const ISSUED_FUEL_CTE = `
       COALESCE(sr.odometer_reading, sr.hour_meter_reading) AS reading
     FROM supply_requests sr
     WHERE sr.request_type = 'fuel' AND sr.status = 'issued'
+      AND COALESCE(sr.fuel_kind, 'diesel') = 'diesel'   -- Round 243: petrol is not diesel
   )`;
 
 const UNIT_JOINS = `
@@ -643,7 +644,7 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
         : null,
       recent: recent.rows.map(ledgerRow),
       // Round 242 — petrol is a fuel now (owner, 26 Oct 2026).
-      petrol: await petrolSummary(monthStart, today).catch((e) => { console.error("fuel dashboard: petrol", e.message); return []; }),
+      petrol: await petrolSummary(monthStart, today).catch((e) => { console.error("fuel dashboard: petrol", e.message); return null; }),
     });
   } catch (err) {
     console.error("GET /fuel-module/dashboard failed:", err);
@@ -658,41 +659,46 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
 // dashboard, and no longer put on maintenance job cards as a lubricant.
 async function petrolSummary(from, to) {
   await query(`ALTER TABLE lubricant_types ADD COLUMN IF NOT EXISTS is_fuel BOOLEAN NOT NULL DEFAULT false`);
-  const { rows: items } = await query(
-    `SELECT lt.id AS lubricant_type_id, lt.name, ssi.id AS item_id, ssi.current_qty, ssi.rate_per_liter, ssi.reorder_level, COALESCE(ssi.unit, 'L') AS unit
-       FROM lubricant_types lt LEFT JOIN store_stock_items ssi ON ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = lt.id
-      WHERE lt.is_active AND lt.is_fuel ORDER BY lt.name`);
-  const out = [];
-  for (const it of items) {
-    const [m, pend, recent] = await Promise.all([
-      query(
-        `SELECT COALESCE(SUM(sr.actual_quantity_issued), 0) AS issued,
-                COALESCE(SUM(COALESCE(sr.fuel_cost, sr.actual_quantity_issued * $4)), 0) AS issued_value, COUNT(*) AS fills
-           FROM supply_requests sr
-          WHERE sr.request_type = 'lubricant' AND sr.lubricant_type_id = $1 AND sr.status = 'issued'
-            AND (sr.issued_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`,
-        [it.lubricant_type_id, from, to, num(it.rate_per_liter) || 0]),
-      query(
-        `SELECT COUNT(*) FILTER (WHERE status = 'pending') AS awaiting_approval, COUNT(*) FILTER (WHERE status = 'approved') AS awaiting_issue
-           FROM supply_requests WHERE request_type = 'lubricant' AND lubricant_type_id = $1 AND status IN ('pending','approved')`, [it.lubricant_type_id]),
-      query(
-        `SELECT s.id, s.issued_at, s.actual_quantity_issued AS litres, ${UNIT_LABEL} AS unit_label
-           FROM supply_requests s ${UNIT_JOINS}
-          WHERE s.request_type = 'lubricant' AND s.lubricant_type_id = $1 AND s.status = 'issued'
-          ORDER BY s.issued_at DESC LIMIT 5`, [it.lubricant_type_id]).catch(() => ({ rows: [] })),
-    ]);
-    const rec = it.item_id
-      ? (await query(`SELECT COALESCE(SUM(qty_change), 0) AS received FROM store_stock_transactions
-                       WHERE stock_item_id = $1 AND txn_type = 'purchase_receive' AND created_at::date BETWEEN $2 AND $3`, [it.item_id, from, to])).rows[0]
-      : { received: 0 };
-    out.push({
-      name: it.name, unit: it.unit, current_qty: num(it.current_qty) ?? 0, rate_per_liter: num(it.rate_per_liter), reorder_level: num(it.reorder_level),
-      month: { issued: num(m.rows[0].issued) || 0, issued_value: Math.round(num(m.rows[0].issued_value) || 0), fills: Number(m.rows[0].fills), received: num(rec.received) || 0 },
-      pending: { awaiting_approval: Number(pend.rows[0].awaiting_approval), awaiting_issue: Number(pend.rows[0].awaiting_issue) },
-      recent: recent.rows.map((r) => ({ ...r, litres: num(r.litres) })),
-    });
+  // Round 243 — petrol is normally an outside fill: fuel requests marked
+  // petrol (request_type 'fuel', fuel_kind 'petrol'). Petrol kept in the
+  // plant store, if any, is shown beside it.
+  const [{ rows: o }, { rows: op }, { rows: orec }, { rows: items }] = await Promise.all([
+    query(
+      `SELECT COALESCE(SUM(actual_quantity_issued), 0) AS litres, COALESCE(SUM(fuel_cost), 0) AS value, COUNT(*) AS fills
+         FROM supply_requests WHERE request_type = 'fuel' AND fuel_kind = 'petrol' AND status = 'issued'
+          AND (issued_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1 AND $2`, [from, to]),
+    query(
+      `SELECT COUNT(*) FILTER (WHERE status = 'pending') AS awaiting_approval, COUNT(*) FILTER (WHERE status = 'approved') AS awaiting_fill
+         FROM supply_requests WHERE request_type = 'fuel' AND fuel_kind = 'petrol' AND status IN ('pending','approved')`),
+    query(
+      `SELECT s.id, s.issued_at, s.actual_quantity_issued AS litres, s.fuel_cost, ${UNIT_LABEL} AS unit_label, fs.name AS station_name
+         FROM supply_requests s ${UNIT_JOINS}
+         LEFT JOIN fuel_stations fs ON fs.id = COALESCE(s.approved_station_id, s.fuel_station_id)
+        WHERE s.request_type = 'fuel' AND s.fuel_kind = 'petrol' AND s.status = 'issued'
+        ORDER BY s.issued_at DESC LIMIT 6`),
+    query(
+      `SELECT lt.id AS lubricant_type_id, ssi.current_qty, ssi.rate_per_liter
+         FROM lubricant_types lt LEFT JOIN store_stock_items ssi ON ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = lt.id
+        WHERE lt.is_active AND lt.is_fuel ORDER BY lt.name LIMIT 1`),
+  ]);
+  let store = null;
+  if (items[0]) {
+    const it = items[0];
+    const { rows: m } = await query(
+      `SELECT COALESCE(SUM(sr.actual_quantity_issued), 0) AS issued,
+              COALESCE(SUM(COALESCE(sr.fuel_cost, sr.actual_quantity_issued * $4)), 0) AS value
+         FROM supply_requests sr
+        WHERE sr.request_type = 'lubricant' AND sr.lubricant_type_id = $1 AND sr.status = 'issued'
+          AND (sr.issued_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`,
+      [it.lubricant_type_id, from, to, num(it.rate_per_liter) || 0]);
+    store = { current_qty: num(it.current_qty) ?? 0, issued: num(m[0].issued) || 0, value: Math.round(num(m[0].value) || 0) };
   }
-  return out;
+  return {
+    outside: { litres: num(o[0].litres) || 0, value: Math.round(num(o[0].value) || 0), fills: Number(o[0].fills) },
+    pending: { awaiting_approval: Number(op[0].awaiting_approval), awaiting_fill: Number(op[0].awaiting_fill) },
+    recent: orec.map((r) => ({ ...r, litres: num(r.litres), fuel_cost: num(r.fuel_cost) })),
+    store,
+  };
 }
 
 // ===================== Issue fuel =====================

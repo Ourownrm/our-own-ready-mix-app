@@ -34,9 +34,11 @@ import fuelAnalysisRoutes from "./routes/fuelAnalysis.js";
 import fuelModuleRoutes from "./routes/fuelModule.js";
 import maintenanceModuleRoutes from "./routes/maintenanceModule.js";
 import maintenanceModule2Routes from "./routes/maintenanceModule2.js";
+import mntPmAssignRoutes from "./routes/mntPmAssign.js";
 import costModuleRoutes from "./routes/costModule.js";
 import costBankRoutes from "./routes/costBank.js";
 import costPartnersRoutes from "./routes/costPartners.js";
+import { ensureRound243 } from "./lib/round243Schema.js";
 import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
@@ -204,6 +206,8 @@ app.use("/api/fuel-module", fuelModuleRoutes);
 app.use("/api/maintenance-module", maintenanceModuleRoutes);
 // Round 216 — tyres & batteries, certificates, bringing over the old screens.
 app.use("/api/maintenance-module", maintenanceModule2Routes);
+// Round 243 — PM schedules given to a person, confirmed in their login.
+app.use("/api/maintenance-module", mntPmAssignRoutes);
 // Round 218 — Cost dashboard, Profit & Loss, Balance Sheet.
 // Round 223 — Cost → Bank statements.
 app.use("/api/cost/bank", costBankRoutes);
@@ -298,6 +302,8 @@ app.use((err, req, res, next) => {
 
 const port = process.env.PORT || 4000;
 app.listen(port, () => console.log(`OORM backend running on port ${port}`));
+// Round 243 — the fuel-kind column is made at start-up too (diesel analytics read it).
+ensureRound243().catch((e) => console.error("round 243 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

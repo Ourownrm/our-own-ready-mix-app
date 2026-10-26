@@ -8,7 +8,8 @@
 // — opens By vehicle: each vehicle with every schedule that applies to it,
 // its status (overdue / due soon …), what is left and when it was last done.
 // The By model view (where schedules are planned and edited) stays.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "../../lib/AuthContext.jsx";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
 import { useLoad, useAction, Loading, Msg, Badge, BASIS, PM_STATUS, fmtDate, fmtNum, H2, MUTED, ROW, GRID, Field, SMALL_BTN } from "./mntUi.jsx";
@@ -265,6 +266,13 @@ export default function MntSchedules() {
 }
 
 function VehicleView({ vehicles, due, sched, allModels, assetId, setAssetId, vq, setVq, canEdit, baseline, setBaseline, saveBaseline, act, onEditSchedule }) {
+  // Round 243 — Manager / Plant In Charge give a vehicle's PM checks to a person.
+  const { user } = useAuth();
+  const canAssign = ["manager", "plant_in_charge", "administrator", "super_admin"].includes(user?.role);
+  const [people, setPeople] = useState([]);
+  useEffect(() => { if (canAssign) apiRequest("/maintenance-module/pm-assign/people").then(setPeople).catch(() => {}); }, [canAssign]);
+  const assign = (body) => act.run(() => apiRequest("/maintenance-module/pm-assign", { method: "PUT", body }), body.user_id ? "Given — it shows in their login." : "Taken off.");
+  const roleTag = (r) => (r ? r.replace(/_/g, " ") : "");
   if (!due.data) return <Loading error={due.error} />;
   const q = vq.trim().toLowerCase();
   const shown = q ? vehicles.filter((v) => `${v.name} ${v.group || ""}`.toLowerCase().includes(q)) : vehicles;
@@ -297,6 +305,16 @@ function VehicleView({ vehicles, due, sched, allModels, assetId, setAssetId, vq,
             {v.km != null ? ` · ${fmtNum(v.km)} km now` : ""}{v.hours != null ? ` · ${fmtNum(v.hours)} h now` : ""}
             {" · schedules are planned per model — editing one changes it for every vehicle of that model"}
           </div>
+          {canAssign && (
+            <label style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12.5, margin: "4px 0 8px" }}>
+              Give every PM check of this vehicle to
+              <select value="" onChange={(e) => e.target.value !== "" && assign({ asset_id: v.asset_id, user_id: e.target.value === "none" ? null : Number(e.target.value) })} aria-label="Give all PM checks of this vehicle to">
+                <option value="">Choose…</option>
+                <option value="none">— nobody —</option>
+                {people.map((p) => <option key={p.id} value={p.id}>{p.name} · {roleTag(p.role)}</option>)}
+              </select>
+            </label>
+          )}
           {v.rows.map((r) => {
             const s = schedById.get(r.schedule_id);
             return (
@@ -305,6 +323,18 @@ function VehicleView({ vehicles, due, sched, allModels, assetId, setAssetId, vq,
                   <b style={{ fontSize: 13.5 }}>{r.schedule_name}</b>
                   <div style={MUTED}>{r.trigger}</div>
                   <div style={{ ...MUTED, fontSize: 11.5 }}>Last done {lastDoneText(r)}{r.next && r.next !== "—" ? ` · next at ${r.next}` : ""}</div>
+                  {r.last_confirmation && (
+                    <div style={{ fontSize: 11.5, color: r.last_confirmation.done ? "var(--signal-green)" : "var(--alert-red)" }}>
+                      {r.last_confirmation.done ? "Confirmed done" : "Not done"} by {r.last_confirmation.by} · {fmtDate(r.last_confirmation.at)}{r.last_confirmation.note ? ` — ${r.last_confirmation.note}` : ""}
+                    </div>
+                  )}
+                  {canAssign ? (
+                    <select value={r.assignee_id || ""} onChange={(e) => assign({ asset_id: v.asset_id, schedule_id: r.schedule_id, user_id: e.target.value ? Number(e.target.value) : null })}
+                      aria-label={`Given to, ${r.schedule_name}`} style={{ marginTop: 4, fontSize: 12, maxWidth: 260 }}>
+                      <option value="">Not given to anyone</option>
+                      {people.map((p) => <option key={p.id} value={p.id}>{p.name} · {roleTag(p.role)}</option>)}
+                    </select>
+                  ) : r.assignee_name ? <div style={{ ...MUTED, fontSize: 11.5 }}>Given to {r.assignee_name}</div> : null}
                 </div>
                 <div style={{ textAlign: "right", minWidth: 110 }}>
                   <Badge map={PM_STATUS} value={r.status} />

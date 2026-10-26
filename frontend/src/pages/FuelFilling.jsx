@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import MyPmChecks from "../lib/MyPmChecks.jsx";
 import { Link } from "react-router-dom";
 import { IfCan } from "../lib/PermissionContext.jsx";
 import { TopBar } from "../lib/TopBar.jsx";
@@ -92,20 +93,22 @@ function RequestFlow() {
     if (!unitId) return setError("Select which unit this is.");
     if (!odometer && !hourMeter) return setError("Enter either an odometer reading or an hour meter reading — needed for later analysis.");
     if (!quantity) return setError("Enter the quantity needed.");
-    if (requestType === "fuel" && !stationId) return setError("Select a filling station.");
+    if ((requestType === "fuel" || requestType === "petrol") && !stationId) return setError("Select a filling station.");
     if (requestType === "lubricant" && !lubricantTypeId) return setError("Select which lubricant.");
-    // Round 242 — petrol is a fuel choice of its own (kept in Store as its own stock item).
+    // Round 243 — petrol is normally an outside fill (a fuel request marked
+    // petrol). "Plant store" uses the petrol kept in Store, if there is any.
     const petrolType = lubricantTypes.find((l) => l.is_fuel);
-    if (requestType === "petrol" && !petrolType) return setError("Petrol is not set up yet. Ask the Administrator.");
+    const petrolFromStore = requestType === "petrol" && stationId === "store";
 
     const body = {
-      request_type: requestType === "petrol" ? "lubricant" : requestType,
+      request_type: petrolFromStore ? "lubricant" : requestType === "petrol" ? "fuel" : requestType,
+      fuel_kind: requestType === "petrol" && !petrolFromStore ? "petrol" : "diesel",
       equipment_type: equipmentType,
       odometer_reading: odometer || null,
       hour_meter_reading: hourMeter || null,
       requested_quantity: quantity,
-      fuel_station_id: requestType === "fuel" ? stationId : null,
-      lubricant_type_id: requestType === "lubricant" ? lubricantTypeId : requestType === "petrol" ? petrolType.id : null,
+      fuel_station_id: (requestType === "fuel" || requestType === "petrol") && !petrolFromStore ? stationId : null,
+      lubricant_type_id: requestType === "lubricant" ? lubricantTypeId : petrolFromStore ? petrolType?.id : null,
     };
     if (equipmentType === "truck") body.truck_id = unitId;
     else if (equipmentType === "pump") body.pump_id = unitId;
@@ -157,6 +160,7 @@ function RequestFlow() {
     <>
       <TopBar title="Fuel and lubricants" />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+        <MyPmChecks />
 
         {isLoaderOperator && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
@@ -177,9 +181,7 @@ function RequestFlow() {
 
           <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
             <button type="button" onClick={() => setRequestType("fuel")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "fuel" ? 600 : 400, background: requestType === "fuel" ? "var(--concrete)" : "transparent" }}>Diesel</button>
-            {lubricantTypes.some((l) => l.is_fuel) && (
-              <button type="button" onClick={() => setRequestType("petrol")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "petrol" ? 600 : 400, background: requestType === "petrol" ? "var(--concrete)" : "transparent" }}>Petrol</button>
-            )}
+            <button type="button" onClick={() => { setRequestType("petrol"); setStationId(""); }} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "petrol" ? 600 : 400, background: requestType === "petrol" ? "var(--concrete)" : "transparent" }}>Petrol</button>
             <button type="button" onClick={() => setRequestType("lubricant")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "lubricant" ? 600 : 400, background: requestType === "lubricant" ? "var(--concrete)" : "transparent" }}>Lubricant</button>
           </div>
 
@@ -236,7 +238,14 @@ function RequestFlow() {
                 </select>
               </div>
             ) : requestType === "petrol" ? (
-              <div style={{ fontSize: 12, color: "var(--slate)" }}>Petrol is issued from the plant store.</div>
+              <div>
+                <div style={{ color: "var(--slate)" }}>Petrol station</div>
+                <select value={stationId} onChange={(e) => setStationId(e.target.value)} required>
+                  <option value="">Select</option>
+                  {stations.filter((s) => !s.is_plant).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  {lubricantTypes.some((l) => l.is_fuel) && <option value="store">Plant store (petrol kept in Store)</option>}
+                </select>
+              </div>
             ) : (
               <div>
                 <div style={{ color: "var(--slate)" }}>Lubricant</div>
@@ -268,7 +277,7 @@ function RequestFlow() {
             <div style={{ fontWeight: 600, marginBottom: 10 }}>Issued today</div>
             {recentIssued.map((r) => (
               <div key={r.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--concrete)", fontSize: 12 }}>
-                <span>{unitLabel(r)} &middot; {r.request_type === "fuel" ? `${r.actual_quantity_issued} L` : `${r.actual_quantity_issued} ${r.lubricant_type_name}`}</span>
+                <span>{unitLabel(r)} &middot; {r.request_type === "fuel" ? `${r.actual_quantity_issued} L${r.fuel_kind === "petrol" ? " petrol" : ""}` : `${r.actual_quantity_issued} ${r.lubricant_type_name}`}</span>
                 <span style={{ color: "var(--slate)" }}>{new Date(r.issued_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
               </div>
             ))}
@@ -412,7 +421,7 @@ function LoaderRepairForm({ loaders, onDone, onCancel }) {
 
 function RequestStatusCard({ request: r, onReload }) {
   const isFuel = r.request_type === "fuel";
-  const itemLabel = isFuel ? `${r.requested_quantity} L fuel` : `${r.requested_quantity} ${r.lubricant_type_name}`;
+  const itemLabel = isFuel ? `${r.requested_quantity} L ${r.fuel_kind === "petrol" ? "petrol" : "diesel"}` : `${r.requested_quantity} ${r.lubricant_type_name}`;
 
   if (r.status === "pending") {
     return (

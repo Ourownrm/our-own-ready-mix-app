@@ -623,7 +623,7 @@ async function computeDriverFuelRows(year, month, driverIds) {
     `WITH truck_fuel AS (
        SELECT sr.truck_id, SUM(sr.actual_quantity_issued) AS total_litres
        FROM supply_requests sr
-       WHERE sr.request_type = 'fuel' AND sr.equipment_type = 'truck' AND sr.status = 'issued'
+       WHERE sr.request_type = 'fuel' AND COALESCE(sr.fuel_kind, 'diesel') = 'diesel' AND sr.equipment_type = 'truck' AND sr.status = 'issued'
          AND sr.truck_id IS NOT NULL
          AND EXTRACT(YEAR FROM sr.issued_at) = $1 AND EXTRACT(MONTH FROM sr.issued_at) = $2
        GROUP BY sr.truck_id

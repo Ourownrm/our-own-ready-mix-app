@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import MyPmChecks from "../lib/MyPmChecks.jsx";
 import { Link } from "react-router-dom";
 import { IfCan } from "../lib/PermissionContext.jsx";
 import { apiRequest } from "../lib/api.js";
@@ -401,6 +402,7 @@ export default function DriverDuty() {
       <TopBar title={t("driver_title")} />
       <div style={{ maxWidth: 360, margin: "0 auto", padding: "0 16px 32px" }}>
         <LanguageTabs />
+        <MyPmChecks />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
           {onDuty && shiftElapsed ? (
             <span style={{ fontSize: 11.5, color: "var(--slate)" }}>{t("on_duty_for", { time: shiftElapsed })}</span>

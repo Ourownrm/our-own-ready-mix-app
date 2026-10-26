@@ -5,9 +5,12 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { chargeLubricantSoon } from "../lib/maintenanceGeneral.js";
+import { ensureRound243 } from "../lib/round243Schema.js";
 
 const router = Router();
 router.use(requireAuth);
+// Round 243 — fuel_kind (diesel / petrol).
+router.use(async (_req, _res, next) => { try { await ensureRound243(); next(); } catch (e) { next(e); } });
 
 // Round 133 — loader_operator added: a dedicated role for whoever operates
 // the loader, scoped to exactly this — requesting fuel/lubricant for their
@@ -78,6 +81,8 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
     odometer_reading, hour_meter_reading, requested_quantity,
     fuel_station_id, lubricant_type_id,
   } = req.body;
+  // Round 243 — which fuel. Petrol is an outside fill only.
+  const fuelKind = request_type === "fuel" && req.body.fuel_kind === "petrol" ? "petrol" : "diesel";
 
   if (!["fuel", "lubricant"].includes(request_type)) return res.status(400).json({ error: "Select fuel or lubricant." });
   if (!equipment_type) return res.status(400).json({ error: "Select which vehicle or machine this is for." });
@@ -92,6 +97,10 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
   if (!requested_quantity) return res.status(400).json({ error: "Enter the quantity needed." });
   if (request_type === "fuel" && !fuel_station_id) return res.status(400).json({ error: "Select a filling station." });
   if (request_type === "lubricant" && !lubricant_type_id) return res.status(400).json({ error: "Select which lubricant." });
+  if (fuelKind === "petrol") {
+    const { rows: st } = await query(`SELECT is_plant FROM fuel_stations WHERE id = $1`, [fuel_station_id]);
+    if (st[0]?.is_plant) return res.status(400).json({ error: "Petrol is filled at an outside station — choose the station." });
+  }
 
   // Round 203 — no more fuel for a vehicle until its last outside fill is
   // confirmed, so an open one can never be quietly forgotten.
@@ -112,8 +121,8 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
   const { rows } = await query(
     `INSERT INTO supply_requests
      (request_type, requested_by, equipment_type, truck_id, pump_id, equipment_id,
-      odometer_reading, hour_meter_reading, requested_quantity, fuel_station_id, lubricant_type_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      odometer_reading, hour_meter_reading, requested_quantity, fuel_station_id, lubricant_type_id, fuel_kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
     [
       request_type, req.user.id, equipment_type,
       equipment_type === "truck" ? truck_id : null,
@@ -122,11 +131,12 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
       odometer_reading || null, hour_meter_reading || null, requested_quantity,
       request_type === "fuel" ? fuel_station_id : null,
       request_type === "lubricant" ? lubricant_type_id : null,
+      fuelKind,
     ]
   );
 
   const { rows: who } = await query("SELECT name FROM users WHERE id = $1", [req.user.id]);
-  const label = `${who[0]?.name || "Someone"} requested ${requested_quantity} ${request_type === "fuel" ? "L fuel" : "of lubricant"}`;
+  const label = `${who[0]?.name || "Someone"} requested ${requested_quantity} ${request_type === "fuel" ? (fuelKind === "petrol" ? "L petrol" : "L diesel") : "of lubricant"}`;
   await pushToRole("manager", { title: "New supply request", body: label, url: "/manager" });
 
   res.status(201).json(rows[0]);
@@ -288,6 +298,7 @@ router.post("/:id/approve", requireRole("manager", "plant_in_charge", "administr
     const stationId = approved_station_id || r.fuel_station_id;
     const { rows: st } = await query("SELECT is_plant, name FROM fuel_stations WHERE id = $1", [stationId]);
     if (!st.length) return res.status(400).json({ error: "Select a filling station." });
+    if (st[0].is_plant && r.fuel_kind === "petrol") return res.status(400).json({ error: "Petrol can't come from the plant diesel tank — choose an outside station." });
     if (st[0].is_plant) {
       const tank = await tankAvailability(r.id);
       if (qty > tank.available) {
@@ -398,6 +409,9 @@ router.post("/:id/issue", requireRole("store", "administrator"), async (req, res
 
   const { rows: existing } = await query("SELECT * FROM supply_requests WHERE id = $1 AND status = 'approved'", [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Request not found or not in an issuable state." });
+  if (existing[0].request_type === "fuel" && existing[0].fuel_kind === "petrol") {
+    return res.status(400).json({ error: "This is a petrol fill at an outside station — it is confirmed by the driver or closed from the bill, not issued from the tank." });
+  }
 
   // Store can issue less than approved (stock shortage on the day) but never
   // more — the Manager's approved figure is the ceiling for what leaves the

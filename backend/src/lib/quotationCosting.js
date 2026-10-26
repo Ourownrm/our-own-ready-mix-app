@@ -101,7 +101,7 @@ async function fuelUsed(from, toExclusive, rate) {
             SUM(sr.actual_quantity_issued) AS litres,
             SUM(COALESCE(sr.fuel_cost, sr.actual_quantity_issued * $3)) AS value
        FROM supply_requests sr LEFT JOIN equipment e ON e.id = sr.equipment_id
-      WHERE sr.request_type = 'fuel' AND sr.status = 'issued' AND sr.actual_quantity_issued > 0
+      WHERE sr.request_type = 'fuel' AND COALESCE(sr.fuel_kind, 'diesel') = 'diesel' AND sr.status = 'issued' AND sr.actual_quantity_issued > 0
         AND (sr.issued_at AT TIME ZONE 'Asia/Kolkata')::date >= $1::date AND (sr.issued_at AT TIME ZONE 'Asia/Kolkata')::date < $2::date
       GROUP BY 1`,
     [from, toExclusive, rate || 0]
@@ -116,7 +116,7 @@ async function fleetKmpl() {
   const { rows } = await query(
     `SELECT truck_id, odometer_reading AS km, actual_quantity_issued AS l
        FROM supply_requests
-      WHERE request_type = 'fuel' AND status = 'issued' AND truck_id IS NOT NULL AND odometer_reading IS NOT NULL
+      WHERE request_type = 'fuel' AND COALESCE(fuel_kind, 'diesel') = 'diesel' AND status = 'issued' AND truck_id IS NOT NULL AND odometer_reading IS NOT NULL
         AND actual_quantity_issued > 0 AND issued_at > now() - interval '90 days'
       ORDER BY truck_id, odometer_reading`
   ).catch(() => ({ rows: [] }));

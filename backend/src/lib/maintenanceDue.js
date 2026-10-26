@@ -174,11 +174,15 @@ export function classify(p, today) {
  * Every active (schedule, asset) pair with its status. Optional filters:
  * { assetId, scheduleId }.
  */
-export async function dueList({ assetId = null, scheduleId = null } = {}, q = dbQuery) {
+export async function dueList({ assetId = null, scheduleId = null, assigneeId = null } = {}, q = dbQuery) {
   const { rows } = await q(`
     SELECT s.id AS schedule_id, s.name AS schedule_name, s.trigger_type, s.every, s.or_months, s.or_days, s.or_hours, s.basis,
            a.id AS asset_id, a.name AS asset_name, a.asset_group, a.truck_id, a.pump_id,
            sa.last_done_date::text AS last_done_date, sa.last_done_km, sa.last_done_hours,
+           pa.user_id AS assignee_id, au.name AS assignee_name, au.role::text AS assignee_role,
+           (SELECT json_build_object('done', c.done, 'at', c.at, 'note', c.note, 'by', cu.name)
+              FROM mnt_pm_confirmations c LEFT JOIN users cu ON cu.id = c.user_id
+             WHERE c.schedule_id = s.id AND c.asset_id = a.id ORDER BY c.at DESC LIMIT 1) AS last_confirmation,
            CURRENT_DATE::text AS today,
            CASE WHEN s.trigger_type = 'm3' AND sa.last_done_date IS NOT NULL THEN (
              SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) FROM delivery_tickets dt
@@ -189,7 +193,10 @@ export async function dueList({ assetId = null, scheduleId = null } = {}, q = db
     JOIN mnt_pm_schedule_models sm ON sm.schedule_id = s.id
     JOIN mnt_assets a ON a.model_id = sm.model_id AND a.is_active
     LEFT JOIN mnt_pm_schedule_assets sa ON sa.schedule_id = s.id AND sa.asset_id = a.id
-    WHERE s.is_active AND ($1::int IS NULL OR a.id = $1) AND ($2::int IS NULL OR s.id = $2)`, [assetId, scheduleId]);
+    LEFT JOIN mnt_pm_assignees pa ON pa.schedule_id = s.id AND pa.asset_id = a.id
+    LEFT JOIN users au ON au.id = pa.user_id
+    WHERE s.is_active AND ($1::int IS NULL OR a.id = $1) AND ($2::int IS NULL OR s.id = $2)
+      AND ($3::int IS NULL OR pa.user_id = $3)`, [assetId, scheduleId, assigneeId]);
   if (!rows.length) return [];
   const readings = await assetReadings([...new Set(rows.map((r) => r.asset_id))], q);
   const today = rows[0].today;
@@ -198,6 +205,8 @@ export async function dueList({ assetId = null, scheduleId = null } = {}, q = db
     const c = classify({ ...r, km: rd.km ?? null, hours: rd.hours ?? null, m3_since: r.m3_since == null ? null : Number(r.m3_since) }, today);
     return {
       schedule_id: r.schedule_id, schedule_name: r.schedule_name, basis: r.basis,
+      trigger_type: r.trigger_type, every: r.every == null ? null : Number(r.every),
+      assignee_id: r.assignee_id, assignee_name: r.assignee_name, assignee_role: r.assignee_role, last_confirmation: r.last_confirmation,
       trigger: triggerText(r), asset_id: r.asset_id, asset_name: r.asset_name, asset_group: r.asset_group,
       last_done_date: r.last_done_date, last_done_km: r.last_done_km == null ? null : Number(r.last_done_km),
       last_done_hours: r.last_done_hours == null ? null : Number(r.last_done_hours),

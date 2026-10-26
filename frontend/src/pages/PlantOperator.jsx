@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import MyPmChecks from "../lib/MyPmChecks.jsx";
 import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
@@ -95,6 +96,7 @@ export default function PlantOperator() {
     <>
       <TopBar title="Plant Operator" />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
+        <MyPmChecks />
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 8 }}>{notice}</div>}
 

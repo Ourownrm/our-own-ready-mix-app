@@ -159,6 +159,7 @@ export default function SupplyApprovals() {
                 <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>
                   {r.odometer_reading ? `Odometer ${r.odometer_reading} km` : `Hour meter ${r.hour_meter_reading} hrs`}
                   {!isFuel && ` · ${r.lubricant_type_name}`}
+                  {isFuel && r.fuel_kind === "petrol" && <b style={{ color: "var(--rebar)" }}> · PETROL</b>}
                 </div>
                 {/* Round 153, item 3 — what this unit has run since its last
                     fill, so the quantity can be judged instead of guessed at.
@@ -175,7 +176,7 @@ export default function SupplyApprovals() {
                       value={edits[r.id]?.station_id || r.fuel_station_id || ""}
                       onChange={(e) => setEdit(r.id, "station_id", e.target.value)}
                     >
-                      {stations.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_plant ? " (plant)" : ""}</option>)}
+                      {stations.filter((s) => !(r.fuel_kind === "petrol" && s.is_plant)).map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_plant ? " (plant)" : ""}</option>)}
                     </select>
                   )}
                   <input

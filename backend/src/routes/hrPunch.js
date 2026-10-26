@@ -90,8 +90,12 @@ async function todaysPunches(empId) {
 
 // The working area of an employee in 'area' mode: their chosen work location
 // (else the first active one) and their radius (else 50 km).
-function areaOf(emp, locs) {
-  const centre = locs.find((l) => l.id === emp.work_area_location_id) || locs[0] || null;
+// Round 243 — the centre chosen on the employee counts even when that work
+// location is switched off (off only stops "at the plant" punching there);
+// blank = the first active one, else the first one at all.
+function areaOf(emp, allLocs) {
+  const centre = allLocs.find((l) => l.id === emp.work_area_location_id)
+    || allLocs.find((l) => l.is_active) || allLocs[0] || null;
   return centre ? { centre, km: Number(emp.work_area_km) || DEFAULT_AREA_KM } : null;
 }
 const fmtDist = (m) => (m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${m} m`);
@@ -107,10 +111,11 @@ router.get("/punch/setup", async (req, res) => {
         reason: emp.role === "driver" ? "Drivers mark attendance on the gate machine." : "Attendance on the phone is not switched on for you. Use the gate machine, or ask HR." });
     }
     const rules = await loadRules();
-    const { rows: locs } = await query(`SELECT id, name, lat, lng, radius_m FROM hr_work_locations WHERE is_active ORDER BY name`);
+    const { rows: allLocs } = await query(`SELECT id, name, lat, lng, radius_m, is_active FROM hr_work_locations ORDER BY name`);
+    const locs = allLocs.filter((l) => l.is_active);
     res.json({
       allowed: true, employee: { name: emp.name, emp_code: emp.emp_code }, mode: emp.app_punch,
-      area: emp.app_punch === "area" ? (() => { const a = areaOf(emp, locs); return a ? { name: a.centre.name, km: a.km, lat: a.centre.lat, lng: a.centre.lng } : null; })() : null,
+      area: emp.app_punch === "area" ? (() => { const a = areaOf(emp, allLocs); return a ? { name: a.centre.name, km: a.km, lat: a.centre.lat, lng: a.centre.lng } : null; })() : null,
       // Round 242 — face check off for this person: no camera, no enrolment needed.
       face_check: emp.face_check !== false,
       enrolled: emp.enrolled || emp.face_check === false, device_registered: !!emp.device_id,
@@ -155,7 +160,8 @@ router.post("/punch", async (req, res) => {
     if (!hasLoc && emp.app_punch !== "area") {
       return bad(res, 400, "Location is needed to mark attendance. Allow location for this app and try again.", { code: "no_location" });
     }
-    const { rows: locs } = await query(`SELECT id, name, lat, lng, radius_m FROM hr_work_locations WHERE is_active ORDER BY id`);
+    const { rows: allLocs } = await query(`SELECT id, name, lat, lng, radius_m, is_active FROM hr_work_locations ORDER BY id`);
+    const locs = allLocs.filter((l) => l.is_active);
     let nearest = null;
     if (hasLoc) {
       for (const l of locs) {
@@ -165,7 +171,7 @@ router.post("/punch", async (req, res) => {
     }
     let warning = null, warningNote = null;
     if (emp.app_punch === "area") {
-      const area = areaOf(emp, locs);
+      const area = areaOf(emp, allLocs);
       if (!area) return bad(res, 409, "No work location is set up yet. Ask HR to add the plant's location.", { code: "no_locations" });
       if (!hasLoc) {
         warning = "no_location";
