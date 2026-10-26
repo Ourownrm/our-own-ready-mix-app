@@ -80,6 +80,12 @@ export default function MarkAttendance() {
         if (await areaRefused(first)) return;
       }
       const posP = first ? Promise.resolve(first) : currentPosition().then((p) => { setLoc(p); return p; });
+      // Round 242 — face check switched off for this person: no camera.
+      if (setup?.face_check === false) {
+        const pos = await posP;
+        await sendWithoutFace(pos);
+        return;
+      }
       setStatus("Opening the camera…");
       const apiP = loadFaceApi();
       streamRef.current = await startCamera(videoRef.current);
@@ -91,6 +97,19 @@ export default function MarkAttendance() {
       setError(err.message || String(err));
       setPhase("idle");
       stopCamera(streamRef.current);
+    }
+  }
+
+  async function sendWithoutFace(pos) {
+    setPhase("checking"); setStatus("Marking…");
+    try {
+      const r = await apiRequest("/hr/punch", { method: "POST", body: {
+        lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy, kind: next === "OUT" ? "out" : "in", device_id: deviceId() } });
+      setResult(r); setPhase("done"); load();
+    } catch (err) {
+      const body = err.data || {};
+      setProblem({ code: body.code || null, error: err.message, detail: body.detail });
+      setPhase("idle");
     }
   }
 
@@ -136,7 +155,7 @@ export default function MarkAttendance() {
             </div>
             {!s.enrolled && <div className="card" style={{ background: "var(--amber-bg)", color: "var(--amber)", fontSize: 13 }}>HR hasn't enrolled your face yet. Ask HR to take your photo once — until then, use the gate machine.</div>}
 
-            <div style={{ position: "relative", borderRadius: 16, background: "#2E3338", overflow: "hidden", aspectRatio: "4 / 3", display: phase === "idle" && !result ? "none" : "block" }}>
+            <div style={{ position: "relative", borderRadius: 16, background: "#2E3338", overflow: "hidden", aspectRatio: "4 / 3", display: s.face_check === false || (phase === "idle" && !result) ? "none" : "block" }}>
               <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} playsInline muted />
               {(phase === "camera" || phase === "checking" || phase === "loading") && (
                 <span style={{ position: "absolute", left: 12, bottom: 12, background: "rgba(255,255,255,0.92)", color: "#22262B", fontSize: 12.5, fontWeight: 600, borderRadius: 999, padding: "6px 12px" }}>{status}</span>
@@ -144,9 +163,9 @@ export default function MarkAttendance() {
             </div>
 
             <div className="card" style={{ padding: "4px 12px" }}>
-              <Check state={face ? (face.found && face.live && !problem ? "ok" : problem && ["face_mismatch", "no_blink", "no_face"].includes(problem.code) ? "bad" : face.found && face.live ? "ok" : "wait") : "wait"}
+              {s.face_check !== false && <Check state={face ? (face.found && face.live && !problem ? "ok" : problem && ["face_mismatch", "no_blink", "no_face"].includes(problem.code) ? "bad" : face.found && face.live ? "ok" : "wait") : "wait"}
                 title={problem?.code === "face_mismatch" ? "Face not recognised" : problem?.code === "no_blink" ? "Blink not seen" : problem?.code === "no_face" ? "No face found" : "It's you"}
-                sub={problem && ["face_mismatch", "no_blink", "no_face"].includes(problem.code) ? `${problem.error}${problem.tries_left ? ` · ${problem.tries_left} more ${problem.tries_left === 1 ? "try" : "tries"} before it goes to your manager` : ""}` : "Matched to the photo HR enrolled · blink once"} />
+                sub={problem && ["face_mismatch", "no_blink", "no_face"].includes(problem.code) ? `${problem.error}${problem.tries_left ? ` · ${problem.tries_left} more ${problem.tries_left === 1 ? "try" : "tries"} before it goes to your manager` : ""}` : "Matched to the photo HR enrolled · blink once"} />}
               {s.mode === "area" ? (
                 <Check state={problem && ["outside_area", "no_location_area"].includes(problem.code) ? "bad" : loc && !loc.off ? "ok" : "wait"}
                   title={problem?.code === "outside_area" ? "Not inside your working area" : problem?.code === "no_location_area" ? "Location not available" : `Inside your working area${s.area ? ` (${s.area.km} km)` : ""}`}
@@ -194,7 +213,7 @@ export default function MarkAttendance() {
                 </div>
               ))}
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--slate)", textAlign: "center" }}>Your photo and location are saved with each punch.</div>
+            <div style={{ fontSize: 11.5, color: "var(--slate)", textAlign: "center" }}>{s.face_check === false ? "Your location is saved with each punch." : "Your photo and location are saved with each punch."}</div>
           </>
         )}
         {error && !s && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}

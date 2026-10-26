@@ -74,6 +74,7 @@ import QcMixDesigns from "./pages/QcMixDesigns.jsx";
 import CubeQcDashboard from "./pages/CubeQcDashboard.jsx";
 import Modules from "./pages/Modules.jsx";
 import SuperAdmin from "./pages/SuperAdmin.jsx";
+import { LockdownGate } from "./lib/Lockdown.jsx";
 
 // Landing route ("/" and any unrecognized path): if we already have a valid
 // saved session, go straight to that role's screen instead of forcing a
@@ -104,6 +105,7 @@ export default function App() {
           staff-facing route, which never reads this context. */}
       <CustomerLanguageProvider>
       <BrowserRouter>
+        <LockdownGate>
         <Routes>
           <Route path="/login" element={<Login />} />
 
@@ -361,6 +363,7 @@ export default function App() {
           <Route path="/" element={<RootRedirect />} />
           <Route path="*" element={<RootRedirect />} />
         </Routes>
+        </LockdownGate>
       </BrowserRouter>
       </CustomerLanguageProvider>
       </PermissionProvider>

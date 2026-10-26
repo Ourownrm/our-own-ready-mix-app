@@ -28,6 +28,7 @@
 // set by hand is never re-sorted.
 import { query, pool } from "../db.js";
 import { isOwnTransfer } from "../routes/accountsLedger.js";
+import { ensurePartners, PARTNER_DUP_SQL } from "./partners.js";
 import { amountOn, rateOn, instNo, stepAmount, hasSchedule, balanceOn, irr, flatRate, schedule } from "./loanMath.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -537,12 +538,17 @@ function emisLeft(out, rate, emi) {
 // to Finance cost.
 export async function bankHeadsMonth(ym) {
   await ensureBankGst().catch(() => {});
+  // Round 242 — a bank line that is a partner's interest already entered on
+  // Cost → Partners (same day, same amount) is not counted again here: the
+  // partners' interest is in the P&L as it accrues.
+  const partnersOk = await ensurePartners().then(() => true).catch(() => false);
   const { rows } = await query(
     // Round 232 — without the GST inside each payment.
     `SELECT l.head, SUM(${NET_SQL("l.debit")}) AS dr, SUM(${NET_SQL("l.credit")}) AS cr, COUNT(*)::int AS n,
             SUM(CASE WHEN l.debit > 0 THEN l.debit - ${NET_SQL("l.debit")} ELSE 0 END) AS gst_in
        FROM cost_bank_lines l
-      WHERE l.treatment = 'cost' AND l.head IS NOT NULL AND to_char(l.txn_date, 'YYYY-MM') = $1 GROUP BY l.head`, [ym]).catch(() => ({ rows: [] }));
+      WHERE l.treatment = 'cost' AND l.head IS NOT NULL AND to_char(l.txn_date, 'YYYY-MM') = $1
+        ${partnersOk ? `AND NOT (l.head = 'interest' AND ${PARTNER_DUP_SQL})` : ""} GROUP BY l.head`, [ym]).catch(() => ({ rows: [] }));
   const out = {}, count = {};
   let gstInput = 0;
   for (const r of rows) {

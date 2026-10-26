@@ -115,11 +115,13 @@ const SOURCE_SQL = `
   LEFT JOIN store_stock_items ssi ON ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = sr.lubricant_type_id
   WHERE sr.request_type = 'lubricant' AND sr.status = 'issued'
     AND sr.actual_quantity_issued IS NOT NULL
+    AND NOT COALESCE(lt.is_fuel, false)   -- Round 242: petrol is fuel, not a job-card lubricant
     AND sr.issued_at >= $1::date`;
 
 export async function syncGeneralCharges({ requestId = null } = {}) {
   const c = await pool.connect();
   try {
+    await c.query(`ALTER TABLE lubricant_types ADD COLUMN IF NOT EXISTS is_fuel BOOLEAN NOT NULL DEFAULT false`); // Round 242
     await c.query("BEGIN");
     const closed = await closePastMonths(c);
     const params = [GENERAL_FROM];

@@ -226,7 +226,8 @@ export default function MyAttendance() {
                 const label = d.code === "L" ? `${d.leave?.name || "Leave"}${d.leave?.half ? " (half day)" : ""}` : d.code === "P" && !clean ? "Present — short of duty hours" : c[0];
                 return (
                   <div key={d.date} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderTop: "1px solid var(--border)" }}>
-                    <span style={{ background: c[1], color: c[2], fontWeight: 700, fontSize: 12, borderRadius: 6, padding: "3px 8px", minWidth: 34, textAlign: "center" }}>
+                    <span style={{ background: c[1], color: c[2], fontWeight: 700, fontSize: 12, borderRadius: 6, padding: "3px 8px", minWidth: 34, textAlign: "center",
+                      boxShadow: d.co || d.co_for ? "0 0 0 2px #0E7C7B" : undefined }}>
                       {d.code === "HD" ? "½" : d.code === "L" ? d.leave?.code || "L" : d.code}
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -239,6 +240,12 @@ export default function MyAttendance() {
                         </div>
                       )}
                       {d.pending > 0 && <div style={{ fontSize: 12, color: "var(--info)" }}>request waiting for approval</div>}
+                      {/* Round 242 — comp-off: which day it was taken on / which worked day it was for. */}
+                      {(d.co || d.co_for) && (
+                        <div style={{ fontSize: 12, color: "#0E7C7B", fontWeight: 600 }}>
+                          {(d.flags || []).filter((x) => x.startsWith("comp-off") || x.includes("comp-off not taken")).join(" · ")}
+                        </div>
+                      )}
                     </div>
                     {!busy && (fixable || canLeave) && (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>

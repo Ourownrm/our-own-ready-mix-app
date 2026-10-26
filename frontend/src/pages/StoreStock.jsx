@@ -160,9 +160,11 @@ export default function StoreStock() {
           {can("module.fuel") && <> <Link to="/fuel-module" style={{ fontWeight: 600 }}>Open Fuel</Link></>}
         </div>
 
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Lubricant balances</div>
-        {lubeItems.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>No lubricant types are set up yet.</div>}
-        {lubeItems.map((it) => {
+        {[["Petrol (fuel)", lubeItems.filter((it) => it.is_fuel)], ["Lubricant balances", lubeItems.filter((it) => !it.is_fuel)]].map(([title, list]) => (list.length > 0 || !title.startsWith("Petrol")) && (
+        <div key={title}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{title}</div>
+        {list.length === 0 && <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>No lubricant types are set up yet.</div>}
+        {list.map((it) => {
           const low = it.reorder_level != null && Number(it.current_qty) <= Number(it.reorder_level);
           return (
             <div key={it.id} className="card" style={{ marginBottom: 10, background: low ? "var(--alert-red-bg)" : undefined }}>
@@ -189,6 +191,8 @@ export default function StoreStock() {
             </div>
           );
         })}
+        </div>
+        ))}
 
         <div style={{ fontSize: 13, fontWeight: 700, margin: "20px 0 8px" }}>My purchase requests</div>
         {myLube.length === 0 ? (

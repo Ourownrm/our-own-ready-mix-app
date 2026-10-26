@@ -27,6 +27,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 import { loadRules } from "../lib/hrRules.js";
 import { ROUND233_SQL } from "../lib/round233Schema.js";
+import { ROUND242_FACE_SQL } from "../lib/round242Schema.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -34,7 +35,7 @@ router.use(requireAuth);
 // never fails on a database where /setup has not run yet.
 let areaReady = null;
 router.use((req, _res, next) => {
-  if (!areaReady) areaReady = query(ROUND233_SQL).catch((e) => { areaReady = null; throw e; });
+  if (!areaReady) areaReady = query(ROUND233_SQL + ROUND242_FACE_SQL).catch((e) => { areaReady = null; throw e; });
   areaReady.then(() => next(), next);
 });
 const DEFAULT_AREA_KM = 50;
@@ -69,7 +70,7 @@ const deviceOk = (d) => typeof d === "string" && /^[A-Za-z0-9-]{16,64}$/.test(d)
 async function myEmployee(userId) {
   const { rows } = await query(
     `SELECT e.id, e.name, e.emp_code, e.app_punch, e.attendance_source, e.device_id, e.is_active, u.role,
-            e.work_area_km, e.work_area_location_id,
+            e.work_area_km, e.work_area_location_id, e.face_check,
             (f.employee_id IS NOT NULL) AS enrolled
      FROM hr_employees e JOIN users u ON u.id = e.app_user_id
      LEFT JOIN hr_employee_faces f ON f.employee_id = e.id
@@ -110,7 +111,9 @@ router.get("/punch/setup", async (req, res) => {
     res.json({
       allowed: true, employee: { name: emp.name, emp_code: emp.emp_code }, mode: emp.app_punch,
       area: emp.app_punch === "area" ? (() => { const a = areaOf(emp, locs); return a ? { name: a.centre.name, km: a.km, lat: a.centre.lat, lng: a.centre.lng } : null; })() : null,
-      enrolled: emp.enrolled, device_registered: !!emp.device_id,
+      // Round 242 — face check off for this person: no camera, no enrolment needed.
+      face_check: emp.face_check !== false,
+      enrolled: emp.enrolled || emp.face_check === false, device_registered: !!emp.device_id,
       locations: locs, rules: { gps_accuracy_max: rules.gps_accuracy_max, face_tries: rules.face_tries },
       today: await todaysPunches(emp.id),
     });
@@ -129,7 +132,11 @@ router.post("/punch", async (req, res) => {
   try {
     const emp = await myEmployee(req.user.id);
     if (!allowedFor(emp)) return bad(res, 403, "Attendance on the phone is not switched on for you.");
-    if (!emp.enrolled) return bad(res, 409, "HR has not enrolled your face yet. Ask HR to take your photo once.", { code: "not_enrolled" });
+    // Round 242 (owner, 26 Oct 2026) — the face check can be switched off per
+    // employee (HR → Employees → Attendance on the phone). Off: location and
+    // the registered phone decide; the camera never opens.
+    const faceOn = emp.face_check !== false;
+    if (faceOn && !emp.enrolled) return bad(res, 409, "HR has not enrolled your face yet. Ask HR to take your photo once.", { code: "not_enrolled" });
     const b = req.body || {};
     const rules = await loadRules();
 
@@ -193,10 +200,10 @@ router.post("/punch", async (req, res) => {
       }
     }
 
-    // 3. face — decided here, against the enrolled descriptor
-    const tries = Math.max(1, Math.min(20, Number(b.tries) || 1));
-    const hasFace = descriptorOk(b.descriptor);
-    if (!hasFace && tries < rules.face_tries) {
+    // 3. face — decided here, against the enrolled descriptor (when on)
+    const tries = faceOn ? Math.max(1, Math.min(20, Number(b.tries) || 1)) : 0;
+    const hasFace = faceOn && descriptorOk(b.descriptor);
+    if (faceOn && !hasFace && tries < rules.face_tries) {
       return bad(res, 422, "No face found in the picture. Look straight at the camera in good light.", { code: "no_face", tries_left: rules.face_tries - tries });
     }
     let dist = null;
@@ -204,15 +211,15 @@ router.post("/punch", async (req, res) => {
       const { rows: f } = await query(`SELECT descriptor FROM hr_employee_faces WHERE employee_id = $1`, [emp.id]);
       dist = Math.round(faceDistance(b.descriptor, f[0].descriptor) * 1000) / 1000;
     }
-    const live = b.live === true;
-    const matched = hasFace && dist <= rules.face_match_max && live;
+    const live = faceOn && b.live === true;
+    const matched = !faceOn || (hasFace && dist <= rules.face_match_max && live);
     if (!matched && tries < rules.face_tries) {
       return bad(res, 422, live ? "Face not recognised. Face the light, take off the helmet or mask, and try again." : "Please blink once while looking at the camera.",
         { code: live ? "face_mismatch" : "no_blink", tries_left: rules.face_tries - tries });
     }
     // After the last try the punch is saved anyway, with its photo, for the
     // manager to look at — it counts only once they approve.
-    const photo = photoBytes(b.photo);
+    const photo = faceOn ? photoBytes(b.photo) : null;
     const status = matched ? "ok" : "review";
     const reviewReason = matched ? null : !hasFace ? "no face found" : !live ? "no blink detected" : `face did not match (${dist})`;
     if (!emp.device_id) {

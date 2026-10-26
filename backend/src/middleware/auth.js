@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import { query } from "../db.js";
+import { lockState } from "../lib/lockdown.js";
 
 // ===========================================================================
 // ROUND 155 — the token is proof of WHO, never of WHAT.
@@ -90,6 +91,14 @@ export async function requireAuth(req, res, next) {
     // The token says who. The database says what they may be. A token whose
     // user has since been deactivated, deleted, or given a different role is
     // still cryptographically valid — it just no longer means what it says.
+    // Round 242 — lifting the emergency lock can sign everyone out: a sign-in
+    // made before that moment no longer works.
+    const lock = await lockState();
+    // (iat is in whole seconds: a sign-in in the same second as the cut-off still works.)
+    if (lock.sessions_after && payload.iat && payload.iat < Math.floor(new Date(lock.sessions_after).getTime() / 1000)) {
+      return res.status(401).json({ error: "You were signed out by the Super Admin. Sign in again.", code: "signed_out" });
+    }
+
     const live = await liveUser(payload.id);
     if (!live || !live.is_active) {
       return res.status(401).json({ error: "Your access has been turned off. Speak to your administrator." });

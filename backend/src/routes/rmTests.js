@@ -21,7 +21,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { TEST_DEFS, computeTest, rowsFor, defaultParams, testLabel, VERDICT_LABEL, STANDARD_PLANS } from "../lib/rmTestDefs.js";
-import { ensureScheduledCards, loadStandardPlan, standardKindFor, companionFor } from "../lib/rmTestCards.js";
+import { ensureScheduledCards, loadStandardPlan, standardKindFor, companionFor, rmTestSettings } from "../lib/rmTestCards.js";
 
 const router = Router();
 const READ_KEYS = ["quality.rm-tests", "quality.rm-test-register", "quality.rm-test-plans"];
@@ -447,6 +447,69 @@ function cleanPlan(body, existing) {
   if (!!low !== !!after) return { error: "A low rate needs both its period and how many results in tolerance switch to it." };
   return { plan: out };
 }
+
+// ---------------------------------------------------------------------------
+// Round 242 — a plant that was already running when the tests started
+// (owner, 26 Oct 2026). Settings, and clearing the backlog of pending cards.
+// ---------------------------------------------------------------------------
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Pending cards that a newer pending card of the same test, material and
+// supplier makes pointless.
+const SUPERSEDED_SQL = `
+  c.status IN ('pending', 'in_progress') AND c.source = 'grn' AND EXISTS (
+    SELECT 1 FROM rm_test_cards n
+     WHERE n.status IN ('pending', 'in_progress') AND n.id > c.id AND n.test_code = c.test_code
+       AND n.material_id IS NOT DISTINCT FROM c.material_id AND n.supplier_id IS NOT DISTINCT FROM c.supplier_id
+       AND COALESCE(n.params->>'name', '') = COALESCE(c.params->>'name', ''))`;
+const BEFORE_SQL = `c.status IN ('pending', 'in_progress') AND COALESCE(c.received_date, c.created_at::date) < $1::date`;
+
+router.get("/catch-up", requirePermission("quality.rm-test-plans", "view"), async (req, res) => {
+  const st = await rmTestSettings();
+  const before = DAY_RE.test(req.query.before || "") ? req.query.before : st.schedule_from;
+  const [{ rows: tot }, { rows: sup }, { rows: bef }, { rows: byTest }] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE due_at < now())::int AS overdue FROM rm_test_cards WHERE status IN ('pending','in_progress')`),
+    query(`SELECT COUNT(*)::int AS n FROM rm_test_cards c WHERE ${SUPERSEDED_SQL}`),
+    before ? query(`SELECT COUNT(*)::int AS n FROM rm_test_cards c WHERE ${BEFORE_SQL}`, [before]) : Promise.resolve({ rows: [{ n: 0 }] }),
+    query(`SELECT c.test_code, c.params, m.name AS material, COUNT(*)::int AS n, MIN(COALESCE(c.received_date, c.created_at::date))::text AS oldest
+             FROM rm_test_cards c LEFT JOIN rm_materials m ON m.id = c.material_id
+            WHERE c.status IN ('pending','in_progress') GROUP BY 1, 2, 3 ORDER BY n DESC LIMIT 40`),
+  ]);
+  res.json({
+    settings: st, before,
+    pending: tot[0].n, overdue: tot[0].overdue, superseded: sup[0].n, before_count: bef[0].n,
+    by_test: byTest.map((r) => ({ test: testLabel(r.test_code, r.params), material: r.material || "Laboratory", n: r.n, oldest: r.oldest })),
+  });
+});
+
+router.put("/catch-up/settings", requirePermission("quality.rm-test-plans", "edit"), async (req, res) => {
+  const from = req.body?.schedule_from ? String(req.body.schedule_from) : null;
+  if (from && !DAY_RE.test(from)) return res.status(400).json({ error: "Date must be yyyy-mm-dd." });
+  await rmTestSettings();
+  await query(`UPDATE rm_test_settings SET schedule_from = $1, established = $2, updated_by = $3, updated_at = now() WHERE id = 1`,
+    [from, !!req.body?.established, req.user.id]);
+  res.json({ settings: await rmTestSettings() });
+});
+
+router.post("/catch-up/close", requirePermission("quality.rm-test-plans", "edit"), async (req, res) => {
+  const mode = req.body?.mode;
+  const reason = String(req.body?.reason || "").trim().slice(0, 300);
+  if (!reason) return res.status(400).json({ error: "Say why these tests are not being done." });
+  let r;
+  if (mode === "superseded") {
+    r = await query(
+      `UPDATE rm_test_cards c SET status = 'closed', closed_by = $1, closed_at = now(), closed_reason = $2 WHERE ${SUPERSEDED_SQL}`,
+      [req.user.id, reason]);
+  } else if (mode === "before") {
+    const before = String(req.body?.before || "");
+    if (!DAY_RE.test(before)) return res.status(400).json({ error: "Choose the date." });
+    r = await query(
+      `UPDATE rm_test_cards c SET status = 'closed', closed_by = $2, closed_at = now(), closed_reason = $3 WHERE ${BEFORE_SQL}`,
+      [before, req.user.id, reason]);
+  } else {
+    return res.status(400).json({ error: "Unknown way of closing." });
+  }
+  res.json({ closed: r.rowCount });
+});
 
 router.get("/plans", requirePermission("quality.rm-test-plans", "view"), async (req, res) => {
   const ref = req.query.material_id ? materialRef(req.query.material_id) : null;

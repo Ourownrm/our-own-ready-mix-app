@@ -26,6 +26,7 @@
 
 import { query } from "../db.js";
 import { loadRules } from "./hrRules.js";
+import { compoffMarks } from "./hrLeave.js";
 
 export const DEFAULT_FULL_MIN = 420; // hours-only days (no shift): 7 h = full day
 export const DEFAULT_HALF_MIN = 240; //                               4 h = half day
@@ -452,6 +453,35 @@ export async function attendanceRegister({ from, to, employeeIds = null, nowMs =
       ...(withRows ? { row: e } : {}),
     };
   });
+  // Round 242 — mark the worked off days whose comp-off has been taken, and
+  // the days off taken as comp-off, with each other's date.
+  try {
+    const marks = await compoffMarks(emps.map((e) => e.id), to);
+    const dm = (d) => new Date(d + "T12:00:00+05:30").toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+    for (const e of employees) {
+      const m = marks.get(e.id);
+      if (!m) continue;
+      for (const day of e.days) {
+        const ea = m.earned.get(day.date);
+        if (ea) {
+          const taken = ea.taken.filter((t) => t.status === "approved");
+          const waiting = ea.taken.filter((t) => t.status === "pending");
+          day.co = { earned: ea.days, taken: taken.map((t) => t.date), waiting: waiting.map((t) => t.date), left: ea.left, expires_on: ea.expires_on,
+            state: taken.length && ea.left <= 0 ? "taken" : taken.length || waiting.length ? "part" : "open" };
+          if (taken.length) day.flags.push(`comp-off taken on ${taken.map((t) => dm(t.date)).join(", ")}`);
+          if (waiting.length) day.flags.push(`comp-off asked for ${waiting.map((t) => dm(t.date)).join(", ")}`);
+          if (ea.left > 0) day.flags.push(`${ea.left} day comp-off not taken yet${ea.expires_on ? ` — lapses ${dm(ea.expires_on)}` : ""}`);
+        }
+        const off = m.offs.get(day.date);
+        if (off && off.paid_by.length) {
+          day.co_for = off.paid_by.map((p) => p.work_date);
+          day.flags.push(`comp-off for work on ${off.paid_by.map((p) => dm(p.work_date)).join(", ")}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("attendance: comp-off marks", err.message);
+  }
   return {
     from, to, today: todayDate,
     dates: dates.map((d) => ({ date: d, dow: dow(d), holiday: holidays.get(d) || null })),

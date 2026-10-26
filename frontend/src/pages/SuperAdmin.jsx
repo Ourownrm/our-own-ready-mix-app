@@ -16,6 +16,7 @@ import { Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { EmergencyLockCard } from "../lib/Lockdown.jsx";
 
 const ACTION_LABEL = { view: "View", create: "Create", edit: "Edit", delete: "Delete" };
 const ROLE_LABEL = {
@@ -52,6 +53,9 @@ export default function SuperAdmin() {
         <div style={{ marginBottom: 12 }}>
           <Link to="/administrator" style={{ fontSize: 12, fontWeight: 600 }}>Administrator dashboard &rarr;</Link>
         </div>
+
+        {/* Round 242 — the emergency lock, Super Admin only (the server checks too). */}
+        {user?.role === "super_admin" && <EmergencyLockCard />}
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
           {[["modules", "Module access"], ["people", "People"], ["roles", "Role defaults"], ["cledger", "C Ledger users"], ["plugins", "Plugins"], ["log", "Change log"]].map(([k, l]) => (

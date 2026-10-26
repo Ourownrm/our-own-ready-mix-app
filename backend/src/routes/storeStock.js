@@ -38,8 +38,9 @@ async function ensureStockItems() {
 
 router.get("/items", requireRole("store", "manager", "plant_in_charge", "administrator", "accountant"), async (req, res) => {
   await ensureStockItems();
+  await query(`ALTER TABLE lubricant_types ADD COLUMN IF NOT EXISTS is_fuel BOOLEAN NOT NULL DEFAULT false`).catch(() => {});
   const { rows } = await query(
-    `SELECT ssi.*,
+    `SELECT ssi.*, COALESCE(lt.is_fuel, false) AS is_fuel,
             CASE WHEN ssi.item_type = 'fuel' THEN 'Diesel (Plant Store)' ELSE lt.name END AS display_name
      FROM store_stock_items ssi
      LEFT JOIN lubricant_types lt ON lt.id = ssi.lubricant_type_id

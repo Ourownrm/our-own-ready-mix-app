@@ -17,6 +17,7 @@ import { ContractLabourTab, ContractorBillsTab } from "./HrContract.jsx";
 import { EmployeeDetails, PhotoPanel, Avatar } from "./HrEmployeeCard.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const CO_TEAL = "#0E7C7B"; // Round 242 — comp-off marks in the register
 const CODE_STYLE = {
   P: { bg: "var(--signal-green-bg)", fg: "var(--signal-green)", label: "Present" },
   HD: { bg: "var(--amber-bg)", fg: "var(--amber)", label: "Half day" },
@@ -221,16 +222,19 @@ function AttendanceTab({ meta }) {
                           {d.code ? (
                             <button
                               onClick={() => { setSel(active ? null : { emp: e, day: d }); setRaising(false); setLeaving(false); }}
-                              title={`${d.code === "L" ? `${d.leave?.name}${d.leave?.half ? " (half day)" : ""}${d.leave?.paid ? "" : " — unpaid"}` : st?.label || d.code}${d.late ? ` · late ${d.late} min` : ""}${d.early ? ` · left ${d.early} min early` : ""}`}
+                              title={`${d.code === "L" ? `${d.leave?.name}${d.leave?.half ? " (half day)" : ""}${d.leave?.paid ? "" : " — unpaid"}` : st?.label || d.code}${d.late ? ` · late ${d.late} min` : ""}${d.early ? ` · left ${d.early} min early` : ""}${(d.flags || []).filter((x) => x.startsWith("comp-off") || x.includes("comp-off not taken")).map((x) => ` · ${x}`).join("")}`}
                               style={{
                                 width: 32, height: 30, padding: 0, fontSize: 10.5, fontWeight: 700, borderRadius: 6, position: "relative",
-                                border: active ? "2px solid var(--charcoal)" : "1px solid transparent",
+                                border: active ? "2px solid var(--charcoal)" : d.co || d.co_for ? `2px solid ${CO_TEAL}` : "1px solid transparent",
                                 background: st?.bg, color: st?.fg,
                               }}>
                               {d.code === "HD" ? "½" : d.code === "L" ? (d.leave?.half ? "½" : "") + (d.leave?.code || "L") : d.code}
                               {(d.late || d.early) && <span aria-hidden style={{ position: "absolute", top: 2, right: 2, width: 6, height: 6, borderRadius: 3, background: "var(--rebar)" }} />}
                               {d.pending > 0 && <span aria-hidden style={{ position: "absolute", bottom: 2, left: 2, width: 6, height: 6, borderRadius: 3, background: "var(--info)" }} />}
                               {d.flags?.some((x) => x.includes("approved request")) && <span aria-hidden style={{ position: "absolute", bottom: 1, right: 3, fontSize: 8, lineHeight: 1 }}>✓</span>}
+                              {/* Round 242 — comp-off: the worked off day (C, filled once taken) and the day off taken for it (ring). */}
+                              {d.co && <span aria-hidden style={{ position: "absolute", top: -5, left: -5, minWidth: 13, height: 13, borderRadius: 7, fontSize: 8.5, lineHeight: "13px", fontWeight: 800,
+                                background: d.co.state === "open" ? "#fff" : CO_TEAL, color: d.co.state === "open" ? CO_TEAL : "#fff", border: `1.5px solid ${CO_TEAL}`, boxSizing: "border-box" }}>C</span>}
                             </button>
                           ) : <span style={{ color: "var(--border-strong)" }}>·</span>}
                         </td>
@@ -292,6 +296,9 @@ function AttendanceTab({ meta }) {
         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: "var(--rebar)", display: "inline-block" }} />late in / early out</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: "var(--info)", display: "inline-block" }} />request waiting</span>
         <span>✓ corrected by an approved request</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 13, height: 13, borderRadius: 7, background: CO_TEAL, color: "#fff", fontSize: 8.5, fontWeight: 800, textAlign: "center", lineHeight: "13px" }}>C</span>worked off day — comp-off taken</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 13, height: 13, borderRadius: 7, border: `1.5px solid ${CO_TEAL}`, color: CO_TEAL, fontSize: 8.5, fontWeight: 800, textAlign: "center", lineHeight: "10px", boxSizing: "border-box" }}>C</span>comp-off earned, not taken yet</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 12, borderRadius: 3, border: `2px solid ${CO_TEAL}`, display: "inline-block" }} />comp-off pair (worked day ↔ day off) — tap a day to see the other date</span>
       </div>
       <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 6 }}>
         * Paid days so far = present + half days ÷ 2 + weekly offs + holidays + paid leave. Missed punches count as {meta.rules.missed_punch_at_lock === "half" ? "half days" : "absent"} when payroll is locked unless corrected; check-ins without location are not paid. A day runs 04:00 to 04:00.
@@ -307,7 +314,7 @@ const EMPTY = {
   policy: "office", default_shift_id: "", weekly_off: "0", trip_allowance: false, notes: "",
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
   daily_rate: "", service_charge_pct: "", incentive_basis: "none", incentive_min_m3: "", incentive_rate: "",
-  salesperson_id: "", ot_eligible: false, app_punch: "off", work_area_km: "", work_area_location_id: "",
+  salesperson_id: "", ot_eligible: false, app_punch: "off", work_area_km: "", work_area_location_id: "", face_check: true,
   aadhaar_no: "", pan_no: "", dl_no: "", dl_valid_till: "", bank_account_name: "", bank_name: "", bank_account_no: "", bank_ifsc: "",
 };
 
@@ -422,18 +429,26 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
           </select>
         </Field>
         {/* Round 202 — attendance on the phone: only with an app login, never drivers. */}
-        <Field label="Attendance on the phone" hint={!f.app_user_id ? "Needs an app login." : appOptions.find((u) => String(u.id) === f.app_user_id)?.role === "driver" ? "Drivers use the gate machine." : "Face check + registered phone."}>
+        <Field label="Attendance on the phone" hint={!f.app_user_id ? "Needs an app login." : appOptions.find((u) => String(u.id) === f.app_user_id)?.role === "driver" ? "Drivers use the gate machine." : "Registered phone; face check below."}>
           <select value={f.app_user_id ? f.app_punch : "off"} onChange={set("app_punch")} disabled={!f.app_user_id || appOptions.find((u) => String(u.id) === f.app_user_id)?.role === "driver"}>
             <option value="off">Off — gate machine only</option>
             <option value="plant">At the plant (inside a work location)</option>
             <option value="anywhere">Anywhere — field / sales (location saved)</option>
-            <option value="area">Working area — within a set km (warning outside / no location)</option>
+            <option value="area">Working area — within a set km (not marked outside / location off)</option>
           </select>
         </Field>
+        {/* Round 242 — face check per employee: off = no camera, location + registered phone only. */}
+        {f.app_user_id && f.app_punch !== "off" && (
+          <Field label="Face check (camera)" hint={f.face_check ? "Camera opens on Punch IN / OUT; matched to the enrolled photo." : "Off — Punch IN / OUT marks on location and the registered phone; no camera."}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, minHeight: 38 }}>
+              <input type="checkbox" checked={!!f.face_check} onChange={set("face_check")} /> Ask for the face when marking
+            </label>
+          </Field>
+        )}
         {/* Round 233 — working area: radius in km around a work location. */}
         {f.app_user_id && f.app_punch === "area" && (
           <>
-            <Field label="Working area (km)" hint="Punches outside, or with location off, are saved with a warning for HR.">
+            <Field label="Working area (km)" hint="Outside the area, or location off: attendance is not marked (the tap is kept for HR to see).">
               <input type="number" min="1" max="500" step="1" value={f.work_area_km ?? ""} placeholder="50" onChange={set("work_area_km")} />
             </Field>
             <Field label="Centre of the area" hint="A work location (HR settings). Blank = the first one.">
@@ -556,7 +571,7 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
       <div style={section}>Photo</div>
       {initial?.id ? <PhotoPanel employee={initial} canEdit={can("hr.employees", "edit")} />
         : <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Add the employee first — the photo can be added from Edit or View straight after.</div>}
-      {initial?.id && f.app_user_id && f.app_punch !== "off" && <FacePanel employee={initial} canEdit={can("hr.employees", "edit")} />}
+      {initial?.id && f.app_user_id && f.app_punch !== "off" && f.face_check && <FacePanel employee={initial} canEdit={can("hr.employees", "edit")} />}
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 10 }}>{error}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
         <button type="submit" className="btn-primary" disabled={saving}>{saving ? "Saving…" : editing ? "Save changes" : "Add employee"}</button>

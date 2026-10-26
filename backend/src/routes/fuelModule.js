@@ -642,12 +642,58 @@ router.get("/dashboard", requirePermission("fuel.dashboard", "view"), async (req
         ? { ...lastDelivery.rows[0], received_qty: num(lastDelivery.rows[0].received_qty), unit_cost: num(lastDelivery.rows[0].unit_cost) }
         : null,
       recent: recent.rows.map(ledgerRow),
+      // Round 242 — petrol is a fuel now (owner, 26 Oct 2026).
+      petrol: await petrolSummary(monthStart, today).catch((e) => { console.error("fuel dashboard: petrol", e.message); return []; }),
     });
   } catch (err) {
     console.error("GET /fuel-module/dashboard failed:", err);
     res.status(500).json({ error: "Could not load the fuel dashboard." });
   }
 });
+
+// Round 242 — PETROL in the Fuel module (owner, 26 Oct 2026: "Petrol to be
+// added to fuel, now it is with lubricants"). Petrol keeps its own stock row
+// in Store (a lubricant type flagged is_fuel), its purchases and issues stay
+// where they were; it is shown here as fuel, counted as fuel in the cost
+// dashboard, and no longer put on maintenance job cards as a lubricant.
+async function petrolSummary(from, to) {
+  await query(`ALTER TABLE lubricant_types ADD COLUMN IF NOT EXISTS is_fuel BOOLEAN NOT NULL DEFAULT false`);
+  const { rows: items } = await query(
+    `SELECT lt.id AS lubricant_type_id, lt.name, ssi.id AS item_id, ssi.current_qty, ssi.rate_per_liter, ssi.reorder_level, COALESCE(ssi.unit, 'L') AS unit
+       FROM lubricant_types lt LEFT JOIN store_stock_items ssi ON ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = lt.id
+      WHERE lt.is_active AND lt.is_fuel ORDER BY lt.name`);
+  const out = [];
+  for (const it of items) {
+    const [m, pend, recent] = await Promise.all([
+      query(
+        `SELECT COALESCE(SUM(sr.actual_quantity_issued), 0) AS issued,
+                COALESCE(SUM(COALESCE(sr.fuel_cost, sr.actual_quantity_issued * $4)), 0) AS issued_value, COUNT(*) AS fills
+           FROM supply_requests sr
+          WHERE sr.request_type = 'lubricant' AND sr.lubricant_type_id = $1 AND sr.status = 'issued'
+            AND (sr.issued_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`,
+        [it.lubricant_type_id, from, to, num(it.rate_per_liter) || 0]),
+      query(
+        `SELECT COUNT(*) FILTER (WHERE status = 'pending') AS awaiting_approval, COUNT(*) FILTER (WHERE status = 'approved') AS awaiting_issue
+           FROM supply_requests WHERE request_type = 'lubricant' AND lubricant_type_id = $1 AND status IN ('pending','approved')`, [it.lubricant_type_id]),
+      query(
+        `SELECT s.id, s.issued_at, s.actual_quantity_issued AS litres, ${UNIT_LABEL} AS unit_label
+           FROM supply_requests s ${UNIT_JOINS}
+          WHERE s.request_type = 'lubricant' AND s.lubricant_type_id = $1 AND s.status = 'issued'
+          ORDER BY s.issued_at DESC LIMIT 5`, [it.lubricant_type_id]).catch(() => ({ rows: [] })),
+    ]);
+    const rec = it.item_id
+      ? (await query(`SELECT COALESCE(SUM(qty_change), 0) AS received FROM store_stock_transactions
+                       WHERE stock_item_id = $1 AND txn_type = 'purchase_receive' AND created_at::date BETWEEN $2 AND $3`, [it.item_id, from, to])).rows[0]
+      : { received: 0 };
+    out.push({
+      name: it.name, unit: it.unit, current_qty: num(it.current_qty) ?? 0, rate_per_liter: num(it.rate_per_liter), reorder_level: num(it.reorder_level),
+      month: { issued: num(m.rows[0].issued) || 0, issued_value: Math.round(num(m.rows[0].issued_value) || 0), fills: Number(m.rows[0].fills), received: num(rec.received) || 0 },
+      pending: { awaiting_approval: Number(pend.rows[0].awaiting_approval), awaiting_issue: Number(pend.rows[0].awaiting_issue) },
+      recent: recent.rows.map((r) => ({ ...r, litres: num(r.litres) })),
+    });
+  }
+  return out;
+}
 
 // ===================== Issue fuel =====================
 // Requests waiting on someone. Approving stays on Supply Approvals and issuing

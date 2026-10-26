@@ -54,6 +54,7 @@ import { tankSummary } from "../routes/fuelModule.js";
 import { bookStockRows } from "../routes/materialModule.js";
 import { bankHeadsMonth, bankBalancesOn } from "./bankBook.js";
 import { clTicketSales, clOtherIncomeMonth, clExpenseHeadsMonth } from "./cLedger.js";
+import { partnerInterestMonth, partnerBalancesOn } from "./partners.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -318,11 +319,25 @@ async function fuelByConsumer(from, toEx, rate) {
 async function fuelMonth(ym, ctx) {
   const { from, toEx, end } = monthBounds(ym);
   const rate = ctx.dieselRate(end);
-  const [tank, consumers] = await Promise.all([tankSummary(from, end), fuelByConsumer(from, toEx, rate)]);
+  const [tank, consumers, petrol] = await Promise.all([tankSummary(from, end), fuelByConsumer(from, toEx, rate), petrolMonth(from, toEx)]);
   const adjValue = r2(tank.adj_out * (rate || 0));
-  const issuedValue = r2(consumers.reduce((t, c) => t + c.value, 0) + adjValue);
-  return { tank, consumers, rate, adj_value: adjValue, issued_value: issuedValue,
+  // Round 242 — petrol is fuel: its issues are added here (and no longer go
+  // to maintenance as a lubricant — see maintenanceRows).
+  const issuedValue = r2(consumers.reduce((t, c) => t + c.value, 0) + adjValue + petrol.value);
+  return { tank, consumers, rate, adj_value: adjValue, issued_value: issuedValue, petrol,
     bought_value: r2(tank.purchased_value), issued_litres: r2(consumers.reduce((t, c) => t + c.litres, 0) + tank.adj_out) };
+}
+async function petrolMonth(from, toEx) {
+  const { rows } = await query(
+    `SELECT COALESCE(SUM(sr.actual_quantity_issued), 0) AS litres,
+            COALESCE(SUM(COALESCE(sr.fuel_cost, ROUND(sr.actual_quantity_issued * COALESCE(ssi.rate_per_liter, 0), 2))), 0) AS value
+       FROM supply_requests sr
+       JOIN lubricant_types lt ON lt.id = sr.lubricant_type_id AND lt.is_fuel
+       LEFT JOIN store_stock_items ssi ON ssi.item_type = 'lubricant' AND ssi.lubricant_type_id = sr.lubricant_type_id
+      WHERE sr.request_type = 'lubricant' AND sr.status = 'issued'
+        AND (sr.issued_at AT TIME ZONE 'Asia/Kolkata')::date >= $1::date AND (sr.issued_at AT TIME ZONE 'Asia/Kolkata')::date < $2::date`,
+    [from, toEx]).catch(() => ({ rows: [{ litres: 0, value: 0 }] }));
+  return { litres: r2(n0(rows[0].litres)), value: r2(n0(rows[0].value)) };
 }
 
 // --------------------------------------------------------- maintenance ---
@@ -339,6 +354,9 @@ async function maintenanceRows(from, toEx) {
        UNION ALL
        SELECT c.asset_id, c.job_card_id, 'lubricant', c.amount FROM mnt_card_charges c
         WHERE c.amount IS NOT NULL AND c.charged_at::date >= $1::date AND c.charged_at::date < $2::date
+          -- Round 242: petrol put on job cards before it became fuel is counted as fuel, not here
+          AND NOT (c.source_type = 'lubricant' AND EXISTS (SELECT 1 FROM supply_requests sr JOIN lubricant_types lt ON lt.id = sr.lubricant_type_id
+                                                            WHERE sr.id = c.source_id AND lt.is_fuel))
        UNION ALL
        SELECT m.asset_id, m.job_card_id, 'tyres', ty.cost FROM mnt_tb_moves m
          JOIN mnt_tyres ty ON m.kind = 'tyre' AND ty.id = m.item_id
@@ -484,7 +502,10 @@ async function computeMonth(ym, ctx) {
   for (const [k, v] of Object.entries(clHeads)) if (k in a) a[k] = r2(a[k] + v);
   // Round 227 — C Ledger other income (scrap, used oil …).
   if (clIncome) a.other_income = r2(a.other_income + clIncome);
-  return { ym, sales, tickets, rm, fuel, mntRows, mnt, man, certs, entries, bank: bank.heads, amounts: withTotals(a) };
+  // Round 242 — interest on the partners' unsecured loans, as it accrues.
+  const partnerInterest = await partnerInterestMonth(ym).catch((e) => { console.error("cost: partner interest", e.message); return 0; });
+  if (partnerInterest) a.interest = r2(a.interest + partnerInterest);
+  return { ym, sales, tickets, rm, fuel, mntRows, mnt, man, certs, entries, bank: bank.heads, partner_interest: partnerInterest, amounts: withTotals(a) };
 }
 
 export function withTotals(a) {
@@ -710,7 +731,7 @@ const PL_LINES = [
   { total: "revenue", label: "Total revenue", band: "soft" },
   { head: "Direct costs" },
   { key: "rm", label: "Raw material consumed", src: "app", hint: "plant consumption × weighted average rate", cost: true },
-  { key: "fuel", label: "Fuel issued", src: "app", hint: "tank, outside fills, net stock adjustment down", cost: true },
+  { key: "fuel", label: "Fuel issued", src: "app", hint: "diesel tank, outside fills, net stock adjustment down, petrol", cost: true },
   { key: "power", label: "Plant power (electricity)", src: "entered", cost: true },
   { key: "repairs", label: "Repairs & maintenance", src: "app", hint: "Maintenance job cards", cost: true },
   { key: "hired_vehicles", label: "Hired vehicles & pumps", src: "entered", cost: true },
@@ -796,13 +817,15 @@ export async function profitLoss(ym, { period = "month", compare = "prev" } = {}
     if (l.hideZero && !cur[key] && !cmp[key] && !ytd[key]) continue;
     const v = cur[key] || 0, c = cmp[key] || 0;
     const fromBank = r2(months.reduce((t, m) => t + (cores.get(m).bank?.[key] || 0), 0));
-    const lineMissing = l.src === "entered" && months.some((m) => !idle(m) && !cores.get(m).entries[key] && !cores.get(m).bank?.[key]);
+    const fromPartners = key === "interest" ? r2(months.reduce((t, m) => t + (cores.get(m).partner_interest || 0), 0)) : 0;
+    const lineMissing = l.src === "entered" && months.some((m) => !idle(m) && !cores.get(m).entries[key] && !cores.get(m).bank?.[key] && !(key === "interest" && cores.get(m).partner_interest));
     const change = c && !lineMissing ? r2(((v - c) / Math.abs(c)) * 100) : null;
     const better = change == null ? null : l.cost ? change < 0 : change > 0;
     rows.push({
       kind: l.total ? "total" : "line", key, label: l.label, band: l.band || null,
       src: l.src === "entered" && fromBank && !months.some((m) => cores.get(m).entries[key]) ? "bank" : l.src || null,
-      hint: [l.hint, fromBank ? `incl. ₹${fromBank.toLocaleString("en-IN", { maximumFractionDigits: 0 })} from bank statements` : null].filter(Boolean).join(" · "),
+      hint: [l.hint, fromBank ? `incl. ₹${fromBank.toLocaleString("en-IN", { maximumFractionDigits: 0 })} from bank statements` : null,
+        fromPartners ? `incl. ₹${fromPartners.toLocaleString("en-IN", { maximumFractionDigits: 0 })} on partners’ loans (Cost → Partners)` : null].filter(Boolean).join(" · "),
       bank: fromBank || null,
       cur: v, per_m3: per(v), pct: cur.revenue ? r2((v / cur.revenue) * 100) : null, cmp: c, change, better: Math.abs(change ?? 0) < 0.05 ? null : better,
       ytd: ytd[key] || 0,
@@ -1002,11 +1025,15 @@ async function sideBalances(ym, ctx) {
   const prepaid = certPrepaid(ctx, day);
   // Round 223 — loans from the loan list, cash credit from the CC statements.
   const bank = await bankBalancesOn(day).catch(() => ({}));
+  // Round 242 — partners' capital, loans and interest owed (Cost → Partners).
+  const partners = await partnerBalancesOn(day).catch((e) => { console.error("cost: partners", e.message); return {}; });
+  if (partners.capital != null) bank.capital = partners.capital;
   return {
     day, ent, bank, retained: { opening: ro ? ro.amount : 0, opening_as_on: ro ? ro.as_on : null, pat: r2(pat), from: startYm },
     v: {
-      capital: E("capital"), retained: r2((ro ? ro.amount : 0) + pat),
+      capital: partners.capital ?? E("capital"), retained: r2((ro ? ro.amount : 0) + pat),
       term_loans: bank.term_loans ?? E("term_loans"), cash_credit: bank.cash_credit ?? E("cash_credit"),
+      partner_loans: partners.partner_loans || 0, partner_interest_due: partners.partner_interest_due || 0,
       rm_suppliers: pos(sup), transporters: pos(trn), maintenance_creditors: mnt.payable, contractors: con.payable,
       other_creditors: E("other_creditors"), salaries_payable: sal.payable, customer_advances: cust.advance,
       gst_tds_payable: E("gst_tds_payable"), tax_provision: r2(tax),
@@ -1029,6 +1056,7 @@ const BS_LAYOUT = {
     { head: "Loans" },
     { key: "term_loans", label: "Term & vehicle loans", src: "entered" },
     { key: "cash_credit", label: "Cash credit (bank overdraft)", src: "entered" },
+    { key: "partner_loans", label: "Unsecured loans from partners", src: "app", hint: "Cost → Partners", hideZero: true },
     { head: "Current liabilities" },
     { key: "rm_suppliers", label: "Raw-material suppliers", src: "app", hint: "Supplier Ledger" },
     { key: "transporters", label: "Transporters", src: "app", hint: "Transporter Ledger" },
@@ -1039,6 +1067,7 @@ const BS_LAYOUT = {
     { key: "customer_advances", label: "Customer advances", src: "app", hint: "receipts not yet set against an invoice" },
     { key: "gst_tds_payable", label: "GST, TDS, PF/ESI payable", src: "entered", hint: "incl. TDS on contractor bills" },
     { key: "tax_provision", label: "Provision for tax", src: "app", hint: "from the Profit & Loss" },
+    { key: "partner_interest_due", label: "Interest due to partners", src: "app", hint: "Cost → Partners: accrued less paid (before TDS)", hideZero: true },
   ],
   asset: [
     { head: "Fixed assets" },
@@ -1058,7 +1087,7 @@ const BS_LAYOUT = {
   ],
 };
 const CURRENT_LIAB = ["rm_suppliers", "transporters", "maintenance_creditors", "contractors", "other_creditors", "salaries_payable",
-  "customer_advances", "gst_tds_payable", "tax_provision", "cash_credit"];
+  "customer_advances", "gst_tds_payable", "tax_provision", "cash_credit", "partner_interest_due"];
 const CURRENT_ASSET = ["rm_stock", "diesel", "stores", "receivables", "advances_paid", "salary_advances", "prepaid_certs",
   "deposits_prepaid", "gst_input", "cash_bank"];
 
@@ -1079,16 +1108,18 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
     for (const l of BS_LAYOUT[k]) {
       if (l.head) { rows.push({ kind: "head", label: l.head }); continue; }
       const a = now.v[l.key] || 0, b = then.v[l.key] || 0;
+      if (l.hideZero && !a && !b) continue;
       tn += a; tt += b;
-      const viaBank = now.bank?.[l.key] != null;
-      rows.push({ kind: "line", key: l.key, label: l.label, src: viaBank ? "bank" : l.src,
-        hint: viaBank ? (l.key === "term_loans" ? "Cost → Bank statements → Loans: balance less principal repaid" : "closing balance of the cash credit statements")
+      const viaBank = now.bank?.[l.key] != null && l.key !== "capital";
+      const viaPartners = l.key === "capital" && now.bank?.capital != null;
+      rows.push({ kind: "line", key: l.key, label: l.label, src: viaBank ? "bank" : viaPartners ? "app" : l.src,
+        hint: viaPartners ? "Cost → Partners: capital brought in less returned" : viaBank ? (l.key === "term_loans" ? "Cost → Bank statements → Loans: balance less principal repaid" : "closing balance of the cash credit statements")
           : l.key === "gst_input" && gstPos ? `GST payable page: credit carried ${fmt(gstPos.credit)}${gstPos.held ? ` + held (not in GSTR-2B yet) ${fmt(gstPos.held)}` : ""}`
           : l.key === "gst_tds_payable" && gstPos && gstPos.due > 0 ? `${l.hint ? `${l.hint} · ` : ""}GST payable page: ${fmt(gstPos.due)} GST still to pay for this month`
           : l.key === "gst_input" && bankGst ? `${l.hint ? `${l.hint} · ` : ""}₹${bankGst.toLocaleString("en-IN", { maximumFractionDigits: 0 })} input GST in this month's bank-statement costs`
           : l.hint || "",
         now: r2(a), then: r2(b), change: r2(a - b),
-        missing: !viaBank && l.src === "entered" && !now.ent[l.key] });
+        missing: !viaBank && !viaPartners && l.src === "entered" && !now.ent[l.key] });
     }
     return { rows, now: r2(tn), then: r2(tt) };
   };
@@ -1103,7 +1134,7 @@ export async function balanceSheet(ym, { compare = "fy_start" } = {}) {
   }
   const v = now.v;
   const ca = CURRENT_ASSET.reduce((t, k) => t + (v[k] || 0), 0), cl = CURRENT_LIAB.reduce((t, k) => t + (v[k] || 0), 0);
-  const netWorth = r2(v.capital + v.retained), loans = r2(v.term_loans + v.cash_credit);
+  const netWorth = r2(v.capital + v.retained), loans = r2(v.term_loans + v.cash_credit + (v.partner_loans || 0));
   const trade = r2(v.rm_suppliers + v.transporters + v.maintenance_creditors + v.contractors + v.other_creditors);
 
   // Working capital cycle on this month's flows.

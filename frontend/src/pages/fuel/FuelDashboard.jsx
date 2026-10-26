@@ -285,6 +285,28 @@ export default function FuelDashboard({ go }) {
           </table>
         </div>
       </section>
+
+      {/* Round 242 — petrol is a fuel: its own stock (kept in Store), issues and purchases this month. */}
+      {(data.petrol || []).map((p) => (
+        <section key={p.name} className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>{p.name}</h2>
+            <span style={{ fontSize: 12, color: "var(--slate)" }}>Stock kept in Store · issued on a Petrol request · counted as fuel in the cost dashboard</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginTop: 10 }}>
+            <Kpi label="In stock" value={`${fmtNum(p.current_qty, 1)} ${p.unit}`}
+              sub={p.reorder_level != null ? (p.current_qty <= p.reorder_level ? "at or below reorder level" : `reorder at ${fmtNum(p.reorder_level)} ${p.unit}`) : "reorder level not set"} />
+            <Kpi label="Issued this month" value={`${fmtNum(p.month.issued, 1)} ${p.unit}`} sub={`${p.month.fills} fill${p.month.fills === 1 ? "" : "s"} · ${fmtRs(p.month.issued_value)}`} />
+            <Kpi label="Received this month" value={`${fmtNum(p.month.received, 1)} ${p.unit}`} sub={p.rate_per_liter != null ? `rate ${fmtRs(p.rate_per_liter, 2)}/${p.unit}` : "rate not set"} />
+            <Kpi label="Waiting" value={`${p.pending.awaiting_approval} · ${p.pending.awaiting_issue}`} sub="to approve · to issue" />
+          </div>
+          {p.recent.length > 0 && (
+            <div style={{ fontSize: 12.5, marginTop: 10, color: "var(--slate)" }}>
+              Latest: {p.recent.map((r) => `${r.unit_label || "—"} ${fmtNum(r.litres, 1)} ${p.unit} (${fmtDate(r.issued_at)})`).join(" · ")}
+            </div>
+          )}
+        </section>
+      ))}
     </div>
   );
 }

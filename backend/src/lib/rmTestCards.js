@@ -28,6 +28,24 @@
 import { pool, query } from "../db.js";
 import { TEST_DEFS, STANDARD_PLANS, testLabel, periodLabel } from "./rmTestDefs.js";
 import { pushToRole } from "./push.js";
+import { ROUND242_RMTEST_SQL } from "./round242Schema.js";
+
+// Round 242 (owner, 26 Oct 2026) — "the aggregate testing plan is as per the
+// standards from the beginning of the company, but we are already a running
+// company for three years; how do I manage this test schedule now? It is
+// crowded with pending test cards." Two settings (Test plans → Running plant):
+//   schedule_from  loads received before this date never get a card;
+//   established    a supplier who supplied before schedule_from starts on the
+//                  LOW rate (the IS 4926 reduced frequency) instead of
+//                  earning it with a streak; one non-conforming result after
+//                  that puts them back on the high rate, as before.
+let settingsReady = null;
+export async function rmTestSettings(db = { query }) {
+  if (!settingsReady) settingsReady = query(ROUND242_RMTEST_SQL).catch((e) => { settingsReady = null; throw e; });
+  await settingsReady;
+  const { rows } = await db.query(`SELECT to_char(schedule_from, 'YYYY-MM-DD') AS schedule_from, established FROM rm_test_settings WHERE id = 1`);
+  return rows[0] || { schedule_from: null, established: false };
+}
 
 // Advisory-lock namespace for this feature (the first int of the two-int
 // form), so a plan id can never collide with another feature's lock.
@@ -288,9 +306,23 @@ function sameTestSql(alias = "c") {
           AND COALESCE(${alias}.params->>'name', '') = $4`;
 }
 
-export async function rateFor(db, plan, supplierId) {
+export async function rateFor(db, plan, supplierId, settings = null) {
   if (!plan.low_days || !plan.low_after) return { rate: "high", streak: 0 };
   const name = (plan.params && plan.params.name) || "";
+  // Round 242 — an established supplier starts on the low rate.
+  if (settings?.established && settings.schedule_from && supplierId) {
+    const { rows: old } = await db.query(
+      `SELECT 1 FROM rm_receipts r JOIN rm_orders o ON o.id = r.order_id -- receipts-raw: any load booked in shows the supplier supplied before
+        WHERE o.supplier_id = $1 AND o.material_id IS NOT DISTINCT FROM $2 AND r.received_date < $3::date LIMIT 1`,
+      [supplierId, plan.material_id, settings.schedule_from]);
+    if (old.length) {
+      const { rows: bad } = await db.query(
+        `SELECT 1 FROM rm_test_cards c WHERE ${sameTestSql("c")} AND c.status = 'approved' AND c.verdict = 'non_conforming'
+            AND c.approved_at >= $5::date LIMIT 1`,
+        [plan.test_code, plan.material_id, supplierId, name, settings.schedule_from]);
+      if (!bad.length) return { rate: "low", streak: plan.low_after, established: true };
+    }
+  }
   const { rows } = await db.query(
     `SELECT c.verdict FROM rm_test_cards c
       WHERE ${sameTestSql("c")} AND c.status = 'approved'
@@ -326,6 +358,9 @@ export async function issueCardsForReceipt(receiptId, userId) {
     );
     rec = rows[0];
     if (!rec) { await client.query("ROLLBACK"); return []; }
+    // Round 242 — a load received before the schedule start gets no card.
+    const settings = await rmTestSettings(client);
+    if (settings.schedule_from && rec.received_date && rec.received_date < settings.schedule_from) { await client.query("ROLLBACK"); return []; }
 
     // A material this feature has never seen gets the standard plan now.
     const { rows: fresh } = await client.query(
@@ -352,7 +387,7 @@ export async function issueCardsForReceipt(receiptId, userId) {
       if (plan.trigger === "every_grn") {
         reason = "Every GRN";
       } else {
-        const r = await rateFor(client, plan, rec.supplier_id);
+        const r = await rateFor(client, plan, rec.supplier_id, settings);
         rate = r.rate;
         const days = (rate === "low" ? plan.low_days : plan.high_days) || plan.high_days || 30;
         const { rows: inWindow } = await client.query(
@@ -367,7 +402,9 @@ export async function issueCardsForReceipt(receiptId, userId) {
           `SELECT 1 FROM rm_test_cards c WHERE ${sameTestSql("c")} AND c.status <> 'closed' LIMIT 1`,
           [plan.test_code, rec.material_id, rec.supplier_id, name]
         );
-        reason = !ever.length
+        reason = r.established
+          ? `${periodLabel(days)} · first GRN from ${rec.supplier_name} in ${days} day${days === 1 ? "" : "s"} (established supplier — low rate)`
+          : !ever.length
           ? `First test on record for ${rec.supplier_name}`
           : `${periodLabel(days)} · first GRN from ${rec.supplier_name} in ${days} day${days === 1 ? "" : "s"}` +
             (rate === "low" ? ` (low rate: last ${r.streak} results in tolerance)` : plan.low_days ? " (high rate)" : "");

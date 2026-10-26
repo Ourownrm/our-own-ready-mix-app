@@ -1,3 +1,5 @@
+import { lockdownGate } from "./lib/lockdown.js";
+import lockdownRoutes from "./routes/lockdown.js";
 import express from "express";
 import "express-async-errors";
 import cors from "cors";
@@ -34,6 +36,7 @@ import maintenanceModuleRoutes from "./routes/maintenanceModule.js";
 import maintenanceModule2Routes from "./routes/maintenanceModule2.js";
 import costModuleRoutes from "./routes/costModule.js";
 import costBankRoutes from "./routes/costBank.js";
+import costPartnersRoutes from "./routes/costPartners.js";
 import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
@@ -168,6 +171,11 @@ app.use(cookieParser());
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
+// Round 242 — the emergency lock: while it is on, only signing in, the lock
+// itself and each person's own attendance get through (lib/lockdown.js).
+app.use(lockdownGate);
+app.use("/api/lockdown", lockdownRoutes);
+
 app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/tickets", ticketRoutes);
@@ -199,6 +207,8 @@ app.use("/api/maintenance-module", maintenanceModule2Routes);
 // Round 218 — Cost dashboard, Profit & Loss, Balance Sheet.
 // Round 223 — Cost → Bank statements.
 app.use("/api/cost/bank", costBankRoutes);
+// Round 242 — partners' capital and unsecured loans.
+app.use("/api/cost/partners", costPartnersRoutes);
 app.use("/api/cost/gst", costGstRoutes);
 // Round 224 — Cost → C Ledger (gated by each person's own C Ledger rights).
 app.use("/api/cost/c-ledger", cLedgerRoutes);

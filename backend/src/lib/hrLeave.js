@@ -97,11 +97,15 @@ export function compoffLedger(claims, coLeaves, asOf) {
   // is paid by that day first, whichever date comes first — an absence can
   // be made good by an off day worked afterwards.
   const own = new Map();
+  // Round 242 — remember which worked day paid for which day off, so the
+  // attendance register can mark both.
+  for (const c of credits) c.taken = [];
+  for (const u of uses) u.paid_by = [];
   for (const u of uses) {
     if (!u.compoff_claim_id) continue;
     const c = credits.find((x) => x.id === u.compoff_claim_id);
     const take = c ? Math.min(c.left, u.days) : 0;
-    if (c) c.left -= take;
+    if (c) { c.left -= take; if (take > 0) { c.taken.push({ date: u.from_date, to: u.to_date || u.from_date, days: take, status: u.status }); u.paid_by.push({ work_date: c.work_date, days: take }); } }
     own.set(u, take);
   }
   for (const u of uses) {
@@ -110,6 +114,8 @@ export function compoffLedger(claims, coLeaves, asOf) {
       if (need <= 0) break;
       if (c.left <= 0 || c.work_date >= u.from_date || c.expires_on < u.from_date) continue;
       const take = Math.min(c.left, need); c.left -= take; need -= take;
+      c.taken.push({ date: u.from_date, to: u.to_date || u.from_date, days: take, status: u.status });
+      u.paid_by.push({ work_date: c.work_date, days: take });
     }
     unfunded += need;
   }
@@ -129,7 +135,8 @@ export function compoffLedger(claims, coLeaves, asOf) {
 async function loadFor(employeeIds, asOf, excludeLeaveId) {
   const from = addMonths(asOf, -40);
   const [lv, cl] = await Promise.all([
-    query(`SELECT id, employee_id, leave_type_id, status, days::float AS days, to_char(from_date, 'YYYY-MM-DD') AS from_date, compoff_claim_id
+    query(`SELECT id, employee_id, leave_type_id, status, days::float AS days, to_char(from_date, 'YYYY-MM-DD') AS from_date,
+                  to_char(to_date, 'YYYY-MM-DD') AS to_date, compoff_claim_id
            FROM hr_leaves WHERE employee_id = ANY($1::int[]) AND status IN ('approved','pending') AND from_date >= $2
              AND ($3::int IS NULL OR id <> $3)`, [employeeIds, from, excludeLeaveId || null]),
     query(`SELECT id, employee_id, status, days::float AS days, to_char(work_date, 'YYYY-MM-DD') AS work_date,
@@ -163,4 +170,30 @@ export async function compoffAvailable(empId, coTypeId, date, excludeLeaveId = n
   const { leaves, claims } = await loadFor([empId], date, excludeLeaveId);
   const led = compoffLedger(claims, leaves.filter((l) => l.leave_type_id === coTypeId), date);
   return r1(led.credits.filter((c) => c.work_date < date && c.expires_on >= date).reduce((a, c) => a + c.left, 0));
+}
+
+// Round 242 (owner, 26 Oct 2026) — "when comp off is taken against a day
+// which is eligible for comp off, it is to be identified with colour or mark
+// in the attendance page". For each employee: the worked off days that earned
+// comp-off (with when it was taken, if it was), and the days off taken as
+// comp-off (with the worked day that paid for them).
+export async function compoffMarks(employeeIds, asOf) {
+  const out = new Map();
+  if (!employeeIds.length) return out;
+  const types = (await leaveTypes()).filter((t) => t.kind === "comp_off").map((t) => t.id);
+  const { leaves, claims } = await loadFor(employeeIds, asOf, null);
+  for (const id of employeeIds) {
+    const led = compoffLedger(claims.filter((c) => c.employee_id === id),
+      leaves.filter((l) => l.employee_id === id && types.includes(l.leave_type_id)), "9999-12-31");
+    const earned = new Map();
+    for (const c of led.credits) earned.set(c.work_date, { days: c.days, left: r1(c.left), expires_on: c.expires_on, taken: c.taken || [] });
+    const offs = new Map();
+    for (const l of leaves.filter((x) => x.employee_id === id && types.includes(x.leave_type_id))) {
+      // the CO leave object carried its paid_by through the ledger run
+      const u = l;
+      for (let d = u.from_date; d <= (u.to_date || u.from_date); d = addDaysYmd(d, 1)) offs.set(d, { paid_by: u.paid_by || [], status: u.status });
+    }
+    out.set(id, { earned, offs });
+  }
+  return out;
 }

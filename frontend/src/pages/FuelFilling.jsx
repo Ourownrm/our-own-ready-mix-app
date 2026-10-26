@@ -94,15 +94,18 @@ function RequestFlow() {
     if (!quantity) return setError("Enter the quantity needed.");
     if (requestType === "fuel" && !stationId) return setError("Select a filling station.");
     if (requestType === "lubricant" && !lubricantTypeId) return setError("Select which lubricant.");
+    // Round 242 — petrol is a fuel choice of its own (kept in Store as its own stock item).
+    const petrolType = lubricantTypes.find((l) => l.is_fuel);
+    if (requestType === "petrol" && !petrolType) return setError("Petrol is not set up yet. Ask the Administrator.");
 
     const body = {
-      request_type: requestType,
+      request_type: requestType === "petrol" ? "lubricant" : requestType,
       equipment_type: equipmentType,
       odometer_reading: odometer || null,
       hour_meter_reading: hourMeter || null,
       requested_quantity: quantity,
       fuel_station_id: requestType === "fuel" ? stationId : null,
-      lubricant_type_id: requestType === "lubricant" ? lubricantTypeId : null,
+      lubricant_type_id: requestType === "lubricant" ? lubricantTypeId : requestType === "petrol" ? petrolType.id : null,
     };
     if (equipmentType === "truck") body.truck_id = unitId;
     else if (equipmentType === "pump") body.pump_id = unitId;
@@ -173,7 +176,10 @@ function RequestFlow() {
           <div style={{ fontWeight: 600, marginBottom: 10 }}>New request</div>
 
           <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            <button type="button" onClick={() => setRequestType("fuel")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "fuel" ? 600 : 400, background: requestType === "fuel" ? "var(--concrete)" : "transparent" }}>Fuel</button>
+            <button type="button" onClick={() => setRequestType("fuel")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "fuel" ? 600 : 400, background: requestType === "fuel" ? "var(--concrete)" : "transparent" }}>Diesel</button>
+            {lubricantTypes.some((l) => l.is_fuel) && (
+              <button type="button" onClick={() => setRequestType("petrol")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "petrol" ? 600 : 400, background: requestType === "petrol" ? "var(--concrete)" : "transparent" }}>Petrol</button>
+            )}
             <button type="button" onClick={() => setRequestType("lubricant")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "lubricant" ? 600 : 400, background: requestType === "lubricant" ? "var(--concrete)" : "transparent" }}>Lubricant</button>
           </div>
 
@@ -229,18 +235,20 @@ function RequestFlow() {
                   {stations.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_plant ? " (plant)" : ""}</option>)}
                 </select>
               </div>
+            ) : requestType === "petrol" ? (
+              <div style={{ fontSize: 12, color: "var(--slate)" }}>Petrol is issued from the plant store.</div>
             ) : (
               <div>
                 <div style={{ color: "var(--slate)" }}>Lubricant</div>
                 <select value={lubricantTypeId} onChange={(e) => setLubricantTypeId(e.target.value)} required>
                   <option value="">Select</option>
-                  {lubricantTypes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                  {lubricantTypes.filter((l) => !l.is_fuel).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
                 </select>
               </div>
             )}
 
             <div>
-              <div style={{ color: "var(--slate)" }}>Quantity {requestType === "fuel" ? "(litres)" : "(litres/kg)"}</div>
+              <div style={{ color: "var(--slate)" }}>Quantity {requestType === "lubricant" ? "(litres/kg)" : "(litres)"}</div>
               <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
             </div>
 

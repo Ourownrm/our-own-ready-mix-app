@@ -19,7 +19,9 @@ router.get("/breakdown-issue-types", (req, res) => {
 });
 
 router.get("/lubricant-types", async (req, res) => {
-  const { rows } = await query("SELECT id, name FROM lubricant_types WHERE is_active ORDER BY name");
+  // Round 242 — is_fuel: petrol is a fuel (shown as its own choice, not with lubricants).
+  await query(`ALTER TABLE lubricant_types ADD COLUMN IF NOT EXISTS is_fuel BOOLEAN NOT NULL DEFAULT false`).catch(() => {});
+  const { rows } = await query("SELECT id, name, is_fuel FROM lubricant_types WHERE is_active ORDER BY name");
   res.json(rows);
 });
 

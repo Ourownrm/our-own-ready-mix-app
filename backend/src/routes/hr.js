@@ -19,6 +19,12 @@ import { leaveTypes, computeBalances, compoffAvailable, eligibility, addDaysYmd 
 
 const router = Router();
 router.use(requireAuth);
+// Round 242 — the employee's face-check switch is made on first use too.
+let r242Face = null;
+router.use((req, _res, next) => {
+  if (!r242Face) r242Face = import("../lib/round242Schema.js").then((m) => query(m.ROUND242_FACE_SQL)).catch((e) => { r242Face = null; throw e; });
+  r242Face.then(() => next(), next);
+});
 
 const ANY_HR = ["hr.today", "hr.attendance", "hr.employees", "hr.roster", "hr.settings"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -184,6 +190,8 @@ function employeeFields(b, { withSalary }) {
     f.work_area_km = km;
   }
   if (b.work_area_location_id !== undefined) f.work_area_location_id = intOrNull(b.work_area_location_id);
+  // Round 242 — face check on the phone, per employee (default on).
+  if (b.face_check !== undefined) f.face_check = bool(b.face_check, true);
   if (f.weekly_off !== null && (f.weekly_off < 0 || f.weekly_off > 6)) throw Object.assign(new Error("Weekly off must be a day of the week."), { expose: true });
   if (f.date_of_leaving && f.date_of_joining && f.date_of_leaving < f.date_of_joining) throw Object.assign(new Error("Leaving date is before joining date."), { expose: true });
   if (withSalary) {

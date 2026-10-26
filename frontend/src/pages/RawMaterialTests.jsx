@@ -861,6 +861,7 @@ function PlansTab({ setError, setNotice }) {
   const mat = meta.materials.find((m) => m.id === materialId);
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-start" }}>
+      <RunningPlantPanel canEdit={canEdit} setError={setError} setNotice={setNotice} />
       <div className="card" style={{ flex: "1 1 220px", padding: 6 }}>
         {meta.materials.map((m) => (
           <button key={m.id} type="button" onClick={() => setMaterialId(m.id)}
@@ -964,5 +965,104 @@ function PlanRow({ p, canEdit, canDelete, patch, remove }) {
       <td><input type="checkbox" checked={p.is_active} disabled={!canEdit} onChange={(e) => patch(p, { is_active: e.target.checked })} aria-label="Plan active" /></td>
       <td>{canDelete && <button type="button" style={{ padding: "4px 8px", color: "var(--alert-red)" }} onClick={() => remove(p)}>Remove</button>}</td>
     </tr>
+  );
+}
+
+// Round 242 (owner, 26 Oct 2026) — the plans follow the standard as if the
+// plant had just started, but it has been running for three years, so the
+// To-do list filled with pending cards. A start date for the schedule,
+// established suppliers on the low rate, and two ways to clear the backlog.
+function RunningPlantPanel({ canEdit, setError, setNotice }) {
+  const [d, setD] = useState(null);
+  const [form, setForm] = useState(null);
+  const [before, setBefore] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  function load(b = before) {
+    apiRequest(`/rm-tests/catch-up${b ? `?before=${b}` : ""}`).then((r) => {
+      setD(r);
+      setForm((f) => f || { schedule_from: r.settings.schedule_from || "", established: !!r.settings.established });
+      if (!b && r.before) setBefore(r.before);
+    }).catch((e) => setError(e.message));
+  }
+  useEffect(() => { load(); }, []);
+  if (!d || !form) return null;
+  async function save() {
+    setBusy(true);
+    try {
+      await apiRequest("/rm-tests/catch-up/settings", { method: "PUT", body: { schedule_from: form.schedule_from || null, established: form.established } });
+      setNotice("Saved. New loads follow these settings from now on."); load();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+  async function close(mode) {
+    const n = mode === "superseded" ? d.superseded : d.before_count;
+    if (!n) return;
+    const reason = mode === "superseded"
+      ? "Older card — a newer card for the same test, material and supplier is pending"
+      : `Load received before ${before} — plant already running; tests restart from the schedule start`;
+    if (!window.confirm(`Close ${n} pending card${n === 1 ? "" : "s"}?\n\nReason saved on each: "${reason}".\nThey move to the Closed list and can be looked at there.`)) return;
+    setBusy(true);
+    try {
+      const r = await apiRequest("/rm-tests/catch-up/close", { method: "POST", body: { mode, before, reason } });
+      setNotice(`${r.closed} card${r.closed === 1 ? "" : "s"} closed.`); load();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+  const box = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600 };
+  return (
+    <div className="card" style={{ flex: "1 1 100%", borderLeft: "4px solid var(--info)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 700 }}>Running plant — start the schedule from today</div>
+          <div style={{ fontSize: 12.5, color: "var(--slate)" }}>
+            {d.pending} card{d.pending === 1 ? "" : "s"} pending{d.overdue ? ` (${d.overdue} overdue)` : ""} · {d.superseded} repeat{d.superseded === 1 ? "" : "s"} of a newer pending card
+            {d.settings.schedule_from ? ` · schedule starts ${fmtDate(d.settings.schedule_from)}` : " · no start date set"}
+            {d.settings.established ? " · established suppliers on the low rate" : ""}
+          </div>
+        </div>
+        <button type="button" onClick={() => setOpen((x) => !x)} aria-expanded={open}>{open ? "Hide" : "Set up / clear the backlog"}</button>
+      </div>
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+          <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+            The plans follow IS 4926 as if every supplier were new. For a plant that has been running for years: <b>1.</b> set the date the schedule starts —
+            loads received before it get no card; <b>2.</b> let suppliers who already supplied before that date start on the reduced (low) rate,
+            until a result fails; <b>3.</b> close the backlog. Closed cards keep their reason and stay on the Closed list.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, alignItems: "end" }}>
+            <label style={box}>Schedule starts on
+              <input type="date" value={form.schedule_from} onChange={(e) => setForm({ ...form, schedule_from: e.target.value })} disabled={!canEdit} /></label>
+            <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5 }}>
+              <input type="checkbox" checked={form.established} onChange={(e) => setForm({ ...form, established: e.target.checked })} disabled={!canEdit || !form.schedule_from} style={{ marginTop: 3 }} />
+              <span>Suppliers who supplied before that date start on the <b>low rate</b> (e.g. grading every 3 months instead of weekly). A non-conforming result puts that supplier back on the high rate.</span>
+            </label>
+            {canEdit && <button type="button" className="btn-primary" disabled={busy} onClick={save}>Save</button>}
+          </div>
+          {canEdit && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+              <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 12, fontSize: 12.5 }}>
+                <b>Close repeats</b> — keep only the newest pending card for each test, material and supplier.
+                <div style={{ marginTop: 8 }}><button type="button" disabled={busy || !d.superseded} onClick={() => close("superseded")}>Close {d.superseded} repeat card{d.superseded === 1 ? "" : "s"}</button></div>
+              </div>
+              <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 12, fontSize: 12.5 }}>
+                <b>Close the backlog</b> — every pending card for a load received before:
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <input type="date" value={before} onChange={(e) => { setBefore(e.target.value); load(e.target.value); }} aria-label="Close cards for loads received before" />
+                  <button type="button" disabled={busy || !before || !d.before_count} onClick={() => close("before")}>Close {before ? d.before_count : 0} card{d.before_count === 1 ? "" : "s"}</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {d.by_test.length > 0 && (
+            <details>
+              <summary style={{ cursor: "pointer", fontSize: 12.5, color: "var(--slate)" }}>Where the pending cards are ({d.by_test.length})</summary>
+              <table style={{ width: "100%", fontSize: 12.5, marginTop: 6 }}>
+                <thead><tr><th>Material</th><th>Test</th><th style={{ textAlign: "right" }}>Pending</th><th>Oldest load</th></tr></thead>
+                <tbody>{d.by_test.map((r, i) => <tr key={i}><td>{r.material}</td><td>{r.test}</td><td style={{ textAlign: "right" }}>{r.n}</td><td>{fmtDate(r.oldest)}</td></tr>)}</tbody>
+              </table>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

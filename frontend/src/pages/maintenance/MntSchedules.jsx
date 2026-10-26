@@ -4,10 +4,14 @@
 // (mnt.schedules edit / delete), with an Undo straight after a delete.
 // Round 215c — schedules are planned per MODEL (Tata Signa, Prima …); every
 // vehicle of the model gets them, and "last done" is kept per vehicle.
+// Round 242 (owner, 26 Oct 2026: "PM Schedules to be grouped with vehicles")
+// — opens By vehicle: each vehicle with every schedule that applies to it,
+// its status (overdue / due soon …), what is left and when it was last done.
+// The By model view (where schedules are planned and edited) stays.
 import { useMemo, useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
-import { useLoad, useAction, Loading, Msg, Badge, BASIS, fmtDate, fmtNum, H2, MUTED, ROW, GRID, Field, SMALL_BTN } from "./mntUi.jsx";
+import { useLoad, useAction, Loading, Msg, Badge, BASIS, PM_STATUS, fmtDate, fmtNum, H2, MUTED, ROW, GRID, Field, SMALL_BTN } from "./mntUi.jsx";
 
 const TRIGGERS = [
   ["day", "Every N days"], ["week", "Every N weeks"], ["month", "Every N months"],
@@ -23,12 +27,16 @@ export default function MntSchedules() {
   const { can } = usePermissions();
   const sched = useLoad("/maintenance-module/schedules");
   const models = useLoad("/maintenance-module/models");
+  const due = useLoad("/maintenance-module/due");
+  const [view, setView] = useState("vehicle");
+  const [assetId, setAssetId] = useState(null);
+  const [vq, setVq] = useState("");
   const [modelId, setModelId] = useState(null);
   const [open, setOpen] = useState(null); // schedule id showing its vehicles
   const [edit, setEdit] = useState(null);       // form object
   const [baseline, setBaseline] = useState(null); // { schedule_id, asset_id, ... }
   const [deleted, setDeleted] = useState(null);
-  const act = useAction(() => sched.load());
+  const act = useAction(() => { sched.load(); due.load(); });
   const canEdit = can("mnt.schedules", "edit");
   const canCreate = can("mnt.schedules", "create");
   const canDelete = can("mnt.schedules", "delete");
@@ -38,6 +46,24 @@ export default function MntSchedules() {
     for (const s of sched.data || []) for (const x of s.models) (m[x.model_id] = m[x.model_id] || []).push(s);
     return m;
   }, [sched.data]);
+
+  // Round 242 — every vehicle with its schedules (from the due list).
+  const vehicles = useMemo(() => {
+    const byId = new Map();
+    const modelOf = new Map();
+    for (const s of sched.data || []) for (const a of s.assets) modelOf.set(a.asset_id, a.model_id);
+    for (const r of due.data || []) {
+      if (!byId.has(r.asset_id)) byId.set(r.asset_id, { asset_id: r.asset_id, name: r.asset_name, group: r.asset_group, model_id: modelOf.get(r.asset_id), km: r.km, hours: r.hours, rows: [] });
+      byId.get(r.asset_id).rows.push(r);
+    }
+    const list = [...byId.values()];
+    for (const v of list) {
+      v.overdue = v.rows.filter((r) => r.status === "overdue").length;
+      v.soon = v.rows.filter((r) => r.status === "due_soon").length;
+      v.never = v.rows.filter((r) => r.status === "never").length;
+    }
+    return list.sort((a, b) => (b.overdue - a.overdue) || (b.soon - a.soon) || a.name.localeCompare(b.name, "en", { numeric: true }));
+  }, [due.data, sched.data]);
 
   if (!sched.data || !models.data) return <Loading error={sched.error || models.error} />;
   const allModels = models.data.models;
@@ -85,6 +111,18 @@ export default function MntSchedules() {
           <button type="button" style={SMALL_BTN} onClick={undo}>Undo</button>
         </div>
       )}
+      <div role="tablist" aria-label="Group PM schedules" style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["vehicle", "By vehicle"], ["model", "By model"]].map(([k, l]) => (
+          <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => { setView(k); setEdit(null); setBaseline(null); }}
+            style={{ padding: "7px 14px", fontSize: 12.5, borderRadius: 999, fontWeight: view === k ? 600 : 400,
+              background: view === k ? "var(--charcoal)" : "#fff", color: view === k ? "#fff" : "var(--charcoal)", border: "1px solid var(--border-strong)" }}>{l}</button>
+        ))}
+      </div>
+      {view === "vehicle" ? (
+        <VehicleView vehicles={vehicles} due={due} sched={sched.data} allModels={allModels} assetId={assetId} setAssetId={setAssetId} vq={vq} setVq={setVq}
+          canEdit={canEdit} baseline={baseline} setBaseline={setBaseline} saveBaseline={saveBaseline} act={act}
+          onEditSchedule={(s) => { setView("model"); const m = s.models[0]?.model_id; if (m) setModelId(m); openEdit(s); }} />
+      ) : (
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
         <aside className="card" style={{ flex: "1 1 250px", maxWidth: 320, padding: 10 }}>
           {allModels.map((a) => (
@@ -221,6 +259,79 @@ export default function MntSchedules() {
           </section>
         )}
       </div>
+      )}
     </>
+  );
+}
+
+function VehicleView({ vehicles, due, sched, allModels, assetId, setAssetId, vq, setVq, canEdit, baseline, setBaseline, saveBaseline, act, onEditSchedule }) {
+  if (!due.data) return <Loading error={due.error} />;
+  const q = vq.trim().toLowerCase();
+  const shown = q ? vehicles.filter((v) => `${v.name} ${v.group || ""}`.toLowerCase().includes(q)) : vehicles;
+  const v = vehicles.find((x) => x.asset_id === assetId) || shown[0] || null;
+  const modelName = (id) => allModels.find((m) => m.id === id)?.name || "";
+  const schedById = new Map((sched || []).map((s) => [s.id, s]));
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
+      <aside className="card" style={{ flex: "1 1 250px", maxWidth: 320, padding: 10 }}>
+        <input aria-label="Find a vehicle" placeholder="Find a vehicle…" value={vq} onChange={(e) => setVq(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+        {!vehicles.length && <div style={MUTED}>No vehicles have schedules yet. Give each vehicle its model on the Equipment tab.</div>}
+        {shown.map((x) => (
+          <button key={x.asset_id} type="button" onClick={() => { setAssetId(x.asset_id); setBaseline(null); }}
+            style={{ display: "block", width: "100%", textAlign: "left", padding: 10, borderRadius: 8, marginBottom: 2,
+              border: `1px solid ${x.asset_id === v?.asset_id ? "#E7C3A6" : "transparent"}`, background: x.asset_id === v?.asset_id ? "#FBF3EC" : "none" }}>
+            <b style={{ fontSize: 13 }}>{x.name.replace(/ — .*$/, "")}</b>
+            <span style={{ ...MUTED, fontSize: 11.5, display: "block" }}>
+              {modelName(x.model_id) || x.group} · {x.rows.length} schedule{x.rows.length === 1 ? "" : "s"}
+              {x.overdue ? <b style={{ color: "var(--alert-red)" }}> · {x.overdue} overdue</b> : null}
+              {x.soon ? <b style={{ color: "var(--amber)" }}> · {x.soon} due soon</b> : null}
+            </span>
+          </button>
+        ))}
+      </aside>
+      {v && (
+        <section className="card" style={{ flex: "1 1 420px", minWidth: 0 }}>
+          <h2 style={{ ...H2, marginBottom: 2 }}>{v.name}</h2>
+          <div style={{ ...MUTED, marginBottom: 8 }}>
+            {modelName(v.model_id) || v.group}
+            {v.km != null ? ` · ${fmtNum(v.km)} km now` : ""}{v.hours != null ? ` · ${fmtNum(v.hours)} h now` : ""}
+            {" · schedules are planned per model — editing one changes it for every vehicle of that model"}
+          </div>
+          {v.rows.map((r) => {
+            const s = schedById.get(r.schedule_id);
+            return (
+              <div key={r.schedule_id} style={{ ...ROW, padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+                <div style={{ flex: 1, minWidth: 190 }}>
+                  <b style={{ fontSize: 13.5 }}>{r.schedule_name}</b>
+                  <div style={MUTED}>{r.trigger}</div>
+                  <div style={{ ...MUTED, fontSize: 11.5 }}>Last done {lastDoneText(r)}{r.next && r.next !== "—" ? ` · next at ${r.next}` : ""}</div>
+                </div>
+                <div style={{ textAlign: "right", minWidth: 110 }}>
+                  <Badge map={PM_STATUS} value={r.status} />
+                  <div style={{ ...MUTED, fontSize: 11.5, marginTop: 2 }}>{r.left}</div>
+                </div>
+                {canEdit && <button type="button" style={SMALL_BTN} onClick={() => setBaseline({ schedule_id: r.schedule_id, asset_id: v.asset_id, vehicle: v.name, name: r.schedule_name, last_done_date: r.last_done_date ? String(r.last_done_date).slice(0, 10) : "", last_done_km: r.last_done_km ?? "", last_done_hours: r.last_done_hours ?? "" })}>Set last done</button>}
+                {canEdit && s && <button type="button" style={SMALL_BTN} onClick={() => onEditSchedule(s)}>Edit schedule</button>}
+              </div>
+            );
+          })}
+        </section>
+      )}
+      {baseline && (
+        <section className="card" style={{ flex: "1 1 320px", minWidth: 0, borderColor: "#E7C3A6" }}>
+          <h2 style={H2}>Last done — {baseline.name}</h2>
+          <p style={{ ...MUTED, marginTop: 0 }}>The starting point for {baseline.vehicle}. After this, each PM inspection updates it automatically.</p>
+          <div style={GRID(130)}>
+            <Field label="Date"><input type="date" value={baseline.last_done_date} onChange={(e) => setBaseline({ ...baseline, last_done_date: e.target.value })} /></Field>
+            <Field label="At km"><input inputMode="decimal" value={baseline.last_done_km} onChange={(e) => setBaseline({ ...baseline, last_done_km: e.target.value })} /></Field>
+            <Field label="At hours"><input inputMode="decimal" value={baseline.last_done_hours} onChange={(e) => setBaseline({ ...baseline, last_done_hours: e.target.value })} /></Field>
+          </div>
+          <div style={{ ...ROW, justifyContent: "flex-end", marginTop: 12 }}>
+            <button type="button" onClick={() => setBaseline(null)}>Cancel</button>
+            <button type="button" className="btn-primary" disabled={act.busy} onClick={saveBaseline}>Save</button>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }

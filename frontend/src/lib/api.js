@@ -19,6 +19,11 @@ export async function apiRequest(path, { method = "GET", body } = {}) {
     const err = new Error(data.error || "Something went wrong. Please try again.");
     err.data = data;
     err.status = res.status;
+    // Round 242 — the emergency lock: tell the app shell at once.
+    if (typeof window !== "undefined") {
+      if (res.status === 503 && data.code === "lockdown") window.dispatchEvent(new CustomEvent("oorm-lockdown", { detail: data }));
+      if (res.status === 401 && data.code === "signed_out") window.dispatchEvent(new CustomEvent("oorm-signed-out"));
+    }
     throw err;
   }
   return data;
