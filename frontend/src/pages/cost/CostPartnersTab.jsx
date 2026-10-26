@@ -28,6 +28,7 @@ export default function CostPartnersTab() {
   const [upload, setUpload] = useState(null);   // "capital" | "loan"
   const [entry, setEntry] = useState(null);     // entry object
   const [setup, setSetup] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [msg, setMsg] = useState("");
 
   const head = (
@@ -42,6 +43,7 @@ export default function CostPartnersTab() {
         <button type="button" style={BTN} disabled={!d} onClick={() => exportPartners(d)}>Export Excel</button>
         {canEdit && <button type="button" style={BTN} onClick={() => setSetup(true)}>Partners &amp; rates</button>}
         {canEdit && <button type="button" style={BTN} disabled={!d?.partners.length} onClick={() => setEntry({ kind: "loan_in", txn_date: istToday() })}>Add an entry</button>}
+        {canEdit && <button type="button" style={BTN} disabled={!d} onClick={() => setImporting(true)}>Import my Investment &amp; Loan sheet</button>}
         {canEdit && <button type="button" className="btn-primary" style={BTN} disabled={!d?.partners.length} onClick={() => setUpload("capital")}>Upload statement</button>}
       </Actions>
     </div>
@@ -55,6 +57,7 @@ export default function CostPartnersTab() {
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       {head}
       {msg && <Note tone="good">{msg}</Note>}
+      {d.sheet_check && <SheetCheck c={d.sheet_check} />}
       {!d.partners.length && <Note>Add the partners first (Partners &amp; rates) — their names, and words their bank lines carry, so the upload can match each line to a partner.</Note>}
 
       <div style={GRID(200)}>
@@ -68,7 +71,7 @@ export default function CostPartnersTab() {
       {active.length > 0 && (
         <section style={panel("1 1 100%")}>
           <h2 style={H2}>Unsecured loans — as on {fmtDay(d.as_of)}</h2>
-          <div style={SUB}>Interest {num(s.loan_rate, 2)}% a year, simple, by days from the day each amount was borrowed{s.rates.length ? `, with rate changes from ${s.rates.map((r) => `${fmtDay(r.from_date)} (${num(r.rate, 2)}%)`).join(", ")}` : ""}. Interest paid counts with its TDS (what reached the partner + TDS deducted).</div>
+          <div style={SUB}>Interest {num(s.loan_rate, 2)}% a year, simple, by days from each amount’s interest start date (the day it came in, unless another date is set on the entry) to the as-on date — counted like your sheet (as-on date − start date){s.rates.length ? `, with rate changes from ${s.rates.map((r) => `${fmtDay(r.from_date)} (${num(r.rate, 2)}%)`).join(", ")}` : ""}. Interest paid counts with its TDS (what reached the partner + TDS deducted).</div>
           <div style={{ overflowX: "auto", marginTop: 10 }}>
             <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
               <thead><tr>
@@ -137,7 +140,7 @@ export default function CostPartnersTab() {
             <tbody>{d.uploads.map((u) => (
               <tr key={u.id}>
                 <td style={TD}>{new Date(u.uploaded_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
-                <td style={TD}>{u.book === "capital" ? "Capital" : "Unsecured loans"}</td><td style={TD}>{u.file_name || "—"}</td><td style={TDR}>{u.kept}</td><td style={TD}>{u.uploaded_by || "—"}</td>
+                <td style={TD}>{u.book === "capital" ? "Capital" : u.book === "sheet" ? "Investment & Loan sheet" : "Unsecured loans"}</td><td style={TD}>{u.file_name || "—"}</td><td style={TDR}>{u.kept}</td><td style={TD}>{u.uploaded_by || "—"}</td>
                 <td style={TD}>{canEdit && <button type="button" style={{ padding: "4px 10px", fontSize: 12 }} onClick={async () => {
                   if (!window.confirm(`Take back this upload? Its ${u.kept} line(s) are removed.`)) return;
                   try { const r = await apiRequest(`/cost/partners/uploads/${u.id}`, { method: "DELETE" }); done(`${r.removed} line(s) taken back.`); } catch (err) { setMsg(err.message); }
@@ -155,6 +158,7 @@ export default function CostPartnersTab() {
 
       {upload && <UploadModal book={upload} d={d} onClose={() => setUpload(null)} onDone={(m) => { setUpload(null); done(m); }} />}
       {entry && <EntryModal entry={entry} d={d} onClose={() => setEntry(null)} onDone={(m) => { setEntry(null); done(m); }} />}
+      {importing && <ImportSheetModal d={d} onClose={() => setImporting(false)} onDone={(m) => { setImporting(false); done(m); }} />}
       {setup && <SetupModal d={d} onClose={() => setSetup(false)} onDone={(m) => { done(m); }} />}
     </div>
   );
@@ -183,13 +187,13 @@ function PartnerDetail({ p, canEdit, onEdit, onDelete }) {
           <tbody>
             {rows.map((x) => (
               <tr key={`${x.book}-${x.id}`}>
-                <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtDay(x.date)}</td><td style={TD}>{KIND_LABEL[x.kind]}</td>
+                <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtDay(x.date)}</td><td style={TD}>{x.kind === "interest_paid" && x.amount < 0 ? "Interest reversed" : KIND_LABEL[x.kind]}{x.interest_from && x.interest_from !== x.date ? <div style={MUTED}>interest from {fmtDay(x.interest_from)}</div> : null}</td>
                 <td style={TDR}>{rs(x.amount)}</td><td style={TDR}>{x.tds ? rs(x.tds) : ""}</td>
                 <td style={TDR}>{x.book === "loan" ? rs(x.balance) : ""}</td><td style={TDR}>{x.book === "loan" ? rs(x.interest_due) : ""}</td>
                 <td style={TDR}>{x.book === "capital" ? rs(x.balance) : ""}</td>
                 <td style={{ ...TD, ...MUTED, maxWidth: 280 }}>{[x.narration, x.note].filter(Boolean).join(" · ")}</td>
                 <td style={{ ...TD, whiteSpace: "nowrap" }}>{canEdit && <>
-                  <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => onEdit({ id: x.id, partner_id: p.id, kind: x.kind, txn_date: x.date, amount: x.amount, tds: x.tds || "", note: x.note || "" })}>Edit</button>{" "}
+                  <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => onEdit({ id: x.id, partner_id: p.id, kind: x.kind, txn_date: x.date, amount: x.amount, tds: x.tds || "", note: x.note || "", interest_from: x.interest_from || "" })}>Edit</button>{" "}
                   <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => onDelete(x)}>Remove</button></>}</td>
               </tr>
             ))}
@@ -316,7 +320,7 @@ function UploadModal({ book: book0, d, onClose, onDone }) {
 }
 
 function EntryModal({ entry, d, onClose, onDone }) {
-  const [f, setF] = useState({ partner_id: String(entry.partner_id || d.partners.find((p) => p.is_active)?.id || ""), kind: entry.kind, txn_date: entry.txn_date, amount: entry.amount ?? "", tds: entry.tds ?? "", note: entry.note || "" });
+  const [f, setF] = useState({ partner_id: String(entry.partner_id || d.partners.find((p) => p.is_active)?.id || ""), kind: entry.kind, txn_date: entry.txn_date, amount: entry.amount ?? "", tds: entry.tds ?? "", note: entry.note || "", interest_from: entry.interest_from || "" });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -338,7 +342,8 @@ function EntryModal({ entry, d, onClose, onDone }) {
         <label style={lab}>Entry<select value={f.kind} onChange={set("kind")}>
           {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
         <label style={lab}>Date<input type="date" value={f.txn_date} onChange={set("txn_date")} required /></label>
-        <label style={lab}>{f.kind === "interest_paid" ? "Paid to the partner (net)" : "Amount"}<input inputMode="decimal" value={f.amount} onChange={set("amount")} required /></label>
+        <label style={lab}>{f.kind === "interest_paid" ? "Paid to the partner (net; − = reversed)" : "Amount"}<input inputMode="decimal" value={f.amount} onChange={set("amount")} required /></label>
+        {f.kind === "loan_in" && <label style={lab}>Interest from (blank = the date above)<input type="date" value={f.interest_from} onChange={set("interest_from")} /></label>}
         {f.kind === "interest_paid" && <label style={lab}>TDS deducted<input inputMode="decimal" value={f.tds} onChange={set("tds")} placeholder={f.amount ? String(Math.round(Number(f.amount) * d.settings.tds_rate / (100 - d.settings.tds_rate))) : ""} /></label>}
         <label style={{ ...lab, gridColumn: "1 / -1" }}>Note<input value={f.note} onChange={set("note")} maxLength={200} /></label>
         {f.kind === "interest_due" && <div style={{ ...MUTED, gridColumn: "1 / -1" }}>Interest owed to the partner on that date for the time before the entries here (e.g. from the books at the start). It is added to the interest due.</div>}
@@ -430,4 +435,93 @@ function exportPartners(d) {
     ...d.partners.flatMap((p) => [...p.loan.ledger.map((x) => [p.name, x.date, KIND_LABEL[x.kind], x.amount, x.tds, x.balance, x.interest_due, "", x.narration || "", x.note || ""]),
       ...p.capital.ledger.map((x) => [p.name, x.date, KIND_LABEL[x.kind], x.amount, "", "", "", x.balance, x.narration || "", x.note || ""])])];
   downloadExcel(`Partners_${d.as_of}.xlsx`, [{ name: "Loans", rows: loans }, { name: "Capital", rows: capital }, { name: "By year", rows: fy }, { name: "Entries", rows: entries }]);
+}
+
+// Round 244 — the latest imported sheet's own totals beside the app's, on the
+// sheet's date (its "Today").
+function SheetCheck({ c }) {
+  const rows = c.rows.filter((x) => x.sheet.loan || x.sheet.capital);
+  const diff = (a, b) => Math.abs((a || 0) - (b || 0));
+  const worst = Math.max(0, ...rows.flatMap((x) => ["capital", "loan", "interest", "paid", "balance"].map((k) => diff(x.app[k], x.sheet[k]))));
+  const ok = worst < 1;
+  const cell = (a, b) => (
+    <td style={{ ...TDR, color: diff(a, b) >= 1 ? "var(--alert-red)" : undefined }}>{rs(a)}{diff(a, b) >= 1 ? <div style={MUTED}>sheet {rs(b)}</div> : null}</td>
+  );
+  return (
+    <section style={panel("1 1 100%")}>
+      <h2 style={H2}>Checked against your sheet {ok ? "— the app agrees" : "— differences"}</h2>
+      <div style={SUB}>{c.file_name || "Sheet"} · on the sheet’s date {fmtDay(c.as_on)} · {ok ? `every figure agrees to the rupee (largest difference ₹${num(worst, 2)}, rounding)` : `largest difference ₹${num(worst, 2)} — shown in red with the sheet’s figure`}</div>
+      <div style={{ overflowX: "auto", marginTop: 10 }}>
+        <table style={{ width: "100%", minWidth: 760, borderCollapse: "collapse" }}>
+          <thead><tr><th style={TH}>Partner</th><th style={{ ...TH, ...R }}>Capital</th><th style={{ ...TH, ...R }}>Loan</th><th style={{ ...TH, ...R }}>Interest till then</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>Interest balance</th></tr></thead>
+          <tbody>{rows.map((x) => (
+            <tr key={x.name}><td style={TD}><b>{x.name}</b></td>{cell(x.app.capital, x.sheet.capital)}{cell(x.app.loan, x.sheet.loan)}{cell(x.app.interest, x.sheet.interest)}{cell(x.app.paid, x.sheet.paid)}{cell(x.app.balance, x.sheet.balance)}</tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function ImportSheetModal({ d, onClose, onDone }) {
+  const [file, setFile] = useState(null);
+  const [r, setR] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [replace, setReplace] = useState(true);
+  async function read(f) {
+    setErr(""); setR(null); setBusy(true);
+    try {
+      const XLSX = await import("xlsx");
+      const { readPartnerSheet } = await import("../../lib/partnerSheetImport.js");
+      const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+      setR(readPartnerSheet(XLSX, wb));
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  async function save() {
+    setBusy(true); setErr("");
+    try {
+      const x = await apiRequest("/cost/partners/import-sheet", { method: "POST", body: { file_name: file?.name, replace, entries: r.entries, check: r.check } });
+      onDone(`${x.added} entr${x.added === 1 ? "y" : "ies"} imported${x.partners_made ? `, ${x.partners_made} partner(s) added` : ""}${x.removed ? `, ${x.removed} from the earlier sheet import replaced` : ""}${x.duplicates ? `, ${x.duplicates} already there` : ""}.`);
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  const per = r ? Object.entries(r.check.partners).map(([n, c]) => ({ n, c, k: r.entries.filter((e) => e.partner === n) })) : [];
+  const sum = (list, kind, f = "amount") => list.filter((e) => e.kind === kind).reduce((a, e) => a + (Number(e[f]) || 0), 0);
+  return (
+    <Modal title="Import your Investment & Loan sheet" onClose={onClose} width={980}>
+      <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+        The Excel with the <b>Investment &amp; Loan</b> table (Date, Narration, Amount, Type of Fund, Investor Name, Interest %, Interest Start Date, Loan Pay Back Date, Interest Amount, the interest-paid columns, Balance). Hidden sheets are left out.
+        Investments → capital; Partner’s Loan → loans with their interest start date; negative rows → paid back; each interest-paid column → interest paid on that date; TDS from the summary table’s “TDS Deducted” column.
+      </div>
+      <input type="file" accept=".xlsx,.xls" style={{ marginTop: 10 }} onChange={(e) => { const f = e.target.files?.[0]; setFile(f || null); if (f) read(f); }} />
+      {busy && !r && <div style={{ ...MUTED, marginTop: 8 }}>Reading…</div>}
+      {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 10 }}>{err}</div>}
+      {r && (
+        <>
+          <div style={{ fontSize: 13, margin: "12px 0 6px", ...NUM }}>
+            <b>{r.entries.length} entries</b> from “{r.sheet}” · sheet date {fmtDay(r.as_on)} · {r.pay_columns.length} interest-paid columns ({r.pay_columns.map((p) => fmtDay(p.date)).join(", ")})
+            {r.rates.some((x) => x !== d.settings.loan_rate) && <div style={{ color: "var(--alert-red)" }}>The sheet uses {r.rates.join(", ")}% — the app’s rate is {num(d.settings.loan_rate, 2)}% (Partners &amp; rates).</div>}
+            {r.tds_missed.length > 0 && <div style={{ color: "var(--amber)" }}>TDS not matched to an interest payment: {r.tds_missed.join(", ")}</div>}
+          </div>
+          <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+            <table style={{ width: "100%", minWidth: 820, borderCollapse: "collapse" }}>
+              <thead><tr><th style={TH}>Partner</th><th style={{ ...TH, ...R }}>Capital in − out</th><th style={{ ...TH, ...R }}>Loans in</th><th style={{ ...TH, ...R }}>Paid back</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>TDS</th><th style={{ ...TH, ...R }}>Sheet: interest balance</th></tr></thead>
+              <tbody>{per.map(({ n, c, k }) => (
+                <tr key={n}><td style={TD}><b>{n}</b>{!d.partners.some((p) => p.name.toLowerCase() === n.toLowerCase()) && <span style={MUTED}> · new</span>}</td>
+                  <td style={TDR}>{rs(sum(k, "capital_in") - sum(k, "capital_out"))}</td><td style={TDR}>{rs(sum(k, "loan_in"))}</td><td style={TDR}>{rs(sum(k, "loan_out"))}</td>
+                  <td style={TDR}>{rs(sum(k, "interest_paid") + sum(k, "interest_paid", "tds"))}</td><td style={TDR}>{rs(sum(k, "interest_paid", "tds"))}</td><td style={TDR}>{rs(c.balance)}</td></tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, marginTop: 10 }}>
+            <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} /> Replace the earlier import of this sheet (entries typed in or from bank statements are kept)
+          </label>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+            <button type="button" onClick={onClose}>Cancel</button>
+            <button type="button" className="btn-primary" disabled={busy} onClick={save}>{busy ? "Importing…" : `Import ${r.entries.length} entries`}</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
 }

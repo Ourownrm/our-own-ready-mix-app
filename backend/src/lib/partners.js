@@ -23,10 +23,11 @@
 // is owed as interest, it does not earn interest.
 import { query } from "../db.js";
 import { ROUND242_PARTNERS_SQL } from "./round242Schema.js";
+import { ROUND244_SQL } from "./round244Schema.js";
 
 let ready = null;
 export async function ensurePartners() {
-  if (!ready) ready = query(ROUND242_PARTNERS_SQL).catch((e) => { ready = null; throw e; });
+  if (!ready) ready = query(ROUND242_PARTNERS_SQL + ROUND244_SQL).catch((e) => { ready = null; throw e; });
   return ready;
 }
 
@@ -87,29 +88,54 @@ function accrue(settings, bal, a, b, byMonth) {
 }
 
 // One partner's loan worked up to (not including) the day `until`: every
-// movement dated before it, and interest for each day before it. "As on 31
-// March" is until = 1 April — a loan taken on 1 April last year then has 365
-// days of interest.
-export function loanPosition(txns, settings, until) {
+// movement dated before it, and interest for each day from the day interest
+// starts up to the day before `until` — the same count as the owner's sheet
+// (No of Days = pay-back date − interest start date, TODAY() for open loans).
+// Round 244 — a loan entry may carry its own "interest from" date (the sheet's
+// "Interest Start Date": loans given before Nov 2023 earn interest only from
+// 1 Nov 2023). The amount is owed from the day it came in; it earns interest
+// from that date.
+// `through`: also take the entries dated `until` itself (they earn no
+// interest that day) — the Partners page "as on" a day.
+export function loanPosition(txns, settings, until, { through = false } = {}) {
   const asOf = until;
-  const rows = txns.filter((t) => ["loan_in", "loan_out", "interest_paid", "interest_due"].includes(t.kind) && t.txn_date < until)
+  const rows = txns.filter((t) => ["loan_in", "loan_out", "interest_paid", "interest_due"].includes(t.kind) && (through ? t.txn_date <= until : t.txn_date < until))
     .sort((a, b) => (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : a.id - b.id));
+  // Changes to the balance that earns interest, by day.
+  const bear = new Map();
+  for (const t of rows) {
+    const amt = Number(t.amount) || 0;
+    if (t.kind === "loan_in") { const d = t.interest_from || t.txn_date; bear.set(d, (bear.get(d) || 0) + amt); }
+    else if (t.kind === "loan_out") bear.set(t.txn_date, (bear.get(t.txn_date) || 0) - amt);
+  }
+  const bearDays = [...bear.keys()].filter((d) => d <= until).sort();
   const byMonth = new Map();
   const ledger = [];
-  let bal = 0, accrued = 0, paidGross = 0, paidNet = 0, tds = 0, borrowed = 0, repaid = 0, openingDue = 0;
-  let last = rows[0]?.txn_date || null;
+  let bal = 0, bearing = 0, accrued = 0, paidGross = 0, paidNet = 0, tds = 0, borrowed = 0, repaid = 0, openingDue = 0;
+  let last = null, bi = 0;
+  // Interest from `last` up to day `d`, stepping through the days the
+  // interest-earning balance changes.
+  const runTo = (d) => {
+    while (bi < bearDays.length && bearDays[bi] <= d) {
+      const day = bearDays[bi++];
+      if (last && day > last) accrued += accrue(settings, bearing, last, day, byMonth);
+      if (!last || day > last) last = day;
+      bearing += bear.get(day);
+    }
+    if (last && d > last) { accrued += accrue(settings, bearing, last, d, byMonth); last = d; }
+    if (!last) last = d;
+  };
   for (const t of rows) {
-    if (last && t.txn_date > last) { accrued += accrue(settings, bal, last, t.txn_date, byMonth); }
-    last = t.txn_date;
+    runTo(t.txn_date);
     const amt = Number(t.amount) || 0, td = Number(t.tds) || 0;
     if (t.kind === "loan_in") { bal += amt; borrowed += amt; }
     else if (t.kind === "loan_out") { bal -= amt; repaid += amt; }
     else if (t.kind === "interest_paid") { paidGross += amt + td; paidNet += amt; tds += td; }
     else if (t.kind === "interest_due") { openingDue += amt; }
-    ledger.push({ id: t.id, date: t.txn_date, kind: t.kind, amount: r2(amt), tds: r2(td), narration: t.narration, note: t.note,
+    ledger.push({ id: t.id, date: t.txn_date, kind: t.kind, amount: r2(amt), tds: r2(td), interest_from: t.interest_from || null, narration: t.narration, note: t.note,
       balance: r2(bal), interest_to_date: r2(accrued + openingDue), interest_due: r2(accrued + openingDue - paidGross), upload_id: t.upload_id });
   }
-  if (last && asOf > last) accrued += accrue(settings, bal, last, asOf, byMonth);
+  if (rows.length) runTo(asOf);
   const due = accrued + openingDue - paidGross;
   return {
     borrowed: r2(borrowed), repaid: r2(repaid), outstanding: r2(bal),
@@ -139,7 +165,7 @@ async function loadAll() {
   const [{ rows: partners }, { rows: txns }] = await Promise.all([
     query(`SELECT id, name, match_words, pan, is_active FROM cost_partners ORDER BY is_active DESC, name`),
     query(`SELECT id, partner_id, kind, to_char(txn_date, 'YYYY-MM-DD') AS txn_date, amount::float AS amount, tds::float AS tds,
-                  narration, note, upload_id FROM cost_partner_txns ORDER BY txn_date, id`),
+                  to_char(interest_from, 'YYYY-MM-DD') AS interest_from, narration, note, upload_id FROM cost_partner_txns ORDER BY txn_date, id`),
   ]);
   return { partners, txns };
 }
@@ -155,11 +181,13 @@ export async function partnersReport(asOf) {
   const out = partners.map((p) => {
     const mine = txns.filter((t) => t.partner_id === p.id);
     const cap = capitalPosition(mine, asOf);
-    const loan = loanPosition(mine, settings, addDay(asOf, 1));
+    // Round 244 — as on a day = interest up to that day, the way the sheet
+    // counts (TODAY() − interest start date).
+    const loan = loanPosition(mine, settings, asOf, { through: true });
     const fyRow = (f) => {
       const end = f.end < asOf ? f.end : asOf;
       const before = loanPosition(mine, settings, f.start);
-      const after = loanPosition(mine, settings, addDay(end, 1));
+      const after = loanPosition(mine, settings, f.end < asOf ? addDay(f.end, 1) : asOf);
       const inFy = mine.filter((t) => t.txn_date >= f.start && t.txn_date <= end);
       const sum = (k, f2 = "amount") => r2(inFy.filter((t) => t.kind === k).reduce((a, t) => a + (Number(t[f2]) || 0), 0));
       return {
@@ -177,6 +205,23 @@ export async function partnersReport(asOf) {
     };
   });
   const tot = (f) => r2(out.reduce((a, p) => a + f(p), 0));
+  // Round 244 — the latest imported sheet's own figures beside the app's,
+  // worked out on the sheet's own date.
+  let sheetCheck = null;
+  const { rows: sc } = await query(
+    `SELECT file_name, uploaded_at, sheet_check FROM cost_partner_uploads WHERE book = 'sheet' AND sheet_check IS NOT NULL ORDER BY uploaded_at DESC LIMIT 1`);
+  if (sc[0]?.sheet_check?.as_on && sc[0].sheet_check.partners) {
+    const c = sc[0].sheet_check;
+    sheetCheck = { as_on: c.as_on, file_name: sc[0].file_name, uploaded_at: sc[0].uploaded_at, rows: [] };
+    for (const [name, sh] of Object.entries(c.partners)) {
+      const p = partners.find((x) => x.name.toLowerCase() === name.toLowerCase());
+      const mine = p ? txns.filter((t) => t.partner_id === p.id) : [];
+      const l = loanPosition(mine, settings, c.as_on, { through: true });
+      const cp = capitalPosition(mine, c.as_on);
+      sheetCheck.rows.push({ name, sheet: sh,
+        app: { capital: cp.balance, loan: l.outstanding, interest: l.interest_total, paid: l.interest_paid_gross, balance: l.interest_due } });
+    }
+  }
   const { rows: uploads } = await query(
     `SELECT u.id, u.book, u.file_name, u.lines, u.uploaded_at, us.name AS uploaded_by,
             (SELECT COUNT(*)::int FROM cost_partner_txns t WHERE t.upload_id = u.id) AS kept
@@ -193,6 +238,7 @@ export async function partnersReport(asOf) {
       fy_interest: tot((p) => p.fy[0]?.interest || 0), fy_tds: tot((p) => p.fy[0]?.tds || 0), fy_paid_net: tot((p) => p.fy[0]?.paid_net || 0),
     },
     uploads,
+    sheet_check: sheetCheck,
   };
 }
 

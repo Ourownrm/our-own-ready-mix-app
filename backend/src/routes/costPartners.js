@@ -107,11 +107,16 @@ function txnBody(b) {
     partner_id: Number(b.partner_id), kind: String(b.kind || ""), txn_date: String(b.txn_date || b.date || ""),
     amount: money(b.amount), tds: b.tds === "" || b.tds == null ? 0 : money(b.tds),
     narration: b.narration ? String(b.narration).slice(0, 1000) : null, note: b.note ? String(b.note).trim().slice(0, 200) : null,
+    // Round 244 — a loan's own "interest from" date (blank = the day it came in).
+    interest_from: b.kind === "loan_in" && DAY_RE.test(String(b.interest_from || "")) ? String(b.interest_from) : null,
   };
   if (!(t.partner_id > 0)) return { err: "Choose the partner." };
   if (!KINDS.includes(t.kind)) return { err: "Choose what the entry is." };
   if (!DAY_RE.test(t.txn_date)) return { err: "Date must be yyyy-mm-dd." };
-  if (!(t.amount > 0)) return { err: "Amount must be more than 0." };
+  // Round 244 — interest paid may be negative: a reversal of interest paid too early.
+  if (t.kind === "interest_paid" ? !(Number.isFinite(t.amount) && t.amount !== 0) : !(t.amount > 0)) {
+    return { err: t.kind === "interest_paid" ? "Amount can't be 0 (negative = interest reversed)." : "Amount must be more than 0." };
+  }
   if (!(t.tds >= 0)) return { err: "TDS must be 0 or more." };
   if (t.kind !== "interest_paid") t.tds = 0;
   return { t };
@@ -121,17 +126,17 @@ router.post("/txns", EDIT, async (req, res) => {
   const { t, err } = txnBody(req.body || {});
   if (err) return bad(res, err);
   const { rows } = await query(
-    `INSERT INTO cost_partner_txns (partner_id, kind, txn_date, amount, tds, narration, note, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-    [t.partner_id, t.kind, t.txn_date, t.amount, t.tds, t.narration, t.note, req.user.id]);
+    `INSERT INTO cost_partner_txns (partner_id, kind, txn_date, amount, tds, narration, note, created_by, interest_from)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    [t.partner_id, t.kind, t.txn_date, t.amount, t.tds, t.narration, t.note, req.user.id, t.interest_from]);
   res.status(201).json({ id: rows[0].id });
 });
 router.put("/txns/:id(\\d+)", EDIT, async (req, res) => {
   const { t, err } = txnBody(req.body || {});
   if (err) return bad(res, err);
   const r = await query(
-    `UPDATE cost_partner_txns SET partner_id=$1, kind=$2, txn_date=$3, amount=$4, tds=$5, note=$6 WHERE id=$7`,
-    [t.partner_id, t.kind, t.txn_date, t.amount, t.tds, t.note, Number(req.params.id)]);
+    `UPDATE cost_partner_txns SET partner_id=$1, kind=$2, txn_date=$3, amount=$4, tds=$5, note=$6, interest_from=$8 WHERE id=$7`,
+    [t.partner_id, t.kind, t.txn_date, t.amount, t.tds, t.note, Number(req.params.id), t.interest_from]);
   if (!r.rowCount) return bad(res, "Entry not found.", 404);
   res.json({ ok: true });
 });
@@ -183,6 +188,60 @@ router.post("/upload", EDIT, async (req, res) => {
     client.release();
   }
   res.status(201).json({ upload_id: uploadId, added, duplicates: dup });
+});
+
+// Round 244 — the owner's own "Investment & Loan" workbook, read in the
+// browser (lib/partnerSheetImport.js): partners by name (made when new),
+// investments as capital, partner's loans with their interest start date,
+// pay-backs, interest paid by date (TDS from the summary sheet), and the
+// sheet's own totals kept to compare with. "Replace" takes back the previous
+// sheet import first.
+router.post("/import-sheet", EDIT, async (req, res) => {
+  const b = req.body || {};
+  const entries = Array.isArray(b.entries) ? b.entries : [];
+  if (!entries.length) return bad(res, "Nothing to import.");
+  if (entries.length > 5000) return bad(res, "Too many lines (5,000 at most).");
+  const names = [...new Set(entries.map((e) => String(e.partner || "").trim()).filter(Boolean))];
+  const client = await pool.connect();
+  let added = 0, dup = 0, removed = 0, made = 0, uploadId;
+  try {
+    await client.query("BEGIN");
+    if (b.replace) {
+      const { rows: old } = await client.query(`SELECT id FROM cost_partner_uploads WHERE book = 'sheet'`);
+      for (const o of old) {
+        removed += (await client.query(`DELETE FROM cost_partner_txns WHERE upload_id = $1`, [o.id])).rowCount;
+        await client.query(`DELETE FROM cost_partner_uploads WHERE id = $1`, [o.id]);
+      }
+    }
+    const ids = new Map();
+    for (const n of names) {
+      const { rows } = await client.query(`SELECT id FROM cost_partners WHERE lower(name) = lower($1)`, [n]);
+      if (rows.length) ids.set(n, rows[0].id);
+      else { ids.set(n, (await client.query(`INSERT INTO cost_partners (name, match_words) VALUES ($1, $2) RETURNING id`, [n.slice(0, 120), n.toUpperCase().slice(0, 300)])).rows[0].id); made++; }
+    }
+    const { rows: up } = await client.query(
+      `INSERT INTO cost_partner_uploads (book, file_name, lines, uploaded_by, sheet_check) VALUES ('sheet', $1, $2, $3, $4::jsonb) RETURNING id`,
+      [String(b.file_name || "").slice(0, 200) || null, entries.length, req.user.id, b.check ? JSON.stringify(b.check) : null]);
+    uploadId = up[0].id;
+    for (const [i, e] of entries.entries()) {
+      const { t, err } = txnBody({ ...e, partner_id: ids.get(String(e.partner || "").trim()) });
+      if (err) throw Object.assign(new Error(`Line ${i + 1} (${e.partner || "?"}, ${e.txn_date || "?"}): ${err}`), { expose: true });
+      const key = ["sheet", t.partner_id, t.kind, t.txn_date, t.amount.toFixed(2), String(t.narration || "").replace(/\s+/g, " ").slice(0, 120), e.seq ?? i].join("|");
+      const r = await client.query(
+        `INSERT INTO cost_partner_txns (partner_id, kind, txn_date, amount, tds, narration, note, upload_id, dedupe_key, created_by, interest_from)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (dedupe_key) DO NOTHING`,
+        [t.partner_id, t.kind, t.txn_date, t.amount, t.tds, t.narration, t.note, uploadId, key, req.user.id, t.interest_from]);
+      if (r.rowCount) added++; else dup++;
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.expose) return bad(res, err.message);
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.status(201).json({ upload_id: uploadId, added, duplicates: dup, removed, partners_made: made });
 });
 
 router.delete("/uploads/:id(\\d+)", EDIT, async (req, res) => {
