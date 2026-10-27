@@ -18,6 +18,7 @@ import { Router } from "express";
 import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, can } from "../lib/permissions.js";
+import { audit } from "../lib/hrAudit.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -61,6 +62,9 @@ router.get("/employees", ANY, async (req, res) => {
 
 router.get("/", ANY, async (req, res) => {
   const show = ["open", "all"].includes(req.query.show) ? req.query.show : "open";
+  // Round 245 — ?month=YYYY-MM: every request raised that month, or with a
+  // line recovered from that month's salary (for the monthly printout).
+  const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : null;
   const { rows } = await query(
     `SELECT r.id, r.purpose, r.status, r.raised_at, r.decided_at, r.decision_note, r.raised_by,
             ru.name AS raised_by_name, du.name AS decided_by_name,
@@ -76,11 +80,13 @@ router.get("/", ANY, async (req, res) => {
        JOIN hr_employees e ON e.id = l.employee_id
        LEFT JOIN hr_advances a ON a.id = l.advance_id
        LEFT JOIN users ru ON ru.id = r.raised_by LEFT JOIN users du ON du.id = r.decided_by
-      WHERE ($1 = 'all' AND r.raised_at > now() - interval '180 days') OR r.status IN ('pending', 'approved', 'part_paid')
+      WHERE ($2::text IS NULL AND (($1 = 'all' AND r.raised_at > now() - interval '180 days') OR r.status IN ('pending', 'approved', 'part_paid')))
+         OR ($2::text IS NOT NULL AND (to_char(r.raised_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM') = $2
+              OR EXISTS (SELECT 1 FROM hr_advance_request_lines x WHERE x.request_id = r.id AND x.recover_month = $2)))
       GROUP BY r.id, ru.name, du.name
       ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'part_paid' THEN 1 ELSE 2 END, r.raised_at DESC
-      LIMIT 200`,
-    [show]
+      LIMIT ${month ? 1000 : 200}`,
+    [show, month]
   );
   const p = await perms(req.user);
   res.json({
@@ -228,6 +234,8 @@ router.post("/lines/:lineId(\\d+)/pay", requirePermission("hr.advance-pay", "edi
       [l.employee_id, day, amt, mode, String(b.reference || "").trim().slice(0, 100) || null, month,
        `Advance request #${l.rid}`, req.user.id, l.id]);
     await client.query(`UPDATE hr_advance_request_lines SET status = 'paid', advance_id = $1, recover_month = $2 WHERE id = $3`, [adv[0].id, month, l.id]);
+    await audit(client, { user: req.user, entity: "advance", entityId: adv[0].id, employeeId: l.employee_id, month, action: "created",
+      after: { given_on: day, amount: amt, mode, reference: b.reference || null, recover_month: month, request: l.rid } });
     const { rows: left } = await client.query(
       `SELECT COUNT(*) FILTER (WHERE status = 'approved')::int AS open, COUNT(*) FILTER (WHERE status = 'paid')::int AS paid
          FROM hr_advance_request_lines WHERE request_id = $1`, [l.rid]);
@@ -267,10 +275,12 @@ const GANG_SELECT = `
 
 router.get("/gangs", ANY, async (req, res) => {
   const show = ["open", "all"].includes(req.query.show) ? req.query.show : "open";
+  const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : null; // Round 245
   const { rows } = await query(
     `${GANG_SELECT}
-      WHERE ($1 = 'all' AND a.raised_at > now() - interval '180 days') OR a.status IN ('pending', 'approved')
-      ORDER BY CASE a.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, a.raised_at DESC LIMIT 200`, [show]);
+      WHERE ($2::text IS NULL AND (($1 = 'all' AND a.raised_at > now() - interval '180 days') OR a.status IN ('pending', 'approved')))
+         OR ($2::text IS NOT NULL AND (to_char(a.raised_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM') = $2 OR a.recover_month = $2))
+      ORDER BY CASE a.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, a.raised_at DESC LIMIT 500`, [show, month]);
   const { rows: gangs } = await query(
     `SELECT g.id, g.name, g.location, c.name AS contractor_name FROM hr_gangs g JOIN hr_contractors c ON c.id = g.contractor_id
       WHERE g.is_active ORDER BY g.name`);

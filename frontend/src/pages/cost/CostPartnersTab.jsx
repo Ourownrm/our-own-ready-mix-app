@@ -378,18 +378,52 @@ function SetupModal({ d, onClose, onDone }) {
       setP({ name: "", match_words: "", pan: "" }); setEditId(null); onDone(editId ? "Partner changed." : "Partner added.");
     } catch (ex) { setErr(ex.message); } finally { setBusy(false); }
   }
+  // Round 245 — merge two spellings of one partner; remove empty partners.
+  async function mergeInto(from, into) {
+    if (!into || !window.confirm(`Merge "${from.name}" into "${into.name}"?\n\nAll ${from.txn_count || 0} entr${from.txn_count === 1 ? "y" : "ies"} of "${from.name}" move to "${into.name}", and "${from.name}" is removed.`)) return;
+    setBusy(true); setErr("");
+    try { const x = await apiRequest(`/cost/partners/partners/${from.id}/merge`, { method: "POST", body: { into: into.id } }); onDone(`"${x.removed}" merged into "${x.kept}" — ${x.moved} entr${x.moved === 1 ? "y" : "ies"} moved.`); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  async function removePartner(x) {
+    if (!window.confirm(`Remove "${x.name}"? It has no entries.`)) return;
+    setBusy(true); setErr("");
+    try { await apiRequest(`/cost/partners/partners/${x.id}`, { method: "DELETE" }); onDone(`"${x.name}" removed.`); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  async function removeEmpty() {
+    const list = d.partners.filter((x) => !x.txn_count);
+    if (!window.confirm(`Remove these partners — they have no entries?\n\n${list.map((x) => x.name).join("\n")}`)) return;
+    setBusy(true); setErr("");
+    try { const x = await apiRequest("/cost/partners/partners/remove-empty", { method: "POST" }); onDone(`${x.removed} partner(s) with no entries removed.`); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
   const lab = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600 };
   return (
-    <Modal title="Partners & interest rates" onClose={onClose} width={720}>
+    <Modal title="Partners & interest rates" onClose={onClose} width={860}>
       <h3 style={{ ...H2, fontSize: 14 }}>Partners</h3>
       <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 6 }}>
-        <thead><tr><th style={TH}>Name</th><th style={TH}>Words on their bank lines</th><th style={TH}>PAN</th><th style={TH} /></tr></thead>
+        <thead><tr><th style={TH}>Name</th><th style={TH}>Words on their bank lines</th><th style={TH}>PAN</th><th style={{ ...TH, ...R }}>Entries</th><th style={TH} /></tr></thead>
         <tbody>{d.partners.map((x) => (
           <tr key={x.id} style={{ opacity: x.is_active ? 1 : 0.55 }}><td style={TD}>{x.name}</td><td style={{ ...TD, ...MUTED }}>{x.match_words || "—"}</td><td style={TD}>{x.pan || "—"}</td>
-            <td style={TD}><button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => { setEditId(x.id); setP({ name: x.name, match_words: x.match_words || "", pan: x.pan || "", is_active: x.is_active }); }}>Edit</button></td></tr>))}
-          {!d.partners.length && <tr><td colSpan={4} style={{ ...TD, ...MUTED }}>None yet.</td></tr>}
+            <td style={TDR}>{x.txn_count || <span style={MUTED}>none</span>}</td>
+            <td style={{ ...TD, whiteSpace: "nowrap" }}>
+              <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => { setEditId(x.id); setP({ name: x.name, match_words: x.match_words || "", pan: x.pan || "", is_active: x.is_active }); }}>Edit</button>{" "}
+              {d.partners.length > 1 && (
+                <select value="" aria-label={`Merge ${x.name} into`} style={{ fontSize: 11.5, maxWidth: 150 }} onChange={(e) => e.target.value && mergeInto(x, d.partners.find((y) => y.id === Number(e.target.value)))}>
+                  <option value="">Merge into…</option>
+                  {d.partners.filter((y) => y.id !== x.id).map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}
+                </select>
+              )}{" "}
+              {!x.txn_count && <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} disabled={busy} onClick={() => removePartner(x)}>Remove</button>}
+            </td></tr>))}
+          {!d.partners.length && <tr><td colSpan={5} style={{ ...TD, ...MUTED }}>None yet.</td></tr>}
         </tbody>
       </table>
+      <div style={{ ...MUTED, marginTop: 6 }}>
+        Same partner twice (two spellings)? <b>Merge into…</b> moves every entry onto the partner you keep and removes the other.
+        {d.partners.some((x) => !x.txn_count) && <> <button type="button" style={{ padding: "3px 8px", fontSize: 11.5, marginLeft: 6 }} disabled={busy} onClick={removeEmpty}>Remove the {d.partners.filter((x) => !x.txn_count).length} partner(s) with no entries</button></>}
+      </div>
       <form onSubmit={savePartner} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginTop: 10, alignItems: "end" }}>
         <label style={lab}>{editId ? "Change name" : "New partner"}<input value={p.name} onChange={(e) => setP({ ...p, name: e.target.value })} required maxLength={120} /></label>
         <label style={lab}>Words on bank lines<input value={p.match_words} onChange={(e) => setP({ ...p, match_words: e.target.value })} placeholder="e.g. PRAMOD, P K NAIR" maxLength={300} /></label>
@@ -455,7 +489,7 @@ function SheetCheck({ c }) {
         <table style={{ width: "100%", minWidth: 760, borderCollapse: "collapse" }}>
           <thead><tr><th style={TH}>Partner</th><th style={{ ...TH, ...R }}>Capital</th><th style={{ ...TH, ...R }}>Loan</th><th style={{ ...TH, ...R }}>Interest till then</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>Interest balance</th></tr></thead>
           <tbody>{rows.map((x) => (
-            <tr key={x.name}><td style={TD}><b>{x.name}</b></td>{cell(x.app.capital, x.sheet.capital)}{cell(x.app.loan, x.sheet.loan)}{cell(x.app.interest, x.sheet.interest)}{cell(x.app.paid, x.sheet.paid)}{cell(x.app.balance, x.sheet.balance)}</tr>
+            <tr key={x.name}><td style={TD}><b>{x.partner || x.name}</b>{x.partner && x.partner.toLowerCase() !== x.name.toLowerCase() ? <div style={MUTED}>“{x.name}” on the sheet</div> : null}</td>{cell(x.app.capital, x.sheet.capital)}{cell(x.app.loan, x.sheet.loan)}{cell(x.app.interest, x.sheet.interest)}{cell(x.app.paid, x.sheet.paid)}{cell(x.app.balance, x.sheet.balance)}</tr>
           ))}</tbody>
         </table>
       </div>
@@ -469,19 +503,24 @@ function ImportSheetModal({ d, onClose, onDone }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [replace, setReplace] = useState(true);
+  // Round 245 — which existing partner each sheet name is, and what to take.
+  const [map, setMap] = useState({});
+  const [parts, setParts] = useState({ capital: !d.partners.some((p) => p.capital.brought_in > 0), loans: true });
   async function read(f) {
     setErr(""); setR(null); setBusy(true);
     try {
       const XLSX = await import("xlsx");
       const { readPartnerSheet } = await import("../../lib/partnerSheetImport.js");
       const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
-      setR(readPartnerSheet(XLSX, wb));
+      const res = readPartnerSheet(XLSX, wb);
+      setR(res);
+      setMap(Object.fromEntries(Object.keys(res.check.partners).map((n) => [n, String(sheetPartnerFor(n, d.partners) ?? "new")])));
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
   async function save() {
     setBusy(true); setErr("");
     try {
-      const x = await apiRequest("/cost/partners/import-sheet", { method: "POST", body: { file_name: file?.name, replace, entries: r.entries, check: r.check } });
+      const x = await apiRequest("/cost/partners/import-sheet", { method: "POST", body: { file_name: file?.name, replace, entries: r.entries, check: r.check, map, parts } });
       onDone(`${x.added} entr${x.added === 1 ? "y" : "ies"} imported${x.partners_made ? `, ${x.partners_made} partner(s) added` : ""}${x.removed ? `, ${x.removed} from the earlier sheet import replaced` : ""}${x.duplicates ? `, ${x.duplicates} already there` : ""}.`);
     } catch (e) { setErr(e.message); setBusy(false); }
   }
@@ -505,23 +544,80 @@ function ImportSheetModal({ d, onClose, onDone }) {
           </div>
           <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
             <table style={{ width: "100%", minWidth: 820, borderCollapse: "collapse" }}>
-              <thead><tr><th style={TH}>Partner</th><th style={{ ...TH, ...R }}>Capital in − out</th><th style={{ ...TH, ...R }}>Loans in</th><th style={{ ...TH, ...R }}>Paid back</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>TDS</th><th style={{ ...TH, ...R }}>Sheet: interest balance</th></tr></thead>
+              <thead><tr><th style={TH}>Name on the sheet</th><th style={TH}>Goes to partner</th><th style={{ ...TH, ...R }}>Capital in − out</th><th style={{ ...TH, ...R }}>Loans in</th><th style={{ ...TH, ...R }}>Paid back</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>TDS</th><th style={{ ...TH, ...R }}>Sheet: interest balance</th></tr></thead>
               <tbody>{per.map(({ n, c, k }) => (
-                <tr key={n}><td style={TD}><b>{n}</b>{!d.partners.some((p) => p.name.toLowerCase() === n.toLowerCase()) && <span style={MUTED}> · new</span>}</td>
-                  <td style={TDR}>{rs(sum(k, "capital_in") - sum(k, "capital_out"))}</td><td style={TDR}>{rs(sum(k, "loan_in"))}</td><td style={TDR}>{rs(sum(k, "loan_out"))}</td>
+                <tr key={n}><td style={TD}><b>{n}</b></td>
+                  <td style={TD}>
+                    <select value={map[n] || "new"} onChange={(e) => setMap({ ...map, [n]: e.target.value })} aria-label={`Partner for ${n}`} style={{ fontSize: 12.5, maxWidth: 220, borderColor: map[n] === "new" ? "var(--amber)" : undefined }}>
+                      <option value="new">+ new partner “{n}”</option>
+                      {d.partners.map((p) => <option key={p.id} value={p.id}>{p.name}{p.capital.balance ? ` · capital ${rs(p.capital.balance)}` : ""}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ ...TDR, opacity: parts.capital ? 1 : 0.4 }}>{rs(sum(k, "capital_in") - sum(k, "capital_out"))}</td><td style={TDR}>{rs(sum(k, "loan_in"))}</td><td style={TDR}>{rs(sum(k, "loan_out"))}</td>
                   <td style={TDR}>{rs(sum(k, "interest_paid") + sum(k, "interest_paid", "tds"))}</td><td style={TDR}>{rs(sum(k, "interest_paid", "tds"))}</td><td style={TDR}>{rs(c.balance)}</td></tr>
               ))}</tbody>
             </table>
           </div>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 13, marginTop: 10 }}>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="checkbox" checked={parts.capital} onChange={(e) => setParts({ ...parts, capital: e.target.checked })} /> Import investments (capital)
+            </label>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="checkbox" checked={parts.loans} onChange={(e) => setParts({ ...parts, loans: e.target.checked })} /> Import partner’s loans and interest paid
+            </label>
+          </div>
+          {parts.capital && d.partners.some((p) => p.capital.brought_in > 0) && (
+            <Note>Capital is already entered for {d.partners.filter((p) => p.capital.brought_in > 0).map((p) => p.name).join(", ")}. Importing investments too counts that capital twice — untick “Import investments” unless those entries are removed first.</Note>
+          )}
+          {Object.values(map).some((v) => v === "new") && d.partners.length > 0 && (
+            <div style={{ ...MUTED, marginTop: 6, color: "var(--amber)" }}>Names marked “+ new partner” are added as new partners — pick the existing partner if it is the same person spelt differently.</div>
+          )}
           <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, marginTop: 10 }}>
             <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} /> Replace the earlier import of this sheet (entries typed in or from bank statements are kept)
           </label>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
             <button type="button" onClick={onClose}>Cancel</button>
-            <button type="button" className="btn-primary" disabled={busy} onClick={save}>{busy ? "Importing…" : `Import ${r.entries.length} entries`}</button>
+            <button type="button" className="btn-primary" disabled={busy || (!parts.capital && !parts.loans)} onClick={save}>{busy ? "Importing…" : `Import ${r.entries.filter((e) => (["capital_in", "capital_out"].includes(e.kind) ? parts.capital : parts.loans)).length} entries`}</button>
           </div>
         </>
       )}
     </Modal>
   );
+}
+
+// Round 245 — the existing partner a sheet name most likely is: same first
+// name, then the rest of the name or initials ("Santosh KS" = "SANTOSH K.S",
+// "Ajith Kumar" = "AJITH KUMAR P. V", "Sajeev K" = "SAJEEV KARAYIL").
+function nameTokens(s) {
+  const raw = String(s || "").toUpperCase().replace(/[^A-Z ]+/g, " ").split(/\s+/).filter(Boolean);
+  const out = [];
+  let run = "";
+  for (const t of raw) {
+    if (t.length === 1) { run += t; continue; }
+    if (run) { out.push(run); run = ""; }
+    out.push(t);
+  }
+  if (run) out.push(run);
+  return out;
+}
+export function sheetPartnerFor(sheetName, partners) {
+  const a = nameTokens(sheetName);
+  if (!a.length) return null;
+  let best = null, bestScore = 0, tie = false;
+  for (const p of partners) {
+    const b = nameTokens(p.name);
+    const words = nameTokens(String(p.match_words || "").replace(/[,;]/g, " "));
+    if (!b.length) continue;
+    let score = 0;
+    if (a.join(" ") === b.join(" ")) score += 100;
+    if (a[0] === b[0]) score += 20;
+    else if (words.includes(a[0])) score += 12;
+    else continue;
+    for (const t of a.slice(1)) {
+      if (b.includes(t) || words.includes(t)) score += 6;
+      else if (b.slice(1).some((u) => u.startsWith(t) || t.startsWith(u) || u[0] === t[0])) score += 3;
+    }
+    if (score > bestScore) { best = p.id; bestScore = score; tie = false; } else if (score === bestScore) tie = true;
+  }
+  return best && !tie ? best : null;
 }

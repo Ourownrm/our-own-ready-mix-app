@@ -15,6 +15,7 @@ import {
   costDashboard, fuelDetail, profitLoss, balanceSheet, monthEntries, balancesOn, addMonths, monthLabel, newContext, monthCore, withTotals,
 } from "../lib/costDashboard.js";
 import { breakEven, lineKinds, BE_KEYS, ensureMixedKinds } from "../lib/breakEven.js";
+import { waterMonth, waterSettings, ensureWater } from "../lib/waterCost.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -216,6 +217,86 @@ router.put("/balances", requirePermission("cost.entries", "edit"), async (req, r
     client.release();
   }
   res.json({ ok: true, changed });
+});
+
+// ---------------------------------------------------------- Round 245: water
+// Owner, 27 Oct 2026: a rate for the plant's own water, and purchased water.
+// Viewing: anyone who sees the P&L; changing: whoever enters the month's
+// expenses (cost.entries · edit).
+router.get("/water", requirePermission("cost.pl", "view"), async (req, res) => {
+  const now = istMonth();
+  const ym = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : now;
+  const settings = await waterSettings();
+  const months = [];
+  for (let i = 5; i >= 0; i--) months.push(addMonths(ym, -i));
+  const trend = [];
+  for (const m of months) {
+    const w = await waterMonth(m, settings);
+    trend.push({ month: m, used_l: w.used_l, bought_l: w.bought_l, value: w.value });
+  }
+  res.json({ settings, month: await waterMonth(ym, settings), trend });
+});
+
+router.put("/water/settings", requirePermission("cost.entries", "edit"), async (req, res) => {
+  await ensureWater();
+  const b = req.body || {};
+  const rate = b.own_rate_kl === "" || b.own_rate_kl == null ? null : Number(b.own_rate_kl);
+  if (rate != null && !(rate >= 0 && rate <= 10000)) return res.status(400).json({ error: "Rate per kilolitre: 0 to 10,000." });
+  const changes = Array.isArray(b.rates) ? b.rates : [];
+  for (const c of changes) if (!DAY_RE.test(c.from_date || "") || !(Number(c.rate_kl) >= 0)) return res.status(400).json({ error: "Each rate change needs a date and a rate." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`UPDATE cost_water_settings SET own_rate_kl = $1, own_note = $2, updated_by = $3, updated_at = now() WHERE id = 1`,
+      [rate, String(b.own_note || "").trim().slice(0, 200) || null, req.user.id]);
+    await client.query(`DELETE FROM cost_water_rates`);
+    for (const c of changes) {
+      await client.query(`INSERT INTO cost_water_rates (from_date, rate_kl, note) VALUES ($1, $2, $3) ON CONFLICT (from_date) DO UPDATE SET rate_kl = EXCLUDED.rate_kl, note = EXCLUDED.note`,
+        [c.from_date, Number(c.rate_kl), String(c.note || "").slice(0, 200) || null]);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.json({ settings: await waterSettings() });
+});
+
+function purchaseBody(b) {
+  const p = {
+    bought_on: String(b.bought_on || ""), supplier: String(b.supplier || "").trim().slice(0, 120) || null,
+    litres: Number(String(b.litres ?? "").replace(/,/g, "")), amount: Number(String(b.amount ?? "").replace(/[,₹\s]/g, "")),
+    bill_no: String(b.bill_no || "").trim().slice(0, 60) || null, note: String(b.note || "").trim().slice(0, 200) || null,
+  };
+  if (!DAY_RE.test(p.bought_on)) return { err: "Date bought: yyyy-mm-dd." };
+  if (p.bought_on > istDay()) return { err: "The date bought can't be in the future." };
+  if (!(p.litres > 0)) return { err: "Litres must be more than 0." };
+  if (!(p.amount >= 0)) return { err: "Amount must be 0 or more." };
+  return { p };
+}
+router.post("/water/purchases", requirePermission("cost.entries", "edit"), async (req, res) => {
+  await ensureWater();
+  const { p, err } = purchaseBody(req.body || {});
+  if (err) return res.status(400).json({ error: err });
+  const { rows } = await query(
+    `INSERT INTO cost_water_purchases (bought_on, supplier, litres, amount, bill_no, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [p.bought_on, p.supplier, p.litres, p.amount, p.bill_no, p.note, req.user.id]);
+  res.status(201).json({ id: rows[0].id });
+});
+router.put("/water/purchases/:id(\\d+)", requirePermission("cost.entries", "edit"), async (req, res) => {
+  const { p, err } = purchaseBody(req.body || {});
+  if (err) return res.status(400).json({ error: err });
+  const r = await query(`UPDATE cost_water_purchases SET bought_on=$1, supplier=$2, litres=$3, amount=$4, bill_no=$5, note=$6 WHERE id=$7`,
+    [p.bought_on, p.supplier, p.litres, p.amount, p.bill_no, p.note, Number(req.params.id)]);
+  if (!r.rowCount) return res.status(404).json({ error: "Not found." });
+  res.json({ ok: true });
+});
+router.delete("/water/purchases/:id(\\d+)", requirePermission("cost.entries", "edit"), async (req, res) => {
+  const r = await query(`DELETE FROM cost_water_purchases WHERE id = $1`, [Number(req.params.id)]);
+  if (!r.rowCount) return res.status(404).json({ error: "Not found." });
+  res.json({ ok: true });
 });
 
 export default router;

@@ -355,3 +355,96 @@ export async function printEmployee(e, { photo, canSalary, canIds } = {}) {
   finish(k, `Employee ${e.emp_code}`);
   open(doc, `Employee_${e.emp_code}.pdf`);
 }
+
+// ------------------------------------------- advances of a month (Round 245) --
+// Owner, 27 Oct 2026: "an option to print advance requests of the month (all
+// the requests for the month) and advances paid". A4 landscape:
+//   1. every salary-advance request raised that month or recovered from that
+//      month's salary — each line: employee, asked, approved, status, paid;
+//   2. pump-gang advance requests, the same way (when there are any);
+//   3. advances paid — the hr_advances recovered from that month's salary
+//      (and those given in the month for a later one).
+const STATUS = { pending: "Waiting for approval", approved: "Approved — to pay", rejected: "Rejected", cancelled: "Withdrawn", paid: "Paid", part_paid: "Part paid" };
+export async function printAdvancesMonth({ requests = [], gangs = [], paid = [], month }) {
+  const k = await newDoc("landscape");
+  const { doc, MX, CW } = k;
+  let y = header(k, "SALARY ADVANCES", "Requests and advances paid", monthName(month));
+  const right = { halign: "right" };
+  const style = tableStyle(k, { styles: { font: "Body", fontSize: 8.5, cellPadding: 1.3, textColor: INK, lineColor: [205, 200, 190], lineWidth: 0.15, overflow: "linebreak" } });
+
+  // 1. requests
+  y = section(k, y, `1 · Advance requests — ${requests.length} request${requests.length === 1 ? "" : "s"}`);
+  let ta = 0, tap = 0, tpd = 0, nLines = 0;
+  const body = [];
+  for (const r of requests) {
+    for (const l of r.lines) {
+      nLines++;
+      ta += Number(l.amount) || 0;
+      if (["approved", "paid"].includes(l.status)) tap += Number(l.approved_amount ?? l.amount) || 0;
+      if (l.paid) tpd += Number(l.paid.amount) || 0;
+      body.push([
+        `#${r.id}`, `${day(r.raised_at)}\n${r.raised_by_name || ""}`, `${l.employee_name}\n${l.emp_code || ""}`,
+        rs0(l.amount), l.approved_amount != null ? rs0(l.approved_amount) : "—", l.recover_month,
+        STATUS[l.status] || l.status,
+        r.decided_by_name ? `${r.decided_by_name}\n${day(r.decided_at)}` : "—",
+        l.paid ? `${rs0(l.paid.amount)} · ${day(l.paid.given_on)}\n${MODES[l.paid.mode] || l.paid.mode || ""}${l.paid.reference ? ` · ${l.paid.reference}` : ""}` : "—",
+        r.purpose || "",
+      ]);
+    }
+  }
+  if (body.length) {
+    doc.autoTable({
+      ...style, startY: y,
+      head: [["Req.", "Raised · by", "Employee", "Asked", "Approved", "Recover from", "Status", "Decided by", "Paid · date · mode", "Purpose"]],
+      body,
+      foot: [["", "", `${nLines} line${nLines === 1 ? "" : "s"}`, rs0(ta), rs0(tap), "", "", "", `paid ${rs0(tpd)}`, ""]],
+      columnStyles: { 0: { cellWidth: 12 }, 1: { cellWidth: 26 }, 2: { cellWidth: 40 }, 3: { cellWidth: 20, ...right }, 4: { cellWidth: 20, ...right },
+        5: { cellWidth: 18 }, 6: { cellWidth: 28 }, 7: { cellWidth: 28 }, 8: { cellWidth: 38 }, 9: { cellWidth: "auto" } },
+      didParseCell: (h) => { if (h.section !== "body" && [3, 4].includes(h.column.index)) h.cell.styles.halign = "right"; },
+    });
+    y = doc.lastAutoTable.finalY + 6;
+  } else {
+    k.font("normal", 9); k.color(GREY); k.text("No advance requests for this month.", MX, y + 3); k.color(INK); y += 8;
+  }
+
+  // 2. pump gang requests
+  if (gangs.length) {
+    y = section(k, y, `2 · Pump gang advances — ${gangs.length}`);
+    doc.autoTable({
+      ...style, startY: y,
+      head: [["Raised · by", "Gang", "Contractor", "Asked", "Approved", "Against bill of", "Status", "Paid · date · mode", "Purpose"]],
+      body: gangs.map((a) => [`${day(a.raised_at)}\n${a.raised_by_name || ""}`, `${a.gang_name}${a.location ? `\n${a.location}` : ""}`, a.contractor_name,
+        rs0(a.amount), a.approved_amount != null ? rs0(a.approved_amount) : "—", a.recover_month, STATUS[a.status] || a.status,
+        a.paid ? `${rs0(a.paid.amount)} · ${day(a.paid.paid_on)}\n${MODES[a.paid.mode] || a.paid.mode || ""}${a.paid.ref ? ` · ${a.paid.ref}` : ""}` : "—", a.purpose || ""]),
+      foot: [["", `${gangs.length}`, "", rs0(gangs.reduce((t, a) => t + (Number(a.amount) || 0), 0)), rs0(gangs.reduce((t, a) => t + (Number(a.approved_amount) || 0), 0)), "", "",
+        `paid ${rs0(gangs.reduce((t, a) => t + (Number(a.paid?.amount) || 0), 0))}`, ""]],
+      columnStyles: { 0: { cellWidth: 26 }, 1: { cellWidth: 36 }, 2: { cellWidth: 36 }, 3: { cellWidth: 20, ...right }, 4: { cellWidth: 20, ...right }, 5: { cellWidth: 20 },
+        6: { cellWidth: 28 }, 7: { cellWidth: 40 }, 8: { cellWidth: "auto" } },
+      didParseCell: (h) => { if (h.section !== "body" && [3, 4].includes(h.column.index)) h.cell.styles.halign = "right"; },
+    });
+    y = doc.lastAutoTable.finalY + 6;
+  }
+
+  // 3. advances paid
+  const rec = paid.filter((a) => a.recover_month === month);
+  y = section(k, y, `${gangs.length ? 3 : 2} · Advances paid — ${paid.length} (recovered from ${monthName(month)} salary: ${rs0(rec.reduce((t, a) => t + Number(a.amount), 0))})`);
+  if (paid.length) {
+    doc.autoTable({
+      ...style, startY: y,
+      head: [["#", "Given on", "Employee", "Amount", "Paid by · reference", "Recover from", "Note", "Entered by"]],
+      body: paid.map((a, i) => [i + 1, day(a.given_on), `${a.employee_name}\n${a.emp_code || ""}`, rs0(a.amount),
+        `${MODES[a.mode] || a.mode || ""}${a.reference ? ` · ${a.reference}` : ""}`, `${a.recover_month}${a.recover_month !== month ? " (other month)" : ""}`, a.note || "", a.created_by_name || ""]),
+      foot: [["", "", `${paid.length}`, rs0(paid.reduce((t, a) => t + Number(a.amount), 0)), "", "", "", ""]],
+      columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 24 }, 2: { cellWidth: 52 }, 3: { cellWidth: 24, ...right }, 4: { cellWidth: 44 }, 5: { cellWidth: 30 }, 6: { cellWidth: "auto" }, 7: { cellWidth: 30 } },
+      didParseCell: (h) => { if (h.section !== "body" && h.column.index === 3) h.cell.styles.halign = "right"; },
+    });
+    y = doc.lastAutoTable.finalY + 6;
+  } else {
+    k.font("normal", 9); k.color(GREY); k.text("No advances paid for this month.", MX, y + 3); k.color(INK); y += 8;
+  }
+  k.font("normal", 8.5); k.color(GREY);
+  k.text("Advances paid are deducted from the salary of the month shown under “Recover from”.", MX, y, { maxWidth: CW });
+  signatures(k, y + 5, ["Prepared by (Accounts)", "Checked by (Plant Manager)", "Approved by (Administrator)"]);
+  finish(k, `Salary advances ${monthName(month)}`);
+  open(doc, `Advances_${month}.pdf`);
+}

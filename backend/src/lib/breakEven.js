@@ -45,6 +45,7 @@ const n0 = (v) => Number(v) || 0;
 export const BE_LINES = [
   { key: "rm", label: "Raw material consumed", hint: "batch weights × weighted average rate", kind: "variable", src: "app" },
   { key: "fuel", label: "Fuel issued", hint: "tank, outside fills, net adjustments", kind: "variable", src: "app" },
+  { key: "water", label: "Water", hint: "batching water: purchased + own water × rate", kind: "variable", src: "app" },
   { key: "power", label: "Plant power (electricity)", hint: "entered by Accounts", kind: "variable", src: "entered" },
   { key: "repairs", label: "Repairs & maintenance", hint: "Maintenance job cards", kind: "variable", src: "app" },
   { key: "hired_vehicles", label: "Hired vehicles & pumps", hint: "entered by Accounts", kind: "variable", src: "entered" },
@@ -114,7 +115,7 @@ function rawLines(core) {
   const a = core.amounts, m = core.man;
   const inc = n0(m.incentive), trip = n0(m.trip), ot = n0(m.overtime);
   return {
-    rm: a.rm, fuel: a.fuel, power: a.power, repairs: a.repairs, hired_vehicles: a.hired_vehicles,
+    rm: a.rm, fuel: a.fuel, water: a.water || 0, power: a.power, repairs: a.repairs, hired_vehicles: a.hired_vehicles,
     incentive: inc, trip, overtime: ot, salaries_base: r2(n0(m.staff) - inc - trip - ot + n0(core.bank?.salaries)),
     pump_gangs: n0(m.gangs), contract: r2(n0(m.contract) + n0(core.bank?.contract_labour)),
     admin_office: a.admin_office, selling: a.selling, rent_rates: a.rent_rates,

@@ -12,6 +12,7 @@ import CostBreakEvenTab from "./cost/CostBreakEvenTab.jsx";
 import CostBankTab from "./cost/CostBankTab.jsx";
 import CostLoansTab from "./cost/CostLoansTab.jsx";
 import CostPartnersTab from "./cost/CostPartnersTab.jsx";
+import CostWaterTab from "./cost/CostWaterTab.jsx";
 import CostCLedgerTab from "./cost/CostCLedgerTab.jsx";
 import CostGstTab from "./cost/CostGstTab.jsx";
 import { currentMonth, addMonths } from "./cost/costUi.jsx";
@@ -22,6 +23,8 @@ const TABS = [
   { key: "balance-sheet", label: "Balance Sheet", perm: "cost.balance-sheet", Component: CostBSTab },
   // Round 221
   { key: "break-even", label: "Break-even", perm: "cost.break-even", Component: CostBreakEvenTab },
+  // Round 245 — water cost.
+  { key: "water", label: "Water", perm: "cost.pl", Component: CostWaterTab },
   // Round 223
   { key: "bank", label: "Bank statements", perm: "cost.bank", Component: CostBankTab },
   // Round 239 — loans on their own page.

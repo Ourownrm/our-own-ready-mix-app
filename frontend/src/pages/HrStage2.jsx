@@ -365,7 +365,8 @@ export function AdvancesTab() {
       {who === "gangs" && seesRequests ? <GangAdvances /> : (
         <>
           {seesRequests && <AdvanceRequests onPaid={() => setTick((t) => t + 1)} />}
-          {can("hr.advances", "view") && <AdvancesPaid key={tick} />}
+          {can("hr.advances", "view") && <AdvancesPaid key={tick} onChanged={() => setTick((t) => t + 1)} />}
+          <MoneyAudit key={`a${tick}`} />
         </>
       )}
     </>
@@ -523,8 +524,9 @@ function GangAdvances() {
   );
 }
 
-function AdvancesPaid() {
+function AdvancesPaid({ onChanged }) {
   const { can } = usePermissions();
+  const [notice, setNotice] = useState("");
   const [month, setMonth] = useState(istMonth());
   const [data, setData] = useState(null);
   const [employees, setEmployees] = useState([]);
@@ -541,12 +543,32 @@ function AdvancesPaid() {
       const body = { ...form, employee_id: Number(form.employee_id), recover_month: form.recover_month || form.given_on.slice(0, 7) };
       if (form.id) await apiRequest(`/hr/advances/${form.id}`, { method: "PATCH", body });
       else await apiRequest("/hr/advances", { method: "POST", body });
-      setForm(null); load();
+      setForm(null); setNotice(form.id ? "Advance corrected (kept in the audit trail)." : "Advance saved."); load();
     } catch (err) { setError(err.message); }
   }
+  // Round 245 — a reason with every removal (kept in the audit trail); an
+  // advance paid through a request puts that request line back to "to pay".
   async function remove(a) {
-    if (!window.confirm(`Remove the ₹${a.amount} advance to ${a.employee_name}?`)) return;
-    try { await apiRequest(`/hr/advances/${a.id}`, { method: "DELETE" }); load(); } catch (err) { setError(err.message); }
+    const fromReq = /Advance request #/.test(a.note || "");
+    const reason = window.prompt(`Remove the ₹${Number(a.amount).toLocaleString("en-IN")} advance to ${a.employee_name}?${fromReq ? `\n\nIt was paid through ${a.note.match(/Advance request #\d+/)[0]} — that line goes back to "approved, to pay".` : ""}\n\nWhy is it being removed? (kept in the audit trail)`, "");
+    if (reason === null) return;
+    if (!reason.trim()) { setError("Give a reason to remove an advance."); return; }
+    try {
+      const r = await apiRequest(`/hr/advances/${a.id}?reason=${encodeURIComponent(reason.trim())}`, { method: "DELETE" });
+      setNotice(`Removed.${r.request_reopened ? ` Advance request #${r.request_reopened} shows that line as approved, to pay.` : ""}`);
+      load(); onChanged?.();
+    } catch (err) { setError(err.message); }
+  }
+  async function printMonth() {
+    setError("");
+    try {
+      const [reqs, gangs] = await Promise.all([
+        apiRequest(`/hr-advance-requests?month=${month}`).catch(() => ({ requests: [] })),
+        apiRequest(`/hr-advance-requests/gangs?month=${month}`).catch(() => ({ advances: [] })),
+      ]);
+      const m = await import("../lib/hrPdf.js");
+      await m.printAdvancesMonth({ requests: reqs.requests || [], gangs: gangs.advances || [], paid: data?.advances || [], month });
+    } catch (err) { setError(err.message); }
   }
 
   return (
@@ -555,7 +577,9 @@ function AdvancesPaid() {
         <Field label="Month"><input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} /></Field>
         <h3 style={{ margin: "0 auto 8px 0", fontSize: 16, alignSelf: "center" }}>Advances paid</h3>
         {data && <div style={{ fontSize: 13, paddingBottom: 8 }}>To recover from {month} salary: <b>{rs(total)}</b>{data.locked && <span className="badge badge-neutral" style={{ marginLeft: 8 }}>month locked</span>}</div>}
+        {data && <button type="button" onClick={printMonth} style={{ marginBottom: 4 }}>Print the month (PDF)</button>}
       </div>
+      {notice && <div className="card" style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 12 }}>{notice}</div>}
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>Money paid to an employee before the month&rsquo;s salary, deducted from the salary of the month shown. New advances come through a request above; Edit here only to correct one.</div>
       {form && (
         <form className="card" onSubmit={save} style={{ marginBottom: 12 }}>
@@ -576,7 +600,10 @@ function AdvancesPaid() {
             <Field label="Reference"><input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="UTR / cheque no." /></Field>
             <Field label="Recover from salary of" hint="Leave as is for the same month."><input type="month" value={form.recover_month || form.given_on.slice(0, 7)} onChange={(e) => setForm({ ...form, recover_month: e.target.value })} /></Field>
           </div>
-          <div style={{ marginTop: 10 }}><Field label="Note"><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field></div>
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+            <Field label="Note"><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+            {form.id && <Field label="Why is it corrected? (audit trail)"><input value={form.reason || ""} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="e.g. amount typed wrong" /></Field>}
+          </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button type="submit" className="btn-primary">Save</button>
             <button type="button" onClick={() => setForm(null)}>Cancel</button>
@@ -847,6 +874,7 @@ export function PayrollTab() {
           {selLine && <LineDetail key={selLine.employee_id + String(selLine.net_pay) + String(selLine.paid_amount)} line={selLine} locked={locked} canEdit={canEdit} month={month} onChanged={load} onClose={() => setSel(null)} />}
         </>
       )}
+      <MoneyAudit />
     </>
   );
 }
@@ -897,6 +925,66 @@ export function RulesCard({ meta, canEdit, onSaved }) {
           {msg && <div style={{ color: "var(--signal-green)", fontSize: 13, marginTop: 6 }}>{msg}</div>}
           {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 6 }}>{error}</div>}
         </>
+      )}
+    </div>
+  );
+}
+
+// Round 245 — the audit trail of advances and payroll money (Administrator):
+// who changed what, from what to what, and why. Nothing here can be edited.
+const AUDIT_WHAT = { advance: "Advance", payroll_line: "Payroll line", payroll_month: "Payroll month", salary_payment: "Salary payment" };
+const AUDIT_ACTION = { created: "added", changed: "changed", removed: "removed", locked: "locked", unlocked: "unlocked", paid: "paid", payment_cleared: "payment cleared" };
+function auditDiff(b, a) {
+  if (!b && !a) return "";
+  const keys = [...new Set([...Object.keys(b || {}), ...Object.keys(a || {})])].filter((k) => !["id", "request_line_id"].includes(k));
+  const show = (v) => (v == null || v === "" ? "—" : typeof v === "number" ? v.toLocaleString("en-IN") : String(v));
+  if (!b) return keys.filter((k) => a[k] != null && a[k] !== "").map((k) => `${k.replace(/_/g, " ")} ${show(a[k])}`).join(" · ");
+  if (!a) return keys.filter((k) => b[k] != null && b[k] !== "").map((k) => `${k.replace(/_/g, " ")} ${show(b[k])}`).join(" · ");
+  return keys.filter((k) => String(b[k] ?? "") !== String(a[k] ?? "")).map((k) => `${k.replace(/_/g, " ")}: ${show(b[k])} → ${show(a[k])}`).join(" · ") || "no change";
+}
+export function MoneyAudit() {
+  const [month, setMonth] = useState(istMonth());
+  const [rows, setRows] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [denied, setDenied] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setRows(null);
+    apiRequest(`/hr/money-audit?month=${month}`).then(setRows).catch((e) => { if (e.status === 403) setDenied(true); setRows([]); });
+  }, [month, open]);
+  if (denied) return null;
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 700 }}>Audit trail — advances &amp; salary</div>
+          <div style={{ fontSize: 12, color: "var(--slate)" }}>Every advance and salary figure added, changed or removed — who, when, before → after, and why. Administrator only.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {open && <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} aria-label="Audit month" />}
+          <button type="button" onClick={() => setOpen((x) => !x)} aria-expanded={open}>{open ? "Hide" : "Show"}</button>
+        </div>
+      </div>
+      {open && (
+        !rows ? <div style={{ fontSize: 13, color: "var(--slate)", marginTop: 8 }}>Loading…</div>
+          : !rows.length ? <div style={{ fontSize: 13, color: "var(--slate)", marginTop: 8 }}>Nothing recorded for {month}. (Changes are recorded from this version on.)</div>
+            : (
+              <div style={{ overflowX: "auto", marginTop: 8 }}>
+                <table>
+                  <thead><tr><th>When</th><th>By</th><th>What</th><th>Employee</th><th>Change</th><th>Why</th></tr></thead>
+                  <tbody>{rows.map((x) => (
+                    <tr key={x.id}>
+                      <td style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>{new Date(x.at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
+                      <td style={{ fontSize: 12.5 }}>{x.user_name || "—"}</td>
+                      <td style={{ fontSize: 12.5 }}><b style={{ color: x.action === "removed" || x.action === "payment_cleared" || x.action === "unlocked" ? "var(--alert-red)" : undefined }}>{AUDIT_WHAT[x.entity] || x.entity} {AUDIT_ACTION[x.action] || x.action}</b>{x.month ? <div style={{ color: "var(--slate)" }}>{x.month}</div> : null}</td>
+                      <td style={{ fontSize: 12.5 }}>{x.employee_name ? `${x.employee_name} ${x.emp_code || ""}` : "—"}</td>
+                      <td style={{ fontSize: 12, maxWidth: 420 }}>{auditDiff(x.before, x.after)}</td>
+                      <td style={{ fontSize: 12.5 }}>{x.reason || ""}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )
       )}
     </div>
   );

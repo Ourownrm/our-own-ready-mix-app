@@ -24,10 +24,11 @@
 import { query } from "../db.js";
 import { ROUND242_PARTNERS_SQL } from "./round242Schema.js";
 import { ROUND244_SQL } from "./round244Schema.js";
+import { ROUND245_PARTNER_SQL } from "./round245Schema.js";
 
 let ready = null;
 export async function ensurePartners() {
-  if (!ready) ready = query(ROUND242_PARTNERS_SQL + ROUND244_SQL).catch((e) => { ready = null; throw e; });
+  if (!ready) ready = query(ROUND242_PARTNERS_SQL + ROUND244_SQL + ROUND245_PARTNER_SQL).catch((e) => { ready = null; throw e; });
   return ready;
 }
 
@@ -214,11 +215,13 @@ export async function partnersReport(asOf) {
     const c = sc[0].sheet_check;
     sheetCheck = { as_on: c.as_on, file_name: sc[0].file_name, uploaded_at: sc[0].uploaded_at, rows: [] };
     for (const [name, sh] of Object.entries(c.partners)) {
-      const p = partners.find((x) => x.name.toLowerCase() === name.toLowerCase());
+      // Round 245 — the partner each sheet name was imported into (by id).
+      const pid = c.ids?.[name];
+      const p = (pid && partners.find((x) => x.id === Number(pid))) || partners.find((x) => x.name.toLowerCase() === name.toLowerCase());
       const mine = p ? txns.filter((t) => t.partner_id === p.id) : [];
       const l = loanPosition(mine, settings, c.as_on, { through: true });
       const cp = capitalPosition(mine, c.as_on);
-      sheetCheck.rows.push({ name, sheet: sh,
+      sheetCheck.rows.push({ name, partner: p?.name || null, sheet: sh,
         app: { capital: cp.balance, loan: l.outstanding, interest: l.interest_total, paid: l.interest_paid_gross, balance: l.interest_due } });
     }
   }

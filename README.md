@@ -9075,3 +9075,31 @@ Owner, 27 Oct 2026, with "Investment & Loan Details.xlsx" (hidden sheets ignored
 - Verified with the owner's file (sheet date 27-Oct-2026, 302 entries, 8 partners): every partner's capital, loan, interest (e.g. Pramod Kumar ₹8,63,152.00, Ranjith Kolangada ₹6,75,241.10), interest paid and interest balance agree with the sheet — largest difference ₹0.03 (the sheet's unrounded decimals); importing twice with Replace gives the same figures; `npm run check` green; build clean.
 
 Files — backend: src/lib/round244Schema.js (new), src/lib/partners.js, src/routes/{costPartners, setup}.js · frontend: src/lib/partnerSheetImport.js (new), src/lib/version.js, src/pages/cost/CostPartnersTab.jsx · root: README.md
+
+## Round 245 — Partners merged and cleaned up; advance Remove fixed with an audit trail; monthly advances printout; water cost (v10.77)
+
+Owner, 27 Oct 2026, four points. **Run /setup once** (additive; also made on first use).
+
+**1. Partners came twice after the sheet import.** The owner had entered capital from the bank statement under the bank's spellings (AJITH KUMAR P. V …); the sheet import made a second partner for every sheet spelling (Ajith Kumar …), and taking the upload back removed the entries but not those partners.
+- Cost → Partners → **Partners & rates**: each partner shows its number of entries; **Merge into…** moves every entry onto the partner kept (PAN and bank-line words kept) and removes the other; **Remove** for a partner with no entries; **Remove the N partners with no entries** in one go.
+- Taking an upload back now also removes the partners that upload made, when they have no entries left (`cost_partners.made_by_upload`).
+- **Import my Investment & Loan sheet** now asks which partner each sheet name is — the existing partner is picked for you (first name, then the rest or initials: "Santosh KS" = "SANTOSH K.S", "Nissar N" = "NISSAR NALOTHUMKANDY"; checked on all eight names), or "+ new partner" — and what to take: **investments (capital)** — off when capital is already entered, with a warning — and **loans and interest paid**. The comparison with the sheet follows each name to its partner.
+- After deploying: Partners & rates → "Remove the partners with no entries" clears the leftovers; then import the sheet again with "investments" unticked.
+- Verified with the owner's file: bank-spelling partners with capital, import as new (16 partners) → take back → 8 partners left; a leftover empty one removed, a duplicate with entries refused for Remove and merged; mapped import of loans only → 8 partners, every figure agrees with the sheet (largest difference ₹0.03).
+
+**2. Remove on Advances paid failed** ("It is still in use, or points at something that does not exist"): an advance paid through an advance request is linked from the request line. Removing it now unlinks it — the line goes back to "approved, to pay" and the request to approved / part paid — and asks why. Edit asks why too. A locked month says how to correct it (unlock payroll after clearing its salary payments).
+- **Audit trail — advances & salary** (HR → Advances and HR → Payroll, Administrator / whoever may unlock payroll): every advance added (by hand or paid through a request), changed or removed; payroll line changes (OT, other earnings / deductions); salary payments recorded, changed or cleared; Pay all; month locked / unlocked — who, when, before → after, and why. Nothing in it can be edited (`hr_money_audit`, `GET /hr/money-audit`).
+- Verified: raise → approve → pay → edit (reason) → remove (reason) → request line back to approved → paid again; all five steps in the audit trail.
+
+**3. Print the month (PDF)** on HR → Advances paid (A4 landscape): every advance request raised that month or recovered from that month's salary — employee, asked, approved, recover from, status, decided by, paid · date · mode, purpose; pump-gang advances of the month (when any); advances paid with what is recovered from the month; signature boxes. `GET /hr-advance-requests?month=` and `/gangs?month=`.
+
+**4. Water cost — Cost → Water** (view with the P&L; change with Enter the month's expenses).
+- Water used = the batching plant's Water 1 + Water 2 actual of every batch kept (1 kg = 1 L).
+- **Own water rate** — ₹ per kilolitre for the plant's own water (borewell pumping, supply charges), with rate changes from a date.
+- **Water bought** — date, supplier, litres, amount, bill no.
+- Water cost = bills of water bought + (used − bought, not below 0) × own rate; shown step by step, with ₹ per kL used and the last six months. Goes into the **P&L** as a direct cost "Water", into the cost dashboard's "where each ₹ goes", and into **break-even** as a variable cost.
+- Verified: 35,000 L used, 32,000 L bought for ₹4,800, own rate ₹12/kL → 3,000 L × ₹12 = ₹36 + ₹4,800 = ₹4,836 on the Water page, the P&L and in break-even's variable cost; screens at 1280 / 390 px with no overflow or page errors.
+
+`npm run check` green; build clean.
+
+Files — backend: src/lib/{round245Schema, hrAudit, waterCost}.js (new), src/lib/{partners, costDashboard, breakEven}.js, src/routes/{costPartners, hr, hrAdvances, costModule, setup}.js · frontend: src/pages/cost/CostWaterTab.jsx (new), src/pages/cost/CostPartnersTab.jsx, src/pages/{CostModule, HrStage2}.jsx, src/lib/{hrPdf, version}.js · root: README.md

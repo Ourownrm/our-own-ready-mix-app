@@ -7,7 +7,8 @@
 // from someone with hr.salary edit. Anyone else editing an employee simply
 // cannot touch them — the fields are dropped, never zeroed.
 import { Router } from "express";
-import { query } from "../db.js";
+import { pool, query } from "../db.js";
+import { audit, auditList } from "../lib/hrAudit.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission, can } from "../lib/permissions.js";
 import { attendanceRegister, datesBetween } from "../lib/hrAttendance.js";
@@ -1325,27 +1326,71 @@ router.post("/advances", requirePermission("hr.advances", "create"), async (req,
       `INSERT INTO hr_advances (employee_id, given_on, amount, mode, reference, recover_month, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
       [f.employee_id, f.given_on, f.amount, f.mode, f.reference, f.recover_month, f.note, req.user.id]);
+    await audit(null, { user: req.user, entity: "advance", entityId: rows[0].id, employeeId: f.employee_id, month: f.recover_month, action: "created", after: f });
     res.status(201).json({ id: rows[0].id });
   } catch (err) { friendly(err, res, "Could not save the advance."); }
 });
+// Round 245 — the advance as it stands, for the audit trail.
+async function advanceRow(db, id) {
+  const { rows } = await db.query(
+    `SELECT id, employee_id, to_char(given_on, 'YYYY-MM-DD') AS given_on, amount::float AS amount, mode, reference, recover_month, note, request_line_id
+       FROM hr_advances WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
 router.patch("/advances/:id", requirePermission("hr.advances", "edit"), async (req, res) => {
   try {
-    const { rows: cur } = await query(`SELECT recover_month FROM hr_advances WHERE id = $1`, [Number(req.params.id)]);
-    if (!cur[0]) return res.status(404).json({ error: "Advance not found." });
+    const before = await advanceRow({ query }, Number(req.params.id));
+    if (!before) return res.status(404).json({ error: "Advance not found." });
     const f = advanceFields(req.body || {});
-    if (await monthLocked(cur[0].recover_month) || await monthLocked(f.recover_month)) return res.status(409).json({ error: "That payroll month is locked." });
+    if (await monthLocked(before.recover_month) || await monthLocked(f.recover_month)) {
+      return res.status(409).json({ error: `Payroll for ${await monthLocked(before.recover_month) ? before.recover_month : f.recover_month} is locked. Unlock that month (HR → Payroll → Unlock — clear its salary payments first) to correct this advance.` });
+    }
     await query(`UPDATE hr_advances SET employee_id=$1, given_on=$2, amount=$3, mode=$4, reference=$5, recover_month=$6, note=$7 WHERE id=$8`,
       [f.employee_id, f.given_on, f.amount, f.mode, f.reference, f.recover_month, f.note, Number(req.params.id)]);
+    await audit(null, { user: req.user, entity: "advance", entityId: before.id, employeeId: f.employee_id, month: f.recover_month, action: "changed",
+      before, after: f, reason: req.body?.reason });
     res.json({ ok: true });
   } catch (err) { friendly(err, res, "Could not save the advance."); }
 });
 router.delete("/advances/:id", requirePermission("hr.advances", "delete"), async (req, res) => {
   try {
-    const { rows: cur } = await query(`SELECT recover_month FROM hr_advances WHERE id = $1`, [Number(req.params.id)]);
-    if (!cur[0]) return res.status(404).json({ error: "Advance not found." });
-    if (await monthLocked(cur[0].recover_month)) return res.status(409).json({ error: "That payroll month is locked." });
-    await query(`DELETE FROM hr_advances WHERE id = $1`, [Number(req.params.id)]);
-    res.json({ ok: true });
+    const id = Number(req.params.id);
+    const before = await advanceRow({ query }, id);
+    if (!before) return res.status(404).json({ error: "Advance not found." });
+    if (await monthLocked(before.recover_month)) {
+      return res.status(409).json({ error: `Payroll for ${before.recover_month} is locked. Unlock that month (HR → Payroll → Unlock — clear its salary payments first) to remove this advance.` });
+    }
+    // Round 245 — an advance paid through an advance request is linked from
+    // the request line (that link is why Remove failed: "still in use"). The
+    // line goes back to "approved — to pay", so the request shows it unpaid.
+    const client = await pool.connect();
+    let reopened = null;
+    try {
+      await client.query("BEGIN");
+      const { rows: lines } = await client.query(
+        `UPDATE hr_advance_request_lines SET advance_id = NULL, status = 'approved' WHERE advance_id = $1 RETURNING id, request_id`, [id]).catch((e) => {
+        if (e.code === "42P01") return { rows: [] }; // no request tables on an old database
+        throw e;
+      });
+      await client.query(`DELETE FROM hr_advances WHERE id = $1`, [id]);
+      for (const l of lines) {
+        reopened = l.request_id;
+        const { rows: left } = await client.query(
+          `SELECT COUNT(*) FILTER (WHERE status = 'approved')::int AS open, COUNT(*) FILTER (WHERE status = 'paid')::int AS paid
+             FROM hr_advance_request_lines WHERE request_id = $1`, [l.request_id]);
+        await client.query(`UPDATE hr_advance_requests SET status = $1 WHERE id = $2`,
+          [left[0].paid ? (left[0].open ? "part_paid" : "paid") : "approved", l.request_id]);
+      }
+      await audit(client, { user: req.user, entity: "advance", entityId: id, employeeId: before.employee_id, month: before.recover_month, action: "removed",
+        before, reason: req.body?.reason || req.query.reason });
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+    res.json({ ok: true, request_reopened: reopened });
   } catch (err) { friendly(err, res, "Could not remove the advance."); }
 });
 
@@ -1432,10 +1477,14 @@ router.patch("/payroll/:month/lines/:emp", requirePermission("hr.payroll", "edit
     const b = req.body || {};
     const ot = b.ot_hours === "" || b.ot_hours === null || b.ot_hours === undefined ? null : Number(b.ot_hours);
     if (ot !== null && !(Number.isFinite(ot) && ot >= 0 && ot <= 300)) return res.status(400).json({ error: "Overtime hours must be 0 to 300." });
+    const { rows: was } = await query(`SELECT ot_hours, other_earning::float AS other_earning, other_deduction::float AS other_deduction, remarks, net_pay::float AS net_pay
+                                         FROM hr_payroll_lines WHERE month = $1 AND employee_id = $2`, [month, emp]);
     const { rowCount } = await query(
       `UPDATE hr_payroll_lines SET ot_hours = $1, other_earning = $2, other_deduction = $3, remarks = $4 WHERE month = $5 AND employee_id = $6`,
       [ot, money(b.other_earning) || 0, money(b.other_deduction) || 0, text(b.remarks, 500), month, emp]);
     if (!rowCount) return res.status(404).json({ error: "Calculate the month first." });
+    await audit(null, { user: req.user, entity: "payroll_line", employeeId: emp, month, action: "changed", before: was[0] || null,
+      after: { ot_hours: ot, other_earning: money(b.other_earning) || 0, other_deduction: money(b.other_deduction) || 0, remarks: text(b.remarks, 500) } });
     const result = await computePayroll(month, { employeeIds: [emp] });
     await saveLines(month, result, req.user.id, { onlyIds: [emp] });
     res.json({ ok: true });
@@ -1452,6 +1501,7 @@ router.post("/payroll/:month/lock", requirePermission("hr.payroll", "edit"), asy
     const result = await computePayroll(month);
     await saveLines(month, result, req.user.id);
     await query(`UPDATE hr_payroll_runs SET status = 'locked', locked_at = now(), locked_by = $1 WHERE month = $2`, [req.user.id, month]);
+    await audit(null, { user: req.user, entity: "payroll_month", month, action: "locked" });
     res.json({ ok: true });
   } catch (err) { friendly(err, res, "Could not lock the month."); }
 });
@@ -1462,6 +1512,7 @@ router.post("/payroll/:month/unlock", requirePermission("hr.payroll", "delete"),
     const { rows } = await query(`SELECT count(*)::int AS n FROM hr_payroll_lines WHERE month = $1 AND paid_amount IS NOT NULL`, [month]);
     if (rows[0].n) return res.status(409).json({ error: `${rows[0].n} salary payment(s) are already recorded for this month. Remove them first.` });
     await query(`UPDATE hr_payroll_runs SET status = 'draft', locked_at = NULL, locked_by = NULL WHERE month = $1`, [month]);
+    await audit(null, { user: req.user, entity: "payroll_month", month, action: "unlocked", reason: req.body?.reason });
     res.json({ ok: true });
   } catch (err) { friendly(err, res, "Could not unlock the month."); }
 });
@@ -1472,9 +1523,12 @@ router.put("/payroll/:month/lines/:emp/payment", requirePermission("hr.payroll",
   try {
     if (!(await monthLocked(month))) return res.status(409).json({ error: "Lock the month before recording payments." });
     const b = req.body || {};
+    const { rows: was } = await query(`SELECT paid_amount::float AS paid_amount, to_char(paid_on, 'YYYY-MM-DD') AS paid_on, paid_mode, paid_ref
+                                         FROM hr_payroll_lines WHERE month = $1 AND employee_id = $2`, [month, emp]);
     if (b.clear) {
       await query(`UPDATE hr_payroll_lines SET paid_amount = NULL, paid_on = NULL, paid_mode = NULL, paid_ref = NULL, paid_by = NULL
                    WHERE month = $1 AND employee_id = $2`, [month, emp]);
+      await audit(null, { user: req.user, entity: "salary_payment", employeeId: emp, month, action: "payment_cleared", before: was[0] || null, reason: b.reason });
       return res.json({ ok: true });
     }
     const amount = money(b.paid_amount), on = date(b.paid_on);
@@ -1483,6 +1537,8 @@ router.put("/payroll/:month/lines/:emp/payment", requirePermission("hr.payroll",
       `UPDATE hr_payroll_lines SET paid_amount = $1, paid_on = $2, paid_mode = $3, paid_ref = $4, paid_by = $5 WHERE month = $6 AND employee_id = $7`,
       [amount, on, PAY_MODES.includes(b.paid_mode) ? b.paid_mode : "bank_transfer", text(b.paid_ref, 100), req.user.id, month, emp]);
     if (!rowCount) return res.status(404).json({ error: "No payroll line for that employee." });
+    await audit(null, { user: req.user, entity: "salary_payment", employeeId: emp, month, action: was[0]?.paid_amount != null ? "changed" : "paid",
+      before: was[0]?.paid_amount != null ? was[0] : null, after: { paid_amount: amount, paid_on: on, paid_mode: b.paid_mode, paid_ref: text(b.paid_ref, 100) } });
     res.json({ ok: true });
   } catch (err) { friendly(err, res, "Could not record the payment."); }
 });
@@ -1501,8 +1557,17 @@ router.post("/payroll/:month/pay-all", requirePermission("hr.payroll", "edit"), 
          -- Round 211 — contract workers with a contractor are paid through the contractor's bill
          AND employee_id NOT IN (SELECT id FROM hr_employees WHERE employment_type = 'contract' AND contractor_id IS NOT NULL)`,
       [on, mode, text(req.body?.paid_ref, 100), req.user.id, month, ["payroll", "contract"].includes(req.body?.only) ? req.body.only : null]);
+    if (rowCount) await audit(null, { user: req.user, entity: "salary_payment", month, action: "paid", after: { all_unpaid: rowCount, paid_on: on, paid_mode: mode } });
     res.json({ ok: true, paid: rowCount });
   } catch (err) { friendly(err, res, "Could not record the payments."); }
+});
+
+// Round 245 — the audit trail of advances and payroll money for a month
+// (Administrator, or whoever may unlock payroll).
+router.get("/money-audit", async (req, res) => {
+  if (!isAdmin(req.user) && !(await can(req.user, "hr.payroll", "delete"))) return res.status(403).json({ error: "Only the Administrator sees the audit trail." });
+  const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : null;
+  res.json(await auditList({ month, employeeId: req.query.employee ? Number(req.query.employee) : null }));
 });
 
 export default router;

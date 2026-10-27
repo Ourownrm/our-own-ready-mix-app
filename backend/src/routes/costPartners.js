@@ -201,7 +201,13 @@ router.post("/import-sheet", EDIT, async (req, res) => {
   const entries = Array.isArray(b.entries) ? b.entries : [];
   if (!entries.length) return bad(res, "Nothing to import.");
   if (entries.length > 5000) return bad(res, "Too many lines (5,000 at most).");
-  const names = [...new Set(entries.map((e) => String(e.partner || "").trim()).filter(Boolean))];
+  // Round 245 — which parts to take (capital already entered from the bank
+  // statement is left out), and which existing partner each sheet name is.
+  const parts = { capital: b.parts?.capital !== false, loans: b.parts?.loans !== false };
+  const map = b.map && typeof b.map === "object" ? b.map : {};
+  const wanted = entries.filter((e) => (["capital_in", "capital_out"].includes(e.kind) ? parts.capital : parts.loans));
+  if (!wanted.length) return bad(res, "Nothing chosen to import.");
+  const names = [...new Set(wanted.map((e) => String(e.partner || "").trim()).filter(Boolean))];
   const client = await pool.connect();
   let added = 0, dup = 0, removed = 0, made = 0, uploadId;
   try {
@@ -211,19 +217,47 @@ router.post("/import-sheet", EDIT, async (req, res) => {
       for (const o of old) {
         removed += (await client.query(`DELETE FROM cost_partner_txns WHERE upload_id = $1`, [o.id])).rowCount;
         await client.query(`DELETE FROM cost_partner_uploads WHERE id = $1`, [o.id]);
+        await dropEmptyMadeBy(client, o.id);
       }
     }
+    const { rows: up } = await client.query(
+      `INSERT INTO cost_partner_uploads (book, file_name, lines, uploaded_by) VALUES ('sheet', $1, $2, $3) RETURNING id`,
+      [String(b.file_name || "").slice(0, 200) || null, wanted.length, req.user.id]);
+    uploadId = up[0].id;
     const ids = new Map();
     for (const n of names) {
-      const { rows } = await client.query(`SELECT id FROM cost_partners WHERE lower(name) = lower($1)`, [n]);
+      const pick = map[n];
+      if (pick && pick !== "new") {
+        const { rows } = await client.query(`SELECT id FROM cost_partners WHERE id = $1`, [Number(pick)]);
+        if (!rows.length) throw Object.assign(new Error(`The partner chosen for "${n}" is not there any more — read the sheet again.`), { expose: true });
+        ids.set(n, rows[0].id);
+        continue;
+      }
+      const { rows } = pick === "new" ? { rows: [] } : await client.query(`SELECT id FROM cost_partners WHERE lower(name) = lower($1)`, [n]);
       if (rows.length) ids.set(n, rows[0].id);
-      else { ids.set(n, (await client.query(`INSERT INTO cost_partners (name, match_words) VALUES ($1, $2) RETURNING id`, [n.slice(0, 120), n.toUpperCase().slice(0, 300)])).rows[0].id); made++; }
+      else {
+        ids.set(n, (await client.query(`INSERT INTO cost_partners (name, match_words, made_by_upload) VALUES ($1, $2, $3) RETURNING id`,
+          [n.slice(0, 120), n.toUpperCase().slice(0, 300), uploadId])).rows[0].id);
+        made++;
+      }
     }
-    const { rows: up } = await client.query(
-      `INSERT INTO cost_partner_uploads (book, file_name, lines, uploaded_by, sheet_check) VALUES ('sheet', $1, $2, $3, $4::jsonb) RETURNING id`,
-      [String(b.file_name || "").slice(0, 200) || null, entries.length, req.user.id, b.check ? JSON.stringify(b.check) : null]);
-    uploadId = up[0].id;
-    for (const [i, e] of entries.entries()) {
+    // The sheet's own totals, with which partner each sheet name became, to compare with.
+    if (b.check) {
+      // Names whose rows were all left out (e.g. capital only) still point at
+      // their partner for the comparison — never a new partner for them.
+      const allIds = new Map(ids);
+      for (const n of Object.keys(b.check.partners || {})) {
+        if (allIds.has(n)) continue;
+        const pick = map[n];
+        const { rows } = pick && pick !== "new"
+          ? await client.query(`SELECT id FROM cost_partners WHERE id = $1`, [Number(pick)])
+          : await client.query(`SELECT id FROM cost_partners WHERE lower(name) = lower($1)`, [n]);
+        if (rows.length) allIds.set(n, rows[0].id);
+      }
+      const check = { ...b.check, ids: Object.fromEntries([...allIds.entries()]) };
+      await client.query(`UPDATE cost_partner_uploads SET sheet_check = $1::jsonb WHERE id = $2`, [JSON.stringify(check), uploadId]);
+    }
+    for (const [i, e] of wanted.entries()) {
       const { t, err } = txnBody({ ...e, partner_id: ids.get(String(e.partner || "").trim()) });
       if (err) throw Object.assign(new Error(`Line ${i + 1} (${e.partner || "?"}, ${e.txn_date || "?"}): ${err}`), { expose: true });
       const key = ["sheet", t.partner_id, t.kind, t.txn_date, t.amount.toFixed(2), String(t.narration || "").replace(/\s+/g, " ").slice(0, 120), e.seq ?? i].join("|");
@@ -248,7 +282,64 @@ router.delete("/uploads/:id(\\d+)", EDIT, async (req, res) => {
   const id = Number(req.params.id);
   const r = await query(`DELETE FROM cost_partner_txns WHERE upload_id = $1`, [id]);
   await query(`DELETE FROM cost_partner_uploads WHERE id = $1`, [id]);
-  res.json({ removed: r.rowCount });
+  const gone = await dropEmptyMadeBy({ query }, id);
+  res.json({ removed: r.rowCount, partners_removed: gone });
+});
+
+// Round 245 — partners the upload made, left with no entries, go with it.
+async function dropEmptyMadeBy(db, uploadId) {
+  const r = await db.query(
+    `DELETE FROM cost_partners p WHERE p.made_by_upload = $1
+        AND NOT EXISTS (SELECT 1 FROM cost_partner_txns t WHERE t.partner_id = p.id)`, [uploadId]);
+  return r.rowCount;
+}
+
+// Round 245 — the same partner entered twice (two spellings): move every
+// entry of one onto the other, keep the PAN and the bank-line words of both,
+// and remove the one merged away.
+router.post("/partners/:id(\\d+)/merge", EDIT, async (req, res) => {
+  const from = Number(req.params.id), into = Number(req.body?.into);
+  if (!(into > 0) || into === from) return bad(res, "Choose the partner to merge into.");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT id, name, match_words, pan FROM cost_partners WHERE id = ANY($1::int[]) FOR UPDATE`, [[from, into]]);
+    const a = rows.find((x) => x.id === from), b = rows.find((x) => x.id === into);
+    if (!a || !b) { await client.query("ROLLBACK"); return bad(res, "Partner not found.", 404); }
+    const moved = (await client.query(`UPDATE cost_partner_txns SET partner_id = $1 WHERE partner_id = $2`, [into, from])).rowCount;
+    const words = [...new Set([b.match_words, a.match_words, a.name.toUpperCase()].filter(Boolean).flatMap((w) => w.split(/\s*[,;]\s*/)).filter(Boolean))].join(", ").slice(0, 300);
+    await client.query(`UPDATE cost_partners SET match_words = $1, pan = COALESCE(pan, $2) WHERE id = $3`, [words, a.pan, into]);
+    await client.query(`DELETE FROM cost_partners WHERE id = $1`, [from]);
+    // A sheet check that pointed at the merged partner now points at the one kept.
+    await client.query(
+      `UPDATE cost_partner_uploads SET sheet_check = jsonb_set(sheet_check, '{ids}',
+          (SELECT COALESCE(jsonb_object_agg(k, CASE WHEN v::text = $1::text THEN to_jsonb($2::int) ELSE v END), '{}'::jsonb)
+             FROM jsonb_each(sheet_check->'ids') AS e(k, v)))
+        WHERE sheet_check ? 'ids'`, [String(from), into]);
+    await client.query("COMMIT");
+    res.json({ moved, kept: b.name, removed: a.name });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// A partner with no entries can be removed.
+router.delete("/partners/:id(\\d+)", EDIT, async (req, res) => {
+  const id = Number(req.params.id);
+  const { rows } = await query(`SELECT COUNT(*)::int AS n FROM cost_partner_txns WHERE partner_id = $1`, [id]);
+  if (rows[0].n) return bad(res, `This partner has ${rows[0].n} entr${rows[0].n === 1 ? "y" : "ies"} — merge it into the right partner instead, or remove the entries first.`, 409);
+  const r = await query(`DELETE FROM cost_partners WHERE id = $1`, [id]);
+  if (!r.rowCount) return bad(res, "Partner not found.", 404);
+  res.json({ ok: true });
+});
+
+// Every partner with no entries at all.
+router.post("/partners/remove-empty", EDIT, async (_req, res) => {
+  const r = await query(`DELETE FROM cost_partners p WHERE NOT EXISTS (SELECT 1 FROM cost_partner_txns t WHERE t.partner_id = p.id) RETURNING name`);
+  res.json({ removed: r.rowCount, names: r.rows.map((x) => x.name) });
 });
 
 export default router;

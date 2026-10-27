@@ -55,6 +55,7 @@ import { bookStockRows } from "../routes/materialModule.js";
 import { bankHeadsMonth, bankBalancesOn } from "./bankBook.js";
 import { clTicketSales, clOtherIncomeMonth, clExpenseHeadsMonth } from "./cLedger.js";
 import { partnerInterestMonth, partnerBalancesOn } from "./partners.js";
+import { waterMonth } from "./waterCost.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -478,6 +479,8 @@ async function computeMonth(ym, ctx) {
   // once). A record with no delivery note is not a sale (Round 227, owner: it
   // is only a collection). No separate line or mark anywhere (owner).
   const clSales = await clTicketSales(tickets.map((t) => t.id));
+  // Round 245 — water: purchased bills + own water × rate.
+  const water = await waterMonth(ym).catch((e) => { console.error("cost: water", e.message); return { value: 0 }; });
   for (const t of tickets) {
     const c = clSales.get(t.id);
     if (!c) continue;
@@ -490,7 +493,7 @@ async function computeMonth(ym, ctx) {
   const e = (k) => (entries[k] ? entries[k].amount : 0);
   const a = {
     concrete: sales.concrete, pumping: sales.pumping, part_load: sales.part_load, other_income: e("other_income"),
-    rm: rm.consumed, fuel: fuel.issued_value, power: e("power"), repairs: mnt.total, hired_vehicles: e("hired_vehicles"),
+    rm: rm.consumed, fuel: fuel.issued_value, water: water.value || 0, power: e("power"), repairs: mnt.total, hired_vehicles: e("hired_vehicles"),
     salaries: man.staff, contract_labour: r2(man.gangs + man.contract), admin_office: e("admin_office"), selling: e("selling"),
     road_tax: certs.road_tax, insurance: certs.insurance, other_certs: certs.other_certs, rent_rates: e("rent_rates"),
     depreciation: e("depreciation"), interest: e("interest"), tax: e("tax"),
@@ -505,13 +508,13 @@ async function computeMonth(ym, ctx) {
   // Round 242 — interest on the partners' unsecured loans, as it accrues.
   const partnerInterest = await partnerInterestMonth(ym).catch((e) => { console.error("cost: partner interest", e.message); return 0; });
   if (partnerInterest) a.interest = r2(a.interest + partnerInterest);
-  return { ym, sales, tickets, rm, fuel, mntRows, mnt, man, certs, entries, bank: bank.heads, partner_interest: partnerInterest, amounts: withTotals(a) };
+  return { ym, sales, tickets, rm, fuel, water, mntRows, mnt, man, certs, entries, bank: bank.heads, partner_interest: partnerInterest, amounts: withTotals(a) };
 }
 
 export function withTotals(a) {
   const t = { ...a };
   t.revenue = r2(a.concrete + a.pumping + a.part_load + a.other_income);
-  t.direct = r2(a.rm + a.fuel + a.power + a.repairs + a.hired_vehicles);
+  t.direct = r2(a.rm + a.fuel + (a.water || 0) + a.power + a.repairs + a.hired_vehicles);
   t.gross = r2(t.revenue - t.direct);
   t.overheads = r2(a.salaries + a.contract_labour + a.admin_office + a.selling + a.road_tax + a.insurance + a.other_certs + a.rent_rates);
   t.ebitda = r2(t.gross - t.overheads);
@@ -732,6 +735,8 @@ const PL_LINES = [
   { head: "Direct costs" },
   { key: "rm", label: "Raw material consumed", src: "app", hint: "plant consumption × weighted average rate", cost: true },
   { key: "fuel", label: "Fuel issued", src: "app", hint: "diesel tank, outside fills, net stock adjustment down, petrol", cost: true },
+  // Round 245
+  { key: "water", label: "Water", src: "app", hint: "batching water: purchased water bills + own water × rate per kL (Cost → Water)", cost: true },
   { key: "power", label: "Plant power (electricity)", src: "entered", cost: true },
   { key: "repairs", label: "Repairs & maintenance", src: "app", hint: "Maintenance job cards", cost: true },
   { key: "hired_vehicles", label: "Hired vehicles & pumps", src: "entered", cost: true },
@@ -835,7 +840,7 @@ export async function profitLoss(ym, { period = "month", compare = "prev" } = {}
 
   // Where each ₹ of revenue per m³ goes.
   const water = qty > 0 && cur.revenue > 0 ? [
-    ["Raw material", cur.rm], ["Fuel", cur.fuel], ["Power, repairs, hire", cur.power + cur.repairs + cur.hired_vehicles],
+    ["Raw material", cur.rm], ["Fuel", cur.fuel], ["Water, power, repairs, hire", (cur.water || 0) + cur.power + cur.repairs + cur.hired_vehicles],
     ["Salaries & contract labour", cur.salaries + cur.contract_labour],
     ["Other overheads", cur.admin_office + cur.selling + cur.road_tax + cur.insurance + cur.other_certs + cur.rent_rates],
     ["Depreciation & interest", cur.depreciation + cur.interest], ["Tax", cur.tax], ["Profit after tax", cur.pat],
