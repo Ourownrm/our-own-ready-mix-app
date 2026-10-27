@@ -365,15 +365,22 @@ export async function printEmployee(e, { photo, canSalary, canIds } = {}) {
 //   3. advances paid — the hr_advances recovered from that month's salary
 //      (and those given in the month for a later one).
 const STATUS = { pending: "Waiting for approval", approved: "Approved — to pay", rejected: "Rejected", cancelled: "Withdrawn", paid: "Paid", part_paid: "Part paid" };
-export async function printAdvancesMonth({ requests = [], gangs = [], paid = [], month }) {
+// Round 246 — `part`: "requests" (requests + pump gang requests),
+// "paid" (advances paid) or "all" (both, as before).
+export async function printAdvancesMonth({ requests = [], gangs = [], paid = [], month, part = "all" }) {
   const k = await newDoc("landscape");
   const { doc, MX, CW } = k;
-  let y = header(k, "SALARY ADVANCES", "Requests and advances paid", monthName(month));
+  const wantReq = part !== "paid", wantPaid = part !== "requests";
+  const title = part === "requests" ? "ADVANCE REQUESTS" : part === "paid" ? "ADVANCES PAID" : "SALARY ADVANCES";
+  let y = header(k, title, part === "requests" ? "Salary advance requests of the month" : part === "paid" ? "Salary advances paid" : "Requests and advances paid", monthName(month));
+  let n = 0;
+  const num = () => (part === "all" ? `${++n} · ` : "");
   const right = { halign: "right" };
   const style = tableStyle(k, { styles: { font: "Body", fontSize: 8.5, cellPadding: 1.3, textColor: INK, lineColor: [205, 200, 190], lineWidth: 0.15, overflow: "linebreak" } });
 
   // 1. requests
-  y = section(k, y, `1 · Advance requests — ${requests.length} request${requests.length === 1 ? "" : "s"}`);
+  if (wantReq) {
+  y = section(k, y, `${num()}Advance requests — ${requests.length} request${requests.length === 1 ? "" : "s"}`);
   let ta = 0, tap = 0, tpd = 0, nLines = 0;
   const body = [];
   for (const r of requests) {
@@ -409,7 +416,7 @@ export async function printAdvancesMonth({ requests = [], gangs = [], paid = [],
 
   // 2. pump gang requests
   if (gangs.length) {
-    y = section(k, y, `2 · Pump gang advances — ${gangs.length}`);
+    y = section(k, y, `${num()}Pump gang advances — ${gangs.length}`);
     doc.autoTable({
       ...style, startY: y,
       head: [["Raised · by", "Gang", "Contractor", "Asked", "Approved", "Against bill of", "Status", "Paid · date · mode", "Purpose"]],
@@ -425,9 +432,11 @@ export async function printAdvancesMonth({ requests = [], gangs = [], paid = [],
     y = doc.lastAutoTable.finalY + 6;
   }
 
+  }
   // 3. advances paid
+  if (wantPaid) {
   const rec = paid.filter((a) => a.recover_month === month);
-  y = section(k, y, `${gangs.length ? 3 : 2} · Advances paid — ${paid.length} (recovered from ${monthName(month)} salary: ${rs0(rec.reduce((t, a) => t + Number(a.amount), 0))})`);
+  y = section(k, y, `${num()}Advances paid — ${paid.length} (recovered from ${monthName(month)} salary: ${rs0(rec.reduce((t, a) => t + Number(a.amount), 0))})`);
   if (paid.length) {
     doc.autoTable({
       ...style, startY: y,
@@ -444,7 +453,9 @@ export async function printAdvancesMonth({ requests = [], gangs = [], paid = [],
   }
   k.font("normal", 8.5); k.color(GREY);
   k.text("Advances paid are deducted from the salary of the month shown under “Recover from”.", MX, y, { maxWidth: CW });
-  signatures(k, y + 5, ["Prepared by (Accounts)", "Checked by (Plant Manager)", "Approved by (Administrator)"]);
-  finish(k, `Salary advances ${monthName(month)}`);
-  open(doc, `Advances_${month}.pdf`);
+  }
+  signatures(k, y + (wantPaid ? 5 : 0), ["Prepared by (Accounts)", "Checked by (Plant Manager)", "Approved by (Administrator)"]);
+  const label = part === "requests" ? "Advance requests" : part === "paid" ? "Advances paid" : "Salary advances";
+  finish(k, `${label} ${monthName(month)}`);
+  open(doc, `${part === "requests" ? "Advance_requests" : part === "paid" ? "Advances_paid" : "Advances"}_${month}.pdf`);
 }

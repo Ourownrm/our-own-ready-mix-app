@@ -9103,3 +9103,10 @@ Owner, 27 Oct 2026, four points. **Run /setup once** (additive; also made on fir
 `npm run check` green; build clean.
 
 Files — backend: src/lib/{round245Schema, hrAudit, waterCost}.js (new), src/lib/{partners, costDashboard, breakEven}.js, src/routes/{costPartners, hr, hrAdvances, costModule, setup}.js · frontend: src/pages/cost/CostWaterTab.jsx (new), src/pages/cost/CostPartnersTab.jsx, src/pages/{CostModule, HrStage2}.jsx, src/lib/{hrPdf, version}.js · root: README.md
+
+## Round 246 — Advance requests and advances paid print separately (v10.78)
+
+Owner, 27 Oct 2026: "Advance request and advance paid is not possible to print separately?" HR → Advances paid now has three buttons: **Print requests** (the month's advance requests, with pump-gang advances when there are any), **Print advances paid**, and **Print both** (as before). Each has its own title (ADVANCE REQUESTS / ADVANCES PAID / SALARY ADVANCES), file name and signature boxes. No /setup needed.
+- Verified: all three PDFs rendered from the test data and looked at; build clean.
+
+Files — frontend: src/lib/{hrPdf, version}.js, src/pages/HrStage2.jsx · root: README.md

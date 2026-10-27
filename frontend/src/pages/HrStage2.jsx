@@ -559,15 +559,16 @@ function AdvancesPaid({ onChanged }) {
       load(); onChanged?.();
     } catch (err) { setError(err.message); }
   }
-  async function printMonth() {
+  // Round 246 — requests and advances paid can be printed separately or together.
+  async function printMonth(part) {
     setError("");
     try {
-      const [reqs, gangs] = await Promise.all([
+      const [reqs, gangs] = part === "paid" ? [{ requests: [] }, { advances: [] }] : await Promise.all([
         apiRequest(`/hr-advance-requests?month=${month}`).catch(() => ({ requests: [] })),
         apiRequest(`/hr-advance-requests/gangs?month=${month}`).catch(() => ({ advances: [] })),
       ]);
       const m = await import("../lib/hrPdf.js");
-      await m.printAdvancesMonth({ requests: reqs.requests || [], gangs: gangs.advances || [], paid: data?.advances || [], month });
+      await m.printAdvancesMonth({ requests: reqs.requests || [], gangs: gangs.advances || [], paid: data?.advances || [], month, part });
     } catch (err) { setError(err.message); }
   }
 
@@ -577,7 +578,13 @@ function AdvancesPaid({ onChanged }) {
         <Field label="Month"><input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} /></Field>
         <h3 style={{ margin: "0 auto 8px 0", fontSize: 16, alignSelf: "center" }}>Advances paid</h3>
         {data && <div style={{ fontSize: 13, paddingBottom: 8 }}>To recover from {month} salary: <b>{rs(total)}</b>{data.locked && <span className="badge badge-neutral" style={{ marginLeft: 8 }}>month locked</span>}</div>}
-        {data && <button type="button" onClick={printMonth} style={{ marginBottom: 4 }}>Print the month (PDF)</button>}
+        {data && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }} role="group" aria-label="Print the month (PDF)">
+            <button type="button" onClick={() => printMonth("requests")}>Print requests</button>
+            <button type="button" onClick={() => printMonth("paid")}>Print advances paid</button>
+            <button type="button" onClick={() => printMonth("all")}>Print both</button>
+          </div>
+        )}
       </div>
       {notice && <div className="card" style={{ color: "var(--signal-green)", fontSize: 13, marginBottom: 12 }}>{notice}</div>}
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>Money paid to an employee before the month&rsquo;s salary, deducted from the salary of the month shown. New advances come through a request above; Edit here only to correct one.</div>
