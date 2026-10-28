@@ -25,10 +25,11 @@ import { query } from "../db.js";
 import { ROUND242_PARTNERS_SQL } from "./round242Schema.js";
 import { ROUND244_SQL } from "./round244Schema.js";
 import { ROUND245_PARTNER_SQL } from "./round245Schema.js";
+import { ROUND247_SQL } from "./round247Schema.js";
 
 let ready = null;
 export async function ensurePartners() {
-  if (!ready) ready = query(ROUND242_PARTNERS_SQL + ROUND244_SQL + ROUND245_PARTNER_SQL).catch((e) => { ready = null; throw e; });
+  if (!ready) ready = query(ROUND242_PARTNERS_SQL + ROUND244_SQL + ROUND245_PARTNER_SQL + ROUND247_SQL).catch((e) => { ready = null; throw e; });
   return ready;
 }
 
@@ -47,10 +48,12 @@ export function fyOf(ymd) {
 export async function partnerSettings() {
   await ensurePartners();
   const [{ rows: s }, { rows: rates }] = await Promise.all([
-    query(`SELECT loan_rate::float AS loan_rate, tds_rate::float AS tds_rate FROM cost_partner_settings WHERE id = 1`),
+    query(`SELECT s.loan_rate::float AS loan_rate, s.tds_rate::float AS tds_rate, s.sheet_closed_at, u.name AS sheet_closed_by
+             FROM cost_partner_settings s LEFT JOIN users u ON u.id = s.sheet_closed_by WHERE s.id = 1`),
     query(`SELECT id, to_char(from_date, 'YYYY-MM-DD') AS from_date, rate::float AS rate FROM cost_partner_rates ORDER BY from_date`),
   ]);
-  return { loan_rate: s[0]?.loan_rate ?? 14, tds_rate: s[0]?.tds_rate ?? 10, rates };
+  return { loan_rate: s[0]?.loan_rate ?? 14, tds_rate: s[0]?.tds_rate ?? 10, rates,
+    sheet_closed_at: s[0]?.sheet_closed_at || null, sheet_closed_by: s[0]?.sheet_closed_by || null };
 }
 
 // The rate in force on a day.
@@ -209,8 +212,9 @@ export async function partnersReport(asOf) {
   const tot = (f) => r2(out.reduce((a, p) => a + f(p), 0));
   // Round 244 — the latest imported sheet's own figures beside the app's,
   // worked out on the sheet's own date.
+  // Round 247 — once the owner confirms the sheet, the comparison goes.
   let sheetCheck = null;
-  const { rows: sc } = await query(
+  const { rows: sc } = settings.sheet_closed_at ? { rows: [] } : await query(
     `SELECT file_name, uploaded_at, sheet_check FROM cost_partner_uploads WHERE book = 'sheet' AND sheet_check IS NOT NULL ORDER BY uploaded_at DESC LIMIT 1`);
   if (sc[0]?.sheet_check?.as_on && sc[0].sheet_check.partners) {
     const c = sc[0].sheet_check;

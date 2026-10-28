@@ -1,25 +1,56 @@
 // Round 242 — Cost → Partners (owner, 26 Oct 2026): partners' capital
 // (brought in and returned) and unsecured loans from partners (14% a year
-// from the day borrowed, interest paid, interest still due, TDS). Lines come
-// from a bank statement upload — Excel, CSV or PDF, read in the browser by the
-// same reader as Bank statements — or are typed one by one. Same permission as
-// Bank statements (cost.bank). Arithmetic: backend lib/partners.js.
-import { useState } from "react";
+// from the day borrowed, interest paid, interest still due, TDS). Same
+// permission as Bank statements (cost.bank). Arithmetic: backend lib/partners.js.
+// Round 247 (owner, 28 Oct 2026: "i need a better visualization of partners
+// page … further entries will be done in app only"): a summary band, one card
+// per partner (capital and loan side by side, interest paid against interest
+// earned), a table view, a statement with filters, and "Record an entry" for
+// capital, loans, interest paid with or without TDS, and TDS on its own. Once
+// the imported sheet is confirmed, the comparison, the sheet import and the
+// statement upload go away.
+import { useEffect, useRef, useState } from "react";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
 import { apiRequest } from "../../lib/api.js";
 import { istDay } from "../../lib/istDate.js";
-import { useCostData, Loading, Actions, BTN, Tile, Note, Modal, downloadExcel, rs, rsL, num, fmtDay, H2, SUB, MUTED, R, NUM, GRID, panel } from "./costUi.jsx";
+import { useCostData, Loading, Actions, BTN, Note, Modal, downloadExcel, rs, rsL, num, fmtDay, H2, SUB, MUTED, R, NUM, GRID, panel } from "./costUi.jsx";
 
 const KIND_LABEL = {
   capital_in: "Capital brought in", capital_out: "Capital returned",
-  loan_in: "Loan borrowed", loan_out: "Principal repaid", interest_paid: "Interest paid", interest_due: "Interest owed at start",
+  loan_in: "Loan received", loan_out: "Loan repaid", interest_paid: "Interest paid", interest_due: "Interest owed at start",
 };
+// Colours: capital green, loan blue, interest paid teal, interest still due amber.
+const COL = { capital: "#1D7A55", loan: "#3E6E9E", paid: "#5FA388", due: "#E0A43A", tds: "#8C7AA9" };
+const KIND_COL = { capital_in: COL.capital, capital_out: COL.capital, loan_in: COL.loan, loan_out: COL.loan, interest_paid: COL.paid, interest_due: COL.due };
 const istToday = () => istDay();
 const TH = { textAlign: "left", fontSize: 11.5, color: "var(--slate)", fontWeight: 600, padding: "6px 8px", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" };
 // Round 247 — column headings stay in view while a long table scrolls (owner: "the window headers are not visible").
 const THS = { ...TH, position: "sticky", top: 0, zIndex: 1, background: "var(--surface)", boxShadow: "0 1px 0 var(--border)" };
 const TD = { padding: "7px 8px", borderBottom: "1px solid var(--border)", fontSize: 13 };
 const TDR = { ...TD, ...R };
+const CAPS = { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, color: "var(--slate)" };
+
+function Dot({ c }) { return <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 9, background: c, display: "inline-block", flex: "none" }} />; }
+// A bar of parts, each { v, c, label }, scaled to `max`.
+function Stack({ parts, max, h = 10 }) {
+  const total = parts.reduce((a, p) => a + Math.max(0, p.v), 0);
+  const scale = max > 0 ? max : total || 1;
+  return (
+    <div role="img" aria-label={parts.map((p) => `${p.label} ${rs(p.v)}`).join(", ")}
+      style={{ display: "flex", height: h, borderRadius: h, background: "var(--concrete)", overflow: "hidden" }}>
+      {parts.map((p, i) => <div key={i} title={`${p.label} ${rs(p.v)}`} style={{ width: `${(Math.max(0, p.v) / scale) * 100}%`, background: p.c }} />)}
+    </div>
+  );
+}
+function Fig({ label, value, c, sub, big }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ ...CAPS, display: "flex", alignItems: "center", gap: 6 }}>{c && <Dot c={c} />}{label}</div>
+      <div style={{ fontSize: big ? 20 : 16, fontWeight: 700, marginTop: 3, ...NUM }}>{value}</div>
+      {sub && <div style={{ ...MUTED, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
 
 export default function CostPartnersTab() {
   const { can } = usePermissions();
@@ -27,26 +58,31 @@ export default function CostPartnersTab() {
   const [asOf, setAsOf] = useState(istToday());
   const { data: d, error, reload } = useCostData(`/cost/partners?as_of=${asOf}`);
   const [open, setOpen] = useState(null);
+  const [view, setView] = useState("cards");
   const [upload, setUpload] = useState(null);   // "capital" | "loan"
   const [entry, setEntry] = useState(null);     // entry object
   const [setup, setSetup] = useState(false);
   const [importing, setImporting] = useState(false);
   const [msg, setMsg] = useState("");
+  const detailRef = useRef(null);
+  useEffect(() => { if (open && detailRef.current) detailRef.current.scrollIntoView({ behavior: "smooth", block: "start" }); }, [open]);
 
+  const closed = !!d?.settings?.sheet_closed_at;
+  const record = (partnerId, kind = "interest_paid") => setEntry({ kind, partner_id: partnerId, txn_date: istToday() });
   const head = (
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 14 }}>
       <div>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Partners</h1>
-        <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 4 }}>Capital brought in and returned · unsecured loans from partners with interest from the day borrowed, interest paid, TDS and what is still due</div>
+        <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 4 }}>Capital and unsecured loans from the partners · interest earned, paid, TDS and what is still due</div>
       </div>
       <Actions>
         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600 }}>As on
           <input type="date" value={asOf} max="2099-12-31" onChange={(e) => e.target.value && setAsOf(e.target.value)} style={{ minHeight: 40 }} /></label>
         <button type="button" style={BTN} disabled={!d} onClick={() => exportPartners(d)}>Export Excel</button>
         {canEdit && <button type="button" style={BTN} onClick={() => setSetup(true)}>Partners &amp; rates</button>}
-        {canEdit && <button type="button" style={BTN} disabled={!d?.partners.length} onClick={() => setEntry({ kind: "loan_in", txn_date: istToday() })}>Add an entry</button>}
-        {canEdit && <button type="button" style={BTN} disabled={!d} onClick={() => setImporting(true)}>Import my Investment &amp; Loan sheet</button>}
-        {canEdit && <button type="button" className="btn-primary" style={BTN} disabled={!d?.partners.length} onClick={() => setUpload("capital")}>Upload statement</button>}
+        {canEdit && d && !closed && <button type="button" style={BTN} onClick={() => setImporting(true)}>Import my Investment &amp; Loan sheet</button>}
+        {canEdit && d && !closed && <button type="button" style={BTN} disabled={!d.partners.length} onClick={() => setUpload("capital")}>Upload statement</button>}
+        {canEdit && <button type="button" className="btn-primary" style={BTN} disabled={!d?.partners.length} onClick={() => record(null)}>+ Record an entry</button>}
       </Actions>
     </div>
   );
@@ -54,103 +90,99 @@ export default function CostPartnersTab() {
   const t = d.totals, s = d.settings;
   const active = d.partners.filter((p) => p.is_active || p.txn_count);
   const done = (m) => { setMsg(m); reload(); };
+  const maxFund = Math.max(0, ...active.map((p) => Math.max(0, p.capital.balance) + Math.max(0, p.loan.outstanding)));
+  const funds = t.capital + t.loans;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       {head}
       {msg && <Note tone="good">{msg}</Note>}
-      {d.sheet_check && <SheetCheck c={d.sheet_check} />}
-      {!d.partners.length && <Note>Add the partners first (Partners &amp; rates) — their names, and words their bank lines carry, so the upload can match each line to a partner.</Note>}
+      {d.sheet_check && <SheetCheck c={d.sheet_check} canEdit={canEdit} onConfirm={async () => {
+        if (!window.confirm("The app's figures are right?\n\nThe comparison, the sheet import and the statement upload are removed from this page. From now on, record capital, loans, interest paid and TDS here with “+ Record an entry”.")) return;
+        try { await apiRequest("/cost/partners/sheet-close", { method: "POST", body: {} }); done("Sheet confirmed. Record new entries with “+ Record an entry”."); } catch (e) { setMsg(e.message); }
+      }} />}
+      {!d.partners.length && <Note>Add the partners first (Partners &amp; rates).</Note>}
 
-      <div style={GRID(200)}>
-        <Tile dark label="Partners’ capital" value={rsL(t.capital)} note={`brought in ${rsL(t.capital_in)} · returned ${rsL(t.capital_out)}`} />
-        <Tile label="Unsecured loans from partners" value={rsL(t.loans)} note={`borrowed ${rsL(t.borrowed)} · repaid ${rsL(t.repaid)} · ${num(s.loan_rate, 2)}% a year`} />
-        <Tile label="Interest due (before TDS)" value={rs(t.interest_due)} note={`TDS ${num(s.tds_rate)}% ${rs(t.tds_on_due)} · net to pay ${rs(t.net_due)}`} />
-        <Tile label="Interest till date" value={rs(t.interest_total)} note={`paid ${rs(t.interest_paid_gross)} = ${rs(t.interest_paid_net)} to partners + ${rs(t.tds)} TDS`} />
-        <Tile label={`Interest FY ${d.fy}`} value={rs(t.fy_interest)} note={`TDS deducted this year ${rs(t.fy_tds)} · paid ${rs(t.fy_paid_net)}`} />
-      </div>
-
-      {active.length > 0 && (
-        <section style={panel("1 1 100%")}>
-          <h2 style={H2}>Unsecured loans — as on {fmtDay(d.as_of)}</h2>
-          <div style={SUB}>Interest {num(s.loan_rate, 2)}% a year, simple, by days from each amount’s interest start date (the day it came in, unless another date is set on the entry) to the as-on date — counted like your sheet (as-on date − start date){s.rates.length ? `, with rate changes from ${s.rates.map((r) => `${fmtDay(r.from_date)} (${num(r.rate, 2)}%)`).join(", ")}` : ""}. Interest paid counts with its TDS (what reached the partner + TDS deducted).</div>
-          <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
-              <thead><tr>
-                <th style={TH}>Partner</th><th style={{ ...TH, ...R }}>Borrowed</th><th style={{ ...TH, ...R }}>Repaid</th><th style={{ ...TH, ...R }}>Outstanding</th>
-                <th style={{ ...TH, ...R }}>Interest till date</th><th style={{ ...TH, ...R }}>Paid (incl. TDS)</th><th style={{ ...TH, ...R }}>TDS deducted</th>
-                <th style={{ ...TH, ...R }}>Interest due</th><th style={{ ...TH, ...R }}>TDS on due</th><th style={{ ...TH, ...R }}>Net to pay</th><th style={TH} />
-              </tr></thead>
-              <tbody>
-                {active.map((p) => (
-                  <tr key={p.id}>
-                    <td style={TD}><b>{p.name}</b>{p.pan ? <div style={MUTED}>PAN {p.pan}</div> : null}{p.loan.first_date ? <div style={MUTED}>since {fmtDay(p.loan.first_date)}</div> : null}</td>
-                    <td style={TDR}>{rs(p.loan.borrowed)}</td><td style={TDR}>{rs(p.loan.repaid)}</td><td style={{ ...TDR, fontWeight: 700 }}>{rs(p.loan.outstanding)}</td>
-                    <td style={TDR}>{rs(p.loan.interest_total)}</td><td style={TDR}>{rs(p.loan.interest_paid_gross)}</td><td style={TDR}>{rs(p.loan.tds)}</td>
-                    <td style={{ ...TDR, fontWeight: 700, color: p.loan.interest_due < 0 ? "var(--signal-green)" : undefined }}>{rs(p.loan.interest_due)}</td>
-                    <td style={TDR}>{rs(p.loan.tds_on_due)}</td><td style={TDR}>{rs(p.loan.net_due)}</td>
-                    <td style={TD}><button type="button" style={{ padding: "5px 10px", fontSize: 12 }} onClick={() => setOpen(open === p.id ? null : p.id)} aria-expanded={open === p.id}>{open === p.id ? "Hide" : "Details"}</button></td>
-                  </tr>
-                ))}
-                <tr>
-                  <td style={{ ...TD, fontWeight: 700 }}>Total</td><td style={TDR}>{rs(t.borrowed)}</td><td style={TDR}>{rs(t.repaid)}</td><td style={{ ...TDR, fontWeight: 700 }}>{rs(t.loans)}</td>
-                  <td style={TDR}>{rs(t.interest_total)}</td><td style={TDR}>{rs(t.interest_paid_gross)}</td><td style={TDR}>{rs(t.tds)}</td>
-                  <td style={{ ...TDR, fontWeight: 700 }}>{rs(t.interest_due)}</td><td style={TDR}>{rs(t.tds_on_due)}</td><td style={TDR}>{rs(t.net_due)}</td><td style={TD} />
-                </tr>
-              </tbody>
-            </table>
+      {/* ---- summary band ---- */}
+      <section style={{ ...panel("1 1 100%"), padding: 0, overflow: "hidden", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
+        <div style={{ background: "var(--charcoal)", color: "#fff", padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ ...CAPS, color: "rgba(255,255,255,.8)" }}>Money from the partners · {fmtDay(d.as_of)}</div>
+          <div style={{ fontSize: 30, fontWeight: 700, ...NUM }}>{rsL(funds)}</div>
+          <Stack h={12} parts={[{ v: t.capital, c: "#6FC29B", label: "Capital" }, { v: t.loans, c: "#8FB3DE", label: "Loans" }]} />
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 12.5 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Dot c="#6FC29B" />Capital <b style={NUM}>{rsL(t.capital)}</b></span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Dot c="#8FB3DE" />Loans <b style={NUM}>{rsL(t.loans)}</b> at {num(s.loan_rate, 2)}%</span>
           </div>
-          {active.some((p) => p.loan.interest_due < 0) && <div style={{ ...MUTED, marginTop: 6 }}>A negative interest due means more interest has been paid than has accrued so far (paid in advance).</div>}
-        </section>
-      )}
-
-      {active.length > 0 && (
-        <section style={panel("1 1 100%")}>
-          <h2 style={H2}>Capital</h2>
-          <div style={SUB}>Capital brought in less capital returned. The Balance Sheet’s Capital line takes this figure once any capital is entered here.</div>
-          <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", minWidth: 560, borderCollapse: "collapse" }}>
-              <thead><tr><th style={TH}>Partner</th><th style={{ ...TH, ...R }}>Brought in</th><th style={{ ...TH, ...R }}>Returned</th><th style={{ ...TH, ...R }}>Capital</th><th style={{ ...TH, ...R }}>Share</th><th style={TH} /></tr></thead>
-              <tbody>
-                {active.map((p) => (
-                  <tr key={p.id}>
-                    <td style={TD}><b>{p.name}</b></td><td style={TDR}>{rs(p.capital.brought_in)}</td><td style={TDR}>{rs(p.capital.returned)}</td>
-                    <td style={{ ...TDR, fontWeight: 700 }}>{rs(p.capital.balance)}</td><td style={TDR}>{t.capital > 0 ? `${num((p.capital.balance / t.capital) * 100, 1)}%` : "—"}</td>
-                    <td style={TD}><button type="button" style={{ padding: "5px 10px", fontSize: 12 }} onClick={() => setOpen(open === p.id ? null : p.id)}>{open === p.id ? "Hide" : "Details"}</button></td>
-                  </tr>
-                ))}
-                <tr><td style={{ ...TD, fontWeight: 700 }}>Total</td><td style={TDR}>{rs(t.capital_in)}</td><td style={TDR}>{rs(t.capital_out)}</td><td style={{ ...TDR, fontWeight: 700 }}>{rs(t.capital)}</td><td style={TD} /><td style={TD} /></tr>
-              </tbody>
-            </table>
+        </div>
+        <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10, borderRight: "1px solid var(--border)" }}>
+          <div style={CAPS}>Interest on the loans till date</div>
+          <div style={{ fontSize: 24, fontWeight: 700, ...NUM }}>{rs(t.interest_total)}</div>
+          <Stack h={12} parts={[{ v: t.interest_paid_net, c: COL.paid, label: "Paid to partners" }, { v: t.tds, c: COL.tds, label: "TDS deducted" }, { v: Math.max(0, t.interest_due), c: COL.due, label: "Still due" }]} />
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Dot c={COL.paid} />Paid {rs(t.interest_paid_net)}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Dot c={COL.tds} />TDS {rs(t.tds)}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Dot c={COL.due} />Due {rs(t.interest_due)}</span>
           </div>
+        </div>
+        <div style={{ padding: 18, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignContent: "start" }}>
+          <Fig big label="Interest due now" c={COL.due} value={rs(t.interest_due)} sub={`if paid: TDS ${num(s.tds_rate)}% ${rs(t.tds_on_due)} · net ${rs(t.net_due)}`} />
+          <Fig big label={`Interest FY ${d.fy}`} value={rs(t.fy_interest)} sub={`paid ${rs(t.fy_paid_net)} · TDS ${rs(t.fy_tds)}`} />
+          <Fig label="Borrowed / repaid" value={`${rsL(t.borrowed)} / ${rsL(t.repaid)}`} />
+          <Fig label="Capital in / returned" value={`${rsL(t.capital_in)} / ${rsL(t.capital_out)}`} />
+        </div>
+      </section>
+
+      {/* ---- partners ---- */}
+      {active.length > 0 && (
+        <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <h2 style={H2}>Each partner</h2>
+              <div style={SUB}>Interest {num(s.loan_rate, 2)}% a year, simple, by days from each loan’s interest start date{s.rates.length ? `; rate changes ${s.rates.map((r) => `${fmtDay(r.from_date)} ${num(r.rate, 2)}%`).join(", ")}` : ""}. Interest paid counts with its TDS.</div>
+            </div>
+            <div role="tablist" aria-label="View" style={{ display: "flex", border: "1px solid var(--border-strong)", borderRadius: 8, overflow: "hidden" }}>
+              {[["cards", "Cards"], ["table", "Table"]].map(([k, l]) => (
+                <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => setView(k)}
+                  style={{ border: 0, borderRadius: 0, padding: "7px 14px", fontSize: 12.5, fontWeight: 600, background: view === k ? "var(--charcoal)" : "var(--surface)", color: view === k ? "#fff" : "var(--charcoal)" }}>{l}</button>
+              ))}
+            </div>
+          </div>
+          {view === "cards" ? (
+            <div style={GRID(310)}>
+              {active.map((p) => <PartnerCard key={p.id} p={p} t={t} maxFund={maxFund} open={open === p.id} canEdit={canEdit}
+                onOpen={() => setOpen(open === p.id ? null : p.id)} onRecord={() => record(p.id)} />)}
+            </div>
+          ) : <PartnersTable active={active} t={t} open={open} setOpen={setOpen} />}
         </section>
       )}
 
       {open && (() => {
         const p = d.partners.find((x) => x.id === open);
-        return p ? <PartnerDetail p={p} canEdit={canEdit} onEdit={(e) => setEntry(e)} onDelete={async (e) => {
+        return p ? <div ref={detailRef} style={{ scrollMarginTop: 12 }}><PartnerDetail p={p} canEdit={canEdit} onClose={() => setOpen(null)} onRecord={() => record(p.id)} onEdit={(e) => setEntry(e)} onDelete={async (e) => {
           if (!window.confirm(`Remove this entry — ${KIND_LABEL[e.kind]} ${rs(e.amount)} on ${fmtDay(e.date)}?`)) return;
           try { await apiRequest(`/cost/partners/txns/${e.id}`, { method: "DELETE" }); done("Entry removed."); } catch (err) { setMsg(err.message); }
-        }} /> : null;
+        }} /></div> : null;
       })()}
 
       {d.uploads.length > 0 && (
-        <section style={panel("1 1 100%")}>
-          <h2 style={H2}>Uploads</h2>
-          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
-            <thead><tr><th style={TH}>When</th><th style={TH}>For</th><th style={TH}>File</th><th style={{ ...TH, ...R }}>Lines kept</th><th style={TH}>By</th><th style={TH} /></tr></thead>
-            <tbody>{d.uploads.map((u) => (
-              <tr key={u.id}>
-                <td style={TD}>{new Date(u.uploaded_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
-                <td style={TD}>{u.book === "capital" ? "Capital" : u.book === "sheet" ? "Investment & Loan sheet" : "Unsecured loans"}</td><td style={TD}>{u.file_name || "—"}</td><td style={TDR}>{u.kept}</td><td style={TD}>{u.uploaded_by || "—"}</td>
-                <td style={TD}>{canEdit && <button type="button" style={{ padding: "4px 10px", fontSize: 12 }} onClick={async () => {
-                  if (!window.confirm(`Take back this upload? Its ${u.kept} line(s) are removed.`)) return;
-                  try { const r = await apiRequest(`/cost/partners/uploads/${u.id}`, { method: "DELETE" }); done(`${r.removed} line(s) taken back.`); } catch (err) { setMsg(err.message); }
-                }}>Take back</button>}</td>
-              </tr>))}
-            </tbody>
-          </table>
-        </section>
+        <details style={panel("1 1 100%")}>
+          <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: 14 }}>Earlier uploads ({d.uploads.length})</summary>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: 560, borderCollapse: "collapse", marginTop: 8 }}>
+              <thead><tr><th style={TH}>When</th><th style={TH}>For</th><th style={TH}>File</th><th style={{ ...TH, ...R }}>Lines kept</th><th style={TH}>By</th><th style={TH} /></tr></thead>
+              <tbody>{d.uploads.map((u) => (
+                <tr key={u.id}>
+                  <td style={TD}>{new Date(u.uploaded_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+                  <td style={TD}>{u.book === "capital" ? "Capital" : u.book === "sheet" ? "Investment & Loan sheet" : "Unsecured loans"}</td><td style={TD}>{u.file_name || "—"}</td><td style={TDR}>{u.kept}</td><td style={TD}>{u.uploaded_by || "—"}</td>
+                  <td style={TD}>{canEdit && <button type="button" style={{ padding: "4px 10px", fontSize: 12 }} onClick={async () => {
+                    if (!window.confirm(`Take back this upload? Its ${u.kept} line(s) are removed.`)) return;
+                    try { const r = await apiRequest(`/cost/partners/uploads/${u.id}`, { method: "DELETE" }); done(`${r.removed} line(s) taken back.`); } catch (err) { setMsg(err.message); }
+                  }}>Take back</button>}</td>
+                </tr>))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
 
       <Note tone="good">
@@ -166,31 +198,116 @@ export default function CostPartnersTab() {
   );
 }
 
-function PartnerDetail({ p, canEdit, onEdit, onDelete }) {
-  const rows = [...p.loan.ledger.map((x) => ({ ...x, book: "loan" })), ...p.capital.ledger.map((x) => ({ ...x, book: "capital" }))]
+function PartnerCard({ p, t, maxFund, open, canEdit, onOpen, onRecord }) {
+  const l = p.loan, cap = p.capital;
+  const share = t.capital > 0 ? (cap.balance / t.capital) * 100 : null;
+  return (
+    <article style={{ ...panel("1 1 auto"), display: "flex", flexDirection: "column", gap: 12, borderColor: open ? "var(--charcoal)" : undefined }}>
+      <header style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{p.name}</div>
+          <div style={MUTED}>{[p.pan && `PAN ${p.pan}`, l.first_date && `loan since ${fmtDay(l.first_date)}`].filter(Boolean).join(" · ") || " "}</div>
+        </div>
+        {share != null && <span style={{ fontSize: 11.5, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: "var(--signal-green-bg)", color: "#1D6A4B", whiteSpace: "nowrap", ...NUM }}>{num(share, 1)}% of capital</span>}
+      </header>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Fig label="Capital" c={COL.capital} value={rsL(cap.balance)} sub={cap.returned ? `returned ${rsL(cap.returned)}` : null} />
+        <Fig label="Loan" c={COL.loan} value={rsL(l.outstanding)} sub={l.repaid ? `repaid ${rsL(l.repaid)}` : null} />
+      </div>
+      <Stack parts={[{ v: cap.balance, c: COL.capital, label: "Capital" }, { v: l.outstanding, c: COL.loan, label: "Loan" }]} max={maxFund} />
+      <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}><span style={{ color: "var(--slate)" }}>Interest till date</span><b style={NUM}>{rs(l.interest_total)}</b></div>
+        <Stack h={8} parts={[{ v: l.interest_paid_net, c: COL.paid, label: "Paid" }, { v: l.tds, c: COL.tds, label: "TDS" }, { v: Math.max(0, l.interest_due), c: COL.due, label: "Due" }]} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, fontSize: 12 }}>
+          <div><div style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--slate)" }}><Dot c={COL.paid} />Paid</div><b style={NUM}>{rs(l.interest_paid_net)}</b></div>
+          <div><div style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--slate)" }}><Dot c={COL.tds} />TDS</div><b style={NUM}>{rs(l.tds)}</b></div>
+          <div><div style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--slate)" }}><Dot c={COL.due} />Due</div><b style={{ ...NUM, color: l.interest_due < 0 ? "var(--signal-green)" : undefined }}>{rs(l.interest_due)}</b></div>
+        </div>
+      </div>
+      <footer style={{ display: "flex", gap: 8, marginTop: "auto" }}>
+        <button type="button" style={{ flex: 1, padding: "8px 10px", fontSize: 12.5 }} onClick={onOpen} aria-expanded={open}>{open ? "Hide statement" : "Statement"}</button>
+        {canEdit && <button type="button" className="btn-primary" style={{ flex: 1, padding: "8px 10px", fontSize: 12.5 }} onClick={onRecord}>+ Record</button>}
+      </footer>
+    </article>
+  );
+}
+
+function PartnersTable({ active, t, open, setOpen }) {
+  const th = (l, right) => <th style={{ ...THS, ...(right ? R : null) }}>{l}</th>;
+  return (
+    <div style={{ ...panel("1 1 100%"), padding: 0, overflow: "auto", maxHeight: "72vh" }}>
+      <table style={{ width: "100%", minWidth: 1080, borderCollapse: "separate", borderSpacing: 0 }}>
+        <thead><tr>{th("Partner")}{th("Capital", 1)}{th("Loan outstanding", 1)}{th("Interest till date", 1)}{th("Paid to partner", 1)}{th("TDS deducted", 1)}{th("Interest due", 1)}{th("TDS on due", 1)}{th("Net to pay", 1)}<th style={THS} /></tr></thead>
+        <tbody>
+          {active.map((p) => (
+            <tr key={p.id}>
+              <td style={TD}><b>{p.name}</b>{p.pan ? <div style={MUTED}>PAN {p.pan}</div> : null}</td>
+              <td style={TDR}>{rs(p.capital.balance)}</td><td style={{ ...TDR, fontWeight: 700 }}>{rs(p.loan.outstanding)}</td>
+              <td style={TDR}>{rs(p.loan.interest_total)}</td><td style={TDR}>{rs(p.loan.interest_paid_net)}</td><td style={TDR}>{rs(p.loan.tds)}</td>
+              <td style={{ ...TDR, fontWeight: 700, color: p.loan.interest_due < 0 ? "var(--signal-green)" : undefined }}>{rs(p.loan.interest_due)}</td>
+              <td style={TDR}>{rs(p.loan.tds_on_due)}</td><td style={TDR}>{rs(p.loan.net_due)}</td>
+              <td style={TD}><button type="button" style={{ padding: "5px 10px", fontSize: 12 }} onClick={() => setOpen(open === p.id ? null : p.id)} aria-expanded={open === p.id}>{open === p.id ? "Hide" : "Statement"}</button></td>
+            </tr>
+          ))}
+          <tr style={{ background: "var(--concrete)" }}>
+            <td style={{ ...TD, fontWeight: 700 }}>Total</td><td style={{ ...TDR, fontWeight: 700 }}>{rs(t.capital)}</td><td style={{ ...TDR, fontWeight: 700 }}>{rs(t.loans)}</td>
+            <td style={TDR}>{rs(t.interest_total)}</td><td style={TDR}>{rs(t.interest_paid_net)}</td><td style={TDR}>{rs(t.tds)}</td>
+            <td style={{ ...TDR, fontWeight: 700 }}>{rs(t.interest_due)}</td><td style={TDR}>{rs(t.tds_on_due)}</td><td style={TDR}>{rs(t.net_due)}</td><td style={TD} />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const FILTERS = [["all", "All"], ["capital", "Capital"], ["loan", "Loan"], ["interest", "Interest & TDS"]];
+function PartnerDetail({ p, canEdit, onClose, onRecord, onEdit, onDelete }) {
+  const [f, setF] = useState("all");
+  const all = [...p.loan.ledger.map((x) => ({ ...x, book: "loan" })), ...p.capital.ledger.map((x) => ({ ...x, book: "capital" }))]
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id));
+  const rows = all.filter((x) => f === "all" || (f === "capital" ? x.book === "capital" : f === "loan" ? ["loan_in", "loan_out"].includes(x.kind) : ["interest_paid", "interest_due"].includes(x.kind)));
+  const label = (x) => (x.kind === "interest_paid" ? (x.amount < 0 ? "Interest reversed" : x.amount === 0 && x.tds ? "TDS deducted" : "Interest paid") : KIND_LABEL[x.kind]);
   return (
     <section style={panel("1 1 100%")}>
-      <h2 style={H2}>{p.name} — every entry</h2>
-      <div style={SUB}>Loan balance and interest after each entry (interest worked to the day of the entry).</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <h2 style={H2}>{p.name} — statement</h2>
+          <div style={SUB}>Loan balance and interest due after each entry (interest worked to the day of the entry).</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {canEdit && <button type="button" className="btn-primary" style={{ padding: "7px 12px", fontSize: 12.5 }} onClick={onRecord}>+ Record for {p.name.split(" ")[0]}</button>}
+          <button type="button" style={{ padding: "7px 12px", fontSize: 12.5 }} onClick={onClose}>Close</button>
+        </div>
+      </div>
       {p.fy.length > 0 && (
-        <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table style={{ width: "100%", minWidth: 720, borderCollapse: "collapse" }}>
-            <thead><tr><th style={TH}>Financial year</th><th style={{ ...TH, ...R }}>Interest</th><th style={{ ...TH, ...R }}>Paid to partner</th><th style={{ ...TH, ...R }}>TDS deducted</th><th style={{ ...TH, ...R }}>Borrowed</th><th style={{ ...TH, ...R }}>Repaid</th><th style={{ ...TH, ...R }}>Capital in</th><th style={{ ...TH, ...R }}>Capital out</th></tr></thead>
-            <tbody>{p.fy.map((f) => (
-              <tr key={f.fy}><td style={TD}>FY {f.fy}<div style={MUTED}>{fmtDay(f.from)} – {fmtDay(f.to)}</div></td><td style={TDR}>{rs(f.interest)}</td><td style={TDR}>{rs(f.paid_net)}</td><td style={TDR}>{rs(f.tds)}</td><td style={TDR}>{rs(f.borrowed)}</td><td style={TDR}>{rs(f.repaid)}</td><td style={TDR}>{rs(f.capital_in)}</td><td style={TDR}>{rs(f.capital_out)}</td></tr>
-            ))}</tbody>
-          </table>
+        <div style={{ ...GRID(260), marginTop: 12 }}>
+          {p.fy.map((y) => (
+            <div key={y.fy} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b>FY {y.fy}</b><span style={MUTED}>{fmtDay(y.from)} – {fmtDay(y.to)}</span></div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 8 }}>
+                <Fig label="Interest" value={rs(y.interest)} /><Fig label="Paid" c={COL.paid} value={rs(y.paid_net)} /><Fig label="TDS" c={COL.tds} value={rs(y.tds)} />
+              </div>
+              {(y.borrowed || y.repaid || y.capital_in || y.capital_out) ? <div style={{ ...MUTED, marginTop: 6 }}>{[y.borrowed && `borrowed ${rs(y.borrowed)}`, y.repaid && `repaid ${rs(y.repaid)}`, y.capital_in && `capital in ${rs(y.capital_in)}`, y.capital_out && `capital returned ${rs(y.capital_out)}`].filter(Boolean).join(" · ")}</div> : null}
+            </div>
+          ))}
         </div>
       )}
-      <div style={{ overflow: "auto", maxHeight: "72vh", marginTop: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
-        <table style={{ width: "100%", minWidth: 860, borderCollapse: "separate", borderSpacing: 0 }}>
+      <div style={{ display: "flex", gap: 6, marginTop: 14, flexWrap: "wrap" }}>
+        {FILTERS.map(([k, l]) => (
+          <button key={k} type="button" aria-pressed={f === k} onClick={() => setF(k)}
+            style={{ padding: "5px 12px", fontSize: 12, borderRadius: 20, fontWeight: 600, background: f === k ? "var(--charcoal)" : "var(--surface)", color: f === k ? "#fff" : "var(--charcoal)" }}>{l}</button>
+        ))}
+        <span style={{ ...MUTED, alignSelf: "center", marginLeft: 6 }}>{rows.length} entr{rows.length === 1 ? "y" : "ies"}</span>
+      </div>
+      <div style={{ overflow: "auto", maxHeight: "72vh", marginTop: 10, border: "1px solid var(--border)", borderRadius: 8 }}>
+        <table style={{ width: "100%", minWidth: 900, borderCollapse: "separate", borderSpacing: 0 }}>
           <thead><tr><th style={THS}>Date</th><th style={THS}>Entry</th><th style={{ ...THS, ...R }}>Amount</th><th style={{ ...THS, ...R }}>TDS</th><th style={{ ...THS, ...R }}>Loan after</th><th style={{ ...THS, ...R }}>Interest due after</th><th style={{ ...THS, ...R }}>Capital after</th><th style={THS}>Narration / note</th><th style={THS} /></tr></thead>
           <tbody>
             {rows.map((x) => (
               <tr key={`${x.book}-${x.id}`}>
-                <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtDay(x.date)}</td><td style={TD}>{x.kind === "interest_paid" && x.amount < 0 ? "Interest reversed" : KIND_LABEL[x.kind]}{x.interest_from && x.interest_from !== x.date ? <div style={MUTED}>interest from {fmtDay(x.interest_from)}</div> : null}</td>
-                <td style={TDR}>{rs(x.amount)}</td><td style={TDR}>{x.tds ? rs(x.tds) : ""}</td>
+                <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtDay(x.date)}</td>
+                <td style={TD}><span style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}><Dot c={KIND_COL[x.kind]} />{label(x)}</span>{x.interest_from && x.interest_from !== x.date ? <div style={MUTED}>interest from {fmtDay(x.interest_from)}</div> : null}</td>
+                <td style={TDR}>{x.amount === 0 && x.tds ? "—" : rs(x.amount)}</td><td style={TDR}>{x.tds ? rs(x.tds) : ""}</td>
                 <td style={TDR}>{x.book === "loan" ? rs(x.balance) : ""}</td><td style={TDR}>{x.book === "loan" ? rs(x.interest_due) : ""}</td>
                 <td style={TDR}>{x.book === "capital" ? rs(x.balance) : ""}</td>
                 <td style={{ ...TD, ...MUTED, maxWidth: 280 }}>{[x.narration, x.note].filter(Boolean).join(" · ")}</td>
@@ -199,7 +316,7 @@ function PartnerDetail({ p, canEdit, onEdit, onDelete }) {
                   <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => onDelete(x)}>Remove</button></>}</td>
               </tr>
             ))}
-            {!rows.length && <tr><td colSpan={9} style={{ ...TD, ...MUTED }}>No entries yet.</td></tr>}
+            {!rows.length && <tr><td colSpan={9} style={{ ...TD, ...MUTED }}>No entries{f === "all" ? " yet" : " of this kind"}.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -321,38 +438,103 @@ function UploadModal({ book: book0, d, onClose, onDone }) {
   );
 }
 
+// Round 247 — "Record an entry": what happened, in the owner's words. Interest
+// paid is typed as the interest (before TDS) and the TDS deducted — no TDS
+// unless typed; the partner got the difference. "TDS deducted" on its own is
+// TDS on interest with nothing paid out that day.
+const TYPES = [
+  ["capital_in", "Capital brought in", COL.capital], ["capital_out", "Capital returned", COL.capital],
+  ["loan_in", "Loan received", COL.loan], ["loan_out", "Loan repaid", COL.loan],
+  ["interest_paid", "Interest paid", COL.paid], ["tds_only", "TDS deducted", COL.tds],
+  ["interest_due", "Interest owed at start", COL.due],
+];
 function EntryModal({ entry, d, onClose, onDone }) {
-  const [f, setF] = useState({ partner_id: String(entry.partner_id || d.partners.find((p) => p.is_active)?.id || ""), kind: entry.kind, txn_date: entry.txn_date, amount: entry.amount ?? "", tds: entry.tds ?? "", note: entry.note || "", interest_from: entry.interest_from || "" });
+  const tdsOnly = entry.kind === "interest_paid" && entry.id && Number(entry.amount) === 0 && Number(entry.tds) > 0;
+  const gross0 = entry.kind === "interest_paid" && entry.id ? Math.round((Number(entry.amount) + Number(entry.tds || 0)) * 100) / 100 : "";
+  const [f, setF] = useState({
+    partner_id: String(entry.partner_id || d.partners.find((p) => p.is_active)?.id || ""),
+    type: tdsOnly ? "tds_only" : entry.kind, txn_date: entry.txn_date,
+    amount: entry.kind === "interest_paid" ? (tdsOnly ? "" : String(gross0)) : String(entry.amount ?? ""),
+    tds: entry.kind === "interest_paid" && Number(entry.tds) ? String(entry.tds) : "",
+    note: entry.note || "", interest_from: entry.interest_from || "",
+  });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const n = (v) => Number(String(v || "").replace(/[,₹\s]/g, "")) || 0;
+  const rate = d.settings.tds_rate;
+  const net = Math.round((n(f.amount) - n(f.tds)) * 100) / 100;
+  const p = d.partners.find((x) => String(x.id) === f.partner_id);
   async function save(e) {
-    e.preventDefault(); setBusy(true); setErr("");
+    e.preventDefault(); setErr("");
+    let body = { partner_id: Number(f.partner_id), txn_date: f.txn_date, note: f.note };
+    if (f.type === "interest_paid") {
+      if (n(f.tds) < 0) return setErr("TDS can't be negative.");
+      if (n(f.amount) > 0 && n(f.tds) > n(f.amount)) return setErr("TDS is more than the interest.");
+      body = { ...body, kind: "interest_paid", amount: net, tds: n(f.tds) };
+    } else if (f.type === "tds_only") {
+      if (!(n(f.tds) > 0)) return setErr("Type the TDS deducted.");
+      body = { ...body, kind: "interest_paid", amount: 0, tds: n(f.tds) };
+    } else body = { ...body, kind: f.type, amount: n(f.amount), interest_from: f.type === "loan_in" ? f.interest_from : "" };
+    setBusy(true);
     try {
-      const body = { ...f, partner_id: Number(f.partner_id) };
       if (entry.id) await apiRequest(`/cost/partners/txns/${entry.id}`, { method: "PUT", body });
       else await apiRequest("/cost/partners/txns", { method: "POST", body });
-      onDone(entry.id ? "Entry changed." : "Entry added.");
+      const what = f.type === "tds_only" ? "TDS deducted" : KIND_LABEL[f.type];
+      onDone(`${entry.id ? "Changed" : "Recorded"}: ${what} — ${p?.name || ""}, ${fmtDay(f.txn_date)}.`);
     } catch (ex) { setErr(ex.message); setBusy(false); }
   }
   const lab = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600 };
+  const chip = (on, c) => ({ display: "flex", alignItems: "center", gap: 7, padding: "9px 10px", fontSize: 12.5, fontWeight: 600, borderRadius: 8, textAlign: "left",
+    border: `1.5px solid ${on ? c : "var(--border-strong)"}`, background: on ? "var(--concrete)" : "var(--surface)", color: "var(--charcoal)" });
   return (
-    <Modal title={entry.id ? "Change an entry" : "Add an entry"} onClose={onClose} width={560}>
-      <form onSubmit={save} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
-        <label style={lab}>Partner<select value={f.partner_id} onChange={set("partner_id")} required>
-          {d.partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <label style={lab}>Entry<select value={f.kind} onChange={set("kind")}>
-          {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
-        <label style={lab}>Date<input type="date" value={f.txn_date} onChange={set("txn_date")} required /></label>
-        <label style={lab}>{f.kind === "interest_paid" ? "Paid to the partner (net; − = reversed)" : "Amount"}<input inputMode="decimal" value={f.amount} onChange={set("amount")} required /></label>
-        {f.kind === "loan_in" && <label style={lab}>Interest from (blank = the date above)<input type="date" value={f.interest_from} onChange={set("interest_from")} /></label>}
-        {f.kind === "interest_paid" && <label style={lab}>TDS deducted<input inputMode="decimal" value={f.tds} onChange={set("tds")} placeholder={f.amount ? String(Math.round(Number(f.amount) * d.settings.tds_rate / (100 - d.settings.tds_rate))) : ""} /></label>}
-        <label style={{ ...lab, gridColumn: "1 / -1" }}>Note<input value={f.note} onChange={set("note")} maxLength={200} /></label>
-        {f.kind === "interest_due" && <div style={{ ...MUTED, gridColumn: "1 / -1" }}>Interest owed to the partner on that date for the time before the entries here (e.g. from the books at the start). It is added to the interest due.</div>}
-        {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 13, gridColumn: "1 / -1" }}>{err}</div>}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, gridColumn: "1 / -1" }}>
+    <Modal title={entry.id ? "Change an entry" : "Record an entry"} onClose={onClose} width={620}>
+      <form onSubmit={save} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+          <label style={lab}>Partner<select value={f.partner_id} onChange={set("partner_id")} required>
+            {d.partners.filter((x) => x.is_active || String(x.id) === f.partner_id).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+          <label style={lab}>Date<input type="date" value={f.txn_date} onChange={set("txn_date")} required /></label>
+        </div>
+        <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+          <legend style={{ ...lab, marginBottom: 6 }}>What happened</legend>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8 }}>
+            {TYPES.map(([k, l, c]) => (
+              <button key={k} type="button" aria-pressed={f.type === k} style={chip(f.type === k, c)} onClick={() => setF({ ...f, type: k })}><Dot c={c} />{l}</button>
+            ))}
+          </div>
+        </fieldset>
+
+        {f.type === "interest_paid" ? (
+          <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, alignItems: "end" }}>
+            <label style={lab}>Interest (before TDS)<input inputMode="decimal" value={f.amount} onChange={set("amount")} required autoFocus /></label>
+            <label style={lab}>TDS deducted
+              <input inputMode="decimal" value={f.tds} onChange={set("tds")} placeholder="0 — no TDS" /></label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button type="button" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setF({ ...f, tds: "" })}>No TDS</button>
+              <button type="button" style={{ padding: "6px 10px", fontSize: 12 }} disabled={!n(f.amount)} onClick={() => setF({ ...f, tds: String(Math.round(n(f.amount) * rate) / 100) })}>TDS {num(rate)}%</button>
+            </div>
+            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "space-between", fontSize: 13.5, borderTop: "1px solid var(--border-strong)", paddingTop: 8 }}>
+              <span>Paid to {p?.name || "the partner"}</span><b style={NUM}>{rs(net)}</b>
+            </div>
+            <div style={{ ...MUTED, gridColumn: "1 / -1" }}>Interest settled = paid + TDS. A negative interest reverses interest paid too early.{p ? ` Interest due for ${p.name} now: ${rs(p.loan.interest_due)}.` : ""}</div>
+          </div>
+        ) : f.type === "tds_only" ? (
+          <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 12, display: "grid", gap: 8 }}>
+            <label style={lab}>TDS deducted<input inputMode="decimal" value={f.tds} onChange={set("tds")} required autoFocus /></label>
+            <div style={MUTED}>TDS on the partner’s interest with nothing paid out that day — it counts as interest settled. If TDS was cut from a payment, use “Interest paid” instead.</div>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+            <label style={lab}>Amount<input inputMode="decimal" value={f.amount} onChange={set("amount")} required autoFocus /></label>
+            {f.type === "loan_in" && <label style={lab}>Interest from (blank = the date above)<input type="date" value={f.interest_from} onChange={set("interest_from")} /></label>}
+            {f.type === "interest_due" && <div style={{ ...MUTED, gridColumn: "1 / -1" }}>Interest owed to the partner on that date for the time before the entries here. It is added to the interest due.</div>}
+          </div>
+        )}
+        <label style={lab}>Note<input value={f.note} onChange={set("note")} maxLength={200} placeholder="e.g. bank ref, cheque no." /></label>
+        {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 13 }}>{err}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button type="button" onClick={onClose}>Cancel</button>
-          <button type="submit" className="btn-primary" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+          <button type="submit" className="btn-primary" disabled={busy}>{busy ? "Saving…" : entry.id ? "Save" : "Record"}</button>
         </div>
       </form>
     </Modal>
@@ -454,6 +636,17 @@ function SetupModal({ d, onClose, onDone }) {
         <button type="button" onClick={() => setRates([...rates, { from_date: "", rate: "" }])}>+ Rate change</button>
         <button type="button" className="btn-primary" disabled={busy} onClick={saveSettings}>Save rates</button>
       </div>
+      {d.settings.sheet_closed_at && (
+        <div style={{ ...MUTED, marginTop: 18, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+          Investment &amp; Loan sheet confirmed {new Date(d.settings.sheet_closed_at).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric" })}{d.settings.sheet_closed_by ? ` by ${d.settings.sheet_closed_by}` : ""} — entries are recorded in the app.{" "}
+          <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} disabled={busy} onClick={async () => {
+            if (!window.confirm("Bring back the sheet import and the statement upload?")) return;
+            setBusy(true); setErr("");
+            try { await apiRequest("/cost/partners/sheet-close", { method: "POST", body: { open: true } }); onDone("Sheet import and statement upload are back."); }
+            catch (e) { setErr(e.message); } finally { setBusy(false); }
+          }}>Open the sheet import again</button>
+        </div>
+      )}
       {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 13, marginTop: 10 }}>{err}</div>}
     </Modal>
   );
@@ -468,30 +661,38 @@ function exportPartners(d) {
   const fy = [["Partner", "Financial year", "Interest", "Paid to partner", "TDS deducted", "Borrowed", "Repaid", "Capital in", "Capital out"],
     ...d.partners.flatMap((p) => p.fy.map((f) => [p.name, f.fy, f.interest, f.paid_net, f.tds, f.borrowed, f.repaid, f.capital_in, f.capital_out]))];
   const entries = [["Partner", "Date", "Entry", "Amount", "TDS", "Loan after", "Interest due after", "Capital after", "Narration", "Note"],
-    ...d.partners.flatMap((p) => [...p.loan.ledger.map((x) => [p.name, x.date, KIND_LABEL[x.kind], x.amount, x.tds, x.balance, x.interest_due, "", x.narration || "", x.note || ""]),
+    ...d.partners.flatMap((p) => [...p.loan.ledger.map((x) => [p.name, x.date, (x.kind === "interest_paid" && x.amount === 0 && x.tds ? "TDS deducted" : KIND_LABEL[x.kind]), x.amount, x.tds, x.balance, x.interest_due, "", x.narration || "", x.note || ""]),
       ...p.capital.ledger.map((x) => [p.name, x.date, KIND_LABEL[x.kind], x.amount, "", "", "", x.balance, x.narration || "", x.note || ""])])];
   downloadExcel(`Partners_${d.as_of}.xlsx`, [{ name: "Loans", rows: loans }, { name: "Capital", rows: capital }, { name: "By year", rows: fy }, { name: "Entries", rows: entries }]);
 }
 
 // Round 244 — the latest imported sheet's own totals beside the app's, on the
 // sheet's date (its "Today").
-function SheetCheck({ c }) {
+function SheetCheck({ c, canEdit, onConfirm }) {
   const rows = c.rows.filter((x) => x.sheet.loan || x.sheet.capital);
+  // Round 247 — a sheet with no investment rows says nothing about capital: no capital column then.
+  const hasCap = rows.some((x) => x.sheet.capital);
+  const keys = hasCap ? ["capital", "loan", "interest", "paid", "balance"] : ["loan", "interest", "paid", "balance"];
   const diff = (a, b) => Math.abs((a || 0) - (b || 0));
-  const worst = Math.max(0, ...rows.flatMap((x) => ["capital", "loan", "interest", "paid", "balance"].map((k) => diff(x.app[k], x.sheet[k]))));
+  const worst = Math.max(0, ...rows.flatMap((x) => keys.map((k) => diff(x.app[k], x.sheet[k]))));
   const ok = worst < 1;
   const cell = (a, b) => (
     <td style={{ ...TDR, color: diff(a, b) >= 1 ? "var(--alert-red)" : undefined }}>{rs(a)}{diff(a, b) >= 1 ? <div style={MUTED}>sheet {rs(b)}</div> : null}</td>
   );
   return (
-    <section style={panel("1 1 100%")}>
-      <h2 style={H2}>Checked against your sheet {ok ? "— the app agrees" : "— differences"}</h2>
-      <div style={SUB}>{c.file_name || "Sheet"} · on the sheet’s date {fmtDay(c.as_on)} · {ok ? `every figure agrees to the rupee (largest difference ₹${num(worst, 2)}, rounding)` : `largest difference ₹${num(worst, 2)} — shown in red with the sheet’s figure`}</div>
+    <section style={{ ...panel("1 1 100%"), borderColor: ok ? "#BFDCCB" : "#E8C4BF" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div>
+          <h2 style={H2}>Checked against your sheet {ok ? "— the app agrees" : "— differences"}</h2>
+          <div style={SUB}>{c.file_name || "Sheet"} · on the sheet’s date {fmtDay(c.as_on)} · {ok ? `every figure agrees to the rupee (largest difference ₹${num(worst, 2)}, rounding)` : `largest difference ₹${num(worst, 2)} — shown in red with the sheet’s figure`}{hasCap ? "" : " · the sheet has no capital rows, so capital is not compared"}</div>
+        </div>
+        {canEdit && <button type="button" className="btn-primary" style={BTN} onClick={onConfirm}>Figures are right — close the sheet import</button>}
+      </div>
       <div style={{ overflowX: "auto", marginTop: 10 }}>
-        <table style={{ width: "100%", minWidth: 760, borderCollapse: "collapse" }}>
-          <thead><tr><th style={TH}>Partner</th><th style={{ ...TH, ...R }}>Capital</th><th style={{ ...TH, ...R }}>Loan</th><th style={{ ...TH, ...R }}>Interest till then</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>Interest balance</th></tr></thead>
+        <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
+          <thead><tr><th style={TH}>Partner</th>{hasCap && <th style={{ ...TH, ...R }}>Capital</th>}<th style={{ ...TH, ...R }}>Loan</th><th style={{ ...TH, ...R }}>Interest till then</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>Interest balance</th></tr></thead>
           <tbody>{rows.map((x) => (
-            <tr key={x.name}><td style={TD}><b>{x.partner || x.name}</b>{x.partner && x.partner.toLowerCase() !== x.name.toLowerCase() ? <div style={MUTED}>“{x.name}” on the sheet</div> : null}</td>{cell(x.app.capital, x.sheet.capital)}{cell(x.app.loan, x.sheet.loan)}{cell(x.app.interest, x.sheet.interest)}{cell(x.app.paid, x.sheet.paid)}{cell(x.app.balance, x.sheet.balance)}</tr>
+            <tr key={x.name}><td style={TD}><b>{x.partner || x.name}</b>{x.partner && x.partner.toLowerCase() !== x.name.toLowerCase() ? <div style={MUTED}>“{x.name}” on the sheet</div> : null}</td>{hasCap && cell(x.app.capital, x.sheet.capital)}{cell(x.app.loan, x.sheet.loan)}{cell(x.app.interest, x.sheet.interest)}{cell(x.app.paid, x.sheet.paid)}{cell(x.app.balance, x.sheet.balance)}</tr>
           ))}</tbody>
         </table>
       </div>

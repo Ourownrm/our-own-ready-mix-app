@@ -10,6 +10,7 @@
 //   POST   /api/cost/partners/txns               one entry by hand
 //   PUT    /api/cost/partners/txns/:id           change an entry
 //   DELETE /api/cost/partners/txns/:id           remove an entry
+//   POST   /api/cost/partners/sheet-close        sheet confirmed: hide the check and the import ({open:true} undoes)
 import { Router } from "express";
 import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -114,8 +115,9 @@ function txnBody(b) {
   if (!KINDS.includes(t.kind)) return { err: "Choose what the entry is." };
   if (!DAY_RE.test(t.txn_date)) return { err: "Date must be yyyy-mm-dd." };
   // Round 244 — interest paid may be negative: a reversal of interest paid too early.
-  if (t.kind === "interest_paid" ? !(Number.isFinite(t.amount) && t.amount !== 0) : !(t.amount > 0)) {
-    return { err: t.kind === "interest_paid" ? "Amount can't be 0 (negative = interest reversed)." : "Amount must be more than 0." };
+  // Round 247 — or 0 with TDS: TDS deducted on interest with nothing paid out that day.
+  if (t.kind === "interest_paid" ? !(Number.isFinite(t.amount) && (t.amount !== 0 || t.tds > 0)) : !(t.amount > 0)) {
+    return { err: t.kind === "interest_paid" ? "Enter the amount paid, the TDS deducted, or both." : "Amount must be more than 0." };
   }
   if (!(t.tds >= 0)) return { err: "TDS must be 0 or more." };
   if (t.kind !== "interest_paid") t.tds = 0;
@@ -198,6 +200,8 @@ router.post("/upload", EDIT, async (req, res) => {
 // sheet import first.
 router.post("/import-sheet", EDIT, async (req, res) => {
   const b = req.body || {};
+  const { rows: closed } = await query(`SELECT sheet_closed_at FROM cost_partner_settings WHERE id = 1`);
+  if (closed[0]?.sheet_closed_at) return bad(res, "The sheet import is closed — the sheet was confirmed and entries are made in the app now. Partners & rates can open it again.", 409);
   const entries = Array.isArray(b.entries) ? b.entries : [];
   if (!entries.length) return bad(res, "Nothing to import.");
   if (entries.length > 5000) return bad(res, "Too many lines (5,000 at most).");
@@ -276,6 +280,14 @@ router.post("/import-sheet", EDIT, async (req, res) => {
     client.release();
   }
   res.status(201).json({ upload_id: uploadId, added, duplicates: dup, removed, partners_made: made });
+});
+
+// Round 247 — the owner confirms the imported sheet is right: the comparison
+// and the sheet import go away (open = true brings them back).
+router.post("/sheet-close", EDIT, async (req, res) => {
+  const open = req.body?.open === true;
+  await query(`UPDATE cost_partner_settings SET sheet_closed_at = ${open ? "NULL" : "now()"}, sheet_closed_by = $1 WHERE id = 1`, [open ? null : req.user.id]);
+  res.json({ closed: !open });
 });
 
 router.delete("/uploads/:id(\\d+)", EDIT, async (req, res) => {

@@ -9116,3 +9116,12 @@ Files — frontend: src/lib/{hrPdf, version}.js, src/pages/HrStage2.jsx · root:
 - **Cost → Partners → Details:** the statement now scrolls inside its own box (up to about ¾ of the screen) and the column headings (Date, Entry, Amount, TDS, Loan after, Interest due after, Capital after, Narration) stay fixed at the top while you scroll. The bank-statement upload and sheet-import tables do the same.
 - **Interest start date guard:** a loan never earns interest before the day it came in. If an entry's "interest from" date is earlier than its date, the app uses the loan date. Loans with a later start date (e.g. June 2023 loans earning from 1 Nov 2023) work as before. The owner's Investment & Loan sheet still matches to 3 paise.
 - No database change; no /setup run needed.
+
+## Round 248 — Partners page redesigned; entries in the app only (v10.80)
+
+- **New layout (Cost → Partners):** a summary band (money from partners split capital / loans; interest till date split paid / TDS / still due; interest due now, FY interest, borrowed / repaid, capital in / returned), then one card per partner (capital and loan with a funding bar, interest paid / TDS / due bar, Statement and + Record buttons). "Table" switches to a single table with fixed headings and totals.
+- **Statement:** FY boxes (interest, paid, TDS), filters All / Capital / Loan / Interest & TDS, coloured entry types, fixed headings, "+ Record for …".
+- **+ Record an entry:** pick what happened — Capital brought in, Capital returned, Loan received, Loan repaid, Interest paid, TDS deducted, Interest owed at start. Interest paid = interest before TDS + TDS deducted (blank = no TDS; "TDS 10%" button), the app shows what reached the partner. "TDS deducted" alone = TDS with no payment that day.
+- **Sheet confirmed:** "Figures are right — close the sheet import" on the sheet check removes the check, the "Import my Investment & Loan sheet" button and "Upload statement". Partners & rates can open them again. The check no longer compares capital when the sheet has no capital rows.
+- Backend: `lib/round247Schema.js` (cost_partner_settings.sheet_closed_at / _by), POST `/api/cost/partners/sheet-close`, import refused once closed, interest-paid entries may be TDS only (amount 0, TDS > 0).
+- **Run /setup?key=… once** (or it is added on first use of the Partners page).
