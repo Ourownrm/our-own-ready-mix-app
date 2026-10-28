@@ -36,6 +36,16 @@ import { lockState } from "../lib/lockdown.js";
 // ===========================================================================
 
 const USER_CACHE_MS = 5000;
+// Round 249 — what a view-only account may still send.
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const VIEW_ONLY_ALLOWED = [
+  /^\/api\/auth\//,                      // sign out, own password, language
+  /^\/api\/hr\/punch(\/|\?|$)/,           // own attendance in the app
+  /^\/api\/hr\/my\//,                     // own leave / comp-off / attendance requests
+  /^\/api\/maintenance-module\/my-pm\//,  // a PM check assigned to them
+  /^\/api\/push(\/|\?|$)/,                // phone notifications
+  /^\/api\/notifications\//,              // marking notifications read
+];
 const userCache = new Map(); // id -> { at, user: {id,name,role,is_active} | null }
 
 /**
@@ -57,7 +67,9 @@ async function liveUser(id) {
   const hit = userCache.get(key);
   if (hit && Date.now() - hit.at < USER_CACHE_MS) return hit.user;
   const { rows } = await query(
-    `SELECT id, name, role::text AS role, is_active FROM users WHERE id = $1`,
+    // Round 249 — view_only read through to_jsonb so sign-in keeps working on a
+    // database that has not had /setup run for the new column yet.
+    `SELECT id, name, role::text AS role, is_active, COALESCE((to_jsonb(u)->>'view_only')::boolean, false) AS view_only FROM users u WHERE id = $1`,
     [key]
   );
   const user = rows[0] || null;
@@ -108,7 +120,14 @@ export async function requireAuth(req, res, next) {
     // effect within USER_CACHE_MS instead of at the token's 30-day expiry.
     // Anything else the payload happens to carry is kept, so this stays a
     // superset of the old behaviour for any field a route reads.
-    req.user = { ...payload, id: live.id, name: live.name, role: live.role };
+    req.user = { ...payload, id: live.id, name: live.name, role: live.role, view_only: !!live.view_only };
+    // Round 249 — a view-only account (a partner, or an administrator the
+    // Super Admin has limited) may look at everything its role shows but
+    // change nothing: every write is refused here, before any route runs,
+    // except signing in/out, its own attendance punch and its own requests.
+    if (live.view_only && !SAFE_METHODS.has(req.method) && !VIEW_ONLY_ALLOWED.some((re) => re.test(req.originalUrl))) {
+      return res.status(403).json({ error: "This is a view-only account — it can look at everything but not add, change or remove anything.", code: "view_only" });
+    }
     next();
   } catch (err) {
     // Distinguish a bad/expired token from the database being unreachable. The

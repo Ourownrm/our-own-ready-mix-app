@@ -53,7 +53,7 @@ export function TopBar({ title }) {
   // Round 192 — the Modules page, offered to every role that has at least one
   // module or screen switched on. The Administrator has the same grid as their
   // own dashboard, so they are not offered it twice.
-  const { can, ready: permsReady } = usePermissions();
+  const { can, ready: permsReady, viewOnly } = usePermissions();
   const showModules = !!user && !isAdminLevel(user.role) && pathname !== "/modules"
     && permsReady && visibleHub(can).length > 0;
   const [notifStatus, setNotifStatus] = useState(null);
@@ -165,6 +165,7 @@ export function TopBar({ title }) {
         <div className="app-footer-who">
           {user?.name && <span className="app-footer-name">{user.name}</span>}
           {user?.role && <span className="app-footer-role">{ROLE_LABELS[user.role] || user.role}</span>}
+          {viewOnly && <span title="This account can look at everything but not add, change or remove anything." style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 20, background: "#E2EAF6", color: "#1F4A82", whiteSpace: "nowrap" }}>{user?.role === "administrator" ? "Partner · view only" : "View only"}</span>}
           <span className="app-footer-ver">v{APP_VERSION}</span>
         </div>
 

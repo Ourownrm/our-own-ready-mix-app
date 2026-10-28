@@ -20,6 +20,10 @@ import { pluginStates, clearPluginCache } from "../lib/plugins.js";
 import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
 import { CATALOGUE, CATALOGUE_BY_KEY, GROUPS, ROLES, ACTIONS, PERMISSION_BY_SCREEN, isLocked, MODULES, FUNCTION_GROUPS } from "../lib/permissionCatalogue.js";
 import { effectivePermissions, clearPermissionCache } from "../lib/permissions.js";
+import { ROUND249_SQL } from "../lib/round249Schema.js";
+
+let r249 = null;
+const ensureRound249 = () => (r249 ||= query(ROUND249_SQL).catch((e) => { r249 = null; throw e; }));
 
 const router = Router();
 router.use(requireAuth);
@@ -82,6 +86,7 @@ router.get("/role-defaults", async (req, res) => {
 router.get("/users", async (req, res) => {
   const { rows } = await query(
     `SELECT u.id, u.name, u.phone, u.role::text AS role, u.is_active,
+            COALESCE((to_jsonb(u)->>'view_only')::boolean, false) AS view_only,
             COALESCE(o.n, 0)::int AS override_count
      FROM users u
      LEFT JOIN (SELECT user_id, COUNT(*) AS n FROM user_permission_overrides GROUP BY user_id) o
@@ -95,7 +100,7 @@ router.get("/users", async (req, res) => {
 // the page can show all three columns side by side.
 router.get("/users/:id/permissions", async (req, res) => {
   const { rows: userRows } = await query(
-    `SELECT id, name, role::text AS role, is_active FROM users WHERE id = $1`, [req.params.id]
+    `SELECT id, name, role::text AS role, is_active, COALESCE((to_jsonb(u)->>'view_only')::boolean, false) AS view_only FROM users u WHERE id = $1`, [req.params.id]
   );
   const user = userRows[0];
   if (!user) return res.status(404).json({ error: "No such user." });
@@ -343,6 +348,29 @@ router.patch("/users/:id/status", async (req, res) => {
   clearUserCache(userId);
   clearPermissionCache(userId);
   res.json({ ok: true });
+});
+
+// Round 249 — view only (owner, 28 Oct 2026: "a partner role, same as admin
+// but only view, no edit option to avoid accidental deletion or modification
+// of data / or option for selected admin user to limit edit and delete
+// access"). Any account can be made view-only; a partner is an Administrator
+// made view-only. The Super Admin's own account can't be, nor the last
+// Super Admin.
+router.patch("/users/:id/view-only", async (req, res) => {
+  const userId = Number(req.params.id);
+  const viewOnly = !!(req.body || {}).view_only;
+  if (userId === req.user.id) return res.status(400).json({ error: "You can't make your own account view-only." });
+  await ensureRound249();
+  const { rows } = await query(`SELECT role::text AS role FROM users WHERE id = $1`, [userId]);
+  if (!rows[0]) return res.status(404).json({ error: "No such user." });
+  const { rows: others } = await query(`SELECT COUNT(*)::int AS n FROM users WHERE role = 'super_admin' AND is_active AND NOT view_only AND id <> $1`, [userId]);
+  if (viewOnly && rows[0].role === "super_admin" && others[0].n === 0) {
+    return res.status(400).json({ error: "That would leave no Super Admin who can change anything." });
+  }
+  await query(`UPDATE users SET view_only = $1 WHERE id = $2`, [viewOnly, userId]);
+  clearUserCache(userId);
+  clearPermissionCache(userId);
+  res.json({ ok: true, view_only: viewOnly });
 });
 
 // ===== Plugins (Round 149) =====

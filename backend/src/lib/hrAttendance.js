@@ -146,7 +146,7 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
       } else {
         day.code = offDay ? (holiday && !p.off ? "H" : "WO") : isToday ? "" : "A";
       }
-      if (offDay && day.code === "P") day.flags.push("worked on " + (holiday ? "holiday" : "off day"));
+      if (offDay && day.code === "P") { day.flags.push("worked on " + (holiday ? "holiday" : "off day")); day.off_work = holiday && !p.off ? "H" : "WO"; } // Round 249 — highlighted in the register
       // Round 200 — an app check-in with location is the whole of the duty.
       if (day.code === "P") day.met = true;
       days.push(day);
@@ -182,7 +182,11 @@ export function computeEmployeeDays(emp, dates, events, plan, holidays, todayDat
         if (earlyBy > shift.grace) day.early = earlyBy;
       }
     }
-    if (offDay) day.flags.push("worked on " + (holiday && !p.off ? "holiday" : "off day"));
+    if (offDay) {
+      day.flags.push("worked on " + (holiday && !p.off ? "holiday" : "off day"));
+      // Round 249 — present on a weekly off / holiday: the register highlights it.
+      if (["P", "HD", "IN", "MIS"].includes(day.code)) day.off_work = holiday && !p.off ? "H" : "WO";
+    }
     // Round 200 — did the day meet the duty hours? The shift's own length
     // (9 to 5 = 8 h), or 8 hours for someone with no shift (operators). The
     // employee's own screen shows a met day as just "P"; anything short shows

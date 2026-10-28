@@ -120,6 +120,10 @@ export async function effectivePermissions(user) {
     }
   }
 
+  // Round 249 — a view-only account keeps only "view": the app hides every
+  // add / change / remove button, and the routes refuse them too.
+  if (user.view_only) perms = new Set([...perms].filter((p) => p.endsWith(":view")));
+
   cache.set(user.id, { at: Date.now(), perms });
   return perms;
 }

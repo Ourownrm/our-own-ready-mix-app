@@ -22,7 +22,7 @@ const TABS = [
   { key: "pl", label: "Profit & Loss", perm: "cost.pl", Component: CostPLTab },
   { key: "balance-sheet", label: "Balance Sheet", perm: "cost.balance-sheet", Component: CostBSTab },
   // Round 221
-  { key: "break-even", label: "Break-even", perm: "cost.break-even", Component: CostBreakEvenTab },
+  { key: "break-even", label: "Break-even", perm: "cost.break-even", Component: CostBreakEvenTab, current: true }, // Round 249 — opens on the current month
   // Round 245 — water cost.
   { key: "water", label: "Water", perm: "cost.pl", Component: CostWaterTab },
   // Round 223
@@ -46,11 +46,16 @@ export default function CostModule() {
   const active = tabs.find((t) => t.key === params.get("tab")) || tabs[0];
   const now = currentMonth();
   const wanted = params.get("month");
-  // Default: the last full month — the one Accounts has closed.
-  const month = /^\d{4}-\d{2}$/.test(wanted || "") && wanted <= now ? wanted : addMonths(now, -1);
+  // Default: the last full month — the one Accounts has closed. Round 249 —
+  // Break-even opens on the current month (owner, 28 Oct 2026).
+  const dflt = (t) => (t?.current ? now : addMonths(now, -1));
+  const month = /^\d{4}-\d{2}$/.test(wanted || "") && wanted <= now ? wanted : dflt(active);
 
   function go(key) {
-    setParams({ tab: key, month });
+    // Moving between tabs keeps a month you picked; a tab's own default otherwise.
+    const target = tabs.find((t) => t.key === key);
+    const picked = month !== dflt(active);
+    setParams({ tab: key, month: picked ? month : dflt(target) });
     window.scrollTo(0, 0);
   }
   function setMonth(m) {

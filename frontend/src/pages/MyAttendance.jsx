@@ -259,7 +259,61 @@ export default function MyAttendance() {
             </div>
           </>
         )}
+        <MyPpe />
       </div>
     </>
+  );
+}
+
+// Round 249 — the employee's own PPE: what they hold, their requests, and
+// asking for an item (approved by the Plant Manager / Admin, then issued).
+const PPE_REASON = { new: "New", worn_out: "Worn out", damaged: "Damaged", lost: "Lost" };
+function MyPpe() {
+  const [d, setD] = useState(null);
+  const [f, setF] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const load = () => apiRequest("/hr/my/ppe").then(setD).catch(() => setD(null));
+  useEffect(() => { load(); }, []);
+  if (!d?.linked) return null;
+  const held = d.issues.filter((x) => !x.returned_on);
+  const item = d.items.find((i) => String(i.id) === String(f?.item_id));
+  async function send(e) {
+    e.preventDefault(); setErr("");
+    try { await apiRequest("/hr/my/ppe-request", { method: "POST", body: { items: [{ item_id: Number(f.item_id), qty: Number(f.qty) || 1, size: f.size, reason: f.reason, note: f.note }] } }); setF(null); setMsg("Request sent — waiting for approval."); load(); }
+    catch (ex) { setErr(ex.message); }
+  }
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <div style={{ fontWeight: 700 }}>My PPE</div>
+        {!f && <button style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={() => { setF({ item_id: "", qty: 1, size: "", reason: "new", note: "" }); setMsg(""); }}>Ask for PPE</button>}
+      </div>
+      {msg && <div style={{ fontSize: 12.5, color: "var(--signal-green)", marginTop: 6 }}>{msg}</div>}
+      {f && (
+        <form onSubmit={send} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 10 }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>Item<select value={f.item_id} onChange={(e) => setF({ ...f, item_id: e.target.value })} required><option value="">Choose…</option>{d.items.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>Qty<input type="number" min={1} max={10} value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} style={{ width: 60 }} /></label>
+          {item?.has_size && <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>Size<input value={f.size} onChange={(e) => setF({ ...f, size: e.target.value })} style={{ width: 70 }} /></label>}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>Why<select value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })}>{Object.entries(PPE_REASON).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
+          <button type="submit" className="btn-primary">Send</button>
+          <button type="button" onClick={() => setF(null)}>Cancel</button>
+          {err && <div style={{ color: "var(--alert-red)", fontSize: 12.5, width: "100%" }}>{err}</div>}
+        </form>
+      )}
+      <div style={{ fontSize: 13, marginTop: 10 }}>
+        <span style={{ color: "var(--slate)" }}>With me:</span> {held.length ? held.map((x) => `${x.item}${x.qty > 1 ? ` × ${x.qty}` : ""}${x.size ? ` (${x.size})` : ""} — ${fmtDay(x.issued_on)}`).join(" · ") : "nothing recorded"}
+      </div>
+      {d.requests.length > 0 && (
+        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+          {d.requests.slice(0, 6).map((r) => (
+            <div key={r.id} style={{ fontSize: 12.5, display: "flex", gap: 8, alignItems: "center" }}>
+              <span className={`badge ${r.status === "issued" ? "badge-success" : STATUS_BADGE[r.status] || "badge-neutral"}`}>{r.status}</span>
+              {r.item}{r.qty > 1 ? ` × ${r.qty}` : ""} · {PPE_REASON[r.reason]}{r.decision_note ? <span style={{ color: "var(--slate)" }}> — {r.decision_note}</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

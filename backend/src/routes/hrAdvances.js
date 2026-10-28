@@ -19,6 +19,7 @@ import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, can } from "../lib/permissions.js";
 import { audit } from "../lib/hrAudit.js";
+import { exitBlock } from "../lib/hrExit.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -121,6 +122,8 @@ router.post("/", requirePermission("hr.advance-request", "create"), async (req, 
   }
   const { rows: emps } = await query(`SELECT id, app_user_id FROM hr_employees WHERE is_active AND id = ANY($1::int[])`, [[...seen]]);
   if (emps.length !== seen.size) return bad(res, "One of the employees was not found or has left.");
+  // Round 249 — nobody leaving or gone gets a new advance.
+  for (const id of seen) { const why = await exitBlock(id, "advance"); if (why) return bad(res, why, 409); }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -221,6 +224,9 @@ router.post("/lines/:lineId(\\d+)/pay", requirePermission("hr.advance-pay", "edi
     const l = rows[0];
     if (!l) { await client.query("ROLLBACK"); return bad(res, "Not found.", 404); }
     if (l.status !== "approved") { await client.query("ROLLBACK"); return bad(res, l.status === "paid" ? "Already paid." : "Only an approved advance can be paid.", 409); }
+    // Round 249 — an exit raised after the approval still stops the payment.
+    const leaving = await exitBlock(l.employee_id, "advance");
+    if (leaving) { await client.query("ROLLBACK"); return bad(res, leaving, 409); }
     const amt = b.amount === undefined || b.amount === "" ? Number(l.approved_amount) : r2(b.amount);
     if (!(amt > 0) || amt > Number(l.approved_amount)) { await client.query("ROLLBACK"); return bad(res, `Pay more than 0 and not more than the ₹${Number(l.approved_amount).toLocaleString("en-IN")} approved.`); }
     const day = DATE_RE.test(b.given_on || "") ? b.given_on : istToday();

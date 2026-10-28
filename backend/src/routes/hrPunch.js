@@ -74,7 +74,9 @@ async function myEmployee(userId) {
             (f.employee_id IS NOT NULL) AS enrolled
      FROM hr_employees e JOIN users u ON u.id = e.app_user_id
      LEFT JOIN hr_employee_faces f ON f.employee_id = e.id
-     WHERE e.app_user_id = $1 AND e.is_active LIMIT 1`, [userId]);
+     WHERE e.app_user_id = $1 AND e.is_active
+       -- Round 249 — not after the last working day of an approved exit
+       AND (e.date_of_leaving IS NULL OR e.date_of_leaving >= (now() AT TIME ZONE 'Asia/Kolkata' - interval '4 hours')::date) LIMIT 1`, [userId]);
   return rows[0] || null;
 }
 const allowedFor = (emp) => !!emp && emp.app_punch !== "off" && emp.role !== "driver";

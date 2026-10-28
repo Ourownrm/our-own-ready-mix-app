@@ -256,6 +256,18 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
 
+  // Round 249 — view only: sees what the role sees, changes nothing (a partner = Administrator + view only).
+  async function setViewOnly(v) {
+    if (v && !window.confirm(`Make ${detail.user.name} view-only?\n\nThey keep seeing everything their role shows, but cannot add, change or remove anything — only their own attendance and requests.`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/super-admin/users/${selected}/view-only`, { method: "PATCH", body: { view_only: v } });
+      setNotice(v ? `${detail.user.name} is now view-only.` : `${detail.user.name} can change data again (as their role allows).`);
+      setDetail(await apiRequest(`/super-admin/users/${selected}/permissions`));
+      loadUsers();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
   async function resetToDefault() {
     if (!window.confirm(`Put ${detail.user.name} back on the ${ROLE_LABEL[detail.user.role]} defaults? Every change made for them is removed.`)) return;
     setBusy(true);
@@ -278,6 +290,7 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
                            background: selected === u.id ? "#FBF6F0" : "#fff" }}>
             <b>{u.name}</b>
             {!u.is_active && <span className="badge badge-neutral" style={{ marginLeft: 6, fontSize: 9.5 }}>Disabled</span>}
+            {u.view_only && <span className="badge" style={{ marginLeft: 6, fontSize: 9.5, background: "#E2EAF6", color: "#1F4A82" }}>{u.role === "administrator" ? "Partner · view only" : "View only"}</span>}
             <div style={{ fontSize: 10.5, color: "var(--slate)" }}>
               {ROLE_LABEL[u.role] || u.role}
               {u.is_self ? " · you" : u.override_count ? ` · ${u.override_count} changed` : " · role default"}
@@ -331,6 +344,11 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
                     <button type="button" onClick={() => setActive(!detail.user.is_active)} disabled={busy} style={{ fontSize: 11.5 }}>
                       {detail.user.is_active ? "Disable sign-in" : "Enable sign-in"}
                     </button>
+                    <label title="Sees everything the role shows; cannot add, change or remove anything. A partner = Administrator + view only."
+                      style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5, padding: "3px 8px", borderRadius: 6, background: detail.user.view_only ? "#E2EAF6" : undefined, border: "1px solid var(--border)" }}>
+                      <input type="checkbox" checked={!!detail.user.view_only} disabled={busy} onChange={(e) => setViewOnly(e.target.checked)} />
+                      View only{detail.user.role === "administrator" ? " (partner)" : ""}
+                    </label>
                   </>
                 )}
               </div>

@@ -749,6 +749,20 @@ export const CATALOGUE = [
     { administrator: E }),
   f("hr.contractor-bills", "hr", "Contractor bills, payments & ledger", VCED,
     { administrator: VCED, accountant: VC }),
+  // Round 249 — PPE (owner, 28 Oct 2026): a request for an employee (create),
+  // approved or rejected (hr.ppe-approve), then issued and recorded against
+  // the employee (edit); returns are recorded too.
+  f("hr.ppe", "hr", "PPE — requests, issue register, returns", VCED,
+    { administrator: VCED, manager: VCE, accountant: V }),
+  f("hr.ppe-approve", "hr", "PPE — approve or reject a request", E,
+    { administrator: E, manager: E }),
+  // Round 249 — an employee leaving: raised (create), approved by Admin
+  // (hr.exit-approve), completed after the last working day. Once approved,
+  // no new advance and no salary after the last working day can be recorded.
+  f("hr.exit", "hr", "Employee exit — raise and follow up", ["view", "create"],
+    { administrator: ["view", "create"], manager: ["view", "create"], accountant: ["view"] }),
+  f("hr.exit-approve", "hr", "Employee exit — approve, reject, complete", E,
+    { administrator: E }),
 
   // ---------- Administration ----------
   f("admin.users", "admin", "Users — list and create", VCE,
@@ -894,10 +908,12 @@ export const MODULES = [
       { key: "hr.advances", label: "Advances" },
       { key: "hr.gangs", label: "Contract labour" },
       { key: "hr.contractor-bills", label: "Contractor bills" },
+      { key: "hr.ppe", label: "PPE" },
+      { key: "hr.exit", label: "Exits" },
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
-    support: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction"],
+    support: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction", "hr.ppe-approve", "hr.exit-approve"],
     // Round 211 — hr.gang-attendance is deliberately NOT in this module: the
     // Site Supervisor confirms gang crews without having the HR module.
     noAutoView: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs"],

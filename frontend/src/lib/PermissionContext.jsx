@@ -22,6 +22,7 @@ export function PermissionProvider({ children }) {
   const [permissions, setPermissions] = useState({});
   const [byScreen, setByScreen] = useState({});
   const [ready, setReady] = useState(false);
+  const [viewOnly, setViewOnly] = useState(false); // Round 249 — a view-only account (partner)
 
   const refresh = useCallback(async () => {
     if (!user) { setPermissions({}); setByScreen({}); setReady(true); return; }
@@ -29,6 +30,7 @@ export function PermissionProvider({ children }) {
       const me = await apiRequest("/auth/me");
       setPermissions(me.permissions || {});
       setByScreen(me.permission_by_screen || {});
+      setViewOnly(!!me.user?.view_only);
     } catch {
       // A failed fetch must not silently grant everything. An empty set plus
       // ready=true hides permission-gated things; the backend would refuse
@@ -45,6 +47,7 @@ export function PermissionProvider({ children }) {
     const can = (key, action = "view") => !!(permissions[key] || []).includes(action);
     return {
       permissions,
+      viewOnly,
       permissionByScreen: byScreen,
       ready,
       can,
@@ -56,7 +59,7 @@ export function PermissionProvider({ children }) {
       },
       refresh,
     };
-  }, [permissions, byScreen, ready, refresh]);
+  }, [permissions, byScreen, ready, refresh, viewOnly]);
 
   return <PermissionContext.Provider value={value}>{children}</PermissionContext.Provider>;
 }

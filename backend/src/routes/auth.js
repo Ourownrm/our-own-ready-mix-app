@@ -44,7 +44,7 @@ router.post("/login", async (req, res) => {
 // cached for a few seconds server-side (see lib/permissions.js).
 router.get("/me", requireAuth, async (req, res) => {
   const { rows } = await query(
-    "SELECT id, name, phone, role::text AS role, is_active, preferred_language FROM users WHERE id = $1",
+    "SELECT id, name, phone, role::text AS role, is_active, preferred_language, COALESCE((to_jsonb(u)->>'view_only')::boolean, false) AS view_only FROM users u WHERE id = $1",
     [req.user.id]
   );
   const user = rows[0];

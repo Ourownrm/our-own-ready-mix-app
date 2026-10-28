@@ -8,6 +8,7 @@
 // cannot touch them — the fields are dropped, never zeroed.
 import { Router } from "express";
 import { pool, query } from "../db.js";
+import { exitBlock, ensureExit, LEFT_BEFORE_MONTH_SQL } from "../lib/hrExit.js";
 import { audit, auditList } from "../lib/hrAudit.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission, can } from "../lib/permissions.js";
@@ -240,6 +241,22 @@ router.patch("/employees/:id", requirePermission("hr.employees", "edit"), async 
     if (f.contractor_id) f.contractor_name = (await query(`SELECT name FROM hr_contractors WHERE id = $1`, [f.contractor_id])).rows[0]?.name || f.contractor_name;
     if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
     if (!f.emp_code || !f.name) return res.status(400).json({ error: "Employee code and name are required." });
+    // Round 249 — leaving goes through HR → Exits (raise → approve → complete),
+    // so the date of leaving is not typed here: a new one is refused, and one
+    // set by an exit can't be changed or cleared while that exit stands.
+    await ensureExit();
+    const { rows: cur } = await query(
+      `SELECT to_char(e.date_of_leaving, 'YYYY-MM-DD') AS dol, e.is_active,
+              (SELECT to_char(x.last_working_day, 'YYYY-MM-DD') FROM hr_exits x WHERE x.employee_id = e.id AND x.status IN ('approved','completed') ORDER BY x.id DESC LIMIT 1) AS exit_lwd,
+              (SELECT x.status FROM hr_exits x WHERE x.employee_id = e.id AND x.status IN ('pending','approved','completed') ORDER BY x.id DESC LIMIT 1) AS exit_status
+         FROM hr_employees e WHERE e.id = $1`, [id]);
+    const was = cur[0];
+    if (was) {
+      const nd = f.date_of_leaving || null;
+      if (was.exit_lwd && nd !== was.exit_lwd) return res.status(409).json({ error: `The date of leaving (${was.exit_lwd}) comes from the approved exit — change or cancel it on HR → Exits.` });
+      if (!was.exit_lwd && nd && nd !== was.dol) return res.status(409).json({ error: "To record someone leaving, raise an exit on HR → Exits — it is approved there, and advances and salary stop at the last working day." });
+      if (was.exit_status === "completed" && req.body.is_active !== false && !was.is_active) return res.status(409).json({ error: "This employee has left (exit completed). Add them again as a new joiner if they rejoin." });
+    }
     // Someone who has left is inactive, so their machine number frees up for a new joiner.
     f.is_active = req.body.is_active === false ? false : !f.date_of_leaving || f.date_of_leaving >= new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
     f.updated_by = req.user.id;
@@ -1322,6 +1339,9 @@ router.post("/advances", requirePermission("hr.advances", "create"), async (req,
   try {
     const f = advanceFields(req.body || {});
     if (await monthLocked(f.recover_month)) return res.status(409).json({ error: `Payroll for ${f.recover_month} is locked — recover it from a later month.` });
+    // Round 249 — no advance for someone leaving or gone.
+    const leaving = await exitBlock(f.employee_id, "advance");
+    if (leaving) return res.status(409).json({ error: leaving });
     const { rows } = await query(
       `INSERT INTO hr_advances (employee_id, given_on, amount, mode, reference, recover_month, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
@@ -1533,6 +1553,9 @@ router.put("/payroll/:month/lines/:emp/payment", requirePermission("hr.payroll",
     }
     const amount = money(b.paid_amount), on = date(b.paid_on);
     if (amount === null || !on) return res.status(400).json({ error: "Give the amount paid and the date." });
+    // Round 249 — no salary for a month after an approved exit's last working day.
+    const gone = await exitBlock(emp, "salary", { month });
+    if (gone) return res.status(409).json({ error: gone });
     const { rowCount } = await query(
       `UPDATE hr_payroll_lines SET paid_amount = $1, paid_on = $2, paid_mode = $3, paid_ref = $4, paid_by = $5 WHERE month = $6 AND employee_id = $7`,
       [amount, on, PAY_MODES.includes(b.paid_mode) ? b.paid_mode : "bank_transfer", text(b.paid_ref, 100), req.user.id, month, emp]);
@@ -1550,9 +1573,12 @@ router.post("/payroll/:month/pay-all", requirePermission("hr.payroll", "edit"), 
     const on = date(req.body?.paid_on);
     if (!on) return res.status(400).json({ error: "Give the payment date." });
     const mode = PAY_MODES.includes(req.body?.paid_mode) ? req.body.paid_mode : "bank_transfer";
+    await ensureExit();
     const { rowCount } = await query(
       `UPDATE hr_payroll_lines SET paid_amount = net_pay, paid_on = $1, paid_mode = $2, paid_ref = $3, paid_by = $4
        WHERE month = $5 AND paid_amount IS NULL AND net_pay > 0
+         -- Round 249 — never someone whose approved exit ended before this month
+         AND ${LEFT_BEFORE_MONTH_SQL("$5")}
          AND ($6::text IS NULL OR employee_id IN (SELECT id FROM hr_employees WHERE employment_type = $6))
          -- Round 211 — contract workers with a contractor are paid through the contractor's bill
          AND employee_id NOT IN (SELECT id FROM hr_employees WHERE employment_type = 'contract' AND contractor_id IS NOT NULL)`,

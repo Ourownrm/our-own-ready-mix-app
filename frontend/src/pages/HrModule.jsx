@@ -15,9 +15,12 @@ import { FacePanel, WorkLocationsCard, PhonePunchReview, PunchWarnings } from ".
 import { TodayTab, CompOffTab } from "./HrToday.jsx";
 import { ContractLabourTab, ContractorBillsTab } from "./HrContract.jsx";
 import { EmployeeDetails, PhotoPanel, Avatar } from "./HrEmployeeCard.jsx";
+import { PpeTab, ExitsTab } from "./HrPeople.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CO_TEAL = "#0E7C7B"; // Round 242 — comp-off marks in the register
+// Round 249 — present on a weekly off or holiday (owner: "highlight present on weekly off day or holiday").
+const OFFWORK = { bg: "#F6C744", fg: "#4A3500", ring: "#B7860B" };
 const CODE_STYLE = {
   P: { bg: "var(--signal-green-bg)", fg: "var(--signal-green)", label: "Present" },
   HD: { bg: "var(--amber-bg)", fg: "var(--amber)", label: "Half day" },
@@ -95,6 +98,8 @@ async function printRegister({ data, rows, month, dept, mode }) {
       const di = h.column.index - 2;
       if (h.section === "body" && di >= 0 && di < n) {
         if (offCol.has(di)) h.cell.styles.fillColor = [243, 241, 236];
+        // Round 249 — present on a weekly off / holiday
+        if (h.row.index != null && rows[h.row.index]?.days[di]?.off_work) { h.cell.styles.fillColor = [246, 199, 68]; h.cell.styles.fontStyle = "bold"; }
         const c = tone[h.cell.raw];
         if (c) { h.cell.styles.textColor = c; if (h.cell.raw === "A") h.cell.styles.fontStyle = "bold"; }
       }
@@ -103,7 +108,7 @@ async function printRegister({ data, rows, month, dept, mode }) {
     didDrawPage: () => {
       const H = doc.internal.pageSize.getHeight();
       doc.setFontSize(6.5); doc.setTextColor(90);
-      doc.text("P present · HD half day · A absent · MIS missed punch (not counted until corrected) · L leave · WO weekly off · H holiday · NL app check-in without location · Paid = present + ½ × half days + off days + holidays + paid leave", 6, H - 16);
+      doc.text("Yellow = present on a weekly off / holiday · P present · HD half day · A absent · MIS missed punch (not counted until corrected) · L leave · WO weekly off · H holiday · NL app check-in without location · Paid = present + ½ × half days + off days + holidays + paid leave", 6, H - 16);
       doc.setTextColor(0); doc.setFontSize(8);
       ["Prepared by", "Checked by (Plant Manager)", "Approved by"].forEach((t, i) => {
         const x = 20 + i * 95;
@@ -146,9 +151,11 @@ function AttendanceTab({ meta }) {
   }, [data, dept, q]);
 
   const attention = useMemo(() => {
-    const a = { missed: 0, late: 0, unlinked: 0, nl: 0 };
+    const a = { missed: 0, late: 0, unlinked: 0, nl: 0, offwork: 0, offPeople: 0 };
     for (const e of rows) {
       a.missed += e.summary.missed; a.late += e.summary.late; a.nl += e.summary.no_location;
+      const ow = e.days.filter((d) => d.off_work).length;
+      a.offwork += ow; if (ow) a.offPeople++;
       if (!e.linked) a.unlinked++;
     }
     return a;
@@ -178,6 +185,7 @@ function AttendanceTab({ meta }) {
           {attention.missed > 0 && <span className="badge" style={{ background: "var(--violet-bg)", color: "var(--violet)" }}>{attention.missed} missed punch{attention.missed > 1 ? "es" : ""}</span>}
           {attention.late > 0 && <span className="badge badge-warning">{attention.late} late arrival{attention.late > 1 ? "s" : ""} — for Admin to review</span>}
           {attention.nl > 0 && <span className="badge" style={{ background: "var(--violet-bg)", color: "var(--violet)" }}>{attention.nl} app check-in{attention.nl > 1 ? "s" : ""} without location</span>}
+          {attention.offwork > 0 && <span className="badge" style={{ background: OFFWORK.bg, color: OFFWORK.fg }}>{attention.offwork} day{attention.offwork > 1 ? "s" : ""} present on a weekly off / holiday ({attention.offPeople} employee{attention.offPeople > 1 ? "s" : ""})</span>}
           {attention.unlinked > 0 && <span className="badge badge-danger">{attention.unlinked} employee{attention.unlinked > 1 ? "s" : ""} not linked to the machine / app</span>}
         </div>
       )}
@@ -222,12 +230,13 @@ function AttendanceTab({ meta }) {
                           {d.code ? (
                             <button
                               onClick={() => { setSel(active ? null : { emp: e, day: d }); setRaising(false); setLeaving(false); }}
-                              title={`${d.code === "L" ? `${d.leave?.name}${d.leave?.half ? " (half day)" : ""}${d.leave?.paid ? "" : " — unpaid"}` : st?.label || d.code}${d.late ? ` · late ${d.late} min` : ""}${d.early ? ` · left ${d.early} min early` : ""}${(d.flags || []).filter((x) => x.startsWith("comp-off") || x.includes("comp-off not taken")).map((x) => ` · ${x}`).join("")}`}
+                              title={`${d.off_work ? `Present on ${d.off_work === "H" ? "a holiday" : "a weekly off"} · ` : ""}${d.code === "L" ? `${d.leave?.name}${d.leave?.half ? " (half day)" : ""}${d.leave?.paid ? "" : " — unpaid"}` : st?.label || d.code}${d.late ? ` · late ${d.late} min` : ""}${d.early ? ` · left ${d.early} min early` : ""}${(d.flags || []).filter((x) => x.startsWith("comp-off") || x.includes("comp-off not taken")).map((x) => ` · ${x}`).join("")}`}
                               style={{
                                 width: 32, height: 30, padding: 0, fontSize: 10.5, fontWeight: 700, borderRadius: 6, position: "relative",
-                                border: active ? "2px solid var(--charcoal)" : d.co || d.co_for ? `2px solid ${CO_TEAL}` : "1px solid transparent",
-                                background: st?.bg, color: st?.fg,
+                                border: active ? "2px solid var(--charcoal)" : d.co || d.co_for ? `2px solid ${CO_TEAL}` : d.off_work ? `1.5px solid ${OFFWORK.ring}` : "1px solid transparent",
+                                background: d.off_work ? OFFWORK.bg : st?.bg, color: d.off_work ? OFFWORK.fg : st?.fg,
                               }}>
+                              {d.off_work && <span aria-hidden style={{ position: "absolute", bottom: -1, left: 0, right: 0, fontSize: 6.5, fontWeight: 800, lineHeight: 1, letterSpacing: 0.2 }}>{d.off_work}</span>}
                               {d.code === "HD" ? "½" : d.code === "L" ? (d.leave?.half ? "½" : "") + (d.leave?.code || "L") : d.code}
                               {(d.late || d.early) && <span aria-hidden style={{ position: "absolute", top: 2, right: 2, width: 6, height: 6, borderRadius: 3, background: "var(--rebar)" }} />}
                               {d.pending > 0 && <span aria-hidden style={{ position: "absolute", bottom: 2, left: 2, width: 6, height: 6, borderRadius: 3, background: "var(--info)" }} />}
@@ -293,6 +302,7 @@ function AttendanceTab({ meta }) {
             <span style={{ background: v.bg, color: v.fg, fontWeight: 700, borderRadius: 4, padding: "1px 5px" }}>{k === "HD" ? "½" : k}</span>{v.label}
           </span>
         ))}
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ background: OFFWORK.bg, color: OFFWORK.fg, border: `1.5px solid ${OFFWORK.ring}`, fontWeight: 700, borderRadius: 4, padding: "0 5px" }}>P</span>present on a weekly off (WO) / holiday (H)</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: "var(--rebar)", display: "inline-block" }} />late in / early out</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: "var(--info)", display: "inline-block" }} />request waiting</span>
         <span>✓ corrected by an approved request</span>
@@ -920,6 +930,8 @@ export default function HrModule() {
     ["advances", "Advances", can("hr.advances", "view") || can("hr.advance-request", "view") || can("hr.advance-approve", "edit") || can("hr.advance-pay", "edit")],
     ["contract", "Contract labour", can("hr.gangs", "view")],
     ["bills", "Contractor bills", can("hr.contractor-bills", "view")],
+    ["ppe", "PPE", can("hr.ppe", "view") || can("hr.ppe-approve", "edit")],
+    ["exits", "Exits", can("hr.exit", "view") || can("hr.exit-approve", "edit")],
     ["settings", "Settings", can("hr.settings", "view")],
   ].filter((t) => t[2]);
   const current = tab || tabs[0]?.[0];
@@ -946,6 +958,8 @@ export default function HrModule() {
         {current === "advances" && <AdvancesTab />}
         {current === "contract" && <ContractLabourTab />}
         {current === "bills" && <ContractorBillsTab />}
+        {current === "ppe" && <PpeTab />}
+        {current === "exits" && <ExitsTab />}
         {meta && current === "settings" && <SettingsTab meta={meta} reloadMeta={loadMeta} />}
       </div>
     </>
