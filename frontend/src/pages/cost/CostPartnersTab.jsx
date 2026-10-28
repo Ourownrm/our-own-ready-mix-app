@@ -16,6 +16,8 @@ const KIND_LABEL = {
 };
 const istToday = () => istDay();
 const TH = { textAlign: "left", fontSize: 11.5, color: "var(--slate)", fontWeight: 600, padding: "6px 8px", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" };
+// Round 247 — column headings stay in view while a long table scrolls (owner: "the window headers are not visible").
+const THS = { ...TH, position: "sticky", top: 0, zIndex: 1, background: "var(--surface)", boxShadow: "0 1px 0 var(--border)" };
 const TD = { padding: "7px 8px", borderBottom: "1px solid var(--border)", fontSize: 13 };
 const TDR = { ...TD, ...R };
 
@@ -181,9 +183,9 @@ function PartnerDetail({ p, canEdit, onEdit, onDelete }) {
           </table>
         </div>
       )}
-      <div style={{ overflowX: "auto", marginTop: 12 }}>
-        <table style={{ width: "100%", minWidth: 860, borderCollapse: "collapse" }}>
-          <thead><tr><th style={TH}>Date</th><th style={TH}>Entry</th><th style={{ ...TH, ...R }}>Amount</th><th style={{ ...TH, ...R }}>TDS</th><th style={{ ...TH, ...R }}>Loan after</th><th style={{ ...TH, ...R }}>Interest due after</th><th style={{ ...TH, ...R }}>Capital after</th><th style={TH}>Narration / note</th><th style={TH} /></tr></thead>
+      <div style={{ overflow: "auto", maxHeight: "72vh", marginTop: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+        <table style={{ width: "100%", minWidth: 860, borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead><tr><th style={THS}>Date</th><th style={THS}>Entry</th><th style={{ ...THS, ...R }}>Amount</th><th style={{ ...THS, ...R }}>TDS</th><th style={{ ...THS, ...R }}>Loan after</th><th style={{ ...THS, ...R }}>Interest due after</th><th style={{ ...THS, ...R }}>Capital after</th><th style={THS}>Narration / note</th><th style={THS} /></tr></thead>
           <tbody>
             {rows.map((x) => (
               <tr key={`${x.book}-${x.id}`}>
@@ -293,7 +295,7 @@ function UploadModal({ book: book0, d, onClose, onDone }) {
             {book === "loan" && <span style={MUTED}> · interest paid: the amount is what reached the partner; TDS filled at {num(tdsRate)}% of the interest (change it if different)</span>}</div>
           <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
             <table style={{ width: "100%", minWidth: 860, borderCollapse: "collapse" }}>
-              <thead><tr><th style={TH}>Keep</th><th style={TH}>Date</th><th style={TH}>Narration</th><th style={{ ...TH, ...R }}>Amount</th><th style={TH}>Partner</th><th style={TH}>Entry</th><th style={TH}>TDS</th></tr></thead>
+              <thead><tr><th style={THS}>Keep</th><th style={THS}>Date</th><th style={THS}>Narration</th><th style={{ ...THS, ...R }}>Amount</th><th style={THS}>Partner</th><th style={THS}>Entry</th><th style={THS}>TDS</th></tr></thead>
               <tbody>{lines.map((l) => (
                 <tr key={l.key} style={{ opacity: l.keep ? 1 : 0.55 }}>
                   <td style={TD}><input type="checkbox" checked={l.keep} onChange={(e) => set(l.key, { keep: e.target.checked })} aria-label="Keep this line" /></td>
@@ -544,7 +546,7 @@ function ImportSheetModal({ d, onClose, onDone }) {
           </div>
           <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
             <table style={{ width: "100%", minWidth: 820, borderCollapse: "collapse" }}>
-              <thead><tr><th style={TH}>Name on the sheet</th><th style={TH}>Goes to partner</th><th style={{ ...TH, ...R }}>Capital in − out</th><th style={{ ...TH, ...R }}>Loans in</th><th style={{ ...TH, ...R }}>Paid back</th><th style={{ ...TH, ...R }}>Interest paid (before TDS)</th><th style={{ ...TH, ...R }}>TDS</th><th style={{ ...TH, ...R }}>Sheet: interest balance</th></tr></thead>
+              <thead><tr><th style={THS}>Name on the sheet</th><th style={THS}>Goes to partner</th><th style={{ ...THS, ...R }}>Capital in − out</th><th style={{ ...THS, ...R }}>Loans in</th><th style={{ ...THS, ...R }}>Paid back</th><th style={{ ...THS, ...R }}>Interest paid (before TDS)</th><th style={{ ...THS, ...R }}>TDS</th><th style={{ ...THS, ...R }}>Sheet: interest balance</th></tr></thead>
               <tbody>{per.map(({ n, c, k }) => (
                 <tr key={n}><td style={TD}><b>{n}</b></td>
                   <td style={TD}>

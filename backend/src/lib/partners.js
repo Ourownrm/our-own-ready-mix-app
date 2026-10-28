@@ -104,9 +104,10 @@ export function loanPosition(txns, settings, until, { through = false } = {}) {
     .sort((a, b) => (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : a.id - b.id));
   // Changes to the balance that earns interest, by day.
   const bear = new Map();
+  // A loan never earns interest before the day it came in.
   for (const t of rows) {
     const amt = Number(t.amount) || 0;
-    if (t.kind === "loan_in") { const d = t.interest_from || t.txn_date; bear.set(d, (bear.get(d) || 0) + amt); }
+    if (t.kind === "loan_in") { const d = t.interest_from && t.interest_from > t.txn_date ? t.interest_from : t.txn_date; bear.set(d, (bear.get(d) || 0) + amt); }
     else if (t.kind === "loan_out") bear.set(t.txn_date, (bear.get(t.txn_date) || 0) - amt);
   }
   const bearDays = [...bear.keys()].filter((d) => d <= until).sort();

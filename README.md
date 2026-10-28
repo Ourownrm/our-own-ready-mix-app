@@ -9110,3 +9110,9 @@ Owner, 27 Oct 2026: "Advance request and advance paid is not possible to print s
 - Verified: all three PDFs rendered from the test data and looked at; build clean.
 
 Files — frontend: src/lib/{hrPdf, version}.js, src/pages/HrStage2.jsx · root: README.md
+
+## Round 247 — Partner statement headings stay in view (v10.79)
+
+- **Cost → Partners → Details:** the statement now scrolls inside its own box (up to about ¾ of the screen) and the column headings (Date, Entry, Amount, TDS, Loan after, Interest due after, Capital after, Narration) stay fixed at the top while you scroll. The bank-statement upload and sheet-import tables do the same.
+- **Interest start date guard:** a loan never earns interest before the day it came in. If an entry's "interest from" date is earlier than its date, the app uses the loan date. Loans with a later start date (e.g. June 2023 loans earning from 1 Nov 2023) work as before. The owner's Investment & Loan sheet still matches to 3 paise.
+- No database change; no /setup run needed.
