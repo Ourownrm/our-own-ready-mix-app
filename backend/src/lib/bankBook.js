@@ -249,6 +249,10 @@ async function appRecords(from, to) {
         WHERE r.cancelled_at IS NULL AND r.receipt_date BETWEEN $1::date AND $2::date`, "receipt", (r) => `Customer receipt — ${r.name} (Accounts)`),
     q(`SELECT p.id, p.payment_date::text AS day, p.amount, 'credit' AS side FROM payments p
         WHERE p.receipt_id IS NULL AND p.payment_date BETWEEN $1::date AND $2::date`, "payment", () => "Customer payment (Accounts)"),
+    // Round 253 — a petty cash top-up from the bank: the vouchers it pays carry the cost.
+    q(`SELECT t.id, t.received_on::text AS day, t.amount, b.name FROM pc_topups t JOIN pc_boxes b ON b.id = t.box_id
+        WHERE t.status = 'received' AND t.source IN ('bank_transfer','cheque','cash_withdrawal') AND t.received_on BETWEEN $1::date AND $2::date`,
+      "petty_topup", (r) => `Petty cash top-up — ${r.name} (Accounts → Petty cash)`),
   ]);
   return parts.flat();
 }

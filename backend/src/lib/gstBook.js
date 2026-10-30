@@ -191,7 +191,7 @@ async function outputRange(from, end, ourState) {
 // "no credit" lists.
 async function inputItems(from, end) {
   const safe = (p) => p.then((r) => r.rows).catch((e) => { console.error("gst input:", e.message); return []; });
-  const [rec, freight, grv, outside, contr, bank, cl, fuel] = await Promise.all([
+  const [rec, freight, grv, outside, contr, bank, cl, fuel, pc] = await Promise.all([
     safe(query(
       `SELECT r.id, COALESCE(r.invoice_date, r.received_date)::text AS day, r.challan_number AS inv_no, r.bill_amount, r.no_tax,
               o.tax_pct, s.id AS party_id, s.name AS party, s.gstin, m.name AS material
@@ -233,6 +233,11 @@ async function inputItems(from, end) {
       `SELECT to_char((sp.received_at AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM') AS ym, SUM(sp.total_cost) AS v, COUNT(*)::int AS n
          FROM store_stock_purchases sp WHERE sp.status = 'received' AND sp.total_cost > 0
           AND (sp.received_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1::date AND $2::date GROUP BY 1`, [from, end])),
+    // Round 253 — approved petty cash vouchers (C Ledger flag rule).
+    safe(query(
+      `SELECT v.id, v.txn_date::text AS day, v.paid_to AS party, v.category, v.amount, v.flagged
+         FROM pc_vouchers v WHERE v.deleted_at IS NULL AND v.status = 'approved' AND v.kind IN ('expense','settle')
+          AND v.txn_date BETWEEN $1::date AND $2::date`, [from, end])),
   ]);
   const items = [];
   const push = (x) => items.push({ ...x, ym: ymOf(x.day), taxable: r2(x.taxable), gst: r2(x.gst) });
@@ -285,6 +290,12 @@ async function inputItems(from, end) {
     const gst = r.flagged ? r2(n0(r.amount) * (1 - CL_FACTOR)) : 0;
     push({ key: `cl:${r.id}`, src: "cledger", group: "C Ledger — cash expenses with GST", id: r.id, day: r.day, party: r.party, gstin: null, inv_no: null,
       taxable: n0(r.amount) - gst, gst, pct: r.flagged ? GST_PCT : 0, no_tax: false, can_flag: false, reason: r.flagged ? null : "C Ledger — not flagged" });
+  }
+  for (const r of pc) {
+    if (!costCat.has(r.category)) continue;
+    const gst = r.flagged ? r2(n0(r.amount) * (1 - CL_FACTOR)) : 0;
+    push({ key: `pc:${r.id}`, src: "petty", group: "Petty cash — cash expenses with GST", id: r.id, day: r.day, party: r.party, gstin: null, inv_no: null,
+      taxable: n0(r.amount) - gst, gst, pct: r.flagged ? GST_PCT : 0, no_tax: false, can_flag: false, reason: r.flagged ? null : "Petty cash — not flagged" });
   }
   const fuelBy = new Map(fuel.map((f) => [f.ym, { amount: r2(f.v), n: f.n }]));
   return { items, fuelBy };

@@ -1,5 +1,7 @@
 // Round 204 — small shared pieces for the Accounts module screens.
+import { useEffect, useState } from "react";
 import { STATUS_LABEL } from "../../lib/quotationTerms.js";
+import { apiRequest } from "../../lib/api.js";
 
 export const TH = { padding: "8px 10px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--slate)", whiteSpace: "nowrap" };
 export const TD = { padding: "8px 10px", fontSize: 13, verticalAlign: "top" };
@@ -72,4 +74,36 @@ export function readFileAsDataUrl(file) {
     r.onerror = reject;
     r.readAsDataURL(file);
   });
+}
+
+// Round 253 — a photo (cheque, bill) shrunk on the phone before upload: the
+// longer side at most `max` px, JPEG. Keeps a camera photo well under 1 MB.
+export function readPhotoSmall(file, max = 1600) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/jpeg", 0.8));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That file is not a picture the browser can read.")); };
+    img.src = url;
+  });
+}
+
+// A photo kept on the server, shown when asked for.
+export function PhotoModal({ path, title = "Photo", onClose }) {
+  const [src, setSrc] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => { apiRequest(path).then((d) => (d.photo ? setSrc(d.photo) : setErr("No photo."))).catch((e) => setErr(e.message)); }, [path]);
+  return (
+    <Modal title={title} onClose={onClose} width={720}>
+      {err ? <div style={{ fontSize: 13, color: "var(--slate)" }}>{err}</div>
+        : src ? <img src={src} alt={title} style={{ width: "100%", borderRadius: 8 }} /> : <div style={{ fontSize: 13 }}>Loading…</div>}
+    </Modal>
+  );
 }

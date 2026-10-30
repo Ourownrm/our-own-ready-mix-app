@@ -40,6 +40,7 @@ import costBankRoutes from "./routes/costBank.js";
 import costPartnersRoutes from "./routes/costPartners.js";
 import { ensureRound243 } from "./lib/round243Schema.js";
 import { ensureRound252 } from "./lib/round252Schema.js";
+import { ensureRound253 } from "./lib/round253Schema.js";
 import { query as dbQuery } from "./db.js";
 import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
@@ -72,6 +73,8 @@ import quotationRoutes from "./routes/quotations.js";
 import accountsLedgerRoutes from "./routes/accountsLedger.js";
 import accountsTallyRoutes from "./routes/accountsTally.js";
 import accountsCreditNotesRoutes from "./routes/accountsCreditNotes.js";
+import accountsChequesRoutes from "./routes/accountsCheques.js";
+import accountsPettyCashRoutes from "./routes/accountsPettyCash.js";
 import quotationImportRoutes from "./routes/quotationImport.js";
 import hrAdvanceRoutes from "./routes/hrAdvances.js";
 import contractLabourRoutes from "./routes/contractLabour.js";
@@ -263,6 +266,8 @@ app.use("/api/quotations", quotationRoutes);
 app.use("/api/accounts", accountsLedgerRoutes);
 app.use("/api/accounts", accountsTallyRoutes); // Round 251 — B2C invoice in the Tally format
 app.use("/api/accounts", accountsCreditNotesRoutes); // Round 252 — credit notes
+app.use("/api/accounts", accountsChequesRoutes); // Round 253 — cheque register
+app.use("/api/accounts", accountsPettyCashRoutes); // Round 253 — petty cash
 app.use("/api/super-admin", superAdminRoutes);
 // The delivery-challan plugin. Both routers gate themselves on the plugin
 // being enabled (lib/plugins.js), so mounting them here does not by itself
@@ -316,6 +321,7 @@ app.listen(port, () => console.log(`OORM backend running on port ${port}`));
 ensureRound243().catch((e) => console.error("round 243 schema:", e.message));
 // Round 252 — credit notes are part of every customer balance, so the table is made at start.
 ensureRound252(dbQuery).catch((e) => console.error("round 252 schema:", e.message));
+ensureRound253().catch((e) => console.error("round 253 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

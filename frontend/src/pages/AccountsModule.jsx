@@ -12,6 +12,8 @@ import Invoices from "./accounts/Invoices.jsx";
 import CreditNotes from "./accounts/CreditNotes.jsx";
 import CustomerLedger from "./accounts/CustomerLedger.jsx";
 import BankReceipts from "./accounts/BankReceipts.jsx";
+import Cheques from "./accounts/Cheques.jsx";
+import PettyCash from "./accounts/PettyCash.jsx";
 import QuotationSettings from "./accounts/QuotationSettings.jsx";
 
 const TABS = [
@@ -22,6 +24,9 @@ const TABS = [
   { key: "credit-notes", label: "Credit notes", perm: "accounts.credit-notes", Component: CreditNotes },
   { key: "ledger", label: "Customer ledger", perm: "accounts.customer-ledger", Component: CustomerLedger },
   { key: "receipts", label: "Bank receipts", perm: "accounts.bank-receipts", Component: BankReceipts },
+  // Round 253 — the cheque register and petty cash.
+  { key: "cheques", label: "Cheques", perm: "accounts.cheques", Component: Cheques },
+  { key: "petty-cash", label: "Petty cash", perm: "accounts.petty-cash", Component: PettyCash },
   // Round 252 — the old rate file screen is switched off (owner, 30 Oct 2026);
   // what is left of it is the "merge same rates" card on Price lists.
   // { key: "migration", label: "Rate migration", perm: "accounts.rate-migration", Component: RateMigration },

@@ -340,10 +340,13 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
     status: c.status, flagged: c.flagged });
   for (const t of transfers) {
     const out = t.from_id === me;
-    tx.push({ kind: t.kind === "bank" ? "deposit" : "transfer", id: t.id, date: t.txn_date, amount: t.amount,
+    // Round 253 — kind 'petty': cash handed into a petty cash box (taken
+    // back only from Accounts → Petty cash, where the top-up is cancelled).
+    const petty = t.kind === "petty";
+    tx.push({ kind: t.kind === "bank" ? "deposit" : petty ? "petty" : "transfer", id: t.id, date: t.txn_date, amount: t.amount,
       sign: out ? (t.status === "rejected" ? 0 : -1) : (t.status === "accepted" ? 1 : 0),
-      desc: t.kind === "bank" ? "Deposited to bank" : out ? `Transfer to ${t.to_name}` : `Transfer from ${t.from_name}`,
-      meta: t.note || "", status: t.kind === "bank" ? "done" : t.status, can_cancel: out && (t.kind === "bank" || t.status === "pending") });
+      desc: t.kind === "bank" ? "Deposited to bank" : petty ? "Given to petty cash" : out ? `Transfer to ${t.to_name}` : `Transfer from ${t.from_name}`,
+      meta: t.note || "", status: t.kind === "bank" || petty ? "done" : t.status, can_cancel: out && (t.kind === "bank" || t.status === "pending") });
   }
   for (const x of expenses) tx.push({ kind: "expense", id: x.id, date: x.txn_date, amount: x.amount, sign: -1,
     desc: `Expense · ${x.where_spent}`, meta: [CL_CATEGORIES.find((c) => c.key === x.category)?.label || "", x.party_name ? `→ ${x.party_name}` : null].filter(Boolean).join(" "),

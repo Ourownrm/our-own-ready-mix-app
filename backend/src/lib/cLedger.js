@@ -271,6 +271,9 @@ export async function holderBalances(upToDay = null) {
                        AND t.status <> 'rejected' AND t.deleted_at IS NULL AND ($1::date IS NULL OR t.txn_date <= $1::date)), 0) AS transfer_out,
             COALESCE((SELECT SUM(t.amount) FROM cl_transfers t WHERE t.from_id = a.user_id AND t.kind = 'bank'
                        AND t.deleted_at IS NULL AND ($1::date IS NULL OR t.txn_date <= $1::date)), 0) AS deposited,
+            -- Round 253 — cash handed into a petty cash box.
+            COALESCE((SELECT SUM(t.amount) FROM cl_transfers t WHERE t.from_id = a.user_id AND t.kind = 'petty'
+                       AND t.deleted_at IS NULL AND ($1::date IS NULL OR t.txn_date <= $1::date)), 0) AS to_petty,
             COALESCE((SELECT SUM(x.amount) FROM cl_expenses x WHERE x.holder_id = a.user_id AND x.deleted_at IS NULL
                        AND ($1::date IS NULL OR x.txn_date <= $1::date)), 0) AS expenses,
             COALESCE((SELECT SUM(i.amount) FROM cl_incomes i WHERE i.received_by = a.user_id AND i.status = 'accepted' AND i.deleted_at IS NULL
@@ -281,8 +284,8 @@ export async function holderBalances(upToDay = null) {
       ORDER BY COALESCE(a.short_name, u.name)`, [d]);
   return rows.map((r) => {
     const o = { id: r.id, name: r.name, short: r.short, is_active: r.is_active };
-    for (const k of ["collected", "pending_collections", "transfer_in", "pending_in", "transfer_out", "deposited", "expenses", "income", "pending_income"]) o[k] = r2(r[k]);
-    o.balance = r2(o.collected + o.income + o.transfer_in - o.transfer_out - o.deposited - o.expenses);
+    for (const k of ["collected", "pending_collections", "transfer_in", "pending_in", "transfer_out", "deposited", "to_petty", "expenses", "income", "pending_income"]) o[k] = r2(r[k]);
+    o.balance = r2(o.collected + o.income + o.transfer_in - o.transfer_out - o.deposited - o.to_petty - o.expenses);
     o.awaiting = r2(o.pending_collections + o.pending_in + o.pending_income);
     return o;
   });

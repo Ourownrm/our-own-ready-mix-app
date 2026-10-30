@@ -54,6 +54,7 @@ import { tankSummary } from "../routes/fuelModule.js";
 import { bookStockRows } from "../routes/materialModule.js";
 import { bankHeadsMonth, bankBalancesOn } from "./bankBook.js";
 import { clTicketSales, clOtherIncomeMonth, clExpenseHeadsMonth } from "./cLedger.js";
+import { pettyHeadsMonth } from "./round253Schema.js";
 import { partnerInterestMonth, partnerBalancesOn } from "./partners.js";
 import { waterMonth } from "./waterCost.js";
 
@@ -470,9 +471,9 @@ export function monthCore(ym, ctx) {
 }
 async function computeMonth(ym, ctx) {
   const { from, toEx, end } = monthBounds(ym);
-  const [tickets, rm, fuel, mntRows, man, entries, bank, clIncome, clHeads] = await Promise.all([
+  const [tickets, rm, fuel, mntRows, man, entries, bank, clIncome, clHeads, pcHeads] = await Promise.all([
     salesTickets(from, toEx), rawMaterial(ym, ctx), fuelMonth(ym, ctx), maintenanceRows(from, toEx), manpower(ym), monthEntries(ym),
-    bankHeadsMonth(ym), clOtherIncomeMonth(ym), clExpenseHeadsMonth(ym),
+    bankHeadsMonth(ym), clOtherIncomeMonth(ym), clExpenseHeadsMonth(ym), pettyHeadsMonth(ym),
   ]);
   // Round 224 — C Ledger. A delivery note tied to a C Ledger record takes its
   // sale value from that record (in place of the invoice, so it is counted
@@ -515,6 +516,8 @@ async function computeMonth(ym, ctx) {
   for (const [k, v] of Object.entries(bank.heads)) if (k in a) a[k] = r2(a[k] + v);
   // Round 224 — C Ledger expenses, added straight into the head of their category.
   for (const [k, v] of Object.entries(clHeads)) if (k in a) a[k] = r2(a[k] + v);
+  // Round 253 — approved petty cash vouchers, the same way (C Ledger categories and flag rule).
+  for (const [k, v] of Object.entries(pcHeads)) if (k in a) a[k] = r2(a[k] + v);
   // Round 227 — C Ledger other income (scrap, used oil …).
   if (clIncome) a.other_income = r2(a.other_income + clIncome);
   // Round 242 — interest on the partners' unsecured loans, as it accrues.

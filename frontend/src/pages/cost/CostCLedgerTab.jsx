@@ -673,7 +673,7 @@ function TxnsView({ me, month }) {
     sheets.push({ name: "Other income", rows: [["Date", "Kind", "What, to whom", "Received by", "Amount", "Status", "Flagged"],
       ...d.incomes.map((i) => [i.txn_date, i.kind_label, i.source, i.received_name, i.amount, i.received_by == null ? "in bank" : i.status, i.flagged ? "Yes" : ""])] });
     if (d.full) sheets.push({ name: "Transfers", rows: [["Date", "From", "To", "Amount", "Status", "Note"],
-      ...d.transfers.map((t) => [t.txn_date, t.from_name, t.kind === "bank" ? "Bank" : t.to_name, t.amount, t.kind === "bank" ? "deposited" : t.status, t.note || ""])] });
+      ...d.transfers.map((t) => [t.txn_date, t.from_name, t.kind === "bank" ? "Bank" : t.kind === "petty" ? "Petty cash" : t.to_name, t.amount, t.kind === "bank" ? "deposited" : t.kind === "petty" ? "to petty cash" : t.status, t.note || ""])] });
     downloadExcel(`C-Ledger-transactions-${month}.xlsx`, sheets);
   }
 
@@ -788,8 +788,8 @@ function TxnsView({ me, month }) {
               <thead><tr><th>Date</th><th>From</th><th>To</th><th style={R}>Amount</th><th>Status</th><th>Note</th></tr></thead>
               <tbody>
                 {d.transfers.map((t) => (
-                  <tr key={t.id}><td style={{ whiteSpace: "nowrap" }}>{fmtDay(t.txn_date)}</td><td>{t.from_name}</td><td>{t.kind === "bank" ? "Bank" : t.to_name}</td>
-                    <td style={{ ...R, fontWeight: 600 }}>{rs(t.amount)}</td><td>{t.kind === "bank" ? <span style={MUTED}>deposited</span> : <Badge status={t.status} />}</td><td style={MUTED}>{t.note}</td></tr>
+                  <tr key={t.id}><td style={{ whiteSpace: "nowrap" }}>{fmtDay(t.txn_date)}</td><td>{t.from_name}</td><td>{t.kind === "bank" ? "Bank" : t.kind === "petty" ? "Petty cash" : t.to_name}</td>
+                    <td style={{ ...R, fontWeight: 600 }}>{rs(t.amount)}</td><td>{t.kind === "bank" ? <span style={MUTED}>deposited</span> : t.kind === "petty" ? <span style={MUTED}>to petty cash</span> : <Badge status={t.status} />}</td><td style={MUTED}>{t.note}</td></tr>
                 ))}
                 {d.transfers.length === 0 && <tr><td colSpan={6} style={{ ...MUTED, padding: 16 }}>None this month.</td></tr>}
               </tbody>

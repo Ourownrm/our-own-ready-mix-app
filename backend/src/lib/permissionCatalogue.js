@@ -581,6 +581,18 @@ export const CATALOGUE = [
     { administrator: VC, accountant: VC }),
   f("accounts.receipt-cancel", "accounts", "Cancel a posted receipt", E,
     { administrator: E }),
+  // Round 253 — the cheque register (received / issued, cheque books, a
+  // returned PDC paid by bank or cash) and petty cash.
+  f("accounts.cheques", "accounts", "Cheques — register, deposit, clear, bounce, return, cheque books", VCE,
+    { administrator: VCE, accountant: VCE, manager: V }),
+  f("accounts.petty-cash", "accounts", "Petty cash — see the boxes; add vouchers and ask for top-ups (own box, or any with edit)", VCE,
+    { administrator: VCE, accountant: VCE, manager: VC }),
+  f("accounts.petty-cash-approve", "accounts", "Petty cash — approve vouchers and top-up requests", E,
+    { administrator: E }),
+  f("accounts.petty-cash-fund", "accounts", "Petty cash — record a top-up from the bank (transfer, self cheque, withdrawal)", ["create"],
+    { administrator: ["create"], accountant: ["create"] }),
+  f("accounts.petty-cash-setup", "accounts", "Petty cash — set up cash boxes (holder, approver, float, limit)", E,
+    { administrator: E }),
   // Round 212 — correct a wrong receipt / payment from the customer ledger
   // (every change is logged with the reason).
   f("accounts.receipt-correct", "accounts", "Edit / delete a payment entry in the customer ledger", ["edit", "delete"],
@@ -981,11 +993,14 @@ export const MODULES = [
       { key: "accounts.credit-notes", label: "Credit notes" },
       { key: "accounts.customer-ledger", label: "Customer ledger" },
       { key: "accounts.bank-receipts", label: "Bank receipts" },
+      { key: "accounts.cheques", label: "Cheques" },
+      { key: "accounts.petty-cash", label: "Petty cash" },
       { key: "accounts.rate-migration", label: "Rate file migration" },
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
       "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.credit-note-approve", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
+      "accounts.petty-cash-approve", "accounts.petty-cash-fund", "accounts.petty-cash-setup",
       "accounts.quotation-costing", "accounts.price-list-enable"],
   },
   {
