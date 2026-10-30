@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import AppointmentLetters from "./HrAppointmentLetter.jsx";
 
 const money = (v) => (v == null || v === "" ? "—" : "₹" + Number(v).toLocaleString("en-IN"));
 const day = (d) => (d ? new Date(`${d}T00:00:00+05:30`).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric" }) : "—");
@@ -124,6 +125,9 @@ export function EmployeeDetails({ employee: e, canSalary, onEdit, onClose, onCha
   const { photo } = usePhoto(e.id, ver);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState("");
+  // Round 250 — the appointment letter, under the details card.
+  const canLetter = can("hr.appointment-letter", "view");
+  const [showLetter, setShowLetter] = useState(false);
   async function print() {
     setPrinting(true); setError("");
     try {
@@ -133,6 +137,7 @@ export function EmployeeDetails({ employee: e, canSalary, onEdit, onClose, onCha
   }
   const gross = ["salary_basic", "salary_da", "salary_hra", "salary_conveyance", "salary_special"].reduce((t, f) => t + Number(e[f] || 0), 0);
   return (
+    <>
     <div className="card" style={{ marginBottom: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
@@ -148,6 +153,7 @@ export function EmployeeDetails({ employee: e, canSalary, onEdit, onClose, onCha
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button type="button" className="btn-primary" disabled={printing} onClick={print}>{printing ? "Preparing…" : "Print"}</button>
+          {canLetter && <button type="button" aria-expanded={showLetter} onClick={() => setShowLetter((v) => !v)}>{showLetter ? "Hide appointment letter" : "Appointment letter"}</button>}
           {canEdit && <button type="button" onClick={onEdit}>Edit</button>}
           <button type="button" onClick={onClose}>Close</button>
         </div>
@@ -161,6 +167,8 @@ export function EmployeeDetails({ employee: e, canSalary, onEdit, onClose, onCha
         <Row label="Left">{e.date_of_leaving ? day(e.date_of_leaving) : null}</Row>
         <Row label="Designation">{e.designation}</Row>
         <Row label="Department">{e.department}</Row>
+        <Row label="S/o · D/o · W/o">{e.relation_name ? `${e.relation_type || "S/o"} ${e.relation_name}` : null}</Row>
+        <Row label="Address">{e.address}</Row>
       </div>
 
       <div style={SECTION}>Attendance &amp; timing</div>
@@ -213,5 +221,7 @@ export function EmployeeDetails({ employee: e, canSalary, onEdit, onClose, onCha
       )}
       {e.notes && (<><div style={SECTION}>Notes</div><div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{e.notes}</div></>)}
     </div>
+    {canLetter && showLetter && <AppointmentLetters employee={e} photo={photo} />}
+    </>
   );
 }

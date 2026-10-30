@@ -7,6 +7,7 @@
 // from someone with hr.salary edit. Anyone else editing an employee simply
 // cannot touch them — the fields are dropped, never zeroed.
 import { Router } from "express";
+import { ensureRound250 } from "../lib/round250Schema.js";
 import { pool, query } from "../db.js";
 import { exitBlock, ensureExit, LEFT_BEFORE_MONTH_SQL } from "../lib/hrExit.js";
 import { audit, auditList } from "../lib/hrAudit.js";
@@ -183,6 +184,10 @@ function employeeFields(b, { withSalary }) {
     trip_allowance: bool(b.trip_allowance, false),
     notes: text(b.notes, 2000),
   };
+  // Round 250 — for the appointment letter: S/o · D/o · W/o and the address.
+  if (b.relation_type !== undefined) f.relation_type = ["S/o", "D/o", "W/o", "C/o"].includes(b.relation_type) ? b.relation_type : null;
+  if (b.relation_name !== undefined) f.relation_name = text(b.relation_name, 120);
+  if (b.address !== undefined) f.address = text(b.address, 500);
   // Round 202 — attendance on the phone: only with an app login (owner's rule).
   if (b.app_punch !== undefined) f.app_punch = f.app_user_id && ["plant", "anywhere", "area"].includes(b.app_punch) ? b.app_punch : "off";
   // Round 233 — working area: a radius in km around a work location.
@@ -215,6 +220,7 @@ function employeeFields(b, { withSalary }) {
 router.post("/employees", requirePermission("hr.employees", "create"), async (req, res) => {
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
+    await ensureRound250(query);
     const f = employeeFields(req.body || {}, { withSalary });
     if (f.contractor_id) f.contractor_name = (await query(`SELECT name FROM hr_contractors WHERE id = $1`, [f.contractor_id])).rows[0]?.name || f.contractor_name;
     if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
@@ -237,6 +243,7 @@ router.patch("/employees/:id", requirePermission("hr.employees", "edit"), async 
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid employee." });
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
+    await ensureRound250(query);
     const f = employeeFields(req.body || {}, { withSalary });
     if (f.contractor_id) f.contractor_name = (await query(`SELECT name FROM hr_contractors WHERE id = $1`, [f.contractor_id])).rows[0]?.name || f.contractor_name;
     if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));

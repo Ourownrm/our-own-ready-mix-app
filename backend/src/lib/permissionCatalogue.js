@@ -763,6 +763,10 @@ export const CATALOGUE = [
     { administrator: ["view", "create"], manager: ["view", "create"], accountant: ["view"] }),
   f("hr.exit-approve", "hr", "Employee exit — approve, reject, complete", E,
     { administrator: E }),
+  // Round 250 — appointment letters, printed from the employee (owner, 30 Oct
+  // 2026). The letter carries the salary, so Administrator only by default.
+  f("hr.appointment-letter", "hr", "Appointment letters — make, issue, print, cancel", VCED,
+    { administrator: VCED }),
 
   // ---------- Administration ----------
   f("admin.users", "admin", "Users — list and create", VCE,
@@ -913,10 +917,10 @@ export const MODULES = [
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
-    support: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction", "hr.ppe-approve", "hr.exit-approve"],
+    support: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction", "hr.ppe-approve", "hr.exit-approve", "hr.appointment-letter"],
     // Round 211 — hr.gang-attendance is deliberately NOT in this module: the
     // Site Supervisor confirms gang crews without having the HR module.
-    noAutoView: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs"],
+    noAutoView: ["hr.salary", "hr.employee-ids", "hr.appointment-letter", "hr.payroll-bank", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs"],
   },
   {
     // Round 199 — the Fuel module. Roles are set on each function above rather

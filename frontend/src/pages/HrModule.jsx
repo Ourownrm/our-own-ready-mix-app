@@ -5,7 +5,7 @@
 // screen edits a punch. Late marks are highlighted only, by the owner's
 // decision; the Administrator decides what to do about them.
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
@@ -16,6 +16,7 @@ import { TodayTab, CompOffTab } from "./HrToday.jsx";
 import { ContractLabourTab, ContractorBillsTab } from "./HrContract.jsx";
 import { EmployeeDetails, PhotoPanel, Avatar } from "./HrEmployeeCard.jsx";
 import { PpeTab, ExitsTab } from "./HrPeople.jsx";
+import { LetterSettingsCard } from "./HrAppointmentLetter.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CO_TEAL = "#0E7C7B"; // Round 242 — comp-off marks in the register
@@ -325,6 +326,7 @@ const EMPTY = {
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
   daily_rate: "", service_charge_pct: "", incentive_basis: "none", incentive_min_m3: "", incentive_rate: "",
   salesperson_id: "", ot_eligible: false, app_punch: "off", work_area_km: "", work_area_location_id: "", face_check: true,
+  relation_type: "S/o", relation_name: "", address: "",
   aadhaar_no: "", pan_no: "", dl_no: "", dl_valid_till: "", bank_account_name: "", bank_name: "", bank_account_no: "", bank_ifsc: "",
 };
 
@@ -409,6 +411,16 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
         ) : <Field label="Contractor"><input value={f.contractor_name} onChange={set("contractor_name")} maxLength={120} /></Field>)}
         <Field label="Date of joining"><input type="date" value={f.date_of_joining} onChange={set("date_of_joining")} /></Field>
         {editing && <Field label="Date of leaving" hint="Fill in when someone leaves — frees their machine number."><input type="date" value={f.date_of_leaving} onChange={set("date_of_leaving")} /></Field>}
+        {/* Round 250 — printed on the appointment letter. */}
+        <Field label="S/o · D/o · W/o">
+          <div style={{ display: "flex", gap: 6 }}>
+            <select value={f.relation_type} onChange={set("relation_type")} aria-label="Relation" style={{ flex: "none", width: 72 }}>
+              {["S/o", "D/o", "W/o", "C/o"].map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <input value={f.relation_name} onChange={set("relation_name")} maxLength={120} placeholder="Father's / husband's name" aria-label="Father's or husband's name" style={{ flex: 1, minWidth: 0 }} />
+          </div>
+        </Field>
+        <Field label="Address" hint="Prints on the appointment letter." span><textarea rows={2} value={f.address} onChange={set("address")} maxLength={500} /></Field>
       </div>
 
       <div style={section}>Attendance</div>
@@ -816,6 +828,7 @@ function SettingsTab({ meta, reloadMeta }) {
       <RulesCard meta={meta} canEdit={canEdit} onSaved={reloadMeta} />
       <LeaveTypesCard meta={meta} canEdit={canEdit} canCreate={canCreate} onSaved={reloadMeta} />
       <WorkLocationsCard canEdit={canEdit} canCreate={canCreate} />
+      <LetterSettingsCard canEdit={canEdit} />
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 4 }}>Shifts</div>
@@ -912,7 +925,10 @@ export default function HrModule() {
   const navigate = useNavigate();
   const [meta, setMeta] = useState(null);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState("");
+  // Round 250 — the tab lives in the URL (?tab=…), as on the Accounts page.
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") || "";
+  const setTab = (k) => { setParams({ tab: k }); window.scrollTo(0, 0); };
   // Someone who only handles advance requests has no other HR screen, so the
   // meta it is refused is not an error for them.
   const loadMeta = () => apiRequest("/hr/meta").then(setMeta).catch((e) => { if (!/access/i.test(e.message)) setError(e.message); });
@@ -934,17 +950,38 @@ export default function HrModule() {
     ["exits", "Exits", can("hr.exit", "view") || can("hr.exit-approve", "edit")],
     ["settings", "Settings", can("hr.settings", "view")],
   ].filter((t) => t[2]);
-  const current = tab || tabs[0]?.[0];
+  const current = tabs.some((t) => t[0] === tab) ? tab : tabs[0]?.[0];
 
   if (!ready) return null;
   return (
     <>
       <TopBar title="HR" />
       <div style={{ maxWidth: 1400, margin: "0 auto", padding: "0 16px 32px" }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          {tabs.map(([k, l]) => <button key={k} className={`btn-tab${current === k ? " active" : ""}`} onClick={() => setTab(k)}>{l}</button>)}
-          {can("admin.attendance-machine", "view") && <button className="btn-tab" onClick={() => navigate("/attendance-machine")}>Attendance machine &rarr;</button>}
-        </div>
+        {/* Round 250 — the same tab strip as the Accounts module (owner: "keep the
+            menu same as the one in app, refer accounts page"): one row that
+            scrolls sideways on a phone, the open tab underlined. */}
+        <nav aria-label="HR module"
+          style={{ display: "flex", gap: 6, overflowX: "auto", borderBottom: "1px solid var(--border-strong)", marginBottom: 18, WebkitOverflowScrolling: "touch" }}>
+          {tabs.map(([k, l]) => {
+            const on = current === k;
+            return (
+              <button key={k} type="button" onClick={() => setTab(k)} aria-current={on ? "page" : undefined}
+                style={{
+                  flex: "none", background: "none", border: "none", borderBottom: `3px solid ${on ? "var(--rebar)" : "transparent"}`,
+                  borderRadius: 0, padding: "11px 12px", minHeight: 44, fontWeight: on ? 700 : 500,
+                  color: on ? "var(--charcoal)" : "var(--slate)", fontSize: 13.5,
+                }}>
+                {l}
+              </button>
+            );
+          })}
+          {can("admin.attendance-machine", "view") && (
+            <button type="button" onClick={() => navigate("/attendance-machine")}
+              style={{ flex: "none", background: "none", border: "none", borderBottom: "3px solid transparent", borderRadius: 0, padding: "11px 12px", minHeight: 44, fontWeight: 500, color: "var(--slate)", fontSize: 13.5 }}>
+              Attendance machine &rarr;
+            </button>
+          )}
+        </nav>
         {!tabs.length && <div className="card" style={{ fontSize: 13 }}>You don&rsquo;t have access to any part of HR. A Super Admin can grant it on the Access Control page.</div>}
         {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13 }}>{error}</div>}
         {meta && current === "today" && <TodayTab meta={meta} />}
