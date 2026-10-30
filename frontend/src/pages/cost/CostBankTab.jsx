@@ -57,6 +57,9 @@ function keywordFrom(narr) {
   return "";
 }
 
+// Round 252 — the Treatment column stays in view when the table scrolls sideways.
+const PIN = { position: "sticky", right: 0, background: "#FFFFFF", boxShadow: "-6px 0 6px -6px rgba(0,0,0,.18)", zIndex: 1 };
+
 export default function CostBankTab({ month, setMonth }) {
   const { can } = usePermissions();
   const canEdit = can("cost.bank", "edit");
@@ -175,21 +178,23 @@ export default function CostBankTab({ month, setMonth }) {
             </label>
           </div>
           <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ minWidth: 960 }}>
-              <thead><tr><th>Date</th><th>Account</th><th>Narration</th><th style={R}>Debit ₹</th><th style={R}>Credit ₹</th><th style={{ minWidth: 290 }}>Treatment</th></tr></thead>
+            {/* Round 252 — fits the panel: the account under the date, the
+                narration capped, and the Treatment column pinned on the
+                right so it is always in view (owner, 30 Oct 2026). */}
+            <table style={{ minWidth: 760 }}>
+              <thead><tr><th>Date · account</th><th>Narration</th><th style={R}>Debit ₹</th><th style={R}>Credit ₹</th><th style={{ minWidth: 250, ...PIN }}>Treatment</th></tr></thead>
               <tbody>
                 {lines.slice(0, shown).map((l) => (
                   <tr key={l.id} style={{ background: l.treatment === "todo" || l.treatment === "check" ? "#FFFBF0" : undefined, verticalAlign: "top" }}>
-                    <td style={{ whiteSpace: "nowrap", ...NUM }}>{fmtDay(l.txn_date)}</td>
-                    <td style={{ fontSize: 12, color: "#4A525C", whiteSpace: "nowrap" }}>{l.account}</td>
-                    <td style={{ whiteSpace: "normal", fontSize: 12.5, minWidth: 240, maxWidth: 340, overflowWrap: "anywhere" }}>{l.narration}{l.reference ? <div style={MUTED}>Ref {l.reference}</div> : null}</td>
+                    <td style={{ whiteSpace: "nowrap", ...NUM }}>{fmtDay(l.txn_date)}<div style={{ fontSize: 11.5, color: "#4A525C", whiteSpace: "normal", maxWidth: 130 }}>{l.account}</div></td>
+                    <td style={{ whiteSpace: "normal", fontSize: 12.5, minWidth: 200, maxWidth: 300, overflowWrap: "anywhere" }}>{l.narration}{l.reference ? <div style={MUTED}>Ref {l.reference}</div> : null}</td>
                     <td style={R}>{l.debit ? num(l.debit, 2) : ""}</td>
                     <td style={{ ...R, color: "var(--signal-green)" }}>{l.credit ? num(l.credit, 2) : ""}</td>
-                    <td style={{ whiteSpace: "normal", minWidth: 280, maxWidth: 340 }}><Treat l={l} d={d} canEdit={canEdit} onDone={(m) => { setMsg(m || ""); reload(); }} /></td>
+                    <td style={{ whiteSpace: "normal", minWidth: 250, maxWidth: 320, ...PIN, background: l.treatment === "todo" || l.treatment === "check" ? "#FFFBF0" : "#FFFFFF" }}><Treat l={l} d={d} canEdit={canEdit} onDone={(m) => { setMsg(m || ""); reload(); }} /></td>
                   </tr>
                 ))}
                 {lines.length === 0 && (
-                  <tr><td colSpan={6} style={{ color: "var(--slate)", whiteSpace: "normal" }}>
+                  <tr><td colSpan={5} style={{ color: "var(--slate)", whiteSpace: "normal" }}>
                     {d.lines.length ? "No lines here." : (() => {
                       // Round 228 — say where the uploaded lines are, with a way there.
                       const months = [...new Set(d.uploads.flatMap((u) => [u.period_from, u.period_to]).filter(Boolean).map((x) => x.slice(0, 7)))].filter((m) => m !== d.month).sort().reverse().slice(0, 6);
@@ -384,7 +389,7 @@ function Editor({ l, d, onCancel, onDone }) {
       if (miss) { setErr(miss); setBusy(false); return; }
       try {
         await apiRequest(`/cost/bank/lines/${l.id}`, { method: "PUT", body: { treatment: t, party_kind: t === "pay" ? x : undefined, ...post } });
-        onDone(t === "cert" ? "Saved — the certificate is renewed in the compliance register." : "Saved — the payment is in the party’s ledger.");
+        onDone(t === "cert" ? "Saved — the certificate is renewed in the compliance register." : x === "customer" ? "Saved — the receipt is in the customer’s ledger." : "Saved — the payment is in the party’s ledger.");
       } catch (e) { setErr(e.message); setBusy(false); }
       return;
     }
@@ -405,6 +410,12 @@ function Editor({ l, d, onCancel, onDone }) {
         <optgroup label={credit ? "Income / reduces a cost" : "Add to a cost"}>
           {d.heads_meta.filter((h) => credit || !h.income).map((h) => <option key={h.key} value={`cost:${h.key}`}>{h.label}</option>)}
         </optgroup>
+        {/* Round 252 — sales income: a customer's payment posts to the customer ledger. */}
+        {credit && (
+          <optgroup label="Received from a customer → customer ledger">
+            <option value="pay:customer">Customer payment (sales receipt)</option>
+          </optgroup>
+        )}
         {!credit && (
           <optgroup label="Paid to a party → its ledger">
             {PAY_KINDS.map(([k, label]) => <option key={k} value={`pay:${k}`}>{label}</option>)}
@@ -472,7 +483,7 @@ const FIELD = { display: "flex", flexDirection: "column", gap: 3, fontSize: 12, 
 function PayFields({ l, kind, post, setPost }) {
   const { p, err } = useParties();
   const [bills, setBills] = useState(null);
-  const list = p ? { supplier: p.suppliers, transporter: p.transporters, contractor: p.contractors }[kind] : null;
+  const list = p ? { supplier: p.suppliers, transporter: p.transporters, contractor: p.contractors, customer: p.customers }[kind] : null;
   // First open: the party named in the narration (or the one already posted).
   useEffect(() => {
     if (!p || kind === "maintenance") return;
@@ -503,6 +514,21 @@ function PayFields({ l, kind, post, setPost }) {
         {!open.length && <div style={MUTED}>No maintenance bill is waiting for payment. A repair paid without a bill can go to the Repairs cost head instead.</div>}
         <TdsField post={post} setPost={setPost} />
         <div style={MUTED}>→ Maintenance → Payments, against that bill. The repair cost is already in the job card / PO.</div>
+      </div>
+    );
+  }
+  if (kind === "customer") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <label style={FIELD}>Received from (customer)
+          <select value={pid || ""} onChange={(e) => setPost({ ...post, party_id: e.target.value })}
+            style={{ fontSize: 12.5, minHeight: 34, background: pid ? "var(--surface)" : "#FFF8E6" }}>
+            <option value="">Choose…</option>
+            {(list || []).map((x) => <option key={x.id} value={x.id}>{x.name}{x.is_active === false ? " (inactive)" : ""}</option>)}
+          </select>
+        </label>
+        {pid && guessParty(l.narration, list) === String(pid) && <div style={MUTED}>found from the narration</div>}
+        <div style={MUTED}>→ Customer ledger: a receipt of {rs(l.credit)} on {fmtDay(l.txn_date)}, set against the customer's oldest dues (what is left stays as an advance). Source: this bank line — change or undo it here.</div>
       </div>
     );
   }
@@ -620,7 +646,7 @@ function ManualSwitch({ d, reload }) {
   }
   return (
     <div style={{ ...MUTED, marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-      <span style={{ flex: "1 1 200px" }}>“Record payment” in the ledgers: <b>{on ? "allowed (by hand too)" : "off — bank statement and C Ledger only"}</b></span>
+      <span style={{ flex: "1 1 200px" }}>“Record payment” in the ledgers and non-cash “Record a receipt” for customers: <b>{on ? "allowed (by hand too)" : "off — bank statement and C Ledger only (customer cash still by hand)"}</b></span>
       {d.ledger?.can_change && <button type="button" disabled={busy} onClick={flip} style={{ fontSize: 12, padding: "4px 10px", minHeight: 30 }}>{on ? "Switch off" : "Allow by hand"}</button>}
     </div>
   );

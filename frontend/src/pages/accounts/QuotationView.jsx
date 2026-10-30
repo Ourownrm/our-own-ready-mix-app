@@ -198,6 +198,7 @@ export default function QuotationView({ meta, id, go, onBack }) {
             </span>
           </div>
         ))}
+        {q.acceptance_comment && q.status === "accepted" && <div style={{ fontSize: 12.5 }}><span className="kpi-label">Acceptance comment</span><div>{q.acceptance_comment}</div></div>}
         {q.acceptance_proof_name && q.status === "accepted" && (
           <button type="button" style={{ marginTop: 8, fontSize: 12 }} onClick={async () => {
             try { const d = await apiRequest(`/quotations/${q.id}/proof`); const a = document.createElement("a"); a.href = d.data; a.download = d.name || "acceptance"; a.click(); }
@@ -313,7 +314,7 @@ function ApproveModal({ q, onClose, onDone }) {
 }
 
 function AcceptModal({ q, onClose, onDone }) {
-  const [f, setF] = useState({ mode: "signed_copy", accepted_on: todayStr(), rates_from: todayStr(), proof: null, proof_name: "" });
+  const [f, setF] = useState({ mode: "signed_copy", accepted_on: todayStr(), rates_from: todayStr(), proof: null, proof_name: "", comment: "" });
   // Round 209 — the customer may approve only some of the grades proposed.
   const gradeLines = q.lines.filter((l) => l.mix_grade_id);
   const [ok, setOk] = useState(() => Object.fromEntries(gradeLines.map((l) => [l.id, true])));
@@ -330,6 +331,7 @@ function AcceptModal({ q, onClose, onDone }) {
     e.preventDefault();
     setBusy(true); setError("");
     if (!approvedCount) { setError("Tick at least one grade the customer approved."); setBusy(false); return; }
+    if (!f.proof && !f.comment.trim()) { setError("Attach the proof, or write a comment on how the customer accepted."); setBusy(false); return; }
     try { onDone(await apiRequest(`/quotations/${q.id}/accept`, { method: "POST", body: { ...f, approved_line_ids: gradeLines.filter((l) => ok[l.id]).map((l) => l.id) } })); }
     catch (err) { setError(err.message); setBusy(false); }
   }
@@ -361,8 +363,12 @@ function AcceptModal({ q, onClose, onDone }) {
           <Field label="Accepted on"><input type="date" value={f.accepted_on} max={todayStr()} onChange={(e) => setF({ ...f, accepted_on: e.target.value })} /></Field>
           <Field label="New rates apply from" hint="Orders dated from this day use the new rates."><input type="date" value={f.rates_from} onChange={(e) => setF({ ...f, rates_from: e.target.value })} /></Field>
         </div>
-        <Field label={q.revision > 0 ? "Proof of acceptance (required for a revision)" : "Proof of acceptance"} hint="Photo of the signed copy, or a screenshot of the email / WhatsApp. Up to 6 MB.">
-          <input type="file" accept="image/*,application/pdf" onChange={pick} required={q.revision > 0} />
+        {/* Round 252 — a file OR a comment. */}
+        <Field label="Proof of acceptance (optional)" hint="Photo of the signed copy, or a screenshot of the email / WhatsApp. Up to 6 MB.">
+          <input type="file" accept="image/*,application/pdf" onChange={pick} />
+        </Field>
+        <Field label={f.proof ? "Comment (optional)" : "Comment — needed when no file is attached"} hint="e.g. “Confirmed by phone with the site engineer, 30 Oct”.">
+          <textarea rows={2} maxLength={500} value={f.comment} onChange={(e) => setF({ ...f, comment: e.target.value })} />
         </Field>
         <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>
           The site's price list changes now. Unpaid invoices for orders dated from that day are re-priced; any already paid are sent to the Accountant to review.

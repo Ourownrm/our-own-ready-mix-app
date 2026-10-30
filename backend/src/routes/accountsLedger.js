@@ -17,6 +17,8 @@ import { openItems, postReceipt, applyAdvances, positions, AGE_GROUPS } from "..
 import { can } from "../lib/permissions.js";
 import { lookAlikePriceLists, mergeCustomer, mergeSite, referenceCounts } from "../lib/recordMerge.js";
 import { ensureRound251 } from "../lib/round251Schema.js";
+import { ensureRound252 } from "../lib/round252Schema.js";
+import { ledgerSettings } from "../lib/ledgerPost.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -407,6 +409,7 @@ router.get("/ledger", LEDGER_VIEW, async (req, res) => {
 
 router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
   const cid = Number(req.params.customerId);
+  await ensureRound252(query);
   const from = ISO.test(req.query.from || "") ? req.query.from : null;
   const to = ISO.test(req.query.to || "") ? req.query.to : null;
   const { rows: cust } = await query(`SELECT id, name, contact_number FROM customers WHERE id = $1`, [cid]);
@@ -438,6 +441,15 @@ router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
                 CASE WHEN r.edited_at IS NOT NULL THEN 'corrected' END),
               0, r.amount, 2
          FROM customer_receipts r WHERE r.customer_id = $1 AND r.cancelled_at IS NULL
+       UNION ALL
+       -- Round 252 — an approved credit note, a credit on the customer's statement.
+       SELECT cn.cn_date, 'credit_note', cn.id, CONCAT('Credit note · ', cn.cn_no),
+              CONCAT_WS(' · ', CASE cn.reason WHEN 'return' THEN 'concrete returned / rejected' WHEN 'rate' THEN 'rate correction'
+                                              WHEN 'discount' THEN 'discount' ELSE 'other' END,
+                        'against ' || (SELECT dt.ticket_number FROM invoices i2 JOIN delivery_tickets dt ON dt.id = i2.ticket_id WHERE i2.id = cn.invoice_id),
+                        CASE WHEN cn.qty_m3 IS NOT NULL THEN cn.qty_m3 || ' m³' END, cn.note),
+              0, cn.total_amount, 2
+         FROM credit_notes cn WHERE cn.customer_id = $1 AND cn.status = 'approved'
        UNION ALL
        SELECT p.payment_date, 'payment', p.id, CONCAT('Payment · ', p.mode::text),
               CONCAT_WS(' · ', 'against ' || CASE WHEN p.opening_balance_id IS NOT NULL THEN 'Opening balance'
@@ -513,6 +525,12 @@ router.post("/receipts", RC_CREATE, async (req, res) => {
   if (!(Number(b.amount) > 0)) return res.status(400).json({ error: "Enter the amount received." });
   if (!MODES.includes(b.mode)) return res.status(400).json({ error: "Choose how it was paid." });
   if (!ISO.test(b.receipt_date || "")) return res.status(400).json({ error: "Enter the date received." });
+  // Round 252 — bank, UPI and cheque money is posted from the bank statement
+  // (Cost → Bank statements), like supplier payments; by hand only cash,
+  // unless an Administrator allows entries by hand there.
+  if (b.mode !== "cash" && !(await ledgerSettings()).manual_payments) {
+    return res.status(403).json({ error: "Money into the bank is posted from the bank statement (Cost → Bank statements → the credit line → Customer payment). Only cash is entered here." });
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1163,6 +1181,29 @@ router.post("/rate-migration/:id(\\d+)", MIG_EDIT, async (req, res) => {
     return res.status(400).json({ error: "Unknown action." });
   }
   res.json({ ok: true });
+});
+
+// Round 252 (owner, 30 Oct 2026): "disable old rate files option or merge if
+// rate is same". A live rate-file rate that a quotation price list already
+// gives at the SAME rate (same customer, site, grade) is closed from today —
+// the quotation's rate carries on, so nothing is priced differently. A rate-
+// file rate with no matching quotation rate keeps applying until the customer
+// is quoted (closing it would hold their deliveries with no price).
+const LIVE_RF = `rm.source = 'rate_file' AND rm.effective_from <= CURRENT_DATE AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)`;
+const SAME_QUOTE = `EXISTS (SELECT 1 FROM rate_master q WHERE q.source <> 'rate_file' AND q.customer_id = rm.customer_id
+                      AND q.site_id IS NOT DISTINCT FROM rm.site_id AND q.mix_grade_id = rm.mix_grade_id AND q.rate_per_m3 = rm.rate_per_m3
+                      AND q.effective_from <= CURRENT_DATE AND (q.effective_to IS NULL OR q.effective_to >= CURRENT_DATE))`;
+router.get("/rate-file-status", MIG_VIEW, async (req, res) => {
+  const { rows } = await query(`SELECT COUNT(*)::int AS live, COUNT(*) FILTER (WHERE ${SAME_QUOTE})::int AS same FROM rate_master rm WHERE ${LIVE_RF}`);
+  res.json(rows[0]);
+});
+router.post("/rate-file-merge", MIG_EDIT, async (req, res) => {
+  const { rowCount } = await query(
+    `UPDATE rate_master rm SET effective_to = GREATEST(rm.effective_from, CURRENT_DATE) - 1,
+            migration_note = 'Merged — the same rate is on the quotation price list'
+      WHERE ${LIVE_RF} AND ${SAME_QUOTE}`);
+  const { rows } = await query(`SELECT COUNT(*)::int AS live FROM rate_master rm WHERE ${LIVE_RF}`);
+  res.json({ merged: rowCount, still_live: rows[0].live });
 });
 
 router.post("/rate-migration/complete", MIG_EDIT, async (req, res) => {

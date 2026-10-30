@@ -313,6 +313,25 @@ router.post("/users/:id/role", async (req, res) => {
   res.json({ ok: true, role });
 });
 
+// Round 252 — the phone (the sign-in) is the company's; the person using it
+// can change (owner, 30 Oct 2026). Rename the account, optionally with a new
+// password so the previous person can no longer sign in, and sign the
+// account out everywhere either way.
+router.patch("/users/:id/name", async (req, res) => {
+  const userId = Number(req.params.id);
+  const name = String((req.body || {}).name || "").trim().slice(0, 100);
+  const password = (req.body || {}).password ? String(req.body.password) : "";
+  if (!name) return res.status(400).json({ error: "Type the new name." });
+  if (password && password.length < 6) return res.status(400).json({ error: "The password must be at least 6 characters." });
+  const { rows } = await query(`SELECT id FROM users WHERE id = $1`, [userId]);
+  if (!rows[0]) return res.status(404).json({ error: "No such user." });
+  if (password) await query(`UPDATE users SET name = $1, password_hash = $2 WHERE id = $3`, [name, await bcrypt.hash(password, 10), userId]);
+  else await query(`UPDATE users SET name = $1 WHERE id = $2`, [name, userId]);
+  clearUserCache(userId);
+  clearPermissionCache(userId);
+  res.json({ ok: true, name, password_changed: !!password });
+});
+
 router.post("/users", async (req, res) => {
   const { name, phone, password, role } = req.body || {};
   if (!name || !phone || !password) return res.status(400).json({ error: "Name, phone and a password are all needed." });

@@ -62,11 +62,15 @@ const BASE_FROM = `
 
 const ROW_COLUMNS = `
   dt.id, dt.ticket_number AS dc_no, dt.order_id, dt.ticket_date, dt.created_at, dt.loaded_quantity_m3 AS quantity_m3,
+  -- Round 252 — returned at site, and what was really supplied (owner, 30 Oct 2026).
+  COALESCE(sq.rejected_quantity_m3, 0) AS returned_m3,
+  dt.loaded_quantity_m3 - COALESCE(sq.rejected_quantity_m3, 0) AS net_m3,
   c.name AS customer_name, s.name AS site_name, t.truck_number, u_driver.name AS driver_name,
   sp.name AS salesperson_name, p.pump_code, u_sup.name AS supervisor_name, m.name AS grade_name,
   sq.delivery_note_status,
-  CASE WHEN dt.loaded_quantity_m3 > 0 AND i.concrete_amount IS NOT NULL
-       THEN ROUND(i.concrete_amount / dt.loaded_quantity_m3, 2) END AS rate,
+  -- the rate billed (an invoice reduced for a return before Oct 2026 is per its accepted m³)
+  COALESCE(i.rate_per_m3, CASE WHEN dt.loaded_quantity_m3 - COALESCE(i.rejected_quantity_m3, 0) > 0 AND i.concrete_amount IS NOT NULL
+       THEN ROUND(i.concrete_amount / (dt.loaded_quantity_m3 - COALESCE(i.rejected_quantity_m3, 0)), 2) END) AS rate,
   i.concrete_amount AS amount,
   i.pumping_charge AS pumping_charge,
   i.part_load_charge AS part_load_charge,
@@ -91,6 +95,8 @@ router.get("/", async (req, res) => {
     query(
       `SELECT COUNT(*) AS delivery_count,
               COALESCE(SUM(dt.loaded_quantity_m3), 0) AS total_qty_m3,
+              COALESCE(SUM(sq.rejected_quantity_m3), 0) AS total_returned_m3,
+              COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS total_net_m3,
               COALESCE(SUM(i.concrete_amount), 0) AS total_concrete_amount,
               COALESCE(SUM(i.pumping_charge), 0) AS total_pumping_charge,
               COALESCE(SUM(i.part_load_charge), 0) AS total_part_load_charge,
@@ -108,6 +114,8 @@ router.get("/", async (req, res) => {
     totals: {
       delivery_count: Number(totalsResult.rows[0].delivery_count),
       total_qty_m3: totalsResult.rows[0].total_qty_m3,
+      total_returned_m3: totalsResult.rows[0].total_returned_m3,
+      total_net_m3: totalsResult.rows[0].total_net_m3,
       total_concrete_amount: totalsResult.rows[0].total_concrete_amount,
       total_pumping_charge: totalsResult.rows[0].total_pumping_charge,
       total_part_load_charge: totalsResult.rows[0].total_part_load_charge,

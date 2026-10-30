@@ -163,6 +163,24 @@ async function outputRange(from, end, ourState) {
     const st = stateOf(r.billing_gstin);
     if (st && st !== ourState) { m.igst += gst; m.inter += 1; } else { m.cgst += gst / 2; m.sgst += gst / 2; }
   }
+  // Round 252 — approved credit notes lower the output tax of the month of
+  // their date (a credit note with GST; one on a no-GST invoice has none).
+  const { rows: cns } = await query(
+    `SELECT to_char(cn.cn_date, 'YYYY-MM') AS ym, cn.base_amount, cn.cgst, cn.sgst, cn.total_amount, cn.gst_applied, i.billing_gstin
+       FROM credit_notes cn JOIN invoices i ON i.id = cn.invoice_id
+      WHERE cn.status = 'approved' AND cn.cn_date BETWEEN $1::date AND $2::date`, [from, end]).catch(() => ({ rows: [] }));
+  for (const c of cns) {
+    if (!by.has(c.ym)) by.set(c.ym, { invoices: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0, total: 0, concrete_taxable: 0, other_taxable: 0,
+      off: { n: 0, amount: 0 }, rejections: 0, inter: 0 });
+    const m = by.get(c.ym);
+    m.credit_notes = (m.credit_notes || 0) + 1;
+    m.credit_note_amount = (m.credit_note_amount || 0) + n0(c.total_amount);
+    if (!c.gst_applied) { m.off.amount -= n0(c.total_amount); continue; }
+    m.taxable -= n0(c.base_amount); m.total -= n0(c.total_amount); m.concrete_taxable -= n0(c.base_amount);
+    const st = stateOf(c.billing_gstin);
+    if (st && st !== ourState) m.igst -= n0(c.cgst) + n0(c.sgst);
+    else { m.cgst -= n0(c.cgst); m.sgst -= n0(c.sgst); }
+  }
   for (const m of by.values()) for (const k of ["taxable", "igst", "cgst", "sgst", "total", "concrete_taxable", "other_taxable"]) m[k] = r2(m[k]);
   return by;
 }

@@ -4,7 +4,7 @@
 // Outstanding Collection report and the Director / Admin dashboards — uses
 // these functions, so they can never show different figures again.
 //
-//   billed   = invoices + opening balances
+//   billed   = invoices − approved credit notes (Round 252) + opening balances
 //   received = receipts (not cancelled) + payments entered before receipts
 //              existed (payments with no receipt)
 //   balance  = billed − received          (negative = the customer paid ahead)
@@ -14,6 +14,7 @@
 // in the owner's groups: 0–7, 8–14, 15–30 and over 30 days. An open item is
 // what is still unpaid on it after the money set against it.
 import { query } from "../db.js";
+import { ensureRound252 } from "./round252Schema.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 export const AGE_GROUPS = [
@@ -27,6 +28,7 @@ export const ageGroup = (days) => AGE_GROUPS.find((g) => days <= g.max).key;
 // Open items of one customer: opening balances first, then invoices oldest
 // delivery first — the order money is set against them.
 export async function openItems(db, customerId) {
+  await ensureRound252(query);
   const { rows } = await db.query(
     `SELECT * FROM (
        SELECT 'opening_balance' AS kind, ob.id, ob.as_of_date::text AS on_date, 'Opening balance' AS label,
@@ -34,7 +36,8 @@ export async function openItems(db, customerId) {
          FROM customer_opening_balances ob WHERE ob.customer_id = $1
        UNION ALL
        SELECT 'invoice', i.id, dt.ticket_date::text, dt.ticket_number,
-              i.total_amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id), 0), 1
+              i.total_amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id), 0)
+                - COALESCE((SELECT SUM(cn.total_amount) FROM credit_notes cn WHERE cn.invoice_id = i.id AND cn.status = 'approved'), 0), 1
          FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id WHERE i.customer_id = $1
      ) x WHERE balance > 0.01 ORDER BY ord, on_date, id`,
     [customerId]
@@ -99,6 +102,7 @@ export async function postReceipt(db, { customer_id, receipt_date, amount, mode,
 // Totals: outstanding (billed − received), and money received in a period.
 export const OUTSTANDING_SQL = `
   SELECT (SELECT COALESCE(SUM(total_amount), 0) FROM invoices)
+       - (SELECT COALESCE(SUM(total_amount), 0) FROM credit_notes WHERE status = 'approved')
        + (SELECT COALESCE(SUM(amount), 0) FROM customer_opening_balances)
        - (SELECT COALESCE(SUM(amount), 0) FROM customer_receipts WHERE cancelled_at IS NULL)
        - (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE receipt_id IS NULL) AS total`;
@@ -115,9 +119,12 @@ export const receivedSql = (fromExpr, toExpr) =>
 
 // Every customer's position, with ageing. { customerId } narrows to one.
 export async function positions({ customerId = null } = {}) {
+  await ensureRound252(query);
   const [{ rows: base }, { rows: items }, { rows: last }, { rows: credit }] = await Promise.all([
     query(
       `WITH inv AS (SELECT customer_id, SUM(total_amount) AS amt FROM invoices GROUP BY customer_id),
+            -- Round 252 — an approved credit note lowers what was billed.
+            cn AS (SELECT customer_id, SUM(total_amount) AS amt FROM credit_notes WHERE status = 'approved' GROUP BY customer_id),
             ob AS (SELECT customer_id, SUM(amount) AS amt FROM customer_opening_balances GROUP BY customer_id),
             rc AS (SELECT customer_id, SUM(amount) AS amt FROM customer_receipts WHERE cancelled_at IS NULL GROUP BY customer_id),
             lp AS (SELECT COALESCE(i.customer_id, b.customer_id) AS customer_id, SUM(p.amount) AS amt
@@ -127,11 +134,11 @@ export async function positions({ customerId = null } = {}) {
             al AS (SELECT r.customer_id, SUM(p.amount) AS amt FROM payments p JOIN customer_receipts r ON r.id = p.receipt_id
                     WHERE r.cancelled_at IS NULL GROUP BY 1)
        SELECT c.id, c.name, c.contact_number,
-              COALESCE(inv.amt, 0) + COALESCE(ob.amt, 0) AS billed,
+              COALESCE(inv.amt, 0) - COALESCE(cn.amt, 0) + COALESCE(ob.amt, 0) AS billed,
               COALESCE(rc.amt, 0) + COALESCE(lp.amt, 0) AS received,
               COALESCE(rc.amt, 0) - COALESCE(al.amt, 0) AS advance
          FROM customers c
-         LEFT JOIN inv ON inv.customer_id = c.id LEFT JOIN ob ON ob.customer_id = c.id
+         LEFT JOIN inv ON inv.customer_id = c.id LEFT JOIN cn ON cn.customer_id = c.id LEFT JOIN ob ON ob.customer_id = c.id
          LEFT JOIN rc ON rc.customer_id = c.id LEFT JOIN lp ON lp.customer_id = c.id LEFT JOIN al ON al.customer_id = c.id
         WHERE (inv.amt IS NOT NULL OR ob.amt IS NOT NULL OR rc.amt IS NOT NULL OR lp.amt IS NOT NULL)
           AND ($1::int IS NULL OR c.id = $1)`,
@@ -145,7 +152,8 @@ export async function positions({ customerId = null } = {}) {
            FROM customer_opening_balances ob WHERE ($1::int IS NULL OR ob.customer_id = $1)
          UNION ALL
          SELECT i.customer_id, (CURRENT_DATE - dt.ticket_date),
-                i.total_amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id), 0), dt.ticket_date
+                i.total_amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id), 0)
+                  - COALESCE((SELECT SUM(cn.total_amount) FROM credit_notes cn WHERE cn.invoice_id = i.id AND cn.status = 'approved'), 0), dt.ticket_date
            FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id WHERE ($1::int IS NULL OR i.customer_id = $1)
        ) x WHERE open > 0.01`,
       [customerId]

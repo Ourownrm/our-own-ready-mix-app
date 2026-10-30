@@ -488,6 +488,18 @@ async function computeMonth(ym, ctx) {
     t.concrete = c.concrete; t.pumping = c.pumping; t.part_load = 0; t.gross = c.gross;
   }
   const sales = salesSummary(tickets);
+  // Round 252 — approved credit notes dated in the month lower the sales
+  // (without GST, like the rest of revenue).
+  {
+    const { rows: cn } = await query(
+      `SELECT COALESCE(SUM(base_amount), 0) AS base, COUNT(*)::int AS n FROM credit_notes
+        WHERE status = 'approved' AND cn_date >= $1::date AND cn_date < $2::date`, [from, toEx]).catch(() => ({ rows: [{ base: 0, n: 0 }] }));
+    sales.credit_notes = r2(cn[0].base); sales.credit_note_count = cn[0].n;
+    if (sales.credit_notes) {
+      sales.concrete = r2(sales.concrete - sales.credit_notes);
+      sales.realisation = sales.invoiced_m3 > 0 ? r2(sales.concrete / sales.invoiced_m3) : null;
+    }
+  }
   const mnt = maintenanceTotals(mntRows);
   const certs = certExpense(ctx, from, end);
   const e = (k) => (entries[k] ? entries[k].amount : 0);

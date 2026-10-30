@@ -1,4 +1,5 @@
 import { query } from "../db.js";
+import { ensureRound252, CREDIT_NOTES_FROM } from "./round252Schema.js";
 import { pushToRole } from "./push.js";
 import { applyAdvances } from "./receivables.js";
 import { rateForOrder } from "./rateLookup.js";
@@ -436,12 +437,35 @@ export async function confirmPartialRejection(ticketId, userId, { rejection_reas
   }
 
   // Make sure an invoice exists (normally created at ticket creation at the full
-  // loaded qty), then adjust it down to the accepted m³ and flag the credit note.
+  // loaded qty).
   await generateInvoiceForTicket(ticketId);
   const { rows: inv } = await query(
-    "SELECT id, concrete_amount, pumping_charge, part_load_charge, waiting_charge FROM invoices WHERE ticket_id = $1",
+    "SELECT i.id, i.concrete_amount, i.pumping_charge, i.part_load_charge, i.waiting_charge, dt.ticket_date::text AS ticket_date FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id WHERE i.ticket_id = $1",
     [ticketId]
   );
+  // Round 252 (owner, 30 Oct 2026) — from 1 Oct 2026 the invoice is NOT cut
+  // down: it stays at the full delivered quantity, the return is marked and
+  // Accounts is asked for a credit note (Accounts → Credit notes). The ledger
+  // changes only when the Administrator approves that credit note. The
+  // returned m³ is already off production (site_qc, above). Earlier returns
+  // keep the old way (invoice reduced at once), as the owner asked.
+  if (inv.length && inv[0].ticket_date >= CREDIT_NOTES_FROM) {
+    await ensureRound252(query);
+    await query(`UPDATE invoices SET return_credit_due = true WHERE id = $1`, [inv[0].id]);
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+       VALUES ('manager', $1, 'concrete_rejected', $2)`,
+      [ticketId, `Partial rejection at site — ${rej} m³ returned; credit note to be raised by Accounts`]);
+    await query(
+      `INSERT INTO notifications (recipient_role, ticket_id, type, message)
+       VALUES ('accountant', $1, 'credit_note_due', $2)`,
+      [ticketId, `Credit note to raise — ${rej} m³ returned at site (Accounts → Credit notes)`]);
+    const { rows: tn } = await query("SELECT ticket_number FROM delivery_tickets WHERE id = $1", [ticketId]);
+    await pushToRole("manager", { title: "Partial rejection at site", body: `${tn[0]?.ticket_number || "A delivery"} — ${rej} m³ returned`, url: "/manager" });
+    await pushToRole("accountant", { title: "Credit note to raise", body: `${tn[0]?.ticket_number || "A delivery"} — ${rej} m³ returned at site`, url: "/accounts?tab=credit-notes" }).catch(() => {});
+    await syncOrderCompletionStatus(orderId);
+    return;
+  }
   if (inv.length) {
     const i = inv[0];
     const rate = loaded > 0 ? Number(i.concrete_amount) / loaded : 0; // per-m³ it was billed at

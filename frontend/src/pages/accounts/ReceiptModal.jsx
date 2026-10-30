@@ -7,10 +7,15 @@ import { apiRequest } from "../../lib/api.js";
 import { todayStr } from "../../lib/istDate.js";
 import { inr2, fmtDate } from "../../lib/quotationTerms.js";
 import { Banner, Field, Modal } from "./ui.jsx";
+import { useLedgerManual } from "../../lib/useLedgerManual.js";
 
 export function ReceiptModal({ customerId, onClose, onDone }) {
   const [customers, setCustomers] = useState([]);
-  const [f, setF] = useState({ customer_id: customerId || "", receipt_date: todayStr(), amount: "", mode: "bank_transfer", reference_number: "", remarks: "" });
+  // Round 252 — money into the bank comes from the bank statement (Cost → Bank
+  // statements), like supplier payments; only cash is entered here unless an
+  // Administrator allows entries by hand.
+  const manual = useLedgerManual();
+  const [f, setF] = useState({ customer_id: customerId || "", receipt_date: todayStr(), amount: "", mode: "cash", reference_number: "", remarks: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (!customerId) apiRequest("/master/customers").then(setCustomers).catch(() => {}); }, [customerId]);
@@ -51,7 +56,8 @@ export function ReceiptModal({ customerId, onClose, onDone }) {
           <Field label="Amount ₹"><input type="number" min="1" step="0.01" required value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></Field>
           <Field label="Mode">
             <select value={f.mode} onChange={(e) => setF({ ...f, mode: e.target.value })}>
-              <option value="bank_transfer">Bank transfer</option><option value="upi">UPI</option><option value="cheque">Cheque</option><option value="cash">Cash</option>
+              <option value="cash">Cash</option>
+              {manual && <><option value="bank_transfer">Bank transfer</option><option value="upi">UPI</option><option value="cheque">Cheque</option></>}
             </select>
           </Field>
           <Field label="Reference / cheque no."><input value={f.reference_number} onChange={(e) => setF({ ...f, reference_number: e.target.value })} /></Field>

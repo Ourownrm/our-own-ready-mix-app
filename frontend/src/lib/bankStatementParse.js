@@ -159,6 +159,11 @@ function findHeader(rows) {
   return fallback;
 }
 
+// Round 252 — the explanation block some banks print after the last entry
+// (ICICI: "Legends Used in Account Statement 1. BBPS - Bharat Bill Payment
+// Service 2. BCTT …"). From such a heading on, nothing is narration until
+// the next dated line (owner, 30 Oct 2026).
+export const END_BLOCK = /legends?\s+used|^legends?\b|abbreviations?\s+used|this is (a|an) (computer|system)[- ]generated|end of (the )?statement|\*+\s*end\s*\*+|statement summary|account summary/i;
 const SKIP_LINE = /opening balance|closing balance|balance (b\/?f|brought|carried|c\/?f)|brought forward|carried forward|page \d+ of|statement of account|^total|grand total|\*\*\*/i;
 
 // Round 231 — a date printed over two lines in its column ("05-09-" / "2026"
@@ -204,6 +209,7 @@ function txnsFromRows(rowsIn) {
   const txns = [];
   let opening = null;
   let cur = null;
+  let inEndBlock = false;
   const dist = (a, b) => (a == null || b == null ? Infinity : Math.abs(a - b));
   // The transaction date: the left-most date in the date columns — which
   // may come after a serial no. or a transaction id (ICICI: "Sl No · Tran
@@ -228,6 +234,7 @@ function txnsFromRows(rowsIn) {
       cur = null; continue;
     }
     if (SKIP_LINE.test(r.text)) { cur = null; continue; }
+    if (END_BLOCK.test(r.text)) { cur = null; inEndBlock = true; continue; }
     const first = r.items.filter((it) => it.x < dateLimit).slice(0, 6)
       .map((it) => ({ it, d: parseDate(it.str) ?? parseDate(it.str.split(" ")[0]) })).find((x) => x.d);
     // Round 231 — CSB centres each entry on its date line: the first line of
@@ -241,7 +248,9 @@ function txnsFromRows(rowsIn) {
         continue;
       }
     }
+    if (inEndBlock && !first) continue;           // legend / footer text — never narration
     if (first) {
+      inEndBlock = false;
       cur = { date: first.d, parts: [...(r.prefix || [])], amounts: [], ref: [], page: r.page, y: r.y };
       txns.push(cur);
       // the rest of the piece holding the date may already be narration

@@ -246,6 +246,21 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
 
+  // Round 252 — the company phone passes to someone else: rename the account,
+  // and optionally give it a new password.
+  async function rename() {
+    const name = window.prompt(`New name for this sign-in (${detail.user.phone || "phone"}):`, detail.user.name);
+    if (name == null || !name.trim() || name.trim() === detail.user.name) return;
+    const password = window.prompt("New password for the new person (at least 6 characters).\nLeave empty to keep the current password.", "") || "";
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/super-admin/users/${selected}/name`, { method: "PATCH", body: { name: name.trim(), password } });
+      setNotice(`Renamed to ${name.trim()}${password ? " with a new password" : ""}. If this sign-in is linked to an employee in HR, change that link on the employee too.`);
+      setDetail(await apiRequest(`/super-admin/users/${selected}/permissions`));
+      loadUsers();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
   async function setActive(isActive) {
     setBusy(true); setError(""); setNotice("");
     try {
@@ -341,6 +356,7 @@ function PeopleTab({ catalogue, me, setError, setNotice }) {
                         {Object.keys(ROLE_LABEL).map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                       </select>
                     </label>
+                    <button type="button" onClick={rename} disabled={busy} style={{ fontSize: 11.5 }}>Change name</button>
                     <button type="button" onClick={() => setActive(!detail.user.is_active)} disabled={busy} style={{ fontSize: 11.5 }}>
                       {detail.user.is_active ? "Disable sign-in" : "Enable sign-in"}
                     </button>

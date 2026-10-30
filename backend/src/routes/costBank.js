@@ -3,6 +3,7 @@
 // because the app has it, own transfer, loan EMI …). The rules live in
 // lib/bankBook.js. Administrator only by default (cost.bank).
 import { Router } from "express";
+import { LEGEND_CUT } from "../lib/round252Schema.js";
 import { irr, flatRate, balanceOn, rateOn, amountOn, schedule as loanSchedule } from "../lib/loanMath.js";
 import { pool, query } from "../db.js";
 import { requireAuth, isAdminLevel } from "../middleware/auth.js";
@@ -191,7 +192,8 @@ router.post("/upload", EDIT, async (req, res) => {
       return bad(res, `Line ${i + 1} (${r.date || "no date"}): needs a date and either a debit or a credit.`);
     }
     const balance = r.balance == null || r.balance === "" || !Number.isFinite(Number(r.balance)) ? null : r2(r.balance);
-    const line = { date: r.date, narration: String(r.narration || "").replace(/\s+/g, " ").trim().slice(0, 1000), reference: String(r.reference || "").trim().slice(0, 120) || null, debit, credit, balance, seq: i };
+    // Round 252 — never keep a bank's legend / footer text on a line.
+    const line = { date: r.date, narration: String(r.narration || "").replace(/\s+/g, " ").replace(LEGEND_CUT, "").trim().slice(0, 1000), reference: String(r.reference || "").trim().slice(0, 120) || null, debit, credit, balance, seq: i };
     clean.push({ ...line, key: dedupeKey(accountId, line) });
   }
   const dates = clean.map((c) => c.date).sort();
@@ -281,12 +283,16 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
   // Round 235 — a payment to a party, or a vehicle certificate: posted into
   // the ledger / compliance register when the line is saved.
   const posting = t === "pay" || t === "cert";
-  if (posting && !(n0(l.debit) > 0)) return bad(res, "Only a payment out (a debit) posts into a ledger.");
+  // Round 252 — money IN from a customer posts to the customer ledger; money
+  // OUT to a supplier / transporter / contractor / maintenance bill as before.
+  const isCustomer = t === "pay" && req.body.party_kind === "customer";
+  if (isCustomer && !(n0(l.credit) > 0)) return bad(res, "Only money received (a credit) posts to a customer's ledger.");
+  if (posting && !isCustomer && !(n0(l.debit) > 0)) return bad(res, "Only a payment out (a debit) posts into a supplier, transporter, contractor or maintenance ledger.");
   if (t === "pay" && !POST_KINDS.includes(req.body.party_kind)) return bad(res, "Choose who this payment is to.");
   if (posting && req.body.always) return bad(res, "A payment to a party is saved line by line — untick “always”.");
   const acc = `${l.bank} ••${String(l.number).slice(-4)}`;
   const common = {
-    amount: n0(l.debit), paid_on: l.txn_date, mode: bankMode(l.narration), reference: bankRef(`${l.reference || ""} ${l.narration || ""}`, `BANK-${l.id}`),
+    amount: isCustomer ? n0(l.credit) : n0(l.debit), paid_on: l.txn_date, narration: l.narration, mode: bankMode(l.narration), reference: bankRef(`${l.reference || ""} ${l.narration || ""}`, `BANK-${l.id}`),
     bank_account: acc, notes: `From the ${acc} statement, ${l.txn_date}${req.body.note ? ` — ${String(req.body.note).slice(0, 120)}` : ""}`,
     user_id: req.user.id, source: "bank", source_id: l.id,
   };
@@ -329,7 +335,8 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
         : await postPayment(client, { ...common, kind: b.party_kind, party_id: b.party_id, bill_id: b.bill_id, allocations: b.allocations,
             tds: n0(b.tds), replacing: l.post_kind === b.party_kind ? l.post_id : null });
       // The line claims what it posted, so no other line is matched to it.
-      const claimKind = out.kind === "certificate" ? "maintenance" : out.kind;
+      // (a customer receipt is matched as "receipt", the kind the sorter knows)
+      const claimKind = out.kind === "certificate" ? "maintenance" : out.kind === "customer" ? "receipt" : out.kind;
       const claimId = out.kind === "certificate" ? out.payment_id : out.id;
       await client.query(
         `UPDATE cost_bank_lines SET post_kind = $2, post_id = $3, party_label = $4, match_kind = $5, match_id = $6, why = $7 WHERE id = $1`,

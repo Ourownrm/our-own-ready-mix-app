@@ -12,6 +12,7 @@
 // None of these is a cost on the bank line: material, freight, labour and
 // repair costs reach the P&L from their own records.
 import { query } from "../db.js";
+import { postReceipt, applyAdvances } from "./receivables.js";
 import { buildLedgers } from "./supplierLedger.js";
 import { CERT_TYPES } from "./round216Schema.js";
 import { istDay } from "./istDate.js";
@@ -89,8 +90,8 @@ export async function refuseIfSourced(table, id) {
   return null;
 }
 
-export const POST_KINDS = ["supplier", "transporter", "contractor", "maintenance"];
-const KIND_LABEL = { supplier: "Supplier ledger", transporter: "Transporter ledger", contractor: "Contractor ledger (HR)", maintenance: "Maintenance → Payments", certificate: "Compliance register" };
+export const POST_KINDS = ["supplier", "transporter", "contractor", "maintenance", "customer"];
+const KIND_LABEL = { customer: "Customer ledger (Accounts)", supplier: "Supplier ledger", transporter: "Transporter ledger", contractor: "Contractor ledger (HR)", maintenance: "Maintenance → Payments", certificate: "Compliance register" };
 export const postWhere = (k) => KIND_LABEL[k] || k;
 
 // How the bank paid it, from the narration.
@@ -113,7 +114,7 @@ export function bankRef(narr, fallback) {
 export async function partyOptions() {
   await ensureRound235();
   const safe = (p) => p.then((r) => r.rows).catch(() => []);
-  const [suppliers, transporters, contractors, bills, assets] = await Promise.all([
+  const [suppliers, transporters, contractors, bills, assets, customers] = await Promise.all([
     safe(query(`SELECT id, name, is_active FROM rm_suppliers ORDER BY is_active DESC, name`)),
     safe(query(`SELECT id, name, is_active FROM rm_transporters ORDER BY is_active DESC, name`)),
     safe(query(`SELECT id, name, is_active FROM hr_contractors ORDER BY is_active DESC, name`)),
@@ -127,11 +128,13 @@ export async function partyOptions() {
          AND b.amount - COALESCE((SELECT SUM(p.amount + p.tds) FROM mnt_payments p WHERE p.bill_id = b.id), 0) > 0.004
        ORDER BY b.bill_date NULLS LAST, b.id`)),
     safe(query(`SELECT id, name, asset_group, reg_no FROM mnt_assets WHERE is_active ORDER BY asset_group, name`)),
+    // Round 252 — money in from a customer posts to the customer ledger.
+    safe(query(`SELECT id, name, COALESCE(is_active, true) AS is_active FROM customers ORDER BY COALESCE(is_active, true) DESC, name`)),
   ]);
   const { rows: certs } = await query(
     `SELECT c.asset_id, c.cert_type, c.valid_to::text AS valid_to FROM mnt_certificates c WHERE c.status = 'current'`).catch(() => ({ rows: [] }));
   return {
-    suppliers, transporters, contractors,
+    suppliers, transporters, contractors, customers,
     mnt_bills: bills.map((b) => ({ ...b, amount: n0(b.amount), balance: r2(b.balance) })),
     assets, current_certs: certs,
     cert_types: Object.entries(CERT_TYPES).filter(([k]) => k !== "other").map(([key, label]) => ({ key, label })),
@@ -244,6 +247,20 @@ export async function postPayment(c, p) {
       [billId, amount, tds, p.paid_on, p.mode, (p.reference || "").slice(0, 100) || null, p.user_id, ...src]);
     return { kind: "maintenance", id: ins[0].id, label: `${b.payee || "Bill"}${b.bill_no ? ` · ${b.bill_no}` : ""}` };
   }
+  // Round 252 — a customer's payment into our bank, from the bank statement
+  // (owner, 30 Oct 2026: "Activate Sales income to post to ledger from Bank
+  // statement same as supplier payment"). A receipt, set against the
+  // customer's oldest dues like any receipt.
+  if (p.kind === "customer") {
+    const { rows: cu } = await c.query(`SELECT id, name FROM customers WHERE id = $1`, [partyId]);
+    if (!cu.length) throw fail("Choose the customer.");
+    const mode = p.mode === "upi" ? "upi" : p.mode === "cheque" ? "cheque" : "bank_transfer";
+    const out = await postReceipt(c, {
+      customer_id: partyId, receipt_date: p.paid_on, amount, mode, reference_number: p.reference || null,
+      bank_account: (p.bank_account || "").slice(0, 60) || null, narration: p.narration || null, remarks: p.notes || null, userId: p.user_id,
+    });
+    return { kind: "customer", id: out.id, label: cu[0].name };
+  }
   throw fail("Choose who this payment is to.");
 }
 
@@ -267,6 +284,14 @@ export async function unpostPayment(c, kind, id, userId, reason = "Changed at it
     await c.query(`DELETE FROM mnt_payments WHERE id = $1`, [id]);
   } else if (kind === "certificate") {
     await unpostCertificate(c, id);
+  } else if (kind === "customer") {
+    // The receipt is cancelled (kept), its settlement of dues undone, and the
+    // customer's other advances set against what this freed.
+    const { rows } = await c.query(
+      `UPDATE customer_receipts SET cancelled_at = now(), cancelled_by = $2, cancel_reason = $3 WHERE id = $1 AND cancelled_at IS NULL RETURNING customer_id`,
+      [id, userId, reason]);
+    await c.query(`DELETE FROM payments WHERE receipt_id = $1`, [id]);
+    if (rows[0]) await applyAdvances(c, rows[0].customer_id);
   }
 }
 

@@ -31,7 +31,8 @@ export default function QuotationsTab({ params, go }) {
   if (!meta) return <Empty>Loading…</Empty>;
 
   const back = () => go("quotations");
-  if (params.get("import") === "1" && meta.perms.import) return <QuotationImport onDone={back} />;
+  // Round 252 — the Excel import is hidden; the screen stays in the code.
+  if (false && params.get("import") === "1" && meta.perms.import) return <QuotationImport onDone={back} />;
   if (isNew || edit) {
     return (
       <QuotationBuilder meta={meta} id={edit ? Number(edit) : null} customerId={params.get("customer_id")} siteId={params.get("site_id")}
@@ -96,7 +97,7 @@ function Register({ meta, go }) {
           <option value="none">Salesperson not set</option>
         </select>
         <span style={{ display: "flex", gap: 8 }}>
-          {meta.perms.import && <button type="button" onClick={() => go("quotations", { import: "1" })}>Import from Excel</button>}
+          {/* Round 252 — Import from Excel hidden (owner, 30 Oct 2026). */}
           {meta.perms.create && <button type="button" className="btn-primary" onClick={() => go("quotations", { new: "1" })}>+ New quotation</button>}
         </span>
       </div>

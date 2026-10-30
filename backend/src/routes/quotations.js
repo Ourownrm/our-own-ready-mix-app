@@ -12,6 +12,7 @@
 // (accounts.*), and the Accounts module switch above it — no role guard, the
 // Round 192 module pattern.
 import { Router } from "express";
+import { ensureRound252 } from "../lib/round252Schema.js";
 import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, can } from "../lib/permissions.js";
@@ -699,9 +700,13 @@ router.post("/:id(\\d+)/accept", ACCEPT, async (req, res) => {
   const ratesFrom = ISO.test(req.body.rates_from || "") ? req.body.rates_from : acceptedOn;
   const proof = typeof req.body.proof === "string" && req.body.proof.startsWith("data:") ? req.body.proof : null;
   if (proof && proof.length > 8_000_000) return res.status(400).json({ error: "The proof file is too large (max about 6 MB)." });
-  if (q.revision > 0 && !proof) {
-    return res.status(400).json({ error: "Attach the proof of acceptance — a revised price list changes only with the customer's written acceptance." });
+  // Round 252 (owner, 30 Oct 2026): "proof of acceptance, make attachment as
+  // an option otherwise write a comment" — a file OR a comment, one of the two.
+  const comment = String(req.body.comment || "").trim().slice(0, 500) || null;
+  if (!proof && !comment) {
+    return res.status(400).json({ error: "Attach the proof of acceptance, or write a comment on how the customer accepted." });
   }
+  await ensureRound252(query);
   // Round 209 — the lines the customer approved (all, when the form does not
   // say). The rest are kept as not approved; Admin can enable them later.
   const gradeLines = q.lines.filter((l) => l.mix_grade_id);
@@ -715,13 +720,13 @@ router.post("/:id(\\d+)/accept", ACCEPT, async (req, res) => {
   await query(
     `UPDATE quotations SET status = 'accepted', accepted_at = now(), accepted_on = $2, acceptance_mode = $3,
             acceptance_proof = $4, acceptance_proof_name = $5, rates_from = $6, accepted_by = $7,
-            next_followup_on = NULL, updated_at = now()
+            acceptance_comment = $8, next_followup_on = NULL, updated_at = now()
       WHERE id = $1`,
-    [q.id, acceptedOn, mode, proof, String(req.body.proof_name || "").slice(0, 200) || null, ratesFrom, req.user.id]
+    [q.id, acceptedOn, mode, proof, proof ? String(req.body.proof_name || "").slice(0, 200) || null : null, ratesFrom, req.user.id, comment]
   );
   const notApproved = approvedIds ? gradeLines.filter((l) => !approvedIds.includes(l.id)) : [];
   const lineName = (l) => [l.grade_name, l.design_ref_code ? `${l.design_ref_code} rev ${l.design_revision}` : l.specification].filter(Boolean).join(" ");
-  await logEvent(pool, q.id, "accepted", req.user.id, { note: `Accepted by ${mode.replace("_", " ")} on ${acceptedOn}; price list from ${ratesFrom}.${notApproved.length ? ` Not approved: ${notApproved.map(lineName).join(", ")}.` : ""}` });
+  await logEvent(pool, q.id, "accepted", req.user.id, { note: `Accepted by ${mode.replace("_", " ")} on ${acceptedOn}; price list from ${ratesFrom}.${comment ? ` Comment: ${comment}` : ""}${notApproved.length ? ` Not approved: ${notApproved.map(lineName).join(", ")}.` : ""}` });
   const repriced = await repriceAfterAcceptance(result, ratesFrom);
   res.json({ ok: true, repriced });
 });

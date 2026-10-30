@@ -26,7 +26,7 @@ const TABS = [
   // Round 245 — water cost.
   { key: "water", label: "Water", perm: "cost.pl", Component: CostWaterTab },
   // Round 223
-  { key: "bank", label: "Bank statements", perm: "cost.bank", Component: CostBankTab },
+  { key: "bank", label: "Bank statements", perm: "cost.bank", Component: CostBankTab, current: true }, // Round 252 — opens on the current month
   // Round 239 — loans on their own page.
   { key: "loans", label: "Loans", perm: "cost.bank", Component: CostLoansTab },
   // Round 242 — partners' capital and unsecured loans.

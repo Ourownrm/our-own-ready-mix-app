@@ -22,13 +22,21 @@ export function LockdownGate({ children }) {
   const { user, logout } = useAuth();
   const { pathname } = useLocation();
   const [lock, setLock] = useState({ locked: false, since: null });
-  const refresh = useCallback(() => apiRequest("/lockdown").then(setLock).catch(() => {}), []);
+  // Round 252 — locking signs everyone out. While locked, a signed-in screen
+  // asks "who am I" so a session from before the lock is ended at once (the
+  // server answers "signed_out" and the listener below signs this tab out).
+  const userRef = useRef(user);
+  userRef.current = user;
+  const refresh = useCallback(() => apiRequest("/lockdown").then((l) => {
+    setLock(l);
+    if (l?.locked && userRef.current) apiRequest("/auth/me").catch(() => {});
+  }).catch(() => {}), []);
   const logoutRef = useRef(logout);
   logoutRef.current = logout;
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 60000);
-    const onLock = (e) => setLock({ locked: true, since: e.detail?.since || null });
+    const t = setInterval(refresh, 15000);
+    const onLock = (e) => { setLock({ locked: true, since: e.detail?.since || null }); if (userRef.current) apiRequest("/auth/me").catch(() => {}); };
     const onOut = () => logoutRef.current();
     window.addEventListener("oorm-lockdown", onLock);
     window.addEventListener("oorm-signed-out", onOut);
@@ -99,7 +107,7 @@ export function EmergencyLockCard() {
         <div style={{ minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Emergency lock</div>
           <div style={{ fontSize: 12.5, color: "var(--slate)", maxWidth: 640, lineHeight: 1.5 }}>
-            If you suspect a security breach, lock the app. Every function stops for everyone — Administrator, you, customers, links and the plant computers.
+            If you suspect a security breach, lock the app. Every function stops for everyone — Administrator, you, customers, links and the plant computers. Locking signs everyone out at once, you included — sign in again to reach the unlock form.
             Only each person&rsquo;s own attendance (Mark attendance, My attendance) keeps working. Unlocking needs your password.
           </div>
         </div>

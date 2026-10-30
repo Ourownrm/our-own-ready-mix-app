@@ -569,6 +569,12 @@ export const CATALOGUE = [
   // invoice number and the Tally boxes (owner, 30 Oct 2026).
   f("accounts.invoice-print", "accounts", "Print a B2C invoice in the Tally format", VE,
     { administrator: VE, accountant: VE }),
+  // Round 252 — credit notes: Accounts raises one against an invoice; only
+  // the Administrator approves, and only an approved note changes the ledger.
+  f("accounts.credit-notes", "accounts", "Credit notes — see and raise", VC,
+    { administrator: VC, accountant: VC, manager: V }),
+  f("accounts.credit-note-approve", "accounts", "Credit notes — approve, reject or cancel an approved one", E,
+    { administrator: E }),
   f("accounts.customer-ledger", "accounts", "Customer ledger and statements", V,
     { administrator: V, manager: V, accountant: V }),
   f("accounts.bank-receipts", "accounts", "Receipts from bank statements", VC,
@@ -972,13 +978,14 @@ export const MODULES = [
       { key: "accounts.quotations", label: "Quotations" },
       { key: "accounts.price-lists", label: "Price lists" },
       { key: "accounts.invoice-list", label: "Invoices" },
+      { key: "accounts.credit-notes", label: "Credit notes" },
       { key: "accounts.customer-ledger", label: "Customer ledger" },
       { key: "accounts.bank-receipts", label: "Bank receipts" },
       { key: "accounts.rate-migration", label: "Rate file migration" },
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
-      "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
+      "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.credit-note-approve", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
       "accounts.quotation-costing", "accounts.price-list-enable"],
   },
   {

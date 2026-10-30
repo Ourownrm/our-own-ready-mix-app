@@ -53,7 +53,10 @@ export function clearLockCache() { cache = { at: 0, row: null }; }
 export async function setLock({ on, reason, userId, ip, signOutAll }) {
   await ensure();
   if (on) {
-    await query(`UPDATE app_lockdown SET is_on = true, since = now(), reason = $1, set_by = $2 WHERE id = 1`, [reason || null, userId]);
+    // Round 252 (owner, 30 Oct 2026): "once locked sign out all users
+    // immediately" — every sign-in made before this moment stops working,
+    // the Super Admin's own included (signing in stays open while locked).
+    await query(`UPDATE app_lockdown SET is_on = true, since = now(), reason = $1, set_by = $2, sessions_after = now() WHERE id = 1`, [reason || null, userId]);
   } else {
     await query(
       `UPDATE app_lockdown SET is_on = false, since = now(), reason = NULL, set_by = $1,
@@ -61,7 +64,7 @@ export async function setLock({ on, reason, userId, ip, signOutAll }) {
       [userId, !!signOutAll]);
   }
   await query(`INSERT INTO app_lockdown_log (action, reason, user_id, ip) VALUES ($1, $2, $3, $4)`,
-    [on ? "lock" : signOutAll ? "unlock+signout" : "unlock", reason || null, userId, String(ip || "").slice(0, 80)]);
+    [on ? "lock+signout" : signOutAll ? "unlock+signout" : "unlock", reason || null, userId, String(ip || "").slice(0, 80)]);
   clearLockCache();
   return lockState({ fresh: true });
 }

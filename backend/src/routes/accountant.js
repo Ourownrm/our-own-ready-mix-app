@@ -55,6 +55,11 @@ router.post("/credit-notes/:ticketId/clear", async (req, res) => {
 // comes from lib/receivables.js, the same calculation as Accounts → Customer
 // ledger, the Outstanding Collection report and the Director dashboard.
 router.get("/home", async (req, res) => {
+  // Round 252 — returns waiting for a credit note, and notes waiting for the Administrator.
+  const cnNew = await query(
+    `SELECT (SELECT COUNT(*)::int FROM invoices i WHERE i.return_credit_due
+               AND NOT EXISTS (SELECT 1 FROM credit_notes x WHERE x.invoice_id = i.id AND x.reason = 'return' AND x.status IN ('pending','approved'))) AS to_raise,
+            (SELECT COUNT(*)::int FROM credit_notes WHERE status = 'pending') AS pending`).catch(() => ({ rows: [{ to_raise: 0, pending: 0 }] }));
   const [all, out, today, month, billedMonth, bank, held, creditNotes, waivers, pump, reprice, dupOb, allowance, todayList] = await Promise.all([
     positions(),
     query(OUTSTANDING_SQL),
@@ -110,6 +115,7 @@ router.get("/home", async (req, res) => {
       bank_lines: bank.rows[0].n, bank_amount: Number(bank.rows[0].amt), bank_matched: bank.rows[0].matched,
       held_loads: held.rows[0].n, held_m3: Number(held.rows[0].m3),
       credit_notes: creditNotes.rows[0].n, credit_note_amount: Number(creditNotes.rows[0].amt),
+      cn_to_raise: cnNew.rows[0].to_raise, cn_pending: cnNew.rows[0].pending,
       charges_left_out: waivers.rows[0].n, pump_recheck: pump.rows[0].n,
       reprice_review: reprice.rows[0].n,
       duplicate_opening_balances: dupOb.rows[0].n,

@@ -31,6 +31,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { PLANT_SLOTS, SLOT_BY_KEY, RECIPE_TARGET_COLUMNS, normaliseSlot, isPlaceholderName } from "../lib/plantSlots.js";
 import { istDay } from "../lib/istDate.js";
+import { ensureRound252 } from "../lib/round252Schema.js";
 import { loadKept, TRUCK_KEY } from "../lib/plantLoadReview.js";
 import { fifoResolveSlot, seedOpeningLayers, fifoStart, openingStamp, SILO_LEVELS_SQL } from "../lib/siloFifo.js";
 
@@ -436,6 +437,7 @@ router.post("/recipes/sync", async (req, res) => {
   if (!recipes) return res.status(400).json({ error: "Send { recipes: [...] }." });
 
   let inserted = 0, updated = 0, unchanged = 0;
+  await ensureRound252(query);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -492,6 +494,20 @@ router.post("/recipes/sync", async (req, res) => {
         if (!Number.isFinite(t) || t === 0) continue;
         await client.query(`INSERT INTO plant_recipe_targets (recipe_id, slot, target) VALUES ($1,$2,$3)`, [recipeId, slot, t]);
       }
+    }
+    // Round 252 — the agent sends the plant's WHOLE Recipe_Master every cycle,
+    // so a code missing from it is no longer on the plant (owner, 30 Oct 2026:
+    // "the app shows a duplicate recipe with a space in code … in plant system
+    // duplicate recipe is not existing"). Kept on record, hidden from lists.
+    // A recipe with an edit still waiting to reach the plant (a rename, say)
+    // is left alone until the plant has it.
+    const codes = recipes.map((r) => String(r.recipe_code || "").trim()).filter(Boolean);
+    if (codes.length) {
+      await client.query(
+        `UPDATE plant_recipes p SET in_plant = (p.recipe_code = ANY($1::text[])),
+                last_seen_at = CASE WHEN p.recipe_code = ANY($1::text[]) THEN now() ELSE p.last_seen_at END
+          WHERE NOT EXISTS (SELECT 1 FROM plant_recipe_edits e WHERE e.recipe_id = p.id AND e.status IN ('pending','claimed'))`,
+        [codes]);
     }
     await client.query("COMMIT");
   } catch (err) {
@@ -1472,7 +1488,11 @@ const WATER_SLOTS = ["water1", "water2"];
 router.get("/recipes", requireAnyPermission(MIX_READ, "view"), async (req, res) => {
   try {
     const [{ rows: recipes }, { rows: targets }, slotMat, rateLk] = await Promise.all([
-      query(`SELECT * FROM plant_recipes WHERE COALESCE(deleted_flag, '') <> 'Yes' ORDER BY recipe_code`),
+      // Round 252 — only what the plant has now (see /recipes/sync).
+      ensureRound252(query).then(() => query(`SELECT p.* FROM plant_recipes p WHERE p.in_plant AND upper(COALESCE(p.deleted_flag, '')) NOT IN ('YES','Y','TRUE','1','DELETED')
+         AND NOT (NOT EXISTS (SELECT 1 FROM plant_recipe_targets t WHERE t.recipe_id = p.id)
+                  AND EXISTS (SELECT 1 FROM plant_recipes q JOIN plant_recipe_targets qt ON qt.recipe_id = q.id
+                               WHERE q.id <> p.id AND replace(q.recipe_code, ' ', '') = replace(p.recipe_code, ' ', ''))) ORDER BY p.recipe_code`)),
       query(`SELECT recipe_id, slot, target FROM plant_recipe_targets`),
       slotMaterialMap(),
       materialRateLookup(),
@@ -2461,8 +2481,12 @@ router.get("/manual", requirePermission("production.plant-manual", "view"), asyn
     );
     // Round 188 (v10.17 #8) — the plant's recipes, so manual production can be
     // entered by recipe and its consumption worked out from the recipe targets.
+    await ensureRound252(query);
     const { rows: recipes } = await query(
-      `SELECT recipe_code, recipe_name FROM plant_recipes WHERE COALESCE(deleted_flag, '') <> 'Yes' ORDER BY recipe_code`
+      `SELECT p.recipe_code, p.recipe_name FROM plant_recipes p WHERE p.in_plant AND upper(COALESCE(p.deleted_flag, '')) NOT IN ('YES','Y','TRUE','1','DELETED')
+         AND NOT (NOT EXISTS (SELECT 1 FROM plant_recipe_targets t WHERE t.recipe_id = p.id)
+                  AND EXISTS (SELECT 1 FROM plant_recipes q JOIN plant_recipe_targets qt ON qt.recipe_id = q.id
+                               WHERE q.id <> p.id AND replace(q.recipe_code, ' ', '') = replace(p.recipe_code, ' ', ''))) ORDER BY p.recipe_code`
     );
     res.json({
       date: day,

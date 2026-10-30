@@ -9,18 +9,22 @@ import { usePermissions } from "../lib/PermissionContext.jsx";
 import QuotationsTab from "./accounts/QuotationsTab.jsx";
 import PriceLists from "./accounts/PriceLists.jsx";
 import Invoices from "./accounts/Invoices.jsx";
+import CreditNotes from "./accounts/CreditNotes.jsx";
 import CustomerLedger from "./accounts/CustomerLedger.jsx";
 import BankReceipts from "./accounts/BankReceipts.jsx";
-import RateMigration from "./accounts/RateMigration.jsx";
 import QuotationSettings from "./accounts/QuotationSettings.jsx";
 
 const TABS = [
   { key: "quotations", label: "Quotations", perm: "accounts.quotations", Component: QuotationsTab },
   { key: "price-lists", label: "Price lists", perm: "accounts.price-lists", Component: PriceLists },
   { key: "invoices", label: "Invoices", perm: "accounts.invoice-list", Component: Invoices },
+  // Round 252 — credit notes with Administrator approval.
+  { key: "credit-notes", label: "Credit notes", perm: "accounts.credit-notes", Component: CreditNotes },
   { key: "ledger", label: "Customer ledger", perm: "accounts.customer-ledger", Component: CustomerLedger },
   { key: "receipts", label: "Bank receipts", perm: "accounts.bank-receipts", Component: BankReceipts },
-  { key: "migration", label: "Rate migration", perm: "accounts.rate-migration", Component: RateMigration },
+  // Round 252 — the old rate file screen is switched off (owner, 30 Oct 2026);
+  // what is left of it is the "merge same rates" card on Price lists.
+  // { key: "migration", label: "Rate migration", perm: "accounts.rate-migration", Component: RateMigration },
   { key: "settings", label: "Settings", perm: "accounts.quotation-settings", Component: QuotationSettings },
 ];
 

@@ -123,6 +123,10 @@ export default function Accountant() {
   const needs = n ? [
     n.bank_lines > 0 && { key: "bank", tone: "var(--rebar)", title: `${n.bank_lines} bank credit${n.bank_lines > 1 ? "s" : ""} to post`, sub: `${money(n.bank_amount)} · ${n.bank_matched} with a suggested customer`, to: "/accounts?tab=receipts" },
     n.held_loads > 0 && { key: "held", tone: "var(--alert-red)", title: `${n.held_loads} load${n.held_loads > 1 ? "s" : ""} held — no price`, sub: `${Number(n.held_m3).toLocaleString("en-IN")} m³ delivered, not invoiced until the site has an accepted price`, to: "/accounts?tab=invoices&view=held" },
+    // Round 252 — returns to credit and notes waiting for the Administrator.
+    (n.cn_to_raise > 0 || n.cn_pending > 0) && { key: "cn2", tone: "var(--amber)",
+      title: n.cn_to_raise > 0 ? `${n.cn_to_raise} return${n.cn_to_raise > 1 ? "s" : ""} — credit note to raise` : `${n.cn_pending} credit note${n.cn_pending > 1 ? "s" : ""} waiting for approval`,
+      sub: n.cn_to_raise > 0 && n.cn_pending > 0 ? `${n.cn_pending} more waiting for the Administrator` : "Accounts → Credit notes", to: "/accounts?tab=credit-notes" },
     n.credit_notes > 0 && { key: "cn", tone: "var(--amber)", title: `${n.credit_notes} credit note${n.credit_notes > 1 ? "s" : ""} to issue`, sub: `${money(n.credit_note_amount)} returned at site — see below`, href: "#credit-notes" },
     n.duplicate_opening_balances > 0 && { key: "dob", tone: "var(--alert-red)", title: `${n.duplicate_opening_balances} customer${n.duplicate_opening_balances > 1 ? "s" : ""} with two opening balances`, sub: "Their dues are counted twice — open Opening balances and remove the duplicate", onClick: () => setShowOpeningBalances(true) },
     n.reprice_review > 0 && { key: "rp", tone: "var(--amber)", title: `${n.reprice_review} paid invoice${n.reprice_review > 1 ? "s" : ""} with a new rate`, sub: "The customer accepted a new quotation, but money was already set against these — not changed automatically", onClick: () => setShowReprice(true) },

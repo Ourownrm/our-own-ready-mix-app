@@ -29,6 +29,7 @@ export default function PriceLists({ params, go }) {
           style={{ marginLeft: "auto", padding: "7px 10px", border: "1px solid var(--border-strong)", borderRadius: 7 }} />
         {can("accounts.price-revision", "edit") && <button type="button" onClick={() => setBulk(true)}>Price revision for many customers…</button>}
       </div>
+      {can("accounts.rate-migration", "edit") && <OldRateFileCard />}
       {!list ? <Empty>Loading…</Empty> : !shown.length ? <Empty>No price lists yet.</Empty> : (
         <Table minWidth={600} head={<>
           <th style={TH}>Customer</th><th style={{ ...TH, textAlign: "right" }}>Sites priced</th><th style={{ ...TH, textAlign: "right" }}>Grades</th><th style={TH}>Notes</th>
@@ -241,5 +242,29 @@ function BulkRevision({ onClose, go }) {
         </>
       )}
     </Modal>
+  );
+}
+
+// Round 252 — what is left of the old rate file: close the rates a quotation
+// already gives at the same rate; the rest stay until those customers are quoted.
+function OldRateFileCard() {
+  const [st, setSt] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = () => apiRequest("/accounts/rate-file-status").then(setSt).catch(() => {});
+  useEffect(() => { load(); }, []);
+  if (!st || !st.live) return null;
+  async function merge() {
+    if (!window.confirm(`Close the ${st.same} old rate-file rate(s) that the quotation price list already gives at the same rate? Nothing is priced differently.`)) return;
+    setBusy(true); setMsg("");
+    try { const r = await apiRequest("/accounts/rate-file-merge", { method: "POST" }); setMsg(`${r.merged} merged. ${r.still_live} old rate-file rate(s) still apply — quote those customers to replace them.`); load(); }
+    catch (e) { setMsg(e.message); } finally { setBusy(false); }
+  }
+  return (
+    <div className="card" style={{ marginBottom: 12, background: "var(--amber-bg)", fontSize: 13, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <span><b>{st.live}</b> rate(s) still come from the old rate file{st.same ? <> — <b>{st.same}</b> of them are the same as the quotation rate</> : " — none match a quotation rate; quote those customers to replace them"}.</span>
+      {st.same > 0 && <button type="button" className="btn-primary" disabled={busy} onClick={merge} style={{ marginLeft: "auto" }}>{busy ? "Merging…" : `Merge ${st.same} same rate(s)`}</button>}
+      {msg && <div style={{ flexBasis: "100%" }}>{msg}</div>}
+    </div>
   );
 }
