@@ -9,6 +9,7 @@ import { inr, inr2, fmtDate } from "../../lib/quotationTerms.js";
 import { daysAgoStr, todayStr } from "../../lib/istDate.js";
 import { TH, TD, NUM, row, money, Banner, Empty, Table, Modal, Field } from "./ui.jsx";
 import MergeModal from "./MergeModal.jsx";
+import TallyPrintModal from "./TallyPrint.jsx";
 
 export default function Invoices({ params, go }) {
   const view = params.get("view") || "invoices";
@@ -35,6 +36,10 @@ function InvoiceList({ canGst }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(null);
   const [open, setOpen] = useState(null);
+  // Round 251 — B2C (no GSTIN) invoices print in the Tally format.
+  const { can } = usePermissions();
+  const canTally = can("accounts.invoice-print", "view");
+  const [tally, setTally] = useState(null);
 
   useEffect(() => { apiRequest("/master/customers").then(setCustomers).catch(() => {}); }, []);
   useEffect(() => {
@@ -76,6 +81,7 @@ function InvoiceList({ canGst }) {
           <th style={TH}>Ticket · date</th><th style={TH}>Customer · site</th><th style={TH}>Grade · m³</th><th style={{ ...TH, textAlign: "right" }}>Rate</th>
           <th style={{ ...TH, textAlign: "right" }}>Concrete</th><th style={{ ...TH, textAlign: "right" }}>Charges</th><th style={{ ...TH, textAlign: "right" }}>Total</th>
           <th style={{ ...TH, textAlign: "right" }}>Base · GST</th><th style={TH}>GST</th><th style={{ ...TH, textAlign: "right" }}>Due</th>
+          {canTally && <th style={TH}>Tally print</th>}
         </>}>
           {rows.map((r) => {
             const charges = Number(r.pumping_charge) + Number(r.part_load_charge) + Number(r.waiting_charge || 0);
@@ -98,12 +104,24 @@ function InvoiceList({ canGst }) {
                   ) : (r.gst_applied ? "Applied" : <span style={{ color: "var(--amber)" }}>Off</span>)}
                 </td>
                 <td style={{ ...NUM, color: r.balance > 0.01 ? "var(--alert-red)" : "var(--signal-green)" }}>{r.balance > 0.01 ? inr2(r.balance) : "Paid"}</td>
+                {canTally && (
+                  <td style={TD} onClick={(e) => e.stopPropagation()}>
+                    {r.billing_gstin ? <span style={{ fontSize: 11.5, color: "var(--slate)" }}>B2B</span> : (
+                      <>
+                        <button type="button" style={{ fontSize: 12, padding: "5px 10px" }} onClick={() => setTally(r.id)}>{r.tally_invoice_no ? "Reprint" : "Print"}</button>
+                        {r.tally_invoice_no && <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 3, whiteSpace: "nowrap" }}>{r.tally_invoice_no}</div>}
+                      </>
+                    )}
+                  </td>
+                )}
               </tr>
             );
           })}
         </Table>
       )}
       {open && <InvoiceDetail inv={open} onClose={() => setOpen(null)} />}
+      {tally && <TallyPrintModal invoiceId={tally} onClose={() => setTally(null)}
+        onPrinted={(inv) => setRows((rs) => rs.map((x) => (x.id === inv.id ? { ...x, tally_invoice_no: inv.tally_invoice_no } : x)))} />}
     </>
   );
 }

@@ -47,6 +47,7 @@ import { migrateRound245 } from "../lib/round245Schema.js";
 import { migrateRound247 } from "../lib/round247Schema.js";
 import { migrateRound249 } from "../lib/round249Schema.js";
 import { migrateRound250 } from "../lib/round250Schema.js";
+import { migrateRound251 } from "../lib/round251Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4196,6 +4197,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound249(pool, log);
     // ROUND 250 — appointment letters.
     await migrateRound250(pool, log);
+    // ROUND 251 — Tally-format print for B2C invoices.
+    await migrateRound251(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

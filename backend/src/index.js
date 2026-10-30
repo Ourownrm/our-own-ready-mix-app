@@ -68,6 +68,7 @@ import rmTestsRoutes from "./routes/rmTests.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 import quotationRoutes from "./routes/quotations.js";
 import accountsLedgerRoutes from "./routes/accountsLedger.js";
+import accountsTallyRoutes from "./routes/accountsTally.js";
 import quotationImportRoutes from "./routes/quotationImport.js";
 import hrAdvanceRoutes from "./routes/hrAdvances.js";
 import contractLabourRoutes from "./routes/contractLabour.js";
@@ -257,6 +258,7 @@ app.use("/api/hr-advance-requests", hrAdvanceRoutes);
 app.use("/api/contract-labour", contractLabourRoutes);
 app.use("/api/quotations", quotationRoutes);
 app.use("/api/accounts", accountsLedgerRoutes);
+app.use("/api/accounts", accountsTallyRoutes); // Round 251 — B2C invoice in the Tally format
 app.use("/api/super-admin", superAdminRoutes);
 // The delivery-challan plugin. Both routers gate themselves on the plugin
 // being enabled (lib/plugins.js), so mounting them here does not by itself

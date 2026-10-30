@@ -565,6 +565,10 @@ export const CATALOGUE = [
     { administrator: V, manager: V, accountant: V }),
   f("accounts.invoice-gst", "accounts", "Apply / remove GST on an invoice", E,
     { administrator: E, accountant: E }),
+  // Round 251 — print a B2C invoice in the Tally format, typing the Tally
+  // invoice number and the Tally boxes (owner, 30 Oct 2026).
+  f("accounts.invoice-print", "accounts", "Print a B2C invoice in the Tally format", VE,
+    { administrator: VE, accountant: VE }),
   f("accounts.customer-ledger", "accounts", "Customer ledger and statements", V,
     { administrator: V, manager: V, accountant: V }),
   f("accounts.bank-receipts", "accounts", "Receipts from bank statements", VC,
@@ -974,7 +978,7 @@ export const MODULES = [
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
-      "accounts.price-revision", "accounts.invoice-gst", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
+      "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
       "accounts.quotation-costing", "accounts.price-list-enable"],
   },
   {

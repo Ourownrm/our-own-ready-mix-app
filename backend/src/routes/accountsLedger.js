@@ -16,6 +16,7 @@ import { recomputeOrderCharges, rateFor } from "../lib/orderCharges.js";
 import { openItems, postReceipt, applyAdvances, positions, AGE_GROUPS } from "../lib/receivables.js";
 import { can } from "../lib/permissions.js";
 import { lookAlikePriceLists, mergeCustomer, mergeSite, referenceCounts } from "../lib/recordMerge.js";
+import { ensureRound251 } from "../lib/round251Schema.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -45,9 +46,10 @@ router.get("/invoices", INV_VIEW, async (req, res) => {
   if (ISO.test(req.query.from || "")) { params.push(req.query.from); where.push(`dt.ticket_date >= $${params.length}`); }
   if (ISO.test(req.query.to || "")) { params.push(req.query.to); where.push(`dt.ticket_date <= $${params.length}`); }
   if (req.query.gst === "off") where.push("NOT i.gst_applied");
+  await ensureRound251(query); // Round 251 — tally_invoice_no
   const { rows } = await query(
     `SELECT i.id, i.total_amount, i.concrete_amount, i.pumping_charge, i.part_load_charge, i.waiting_charge,
-            i.rate_per_m3, i.gst_applied, i.billing_name, i.billing_gstin, i.created_at,
+            i.rate_per_m3, i.gst_applied, i.billing_name, i.billing_gstin, i.created_at, i.tally_invoice_no,
             dt.ticket_number, dt.ticket_date::text AS ticket_date, dt.loaded_quantity_m3, i.rejected_quantity_m3,
             c.id AS customer_id, c.name AS customer_name, s.name AS site_name, m.name AS grade_name,
             q.quote_no, rm.source AS rate_source,
