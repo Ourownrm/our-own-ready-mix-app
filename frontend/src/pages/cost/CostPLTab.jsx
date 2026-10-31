@@ -16,6 +16,8 @@ export default function CostPLTab({ month, setMonth }) {
   const [period, setPeriod] = useState("month");
   const [compare, setCompare] = useState("prev");
   const [entering, setEntering] = useState(false);
+  // Round 255 — what makes up a line (owner: "what contributed this 5.3 lakh").
+  const [breakup, setBreakup] = useState(null);
   const { data: d, error, reload } = useCostData(`/cost/pl?month=${month}&period=${period}&compare=${compare}`);
   const mayEnter = can("cost.entries", "edit");
   const head = (
@@ -36,7 +38,10 @@ export default function CostPLTab({ month, setMonth }) {
       </Actions>
     </div>
   );
-  const modal = entering && <EntryModal month={month} onClose={() => setEntering(false)} onSaved={() => { setEntering(false); reload(); }} />;
+  const modal = <>
+    {entering && <EntryModal month={month} onClose={() => setEntering(false)} onSaved={() => { setEntering(false); reload(); }} />}
+    {breakup && <BreakupModal month={month} period={period} line={breakup} onClose={() => setBreakup(null)} />}
+  </>;
   if (!d || d.month !== month) return <>{head}<div style={{ marginTop: 16 }}><Loading error={error} /></div>{modal}</>;
 
   const k = d.kpis;
@@ -72,7 +77,12 @@ export default function CostPLTab({ month, setMonth }) {
                   return (
                     <tr key={i} style={{ background: total ? BANDS[r.band] || undefined : undefined }}>
                       <td style={{ paddingLeft: total ? 6 : 20, fontWeight: total ? 700 : 400, ...top }}>
-                        {r.label}{r.missing && <span style={{ color: "var(--amber)", fontWeight: 600 }}> · not entered</span>}
+                        {total ? r.label : (
+                          <button type="button" onClick={() => setBreakup(r)} title="See what makes up this figure"
+                            style={{ background: "none", border: "none", padding: 0, minHeight: 0, color: "var(--charcoal)", textAlign: "left", textDecoration: "underline dotted", textUnderlineOffset: 3, cursor: "pointer", font: "inherit" }}>
+                            {r.label}
+                          </button>
+                        )}{r.missing && <span style={{ color: "var(--amber)", fontWeight: 600 }}> · not entered</span>}
                         {r.hint && <div style={{ ...MUTED, fontSize: 11 }}>{r.hint}</div>}</td>
                       <td style={{ ...R, fontWeight: total ? 700 : 400, color: r.cur < 0 ? "var(--alert-red)" : undefined, ...top }}>{lakh(r.cur)}</td>
                       <td style={{ ...R, color: "#4A525C", fontWeight: total ? 700 : 400, ...top }}>{num(r.per_m3)}</td>
@@ -264,4 +274,65 @@ function exportPL(d) {
     rows.push([r.label, L(r.cur), r.per_m3, r.pct, L(r.cmp), r.change, L(r.ytd), r.src === "app" ? "App" : r.src === "entered" ? (r.missing ? "Entered — missing" : "Entered") : ""]);
   }
   downloadExcel(`Profit and Loss ${d.month} ${d.period}.xlsx`, [{ name: "Profit & Loss", rows }]);
+}
+
+// Round 255 — every entry behind one P&L line, grouped by where it comes from.
+function BreakupModal({ month, period, line, onClose }) {
+  const { data: b, error } = useCostData(`/cost/pl/breakup?month=${month}&period=${period}&key=${line.key}`);
+  const [open, setOpen] = useState({});
+  function excel() {
+    downloadExcel(`P&L ${b.line} — ${b.label}.xlsx`, b.groups.map((g) => ({
+      name: g.label.slice(0, 31).replace(/[\\/?*[\]:]/g, " "),
+      rows: [g.columns, ...g.rows, [], ...[["Total", ...Array(Math.max(0, g.columns.length - 2)).fill(""), g.total]]],
+    })));
+  }
+  return (
+    <Modal title={`${line.label} — ${b ? b.label : "…"}`} onClose={onClose} width={980}>
+      {!b ? <Loading error={error} /> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+            <div>
+              <div style={{ fontSize: 24, fontWeight: 700, ...NUM }}>{rs(b.pl)}</div>
+              <div style={MUTED}>{b.hint ? `${b.hint} · ` : ""}what makes it up, by where it comes from</div>
+            </div>
+            {b.groups.length > 0 && <button type="button" style={BTN} onClick={excel}>Export Excel</button>}
+          </div>
+          {b.groups.length === 0 && <div style={MUTED}>Nothing in this line for {b.label}.</div>}
+          {b.groups.map((g) => {
+            const many = g.rows.length > 25;
+            const shown = many && !open[g.key] ? g.rows.slice(0, 25) : g.rows;
+            const numeric = (c) => typeof c === "number";
+            return (
+              <div key={g.key} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                  <h3 style={{ margin: 0, fontSize: 14 }}>{g.label} <span style={{ ...MUTED, fontWeight: 400 }}>· {g.rows.length} {g.rows.length === 1 ? "entry" : "entries"}</span></h3>
+                  <b style={NUM}>{rs(g.total)}</b>
+                </div>
+                {g.note && <div style={{ ...MUTED, marginTop: 2 }}>{g.note}</div>}
+                <div style={{ overflowX: "auto", marginTop: 6 }}>
+                  <table>
+                    <thead><tr>{g.columns.map((c, i) => <th key={i} style={i === g.columns.length - 1 || numeric(g.rows[0]?.[i]) ? R : undefined}>{c}</th>)}</tr></thead>
+                    <tbody>
+                      {shown.map((r, i) => (
+                        <tr key={i}>{r.map((c, j) => (
+                          <td key={j} style={numeric(c) ? { ...R, fontWeight: j === r.length - 1 ? 600 : 400 } : { fontSize: 12.5 }}>
+                            {numeric(c) ? (j === r.length - 1 ? rs(c) : num(c, Number.isInteger(c) ? 0 : 2)) : c}
+                          </td>
+                        ))}</tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {many && <button type="button" style={{ marginTop: 6, fontSize: 12.5, padding: "5px 10px" }} onClick={() => setOpen({ ...open, [g.key]: !open[g.key] })}>
+                  {open[g.key] ? "Show fewer" : `Show all ${g.rows.length}`}</button>}
+              </div>
+            );
+          })}
+          {Math.abs(b.difference) >= 1 && (
+            <div style={{ fontSize: 12.5, color: "var(--alert-red)" }}>The entries add up to {rs(b.sum)} — {rs(Math.abs(b.difference))} {b.difference > 0 ? "less" : "more"} than the P&amp;L line. Please tell us which month and line.</div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
 }

@@ -2,20 +2,25 @@
 // Accountant home (it replaces the old "Record payment"). Shows which dues
 // the money pays, oldest first, before saving; anything over is kept as the
 // customer's advance and pays the next invoices automatically.
+//
+// Round 255 (owner, 31 Oct 2026): every mode again (cash, bank transfer, UPI,
+// cheque) — Round 252's "cash only" is gone; a bank transfer recorded here is
+// matched when the bank statement comes, not posted twice. "Send to C Ledger":
+// cash goes to a cash holder's wallet as a collection to accept; any other
+// mode is a "Paid to bank" line. The invoices it pays are marked Cash.
 import { useEffect, useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import { todayStr } from "../../lib/istDate.js";
 import { inr2, fmtDate } from "../../lib/quotationTerms.js";
 import { Banner, Field, Modal } from "./ui.jsx";
-import { useLedgerManual } from "../../lib/useLedgerManual.js";
 
 export function ReceiptModal({ customerId, onClose, onDone }) {
   const [customers, setCustomers] = useState([]);
-  // Round 252 — money into the bank comes from the bank statement (Cost → Bank
-  // statements), like supplier payments; only cash is entered here unless an
-  // Administrator allows entries by hand.
-  const manual = useLedgerManual();
   const [f, setF] = useState({ customer_id: customerId || "", receipt_date: todayStr(), amount: "", mode: "cash", reference_number: "", remarks: "" });
+  const [toCl, setToCl] = useState(false);
+  const [holder, setHolder] = useState("");
+  const [holders, setHolders] = useState(null);
+  useEffect(() => { apiRequest("/accounts/cl-holders").then((h) => { setHolders(h); if (h[0]) setHolder(String(h[0].id)); }).catch(() => setHolders([])); }, []);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (!customerId) apiRequest("/master/customers").then(setCustomers).catch(() => {}); }, [customerId]);
@@ -37,7 +42,9 @@ export function ReceiptModal({ customerId, onClose, onDone }) {
   async function save(e) {
     e.preventDefault();
     setBusy(true); setError("");
-    try { onDone(await apiRequest("/accounts/receipts", { method: "POST", body: { ...f, customer_id: Number(f.customer_id), amount: Number(f.amount) } })); }
+    const c_ledger = !toCl ? null : f.mode === "cash" ? { holder_id: Number(holder) } : { bank: true };
+    if (toCl && f.mode === "cash" && !holder) { setError("Choose the cash holder who has the cash."); setBusy(false); return; }
+    try { onDone(await apiRequest("/accounts/receipts", { method: "POST", body: { ...f, customer_id: Number(f.customer_id), amount: Number(f.amount), c_ledger } })); }
     catch (err) { setError(err.message); setBusy(false); }
   }
   return (
@@ -57,12 +64,28 @@ export function ReceiptModal({ customerId, onClose, onDone }) {
           <Field label="Mode">
             <select value={f.mode} onChange={(e) => setF({ ...f, mode: e.target.value })}>
               <option value="cash">Cash</option>
-              {manual && <><option value="bank_transfer">Bank transfer</option><option value="upi">UPI</option><option value="cheque">Cheque</option></>}
+              <option value="bank_transfer">Bank transfer</option><option value="upi">UPI</option><option value="cheque">Cheque</option>
             </select>
           </Field>
           <Field label="Reference / cheque no."><input value={f.reference_number} onChange={(e) => setF({ ...f, reference_number: e.target.value })} /></Field>
         </div>
         <Field label="Remarks"><input value={f.remarks} onChange={(e) => setF({ ...f, remarks: e.target.value })} /></Field>
+        {f.mode !== "cash" && <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10 }}>When the bank statement comes, its line for this money is matched to this receipt — it is not posted twice.</div>}
+        <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 10, background: toCl ? "var(--concrete)" : undefined }}>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13.5, fontWeight: 600 }}>
+            <input type="checkbox" checked={toCl} onChange={(e) => setToCl(e.target.checked)} style={{ width: "auto" }} /> Send to C Ledger
+          </label>
+          {toCl && (f.mode === "cash" ? (
+            holders && holders.length === 0 ? <div style={{ fontSize: 12, color: "var(--alert-red)", marginTop: 6 }}>No cash holders yet — a Super Admin sets them under C Ledger users.</div> : (
+              <Field label="Cash holder who has the cash" style={{ marginTop: 8, marginBottom: 0 }}>
+                <select value={holder} onChange={(e) => setHolder(e.target.value)}>
+                  {(holders || []).map((h) => <option key={h.id} value={h.id}>{h.short}{h.short !== h.name ? ` — ${h.name}` : ""}</option>)}
+                </select>
+              </Field>
+            )
+          ) : <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 6 }}>Goes in as &ldquo;Paid to bank&rdquo; — collected, in nobody&rsquo;s cash.</div>)}
+          {toCl && <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 6 }}>The invoices it pays are marked Cash and get a collection line each; anything not set against an invoice goes in as a collection only.</div>}
+        </div>
         {open && Number(f.amount) > 0 ? (
           <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 12.5 }}>
             <div style={{ color: "var(--slate)", marginBottom: 4 }}>This receipt pays (oldest first):</div>

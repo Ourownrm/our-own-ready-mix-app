@@ -16,6 +16,7 @@ import {
 } from "../lib/costDashboard.js";
 import { breakEven, lineKinds, BE_KEYS, ensureMixedKinds } from "../lib/breakEven.js";
 import { waterMonth, waterSettings, ensureWater } from "../lib/waterCost.js";
+import { plBreakup, BREAKUP_KEYS } from "../lib/plBreakup.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -51,6 +52,16 @@ router.get("/pl", requirePermission("cost.pl", "view"), async (req, res) => {
   const period = ["month", "quarter", "ytd"].includes(req.query.period) ? req.query.period : "month";
   const compare = req.query.compare === "last_year" ? "last_year" : "prev";
   res.json(await profitLoss(ym, { period, compare }));
+});
+
+// Round 255 — every entry behind one P&L line (owner: "what contributed this 5.3 lakh").
+router.get("/pl/breakup", requirePermission("cost.pl", "view"), async (req, res) => {
+  const ym = pickMonth(req, res);
+  if (!ym) return;
+  const key = String(req.query.key || "");
+  if (!BREAKUP_KEYS.has(key)) return res.status(400).json({ error: "Pick a line of the Profit & Loss." });
+  const period = ["month", "quarter", "ytd"].includes(req.query.period) ? req.query.period : "month";
+  res.json(await plBreakup(ym, key, { period }));
 });
 
 router.get("/balance-sheet", requirePermission("cost.balance-sheet", "view"), async (req, res) => {

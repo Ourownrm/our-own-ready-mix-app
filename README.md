@@ -9137,3 +9137,43 @@ Files — frontend: src/lib/{hrPdf, version}.js, src/pages/HrStage2.jsx · root:
 - New permissions (seeded by /setup): hr.ppe, hr.ppe-approve, hr.exit, hr.exit-approve.
 - Backend: lib/round249Schema.js, lib/hrExit.js, routes/hrPeople.js; changes in middleware/auth.js, lib/permissions.js, lib/permissionCatalogue.js, lib/hrAttendance.js, routes/auth.js, routes/superAdmin.js, routes/hr.js, routes/hrAdvances.js, routes/hrPunch.js, routes/setup.js, index.js.
 - **Run /setup?key=… once.**
+
+## Round 255 — Send to CA, invoices marked Cash into C Ledger, receipts any mode, C Ledger flag = no tax, P&L breakup, cheque correction (v10.87)
+Owner, 31 Oct 2026 (mock-up "CA Tax Desk Mockup", v3 agreed — claude/ca-tax-desk-mockup-v1.md), plus "in P&L — breakup of each head" and "admin can edit entered cheque details". **Run /setup once** (additive; also made at start-up).
+
+Declined (owner told why): an invoice flag that would treat a sale as having no GST and keep those invoices / C Ledger entries out of the CA's data. Every invoice and every C Ledger entry goes to the CA.
+
+## 1. Accounts → Invoices — "Cash" mark → C Ledger
+- New column **Cash → C Ledger** (permission `accounts.invoice-cash`, E: Administrator, Accountant); filter Cash / not; invoice detail: **Mark the whole order Cash** / take it off.
+- A marked invoice becomes a C Ledger delivery entry (`cl_deliveries.invoice_id`, ticket linked): date, customer, site, grade, m³ (loaded − returned), rate, other charges = invoice total. Only what is marked goes in (40 of 100 m³ → 40 m³). Kept in step with the invoice (`refreshInvoiceEntries` on every read).
+- The invoice is untouched (GST stays; customer ledger, GST page, CA sales sheet as before). The invoice is the sale: `clTicketSales` leaves these entries out. Untick refused once money is collected against it. A delivery note already on an old hand record is refused (change that record).
+- Old hand-made C Ledger records stay exactly as they were (owner). New hand records are for money with no delivery note only (server refuses delivery notes; "+ Money with no delivery note").
+
+## 2. Customer ledger → Record a receipt — every mode + "Send to C Ledger"
+- Cash, bank transfer, UPI, cheque again (Round 252's cash-only rule removed). A bank transfer recorded by hand is left out when the statement comes (existing "already in the app" match).
+- **Send to C Ledger** (on the receipt form, or later from the statement line): cash → a collection line per invoice it paid, waiting for the chosen cash holder; other modes → "Paid to bank" lines. Invoices it pays are marked Cash; money not against an invoice → a collection-only record (`cl_deliveries.receipt_id`). Lines carry `cl_collections.receipt_id`.
+- Cancel / correct a receipt removes / remakes its lines — refused while a cash holder has accepted its cash. A bank receipt undone at the statement takes its lines with it. Statement shows "C Ledger · PK · waiting" with **Take out**.
+- In C Ledger, an entry from an invoice / receipt is kept by Accounts: Entry may only move a waiting or rejected cash line to another cash holder; no extra lines, no delete, no flag.
+- Routes: `POST /accounts/invoices/cash`, `GET /accounts/cl-holders`, `POST|DELETE /accounts/receipts/:id/c-ledger`.
+
+## 3. C Ledger expense flag = no tax; cross-check
+- Flag now means what the purchase flag means: flagged = no tax → full amount is cost, no credit; not flagged → amount × 100/118, credit on the GST page. Existing C Ledger expenses and petty cash vouchers (same rule) turned over once (mark `r255_flag_means_no_tax`, one transaction). Cost dashboard, P&L, break-even, GST page, wallet costs follow.
+- C Ledger → **Cross-check** (View entry data or View transactions): invoices marked Cash = entries; receipts sent = lines; receipts against Cash invoices not sent; collections typed on invoice entries; entries whose invoice was cancelled; waiting collections; expenses flagged / not (lines, paid, cost). `GET /cost/c-ledger/cross-check`.
+
+## 4. Accounts → Send to CA (`accounts.send-to-ca`, VE: Administrator, Accountant)
+- Month (last month by default), status Not sent / Overdue (after the 5th) / Sent / Changed after sending; Accountant home "Send <month>'s data to the CA" from the 1st.
+- Before sending: bank statements to month end per account, bank lines without a head, held loads, C Ledger categories, petty vouchers waiting, payroll locked, previous month's GSTR-2B uploaded, cross-check.
+- 9 sheets (Excel, built in the browser; "About" sheet first): Sales invoices + credit notes · Money received (receipts, old payments, C Ledger other income) · Purchase bills (GST page purchases: receipts, freight/RCM, maintenance bills, contractor bills; diesel/lubricant purchases) · Money paid (party ledgers except C Ledger cash, salaries paid, advances, bank debits with a head incl. loan interest/principal, tax, asset, capital) · Bank statements (every line + treatment) · Cash (C Ledger + petty cash) · Salaries (payroll) · Partners (txns + month's accrued interest) · GSTR-2B differences (previous month: in books not in 2B, in 2B not in books, tax differs).
+- Head names for the CA (`ca_head_names`): each row prints app head + CA ledger name. Mark as sent stores row fingerprints (`ca_sends`); later changes listed; **Download changes only**.
+
+## 5. Cost → Profit & Loss — breakup of every line
+- Click a line name: every entry behind it for the period (month / quarter / YTD), grouped by source, with the groups adding to the P&L figure (difference shown if not). Sales: invoices (ex-GST), old C Ledger-priced loads, credit notes. Raw material by material. Fuel: each issue + net adjustment + petrol. Water. Repairs: parts issued, outside repairs, lubricants on job cards, tyres/batteries. Salaries per employee; contract labour bills / payroll / gang months. Certificates spread. All heads: entered amount, bank lines (without GST), C Ledger expenses, petty vouchers; interest: loan EMI interest, partners. Excel export. `GET /cost/pl/breakup` (cost.pl view), lib/plBreakup.js.
+
+## 6. Cheques — Administrator corrects an entry (`accounts.cheque-correct`, E: Administrator)
+- Cheque → **Correct entry**, any status: number (duplicate check), date, amount, customer / drawn on / deposit account / received / slip, or account / payee for issued, step dates, purpose, remarks. Reason required; before → after in the cheque history ("entry corrected"). Amount, customer, account locked once matched to a bank line / receipt. `POST /accounts/cheques/:id/correct`.
+
+## Schema (lib/round255Schema.js)
+invoices.cl_cash/_by/_at; cl_deliveries.invoice_id (no FK — a fully rejected load still deletes its invoice), receipt_id; cl_collections.receipt_id; ca_head_names; ca_sends.
+
+## Verified (scratch Postgres, fresh /setup)
+Scenario script, all 44 checks pass: mark / untick / filter; hand record refuses a delivery note; cash receipt → PK lines; bank receipt by hand → Paid to bank lines and invoices marked; accept; cancel refused while accepted; bank receipt cancel removes lines; untick refused after collection; reassign to AK; no hand lines / delete on invoice entries; expense cost 4,500 flagged + 1,180 → 1,000 = 5,500; cross-check matches; P&L breakup = P&L for repairs, concrete and every line YTD; accountant 403 on breakup; 9 sheets; sent → changed after a new expense; CA ledger name printed; reminder; statement C Ledger state; receipt amount change refused; cheque correction (403 accountant, reason required, after deposit, history, nothing-changed refused). Flag flip runs exactly once. `npm run check` green; build clean; screens at 1366 / 390 px, no page errors (customer ledger header wrap fixed on phone).

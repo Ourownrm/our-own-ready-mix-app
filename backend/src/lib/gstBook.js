@@ -11,7 +11,9 @@
 //   freight on ex-factory loads (transporter's GST %; none → reverse charge 5%),
 //   maintenance GRVs (PO line GST %) and outside-repair bills (18% inside),
 //   contractor bills (their GST), bank-statement cost lines (GST % per line),
-//   C Ledger expenses flagged "with GST" (18% inside — C Ledger's own flag).
+//   C Ledger expenses and petty cash vouchers NOT flagged (18% inside).
+//   Round 255: their flag now means what the purchase flag means — flagged =
+//   the bill had no tax, no credit.
 // The quiet flag (owner): every purchase starts WITHOUT the flag = the bill
 //   has tax. The Accountant flags a bill that came without tax: no credit.
 //   Receipts, maintenance bills and contractor bills carry `no_tax`; a bank
@@ -29,6 +31,7 @@ import { computeFreightTotal } from "./supplierLedger.js";
 import { CL_CATEGORIES, CL_FACTOR } from "./cLedger.js";
 import { BANK_HEADS } from "./bankBook.js";
 import { istMonth } from "./istDate.js";
+import { ensureRound255 } from "./round255Schema.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -189,7 +192,7 @@ async function outputRange(from, end, ourState) {
 // One row per purchase: { key, src, group, id, day, ym, party, gstin, inv_no,
 // taxable, gst, pct, no_tax, can_flag, reason }. gst = 0 rows are kept for the
 // "no credit" lists.
-async function inputItems(from, end) {
+export async function inputItems(from, end) {
   const safe = (p) => p.then((r) => r.rows).catch((e) => { console.error("gst input:", e.message); return []; });
   const [rec, freight, grv, outside, contr, bank, cl, fuel, pc] = await Promise.all([
     safe(query(
@@ -287,15 +290,15 @@ async function inputItems(from, end) {
   const costCat = new Set(CL_CATEGORIES.filter((c) => !c.notCost).map((c) => c.key));
   for (const r of cl) {
     if (!costCat.has(r.category)) continue;
-    const gst = r.flagged ? r2(n0(r.amount) * (1 - CL_FACTOR)) : 0;
+    const gst = r.flagged ? 0 : r2(n0(r.amount) * (1 - CL_FACTOR));
     push({ key: `cl:${r.id}`, src: "cledger", group: "C Ledger — cash expenses with GST", id: r.id, day: r.day, party: r.party, gstin: null, inv_no: null,
-      taxable: n0(r.amount) - gst, gst, pct: r.flagged ? GST_PCT : 0, no_tax: false, can_flag: false, reason: r.flagged ? null : "C Ledger — not flagged" });
+      taxable: n0(r.amount) - gst, gst, pct: r.flagged ? 0 : GST_PCT, no_tax: !!r.flagged, can_flag: false, reason: r.flagged ? "flagged" : null });
   }
   for (const r of pc) {
     if (!costCat.has(r.category)) continue;
-    const gst = r.flagged ? r2(n0(r.amount) * (1 - CL_FACTOR)) : 0;
+    const gst = r.flagged ? 0 : r2(n0(r.amount) * (1 - CL_FACTOR));
     push({ key: `pc:${r.id}`, src: "petty", group: "Petty cash — cash expenses with GST", id: r.id, day: r.day, party: r.party, gstin: null, inv_no: null,
-      taxable: n0(r.amount) - gst, gst, pct: r.flagged ? GST_PCT : 0, no_tax: false, can_flag: false, reason: r.flagged ? null : "Petty cash — not flagged" });
+      taxable: n0(r.amount) - gst, gst, pct: r.flagged ? 0 : GST_PCT, no_tax: !!r.flagged, can_flag: false, reason: r.flagged ? "flagged" : null });
   }
   const fuelBy = new Map(fuel.map((f) => [f.ym, { amount: r2(f.v), n: f.n }]));
   return { items, fuelBy };
@@ -372,6 +375,7 @@ const add = (a, b) => ({ igst: a.igst + b.igst, cgst: a.cgst + b.cgst, sgst: a.s
 
 export async function gstMonth(ym) {
   await ensureRound236();
+  await ensureRound255().catch(() => {});
   const s = await gstSettings();
   const from = s.from_month <= ym ? s.from_month : ym;
   const fromDay = monthBounds(from).from, { end } = monthBounds(ym);

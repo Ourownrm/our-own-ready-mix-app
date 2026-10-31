@@ -54,6 +54,9 @@ export default function Accountant() {
     }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Round 255 — last month's data for the CA, from the 1st; due by the 5th.
+  const [caDue, setCaDue] = useState(null);
+  useEffect(() => { if (can("accounts.send-to-ca", "view")) apiRequest("/accounts/ca/due").then(setCaDue).catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function clearCreditNote(ticketId) {
     setError("");
@@ -121,6 +124,8 @@ export default function Accountant() {
   const canReceipt = can("accounts.bank-receipts", "create");
 
   const needs = n ? [
+    caDue && !caDue.sent && { key: "ca", tone: caDue.overdue ? "var(--alert-red)" : "var(--rebar)", title: `Send ${caDue.label}'s data to the CA`,
+      sub: caDue.overdue ? `Overdue — it was due by ${fmtDate(caDue.due_on)}` : `Due by ${fmtDate(caDue.due_on)} · Accounts → Send to CA`, to: "/accounts?tab=send-to-ca" },
     n.bank_lines > 0 && { key: "bank", tone: "var(--rebar)", title: `${n.bank_lines} bank credit${n.bank_lines > 1 ? "s" : ""} to post`, sub: `${money(n.bank_amount)} · ${n.bank_matched} with a suggested customer`, to: "/accounts?tab=receipts" },
     n.held_loads > 0 && { key: "held", tone: "var(--alert-red)", title: `${n.held_loads} load${n.held_loads > 1 ? "s" : ""} held — no price`, sub: `${Number(n.held_m3).toLocaleString("en-IN")} m³ delivered, not invoiced until the site has an accepted price`, to: "/accounts?tab=invoices&view=held" },
     // Round 252 — returns to credit and notes waiting for the Administrator.

@@ -42,6 +42,7 @@ import { ensureRound243 } from "./lib/round243Schema.js";
 import { ensureRound252 } from "./lib/round252Schema.js";
 import { ensureRound253 } from "./lib/round253Schema.js";
 import { ensureRound254 } from "./lib/round254Schema.js";
+import { ensureRound255 } from "./lib/round255Schema.js";
 import { query as dbQuery } from "./db.js";
 import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
@@ -76,6 +77,7 @@ import accountsTallyRoutes from "./routes/accountsTally.js";
 import accountsCreditNotesRoutes from "./routes/accountsCreditNotes.js";
 import accountsChequesRoutes from "./routes/accountsCheques.js";
 import accountsPettyCashRoutes from "./routes/accountsPettyCash.js";
+import accountsCaRoutes from "./routes/accountsCa.js";
 import productionRoutes from "./routes/production.js";
 import mixMappingRoutes from "./routes/mixMapping.js";
 import quotationImportRoutes from "./routes/quotationImport.js";
@@ -271,6 +273,7 @@ app.use("/api/accounts", accountsTallyRoutes); // Round 251 — B2C invoice in t
 app.use("/api/accounts", accountsCreditNotesRoutes); // Round 252 — credit notes
 app.use("/api/accounts", accountsChequesRoutes); // Round 253 — cheque register
 app.use("/api/accounts", accountsPettyCashRoutes); // Round 253 — petty cash
+app.use("/api/accounts", accountsCaRoutes); // Round 255 — Send to CA
 app.use("/api/production", productionRoutes); // Round 254 — Production module tabs
 app.use("/api/mix-mapping", mixMappingRoutes); // Round 254 — QC mix mapping
 app.use("/api/super-admin", superAdminRoutes);
@@ -328,6 +331,7 @@ ensureRound243().catch((e) => console.error("round 243 schema:", e.message));
 ensureRound252(dbQuery).catch((e) => console.error("round 252 schema:", e.message));
 ensureRound253().catch((e) => console.error("round 253 schema:", e.message));
 ensureRound254().catch((e) => console.error("round 254 schema:", e.message));
+ensureRound255().catch((e) => console.error("round 255 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

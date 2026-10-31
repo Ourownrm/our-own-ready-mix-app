@@ -30,7 +30,7 @@ export default function Invoices({ params, go }) {
 }
 
 function InvoiceList({ canGst }) {
-  const [f, setF] = useState({ from: daysAgoStr(30), to: todayStr(), status: "all", gst: "", customer_id: "" });
+  const [f, setF] = useState({ from: daysAgoStr(30), to: todayStr(), status: "all", gst: "", customer_id: "", cash: "" });
   const [rows, setRows] = useState(null);
   const [customers, setCustomers] = useState([]);
   const [error, setError] = useState("");
@@ -40,13 +40,27 @@ function InvoiceList({ canGst }) {
   const { can } = usePermissions();
   const canTally = can("accounts.invoice-print", "view");
   const [tally, setTally] = useState(null);
+  // Round 255 — "Cash": the invoice is collected through C Ledger.
+  const canCash = can("accounts.invoice-cash", "edit");
+  const [msg, setMsg] = useState("");
+  const [reload, setReload] = useState(0);
+  async function markCash(body) {
+    setError(""); setMsg("");
+    try {
+      const r = await apiRequest("/accounts/invoices/cash", { method: "POST", body });
+      if (r.refused?.length) setError(r.refused.map((x) => `${x.ticket_number}: ${x.reason}`).join(" · "));
+      else setMsg(body.on ? `${r.done.length} invoice${r.done.length === 1 ? "" : "s"} marked Cash — now in C Ledger.` : `Cash mark taken off ${r.done.length} invoice${r.done.length === 1 ? "" : "s"}.`);
+      setReload((t) => t + 1);
+      return r;
+    } catch (e) { setError(e.message); return null; }
+  }
 
   useEffect(() => { apiRequest("/master/customers").then(setCustomers).catch(() => {}); }, []);
   useEffect(() => {
     const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
     setRows(null);
     apiRequest(`/accounts/invoices?${qs}`).then(setRows).catch((e) => setError(e.message));
-  }, [f]);
+  }, [f, reload]);
 
   async function toggleGst(inv) {
     setBusy(inv.id); setError("");
@@ -61,7 +75,7 @@ function InvoiceList({ canGst }) {
   const inp = { padding: "6px 8px", border: "1px solid var(--border-strong)", borderRadius: 7, fontSize: 13 };
   return (
     <>
-      <Banner>{error}</Banner>
+      <Banner>{error}</Banner><Banner kind="ok">{msg}</Banner>
       <div className="card" style={{ marginBottom: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 13 }}>
         <select value={f.customer_id} onChange={(e) => setF({ ...f, customer_id: e.target.value })} style={inp}>
           <option value="">All customers</option>
@@ -74,6 +88,9 @@ function InvoiceList({ canGst }) {
           <option value="all">Paid and unpaid</option><option value="unpaid">Unpaid</option><option value="part_paid">Part paid</option><option value="paid">Paid</option>
         </select>
         <label style={{ display: "flex", gap: 5, alignItems: "center" }}><input type="checkbox" checked={f.gst === "off"} onChange={(e) => setF({ ...f, gst: e.target.checked ? "off" : "" })} style={{ width: "auto" }} /> Without GST only</label>
+        <select value={f.cash} onChange={(e) => setF({ ...f, cash: e.target.value })} style={inp} aria-label="Cash collection">
+          <option value="">Cash and not</option><option value="on">Cash (C Ledger) only</option><option value="off">Not marked Cash</option>
+        </select>
         {rows && <span style={{ marginLeft: "auto" }}>{rows.length} invoices · <b>{money(tot.total)}</b> (base {money(tot.base)} + GST {money(tot.gst)}) · due {money(tot.balance)}</span>}
       </div>
       {!rows ? <Empty>Loading…</Empty> : !rows.length ? <Empty>No invoices in this period.</Empty> : (
@@ -82,6 +99,7 @@ function InvoiceList({ canGst }) {
           <th style={{ ...TH, textAlign: "right" }}>Concrete</th><th style={{ ...TH, textAlign: "right" }}>Charges</th><th style={{ ...TH, textAlign: "right" }}>Total</th>
           <th style={{ ...TH, textAlign: "right" }}>Base · GST</th><th style={TH}>GST</th><th style={{ ...TH, textAlign: "right" }}>Due</th>
           {canTally && <th style={TH}>Tally print</th>}
+          <th style={TH} title="Collected in cash through C Ledger">Cash → C Ledger</th>
         </>}>
           {rows.map((r) => {
             const charges = Number(r.pumping_charge) + Number(r.part_load_charge) + Number(r.waiting_charge || 0);
@@ -114,19 +132,31 @@ function InvoiceList({ canGst }) {
                     )}
                   </td>
                 )}
+                <td style={TD} onClick={(e) => e.stopPropagation()}>
+                  {canCash ? (
+                    <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12, whiteSpace: "nowrap" }} title={Number(r.cl_collected) > 0 ? "Money is collected against it in C Ledger" : undefined}>
+                      <input type="checkbox" checked={!!r.cl_cash} disabled={Number(r.cl_collected) > 0 && r.cl_cash} style={{ width: "auto" }}
+                        onChange={() => markCash({ ids: [r.id], on: !r.cl_cash })} />
+                      {r.cl_cash ? "Cash" : ""}
+                    </label>
+                  ) : r.cl_cash ? <span style={{ fontSize: 12 }}>Cash</span> : null}
+                  {r.cl_cash && Number(r.cl_collected) > 0 && <div style={{ fontSize: 11, color: "var(--slate)" }}>₹{inr2(r.cl_collected)} collected</div>}
+                </td>
               </tr>
             );
           })}
         </Table>
       )}
-      {open && <InvoiceDetail inv={open} onClose={() => setOpen(null)} />}
+      {canCash && rows?.length > 0 && <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Tick <b>Cash</b> for an invoice collected in cash through C Ledger — it becomes a C Ledger entry with its m³ and amount. The invoice itself does not change (GST stays on it). Open an invoice to mark its whole order.</div>}
+      {open && <InvoiceDetail inv={open} onClose={() => setOpen(null)} canCash={canCash}
+        onOrderCash={async (on) => { const r = await markCash({ order_id: open.order_id, on }); if (r) setOpen(null); }} />}
       {tally && <TallyPrintModal invoiceId={tally} onClose={() => setTally(null)}
         onPrinted={(inv) => setRows((rs) => rs.map((x) => (x.id === inv.id ? { ...x, tally_invoice_no: inv.tally_invoice_no } : x)))} />}
     </>
   );
 }
 
-function InvoiceDetail({ inv, onClose }) {
+function InvoiceDetail({ inv, onClose, canCash, onOrderCash }) {
   const lines = [
     ["Concrete", `${inr(inv.loaded_quantity_m3 - (inv.rejected_quantity_m3 || 0), 2)} m³ × ₹${inr2(inv.rate_per_m3)}`, inv.concrete_amount],
     ...(Number(inv.pumping_charge) ? [["Pump mobilization", "", inv.pumping_charge]] : []),
@@ -152,6 +182,13 @@ function InvoiceDetail({ inv, onClose }) {
           <tr style={{ fontWeight: 700 }}><td style={TD}>Due</td><td style={NUM}>{inr2(inv.balance)}</td></tr>
         </tbody>
       </table>
+      {canCash && (
+        <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12.5 }}>
+          <span style={{ color: "var(--slate)" }}>{inv.cl_cash ? "Marked Cash — in C Ledger." : "Not marked Cash."} Every invoice of this order:</span>
+          <button type="button" style={{ fontSize: 12.5, padding: "5px 10px" }} onClick={() => onOrderCash(true)}>Mark the whole order Cash</button>
+          <button type="button" style={{ fontSize: 12.5, padding: "5px 10px" }} onClick={() => onOrderCash(false)}>Take the mark off the order</button>
+        </div>
+      )}
     </Modal>
   );
 }

@@ -285,6 +285,9 @@ export async function unpostPayment(c, kind, id, userId, reason = "Changed at it
   } else if (kind === "certificate") {
     await unpostCertificate(c, id);
   } else if (kind === "customer") {
+    // Round 255 — its C Ledger lines (if it was sent there) go with it.
+    const { removeReceiptCl } = await import("./round255Schema.js");
+    await removeReceiptCl(c, id, { force: true, userId }).catch(() => {});
     // The receipt is cancelled (kept), its settlement of dues undone, and the
     // customer's other advances set against what this freed.
     const { rows } = await c.query(

@@ -740,7 +740,7 @@ export async function costDashboard(ym) {
 }
 
 // ======================================================== PROFIT & LOSS ===
-const PL_LINES = [
+export const PL_LINES = [
   { head: "Revenue" },
   { key: "concrete", label: "Sale of concrete", src: "app", hint: "tax invoices, GST taken out" },
   { key: "pumping", label: "Pumping charges", src: "app", hint: "on the invoices, as decided per order" },
@@ -773,7 +773,7 @@ const PL_LINES = [
   { total: "pat", label: "Profit after tax", band: "strong" },
 ];
 
-function periodMonths(ym, period) {
+export function periodMonths(ym, period) {
   if (period === "ytd") return monthsFrom(fyStart(ym), ym);
   if (period === "quarter") {
     const fs = fyStart(ym);
@@ -782,7 +782,7 @@ function periodMonths(ym, period) {
   }
   return [ym];
 }
-function periodLabel(months, period) {
+export function periodLabel(months, period) {
   if (months.length === 1) return monthLabel(months[0], true);
   const a = monthLabel(months[0]).split(" ")[0], b = monthLabel(months[months.length - 1]);
   return `${period === "ytd" ? "Year to date " : ""}${a}–${b}`;

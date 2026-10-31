@@ -340,6 +340,110 @@ router.post("/cheques/:id(\\d+)/edit", EDIT, async (req, res) => {
   });
 });
 
+// Round 255 — the Administrator corrects a cheque entered wrongly (owner,
+// 31 Oct 2026), whatever its status: number, date, amount, customer / payee,
+// bank, account and the dates of its steps. A reason is required and the
+// before / after goes into the cheque's history. Money already in the books
+// stays safe: once a cheque is linked to a receipt or matched to a bank line,
+// its amount, customer and account can't change here (undo that first).
+const CORRECT = requirePermission("accounts.cheque-correct", "edit");
+router.post("/cheques/:id(\\d+)/correct", CORRECT, async (req, res) => {
+  const b = req.body || {};
+  await tx(res, async (db) => {
+    const reason = txt(b.reason, 300);
+    if (!reason) throw fail("Say what was wrong in the entry.");
+    const c = await loadCheque(db, Number(req.params.id), true);
+    const linked = !!(c.receipt_id || c.bank_line_id);
+    const next = {};
+    const was = {};
+    const set = (k, v) => { if (v !== undefined && String(v ?? "") !== String(c[k] ?? "")) { next[k] = v; was[k] = c[k]; } };
+    if (b.cheque_no !== undefined) {
+      const no = String(b.cheque_no || "").replace(/\D/g, "");
+      if (no.length < 3 || no.length > 12) throw fail("Enter the cheque number (the digits printed on the leaf).");
+      if (no.replace(/^0+/, "") !== String(c.cheque_no).replace(/^0+/, "")) {
+        const { rows: dup } = await db.query(
+          c.direction === "issued"
+            ? `SELECT id FROM cheques WHERE direction = 'issued' AND account_id = $2 AND ltrim(cheque_no, '0') = ltrim($1, '0') AND id <> $3`
+            : `SELECT id FROM cheques WHERE direction = 'received' AND status <> 'cancelled' AND ltrim(cheque_no, '0') = ltrim($1, '0')
+                 AND (customer_id = $2 OR lower(drawn_on) = lower($4)) AND id <> $3`,
+          c.direction === "issued" ? [no, b.account_id ? Number(b.account_id) : c.account_id, c.id] : [no, b.customer_id ? Number(b.customer_id) : c.customer_id, c.id, b.drawn_on ?? c.drawn_on]);
+        if (dup.length) throw fail(`Cheque ${no} is already in the register.`, 409);
+        set("cheque_no", c.direction === "issued" && c.cheque_no.length > no.length ? no.padStart(c.cheque_no.length, "0") : no);
+      }
+    }
+    if (b.cheque_date !== undefined) {
+      const d = day(b.cheque_date, { future: true });
+      if (!d) throw fail("Enter the cheque date.");
+      set("cheque_date", d);
+    }
+    if (b.amount !== undefined && c.status !== "cancelled") {
+      const a = r2(b.amount);
+      if (!(a > 0)) throw fail("Enter the amount.");
+      if (Math.abs(a - n0(c.amount)) > 0.005) {
+        if (linked) throw fail("This cheque is already matched to the bank / a receipt — its amount can't change here. Present it again or undo the receipt first.");
+        const { rows: rp } = await db.query(`SELECT COALESCE(SUM(amount), 0) AS v FROM cheque_replacements WHERE cheque_id = $1 AND removed_at IS NULL`, [c.id]);
+        if (a < r2(rp[0].v) - 0.005) throw fail("The amount can't be less than what was paid in its place.");
+        set("amount", a);
+      }
+    }
+    for (const k of ["received_on", "deposited_on", "cleared_on", "bounced_on", "returned_on"]) {
+      if (b[k] === undefined) continue;
+      if (b[k] === "" || b[k] === null) { if (c[k] && ["received_on"].includes(k)) throw fail("The day it was received is needed."); continue; }
+      const d = day(b[k]);
+      if (!d) throw fail("Dates of what already happened can't be in the future.");
+      if (c[k]) set(k, d);
+    }
+    if (c.direction === "received") {
+      if (b.customer_id !== undefined && Number(b.customer_id) !== c.customer_id) {
+        if (linked) throw fail("This cheque is already matched to a receipt — the customer can't change here. Undo the receipt first.");
+        const { rows } = await db.query(`SELECT id FROM customers WHERE id = $1`, [Number(b.customer_id)]);
+        if (!rows.length) throw fail("Choose the customer.");
+        set("customer_id", Number(b.customer_id));
+      }
+      if (b.drawn_on !== undefined) { const v = txt(b.drawn_on, 120); if (!v) throw fail("Enter the customer's bank and branch."); set("drawn_on", v); }
+      if (b.deposit_account_id !== undefined) {
+        const v = b.deposit_account_id ? Number(b.deposit_account_id) : null;
+        if (v !== (c.deposit_account_id || null) && c.bank_line_id) throw fail("This cheque is already matched to a bank line — the account can't change here.");
+        set("deposit_account_id", v);
+      }
+      if (b.slip_no !== undefined) set("slip_no", txt(b.slip_no, 40));
+    } else {
+      if (b.account_id !== undefined && Number(b.account_id) !== c.account_id) {
+        if (linked) throw fail("This cheque is already matched to a bank line — the account can't change here.");
+        const { rows } = await db.query(`SELECT id FROM cost_bank_accounts WHERE id = $1`, [Number(b.account_id)]);
+        if (!rows.length) throw fail("Choose the bank account.");
+        set("account_id", Number(b.account_id));
+      }
+      if (b.payee_kind !== undefined || b.payee_id !== undefined || b.payee_name !== undefined) {
+        const kind = ["supplier", "transporter", "contractor", "self", "other"].includes(b.payee_kind) ? b.payee_kind : c.payee_kind || "other";
+        if (c.status !== "cancelled") {
+          const name = await payeeName(db, kind, b.payee_id ?? c.payee_id, b.payee_name ?? c.payee_name);
+          set("payee_kind", kind);
+          set("payee_id", ["supplier", "transporter", "contractor"].includes(kind) ? Number(b.payee_id ?? c.payee_id) : null);
+          set("payee_name", name);
+        }
+      }
+    }
+    if (b.purpose !== undefined) set("purpose", txt(b.purpose, 300));
+    if (b.remarks !== undefined) set("remarks", txt(b.remarks, 300));
+    const keys = Object.keys(next);
+    if (!keys.length) throw fail("Nothing was changed.");
+    // A different issued leaf number may now sit in another book.
+    if (c.direction === "issued" && (next.cheque_no || next.account_id)) {
+      const n = Number(bareNo(next.cheque_no || c.cheque_no));
+      const { rows: bk } = await db.query(
+        `SELECT id FROM cheque_books WHERE account_id = $1 AND $2 BETWEEN first_no AND last_no ORDER BY is_active DESC, id DESC LIMIT 1`, [next.account_id || c.account_id, n]);
+      next.book_id = bk[0]?.id || null;
+    }
+    const cols = Object.keys(next);
+    await db.query(`UPDATE cheques SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(", ")}, updated_by = $${cols.length + 2}, updated_at = now() WHERE id = $1`,
+      [c.id, ...cols.map((k) => next[k]), req.user.id]);
+    const after = Object.fromEntries(keys.map((k) => [k, next[k]]));
+    await chequeEvent(db, c.id, "entry corrected", { reason, before: was, after }, req.user.id);
+    return { ok: true, changed: keys };
+  });
+});
+
 // ============================================================== steps ===
 router.post("/cheques/:id(\\d+)/deposit", EDIT, async (req, res) => {
   const b = req.body || {};

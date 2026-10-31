@@ -14,6 +14,7 @@ import CustomerLedger from "./accounts/CustomerLedger.jsx";
 import BankReceipts from "./accounts/BankReceipts.jsx";
 import Cheques from "./accounts/Cheques.jsx";
 import PettyCash from "./accounts/PettyCash.jsx";
+import SendToCa from "./accounts/SendToCa.jsx";
 import QuotationSettings from "./accounts/QuotationSettings.jsx";
 
 const TABS = [
@@ -27,6 +28,8 @@ const TABS = [
   // Round 253 — the cheque register and petty cash.
   { key: "cheques", label: "Cheques", perm: "accounts.cheques", Component: Cheques },
   { key: "petty-cash", label: "Petty cash", perm: "accounts.petty-cash", Component: PettyCash },
+  // Round 255 — the month's data for the CA, in Excel, by the 5th.
+  { key: "send-to-ca", label: "Send to CA", perm: "accounts.send-to-ca", Component: SendToCa },
   // Round 252 — the old rate file screen is switched off (owner, 30 Oct 2026);
   // what is left of it is the "merge same rates" card on Price lists.
   // { key: "migration", label: "Rate migration", perm: "accounts.rate-migration", Component: RateMigration },

@@ -13,6 +13,11 @@
 // The flag: the owner's rule decides how a flagged / not-flagged record is
 // counted in Sales and Cost. That rule is applied in the backend
 // (lib/cLedger.js) and is deliberately NOT written on any screen.
+//
+// Round 255: delivery entries come from invoices marked "Cash" in Accounts,
+// and collections from receipts sent there; such an entry is kept by
+// Accounts (only a waiting cash line can go to another cash holder here). A
+// record typed here is for money with no delivery note. New: Cross-check.
 import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../../lib/api.js";
 import {
@@ -79,6 +84,7 @@ export default function CostCLedgerTab() {
     a.cash_holder && ["wallet", "My wallet"],
     // Round 229 (owner): independent rights — Entry is deliveries only.
     a.view_txns && ["txns", "Expenses & transactions"],
+    (a.view_entries || a.view_txns) && ["check", "Cross-check"],
   ].filter(Boolean);
   const cur = views.find((v) => v[0] === view)?.[0] || views[0][0];
   return (
@@ -90,6 +96,7 @@ export default function CostCLedgerTab() {
       {cur === "entries" && <EntriesView me={me} month={month} />}
       {cur === "wallet" && <WalletView me={me} month={month} />}
       {cur === "txns" && <TxnsView me={me} month={month} />}
+      {cur === "check" && <CrossCheckView month={month} />}
     </div>
   );
 }
@@ -145,7 +152,7 @@ function EntriesView({ me, month }) {
             <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer, site or delivery note" style={{ ...INPUT, minWidth: 220, fontSize: 13, minHeight: 40 }} />
           </label>
           <button type="button" style={BTN} onClick={excel}>Export Excel</button>
-          {canEdit && <button type="button" className="btn-primary" style={BTN} onClick={() => setForm({})}>+ New delivery entry</button>}
+          {canEdit && <button type="button" className="btn-primary" style={BTN} onClick={() => setForm({})}>+ Money with no delivery note</button>}
         </Actions>
       </div>
 
@@ -153,7 +160,9 @@ function EntriesView({ me, month }) {
         <Tile label="Billed" value={rs(s.billed)} note={`${s.count} deliveries · ${num(s.m3, 1)} m³`} />
         <Tile label="Collected" value={rs(s.collected)} note={s.pending ? `${rs(s.pending)} awaiting acceptance` : "all accepted"} />
         <Tile label="Balance due" value={rs(s.balance)} note={s.rejected ? `incl. ${rs(s.rejected)} rejected, to reassign` : null} />
-        <Tile label="Sales value" value={rs(s.sales_value)} note={`${s.flagged} flagged · ${s.count - s.flagged} not flagged${s.unlinked ? ` · ${s.unlinked} without a delivery note not counted` : ""}`} dark />
+        <Tile label="Sales value" value={rs(s.sales_value)} note={[s.from_invoices ? `${s.from_invoices} from invoices` : null,
+          s.count - (s.from_invoices || 0) - s.unlinked > 0 ? `${s.flagged} flagged · ${s.count - (s.from_invoices || 0) - s.unlinked - s.flagged} not flagged` : null,
+          s.unlinked ? `${s.unlinked} without a delivery note not counted` : null].filter(Boolean).join(" · ") || null} dark />
       </div>
 
       {err && <Note tone="bad">{err}</Note>}
@@ -167,6 +176,7 @@ function EntriesView({ me, month }) {
           ))}
         </Note>
       )}
+      <Note tone="info">Delivery entries come from Accounts → Invoices (an invoice marked <b>Cash</b>), and their collections from Accounts → Customer ledger → Record a receipt → Send to C Ledger.</Note>
       {s.unlinked > 0 && <Note>{s.unlinked} record{s.unlinked > 1 ? "s have" : " has"} no delivery note ({rs(s.unlinked_total)}). {s.unlinked > 1 ? "They are" : "It is"} kept for collections only and not counted in Sales{canEdit ? " — if there is a challan, open the record and pick it" : ""}.</Note>}
 
       <div style={panel("1 1 100%")}>
@@ -185,7 +195,11 @@ function EntriesView({ me, month }) {
                 <tr key={r.id} style={{ background: r.flagged ? "#FFFBF2" : undefined, verticalAlign: "top" }}>
                   <td style={{ whiteSpace: "nowrap", ...NUM }}>{fmtDay(r.entry_date)}</td>
                   <td style={{ minWidth: 160 }}><div style={{ fontWeight: 600 }}>{r.customer_name}</div><div style={MUTED}>{r.location}</div></td>
-                  <td style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>{r.tickets.length ? r.tickets.map((t) => t.number).join(", ") : <span style={{ color: "var(--alert-red)" }}>not linked</span>}</td>
+                  <td style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
+                    {r.source !== "hand" && <SourcePill source={r.source} />}
+                    {r.tickets.length ? r.tickets.map((t) => t.number).join(", ") : r.source === "receipt" ? <span style={MUTED}>receipt, not against an invoice</span> : <span style={{ color: "var(--alert-red)" }}>not linked</span>}
+                    {r.source === "invoice" && r.invoice_live === false && <div style={{ color: "var(--alert-red)", fontSize: 11.5 }}>invoice cancelled</div>}
+                  </td>
                   <td>{r.grade || "—"}</td>
                   <td style={R}>{num(r.qty_m3, 1)}</td>
                   <td style={R}>{num(r.rate)}</td>
@@ -200,11 +214,15 @@ function EntriesView({ me, month }) {
                   </td>
                   <td style={{ ...R, fontWeight: 600, color: r.balance > 0.5 ? "var(--alert-red)" : "var(--signal-green)" }}>{rs(r.balance)}</td>
                   <td style={{ ...R, fontWeight: 600 }}>{r.tickets.length ? rs(r.sales_value) : <span style={MUTED} title="No delivery note — not a sale">—</span>}</td>
-                  <td>{canEdit ? <FlagButton on={r.flagged} disabled={busy} onClick={() => flag(r)} label={`${r.flagged ? "Remove flag on" : "Flag"} ${r.customer_name}`} /> : r.flagged ? <FlagPill /> : null}</td>
+                  <td>{r.source !== "hand" ? null : canEdit ? <FlagButton on={r.flagged} disabled={busy} onClick={() => flag(r)} label={`${r.flagged ? "Remove flag on" : "Flag"} ${r.customer_name}`} /> : r.flagged ? <FlagPill /> : null}</td>
                   {canEdit && (
                     <td style={{ whiteSpace: "nowrap" }}>
-                      <button type="button" style={{ padding: "6px 10px", minHeight: 36, fontSize: 12 }} onClick={() => setForm(r)}>Edit</button>{" "}
-                      {!r.collections.some((c) => c.status === "accepted") && <button type="button" style={{ padding: "6px 10px", minHeight: 36, fontSize: 12 }} onClick={() => remove(r)} disabled={busy}>Delete</button>}
+                      {r.source === "hand" ? <>
+                        <button type="button" style={{ padding: "6px 10px", minHeight: 36, fontSize: 12 }} onClick={() => setForm(r)}>Edit</button>{" "}
+                        {!r.collections.some((c) => c.status === "accepted") && <button type="button" style={{ padding: "6px 10px", minHeight: 36, fontSize: 12 }} onClick={() => remove(r)} disabled={busy}>Delete</button>}
+                      </> : r.collections.some((c) => !c.bank && c.status !== "accepted") ? (
+                        <button type="button" style={{ padding: "6px 10px", minHeight: 36, fontSize: 12 }} onClick={() => setForm(r)}>Cash holder</button>
+                      ) : null}
                     </td>
                   )}
                 </tr>
@@ -215,7 +233,9 @@ function EntriesView({ me, month }) {
         </div>
         <div style={{ ...MUTED, marginTop: 8 }}>An accepted collection is locked. A rejected one comes back here to be given to another cash holder.</div>
       </div>
-      {form && <DeliveryForm me={me} rec={form.id ? form : null} onClose={() => setForm(null)} onSaved={() => { setForm(null); reload(); }} />}
+      {form && (form.id && form.source !== "hand"
+        ? <ReassignForm me={me} rec={form} onClose={() => setForm(null)} onSaved={() => { setForm(null); reload(); }} />
+        : <DeliveryForm me={me} rec={form.id ? form : null} onClose={() => setForm(null)} onSaved={() => { setForm(null); reload(); }} />)}
     </>
   );
 }
@@ -230,7 +250,9 @@ function DeliveryForm({ me, rec, onClose, onSaved }) {
   const locked = rec ? rec.collections.filter((c) => c.status === "accepted" && !c.bank) : [];
   const [lines, setLines] = useState(() => rec ? rec.collections.filter((c) => !(c.status === "accepted" && !c.bank))
     .map((c) => ({ ...c, amount: String(c.amount), holder_id: c.bank ? "bank" : c.holder_id, paid_on: c.paid_on || "" })) : []);
-  const [noNote, setNoNote] = useState(rec ? rec.tickets.length === 0 : false);
+  // Round 255 — a new record is for money with no delivery note (delivery
+  // notes come in from Accounts → Invoices). An old record keeps its notes.
+  const [noNote, setNoNote] = useState(rec ? rec.tickets.length === 0 : true);
   const [tq, setTq] = useState("");
   const [cands, setCands] = useState(null);
   const [err, setErr] = useState("");
@@ -309,10 +331,13 @@ function DeliveryForm({ me, rec, onClose, onSaved }) {
           </div>
         )}
         {!noNote && picked.length > 0 && <div style={{ fontSize: 12.5 }}>Picked: <b>{picked.map((p) => p.number).join(", ")}</b></div>}
-        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-          <input type="checkbox" checked={noNote} onChange={(e) => { setNoNote(e.target.checked); if (e.target.checked) setPicked([]); }} style={{ width: 18, height: 18, margin: 0 }} />
-          No delivery note in the app for this (pick it later)
-        </label>
+        {rec && rec.tickets.length > 0 && (
+          <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+            <input type="checkbox" checked={noNote} onChange={(e) => { setNoNote(e.target.checked); if (e.target.checked) setPicked([]); }} style={{ width: 18, height: 18, margin: 0 }} />
+            No delivery note in the app for this
+          </label>
+        )}
+        {!rec && <div style={{ ...MUTED, fontSize: 12.5 }}>For money with no delivery note in the app (e.g. an old outstanding amount) — it is a collection only, not a sale. A delivery comes into C Ledger when its invoice is marked <b>Cash</b> in Accounts → Invoices.</div>}
 
         <div style={GRID(170)}>
           <label style={LBL}>Customer<input value={f.customer_name} onChange={(e) => set("customer_name", e.target.value)} style={INPUT} /></label>
@@ -361,10 +386,12 @@ function DeliveryForm({ me, rec, onClose, onSaved }) {
           {holders.length === 0 && <div style={MUTED}>No cash holders yet — a Super Admin sets them under C Ledger users.</div>}
         </div>
 
-        <label style={{ display: "flex", gap: 9, alignItems: "center", fontSize: 14, fontWeight: 600, background: "var(--amber-bg)", border: "1px solid #E7D8AE", borderRadius: 8, padding: "10px 12px" }}>
-          <input type="checkbox" checked={f.flagged} onChange={(e) => set("flagged", e.target.checked)} style={{ width: 18, height: 18, margin: 0 }} />
-          <span style={{ color: "#7A4F00", display: "inline-flex" }}><FlagIcon size={14} /></span>Flag this record
-        </label>
+        {rec && rec.tickets.length > 0 && (
+          <label style={{ display: "flex", gap: 9, alignItems: "center", fontSize: 14, fontWeight: 600, background: "var(--amber-bg)", border: "1px solid #E7D8AE", borderRadius: 8, padding: "10px 12px" }}>
+            <input type="checkbox" checked={f.flagged} onChange={(e) => set("flagged", e.target.checked)} style={{ width: 18, height: 18, margin: 0 }} />
+            <span style={{ color: "#7A4F00", display: "inline-flex" }}><FlagIcon size={14} /></span>Flag this record
+          </label>
+        )}
         <label style={LBL}>Note (optional)<input value={f.note} onChange={(e) => set("note", e.target.value)} style={INPUT} /></label>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
@@ -381,6 +408,99 @@ function DeliveryForm({ me, rec, onClose, onSaved }) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+function SourcePill({ source }) {
+  const [label, bg, fg] = source === "invoice" ? ["Invoice", "var(--info-bg)", "var(--info)"] : ["Receipt", "#ECEAE4", "var(--slate)"];
+  return <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 20, background: bg, color: fg, marginRight: 6 }}>{label}</span>;
+}
+
+// Round 255 — an entry kept by Accounts: a waiting / rejected cash line can go
+// to another cash holder. Everything else changes in Accounts.
+function ReassignForm({ me, rec, onClose, onSaved }) {
+  const [lines, setLines] = useState(() => rec.collections.map((c) => ({ ...c, to: c.holder_id ? String(c.holder_id) : "" })));
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true); setErr("");
+    try {
+      await apiRequest(`/cost/c-ledger/deliveries/${rec.id}`, { method: "PUT", body: { collections: lines.filter((l) => !l.bank && l.status !== "accepted").map((l) => ({ id: l.id, holder_id: Number(l.to) })) } });
+      onSaved();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  return (
+    <Modal title={`${rec.customer_name} — cash holder`} onClose={onClose} width={560}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={MUTED}>{rec.source === "invoice" ? `From the invoice of ${rec.tickets.map((t) => t.number).join(", ")}` : "From a receipt"} · {rs(rec.total)}. Amounts and receipts change in Accounts.</div>
+        {lines.map((l, i) => (
+          <div key={l.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+            <b style={NUM}>{rs(l.amount)}</b>
+            {l.bank ? <span>Paid to bank</span> : l.status === "accepted" ? <span>{l.holder} <Badge status="accepted" /></span> : (
+              <>
+                <select aria-label="Cash holder" value={l.to} onChange={(e) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, to: e.target.value } : x)))} style={{ ...INPUT, width: 180 }}>
+                  {me.holders.map((h) => <option key={h.id} value={h.id}>{h.short}</option>)}
+                </select>
+                <Badge status={l.status} />
+                {l.status === "rejected" && l.reject_reason && <span style={{ color: "var(--alert-red)", fontSize: 12 }}>“{l.reject_reason}”</span>}
+              </>
+            )}
+          </div>
+        ))}
+        {err && <Note tone="bad">{err}</Note>}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button type="button" onClick={onClose} style={BTN}>Cancel</button>
+          <button type="button" className="btn-primary" onClick={save} disabled={busy} style={BTN}>{busy ? "Saving…" : "Save"}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ========================================================== cross-check ===
+function CrossCheckView({ month }) {
+  const { data: d, error } = useCostData(`/cost/c-ledger/cross-check?month=${month}`);
+  if (!d) return <Loading error={error} />;
+  const e = d.expenses;
+  return (
+    <>
+      <div>
+        <h2 style={{ ...H2, fontSize: 18 }}>Cross-check — {d.label}</h2>
+        <div style={SUB}>Accounts against C Ledger. A row that doesn&rsquo;t match stops nothing — it is there to be explained.</div>
+      </div>
+      <div style={ROW}>
+        <div style={panel("2 1 520px")}>
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead><tr><th>Check</th><th style={R}>Accounts</th><th style={R}>C Ledger</th><th /></tr></thead>
+              <tbody>
+                {d.checks.map((c) => (
+                  <tr key={c.key}>
+                    <td>{c.label}</td>
+                    <td style={R}>{c.left_n || c.left ? <>{rs(c.left)}<div style={MUTED}>{c.left_n}</div></> : "—"}</td>
+                    <td style={R}>{c.right_n || c.right ? <>{rs(c.right)}<div style={MUTED}>{c.right_n}</div></> : "—"}</td>
+                    <td>{c.ok ? <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 20, background: "var(--signal-green-bg)", color: "#155C40" }}>Matches</span> : <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 20, background: c.warn_only ? "var(--amber-bg)" : "var(--alert-red-bg)", color: c.warn_only ? "#7A4F00" : "var(--alert-red)" }}>{c.warn_only ? "Look" : "Differs"}</span>}</td>
+                  </tr>
+                ))}
+                <tr><td>Collections waiting to be accepted in a wallet (any month)</td><td style={R}>—</td><td style={R}>{d.pending.n ? <>{rs(d.pending.amount)}<div style={MUTED}>{d.pending.n}</div></> : "—"}</td><td /></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div style={panel("1 1 320px")}>
+          <h2 style={H2}>Expenses</h2>
+          <table style={{ marginTop: 8 }}>
+            <thead><tr><th /><th style={R}>Lines</th><th style={R}>Paid</th><th style={R}>Cost</th></tr></thead>
+            <tbody>
+              <tr><td><FlagPill /></td><td style={R}>{e.flagged.n}</td><td style={R}>{rs(e.flagged.amount)}</td><td style={R}>{rs(e.flagged.cost)}</td></tr>
+              <tr><td>Not flagged</td><td style={R}>{e.not_flagged.n}</td><td style={R}>{rs(e.not_flagged.amount)}</td><td style={R}>{rs(e.not_flagged.cost)}</td></tr>
+              <tr style={{ fontWeight: 700 }}><td>Total</td><td style={R}>{e.total.n}</td><td style={R}>{rs(e.total.amount)}</td><td style={R}>{rs(e.total.cost)}</td></tr>
+            </tbody>
+          </table>
+          <div style={{ ...MUTED, marginTop: 8 }}>Cost is what goes to the P&amp;L and break-even.</div>
+        </div>
+      </div>
+    </>
   );
 }
 

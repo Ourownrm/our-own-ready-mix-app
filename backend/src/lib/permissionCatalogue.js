@@ -575,6 +575,13 @@ export const CATALOGUE = [
   // invoice number and the Tally boxes (owner, 30 Oct 2026).
   f("accounts.invoice-print", "accounts", "Print a B2C invoice in the Tally format", VE,
     { administrator: VE, accountant: VE }),
+  // Round 255 — mark an invoice "Cash": it goes to C Ledger as an entry, and
+  // the cash collected is recorded against it there (owner, 31 Oct 2026).
+  f("accounts.invoice-cash", "accounts", "Mark invoices \"Cash\" — they go to C Ledger", E,
+    { administrator: E, accountant: E }),
+  // Round 255 — the month's data for the CA, in Excel, by the 5th.
+  f("accounts.send-to-ca", "accounts", "Send to CA — download the month's data, mark it sent, set the CA's ledger names", VE,
+    { administrator: VE, accountant: VE }),
   // Round 252 — credit notes: Accounts raises one against an invoice; only
   // the Administrator approves, and only an approved note changes the ledger.
   f("accounts.credit-notes", "accounts", "Credit notes — see and raise", VC,
@@ -591,6 +598,9 @@ export const CATALOGUE = [
   // returned PDC paid by bank or cash) and petty cash.
   f("accounts.cheques", "accounts", "Cheques — register, deposit, clear, bounce, return, cheque books", VCE,
     { administrator: VCE, accountant: VCE, manager: V }),
+  // Round 255 — correct a cheque entered wrongly, whatever its status (owner).
+  f("accounts.cheque-correct", "accounts", "Cheques — correct an entry made by mistake (number, date, amount, customer / payee, bank)", E,
+    { administrator: E }),
   f("accounts.petty-cash", "accounts", "Petty cash — see the boxes; add vouchers and ask for top-ups (own box, or any with edit)", VCE,
     { administrator: VCE, accountant: VCE, manager: VC }),
   f("accounts.petty-cash-approve", "accounts", "Petty cash — approve vouchers and top-up requests", E,
@@ -1001,12 +1011,13 @@ export const MODULES = [
       { key: "accounts.bank-receipts", label: "Bank receipts" },
       { key: "accounts.cheques", label: "Cheques" },
       { key: "accounts.petty-cash", label: "Petty cash" },
+      { key: "accounts.send-to-ca", label: "Send to CA" },
       { key: "accounts.rate-migration", label: "Rate file migration" },
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
-      "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.credit-note-approve", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
-      "accounts.petty-cash-approve", "accounts.petty-cash-fund", "accounts.petty-cash-setup",
+      "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.invoice-cash", "accounts.credit-note-approve", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
+      "accounts.petty-cash-approve", "accounts.petty-cash-fund", "accounts.petty-cash-setup", "accounts.cheque-correct",
       "accounts.quotation-costing", "accounts.price-list-enable"],
   },
   {

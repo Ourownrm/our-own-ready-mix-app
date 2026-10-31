@@ -12,10 +12,11 @@ import {
   CL_CATEGORIES, CL_CATEGORY_KEYS, CL_INCOME_KINDS, CL_INCOME_KEYS, CL_FACTOR, clAccess, requireCl, clLog, holderBalances, clDeliveryTotal,
 } from "../lib/cLedger.js";
 import { ensureRound235, postPayment, unpostPayment } from "../lib/ledgerPost.js";
+import { ensureRound255, refreshInvoiceEntries, clCrossCheck } from "../lib/round255Schema.js";
 
 const router = Router();
 router.use(requireAuth);
-router.use(async (_req, _res, next) => { try { await ensureRound235(); next(); } catch (e) { next(e); } });
+router.use(async (_req, _res, next) => { try { await ensureRound235(); await ensureRound255(); next(); } catch (e) { next(e); } });
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -54,9 +55,11 @@ async function deliveriesFor(where, params) {
   const { rows } = await query(
     `SELECT d.id, d.entry_date::text AS entry_date, d.customer_name, d.location, d.grade, d.qty_m3, d.rate, d.other_charges,
             d.sales_rep, d.flagged, d.note, d.created_at, cu.name AS created_by_name, uu.name AS updated_by_name, d.updated_at,
+            -- Round 255 — an entry made from an invoice marked "Cash", or by a receipt.
+            d.invoice_id, d.receipt_id, inv.gst_applied AS invoice_gst, (inv.id IS NOT NULL) AS invoice_live,
             COALESCE((SELECT json_agg(json_build_object('id', c.id, 'amount', c.amount, 'holder_id', c.holder_id,
                         'holder', COALESCE(ca.short_name, hu.name, 'Bank'), 'mode', c.mode, 'status', c.status, 'reject_reason', c.reject_reason,
-                        'paid_on', c.paid_on::text, 'bank', c.holder_id IS NULL)
+                        'paid_on', c.paid_on::text, 'bank', c.holder_id IS NULL, 'receipt_id', c.receipt_id)
                         ORDER BY c.id)
                         FROM cl_collections c LEFT JOIN users hu ON hu.id = c.holder_id LEFT JOIN cl_access ca ON ca.user_id = c.holder_id
                        WHERE c.delivery_id = d.id), '[]') AS collections,
@@ -65,6 +68,7 @@ async function deliveriesFor(where, params) {
                         FROM cl_delivery_tickets l JOIN delivery_tickets t ON t.id = l.ticket_id WHERE l.delivery_id = d.id), '[]') AS tickets
        FROM cl_deliveries d
        LEFT JOIN users cu ON cu.id = d.created_by LEFT JOIN users uu ON uu.id = d.updated_by
+       LEFT JOIN invoices inv ON inv.id = d.invoice_id
       WHERE d.deleted_at IS NULL AND ${where}
       ORDER BY d.entry_date DESC, d.id DESC`, params);
   return rows.map((d) => {
@@ -78,7 +82,10 @@ async function deliveriesFor(where, params) {
       rejected: r2(colls.filter((c) => c.status === "rejected").reduce((t, c) => t + c.amount, 0)),
       pending: r2(colls.filter((c) => c.status === "pending").reduce((t, c) => t + c.amount, 0)),
       // Round 227 — a record with no delivery note is not a sale (owner).
-      sales_value: d.tickets.length ? r2(total * (d.flagged ? CL_FACTOR : 1)) : 0,
+      // Round 255 — an entry from an invoice: the invoice is the sale (its GST taken out).
+      source: d.invoice_id ? "invoice" : d.receipt_id ? "receipt" : "hand",
+      sales_value: d.invoice_id ? (d.invoice_live ? r2(total * (d.invoice_gst === false ? 1 : CL_FACTOR)) : 0)
+        : d.tickets.length ? r2(total * (d.flagged ? CL_FACTOR : 1)) : 0,
     };
   });
 }
@@ -86,6 +93,7 @@ async function deliveriesFor(where, params) {
 router.get("/deliveries", requireCl("view_entries"), async (req, res) => {
   const ym = pickMonth(req, res);
   if (!ym) return;
+  await refreshInvoiceEntries();
   const { from, end } = monthBounds(ym);
   const list = await deliveriesFor(`d.entry_date BETWEEN $1::date AND $2::date`, [from, end]);
   const sum = (k) => r2(list.reduce((t, d) => t + d[k], 0));
@@ -94,8 +102,9 @@ router.get("/deliveries", requireCl("view_entries"), async (req, res) => {
     summary: {
       count: list.length, m3: sum("qty_m3"), billed: sum("total"), collected: sum("collected"), balance: sum("balance"),
       pending: sum("pending"), rejected: sum("rejected"), sales_value: sum("sales_value"),
-      flagged: list.filter((d) => d.flagged).length, unlinked: list.filter((d) => !d.tickets.length).length,
-      unlinked_total: r2(list.filter((d) => !d.tickets.length).reduce((t, d) => t + d.total, 0)),
+      flagged: list.filter((d) => d.flagged).length, unlinked: list.filter((d) => !d.tickets.length && d.source === "hand").length,
+      unlinked_total: r2(list.filter((d) => !d.tickets.length && d.source === "hand").reduce((t, d) => t + d.total, 0)),
+      from_invoices: list.filter((d) => d.source === "invoice").length,
     },
     rejected_lines: list.flatMap((d) => d.collections.filter((c) => c.status === "rejected")
       .map((c) => ({ ...c, delivery_id: d.id, customer_name: d.customer_name, entry_date: d.entry_date }))),
@@ -211,9 +220,30 @@ async function writeLinksAndLines(client, id, d, holders) {
   return null;
 }
 
+// Round 255 — on an entry kept by Accounts, Entry may only give a cash line
+// that is waiting or was rejected to another cash holder (same amount).
+async function reassignOnly(client, id, sent, holders) {
+  const { rows: existing } = await client.query(`SELECT * FROM cl_collections WHERE delivery_id = $1 FOR UPDATE`, [id]);
+  for (const l of Array.isArray(sent) ? sent : []) {
+    const old = existing.find((c) => c.id === Number(l.id));
+    if (!old) return "Collections on this entry come from Accounts → Customer ledger → Record a receipt.";
+    if (old.holder_id == null || old.status === "accepted") continue;
+    const to = Number(l.holder_id);
+    if (to === old.holder_id && old.status !== "rejected") continue;
+    if (!holders.has(to)) return "Pick the cash holder.";
+    await client.query(`UPDATE cl_collections SET holder_id = $2, status = 'pending', reject_reason = NULL, responded_at = NULL WHERE id = $1`, [old.id, to]);
+  }
+  return null;
+}
+
 router.post("/deliveries", requireCl("entry"), async (req, res) => {
   const d = cleanDelivery(req.body || {});
   if (d.error) return bad(res, d.error);
+  // Round 255 (owner): a delivery note comes into C Ledger from Accounts →
+  // Invoices (mark "Cash"); a record typed here is for money with no
+  // delivery note in the app, and is never a sale.
+  if (d.ticket_ids.length) return bad(res, "Delivery notes come into C Ledger from Accounts → Invoices: mark the invoice \"Cash\". A record typed here is only for money with no delivery note.");
+  d.flagged = false;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -233,14 +263,26 @@ router.post("/deliveries", requireCl("entry"), async (req, res) => {
 
 router.put("/deliveries/:id", requireCl("entry"), async (req, res) => {
   const id = Number(req.params.id);
-  const d = cleanDelivery(req.body || {});
-  if (d.error) return bad(res, d.error);
+  // Round 255 — an entry kept by Accounts takes only a change of cash holder.
+  const { rows: src } = await query(`SELECT invoice_id, receipt_id FROM cl_deliveries WHERE id = $1 AND deleted_at IS NULL`, [id]);
+  const kept = !!(src[0]?.invoice_id || src[0]?.receipt_id);
+  const d = kept ? null : cleanDelivery(req.body || {});
+  if (d?.error) return bad(res, d.error);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const { rows: cur } = await client.query(`SELECT * FROM cl_deliveries WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [id]);
     if (!cur.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "That record is not there any more." }); }
     const holders = await cashHolderIds(client);
+    // Round 255 — an entry made from an invoice or a receipt is kept by
+    // Accounts: here only a cash line not yet accepted can go to another cash holder.
+    if (kept || cur[0].invoice_id || cur[0].receipt_id) {
+      const err = await reassignOnly(client, id, req.body?.collections, holders);
+      if (err) { await client.query("ROLLBACK"); return bad(res, err); }
+      await clLog(client, "delivery", id, "reassigned", { collections: req.body?.collections }, req.user.id);
+      await client.query("COMMIT");
+      return res.json({ ok: true });
+    }
     await client.query(
       `UPDATE cl_deliveries SET entry_date = $2, customer_name = $3, location = $4, grade = $5, qty_m3 = $6, rate = $7, other_charges = $8,
               sales_rep = $9, flagged = $10, note = $11, updated_by = $12, updated_at = now() WHERE id = $1`,
@@ -255,7 +297,7 @@ router.put("/deliveries/:id", requireCl("entry"), async (req, res) => {
 
 router.post("/deliveries/:id/flag", requireCl("entry"), async (req, res) => {
   const { rowCount } = await query(
-    `UPDATE cl_deliveries SET flagged = $2, updated_by = $3, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
+    `UPDATE cl_deliveries SET flagged = $2, updated_by = $3, updated_at = now() WHERE id = $1 AND deleted_at IS NULL AND invoice_id IS NULL AND receipt_id IS NULL`,
     [Number(req.params.id), !!req.body?.flagged, req.user.id]);
   if (!rowCount) return res.status(404).json({ error: "That record is not there any more." });
   await clLog(null, "delivery", Number(req.params.id), req.body?.flagged ? "flagged" : "unflagged", null, req.user.id);
@@ -267,6 +309,9 @@ router.delete("/deliveries/:id", requireCl("entry"), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const { rows: src } = await client.query(`SELECT invoice_id, receipt_id FROM cl_deliveries WHERE id = $1`, [id]);
+    if (src[0]?.invoice_id) { await client.query("ROLLBACK"); return bad(res, "This entry comes from an invoice marked \"Cash\" — untick it in Accounts → Invoices."); }
+    if (src[0]?.receipt_id) { await client.query("ROLLBACK"); return bad(res, "This entry comes from a receipt — take the receipt out of C Ledger (or cancel it) in Accounts."); }
     const { rows } = await client.query(`SELECT COUNT(*)::int AS n FROM cl_collections WHERE delivery_id = $1 AND status = 'accepted' AND holder_id IS NOT NULL`, [id]);
     if (rows[0].n) { await client.query("ROLLBACK"); return bad(res, "A cash holder has already accepted cash on this record, so it can't be deleted. Edit it instead."); }
     const { rowCount } = await client.query(`UPDATE cl_deliveries SET deleted_at = now(), deleted_by = $2 WHERE id = $1 AND deleted_at IS NULL`, [id, req.user.id]);
@@ -279,6 +324,14 @@ router.delete("/deliveries/:id", requireCl("entry"), async (req, res) => {
   } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
 });
 
+// Round 255 — Accounts against C Ledger for the month.
+router.get("/cross-check", requireCl("view_entries", "view_txns"), async (req, res) => {
+  const ym = pickMonth(req, res);
+  if (!ym) return;
+  const { from, end } = monthBounds(ym);
+  res.json({ month: ym, label: monthLabel(ym, true), ...(await clCrossCheck(from, end)) });
+});
+
 // ------------------------------------------------------- cash holder ---
 async function expensesFor(where, params) {
   const { rows } = await query(
@@ -289,7 +342,7 @@ async function expensesFor(where, params) {
               WHEN 'contractor' THEN (SELECT name FROM hr_contractors WHERE id = x.party_id) END AS party_name
        FROM cl_expenses x JOIN users u ON u.id = x.holder_id LEFT JOIN cl_access a ON a.user_id = x.holder_id
       WHERE x.deleted_at IS NULL AND ${where} ORDER BY x.txn_date DESC, x.id DESC`, params);
-  return rows.map((x) => ({ ...x, amount: n0(x.amount), cost: CL_CATEGORIES.find((c) => c.key === x.category)?.notCost ? 0 : r2(n0(x.amount) * (x.flagged ? CL_FACTOR : 1)) }));
+  return rows.map((x) => ({ ...x, amount: n0(x.amount), cost: CL_CATEGORIES.find((c) => c.key === x.category)?.notCost ? 0 : r2(n0(x.amount) * (x.flagged ? 1 : CL_FACTOR)) }));
 }
 async function transfersFor(where, params) {
   const { rows } = await query(

@@ -25,6 +25,8 @@ export default function Cheques({ params, go }) {
   const { can } = usePermissions();
   const canCreate = can("accounts.cheques", "create");
   const canEdit = can("accounts.cheques", "edit");
+  // Round 255 — the Administrator corrects a wrong entry, whatever its status.
+  const canCorrect = can("accounts.cheque-correct", "edit");
   const [d, setD] = useState(null);
   const [meta, setMeta] = useState(null);
   const [error, setError] = useState("");
@@ -137,7 +139,7 @@ export default function Cheques({ params, go }) {
       )}
 
       {modal?.kind === "new" && meta && <NewCheque meta={meta} onClose={() => setModal(null)} onDone={done} />}
-      {modal?.kind === "view" && <ChequeDetail id={modal.cheque.id} canEdit={canEdit} onClose={() => setModal(null)} onDone={done} />}
+      {modal?.kind === "view" && <ChequeDetail id={modal.cheque.id} canEdit={canEdit} canCorrect={canCorrect} meta={meta} onClose={() => setModal(null)} onDone={done} />}
       {modal && !["new", "view"].includes(modal.kind) && (
         <StepModal kind={modal.kind} c={modal.cheque} meta={meta} today={d.today} onClose={() => setModal(null)} onDone={done} />
       )}
@@ -417,8 +419,9 @@ function ReplacementLine({ p, linkable, today, onChange, onRemove }) {
 }
 
 // ---------------------------------------------------------- one cheque ---
-function ChequeDetail({ id, canEdit, onClose, onDone }) {
+function ChequeDetail({ id, canEdit, canCorrect, meta, onClose, onDone }) {
   const [c, setC] = useState(null);
+  const [fix, setFix] = useState(false);
   const [error, setError] = useState("");
   const [add, setAdd] = useState(null);
   const [photo, setPhoto] = useState(false);
@@ -491,16 +494,114 @@ function ChequeDetail({ id, canEdit, onClose, onDone }) {
         {c.events.map((e, i) => (
           <div key={i} style={{ display: "flex", gap: 8, padding: "3px 0" }}>
             <span style={{ ...sub, minWidth: 92 }}>{new Date(e.done_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "2-digit" })}</span>
-            <span><b>{e.action}</b>{e.detail?.reason ? ` — ${e.detail.reason}` : ""}{e.detail?.mode ? ` — ${e.detail.mode === "cash" ? "cash" : "bank"} ₹${inr2(e.detail.amount)}` : ""} <span style={sub}>{e.done_by || "app"}</span></span>
+            <span><b>{e.action}</b>{e.detail?.reason ? ` — ${e.detail.reason}` : ""}{e.detail?.mode ? ` — ${e.detail.mode === "cash" ? "cash" : "bank"} ₹${inr2(e.detail.amount)}` : ""} <span style={sub}>{e.done_by || "app"}</span>
+              {e.action === "entry corrected" && e.detail?.after && (
+                <div style={sub}>{Object.keys(e.detail.after).map((k) => `${FIELD_LABEL[k] || k}: ${e.detail.before?.[k] ?? "—"} → ${e.detail.after[k] ?? "—"}`).join(" · ")}</div>
+              )}
+            </span>
           </div>
         ))}
       </div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12, flexWrap: "wrap" }}>
         {c.has_photo && <button type="button" onClick={() => setPhoto(true)}>Cheque photo</button>}
+        {canCorrect && meta && <button type="button" onClick={() => setFix(true)}>Correct entry</button>}
         {canEdit && ["in_hand", "issued"].includes(c.status) && <button type="button" onClick={cancel}>{c.direction === "issued" ? "Cancel (leaf void)" : "Cancel — entered by mistake"}</button>}
         <button type="button" onClick={onClose}>Close</button>
       </div>
       {photo && <PhotoModal path={`/accounts/cheques/${id}/photo`} title={`Cheque ${c.cheque_no}`} onClose={() => setPhoto(false)} />}
+      {fix && <CorrectCheque c={c} meta={meta} onClose={() => setFix(false)} onDone={() => { setFix(false); load(); }} />}
+    </Modal>
+  );
+}
+
+// Round 255 — Administrator: correct a cheque entered wrongly, at any stage.
+// A reason is required; the change shows in the cheque's history.
+const FIELD_LABEL = { cheque_no: "number", cheque_date: "date", amount: "amount", customer_id: "customer", drawn_on: "drawn on", deposit_account_id: "deposit account",
+  received_on: "received", deposited_on: "deposited", cleared_on: "cleared", bounced_on: "bounced", returned_on: "returned", slip_no: "slip",
+  account_id: "account", payee_kind: "payee type", payee_id: "payee", payee_name: "payee name", purpose: "purpose", remarks: "remarks" };
+function CorrectCheque({ c, meta, onClose, onDone }) {
+  const received = c.direction === "received";
+  const linked = !!(c.receipt_id || c.bank_line_id);
+  const [f, setF] = useState({
+    cheque_no: c.cheque_no, cheque_date: c.cheque_date, amount: c.amount == null ? "" : String(c.amount), customer_id: c.customer_id || "",
+    drawn_on: c.drawn_on || "", deposit_account_id: c.deposit_account_id || "", received_on: c.received_on || "", deposited_on: c.deposited_on || "",
+    slip_no: c.slip_no || "", cleared_on: c.cleared_on || "", bounced_on: c.bounced_on || "", returned_on: c.returned_on || "",
+    account_id: c.account_id || "", payee_kind: c.payee_kind || "other", payee_id: c.payee_id || "", payee_name: c.payee_name || "",
+    purpose: c.purpose || "", remarks: c.remarks || "", reason: "",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const parties = { supplier: meta.suppliers, transporter: meta.transporters, contractor: meta.contractors }[f.payee_kind];
+  async function save(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    const body = { ...f, amount: f.amount === "" ? undefined : Number(f.amount) };
+    for (const k of ["deposited_on", "cleared_on", "bounced_on", "returned_on"]) if (!c[k]) delete body[k];
+    if (received) { delete body.account_id; delete body.payee_kind; delete body.payee_id; delete body.payee_name; }
+    else { delete body.customer_id; delete body.drawn_on; delete body.deposit_account_id; delete body.received_on; delete body.slip_no; }
+    try { await apiRequest(`/accounts/cheques/${c.id}/correct`, { method: "POST", body }); onDone(); }
+    catch (err) { setError(err.message); setBusy(false); }
+  }
+  const step = (k, label) => (c[k] ? <Field label={label}><input type="date" max={todayStr()} value={f[k]} onChange={set(k)} /></Field> : null);
+  return (
+    <Modal title={`Correct cheque ${c.cheque_no}`} onClose={onClose} width={620}>
+      <form onSubmit={save}>
+        <Banner>{error}</Banner>
+        <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>
+          For a mistake in the entry. {linked ? "This cheque is matched to the bank / a receipt, so its amount, customer and account stay as they are." : "Every change is kept in the cheque's history."}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+          <Field label="Cheque number"><input required inputMode="numeric" value={f.cheque_no} onChange={set("cheque_no")} /></Field>
+          <Field label="Date on the cheque"><input type="date" required value={f.cheque_date} onChange={set("cheque_date")} /></Field>
+          {c.status !== "cancelled" && <Field label="Amount ₹"><input type="number" min="1" step="0.01" required disabled={linked} value={f.amount} onChange={set("amount")} /></Field>}
+          {received ? (
+            <>
+              <Field label="Customer">
+                <select disabled={linked} value={f.customer_id} onChange={set("customer_id")}>{meta.customers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+              </Field>
+              <Field label="Drawn on (bank, branch)"><input required value={f.drawn_on} onChange={set("drawn_on")} /></Field>
+              <Field label="Deposit into">
+                <select disabled={!!c.bank_line_id} value={f.deposit_account_id} onChange={set("deposit_account_id")}>
+                  <option value="">—</option>{meta.accounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Received on"><input type="date" required max={todayStr()} value={f.received_on} onChange={set("received_on")} /></Field>
+              {c.deposited_on && <Field label="Pay-in slip no."><input value={f.slip_no} onChange={set("slip_no")} /></Field>}
+            </>
+          ) : (
+            <>
+              <Field label="Drawn on our account">
+                <select disabled={linked} value={f.account_id} onChange={set("account_id")}>{meta.accounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}</select>
+              </Field>
+              {c.status !== "cancelled" && (
+                <>
+                  <Field label="Paid to">
+                    <select value={f.payee_kind} onChange={(e) => setF({ ...f, payee_kind: e.target.value, payee_id: "" })}>
+                      <option value="supplier">Supplier</option><option value="transporter">Transporter</option><option value="contractor">Contractor</option>
+                      <option value="self">Self</option><option value="other">Other</option>
+                    </select>
+                  </Field>
+                  {parties ? (
+                    <Field label="Who"><select required value={f.payee_id} onChange={set("payee_id")}><option value="">Choose…</option>{parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+                  ) : <Field label="Name"><input value={f.payee_name} onChange={set("payee_name")} /></Field>}
+                </>
+              )}
+            </>
+          )}
+          {step("deposited_on", "Deposited on")}
+          {step("cleared_on", "Cleared on")}
+          {step("bounced_on", "Bounced on")}
+          {step("returned_on", "Returned on")}
+        </div>
+        <Field label="Purpose"><input value={f.purpose} onChange={set("purpose")} /></Field>
+        <Field label="Remarks"><input value={f.remarks} onChange={set("remarks")} /></Field>
+        <Field label="What was wrong (required)"><input required value={f.reason} onChange={set("reason")} placeholder="e.g. amount typed as 52,000 — the cheque says 25,000" /></Field>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit" disabled={busy}>{busy ? "Saving…" : "Save correction"}</button>
+        </div>
+      </form>
     </Modal>
   );
 }

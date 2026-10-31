@@ -23,8 +23,14 @@
 //     P&L. Amounts go straight into the existing heads.
 //   * The flag decides tax, and the words "with / without GST" appear on no
 //     screen: a FLAGGED sale counts as amount × 100 / 118, a not-flagged sale
-//     in full; a FLAGGED expense counts as amount × 100 / 118, a not-flagged
-//     one in full. Cash in hand always uses the full amount.
+//     in full. Round 255 (owner, 31 Oct 2026): an EXPENSE flag now means what
+//     the purchase-bill flag means — FLAGGED = the bill has no tax → the full
+//     amount is the cost; NOT flagged = tax inside → amount × 100 / 118.
+//     (Existing flags were turned over once — lib/round255Schema.js.)
+//     Cash in hand always uses the full amount.
+//   * Round 255: an invoice marked "Cash" in Accounts is a C Ledger entry
+//     (cl_deliveries.invoice_id). The invoice sets its sale value, so it is
+//     left out of clTicketSales below.
 //   * Sales: a delivery record tied to its delivery note(s) SETS the sale value
 //     of those notes (it replaces the invoice figure for them, so the load is
 //     never counted twice). Round 227 (owner): a record with NO delivery note is
@@ -38,6 +44,7 @@
 //   * A collection line may be "Paid to bank" (Round 227): counted as collected,
 //     in nobody's cash in hand, nothing to accept.
 import { query } from "../db.js";
+import { ensureRound255 } from "./round255Schema.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -301,13 +308,14 @@ export function clDeliveryTotal(d) {
 export async function clTicketSales(ticketIds) {
   const out = new Map();
   if (!ticketIds.length) return out;
+  await ensureRound255().catch(() => {});
   const { rows } = await query(
     `SELECT l.delivery_id, l.ticket_id, d.qty_m3, d.rate, d.other_charges, d.flagged,
             COALESCE(t.loaded_quantity_m3, 0) AS loaded,
             SUM(COALESCE(t.loaded_quantity_m3, 0)) OVER (PARTITION BY l.delivery_id) AS loaded_all,
             COUNT(*) OVER (PARTITION BY l.delivery_id) AS n
        FROM cl_delivery_tickets l
-       JOIN cl_deliveries d ON d.id = l.delivery_id AND d.deleted_at IS NULL
+       JOIN cl_deliveries d ON d.id = l.delivery_id AND d.deleted_at IS NULL AND d.invoice_id IS NULL
        JOIN delivery_tickets t ON t.id = l.ticket_id
       WHERE l.delivery_id IN (SELECT delivery_id FROM cl_delivery_tickets WHERE ticket_id = ANY($1::int[]))`,
     [ticketIds]).catch(() => ({ rows: [] }));
@@ -332,10 +340,13 @@ export async function clOtherIncomeMonth(ym) {
   return r2(rows[0].v);
 }
 
-// Expenses by Cost dashboard head for a month.
+// Expenses by Cost dashboard head for a month. Round 255: flagged = no tax
+// (full amount); not flagged = tax inside (amount × 100 / 118).
+export const clExpenseCost = (amount, flagged) => r2((Number(amount) || 0) * (flagged ? 1 : CL_FACTOR));
 export async function clExpenseHeadsMonth(ym) {
+  await ensureRound255().catch(() => {});
   const { rows } = await query(
-    `SELECT category, SUM(amount * CASE WHEN flagged THEN $2::numeric ELSE 1 END) AS v
+    `SELECT category, SUM(amount * CASE WHEN flagged THEN 1 ELSE $2::numeric END) AS v
        FROM cl_expenses WHERE deleted_at IS NULL AND to_char(txn_date, 'YYYY-MM') = $1 GROUP BY category`,
     [ym, CL_FACTOR]).catch(() => ({ rows: [] }));
   const out = {};

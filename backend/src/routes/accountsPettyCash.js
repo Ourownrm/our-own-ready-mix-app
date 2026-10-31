@@ -166,7 +166,7 @@ router.get("/petty-cash/:box(\\d+)", VIEW, async (req, res) => {
   for (const t of tops) if (t.status === "received") moves.push({ d: t.d, k: `t${t.id}`, eff: n0(t.amount), row: { type: "topup", ...t, amount: n0(t.amount), source_label: SOURCES[t.source] || t.source } });
   for (const v of vouchers) {
     const row = { type: "voucher", ...v, amount: n0(v.amount), returned_amount: v.returned_amount == null ? null : n0(v.returned_amount), no: vno(v),
-      cost: v.status === "approved" && v.kind !== "advance" && PC_COST_KEYS.has(v.category) ? r2(n0(v.amount) * (v.flagged ? CL_FACTOR : 1)) : 0 };
+      cost: v.status === "approved" && v.kind !== "advance" && PC_COST_KEYS.has(v.category) ? r2(n0(v.amount) * (v.flagged ? 1 : CL_FACTOR)) : 0 };
     const cash = v.kind === "settle" || v.status === "rejected" ? 0 : -n0(v.amount);
     moves.push({ d: v.d, k: `v${String(v.id).padStart(8, "0")}`, eff: cash, row });
     if (v.kind === "advance" && v.settled_on && v.status !== "rejected" && n0(v.returned_amount) !== 0) {

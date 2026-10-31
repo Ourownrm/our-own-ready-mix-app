@@ -19,6 +19,7 @@ import { lookAlikePriceLists, mergeCustomer, mergeSite, referenceCounts } from "
 import { ensureRound251 } from "../lib/round251Schema.js";
 import { ensureRound252 } from "../lib/round252Schema.js";
 import { ledgerSettings } from "../lib/ledgerPost.js";
+import { ensureRound255, setInvoicesCash, sendReceiptToCl, removeReceiptCl, receiptClState } from "../lib/round255Schema.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -49,9 +50,15 @@ router.get("/invoices", INV_VIEW, async (req, res) => {
   if (ISO.test(req.query.to || "")) { params.push(req.query.to); where.push(`dt.ticket_date <= $${params.length}`); }
   if (req.query.gst === "off") where.push("NOT i.gst_applied");
   await ensureRound251(query); // Round 251 — tally_invoice_no
+  await ensureRound255(); // Round 255 — the "Cash" mark (C Ledger)
+  if (req.query.cash === "on") where.push("i.cl_cash");
+  if (req.query.cash === "off") where.push("NOT i.cl_cash");
+  if (req.query.order_id) { params.push(Number(req.query.order_id)); where.push(`co.id = $${params.length}`); }
   const { rows } = await query(
     `SELECT i.id, i.total_amount, i.concrete_amount, i.pumping_charge, i.part_load_charge, i.waiting_charge,
-            i.rate_per_m3, i.gst_applied, i.billing_name, i.billing_gstin, i.created_at, i.tally_invoice_no,
+            i.rate_per_m3, i.gst_applied, i.billing_name, i.billing_gstin, i.created_at, i.tally_invoice_no, i.cl_cash, co.id AS order_id,
+            (SELECT COALESCE(SUM(c.amount), 0) FROM cl_deliveries d JOIN cl_collections c ON c.delivery_id = d.id AND c.status <> 'rejected'
+              WHERE d.invoice_id = i.id AND d.deleted_at IS NULL) AS cl_collected,
             dt.ticket_number, dt.ticket_date::text AS ticket_date, dt.loaded_quantity_m3, i.rejected_quantity_m3,
             c.id AS customer_id, c.name AS customer_name, s.name AS site_name, m.name AS grade_name,
             q.quote_no, rm.source AS rate_source,
@@ -76,6 +83,34 @@ router.get("/invoices", INV_VIEW, async (req, res) => {
     })
     .filter((r) => !req.query.status || req.query.status === "all" || r.status === req.query.status);
   res.json(out);
+});
+
+// Round 255 — mark invoices "Cash" (collected through C Ledger) or take the
+// mark off. { ids: [...] } or { order_id } (the whole order), and { on }.
+router.post("/invoices/cash", requirePermission("accounts.invoice-cash", "edit"), async (req, res) => {
+  await ensureRound255();
+  const on = !!req.body?.on;
+  let ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length && req.body?.order_id) {
+    const { rows } = await query(
+      `SELECT i.id FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id WHERE dt.order_id = $1 AND i.cl_cash <> $2`,
+      [Number(req.body.order_id), on]);
+    ids = rows.map((r) => r.id);
+  }
+  if (!ids.length) return res.status(400).json({ error: on ? "Nothing to mark." : "Nothing to take the mark off." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const out = await setInvoicesCash(client, ids, on, req.user.id);
+    await client.query("COMMIT");
+    res.json(out);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // Delivered loads with no invoice — no price on file for the customer + site +
@@ -470,6 +505,22 @@ router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
     if (to && d > to) continue;
     lines.push({ ...e, on_date: d, balance: running });
   }
+  // Round 255 — which receipts are in C Ledger (and with whom).
+  await ensureRound255();
+  const rIds = lines.filter((l) => l.kind === "receipt").map((l) => l.id);
+  if (rIds.length) {
+    const { rows: cl } = await query(
+      `SELECT c.receipt_id, bool_and(c.holder_id IS NULL) AS bank, string_agg(DISTINCT COALESCE(a.short_name, u.name), ', ') AS holders,
+              bool_or(c.status = 'pending') AS pending, bool_or(c.status = 'rejected') AS rejected
+         FROM cl_collections c LEFT JOIN users u ON u.id = c.holder_id LEFT JOIN cl_access a ON a.user_id = c.holder_id
+        WHERE c.receipt_id = ANY($1::int[]) GROUP BY c.receipt_id`, [rIds]).catch(() => ({ rows: [] }));
+    const m = new Map(cl.map((x) => [x.receipt_id, x]));
+    for (const l of lines) if (l.kind === "receipt") {
+      const x = m.get(l.id);
+      l.c_ledger = x ? { bank: x.bank, holders: x.holders, pending: x.pending, rejected: x.rejected } : null;
+      l.mode = String(l.particulars || "").replace(/^Receipt · /, "");
+    }
+  }
   const items = await openItems(pool, cid);
   const pos = (await positions({ customerId: cid }))[0];
   const aging = Object.fromEntries(AGE_GROUPS.map((g) => [g.label, pos ? pos[g.key] : 0]));
@@ -525,20 +576,63 @@ router.post("/receipts", RC_CREATE, async (req, res) => {
   if (!(Number(b.amount) > 0)) return res.status(400).json({ error: "Enter the amount received." });
   if (!MODES.includes(b.mode)) return res.status(400).json({ error: "Choose how it was paid." });
   if (!ISO.test(b.receipt_date || "")) return res.status(400).json({ error: "Enter the date received." });
-  // Round 252 — bank, UPI and cheque money is posted from the bank statement
-  // (Cost → Bank statements), like supplier payments; by hand only cash,
-  // unless an Administrator allows entries by hand there.
-  if (b.mode !== "cash" && !(await ledgerSettings()).manual_payments) {
-    return res.status(403).json({ error: "Money into the bank is posted from the bank statement (Cost → Bank statements → the credit line → Customer payment). Only cash is entered here." });
-  }
+  // Round 255 (owner, 31 Oct 2026): Record a receipt takes every mode again —
+  // Round 252's "cash only by hand" is gone. A bank transfer recorded here is
+  // matched when the bank statement comes ("already in the app"), not posted twice.
+  // "Send to C Ledger" (c_ledger: { holder_id } for cash, or { bank: true }).
+  const target = b.c_ledger && (b.c_ledger.bank || b.c_ledger.holder_id) ? b.c_ledger : null;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const out = await postReceipt(client, { ...b, userId: req.user.id });
+    if (target) out.c_ledger = await sendReceiptToCl(client, out.id, target, req.user.id);
     await client.query("COMMIT");
     res.status(201).json(out);
   } catch (err) {
     await client.query("ROLLBACK");
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// Round 255 — the cash holders a receipt can be sent to (names only).
+router.get("/cl-holders", RC_VIEW, async (_req, res) => {
+  await ensureRound255();
+  const { rows } = await query(
+    `SELECT a.user_id AS id, COALESCE(a.short_name, u.name) AS short, u.name FROM cl_access a JOIN users u ON u.id = a.user_id
+      WHERE a.is_cash_holder AND u.is_active ORDER BY COALESCE(a.short_name, u.name)`).catch(() => ({ rows: [] }));
+  res.json(rows);
+});
+
+// Round 255 — send a receipt already recorded (by hand or from the bank
+// statement) to C Ledger, or take it out again.
+router.post("/receipts/:id(\\d+)/c-ledger", RC_CREATE, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const out = await sendReceiptToCl(client, Number(req.params.id), req.body || {}, req.user.id);
+    await client.query("COMMIT");
+    res.json(out);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+router.delete("/receipts/:id(\\d+)/c-ledger", RC_CREATE, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const n = await removeReceiptCl(client, Number(req.params.id), { userId: req.user.id });
+    await client.query("COMMIT");
+    res.json({ ok: true, removed: n });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.status) return res.status(err.status).json({ error: err.message });
     throw err;
   } finally {
     client.release();
@@ -560,6 +654,7 @@ router.post("/receipts/:id(\\d+)/cancel", requirePermission("accounts.receipt-ca
     res.json({ ok: true });
   } catch (err) {
     await client.query("ROLLBACK");
+    if (err.status) return res.status(err.status).json({ error: err.message });
     throw err;
   } finally {
     client.release();
@@ -570,6 +665,10 @@ router.post("/receipts/:id(\\d+)/cancel", requirePermission("accounts.receipt-ca
 // and any other advance of the customer is set against what this freed.
 // The change is logged. Returns false if there is no such live receipt.
 async function cancelReceipt(client, id, userId, reason) {
+  // Round 255 — its C Ledger lines go too (refused while a cash holder has
+  // accepted its cash: that cash is in their wallet).
+  await ensureRound255();
+  await removeReceiptCl(client, id, { userId });
   const { rows } = await client.query(
     `UPDATE customer_receipts SET cancelled_at = now(), cancelled_by = $2, cancel_reason = $3
       WHERE id = $1 AND cancelled_at IS NULL
@@ -686,6 +785,13 @@ router.post("/ledger/entries/receipt/:id(\\d+)/edit", CORRECT_EDIT, async (req, 
     const after = receiptView({ ...next });
     if (JSON.stringify(before) === JSON.stringify(after)) return bad("Nothing was changed.");
 
+    // Round 255 — a receipt sent to C Ledger: its lines are made again from
+    // the corrected receipt (refused while a cash holder has accepted its cash).
+    await ensureRound255();
+    const clBefore = await receiptClState(client, old.id);
+    const moneyChanged = next.customer_id !== old.customer_id || next.receipt_date !== old.receipt_date
+      || Math.abs(next.amount - Number(old.amount)) > 0.005 || next.mode !== old.mode;
+    if (clBefore && moneyChanged) await removeReceiptCl(client, old.id, { userId: req.user.id });
     // Take the receipt off the dues it paid, change it, and set it (and any
     // other advance of the customer) against the dues again, oldest first.
     await client.query(`DELETE FROM payments WHERE receipt_id = $1`, [old.id]);
@@ -702,6 +808,9 @@ router.post("/ledger/entries/receipt/:id(\\d+)/edit", CORRECT_EDIT, async (req, 
       await applyAdvances(client, old.customer_id);
     }
     await applyAdvances(client, next.customer_id);
+    if (clBefore && moneyChanged) {
+      await sendReceiptToCl(client, old.id, next.mode === "cash" && clBefore.holder_id ? { holder_id: clBefore.holder_id } : { bank: true }, req.user.id);
+    }
     const { rows: left } = await client.query(
       `SELECT r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) AS free,
               (SELECT string_agg(lbl, ', ' ORDER BY first_id) FROM (
@@ -715,6 +824,7 @@ router.post("/ledger/entries/receipt/:id(\\d+)/edit", CORRECT_EDIT, async (req, 
     res.json({ ok: true, moved: next.customer_id !== old.customer_id, against: left[0].against, advance: r2(Math.max(0, Number(left[0].free))) });
   } catch (err) {
     await client.query("ROLLBACK");
+    if (err.status) return res.status(err.status).json({ error: err.message });
     throw err;
   } finally {
     client.release();
@@ -733,6 +843,7 @@ router.post("/ledger/entries/receipt/:id(\\d+)/delete", CORRECT_DELETE, async (r
     res.json({ ok: true });
   } catch (err) {
     await client.query("ROLLBACK");
+    if (err.status) return res.status(err.status).json({ error: err.message });
     throw err;
   } finally {
     client.release();

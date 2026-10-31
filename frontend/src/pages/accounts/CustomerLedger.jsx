@@ -6,7 +6,7 @@ import * as XLSX from "xlsx";
 import { apiRequest } from "../../lib/api.js";
 import { usePermissions } from "../../lib/PermissionContext.jsx";
 import { inr2, fmtDate } from "../../lib/quotationTerms.js";
-import { TH, TD, NUM, row, money, Banner, Empty, Table } from "./ui.jsx";
+import { TH, TD, NUM, row, money, Banner, Empty, Table, Modal, Field } from "./ui.jsx";
 import { ReceiptModal } from "./ReceiptModal.jsx";
 import { CorrectEntryModal, CorrectionsLog } from "./CorrectEntryModal.jsx";
 
@@ -72,6 +72,15 @@ function Statement({ customerId, go }) {
   const canFixEdit = can("accounts.receipt-correct", "edit");
   const canFixDelete = can("accounts.receipt-correct", "delete");
   const canFix = canFixEdit || canFixDelete;
+  // Round 255 — a receipt (any mode) can be sent to C Ledger, or taken out.
+  const canCl = can("accounts.bank-receipts", "create");
+  const [toCl, setToCl] = useState(null);
+  async function takeOut(l) {
+    if (!window.confirm("Take this receipt out of C Ledger? Its collection lines there are removed.")) return;
+    setError(""); setMsg("");
+    try { await apiRequest(`/accounts/receipts/${l.id}/c-ledger`, { method: "DELETE" }); setMsg("Taken out of C Ledger."); setTick((t) => t + 1); }
+    catch (e) { setError(e.message); }
+  }
   useEffect(() => {
     const qs = new URLSearchParams(Object.entries(range).filter(([, v]) => v)).toString();
     apiRequest(`/accounts/ledger/${customerId}?${qs}`).then(setD).catch((e) => setError(e.message));
@@ -105,7 +114,7 @@ function Statement({ customerId, go }) {
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
         <button type="button" onClick={() => go("ledger")}>← All customers</button>
         <h2 style={{ margin: 0, fontSize: 18 }}>{d.customer.name}</h2>
-        <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", fontSize: 13, flexWrap: "wrap" }}>
           <input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} style={inp} /> to
           <input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} style={inp} />
           <button type="button" onClick={exportXlsx}>Excel</button>
@@ -141,7 +150,14 @@ function Statement({ customerId, go }) {
         {d.lines.map((l) => (
           <tr key={`${l.kind}-${l.id}`} style={row}>
             <td style={{ ...TD, whiteSpace: "nowrap" }}>{fmtDate(l.on_date)}</td>
-            <td style={{ ...TD, fontWeight: l.kind === "invoice" ? 600 : 400 }}>{l.particulars}</td>
+            <td style={{ ...TD, fontWeight: l.kind === "invoice" ? 600 : 400 }}>{l.particulars}
+              {l.kind === "receipt" && (l.c_ledger ? (
+                <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>
+                  C Ledger · {l.c_ledger.bank ? "Paid to bank" : l.c_ledger.holders}{l.c_ledger.pending ? " · waiting to be accepted" : ""}{l.c_ledger.rejected ? " · rejected — reassign in C Ledger" : ""}
+                  {canCl && <button type="button" style={{ fontSize: 11.5, padding: "1px 7px", marginLeft: 6 }} onClick={() => takeOut(l)}>Take out</button>}
+                </div>
+              ) : canCl ? <div><button type="button" style={{ fontSize: 11.5, padding: "2px 8px", marginTop: 3 }} onClick={() => setToCl(l)}>Send to C Ledger</button></div> : null)}
+            </td>
             <td style={{ ...TD, fontSize: 12, color: "var(--slate)" }}>{l.detail}</td>
             <td style={NUM}>{Number(l.debit) ? inr2(l.debit) : ""}</td>
             <td style={{ ...NUM, color: "var(--signal-green)" }}>{Number(l.credit) ? inr2(l.credit) : ""}</td>
@@ -161,7 +177,46 @@ function Statement({ customerId, go }) {
       <CorrectionsLog customerId={customerId} tick={tick} />
       {fix && <CorrectEntryModal entry={fix.entry} mode={fix.mode} canEdit={canFixEdit} canDelete={canFixDelete}
         onClose={() => setFix(null)} onDone={(m) => { setFix(null); setError(""); setMsg(m); setTick((t) => t + 1); }} />}
+      {toCl && <SendToClModal entry={toCl} onClose={() => setToCl(null)} onDone={(m) => { setToCl(null); setError(""); setMsg(m); setTick((t) => t + 1); }} />}
       {receipt && <ReceiptModal customerId={customerId} onClose={() => setReceipt(false)} onDone={(r) => { setReceipt(false); setMsg(`Receipt saved${r.applied.length ? ` — set against ${r.applied.map((a) => a.label).join(", ")}` : ""}${r.advance ? `; ₹${inr2(r.advance)} kept as advance` : ""}.`); setTick((t) => t + 1); }} />}
     </>
+  );
+}
+
+// Round 255 — send a receipt already recorded to C Ledger.
+function SendToClModal({ entry, onClose, onDone }) {
+  const cash = String(entry.mode || "").startsWith("cash");
+  const [holders, setHolders] = useState(null);
+  const [holder, setHolder] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { apiRequest("/accounts/cl-holders").then((h) => { setHolders(h); if (h[0]) setHolder(String(h[0].id)); }).catch(() => setHolders([])); }, []);
+  async function send(target) {
+    setBusy(true); setError("");
+    try {
+      const r = await apiRequest(`/accounts/receipts/${entry.id}/c-ledger`, { method: "POST", body: target });
+      onDone(`Sent to C Ledger — ₹${inr2(r.to_invoices)} against invoices${r.rest ? `, ₹${inr2(r.rest)} as a collection only` : ""}.`);
+    } catch (e) { setError(e.message); setBusy(false); }
+  }
+  return (
+    <Modal title="Send to C Ledger" onClose={onClose} width={440}>
+      <Banner>{error}</Banner>
+      <div style={{ fontSize: 13, marginBottom: 10 }}>{entry.particulars} · ₹{inr2(entry.credit)} · {fmtDate(entry.on_date)}</div>
+      {cash ? (
+        <>
+          <Field label="Cash holder who has the cash">
+            <select value={holder} onChange={(e) => setHolder(e.target.value)}>
+              {(holders || []).map((h) => <option key={h.id} value={h.id}>{h.short}{h.short !== h.name ? ` — ${h.name}` : ""}</option>)}
+            </select>
+          </Field>
+          {holders && holders.length === 0 && <div style={{ fontSize: 12, color: "var(--alert-red)", marginBottom: 8 }}>No cash holders yet — a Super Admin sets them under C Ledger users.</div>}
+        </>
+      ) : <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>Goes in as &ldquo;Paid to bank&rdquo; — collected, in nobody&rsquo;s cash.</div>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+        <button type="button" onClick={onClose}>Cancel</button>
+        {cash && <button type="button" disabled={busy} onClick={() => send({ bank: true })}>Paid to bank instead</button>}
+        <button type="button" className="btn-primary" disabled={busy || (cash && !holder)} onClick={() => send(cash ? { holder_id: Number(holder) } : { bank: true })}>{busy ? "Sending…" : "Send"}</button>
+      </div>
+    </Modal>
   );
 }

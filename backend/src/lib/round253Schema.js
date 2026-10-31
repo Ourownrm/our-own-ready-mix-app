@@ -347,10 +347,13 @@ export async function boxBalances(db = { query }, boxId = null) {
 }
 
 // Approved petty cash expenses by Cost dashboard head for a month, the C
-// Ledger flag rule applied (a flagged voucher counts as amount × 100 / 118).
+// Ledger flag rule applied. Round 255: flagged = no tax (full amount); not
+// flagged = tax inside (amount × 100 / 118).
 export async function pettyHeadsMonth(ym) {
+  const { ensureRound255 } = await import("./round255Schema.js");
+  await ensureRound255().catch(() => {});
   const { rows } = await query(
-    `SELECT category, SUM(amount * CASE WHEN flagged THEN $2::numeric ELSE 1 END) AS v
+    `SELECT category, SUM(amount * CASE WHEN flagged THEN 1 ELSE $2::numeric END) AS v
        FROM pc_vouchers WHERE deleted_at IS NULL AND status = 'approved' AND kind IN ('expense','settle')
         AND to_char(txn_date, 'YYYY-MM') = $1 GROUP BY category`, [ym, CL_FACTOR]).catch(() => ({ rows: [] }));
   const out = {};
