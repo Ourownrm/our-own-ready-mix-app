@@ -101,9 +101,9 @@ export const CATALOGUE = [
   // said so). Separate from the keys above because Sales and the plant roles
   // hold view on orders/tickets for their OWN screens, and handing them the
   // correction screens by accident would widen access.
-  f("production.correct-order", "orders", "Correct Order (admin correction screen)", VE,
+  f("production.correct-order", "orders", "Orders (order list, new order, corrections)", VE,
     { administrator: VE, manager: VE }, { screen: "correct-order" }),
-  f("production.correct-tickets", "orders", "Correct Tickets (admin correction screen)", VE,
+  f("production.correct-tickets", "orders", "Delivery tickets (list, corrections)", VE,
     { administrator: VE, manager: VE }, { screen: "correct-tickets" }),
   // Round 153, item 1 — widened from Administrator-only. The Plant Operator
   // raises every one of these notes, and the lab and QC get asked about a
@@ -118,8 +118,9 @@ export const CATALOGUE = [
   // REPAIR_148, and for the same reason.
   f("orders.challan-print", "orders", "Print / download challan", V,
     { administrator: V, manager: V, plant_operator: V, lab_technician: V, qc_engineer: V }),
-  f("orders.live-tracking", "orders", "Live truck tracking", ["view", "edit"],
-    { administrator: ["view", "edit"], manager: ["view", "edit"] }),
+  // Round 254 — also the Production module's Vehicle tracking tab.
+  f("orders.live-tracking", "orders", "Live truck tracking / Vehicle tracking", ["view", "edit"],
+    { administrator: ["view", "edit"], manager: ["view", "edit"] }, { screen: "vehicle-tracking" }),
   f("orders.delay-reasons", "orders", "Delay reasons", VC,
     { administrator: VC, manager: VC, site_supervisor: VC, plant_operator: VC }),
   f("orders.delay-charge", "orders", "Apply a delay charge", E,
@@ -167,6 +168,11 @@ export const CATALOGUE = [
     { administrator: V, manager: V, qc_engineer: V, lab_technician: V }, { screen: "mix-designs-view" }),
   f("quality.mix-design-standard", "quality", "Set a design as standard for its grade", E,
     { administrator: E, manager: E }),
+  // Round 254 — Quality Control → Mix mapping: each customer's quoted mix
+  // design mapped to a plant recipe. QC Engineer and Administrator only
+  // (owner, 31 Oct 2026).
+  f("quality.mix-mapping", "quality", "Mix mapping (customer mix → plant recipe)", VE,
+    { administrator: VE, qc_engineer: VE }, { screen: "mix-mapping" }),
   f("quality.mix-assignments", "quality", "Approved Mix Designs (assignments)", ["view", "create", "delete"],
     { administrator: ["view", "create", "delete"], manager: ["view", "create", "delete"] }, { screen: "mix-assignments" }),
   // Round 194 — raw material lab tests. Cards are issued from a GRN to the
@@ -1020,11 +1026,14 @@ export const MODULES = [
   {
     key: "quality-control", label: "Quality Control", gate: "module.quality-control", to: "/modules?module=quality-control",
     matrixRoles: ["manager", "qc_engineer"],
+    // Round 254 — Mix mapping is QC Engineer and Administrator only.
+    noAutoView: ["quality.mix-mapping"],
     menus: [
       { key: "quality.lab-technician", label: "Laboratory" },
       { key: "quality.mix-assignments", label: "Approved Mix Designs" },
       { key: "quality.mix-designs", label: "Mix Designs (Approve)" },
       { key: "quality.mix-designs-view", label: "Mix Designs & Recipes" },
+      { key: "quality.mix-mapping", label: "Mix Mapping" },
       { key: "quality.cube-test-report", label: "Cube Test Report" },
       { key: "quality.cube-qc-dashboard", label: "Cube Strength Analysis" },
       // Round 194
@@ -1045,9 +1054,11 @@ export const FUNCTION_GROUPS = [
   {
     key: "production", label: "Production",
     menus: [
+      { key: "production.manager-dashboard", label: "Plant overview" },
+      { key: "production.correct-order", label: "Orders" },
+      { key: "production.correct-tickets", label: "Delivery tickets" },
+      { key: "orders.live-tracking", label: "Vehicle tracking" },
       { key: "production.targets", label: "Production Target" },
-      { key: "production.correct-order", label: "Correct Order" },
-      { key: "production.correct-tickets", label: "Correct Tickets" },
       { key: "reports.production", label: "Daily Production Report" },
       { key: "reports.trip-allowance", label: "Trip Allowance Report" },
       { key: "reports.cycle-time", label: "Cycle Time Report" },

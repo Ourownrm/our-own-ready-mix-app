@@ -3,6 +3,7 @@ import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { syncOrderCompletionStatus, checkPumpChargeThreshold, generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { pushToUser } from "../lib/push.js";
+import { ensureRound254 } from "../lib/round254Schema.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("plant_operator", "manager", "administrator"));
@@ -52,9 +53,13 @@ async function logEvent(ticketId, eventType, userId) {
 
 // Orders with remaining quantity still available to dispatch — powers the "Select order" dropdown
 router.get("/available-orders", async (req, res) => {
+  await ensureRound254();
   const { rows } = await query(
     `SELECT co.id, co.order_quantity_m3, co.scheduled_batching_time, c.name AS customer_name, s.name AS site_name,
             m.name AS mix_grade_name,
+            -- Round 254 — "Mix Design / Recipe": the quotation's mix on the
+            -- order and the plant recipe QC mapped it to (null = not mapped).
+            co.quoted_mix_design_id, md.design_ref_code || COALESCE(' · rev ' || md.revision, '') AS mix_code, mrm.recipe_code,
             (co.assigned_site_supervisor_id IS NOT NULL AND NOT co.site_ready_confirmed) AS blocked_site_not_ready,
             co.site_ready_confirmed_at, co.batching_delay_reason,
             MIN(dt.created_at) AS first_ticket_created_at,
@@ -63,10 +68,12 @@ router.get("/available-orders", async (req, res) => {
      JOIN customers c ON c.id = co.customer_id
      JOIN sites s ON s.id = co.site_id
      JOIN mix_grades m ON m.id = co.mix_grade_id
+     LEFT JOIN mix_designs md ON md.id = co.quoted_mix_design_id
+     LEFT JOIN mix_recipe_map mrm ON mrm.customer_id = co.customer_id AND mrm.mix_design_id = co.quoted_mix_design_id
      LEFT JOIN delivery_tickets dt ON dt.order_id = co.id AND dt.status != 'cancelled'
      LEFT JOIN site_qc sq ON sq.ticket_id = dt.id
      WHERE co.order_date = CURRENT_DATE AND co.status IN ('planned', 'in_progress', 'partially_completed')
-     GROUP BY co.id, c.name, s.name, m.name, co.assigned_site_supervisor_id, co.site_ready_confirmed, co.site_ready_confirmed_at
+     GROUP BY co.id, c.name, s.name, m.name, md.id, mrm.recipe_code, co.assigned_site_supervisor_id, co.site_ready_confirmed, co.site_ready_confirmed_at
      HAVING COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) < co.order_quantity_m3
      ORDER BY co.scheduled_batching_time`
   );

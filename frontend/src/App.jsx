@@ -9,7 +9,8 @@ import ProtectedRoute from "./lib/ProtectedRoute.jsx";
 import Login from "./pages/Login.jsx";
 import DriverDuty from "./pages/DriverDuty.jsx";
 import DriverSettings from "./pages/DriverSettings.jsx";
-import ManagerDashboard from "./pages/ManagerDashboard.jsx";
+import ProductionModule from "./pages/ProductionModule.jsx";
+import MixMapping from "./pages/MixMapping.jsx";
 import SiteSupervisor from "./pages/SiteSupervisor.jsx";
 import PlantOperator from "./pages/PlantOperator.jsx";
 import QcEngineer from "./pages/QcEngineer.jsx";
@@ -145,7 +146,16 @@ export default function App() {
           } />
 
           <Route path="/manager" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><ManagerDashboard /></ProtectedRoute>
+            <ProtectedRoute roles={["manager", "administrator"]}><ProductionModule defaultTab="overview" /></ProtectedRoute>
+          } />
+          {/* Round 254 — the Production module, tabs like Accounts. /manager
+              (the Plant Manager's home) opens it on the Plant overview. */}
+          <Route path="/production" element={
+            <ProtectedRoute perm={["production.manager-dashboard", "production.correct-order", "production.correct-tickets", "orders.live-tracking", "masters.customers", "production.targets", "reports.production"]}><ProductionModule /></ProtectedRoute>
+          } />
+          {/* Round 254 — Quality Control → Mix mapping (QC Engineer, Administrator). */}
+          <Route path="/mix-mapping" element={
+            <ProtectedRoute perm="quality.mix-mapping"><MixMapping /></ProtectedRoute>
           } />
           <Route path="/site-supervisor" element={
             <ProtectedRoute roles={["site_supervisor"]}><SiteSupervisor /></ProtectedRoute>

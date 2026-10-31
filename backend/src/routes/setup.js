@@ -50,6 +50,7 @@ import { migrateRound250 } from "../lib/round250Schema.js";
 import { migrateRound251 } from "../lib/round251Schema.js";
 import { migrateRound252 } from "../lib/round252Schema.js";
 import { migrateRound253 } from "../lib/round253Schema.js";
+import { migrateRound254 } from "../lib/round254Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4205,6 +4206,7 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound252(pool, log);
     // ROUND 253 — cheque register, petty cash.
     await migrateRound253(pool, log);
+    await migrateRound254(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

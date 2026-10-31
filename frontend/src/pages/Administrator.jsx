@@ -199,6 +199,13 @@ export default function Administrator() {
       .catch(() => {});
   }, []);
 
+  // Round 254 — orders, tickets and the target are tabs of the Production
+  // module now; old links (?view=orders) land there.
+  useEffect(() => {
+    const tab = { orders: "orders", tickets: "tickets", "production-target": "target" }[view];
+    if (tab) navigate(`/production?tab=${tab}`, { replace: true });
+  }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function openScreen(screen) {
     if (screen.to) { navigate(screen.to); return; }
     setSearchParams({ view: screen.view }, { replace: false });

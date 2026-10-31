@@ -31,7 +31,7 @@ export function List({ rows, columns }) {
 // GSTIN), each selectable per order when it's created. Shown as an
 // expandable row under the customer it belongs to, since most customers
 // will never need more than one and this keeps the main table uncluttered.
-function CustomerBillingAddressesEditor({ customerId, setError }) {
+export function CustomerBillingAddressesEditor({ customerId, setError }) {
   const [list, setList] = useState(null);
   const [form, setForm] = useState({ name: "", address: "", gstin: "" });
   const [editingId, setEditingId] = useState(null);
@@ -630,7 +630,7 @@ export function RatesPanel({ setError }) {
   );
 }
 
-function SiteMismatchReview({ setError, onClose, onDone }) {
+export function SiteMismatchReview({ setError, onClose, onDone }) {
   const [rows, setRows] = useState(null);
   const [sites, setSites] = useState([]);
   const [fixSelections, setFixSelections] = useState({});
@@ -707,7 +707,7 @@ function SiteMismatchReview({ setError, onClose, onDone }) {
   );
 }
 
-function DuplicateSitesReview({ setError, onClose, onDone }) {
+export function DuplicateSitesReview({ setError, onClose, onDone }) {
   const [rows, setRows] = useState(null);
   const [canonicalBySite, setCanonicalBySite] = useState({}); // group key -> chosen canonical site id
   const [merging, setMerging] = useState(null);
@@ -1754,7 +1754,10 @@ export function TicketsPanel({ setError, showChallan }) {
   async function saveEdit(id) {
     setSaving(true); setError("");
     try {
-      await apiRequest(`/administrator/tickets/${id}`, { method: "PATCH", body: { loaded_quantity_m3: qty } });
+      // Round 254 — a quantity correction needs a reason (it is logged).
+      const reason = window.prompt("Reason for correcting the quantity?");
+      if (!reason || !reason.trim()) { setSaving(false); return; }
+      await apiRequest(`/administrator/tickets/${id}`, { method: "PATCH", body: { loaded_quantity_m3: qty, reason: reason.trim() } });
       setEditing(null);
       load();
     } catch (err) { setError(err.message); } finally { setSaving(false); }

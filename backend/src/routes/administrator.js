@@ -925,6 +925,25 @@ router.patch("/orders/:id", requirePermission("production.correct-order", "edit"
     }
   }
 
+  // Round 254 — a grade change (or a mix chosen in Production → Orders)
+  // re-resolves the order's mix design and price option from the site's
+  // price list, with the same "choose the quotation's mix" rule as a new order.
+  let mixFix = null;
+  {
+    const { rows: cur } = await query(
+      `SELECT customer_id, site_id, mix_grade_id, order_date::text AS order_date, quoted_mix_design_id, price_option FROM customer_orders WHERE id = $1`, [req.params.id]);
+    const c = cur[0];
+    const gradeChanged = c && mix_grade_id && String(mix_grade_id) !== String(c.mix_grade_id);
+    const mixAsked = req.body.mix_design_id !== undefined && String(req.body.mix_design_id || "") !== String(c?.quoted_mix_design_id || "");
+    if (c && (gradeChanged || mixAsked)) {
+      const { rows: tk } = await query("SELECT 1 FROM delivery_tickets WHERE order_id = $1 AND status <> 'cancelled' LIMIT 1", [req.params.id]);
+      if (tk.length) return res.status(400).json({ error: "The grade / mix can't be changed — a delivery ticket has already been created against this order." });
+      const { resolveOrderMix } = await import("../lib/orderCharges.js");
+      mixFix = await resolveOrderMix(req.body, { customer_id: c.customer_id, site_id: c.site_id, mix_grade_id: mix_grade_id || c.mix_grade_id, order_date: c.order_date });
+      if (mixFix.error) return res.status(400).json({ error: mixFix.error });
+    }
+  }
+
   const { rows } = await query(
     `UPDATE customer_orders SET
        order_quantity_m3 = COALESCE($1, order_quantity_m3),
@@ -939,6 +958,13 @@ router.patch("/orders/:id", requirePermission("production.correct-order", "edit"
     [order_quantity_m3, scheduled_batching_time, remarks, mix_grade_id || null, pump_requirement || null, pump_id || null, req.params.id, assigned_qc_engineer_id || null, required_at_site_time || null]
   );
   if (!rows.length) return res.status(404).json({ error: "Order not found." });
+  if (mixFix) {
+    await query(`UPDATE customer_orders SET price_option = $2, quoted_mix_design_id = $3,
+                        resolved_mix_design_id = COALESCE($4, resolved_mix_design_id) WHERE id = $1`,
+      [req.params.id, mixFix.price_option, mixFix.quoted_mix_design_id, mixFix.mix_design_id]);
+    const { afterOrderMix } = await import("../lib/round254Schema.js");
+    await afterOrderMix(Number(req.params.id), mixFix.quoted_mix_design_id).catch(() => {});
+  }
   res.json(rows[0]);
 });
 
@@ -1004,6 +1030,17 @@ router.patch("/tickets/:id", requirePermission("production.correct-tickets", "ed
   const { rows: before } = await query("SELECT loaded_quantity_m3 FROM delivery_tickets WHERE id = $1", [req.params.id]);
   if (!before.length) return res.status(404).json({ error: "Ticket not found." });
   const oldQty = Number(before[0].loaded_quantity_m3);
+  // Round 254 — a quantity correction says why, and is logged.
+  const qtyChanged = loaded_quantity_m3 != null && loaded_quantity_m3 !== "" && Number(loaded_quantity_m3) !== oldQty;
+  const reason = String(req.body.reason || "").trim().slice(0, 300);
+  if (qtyChanged && !(Number(loaded_quantity_m3) > 0)) return res.status(400).json({ error: "The loaded quantity must be more than 0." });
+  if (qtyChanged && !reason) return res.status(400).json({ error: "Give the reason for correcting the quantity." });
+  if (qtyChanged) {
+    const { ensureRound254 } = await import("../lib/round254Schema.js");
+    await ensureRound254();
+    await query(`INSERT INTO ticket_qty_corrections (ticket_id, old_qty, new_qty, reason, done_by) VALUES ($1, $2, $3, $4, $5)`,
+      [req.params.id, oldQty, Number(loaded_quantity_m3), reason, req.user.id]);
+  }
 
   const { rows } = await query(
     `UPDATE delivery_tickets SET loaded_quantity_m3 = COALESCE($1, loaded_quantity_m3) WHERE id = $2 RETURNING *`,
@@ -1012,9 +1049,12 @@ router.patch("/tickets/:id", requirePermission("production.correct-tickets", "ed
 
   if (loaded_quantity_m3 && Number(loaded_quantity_m3) !== oldQty && oldQty > 0) {
     const { rows: invRows } = await query(
-      `SELECT i.id, i.concrete_amount, i.pumping_charge, i.part_load_charge,
-              COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count
-       FROM invoices i WHERE i.ticket_id = $1`,
+      `SELECT i.id, i.concrete_amount, i.pumping_charge, i.part_load_charge, i.waiting_charge,
+              COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id), 0) AS payment_count,
+              co.part_load_applicable, co.part_load_basis, rm.part_load_min_qty_m3, rm.part_load_charge_per_m3
+       FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id JOIN customer_orders co ON co.id = dt.order_id
+       LEFT JOIN rate_master rm ON rm.id = i.rate_id
+       WHERE i.ticket_id = $1`,
       [req.params.id]
     );
     const inv = invRows[0];
@@ -1024,10 +1064,18 @@ router.patch("/tickets/:id", requirePermission("production.correct-tickets", "ed
     if (inv && Number(inv.payment_count) === 0) {
       const ratePerM3 = Number(inv.concrete_amount) / oldQty;
       const newConcreteAmount = ratePerM3 * Number(loaded_quantity_m3);
-      const newTotal = newConcreteAmount + Number(inv.pumping_charge) + Number(inv.part_load_charge);
+      // Round 254 — the part load follows the corrected quantity (per-load
+      // orders): (minimum − load) × the price list's part load rate.
+      let partLoad = Number(inv.part_load_charge);
+      if (inv.part_load_basis === "per_load") {
+        partLoad = inv.part_load_applicable
+          ? Math.round(Math.max(0, Number(inv.part_load_min_qty_m3 ?? 5) - Number(loaded_quantity_m3)) * Number(inv.part_load_charge_per_m3 || 0) * 100) / 100
+          : 0;
+      }
+      const newTotal = newConcreteAmount + Number(inv.pumping_charge) + partLoad + Number(inv.waiting_charge || 0);
       await query(
-        "UPDATE invoices SET concrete_amount = $1, total_amount = $2 WHERE id = $3",
-        [newConcreteAmount, newTotal, inv.id]
+        "UPDATE invoices SET concrete_amount = $1, part_load_charge = $2, total_amount = $3 WHERE id = $4",
+        [newConcreteAmount, partLoad, newTotal, inv.id]
       );
     }
   }

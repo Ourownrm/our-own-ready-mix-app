@@ -224,7 +224,23 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
   // Round 205 — two prices for the grade at this site (OPC / OPC + fly ash):
   // which one this order is.
   const [priceOption, setPriceOption] = useState("");
-  useEffect(() => { setPriceOption(""); }, [form.site_id, form.mix_grade_id]);
+  useEffect(() => { setPriceOption(""); setMixDesignId(""); }, [form.site_id, form.mix_grade_id]);
+  // Round 254 — the quotation's mix designs for the chosen grade; one must be
+  // chosen when the quotation names any (same rule as Create Order).
+  const [siteMixes, setSiteMixes] = useState(null);
+  const [mixDesignId, setMixDesignId] = useState("");
+  useEffect(() => {
+    setSiteMixes(null);
+    if (!booking.customer_id || !form.site_id) return;
+    apiRequest(`/master/site-mixes?customer_id=${booking.customer_id}&site_id=${form.site_id}&date=${form.order_date}`)
+      .then(setSiteMixes).catch(() => setSiteMixes(null));
+  }, [booking.customer_id, form.site_id, form.order_date]);
+  const gradeDesigns = (siteMixes?.mixes || []).filter((m) => m.mix_design_id && String(m.mix_grade_id) === String(form.mix_grade_id));
+  function chooseDesign(key) {
+    const m = gradeDesigns.find((x) => `${x.mix_design_id}|${x.price_option || ""}` === key);
+    setMixDesignId(m ? String(m.mix_design_id) : "");
+    setPriceOption(m?.price_option || "");
+  }
   const [billingAddresses, setBillingAddresses] = useState([]);
 
   // Round 119, post-ship again, item 2 — this form used to collect only a
@@ -324,6 +340,10 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
       setError("Select which pump will be used for this order.");
       return;
     }
+    if (gradeDesigns.length > 0 && !mixDesignId) {
+      setError("Choose the mix design for this grade — the quotation names one.");
+      return;
+    }
     if (rateInfo?.options?.length > 1 && !priceOption) {
       setError("This site has two prices for the grade — choose which one this order is.");
       return;
@@ -353,6 +373,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
           pump_charge_applicable: needsPumpDecision ? pumpChargeDecision : linePumpAboveMin ? false : undefined,
           pump_charge_amount: needsPumpDecision && pumpChargeDecision ? pumpChargeAmount : 0,
           price_option: priceOption || undefined,
+          mix_design_id: mixDesignId ? Number(mixDesignId) : undefined,
           pump_charge_waiver_reason: needsPumpDecision && pumpChargeDecision === false ? pumpWaiverReason.trim() || undefined : undefined,
           part_load_applicable: partLoadDecision,
           part_load_waiver_reason: partLoadDecision === false ? partLoadWaiverReason.trim() : undefined,
@@ -428,6 +449,15 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
             {mixGrades.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
         </div>
+        {gradeDesigns.length > 0 && (
+          <div>
+            <div style={{ color: "var(--slate)" }}>Mix design (from quotation) — required</div>
+            <select value={mixDesignId ? `${mixDesignId}|${priceOption}` : ""} onChange={(e) => chooseDesign(e.target.value)} required>
+              <option value="">Choose…</option>
+              {gradeDesigns.map((m) => <option key={`${m.mix_design_id}|${m.price_option || ""}`} value={`${m.mix_design_id}|${m.price_option || ""}`}>{m.design_ref}{m.price_option && gradeDesigns.filter((x) => x.mix_design_id === m.mix_design_id).length > 1 ? ` · ${m.price_option}` : ""}</option>)}
+            </select>
+          </div>
+        )}
         <div><div style={{ color: "var(--slate)" }}>Order quantity (m³)</div><input type="number" value={form.order_quantity_m3} onChange={(e) => setForm({ ...form, order_quantity_m3: e.target.value })} required /></div>
         <div><div style={{ color: "var(--slate)" }}>Truck dispatch interval (min)</div><input type="number" value={form.truck_dispatch_interval_minutes} onChange={(e) => setForm({ ...form, truck_dispatch_interval_minutes: e.target.value })} required /></div>
         <div>
@@ -550,7 +580,7 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
             Price on the site's price list{rateInfo.quote_no ? ` — quotation ${rateInfo.quote_no}` : rateInfo.rate_source === "rate_file" ? " — from the rate file" : ""}
           </div>
         )}
-        {rateInfo?.options?.length > 1 && (
+        {rateInfo?.options?.length > 1 && gradeDesigns.length === 0 && (
           <div style={{ gridColumn: "1 / -1", fontSize: 12, background: "var(--info-bg)", color: "var(--info)", padding: 10, borderRadius: 8 }}>
             <div style={{ fontWeight: 600, marginBottom: 6 }}>This site has {rateInfo.options.length} prices for this grade — which one is this order? (required)</div>
             <select value={priceOption} onChange={(e) => setPriceOption(e.target.value)} style={{ width: "100%" }}>

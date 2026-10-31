@@ -16,7 +16,11 @@ import CreateOrder from "./CreateOrder.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
 import { usePermissions, IfCan } from "../lib/PermissionContext.jsx";
 
-export default function ManagerDashboard() {
+// Round 254 — `embedded`: shown as the Plant overview tab of the Production
+// module (/production). Orders, tickets, customers and the target are tabs of
+// their own there, so this keeps the live items (alerts, approvals, status of
+// trucks, pumps and orders) and hands "new order" / "edit order" to the tabs.
+export default function ManagerDashboard({ embedded = false, onGo } = {}) {
   const [stats, setStats] = useState(null);
   const [orders, setOrders] = useState([]);
   const [activeTrucks, setActiveTrucks] = useState([]);
@@ -86,6 +90,7 @@ export default function ManagerDashboard() {
   }
 
   function editOrder(orderId) {
+    if (embedded && onGo) return onGo("orders", { edit: String(orderId) });
     setJumpToOrderId(orderId);
     setView("correct-orders");
   }
@@ -154,7 +159,7 @@ export default function ManagerDashboard() {
   if (view === "create-order") {
     return (
       <>
-        <TopBar title="Manager · Create order" />
+        {!embedded && <TopBar title="Manager · Create order" />}
         <div style={{ maxWidth: 960, margin: "0 auto", padding: "0 16px 32px" }}>
           <button onClick={() => setView("dashboard")} style={{ marginBottom: 16 }}>← Back to dashboard</button>
           <CreateOrder onDone={() => { setView("dashboard"); load(); }} />
@@ -165,7 +170,7 @@ export default function ManagerDashboard() {
   if (["customers", "sites", "correct-orders", "correct-tickets", "rates", "maintenance-action-points", "mix-assignments", "mix-designs"].includes(view)) {
     return (
       <>
-        <TopBar title="Manager · Records" />
+        {!embedded && <TopBar title="Manager · Records" />}
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
             <button onClick={() => setView("dashboard")}>← Back to dashboard</button>
@@ -193,7 +198,7 @@ export default function ManagerDashboard() {
   if (view === "leads") {
     return (
       <>
-        <TopBar title="Manager · Assign a lead" />
+        {!embedded && <TopBar title="Manager · Assign a lead" />}
         <div style={{ maxWidth: 600, margin: "0 auto", padding: "0 16px 32px" }}>
           <button onClick={() => setView("dashboard")} style={{ marginBottom: 16 }}>← Back to dashboard</button>
           {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
@@ -215,6 +220,99 @@ export default function ManagerDashboard() {
     new Date(o.order_date) < startOfDay(new Date()) &&
     !["completed", "cancelled", "closed"].includes(o.status)
   );
+
+  if (embedded) {
+    const tomorrowUpcoming = (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+        <div style={{ flex: "1 1 300px", minWidth: 0 }}>
+          <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showSiteReady={false} accentColor="var(--info)" />
+        </div>
+        <div style={{ flex: "1 1 300px", minWidth: 0 }}>
+          <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
+        </div>
+      </div>
+    );
+    return (
+      <>
+        {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+          <IfCan perm="production.correct-order" action="edit"><button className="btn-primary" onClick={() => onGo?.("orders", { new: "1" })}>+ New order</button></IfCan>
+          <IfCan perm="fleet.fuel-filling"><Link to="/fuel"><button type="button">Fuel &amp; lubricant filling</button></Link></IfCan>
+          <IfCan perm="store.items"><Link to="/store-stock"><button type="button">Store stock</button></Link></IfCan>
+          <IfCan perm="module.plant-production"><Link to="/plant-production"><button type="button">Plant production &amp; consumption</button></Link></IfCan>
+          <IfCan perm="quality.mix-designs-view"><Link to="/mix-designs"><button type="button">Mix designs &amp; recipes</button></Link></IfCan>
+          <GroupedMenu
+            label="Sales"
+            items={allow([
+              { label: "Sales Forecast", to: "/sales-forecast", perm: "sales.forecast" },
+              { label: "Assign a Lead", onClick: () => setView("leads"), perm: "sales.lead-assign", permAction: "edit" },
+              { label: "Browse Leads", to: "/leads", perm: "sales.leads" },
+              { label: "Customer Feed Back", to: "/customer-feedback", perm: "sales.feedback" },
+              { label: "Booking Links & Requests", to: "/customer-booking", perm: "sales.booking-links" },
+            ])}
+          />
+          <GroupedMenu
+            label="Admin"
+            items={allow([
+              { label: "Concrete Grade & Rates", onClick: () => setView("rates"), perm: "accounts.rates" },
+              { label: "Approved Mix Assignments", onClick: () => setView("mix-assignments"), perm: "quality.mix-assignments" },
+              { label: "Mix Designs (approve)", onClick: () => setView("mix-designs"), perm: "quality.mix-designs" },
+              { label: "Website Content", to: "/site-content", perm: "admin.site-content" },
+              { label: "Home Screen Photos", to: "/home-screen-photos", perm: "admin.home-screen-photos" },
+            ])}
+          />
+        </div>
+
+        <NeedsYouNow pendingSupply={pendingSupply.length} pendingPurchases={pendingPurchases.length} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
+          <Kpi label="Today's production" value={`${stats?.today_production_m3 ?? "–"} m³`} />
+          <Kpi label="Monthly production" value={`${stats?.monthly_production_m3 ?? "–"} m³`} />
+          <Kpi label="Delayed trucks" value={stats?.delayed_trucks ?? "–"} danger={stats?.delayed_trucks > 0} />
+          <Kpi label="Rejected concrete — month" value={`${stats?.rejected_concrete_month_m3 ?? "–"} m³`} />
+        </div>
+        {stats?.target_m3 != null && <MonthlyTargetPanel stats={stats} />}
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-start" }}>
+          <div style={{ flex: "999 1 600px", minWidth: 0 }}>
+            {carriedForward.length > 0 && (
+              <div id="mgr-carried">
+                <OrderTable title="Needs attention — carried forward from an earlier day" rows={carriedForward} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder}
+                  onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate accentColor="var(--alert-red)" />
+              </div>
+            )}
+            <div id="mgr-today">
+              <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} accentColor="var(--signal-green)" activeTrucks={activeTrucks} />
+            </div>
+            <div id="mgr-trucks">
+              <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} onApplyDelayCharge={applyDelayCharge} onAddSiteDelayReason={addSiteDelayReason} />
+            </div>
+            <PumpStatusTable orders={today.concat(carriedForward)} activeTrucks={activeTrucks} setError={setError} onReload={load} />
+            <CompletedTripsTable trips={completedTrips} />
+            {tomorrowUpcoming}
+          </div>
+          <aside style={{ flex: "1 1 320px", minWidth: 0 }}>
+            <div id="mgr-bookings"><BookingsQueue setError={setError} /></div>
+            <div id="mgr-inquiries"><CustomerInquiriesCard setError={setError} /></div>
+            <OnDutyDriversTable drivers={onDutyDrivers} />
+            <div id="mgr-followups"><FollowupsDue /></div>
+            <RawMaterialStockCard />
+            <StoreStockCard />
+            <div id="mgr-compliance"><ComplianceAlertsCard /></div>
+            <div className="card" style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Pump utilization this month</div>
+              <PieChart
+                data={pumpUtilization.map((r) => ({ label: r.pump_type === "none" ? "Without pump" : `${r.pump_code} (${r.pump_type})`, value: r.total_qty_m3 }))}
+                valueLabel={(v) => `${v} m³`}
+                monochromeHue={165}
+              />
+            </div>
+          </aside>
+        </div>
+        <OrderDetailModal orderId={detailOrderId} onClose={() => setDetailOrderId(null)} />
+      </>
+    );
+  }
 
   return (
     <>
@@ -364,6 +462,58 @@ export default function ManagerDashboard() {
       </div>
       <OrderDetailModal orderId={detailOrderId} onClose={() => setDetailOrderId(null)} />
     </>
+  );
+}
+
+// Round 254 — the approvals and alerts waiting on the Plant Manager, in one
+// panel at the top of the Plant overview. Each opens the item below (or its
+// own screen). Empty once all are done.
+function NeedsYouNow({ pendingSupply, pendingPurchases }) {
+  const [a, setA] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const get = () => apiRequest("/production/attention").then((r) => live && setA(r)).catch(() => {});
+    get();
+    const t = setInterval(get, 60000);
+    return () => { live = false; clearInterval(t); };
+  }, []);
+  if (!a) return null;
+  const jump = (id) => () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const supply = pendingSupply + pendingPurchases;
+  const items = [
+    { n: supply, label: "Fuel & lubricant requests", sub: [pendingSupply ? `${pendingSupply} issue request${pendingSupply === 1 ? "" : "s"}` : null, pendingPurchases ? `${pendingPurchases} store purchase request${pendingPurchases === 1 ? "" : "s"}` : null].filter(Boolean).join(" · "), to: "/supply-approvals" },
+    { n: a.bookings, label: "Booking requests", sub: "customers' requests to convert into orders", go: jump("mgr-bookings") },
+    { n: a.inquiries, label: "Customer inquiries", sub: "from the website and portal", go: jump("mgr-inquiries") },
+    { n: a.delayed, label: "Delayed trucks to review", sub: "over 2 hours at site — delay charge or site delay reason", go: jump("mgr-trucks"), red: true },
+    { n: a.to_confirm, label: "Orders to confirm complete", sub: "all loads out — confirm or close", go: jump("mgr-today") },
+    { n: a.compliance, label: "Compliance due", sub: "certificates expiring within 15 days", go: jump("mgr-compliance"), red: true },
+    { n: a.followups, label: "Follow-ups due", sub: "quotations and leads to call back", go: jump("mgr-followups") },
+    { n: a.waiting_first_load, label: "Site ready — waiting for first load", sub: "batching timer running", go: jump("mgr-today"), red: true },
+  ].filter((i) => i.n > 0);
+  const total = items.reduce((s, i) => s + i.n, 0);
+  return (
+    <section className="card" style={{ padding: 0, marginBottom: 16, borderColor: items.length ? "var(--amber)" : undefined, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", background: items.length ? "var(--amber-bg)" : undefined, display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between", alignItems: "baseline" }}>
+        <b style={{ fontSize: 15, color: items.length ? "#7a5410" : "var(--charcoal)" }}>Needs you now{items.length ? ` · ${total}` : ""}</b>
+        <span style={{ fontSize: 12, color: "var(--slate)" }}>{items.length ? "approvals and alerts" : "nothing waiting on you"}</span>
+      </div>
+      {items.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+          {items.map((i) => {
+            const inner = (
+              <>
+                <span style={{ minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{i.label}</b>{i.sub && <div style={{ fontSize: 12, color: "var(--slate)" }}>{i.sub}</div>}</span>
+                <span className={`badge ${i.red ? "badge-danger" : "badge-warning"}`}>{i.n}</span>
+              </>
+            );
+            const st = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 14px", borderTop: "1px solid var(--border)", minHeight: 44, textAlign: "left", background: "none", border: "none", borderTopStyle: "solid", borderTopWidth: 1, borderTopColor: "var(--border)", borderRadius: 0, width: "100%", color: "var(--charcoal)", textDecoration: "none", font: "inherit", cursor: "pointer" };
+            return i.to
+              ? <Link key={i.label} to={i.to} style={st}>{inner}</Link>
+              : <button key={i.label} type="button" onClick={i.go} style={st}>{inner}</button>;
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 

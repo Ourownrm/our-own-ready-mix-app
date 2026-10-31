@@ -79,6 +79,17 @@ export default function CreateOrder({ onDone }) {
     setPriceOption(m?.price_option || "");
     setMixDesignId(m?.mix_design_id ? String(m.mix_design_id) : "");
   }
+  const mixGradesOfSite = mixMode
+    ? [...new Map(siteMixes.mixes.map((m) => [String(m.mix_grade_id), { id: String(m.mix_grade_id), name: m.grade_name }])).values()]
+    : [];
+  const gradeMixes = mixMode ? siteMixes.mixes.filter((m) => String(m.mix_grade_id) === String(form.mix_grade_id)) : [];
+  const gradeHasDesign = gradeMixes.some((m) => m.mix_design_id);
+  function chooseGrade(gid) {
+    const list = mixMode ? siteMixes.mixes.filter((m) => String(m.mix_grade_id) === String(gid)) : [];
+    if (list.length === 1) return chooseMix(mixKeyOf(list[0]));
+    setMixKey(""); setPriceOption(""); setMixDesignId("");
+    setForm((f) => ({ ...f, mix_grade_id: gid }));
+  }
   useEffect(() => { if (!mixMode) setPriceOption(""); }, [form.site_id, form.mix_grade_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Site Contacts directory (round 96, item 7) — autofills from any contact
@@ -306,12 +317,29 @@ export default function CreateOrder({ onDone }) {
           </Field>
         )}
         {mixMode ? (
-          <Field label={siteMixes.source === "quotation" ? `Grade · mix design (quotation ${siteMixes.quote_no})` : "Grade · mix design (approved for this site)"}>
-            <select value={mixKey} onChange={(e) => chooseMix(e.target.value)} required>
-              <option value="">Select</option>
-              {siteMixes.mixes.map((m) => <option key={mixKeyOf(m)} value={mixKeyOf(m)}>{m.label}</option>)}
-            </select>
-          </Field>
+          <>
+            {/* Round 254 — grade first, then the quotation's mix design for
+                that grade (only that grade's mixes). Required when the
+                quotation names mix designs; skipped when it does not. */}
+            <Field label={siteMixes.source === "quotation" ? `Mix grade (quotation ${siteMixes.quote_no})` : "Mix grade (approved for this site)"}>
+              <select value={form.mix_grade_id} onChange={(e) => chooseGrade(e.target.value)} required>
+                <option value="">Select</option>
+                {mixGradesOfSite.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            </Field>
+            {form.mix_grade_id && (gradeMixes.length > 1 || gradeHasDesign) && (
+              <Field label={gradeHasDesign ? "Mix design (from quotation) — required" : "Price option — required"}>
+                <select value={mixKey} onChange={(e) => chooseMix(e.target.value)} required>
+                  <option value="">Choose…</option>
+                  {gradeMixes.map((m) => (
+                    <option key={mixKeyOf(m)} value={mixKeyOf(m)}>
+                      {m.design_ref ? `${m.design_ref}${gradeMixes.filter((x) => x.design_ref === m.design_ref).length > 1 && m.price_option ? ` · ${m.price_option}` : ""}` : (m.price_option || m.label)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </>
         ) : (
           <Field label="Mix grade">
             <select value={form.mix_grade_id} onChange={(e) => set("mix_grade_id", e.target.value)} required>

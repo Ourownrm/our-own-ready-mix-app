@@ -49,12 +49,39 @@ export async function resolveChargeDecisions(body, { customer_id, site_id, mix_g
       return { error: "This grade / mix is not approved by the customer for this site — the Administrator can enable it in Accounts → Price lists." };
     }
   }
-  if (picked.options.length > 1 && !picked.rate) {
+  // Round 254 (owner, 31 Oct 2026) — "after grade, a mandatory option to
+  // select mix design, if mix design is present in quotation … selected grade
+  // mix only … if mix design code is not added to quotation, skip this".
+  // When the site's price-list rows for the grade carry mix designs, the
+  // order must name one of them, and that row prices the order.
+  let rate = picked.rate;
+  let quotedMix = null;
+  const wantMix = Number(body.mix_design_id) || null;
+  const designRows = picked.options.filter((o) => o.mix_design_id);
+  if (designRows.length) {
+    if (!wantMix) return { error: "Choose the mix design for this grade — the quotation names one." };
+    const hit = picked.options.find((o) => Number(o.mix_design_id) === wantMix);
+    if (!hit) return { error: "That mix design is not on this site's price list for the grade — choose one of those shown." };
+    rate = hit;
+    quotedMix = wantMix;
+  } else if (!picked.options.length) {
+    // A new site's first order, priced from its quotation (no price list yet).
+    const { rows: ql } = await query(
+      `SELECT DISTINCT ql.mix_design_id FROM quotation_lines ql
+        WHERE ql.mix_grade_id = $3 AND ql.mix_design_id IS NOT NULL
+          AND ql.quotation_id = (SELECT id FROM quotations WHERE customer_id = $1 AND site_id = $2 AND status IN ('approved', 'sent') ORDER BY id DESC LIMIT 1)`,
+      [customer_id, site_id, mix_grade_id]).catch(() => ({ rows: [] }));
+    if (ql.length) {
+      if (!wantMix) return { error: "Choose the mix design for this grade — the quotation names one." };
+      if (!ql.some((r) => Number(r.mix_design_id) === wantMix)) return { error: "That mix design is not in the quotation for this grade." };
+      quotedMix = wantMix;
+    }
+  }
+  if (!designRows.length && picked.options.length > 1 && !picked.rate) {
     return { error: picked.reason === "no_option"
       ? "That price option is not in the site's price list — choose one of the options shown."
       : `This site has ${picked.options.length} prices for this grade (${picked.options.map((o) => o.price_option || "standard").join(" / ")}) — choose which one this order is.` };
   }
-  const rate = picked.rate;
   // No price list yet (first order of a new site): keep what the form chose
   // from the quotation, so the deemed acceptance prices it.
   const priceOption = rate?.price_option || (!picked.options.length ? String(body.price_option || "").trim() || null : null);
@@ -65,6 +92,7 @@ export async function resolveChargeDecisions(body, { customer_id, site_id, mix_g
     pump_charge_applicable: null, pump_charge_amount: 0, pump_charge_waiver_reason: null,
     part_load_applicable: null, part_load_charge_amount: 0, part_load_waiver_reason: null,
     part_load_basis: "per_load",
+    quoted_mix_design_id: quotedMix,
   };
 
   // Round 217 (owner, 20 Oct 2026) — a line pump order at or above the line
@@ -179,4 +207,27 @@ export async function recomputeOrderCharges(orderId) {
     changed++;
   }
   return changed;
+}
+
+// Round 254 — a grade / mix change on an existing order (Production → Orders):
+// the same rule as a new order — when the site's price list names mix designs
+// for the grade, one of them must be chosen; it decides the price option.
+// Returns { price_option, mix_design_id, quoted_mix_design_id } or { error }.
+export async function resolveOrderMix(body, { customer_id, site_id, mix_grade_id, order_date }) {
+  const picked = await rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option: body.price_option || null }, undefined, { enabledOnly: true });
+  const wantMix = Number(body.mix_design_id) || null;
+  const designRows = picked.options.filter((o) => o.mix_design_id);
+  if (designRows.length) {
+    if (!wantMix) return { error: "Choose the mix design for this grade — the quotation names one." };
+    const hit = picked.options.find((o) => Number(o.mix_design_id) === wantMix);
+    if (!hit) return { error: "That mix design is not on this site's price list for the grade." };
+    return { price_option: hit.price_option || null, mix_design_id: wantMix, quoted_mix_design_id: wantMix };
+  }
+  if (picked.options.length > 1 && !picked.rate) {
+    return { error: `This site has ${picked.options.length} prices for this grade — choose which one this order is.` };
+  }
+  if (!picked.options.length && picked.reason === "none") {
+    return { price_option: null, mix_design_id: null, quoted_mix_design_id: null };
+  }
+  return { price_option: picked.rate?.price_option || null, mix_design_id: picked.rate?.mix_design_id || null, quoted_mix_design_id: null };
 }

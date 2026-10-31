@@ -139,12 +139,21 @@ export default function PlantOperator() {
                 <option value="">Select</option>
                 {orders.map((o) => (
                   <option key={o.id} value={o.id}>
-                    {formatOrderNumber(o.id)} — {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name} &middot; {o.scheduled_batching_time?.slice(0, 5)} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
+                    {formatOrderNumber(o.id)} — {o.customer_name} &middot; {o.site_name} &middot; {o.mix_grade_name}{o.mix_code ? ` · ${o.mix_code} / ${o.recipe_code || "Not mapped"}` : ""} &middot; {o.scheduled_batching_time?.slice(0, 5)} &middot; {o.order_quantity_m3 - o.dispatched_so_far} m³ remaining
                     {o.blocked_site_not_ready ? " — site not confirmed ready yet" : ""}
                   </option>
                 ))}
               </select>
             </div>
+            {/* Round 254 — the quotation's mix and the plant recipe QC mapped
+                it to (Quality Control → Mix mapping). Only when the order
+                carries a mix design; nothing else is shown. */}
+            {selectedOrder?.mix_code && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border-strong)", borderRadius: 8, padding: "10px 12px", fontSize: 14 }}>
+                <span style={{ fontSize: 12, color: "var(--slate)" }}>Mix Design / Recipe</span>
+                <b>{selectedOrder.mix_code} / {selectedOrder.recipe_code || <span style={{ color: "var(--alert-red)" }}>Not mapped</span>}</b>
+              </div>
+            )}
             {selectedOrder && (
               <div style={{ fontSize: 12, color: "var(--slate)", background: "var(--concrete)", padding: 8, borderRadius: 6 }}>
                 {formatOrderNumber(selectedOrder.id)} — {selectedOrder.order_quantity_m3} m³ &middot; dispatched {selectedOrder.dispatched_so_far} m³ &middot;

@@ -70,27 +70,17 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 254 — the Production module is one page with tabs, like
+    // Accounts (owner, 31 Oct 2026): Plant overview (the Plant Manager
+    // dashboard), Orders, Delivery tickets, Vehicle tracking, Customers &
+    // sites, Production target and Reports. Opens straight away.
     key: "production",
     label: "Production",
     icon: "factory",
     colour: "#C75B12",
     tint: "#FBEDE3",
-    screens: [
-      // The Manager dashboard, reachable by an Administrator all along
-      // (App.jsx guards it manager+administrator) but never linked from here.
-      // Labelled by what it shows, not whose screen it is. First in the
-      // module at the user's request — it is the overview the rest explain.
-      { key: "plant-manager", label: "Plant Manager", icon: "gauge", to: "/manager" },
-      { key: "production-target", label: "Production Target", icon: "target", view: "production-target" },
-      { key: "correct-order", label: "Correct Order", icon: "edit", view: "orders" },
-      { key: "correct-tickets", label: "Correct Tickets", icon: "receipt", view: "tickets" },
-      { key: "daily-production-report", label: "Daily Production Report", icon: "doc", to: "/production-report" },
-      { key: "trip-allowance-report", label: "Trip Allowance Report", icon: "cash", to: "/trip-allowance-report" },
-      { key: "cycle-time-report", label: "Cycle Time Report", icon: "cycle", to: "/cycle-time-report" },
-      { key: "charts", label: "Charts", icon: "trend", to: "/charts" },
-      { key: "delay-justification", label: "Delay Justification Report", icon: "hourglass", to: "/delay-justification-report" },
-      { key: "time-cross-check", label: "Time Cross Check", icon: "clock", to: "/trip-time-crosscheck" },
-    ],
+    to: "/production",
+    screens: [],
   },
   {
     key: "fuel-lubricants",
@@ -133,6 +123,8 @@ export const ADMIN_MODULES = [
       // Round 170 — the read/costing view of mix designs, moved here from Plant
       // Production (Details + Costing).
       { key: "mix-designs-view", label: "Mix Designs & Recipes", icon: "layers", to: "/mix-designs" },
+      // Round 254 — each customer's quoted mix design mapped to a plant recipe.
+      { key: "mix-mapping", label: "Mix Mapping", icon: "layers", to: "/mix-mapping" },
       { key: "cube-test-report", label: "Cube Test Report", icon: "doc", to: "/lab-technician/cube-test-report" },
       { key: "cube-strength-analysis", label: "Cube Strength Analysis", icon: "chart", to: "/cube-qc-dashboard" },
       // Round 194 — raw material lab tests: cards from a GRN, Administrator approval.
@@ -302,8 +294,7 @@ export function moduleByKey(key) {
 export const DEFAULT_PINS = [
   "directors-dashboard",
   "material-module",
-  "correct-tickets",
-  "daily-production-report",
+  "production",
   "outstanding-collection",
   "mix-designs-approve",
 ];
@@ -339,6 +330,7 @@ export const HUB = [
       { key: "mix-assignments", perm: "quality.mix-assignments" },
       { key: "mix-designs-approve", perm: "quality.mix-designs" },
       { key: "mix-designs-view", perm: "quality.mix-designs-view" },
+      { key: "mix-mapping", perm: "quality.mix-mapping" },
       { key: "cube-test-report", perm: "quality.cube-test-report" },
       { key: "cube-strength-analysis", perm: "quality.cube-qc-dashboard" },
       { key: "rm-tests", perm: "quality.rm-tests" },
@@ -347,15 +339,9 @@ export const HUB = [
     ],
   },
   {
-    key: "production",
-    screens: [
-      { key: "production-target", perm: "production.targets" },
-      { key: "correct-order", perm: "production.correct-order" },
-      { key: "correct-tickets", perm: "production.correct-tickets" },
-      { key: "daily-production-report", perm: "reports.production" },
-      { key: "trip-allowance-report", perm: "reports.trip-allowance" },
-      { key: "cycle-time-report", perm: "reports.cycle-time" },
-    ],
+    key: "production", to: "/production",
+    perm: ["production.manager-dashboard", "production.correct-order", "production.correct-tickets", "orders.live-tracking",
+      "masters.customers", "production.targets", "reports.production", "reports.trip-allowance", "reports.cycle-time"],
   },
   {
     key: "fuel-lubricants",

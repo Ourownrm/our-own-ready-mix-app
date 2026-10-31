@@ -91,6 +91,7 @@ export default function QcEngineer() {
             missing, so a granted permission had no way to be reached). */}
         <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
           <IfCan perm="quality.mix-designs-view"><Link to="/mix-designs" className="btn-tab" style={{ textDecoration: "none" }}>Mix Designs &amp; Recipes →</Link></IfCan>
+          <IfCan perm="quality.mix-mapping"><Link to="/mix-mapping" className="btn-tab" style={{ textDecoration: "none" }}>Mix Mapping →</Link></IfCan>
           <IfCan perm="module.plant-production"><Link to="/plant-production" className="btn-tab" style={{ textDecoration: "none" }}>Plant Production &amp; Consumption →</Link></IfCan>
         </div>
 

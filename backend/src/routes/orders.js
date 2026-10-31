@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { setOrderGang } from "../lib/gangs.js";
 import { resolveChargeDecisions, notifyWaivers } from "../lib/orderCharges.js";
+import { afterOrderMix } from "../lib/round254Schema.js";
 import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -158,6 +159,8 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
   // site's approved quotation is accepted by its first order (clause 9.1).
   await notifyWaivers(rows[0].id);
   await deemedAcceptOnFirstOrder(rows[0].id, req.user.id);
+  // Round 254 — the quotation's mix chosen on the order; QC told if unmapped.
+  await afterOrderMix(rows[0].id, cd.quoted_mix_design_id).catch((e) => console.error("afterOrderMix", e.message));
   res.status(201).json(rows[0]);
 });
 
