@@ -5,6 +5,7 @@
 // on the Access Control page; the tab is kept in the URL (?tab=...).
 import { useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
+import { MODULE_TABS, tabAllowed } from "../lib/moduleTabs.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import QuotationsTab from "./accounts/QuotationsTab.jsx";
 import PriceLists from "./accounts/PriceLists.jsx";
@@ -17,31 +18,28 @@ import PettyCash from "./accounts/PettyCash.jsx";
 import SendToCa from "./accounts/SendToCa.jsx";
 import QuotationSettings from "./accounts/QuotationSettings.jsx";
 
-const TABS = [
-  { key: "quotations", label: "Quotations", perm: "accounts.quotations", Component: QuotationsTab },
-  { key: "price-lists", label: "Price lists", perm: "accounts.price-lists", Component: PriceLists },
-  { key: "invoices", label: "Invoices", perm: "accounts.invoice-list", Component: Invoices },
-  // Round 252 — credit notes with Administrator approval.
-  { key: "credit-notes", label: "Credit notes", perm: "accounts.credit-notes", Component: CreditNotes },
-  { key: "ledger", label: "Customer ledger", perm: "accounts.customer-ledger", Component: CustomerLedger },
-  { key: "receipts", label: "Bank receipts", perm: "accounts.bank-receipts", Component: BankReceipts },
-  // Round 253 — the cheque register and petty cash.
-  { key: "cheques", label: "Cheques", perm: "accounts.cheques", Component: Cheques },
-  { key: "petty-cash", label: "Petty cash", perm: "accounts.petty-cash", Component: PettyCash },
-  // Round 255 — the month's data for the CA, in Excel, by the 5th.
-  { key: "send-to-ca", label: "Send to CA", perm: "accounts.send-to-ca", Component: SendToCa },
-  // Round 252 — the old rate file screen is switched off (owner, 30 Oct 2026);
-  // what is left of it is the "merge same rates" card on Price lists.
-  // { key: "migration", label: "Rate migration", perm: "accounts.rate-migration", Component: RateMigration },
-  { key: "settings", label: "Settings", perm: "accounts.quotation-settings", Component: QuotationSettings },
-];
+// Round 256 — the tab list (key, label, who may open it) lives in
+// lib/moduleTabs.js, shared with the computer side menu.
+const COMPONENTS = {
+  "quotations": QuotationsTab,
+  "price-lists": PriceLists,
+  "invoices": Invoices,
+  "credit-notes": CreditNotes,
+  "ledger": CustomerLedger,
+  "receipts": BankReceipts,
+  "cheques": Cheques,
+  "petty-cash": PettyCash,
+  "send-to-ca": SendToCa,
+  "settings": QuotationSettings,
+};
+const TABS = MODULE_TABS["accounts-module"].tabs.map((t) => ({ ...t, Component: COMPONENTS[t.key] }));
 
 export default function AccountsModule() {
   const { can, ready } = usePermissions();
   const [params, setParams] = useSearchParams();
   if (!ready) return null;
 
-  const tabs = TABS.filter((t) => can(t.perm, "view"));
+  const tabs = TABS.filter((t) => tabAllowed(t, can));
   const wanted = params.get("tab");
   const active = tabs.find((t) => t.key === wanted) || tabs[0];
 

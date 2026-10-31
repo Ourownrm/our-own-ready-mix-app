@@ -5,6 +5,7 @@
 // (?tab=...) so a link or the browser's back button lands on the same view.
 import { useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
+import { MODULE_TABS, tabAllowed } from "../lib/moduleTabs.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import FuelDashboard from "./fuel/FuelDashboard.jsx";
 import FuelTransactions from "./fuel/FuelTransactions.jsx";
@@ -15,23 +16,26 @@ import FuelReports from "./fuel/FuelReports.jsx";
 import FuelSettings from "./fuel/FuelSettings.jsx";
 import FuelCorrections from "./fuel/FuelCorrections.jsx";
 
-const TABS = [
-  { key: "dashboard", label: "Dashboard", perm: "fuel.dashboard", Component: FuelDashboard },
-  { key: "transactions", label: "Transactions", perm: "fuel.transactions", Component: FuelTransactions },
-  { key: "issue", label: "Issue fuel", perm: "fuel.issue", Component: FuelIssue },
-  { key: "purchases", label: "Purchases", perm: "fuel.purchases", Component: FuelPurchases },
-  { key: "analysis", label: "360° Analysis", perm: "reports.fuel-analysis", Component: FuelAnalysis360 },
-  { key: "reports", label: "Reports", perm: "fuel.reports", Component: FuelReports },
-  { key: "settings", label: "Settings", perm: "fuel.settings", Component: FuelSettings },
-  { key: "corrections", label: "Corrections", perm: "fuel.corrections", Component: FuelCorrections },
-];
+// Round 256 — the tab list (key, label, who may open it) lives in
+// lib/moduleTabs.js, shared with the computer side menu.
+const COMPONENTS = {
+  "dashboard": FuelDashboard,
+  "transactions": FuelTransactions,
+  "issue": FuelIssue,
+  "purchases": FuelPurchases,
+  "analysis": FuelAnalysis360,
+  "reports": FuelReports,
+  "settings": FuelSettings,
+  "corrections": FuelCorrections,
+};
+const TABS = MODULE_TABS["fuel-module"].tabs.map((t) => ({ ...t, Component: COMPONENTS[t.key] }));
 
 export default function FuelModule() {
   const { can, ready } = usePermissions();
   const [params, setParams] = useSearchParams();
   if (!ready) return null;
 
-  const tabs = TABS.filter((t) => can(t.perm, "view"));
+  const tabs = TABS.filter((t) => tabAllowed(t, can));
   const wanted = params.get("tab");
   const active = tabs.find((t) => t.key === wanted) || tabs[0];
 

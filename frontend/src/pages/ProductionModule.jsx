@@ -9,6 +9,7 @@
 //   Production target, Reports
 import { useSearchParams, Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
+import { MODULE_TABS, PRODUCTION_REPORTS, tabAllowed } from "../lib/moduleTabs.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import ManagerDashboard from "./ManagerDashboard.jsx";
 import OrdersTab from "./production/OrdersTab.jsx";
@@ -28,19 +29,9 @@ function TargetTab() {
   );
 }
 
-const REPORTS = [
-  { label: "Daily Production Report", to: "/production-report", perm: "reports.production" },
-  { label: "Trip Allowance Report", to: "/trip-allowance-report", perm: "reports.trip-allowance" },
-  { label: "Cycle Time Report", to: "/cycle-time-report", perm: "reports.cycle-time" },
-  { label: "Truck Timing Report", to: "/truck-timing-report", perm: "reports.truck-timing" },
-  { label: "Delay Justification Report", to: "/delay-justification-report", perm: "reports.delay-justification" },
-  { label: "Time Cross Check", to: "/trip-time-crosscheck", perm: "reports.trip-time-crosscheck" },
-  { label: "Charts", to: "/charts", perm: "reports.charts" },
-  { label: "Fuel and Lubricant Report", to: "/fuel-report", perm: "reports.fuel" },
-  { label: "Best Driver & Site Efficiency", to: "/maintenance", perm: "fleet.maintenance" },
-  { label: "Outstanding Collection", to: "/outstanding-collection-report", perm: "accounts.outstanding" },
-];
-const REPORT_PERMS = REPORTS.map((r) => r.perm);
+// Round 256 — the report list lives in lib/moduleTabs.js (the Reports tab
+// shows only when one of these is held, there and in the side menu).
+const REPORTS = PRODUCTION_REPORTS;
 
 function ReportsTab() {
   const { can } = usePermissions();
@@ -56,22 +47,25 @@ function ReportsTab() {
   );
 }
 
-const TABS = [
-  { key: "overview", label: "Plant overview", perm: "production.manager-dashboard", Component: ({ go }) => <ManagerDashboard embedded onGo={go} /> },
-  { key: "orders", label: "Orders", perm: "production.correct-order", Component: OrdersTab },
-  { key: "tickets", label: "Delivery tickets", perm: "production.correct-tickets", Component: TicketsTab },
-  { key: "tracking", label: "Vehicle tracking", perm: "orders.live-tracking", Component: TrackingTab },
-  { key: "customers", label: "Customers & sites", perm: "masters.customers", Component: CustomersTab },
-  { key: "target", label: "Production target", perm: "production.targets", Component: TargetTab },
-  { key: "reports", label: "Reports", anyPerm: REPORT_PERMS, Component: ReportsTab },
-];
+// Round 256 — the tab list (key, label, who may open it) lives in
+// lib/moduleTabs.js, shared with the computer side menu.
+const COMPONENTS = {
+  "overview": ({ go }) => <ManagerDashboard embedded onGo={go} />,
+  "orders": OrdersTab,
+  "tickets": TicketsTab,
+  "tracking": TrackingTab,
+  "customers": CustomersTab,
+  "target": TargetTab,
+  "reports": ReportsTab,
+};
+const TABS = MODULE_TABS["production"].tabs.map((t) => ({ ...t, Component: COMPONENTS[t.key] }));
 
 export default function ProductionModule({ defaultTab }) {
   const { can, ready } = usePermissions();
   const [params, setParams] = useSearchParams();
   if (!ready) return null;
 
-  const tabs = TABS.filter((t) => (t.anyPerm ? t.anyPerm.some((p) => can(p, "view")) : can(t.perm, "view")));
+  const tabs = TABS.filter((t) => tabAllowed(t, can));
   const wanted = params.get("tab") || defaultTab;
   const active = tabs.find((t) => t.key === wanted) || tabs[0];
 

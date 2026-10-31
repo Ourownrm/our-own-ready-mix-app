@@ -25,6 +25,7 @@ import { useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { MODULE_TABS, tabAllowed } from "../lib/moduleTabs.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { monthStartStr, todayStr } from "../lib/istDate.js";
@@ -174,35 +175,15 @@ function sameDay(dateStr, ts) {
 // the tab on the edit action keeps the masters Administrator-only by default
 // while staying permission-driven — grant Store material.materials:create and
 // the tab appears.
-const ALL_TABS = [
-  { key: "stock", label: "Stock", perm: "material.stock", action: "view" },
-  { key: "orders", label: "Orders", perm: "material.orders", action: "view" },
-  { key: "receipts", label: "Receipts", perm: "material.receipts", action: "view" },
-  { key: "consumption", label: "Consumption", perm: "material.consumption", action: "view" },
-  { key: "physical-stock", label: "Physical Stock", perm: "material.physical-stock", action: "view" },
-  { key: "consumption-transfer", label: "Consumption transfer", perm: "material.consumption-transfer", action: "view" },
-  { key: "reports", label: "Reports", perm: "material.reports", action: "view" },
-  { key: "cost-dashboard", label: "Cost Dashboard", perm: "material.cost-dashboard", action: "view" },
-  // Round 193 — what we owe each supplier, payments and opening balances.
-  { key: "supplier-ledger", label: "Supplier Ledger", perm: "material.supplier-ledger", action: "view" },
-  // Round 200 — freight owed to transporters on ex-factory loads, and payments.
-  { key: "transporter-ledger", label: "Transporter Ledger", perm: "material.transporter-ledger", action: "view" },
-  // Round 192 — the Materials and Suppliers tabs have their own view keys
-  // (Raw Material module sub-menus), so a Super Admin can show the masters
-  // read-only. Editing inside still needs create/edit on the master itself.
-  { key: "materials", label: "Materials", perm: "material.materials-menu", action: "view" },
-  { key: "suppliers", label: "Suppliers", perm: "material.suppliers-menu", action: "view" },
-  // Round 204 — moved here from the Weighbridge (owner, 11 Oct 2026): the
-  // Manager's decision on a disputed load, and the variance report. Either
-  // function opens the tab.
-  { key: "receipt-variances", label: "Receipt Variances", perm: ["material.receipt-confirm", "weighbridge.receipt-variance"], action: "view" },
-];
+// Round 256 — the tab list lives in lib/moduleTabs.js, shared with the
+// computer side menu.
+const ALL_TABS = MODULE_TABS["material-module"].tabs;
 
 export default function MaterialModule() {
   const { user } = useAuth();
   const { can, ready } = usePermissions();
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabs = ready ? ALL_TABS.filter((t) => [].concat(t.perm).some((p) => can(p, t.action))) : [];
+  const tabs = ready ? ALL_TABS.filter((t) => tabAllowed(t, can)) : [];
   const requestedTab = searchParams.get("tab");
   const initialTab = tabs.some((t) => t.key === requestedTab) ? requestedTab : (tabs[0]?.key || "");
   const [tab, setTab] = useState(initialTab);
@@ -212,6 +193,11 @@ export default function MaterialModule() {
   useEffect(() => {
     if (ready && !tabs.some((t) => t.key === tab) && initialTab) setTab(initialTab);
   }, [ready, initialTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Round 256 — the side menu changes ?tab= while this page is already open;
+  // follow it (the page keeps its own tab state, read from the URL once).
+  useEffect(() => {
+    if (ready && requestedTab && requestedTab !== tab && tabs.some((t) => t.key === requestedTab)) setTab(requestedTab);
+  }, [requestedTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function changeTab(key) {
     setTab(key);

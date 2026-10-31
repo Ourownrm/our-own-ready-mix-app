@@ -28,7 +28,7 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { CustomersPanel, SitesPanel, RatesPanel, FleetPanel, SalespersonsPanel, FuelStationsAndEquipmentPanel, PlantLocationsPanel, SiteGeofenceReportPanel, SiteContactsPanel, ProductionTargetPanel, MixDesignAssignmentsPanel, MixDesignsPanel, MaintenanceActionPointsPanel, OrdersPanel as SharedOrdersPanel, TicketsPanel as SharedTicketsPanel } from "../lib/MasterDataPanels.jsx";
 import { CreateLeadForm } from "../lib/SalesPanels.jsx";
-import { ADMIN_MODULES, ALL_SCREENS, SCREEN_BY_KEY, GLYPHS, DEFAULT_PINS, moduleByKey, moduleBadge } from "../lib/adminScreens.js";
+import { ADMIN_MODULES, ALL_SCREENS, SCREEN_BY_KEY, GLYPHS, DEFAULT_PINS, moduleByKey, moduleBadge, visibleAdminModules } from "../lib/adminScreens.js";
 // Round 146 — a tile the person has no View permission for is not rendered.
 // The backend refuses the route as well; this only decides what is worth
 // showing (see lib/PermissionContext.jsx).
@@ -222,13 +222,7 @@ export default function Administrator() {
   // disappears too; a module that opens its own screen directly is judged on
   // that screen. Until the permission fetch lands, `permsReady` is false and
   // nothing is filtered, so tiles never flash away after paint.
-  const visibleModules = ADMIN_MODULES
-    .map((m) => (m.screens.length
-      ? { ...m, screens: m.screens.filter((sc) => !permsReady || canScreen(sc.key)) }
-      : m))
-    .filter((m) => (m.screens.length
-      ? m.screens.length > 0
-      : !permsReady || canScreen(m.key)));
+  const visibleModules = visibleAdminModules(canScreen, permsReady);
 
   const rawActiveModule = moduleKey ? moduleByKey(moduleKey) : null;
   const activeModule = rawActiveModule

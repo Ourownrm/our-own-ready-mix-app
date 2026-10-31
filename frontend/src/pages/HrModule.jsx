@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
+import { MODULE_TABS, tabAllowed } from "../lib/moduleTabs.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import { RequestForm, RequestsTab, PayrollTab, AdvancesTab, RulesCard } from "./HrStage2.jsx";
 import { LeaveForm, LeaveTab, LeaveTypesCard } from "./HrLeave.jsx";
@@ -934,22 +935,9 @@ export default function HrModule() {
   const loadMeta = () => apiRequest("/hr/meta").then(setMeta).catch((e) => { if (!/access/i.test(e.message)) setError(e.message); });
   useEffect(() => { loadMeta(); }, []);
 
-  const tabs = [
-    ["today", "Today", can("hr.today", "view")],
-    ["attendance", "Attendance", can("hr.attendance", "view")],
-    ["employees", "Employees", can("hr.employees", "view")],
-    ["requests", "Requests", can("hr.requests", "view")],
-    ["leave", "Leave", can("hr.requests", "view")],
-    ["compoff", "Comp-off", can("hr.requests", "view")],
-    ["roster", "Roster", can("hr.roster", "view")],
-    ["payroll", "Payroll", can("hr.payroll", "view")],
-    ["advances", "Advances", can("hr.advances", "view") || can("hr.advance-request", "view") || can("hr.advance-approve", "edit") || can("hr.advance-pay", "edit")],
-    ["contract", "Contract labour", can("hr.gangs", "view")],
-    ["bills", "Contractor bills", can("hr.contractor-bills", "view")],
-    ["ppe", "PPE", can("hr.ppe", "view") || can("hr.ppe-approve", "edit")],
-    ["exits", "Exits", can("hr.exit", "view") || can("hr.exit-approve", "edit")],
-    ["settings", "Settings", can("hr.settings", "view")],
-  ].filter((t) => t[2]);
+  // Round 256 — the tab list lives in lib/moduleTabs.js, shared with the
+  // computer side menu. Same [key, label] pairs as before.
+  const tabs = MODULE_TABS.hr.tabs.filter((t) => tabAllowed(t, can)).map((t) => [t.key, t.label, true]);
   const current = tabs.some((t) => t[0] === tab) ? tab : tabs[0]?.[0];
 
   if (!ready) return null;

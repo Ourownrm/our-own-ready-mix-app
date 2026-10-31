@@ -4,6 +4,7 @@
 // lands on the same view.
 import { useSearchParams, Link } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
+import { MODULE_TABS, tabAllowed } from "../lib/moduleTabs.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import MntDashboard from "./maintenance/MntDashboard.jsx";
 import MntEquipment from "./maintenance/MntEquipment.jsx";
@@ -17,26 +18,29 @@ import MntPayments from "./maintenance/MntPayments.jsx";
 import MntTyres from "./maintenance/MntTyres.jsx";
 import MntCertificates from "./maintenance/MntCertificates.jsx";
 
-const TABS = [
-  { key: "dashboard", label: "Dashboard", perm: "mnt.dashboard", Component: MntDashboard },
-  { key: "equipment", label: "Equipment", perm: "mnt.equipment", Component: MntEquipment },
-  { key: "schedules", label: "PM schedules", perm: "mnt.schedules", Component: MntSchedules },
-  { key: "inspection", label: "PM Inspection", perm: "mnt.inspections", Component: MntInspection },
-  { key: "job-cards", label: "Job cards", perm: "mnt.job-cards", Component: MntJobCards },
-  { key: "outside", label: "Outside repairs", perm: "mnt.outside-repairs", Component: MntOutside },
-  { key: "purchase", label: "Parts, PO & GRV", perm: "mnt.purchase-orders", Component: MntPurchase },
-  { key: "store", label: "Store stock", perm: "mnt.store", Component: MntStore },
-  { key: "tyres", label: "Tyres & batteries", perm: "mnt.tyres", Component: MntTyres },
-  { key: "certificates", label: "Certificates", perm: "mnt.certificates", Component: MntCertificates },
-  { key: "payments", label: "Payments", perm: "mnt.payments", Component: MntPayments },
-];
+// Round 256 — the tab list (key, label, who may open it) lives in
+// lib/moduleTabs.js, shared with the computer side menu.
+const COMPONENTS = {
+  "dashboard": MntDashboard,
+  "equipment": MntEquipment,
+  "schedules": MntSchedules,
+  "inspection": MntInspection,
+  "job-cards": MntJobCards,
+  "outside": MntOutside,
+  "purchase": MntPurchase,
+  "store": MntStore,
+  "tyres": MntTyres,
+  "certificates": MntCertificates,
+  "payments": MntPayments,
+};
+const TABS = MODULE_TABS["maintenance-module"].tabs.map((t) => ({ ...t, Component: COMPONENTS[t.key] }));
 
 export default function MaintenanceModule() {
   const { can, ready } = usePermissions();
   const [params, setParams] = useSearchParams();
   if (!ready) return null;
 
-  const tabs = TABS.filter((t) => can(t.perm, "view"));
+  const tabs = TABS.filter((t) => tabAllowed(t, can));
   const wanted = params.get("tab");
   const active = tabs.find((t) => t.key === wanted) || tabs[0];
 

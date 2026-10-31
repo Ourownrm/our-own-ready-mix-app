@@ -6,6 +6,7 @@ import { CustomerLanguageProvider } from "./lib/customerI18n.jsx";
 import { ROLE_HOME } from "./lib/roleHome.js";
 import { getCustomerSession } from "./lib/customerPortalApi.js";
 import ProtectedRoute from "./lib/ProtectedRoute.jsx";
+import SideMenu from "./lib/SideMenu.jsx";
 import Login from "./pages/Login.jsx";
 import DriverDuty from "./pages/DriverDuty.jsx";
 import DriverSettings from "./pages/DriverSettings.jsx";
@@ -109,6 +110,9 @@ export default function App() {
       <CustomerLanguageProvider>
       <BrowserRouter>
         <LockdownGate>
+        {/* Round 256 — the side menu on a computer; renders nothing on a
+            phone or tablet, on the public pages, or for anyone signed out. */}
+        <SideMenu />
         <Routes>
           <Route path="/login" element={<Login />} />
 

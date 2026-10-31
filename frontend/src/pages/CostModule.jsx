@@ -4,6 +4,7 @@
 // lands on the same view.
 import { useSearchParams } from "react-router-dom";
 import { TopBar } from "../lib/TopBar.jsx";
+import { MODULE_TABS, tabAllowed } from "../lib/moduleTabs.js";
 import { usePermissions } from "../lib/PermissionContext.jsx";
 import CostDashboardTab from "./cost/CostDashboardTab.jsx";
 import CostPLTab from "./cost/CostPLTab.jsx";
@@ -17,32 +18,28 @@ import CostCLedgerTab from "./cost/CostCLedgerTab.jsx";
 import CostGstTab from "./cost/CostGstTab.jsx";
 import { currentMonth, addMonths } from "./cost/costUi.jsx";
 
-const TABS = [
-  { key: "dashboard", label: "Cost dashboard", perm: "cost.dashboard", Component: CostDashboardTab },
-  { key: "pl", label: "Profit & Loss", perm: "cost.pl", Component: CostPLTab },
-  { key: "balance-sheet", label: "Balance Sheet", perm: "cost.balance-sheet", Component: CostBSTab },
-  // Round 221
-  { key: "break-even", label: "Break-even", perm: "cost.break-even", Component: CostBreakEvenTab, current: true }, // Round 249 — opens on the current month
-  // Round 245 — water cost.
-  { key: "water", label: "Water", perm: "cost.pl", Component: CostWaterTab },
-  // Round 223
-  { key: "bank", label: "Bank statements", perm: "cost.bank", Component: CostBankTab, current: true }, // Round 252 — opens on the current month
-  // Round 239 — loans on their own page.
-  { key: "loans", label: "Loans", perm: "cost.bank", Component: CostLoansTab },
-  // Round 242 — partners' capital and unsecured loans.
-  { key: "partners", label: "Partners", perm: "cost.bank", Component: CostPartnersTab },
-  // Round 236
-  { key: "gst", label: "GST payable", perm: "cost.gst", Component: CostGstTab },
-  // Round 224 — only for people given C Ledger rights by name (not by role).
-  { key: "c-ledger", label: "C Ledger", perm: "cledger.access", Component: CostCLedgerTab },
-];
+// Round 256 — the tab list (key, label, who may open it) lives in
+// lib/moduleTabs.js, shared with the computer side menu.
+const COMPONENTS = {
+  "dashboard": CostDashboardTab,
+  "pl": CostPLTab,
+  "balance-sheet": CostBSTab,
+  "break-even": CostBreakEvenTab,
+  "water": CostWaterTab,
+  "bank": CostBankTab,
+  "loans": CostLoansTab,
+  "partners": CostPartnersTab,
+  "gst": CostGstTab,
+  "c-ledger": CostCLedgerTab,
+};
+const TABS = MODULE_TABS["cost-module"].tabs.map((t) => ({ ...t, Component: COMPONENTS[t.key] }));
 
 export default function CostModule() {
   const { can, ready } = usePermissions();
   const [params, setParams] = useSearchParams();
   if (!ready) return null;
 
-  const tabs = TABS.filter((t) => can(t.perm, "view"));
+  const tabs = TABS.filter((t) => tabAllowed(t, can));
   const active = tabs.find((t) => t.key === params.get("tab")) || tabs[0];
   const now = currentMonth();
   const wanted = params.get("month");

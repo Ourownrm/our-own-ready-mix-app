@@ -54,6 +54,15 @@ export const GLYPHS = {
   gauge: '<path d="M4 17a8.5 8.5 0 1 1 16 0"/><path d="m12 17 4-5.4"/><circle cx="12" cy="17" r="1.2"/>',
   factory: '<path d="M3 21h18"/><path d="M3.5 21V11l5.3 3.4V11l5.3 3.4V7.6L19.5 11v10"/><path d="M7 17.4h1.6M12 17.4h1.6M16.8 17.4h1.4"/>',
   rupee: '<path d="M7.5 4.5h9M7.5 9h9M15 4.5c0 3.3-3 4.5-6 4.5l7.5 10.5"/>',
+  // Round 256 — for the computer side menu, so no two modules share an icon.
+  clipboard: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V2.8h6V4"/><path d="M8.5 10h7M8.5 14h7M8.5 18h4"/>',
+  scale: '<path d="M12 4v16M7 20h10M5 8h14"/><path d="M5 8 2.5 14a2.5 2.5 0 0 0 5 0z"/><path d="m19 8-2.5 6a2.5 2.5 0 0 0 5 0z"/>',
+  pump: '<path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M3 21h12M6.5 8h5"/><path d="M14 10h2a2 2 0 0 1 2 2v4a1.5 1.5 0 0 0 3 0V8l-3-3"/>',
+  droplet: '<path d="M12 3s5 5.6 5 9a5 5 0 0 1-10 0c0-3.4 5-9 5-9z"/><path d="M10 13.5a2 2 0 0 0 2 2"/>',
+  pie: '<path d="M12 3a9 9 0 1 0 9 9h-9z"/><path d="M15 3.4A9 9 0 0 1 20.6 9H15z"/>',
+  home: '<path d="M4 11 12 4l8 7v9H4z"/><path d="M10 20v-5h4v5"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
 };
 
 // Each module: a saturated colour for the big tile (white glyph on it) and a
@@ -283,6 +292,19 @@ export const ALL_SCREENS = ADMIN_MODULES.flatMap((m) =>
     ? m.screens.map((s) => ({ ...s, moduleKey: m.key, moduleLabel: m.label, colour: m.colour, tint: m.tint }))
     : [{ key: m.key, label: m.label, icon: m.icon, to: m.to, view: m.view, moduleKey: m.key, moduleLabel: m.label, colour: m.colour, tint: m.tint }]
 );
+
+// Round 256 — the modules an Administrator-level person sees: a module with
+// sub-screens keeps only the screens they may open and disappears when none
+// are left; a module that opens directly is judged on itself. Until the
+// permissions arrive (`ready` false) nothing is filtered, so tiles never flash
+// away. Shared by the Administrator dashboard and the computer side menu.
+export function visibleAdminModules(canScreen, ready) {
+  return ADMIN_MODULES
+    .map((m) => (m.screens.length
+      ? { ...m, screens: m.screens.filter((sc) => !ready || canScreen(sc.key)) }
+      : m))
+    .filter((m) => (m.screens.length ? m.screens.length > 0 : !ready || canScreen(m.key)));
+}
 
 export const SCREEN_BY_KEY = Object.fromEntries(ALL_SCREENS.map((s) => [s.key, s]));
 
