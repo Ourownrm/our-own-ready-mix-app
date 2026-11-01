@@ -174,15 +174,30 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 16px 32px" }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
             <button onClick={() => setView("dashboard")}>← Back to dashboard</button>
-            <button className={`btn-tab ${view === "customers" ? "active" : ""}`} onClick={() => setView("customers")}>Customers</button>
-            <button className={`btn-tab ${view === "sites" ? "active" : ""}`} onClick={() => setView("sites")}>Projects and sites</button>
-            <button className={`btn-tab ${view === "correct-orders" ? "active" : ""}`} onClick={() => setView("correct-orders")}>Correct orders</button>
-            <button className={`btn-tab ${view === "correct-tickets" ? "active" : ""}`} onClick={() => setView("correct-tickets")}>Correct tickets</button>
+            {/* Round 257 — inside the Production module these four are its own
+                tabs (Orders, Delivery tickets, Customers & sites), so they go there. */}
+            {embedded && onGo ? (
+              <>
+                <button className="btn-tab" onClick={() => onGo("customers")}>Customers &amp; sites</button>
+                <button className="btn-tab" onClick={() => onGo("orders")}>Orders</button>
+                <button className="btn-tab" onClick={() => onGo("tickets")}>Delivery tickets</button>
+              </>
+            ) : (
+              <>
+                <button className={`btn-tab ${view === "customers" ? "active" : ""}`} onClick={() => setView("customers")}>Customers</button>
+                <button className={`btn-tab ${view === "sites" ? "active" : ""}`} onClick={() => setView("sites")}>Projects and sites</button>
+                <button className={`btn-tab ${view === "correct-orders" ? "active" : ""}`} onClick={() => setView("correct-orders")}>Correct orders</button>
+                <button className={`btn-tab ${view === "correct-tickets" ? "active" : ""}`} onClick={() => setView("correct-tickets")}>Correct tickets</button>
+              </>
+            )}
             <button className={`btn-tab ${view === "rates" ? "active" : ""}`} onClick={() => setView("rates")}>Concrete grades and rates</button>
             <button className={`btn-tab ${view === "mix-assignments" ? "active" : ""}`} onClick={() => setView("mix-assignments")}>Approved Mix Assignments</button>
             <button className={`btn-tab ${view === "mix-designs" ? "active" : ""}`} onClick={() => setView("mix-designs")}>Mix Designs (approve)</button>
           </div>
           {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+          {/* Round 257 — the old record tables are wider than a phone: they
+              scroll sideways inside their card instead of widening the page. */}
+          <div className="records-scroll">
           {view === "customers" && <CustomersPanel setError={setError} />}
           {view === "sites" && <SitesPanel setError={setError} />}
           {view === "correct-orders" && <OrdersPanel setError={setError} initialEditId={jumpToOrderId} />}
@@ -191,6 +206,7 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
           {view === "maintenance-action-points" && <MaintenanceActionPointsPanel setError={setError} />}
           {view === "mix-assignments" && <MixDesignAssignmentsPanel setError={setError} />}
           {view === "mix-designs" && <MixDesignsPanel setError={setError} />}
+          </div>
         </div>
       </>
     );

@@ -95,6 +95,24 @@ export function TopBar({ title }) {
       .catch(() => {});
   }, [user?.id, myAttendance]);
 
+  // Round 257 — "My vehicle fuel" for anyone with a company vehicle allocated
+  // to them. Asked once per session (a "no" again after 10 minutes).
+  const [myVehicle, setMyVehicle] = useState(() => {
+    try { return user ? sessionStorage.getItem(`oorm_my_veh_${user.id}`) === "1" : false; } catch { return false; }
+  });
+  useEffect(() => {
+    if (!user) return;
+    const key = `oorm_my_veh_${user.id}`;
+    try {
+      const v = sessionStorage.getItem(key);
+      if (v === "1") return;
+      if (v && v.startsWith("0:") && Date.now() - Number(v.slice(2)) < 10 * 60_000) return;
+    } catch { /* ask anyway */ }
+    apiRequest("/supply-requests/my-vehicles")
+      .then((r) => { const yes = Array.isArray(r) && r.length > 0; setMyVehicle(yes); try { sessionStorage.setItem(key, yes ? "1" : `0:${Date.now()}`); } catch { /* ignore */ } })
+      .catch(() => {});
+  }, [user?.id]);
+
   useEffect(() => {
     if (pushSupported()) pushStatus().then(setNotifStatus);
   }, []);
@@ -148,6 +166,9 @@ export function TopBar({ title }) {
           )}
           {myAttendance && pathname !== "/my-attendance" && (
             <Link to="/my-attendance" className="topbar-link">My attendance</Link>
+          )}
+          {myVehicle && pathname !== "/my-vehicle-fuel" && (
+            <Link to="/my-vehicle-fuel" className="topbar-link">My vehicle fuel</Link>
           )}
           {pathname !== "/orders" && (
             <Link to="/orders" className="topbar-link">Today &amp; tomorrow's orders</Link>

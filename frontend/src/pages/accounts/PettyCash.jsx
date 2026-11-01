@@ -279,6 +279,10 @@ function VoucherForm({ d, box, voucher, onDone }) {
         onDone(`${voucher.no} changed.`);
       } else {
         const r = await apiRequest(`/accounts/petty-cash/${box.id}/vouchers`, { method: "POST", body });
+        // Round 257 — the new-voucher form stays on the page (it is not a
+        // modal), so it must clear itself; before, it stayed on "Saving…".
+        setF({ kind: f.kind, txn_date: f.txn_date, amount: "", paid_to: "", purpose: "", category: "", asset_id: "", bill: "slip", flagged: false, photo: null });
+        setBusy(false);
         onDone(`${r.no} saved${r.status === "pending" ? " — waiting for approval" : ""}.`);
       }
     } catch (err) { setError(err.message); setBusy(false); }

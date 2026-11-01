@@ -322,6 +322,7 @@ const TYPE_LABEL = {
   loader: "Loader",
   generator: "Generator",
   batching_plant: "Batching plant",
+  company_vehicle: "Company vehicle",
 };
 function typeLabel(t) {
   return TYPE_LABEL[t] || (t ? t.replace(/_/g, " ") : "—");

@@ -521,6 +521,15 @@ router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
       l.mode = String(l.particulars || "").replace(/^Receipt · /, "");
     }
   }
+  // Round 257 — the customer's cheques received and not yet collected
+  // (in hand, or deposited and clearing), shown on the ledger.
+  const { rows: pendingCheques } = await query(
+    `SELECT c.id, c.cheque_no, c.cheque_date::text AS cheque_date, c.amount, c.drawn_on, c.status,
+            c.received_on::text AS received_on, c.deposited_on::text AS deposited_on,
+            COALESCE(ba.label, ba.bank) AS deposit_account
+       FROM cheques c LEFT JOIN cost_bank_accounts ba ON ba.id = c.deposit_account_id
+      WHERE c.direction = 'received' AND c.customer_id = $1 AND c.status IN ('in_hand', 'deposited')
+      ORDER BY c.cheque_date, c.id`, [cid]).catch((e) => { console.error("ledger: cheques", e.message); return { rows: [] }; });
   const items = await openItems(pool, cid);
   const pos = (await positions({ customerId: cid }))[0];
   const aging = Object.fromEntries(AGE_GROUPS.map((g) => [g.label, pos ? pos[g.key] : 0]));
@@ -529,6 +538,7 @@ router.get("/ledger/:customerId(\\d+)", LEDGER_VIEW, async (req, res) => {
     position: pos ? { ...pos, unallocated: pos.advance } : { billed: 0, received: 0, balance: 0, unallocated: 0 },
     credit: pos?.credit || null,
     open_items: items,
+    pending_cheques: pendingCheques.map((c) => ({ ...c, amount: Number(c.amount) })),
   });
 });
 

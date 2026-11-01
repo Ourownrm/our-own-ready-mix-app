@@ -1074,6 +1074,22 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
   const [savingStation, setSavingStation] = useState(false);
   const [savingEquip, setSavingEquip] = useState(false);
   const [savingLubricant, setSavingLubricant] = useState(false);
+  // Round 257 — a company vehicle (or pickup) allocated to one person, who can
+  // then request fuel for it from "My vehicle fuel".
+  const [allocUsers, setAllocUsers] = useState(null);
+  const [allocating, setAllocating] = useState(null); // equipment id
+  const [allocUser, setAllocUser] = useState("");
+  async function startAllocate(e) {
+    setAllocating(e.id); setAllocUser(e.allocated_user_id ? String(e.allocated_user_id) : "");
+    if (!allocUsers) apiRequest("/administrator/vehicle-allocation/users").then(setAllocUsers).catch((err) => setError(err.message));
+  }
+  async function saveAllocate(id) {
+    setError("");
+    try {
+      await apiRequest(`/administrator/equipment/${id}/allocate`, { method: "POST", body: { user_id: allocUser ? Number(allocUser) : null } });
+      setAllocating(null); load();
+    } catch (err) { setError(err.message); }
+  }
 
   async function load() {
     try {
@@ -1197,15 +1213,32 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
         <div style={{ gridColumn: "1 / -1" }}><button type="submit" disabled={savingStation}>{savingStation ? "Saving..." : "Add fuel station"}</button></div>
       </form>
 
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Equipment (pickup vans, loaders, generators, batching plant)</div>
-      <div className="card" style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Equipment (pickup vans, loaders, generators, batching plant, company vehicles)</div>
+      <div className="card" style={{ marginBottom: 12, overflowX: "auto" }}>
         <table>
-          <thead><tr><th>Type</th><th>Name</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Type</th><th>Name</th><th>Allocated to</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {equipment.map((e) => (
               <tr key={e.id}>
-                <td>{e.equipment_type.replace("_", " ")}</td>
+                <td>{e.equipment_type === "company_vehicle" ? "company vehicle" : e.equipment_type.replace("_", " ")}</td>
                 <td>{e.name}</td>
+                <td>
+                  {["company_vehicle", "pickup_van"].includes(e.equipment_type) ? (
+                    allocating === e.id ? (
+                      <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <select value={allocUser} onChange={(ev) => setAllocUser(ev.target.value)} style={{ fontSize: 12 }}>
+                          <option value="">Nobody</option>
+                          {(allocUsers || []).map((u) => <option key={u.id} value={u.id}>{u.name} · {u.role.replace("_", " ")}</option>)}
+                        </select>
+                        <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => saveAllocate(e.id)}>Save</button>
+                        <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => setAllocating(null)}>✕</button>
+                      </span>
+                    ) : (
+                      <span>{e.allocated_user_name || <span style={{ color: "var(--slate)" }}>—</span>}{" "}
+                        <button style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => startAllocate(e)}>{e.allocated_user_name ? "Change" : "Allocate"}</button></span>
+                    )
+                  ) : <span style={{ color: "var(--slate)" }}>—</span>}
+                </td>
                 <td>{e.is_active ? "Active" : "Inactive"}</td>
                 <td style={{ display: "flex", gap: 6 }}>
                   <button style={{ fontSize: 12, padding: "3px 8px" }} onClick={() => toggleActive("equipment", e.id, !e.is_active)}>
@@ -1217,7 +1250,7 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
                 </td>
               </tr>
             ))}
-            {equipment.length === 0 && <tr><td colSpan={4} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
+            {equipment.length === 0 && <tr><td colSpan={5} style={{ color: "var(--slate)" }}>None yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1229,6 +1262,7 @@ export function FuelStationsAndEquipmentPanel({ setError }) {
             <option value="loader">Loader</option>
             <option value="generator">Generator</option>
             <option value="batching_plant">Batching plant</option>
+            <option value="company_vehicle">Company vehicle (car / two-wheeler)</option>
           </select>
         </div>
         <div><div style={{ color: "var(--slate)" }}>Name</div><input value={equipForm.name} onChange={(e) => setEquipForm({ ...equipForm, name: e.target.value })} placeholder="e.g. Loader-1" required /></div>

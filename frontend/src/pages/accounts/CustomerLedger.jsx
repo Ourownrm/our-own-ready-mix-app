@@ -140,6 +140,7 @@ function Statement({ customerId, go }) {
           {Object.entries(d.aging).map(([k, v]) => <span key={k} style={{ marginRight: 10, color: k.startsWith("Over") && v > 0 ? "var(--alert-red)" : undefined }}>{k}: <b>{money(v)}</b></span>)}
         </div>
       </div>
+      <PendingCheques list={d.pending_cheques || []} balance={Number(pos.balance)} canOpen={can("accounts.cheques", "view")} go={go} />
       <Table minWidth={canFix ? 840 : 760} head={<>
         <th style={TH}>Date</th><th style={TH}>Particulars</th><th style={TH}>Details</th>
         <th style={{ ...TH, textAlign: "right" }}>Debit</th><th style={{ ...TH, textAlign: "right" }}>Credit</th><th style={{ ...TH, textAlign: "right" }}>Balance</th>{canFix && <th style={TH} />}
@@ -218,5 +219,45 @@ function SendToClModal({ entry, onClose, onDone }) {
         <button type="button" className="btn-primary" disabled={busy || (cash && !holder)} onClick={() => send(cash ? { holder_id: Number(holder) } : { bank: true })}>{busy ? "Sending…" : "Send"}</button>
       </div>
     </Modal>
+  );
+}
+
+// Round 257 — the customer's cheques received and not yet collected: in hand
+// (to deposit) or deposited and clearing. Not in the balance until cleared.
+function PendingCheques({ list, balance, canOpen, go }) {
+  if (!list.length) return null;
+  const total = list.reduce((t, c) => t + Number(c.amount), 0);
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  return (
+    <div className="card" style={{ marginBottom: 12, padding: 0, overflow: "hidden", borderColor: "var(--amber)" }}>
+      <div style={{ padding: "10px 14px", background: "var(--amber-bg)", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+        <b style={{ fontSize: 14, color: "#7a5410" }}>Cheques received — pending collection · {list.length} · {money(total, 2)}</b>
+        <span style={{ fontSize: 12, color: "#7a5410" }}>not in the balance until cleared · balance after they clear {money(balance - total, 2)}</span>
+        {canOpen && <button type="button" style={{ marginLeft: "auto", fontSize: 12, padding: "3px 10px" }} onClick={() => go("cheques")}>Open Cheques</button>}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
+          <thead><tr><th style={TH}>Cheque no.</th><th style={TH}>Bank</th><th style={TH}>Cheque date</th><th style={{ ...TH, textAlign: "right" }}>Amount</th><th style={TH}>Status</th></tr></thead>
+          <tbody>
+            {list.map((c) => {
+              const due = c.status === "in_hand" && c.cheque_date <= today;
+              return (
+                <tr key={c.id} style={row}>
+                  <td style={{ ...TD, fontWeight: 600 }}>{c.cheque_no}</td>
+                  <td style={TD}>{c.drawn_on || "—"}</td>
+                  <td style={TD}>{fmtDate(c.cheque_date)}{c.cheque_date > today && <span style={{ fontSize: 11.5, color: "var(--slate)" }}> · post-dated</span>}</td>
+                  <td style={NUM}>{inr2(c.amount)}</td>
+                  <td style={TD}>
+                    {c.status === "deposited"
+                      ? <><span className="badge badge-warning">Deposited · clearing</span><div style={{ fontSize: 11.5, color: "var(--slate)" }}>{fmtDate(c.deposited_on)}{c.deposit_account ? ` · ${c.deposit_account}` : ""}</div></>
+                      : <><span className={`badge ${due ? "badge-danger" : "badge-neutral"}`}>{due ? "In hand · deposit now" : "In hand"}</span>{c.received_on && <div style={{ fontSize: 11.5, color: "var(--slate)" }}>received {fmtDate(c.received_on)}</div>}</>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

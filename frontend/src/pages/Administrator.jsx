@@ -245,7 +245,7 @@ export default function Administrator() {
 
         {/* ---------- a panel, rendered in place ---------- */}
         {view && (
-          <>
+          <div className="records-scroll">
             <BackBar
               trail={<>Dashboard {viewModule && viewModule.screens.length ? <>&rsaquo; {viewModule.label} </> : null}&rsaquo; <b style={{ color: "var(--charcoal)" }}>{viewScreen ? viewScreen.label : view}</b></>}
               onBack={() => (viewModule && viewModule.screens.length ? setSearchParams({ module: viewModule.key }) : goHome())}
@@ -276,7 +276,7 @@ export default function Administrator() {
                 <CreateLeadForm setError={setError} onDone={goHome} />
               </div>
             )}
-          </>
+          </div>
         )}
 
         {/* ---------- a module's sub-grid ---------- */}

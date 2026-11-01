@@ -36,7 +36,7 @@ import TruckTimingReport from "./pages/TruckTimingReport.jsx";
 import FuelModule from "./pages/FuelModule.jsx";
 import AccountsModule from "./pages/AccountsModule.jsx";
 import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
-import FuelFilling from "./pages/FuelFilling.jsx";
+import FuelFilling, { MyVehicleFuel } from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
 import StoreHome from "./pages/StoreHome.jsx";
 import StoreScan from "./pages/StoreScan.jsx";
@@ -263,6 +263,8 @@ export default function App() {
           <Route path="/home-screen-photos" element={
             <ProtectedRoute roles={["manager", "administrator"]}><HomeScreenPhotos /></ProtectedRoute>
           } />
+          {/* Round 257 — fuel for the company vehicle allocated to this person, any role. */}
+          <Route path="/my-vehicle-fuel" element={<ProtectedRoute><MyVehicleFuel /></ProtectedRoute>} />
           <Route path="/fuel" element={
             <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator", "loader_operator"]}><FuelFilling /></ProtectedRoute>
           } />

@@ -14,6 +14,7 @@ const FUEL_SCREEN_EQUIP = ["fleet.equipment", "fleet.fuel-stations"];
 import { voidInvoiceForTicket, generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { fetchChallanData } from "../lib/challanData.js";
 import { istDay } from "../lib/istDate.js";
+import { ensureRound257 } from "../lib/round257Schema.js";
 
 const router = Router();
 router.use(requireAuth); // per-route role checks below, since customers/sites/rates need broader access
@@ -803,18 +804,53 @@ router.patch("/visit-outcome-reasons/:id/status", requireRole("administrator"), 
 // ===== Master data: Equipment (pickup vans, loaders, generators, batching plants) =====
 
 router.get("/equipment", requireAnyPermission(FUEL_SCREEN_EQUIP, "view"), async (req, res) => {
-  const { rows } = await query("SELECT * FROM equipment ORDER BY equipment_type, name");
+  // Round 257 — with who a company vehicle is allocated to.
+  await ensureRound257();
+  const { rows } = await query(
+    `SELECT e.*, va.user_id AS allocated_user_id, u.name AS allocated_user_name, va.allocated_at
+       FROM equipment e
+       LEFT JOIN vehicle_allocations va ON va.equipment_id = e.id AND va.ended_at IS NULL
+       LEFT JOIN users u ON u.id = va.user_id
+      ORDER BY e.equipment_type, e.name`);
   res.json(rows);
+});
+
+// Round 257 — allocate a company vehicle (car / two-wheeler / pickup) to one
+// person, or take it back (user_id null). That person can then request fuel
+// for it from "My vehicle fuel".
+const ALLOCATABLE = ["company_vehicle", "pickup_van"];
+router.get("/vehicle-allocation/users", requireAnyPermission(FUEL_SCREEN_EQUIP, "edit"), async (_req, res) => {
+  const { rows } = await query(`SELECT id, name, role FROM users WHERE COALESCE(is_active, true) AND role <> 'super_admin' ORDER BY name`);
+  res.json(rows);
+});
+router.post("/equipment/:id/allocate", requireAnyPermission(FUEL_SCREEN_EQUIP, "edit"), async (req, res) => {
+  await ensureRound257();
+  const { rows: eq } = await query(`SELECT id, name, equipment_type FROM equipment WHERE id = $1`, [req.params.id]);
+  if (!eq.length) return res.status(404).json({ error: "Vehicle not found." });
+  if (!ALLOCATABLE.includes(eq[0].equipment_type)) return res.status(400).json({ error: "Only a company vehicle or a pickup can be allocated to a person." });
+  const userId = req.body.user_id ? Number(req.body.user_id) : null;
+  if (userId) {
+    const { rows: u } = await query(`SELECT id FROM users WHERE id = $1 AND COALESCE(is_active, true)`, [userId]);
+    if (!u.length) return res.status(400).json({ error: "That user is not active." });
+  }
+  const db = await pool.connect();
+  try {
+    await db.query("BEGIN");
+    await db.query(`UPDATE vehicle_allocations SET ended_at = now(), ended_by = $2 WHERE equipment_id = $1 AND ended_at IS NULL`, [eq[0].id, req.user.id]);
+    if (userId) await db.query(`INSERT INTO vehicle_allocations (equipment_id, user_id, allocated_by) VALUES ($1, $2, $3)`, [eq[0].id, userId, req.user.id]);
+    await db.query("COMMIT");
+  } catch (e) { await db.query("ROLLBACK").catch(() => {}); throw e; } finally { db.release(); }
+  res.json({ ok: true });
 });
 
 // Allow-list intentionally excludes 'truck'/'pump' — those are managed via their own
 // dedicated master-data panels (Fleet, Fuel Stations), not this generic Equipment list.
-const EQUIPMENT_TYPES = ["pickup_van", "loader", "generator", "batching_plant"];
+const EQUIPMENT_TYPES = ["pickup_van", "loader", "generator", "batching_plant", "company_vehicle"];
 
 router.post("/equipment", requireAnyPermission(FUEL_SCREEN_EQUIP, "create"), async (req, res) => {
   const { equipment_type, name } = req.body;
   if (!equipment_type || !EQUIPMENT_TYPES.includes(equipment_type)) {
-    return res.status(400).json({ error: "Equipment type must be pickup van, loader, generator, or batching plant." });
+    return res.status(400).json({ error: "Equipment type must be pickup van, loader, generator, batching plant or company vehicle." });
   }
   if (!name) return res.status(400).json({ error: "Name is required." });
   const { rows } = await query(

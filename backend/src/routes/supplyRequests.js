@@ -6,17 +6,35 @@ import { requirePermission } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { chargeLubricantSoon } from "../lib/maintenanceGeneral.js";
 import { ensureRound243 } from "../lib/round243Schema.js";
+import { ensureRound257, myVehicles, isAllocatedTo } from "../lib/round257Schema.js";
 
 const router = Router();
 router.use(requireAuth);
 // Round 243 — fuel_kind (diesel / petrol).
-router.use(async (_req, _res, next) => { try { await ensureRound243(); next(); } catch (e) { next(e); } });
+router.use(async (_req, _res, next) => { try { await ensureRound243(); await ensureRound257(); next(); } catch (e) { next(e); } });
 
 // Round 133 — loader_operator added: a dedicated role for whoever operates
 // the loader, scoped to exactly this — requesting fuel/lubricant for their
 // equipment (equipment_type: 'loader', already supported below) and seeing
 // their own request history via GET /mine.
 const REQUESTER_ROLES = ["driver", "site_supervisor", "plant_operator", "manager", "administrator", "loader_operator"];
+// Equipment-table units (the rest are trucks and pumps). Round 257 adds the
+// company car / two-wheeler.
+const EQUIP_UNITS = ["pickup_van", "loader", "generator", "company_vehicle"];
+
+// Round 257 — anyone with a company vehicle allocated to them may request
+// fuel for THAT vehicle and confirm its outside fill, whatever their role.
+function requesterOrAllocated(req, res, next) {
+  if (req.user?.role === "super_admin" || REQUESTER_ROLES.includes(req.user?.role)) return next();
+  myVehicles(req.user.id).then((v) => {
+    if (!v.length) return res.status(403).json({ error: "You don't have access to this." });
+    req.allocatedOnly = v.map((x) => x.id);
+    next();
+  }).catch(next);
+}
+
+// The vehicles allocated to the signed-in person (for "My vehicle fuel").
+router.get("/my-vehicles", async (req, res) => { res.json(await myVehicles(req.user.id)); });
 
 // ===== Round 203 — outside-station fills =====
 // An approved fuel request whose station is NOT the plant ends with someone
@@ -42,6 +60,9 @@ const DRIVING_IT_SQL = (userParam) => `(
          WHERE dt.truck_id = sr.truck_id AND dt.driver_id = ${userParam}
            AND dt.status NOT IN ('cancelled', 'rejected')
            AND dt.ticket_date IN (CURRENT_DATE, sr.approved_at::date)))
+  OR (sr.equipment_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM vehicle_allocations va
+         WHERE va.equipment_id = sr.equipment_id AND va.user_id = ${userParam} AND va.ended_at IS NULL))
   OR (sr.pump_id IS NOT NULL AND EXISTS (
         SELECT 1 FROM pump_logs pl
          WHERE pl.pump_id = sr.pump_id AND pl.pump_operator_id = ${userParam}
@@ -75,7 +96,7 @@ function positiveNumber(v) {
 // meter reading is required — this is the field the old self-logged flow
 // captured that matters most for later efficiency analysis, so it's kept
 // mandatory here even though nothing else about the old flow survives.
-router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
+router.post("/", requesterOrAllocated, async (req, res) => {
   const {
     request_type, equipment_type, truck_id, pump_id, equipment_id,
     odometer_reading, hour_meter_reading, requested_quantity,
@@ -88,8 +109,19 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
   if (!equipment_type) return res.status(400).json({ error: "Select which vehicle or machine this is for." });
   if (equipment_type === "truck" && !truck_id) return res.status(400).json({ error: "Select which truck." });
   if (equipment_type === "pump" && !pump_id) return res.status(400).json({ error: "Select which pump." });
-  if (["pickup_van", "loader", "generator"].includes(equipment_type) && !equipment_id) {
+  if (EQUIP_UNITS.includes(equipment_type) && !equipment_id) {
     return res.status(400).json({ error: "Select which unit." });
+  }
+  // Round 257 — a company vehicle's fuel is requested by the person it is
+  // allocated to (or the Manager / Administrator for them); someone who is
+  // here only because of their vehicle may request fuel for it and nothing else.
+  if (req.allocatedOnly) {
+    if (request_type !== "fuel" || !EQUIP_UNITS.includes(equipment_type) || !req.allocatedOnly.includes(Number(equipment_id))) {
+      return res.status(403).json({ error: "You can request fuel only for the vehicle allocated to you." });
+    }
+  } else if (equipment_type === "company_vehicle" && !["manager", "administrator", "super_admin"].includes(req.user.role)
+             && !(await isAllocatedTo(req.user.id, equipment_id))) {
+    return res.status(403).json({ error: "This company vehicle is allocated to someone else." });
   }
   if (!odometer_reading && !hour_meter_reading) {
     return res.status(400).json({ error: "Enter either an odometer reading or an hour meter reading — needed for later analysis." });
@@ -108,7 +140,7 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
     const open = await openOutsideFill({
       truck_id: equipment_type === "truck" ? truck_id : null,
       pump_id: equipment_type === "pump" ? pump_id : null,
-      equipment_id: ["pickup_van", "loader", "generator"].includes(equipment_type) ? equipment_id : null,
+      equipment_id: EQUIP_UNITS.includes(equipment_type) ? equipment_id : null,
     });
     if (open) {
       return res.status(409).json({
@@ -127,7 +159,7 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
       request_type, req.user.id, equipment_type,
       equipment_type === "truck" ? truck_id : null,
       equipment_type === "pump" ? pump_id : null,
-      ["pickup_van", "loader", "generator"].includes(equipment_type) ? equipment_id : null,
+      EQUIP_UNITS.includes(equipment_type) ? equipment_id : null,
       odometer_reading || null, hour_meter_reading || null, requested_quantity,
       request_type === "fuel" ? fuel_station_id : null,
       request_type === "lubricant" ? lubricant_type_id : null,
@@ -145,7 +177,7 @@ router.post("/", requireRole(...REQUESTER_ROLES), async (req, res) => {
 // The requester's own requests — active ones (not yet issued/rejected) plus
 // anything issued today, so the QR/slip can disappear once used but recent
 // history is still visible.
-router.get("/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
+router.get("/mine", requesterOrAllocated, async (req, res) => {
   const { rows } = await query(
     `SELECT sr.*, u.name AS requested_by_name,
             fs.name AS fuel_station_name, fs.is_plant AS station_is_plant,
@@ -663,7 +695,7 @@ router.get("/report/export", requirePermission("reports.fuel", "view"), async (r
 // no way to ever reach 'issued'. The driver, being the one physically at the
 // pump, is the only person who actually knows the real numbers, so they
 // confirm their own external fill here.
-router.post("/:id/confirm-external-fill", requireRole(...REQUESTER_ROLES), async (req, res) => {
+router.post("/:id/confirm-external-fill", requesterOrAllocated, async (req, res) => {
   // Round 203 — litres AND amount are both required now, and whoever is
   // driving the vehicle today may confirm, not only the person who raised it.
   const litres = positiveNumber(req.body.actual_quantity_issued);

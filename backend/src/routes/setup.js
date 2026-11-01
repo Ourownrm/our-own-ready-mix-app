@@ -52,6 +52,7 @@ import { migrateRound252 } from "../lib/round252Schema.js";
 import { migrateRound253 } from "../lib/round253Schema.js";
 import { migrateRound254 } from "../lib/round254Schema.js";
 import { migrateRound255 } from "../lib/round255Schema.js";
+import { migrateRound257 } from "../lib/round257Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4209,6 +4210,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound253(pool, log);
     await migrateRound254(pool, log);
     await migrateRound255(pool, log);
+    // ROUND 257 — company vehicles allocated to a person (fuel requests).
+    await migrateRound257(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

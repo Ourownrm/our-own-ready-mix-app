@@ -20,14 +20,23 @@ export default function FuelFilling() {
   return isAccountant ? <FuelCostReport /> : <RequestFlow />;
 }
 
-function RequestFlow() {
+// Round 257 — "My vehicle fuel": anyone with a company vehicle allocated to
+// them (Administrator → Fuel Stations & Equipment) requests fuel for it here —
+// petrol by default — and confirms the outside fill, whatever their role.
+export function MyVehicleFuel() {
+  return <RequestFlow vehicleOnly />;
+}
+
+function RequestFlow({ vehicleOnly = false }) {
   const { user } = useAuth();
   // Round 134, item 2 — a Loader Operator only ever deals with loaders, so
   // skip the "which vehicle/machine type" picker entirely for that role
   // rather than showing trucks/pumps/pickup vans/generators that will never
   // apply to them.
   const isLoaderOperator = user?.role === "loader_operator";
-  const equipmentTabs = isLoaderOperator ? EQUIPMENT_TABS.filter((t) => t.type === "loader") : EQUIPMENT_TABS;
+  const [myVehicles, setMyVehicles] = useState(null);
+  const equipmentTabs = vehicleOnly ? [{ type: "company_vehicle", label: "Vehicle" }]
+    : isLoaderOperator ? EQUIPMENT_TABS.filter((t) => t.type === "loader") : EQUIPMENT_TABS;
 
   const [trucks, setTrucks] = useState([]);
   const [pumps, setPumps] = useState([]);
@@ -36,8 +45,8 @@ function RequestFlow() {
   const [lubricantTypes, setLubricantTypes] = useState([]);
   const [myRequests, setMyRequests] = useState([]);
 
-  const [requestType, setRequestType] = useState("fuel");
-  const [equipmentType, setEquipmentType] = useState(isLoaderOperator ? "loader" : "truck");
+  const [requestType, setRequestType] = useState(vehicleOnly ? "petrol" : "fuel");
+  const [equipmentType, setEquipmentType] = useState(vehicleOnly ? "company_vehicle" : isLoaderOperator ? "loader" : "truck");
   // Round 134, items 1-2 — Loader Operator can also report a breakdown or
   // request an outside repair for their loader, right from this same
   // screen (their whole dashboard), not just fuel/lubricant.
@@ -69,6 +78,9 @@ function RequestFlow() {
     }
   }
   useEffect(() => {
+    if (vehicleOnly) apiRequest("/supply-requests/my-vehicles").then(setMyVehicles).catch(() => setMyVehicles([]));
+  }, [vehicleOnly]);
+  useEffect(() => {
     load();
     const interval = setInterval(load, 15000); // so an approval/issue elsewhere shows up, and an issued QR disappears
     return () => clearInterval(interval);
@@ -80,7 +92,10 @@ function RequestFlow() {
     pickup_van: equipment.filter((e) => e.equipment_type === "pickup_van").map((e) => ({ id: e.id, label: e.name })),
     loader: equipment.filter((e) => e.equipment_type === "loader").map((e) => ({ id: e.id, label: e.name })),
     generator: equipment.filter((e) => e.equipment_type === "generator").map((e) => ({ id: e.id, label: e.name })),
-  }[equipmentType];
+    company_vehicle: (myVehicles || []).map((e) => ({ id: e.id, label: e.name })),
+  }[equipmentType] || [];
+  // A single allocated vehicle is chosen for them.
+  useEffect(() => { if (vehicleOnly && myVehicles?.length === 1 && !unitId) setUnitId(String(myVehicles[0].id)); }, [vehicleOnly, myVehicles]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function switchType(type) {
     setEquipmentType(type);
@@ -131,7 +146,7 @@ function RequestFlow() {
   // Round 203 — the server refuses fuel for a vehicle whose last outside fill
   // isn't confirmed; say so before the person fills in the whole form.
   const unitKey = equipmentType === "truck" ? "truck_id" : equipmentType === "pump" ? "pump_id" : "equipment_id";
-  const openOutside = requestType === "fuel" && unitId
+  const openOutside = (requestType === "fuel" || requestType === "petrol") && unitId
     ? myRequests.find((r) => r.status === "approved" && r.request_type === "fuel" && !r.approved_station_is_plant && String(r[unitKey]) === String(unitId))
     : null;
   const recentIssued = myRequests.filter((r) => r.status === "issued");
@@ -158,9 +173,12 @@ function RequestFlow() {
 
   return (
     <>
-      <TopBar title="Fuel and lubricants" />
+      <TopBar title={vehicleOnly ? "My vehicle fuel" : "Fuel and lubricants"} />
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 32px" }}>
-        <MyPmChecks />
+        {!vehicleOnly && <MyPmChecks />}
+        {vehicleOnly && myVehicles && myVehicles.length === 0 && (
+          <div className="card" style={{ marginBottom: 16, fontSize: 13 }}>No company vehicle is allocated to you. The Administrator allocates one under Fuel Stations &amp; Equipment.</div>
+        )}
 
         {isLoaderOperator && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
@@ -182,7 +200,7 @@ function RequestFlow() {
           <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
             <button type="button" onClick={() => setRequestType("fuel")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "fuel" ? 600 : 400, background: requestType === "fuel" ? "var(--concrete)" : "transparent" }}>Diesel</button>
             <button type="button" onClick={() => { setRequestType("petrol"); setStationId(""); }} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "petrol" ? 600 : 400, background: requestType === "petrol" ? "var(--concrete)" : "transparent" }}>Petrol</button>
-            <button type="button" onClick={() => setRequestType("lubricant")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "lubricant" ? 600 : 400, background: requestType === "lubricant" ? "var(--concrete)" : "transparent" }}>Lubricant</button>
+            {!vehicleOnly && <button type="button" onClick={() => setRequestType("lubricant")} style={{ flex: 1, padding: "8px", fontSize: 13, fontWeight: requestType === "lubricant" ? 600 : 400, background: requestType === "lubricant" ? "var(--concrete)" : "transparent" }}>Lubricant</button>}
           </div>
 
           {equipmentTabs.length > 1 && (
@@ -243,7 +261,7 @@ function RequestFlow() {
                 <select value={stationId} onChange={(e) => setStationId(e.target.value)} required>
                   <option value="">Select</option>
                   {stations.filter((s) => !s.is_plant).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  {lubricantTypes.some((l) => l.is_fuel) && <option value="store">Plant store (petrol kept in Store)</option>}
+                  {!vehicleOnly && lubricantTypes.some((l) => l.is_fuel) && <option value="store">Plant store (petrol kept in Store)</option>}
                 </select>
               </div>
             ) : (

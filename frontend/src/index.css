@@ -540,3 +540,10 @@ body.with-side-rail .app-footer { left: 48px; }
   .side-menu, .side-rail { display: none !important; }
   body.with-side-menu #root, body.with-side-rail #root { margin-left: 0; }
 }
+
+/* Round 257 — record tables (Customers, Correct orders …) are wider than a
+   phone. They scroll sideways inside their card, so the page itself never
+   grows wider than the screen. */
+.records-scroll { max-width: 100%; min-width: 0; }
+.records-scroll .card { overflow-x: auto; max-width: 100%; }
+.records-scroll .card table { min-width: 640px; }
