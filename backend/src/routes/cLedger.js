@@ -14,9 +14,11 @@ import {
 import { ensureRound235, postPayment, unpostPayment } from "../lib/ledgerPost.js";
 import { ensureRound255, refreshInvoiceEntries, clCrossCheck } from "../lib/round255Schema.js";
 
+import { ensureRound258, roleLabel } from "../lib/round258Schema.js";
+import { setInvoicesCash } from "../lib/round255Schema.js";
 const router = Router();
 router.use(requireAuth);
-router.use(async (_req, _res, next) => { try { await ensureRound235(); await ensureRound255(); next(); } catch (e) { next(e); } });
+router.use(async (_req, _res, next) => { try { await ensureRound235(); await ensureRound255(); await ensureRound258(); next(); } catch (e) { next(e); } });
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -54,14 +56,16 @@ router.get("/me", async (req, res) => {
 async function deliveriesFor(where, params) {
   const { rows } = await query(
     `SELECT d.id, d.entry_date::text AS entry_date, d.customer_name, d.location, d.grade, d.qty_m3, d.rate, d.other_charges,
-            d.sales_rep, d.flagged, d.note, d.created_at, cu.name AS created_by_name, uu.name AS updated_by_name, d.updated_at,
+            d.sales_rep, d.flagged, d.note, d.created_at, cu.name AS created_by_name, cu.role AS created_by_role, uu.name AS updated_by_name, d.updated_at,
             -- Round 255 — an entry made from an invoice marked "Cash", or by a receipt.
             d.invoice_id, d.receipt_id, inv.gst_applied AS invoice_gst, (inv.id IS NOT NULL) AS invoice_live,
             COALESCE((SELECT json_agg(json_build_object('id', c.id, 'amount', c.amount, 'holder_id', c.holder_id,
                         'holder', COALESCE(ca.short_name, hu.name, 'Bank'), 'mode', c.mode, 'status', c.status, 'reject_reason', c.reject_reason,
-                        'paid_on', c.paid_on::text, 'bank', c.holder_id IS NULL, 'receipt_id', c.receipt_id)
+                        'paid_on', c.paid_on::text, 'bank', c.holder_id IS NULL, 'receipt_id', c.receipt_id,
+                        'sent_by', su.name, 'sent_by_role', su.role)
                         ORDER BY c.id)
                         FROM cl_collections c LEFT JOIN users hu ON hu.id = c.holder_id LEFT JOIN cl_access ca ON ca.user_id = c.holder_id
+                        LEFT JOIN users su ON su.id = c.sent_by
                        WHERE c.delivery_id = d.id), '[]') AS collections,
             COALESCE((SELECT json_agg(json_build_object('id', t.id, 'number', t.ticket_number, 'date', t.ticket_date::text,
                         'loaded', t.loaded_quantity_m3) ORDER BY t.ticket_date, t.id)
@@ -73,7 +77,7 @@ async function deliveriesFor(where, params) {
       ORDER BY d.entry_date DESC, d.id DESC`, params);
   return rows.map((d) => {
     const total = clDeliveryTotal(d);
-    const colls = d.collections.map((c) => ({ ...c, amount: n0(c.amount) }));
+    const colls = d.collections.map((c) => ({ ...c, amount: n0(c.amount), sent_by_role: c.sent_by_role ? roleLabel(c.sent_by_role) : null }));
     const collected = r2(colls.filter((c) => c.status !== "rejected").reduce((t, c) => t + c.amount, 0));
     return {
       ...d, qty_m3: n0(d.qty_m3), rate: n0(d.rate), other_charges: n0(d.other_charges), collections: colls,
@@ -84,6 +88,8 @@ async function deliveriesFor(where, params) {
       // Round 227 — a record with no delivery note is not a sale (owner).
       // Round 255 — an entry from an invoice: the invoice is the sale (its GST taken out).
       source: d.invoice_id ? "invoice" : d.receipt_id ? "receipt" : "hand",
+      // Round 258 (owner) — who sent it to C Ledger, with their role.
+      sent_by: d.invoice_id || d.receipt_id ? { name: d.created_by_name, role: roleLabel(d.created_by_role), at: d.created_at } : null,
       sales_value: d.invoice_id ? (d.invoice_live ? r2(total * (d.invoice_gst === false ? 1 : CL_FACTOR)) : 0)
         : d.tickets.length ? r2(total * (d.flagged ? CL_FACTOR : 1)) : 0,
     };
@@ -370,7 +376,7 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
   if (!ym) return;
   const { from, end } = monthBounds(ym);
   const me = req.user.id;
-  const [bal, incoming, incomingT, colls, transfers, expenses, incomes, incomingI] = await Promise.all([
+  const [bal, incoming, incomingT, colls, transfers, expenses, incomes, incomingI, incomingU] = await Promise.all([
     holderBalances(),
     query(`SELECT c.id, c.amount, c.mode, c.created_at, d.id AS delivery_id, d.entry_date::text AS entry_date, d.customer_name, d.location, d.flagged,
                   (SELECT string_agg(t.ticket_number, ', ') FROM cl_delivery_tickets l JOIN delivery_tickets t ON t.id = l.ticket_id WHERE l.delivery_id = d.id) AS tickets
@@ -384,6 +390,13 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
     expensesFor(`x.holder_id = $1 AND x.txn_date BETWEEN $2::date AND $3::date`, [me, from, end]),
     incomesFor(`i.received_by = $1 AND i.status <> 'pending' AND i.txn_date BETWEEN $2::date AND $3::date`, [me, from, end]),
     incomesFor(`i.received_by = $1 AND i.status = 'pending'`, [me]),
+    // Round 258 — Accounts asks to take the Cash mark off an invoice whose
+    // cash this holder accepted: the money leaves their cash if they approve.
+    query(`SELECT r.id, r.amount, r.reason, r.requested_at, d.entry_date::text AS entry_date, d.customer_name, d.location,
+                  ru.name AS requested_by_name, ru.role AS requested_by_role,
+                  (SELECT string_agg(t.ticket_number, ', ') FROM cl_delivery_tickets l JOIN delivery_tickets t ON t.id = l.ticket_id WHERE l.delivery_id = d.id) AS tickets
+             FROM cl_untick_requests r JOIN cl_deliveries d ON d.id = r.delivery_id LEFT JOIN users ru ON ru.id = r.requested_by
+            WHERE r.holder_id = $1 AND r.status = 'pending' ORDER BY r.requested_at`, [me]).then((r) => r.rows),
   ]);
   const mine = bal.find((b) => b.id === me) || { id: me, balance: 0, collected: 0, transfer_in: 0, transfer_out: 0, deposited: 0, expenses: 0, awaiting: 0 };
   // One list of everything that moved this person's cash, newest first.
@@ -416,6 +429,10 @@ router.get("/wallet", requireCl("cash_holder"), async (req, res) => {
       ...incomingT.map((t) => ({ type: "transfer", id: t.id, amount: t.amount, date: t.txn_date, title: `Transfer from ${t.from_name}`, meta: t.note || "" })),
       ...incomingI.map((i) => ({ type: "income", id: i.id, amount: i.amount, date: i.txn_date, title: `${i.kind_label} · ${i.source}`,
         meta: i.created_by_name ? `entered by ${i.created_by_name}` : "", flagged: i.flagged })),
+      ...incomingU.map((u) => ({ type: "untick", id: u.id, amount: n0(u.amount), date: u.entry_date,
+        title: `Take back: Cash mark off · ${u.customer_name}`,
+        meta: [u.tickets, `asked by ${u.requested_by_name || "Accounts"}${u.requested_by_role ? ` (${roleLabel(u.requested_by_role)})` : ""}`, u.reason ? `“${u.reason}”` : null].filter(Boolean).join(" · "),
+        note: "If you approve, this cash leaves your balance and the invoice is no longer Cash." })),
     ],
     transactions: tx,
   });
@@ -432,6 +449,43 @@ router.post("/collections/:id/respond", requireCl("cash_holder"), async (req, re
   if (!rowCount) return bad(res, "That collection is not waiting for you any more.");
   await clLog(null, "collection", Number(req.params.id), decision, reason ? { reason } : null, req.user.id);
   res.json({ ok: true });
+});
+
+// Round 258 — the cash holder approves / rejects taking the Cash mark off an
+// invoice whose cash they accepted. When every holder asked has approved, the
+// mark comes off (its C Ledger entry and collection lines go).
+router.post("/untick/:id/respond", requireCl("cash_holder"), async (req, res) => {
+  const decision = req.body?.decision === "accept" ? "approved" : req.body?.decision === "reject" ? "rejected" : null;
+  if (!decision) return bad(res, "Approve or reject?");
+  const reason = txt(req.body?.reason, 300);
+  if (decision === "rejected" && !reason) return bad(res, "Say why you are rejecting it.");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `UPDATE cl_untick_requests SET status = $3, reject_reason = $4, decided_at = now()
+        WHERE id = $1 AND holder_id = $2 AND status = 'pending' RETURNING invoice_id, requested_by`, [Number(req.params.id), req.user.id, decision, reason]);
+    if (!rows.length) { await client.query("ROLLBACK"); return bad(res, "That request is not waiting for you any more."); }
+    const { invoice_id: invId, requested_by: by } = rows[0];
+    let done = false;
+    if (decision === "rejected") {
+      await client.query(`UPDATE cl_untick_requests SET status = 'cancelled', decided_at = now() WHERE invoice_id = $1 AND status = 'pending'`, [invId]);
+    } else {
+      const { rows: left } = await client.query(`SELECT COUNT(*)::int AS n FROM cl_untick_requests WHERE invoice_id = $1 AND status = 'pending'`, [invId]);
+      if (!left[0].n) {
+        const out = await setInvoicesCash(client, [invId], false, by || req.user.id, { approved: true });
+        if (out.refused.length) throw Object.assign(new Error(out.refused[0].reason), { status: 409 });
+        done = true;
+      }
+    }
+    await clLog(client, "untick", Number(req.params.id), decision, reason ? { reason, invoice_id: invId } : { invoice_id: invId }, req.user.id);
+    await client.query("COMMIT");
+    res.json({ ok: true, done });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.status) return bad(res, err.message);
+    throw err;
+  } finally { client.release(); }
 });
 
 router.post("/transfers", requireCl("cash_holder"), async (req, res) => {

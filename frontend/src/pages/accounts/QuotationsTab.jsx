@@ -12,7 +12,7 @@ import { TH, TD, NUM, row, money, StatusBadge, Banner, Field, Modal, Empty, Tabl
 
 const FILTERS = [
   ["open", "Open"], ["pending_approval", "Waiting approval"], ["approved", "Approved"], ["sent", "Sent"],
-  ["accepted", "Accepted"], ["closed", "Lost / declined"], ["draft", "Drafts"], ["all", "All"],
+  ["accepted", "Accepted"], ["completed", "Project completed"], ["closed", "Lost / declined"], ["draft", "Drafts"], ["all", "All"],
 ];
 const OPEN = new Set(["draft", "pending_approval", "approved", "sent"]);
 
@@ -174,6 +174,7 @@ function Register({ meta, go }) {
               <td style={TD}>
                 <StatusBadge status={q.status} />
                 {q.status === "accepted" && q.rates_from && <div style={{ fontSize: 11, color: "var(--slate)" }}>price list from {fmtDate(q.rates_from)}</div>}
+                {q.status === "completed" && q.completed_on && <div style={{ fontSize: 11, color: "var(--slate)" }}>completed {fmtDate(q.completed_on)}</div>}
                 {["lost", "declined"].includes(q.status) && q.closed_reason && <div style={{ fontSize: 11, color: "var(--slate)" }}>{q.closed_reason}</div>}
               </td>
               <td style={{ ...TD, fontSize: 12 }}>{q.salesperson_name || <span style={{ color: "var(--slate)" }}>—</span>}</td>

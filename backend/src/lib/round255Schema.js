@@ -22,6 +22,7 @@
 //   * Accounts → Send to CA (routes/accountsCa.js): last month's data in nine
 //     Excel sheets, due by the 5th.
 import { pool, query } from "../db.js";
+import { ensureRound258 } from "./round258Schema.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const n0 = (v) => Number(v) || 0;
@@ -131,15 +132,20 @@ export function entryFromInvoice(inv) {
   };
 }
 
-// Mark (on) or unmark (off) invoices "Cash". Returns { done, refused[] }.
-export async function setInvoicesCash(c, ids, on, userId) {
-  const done = [], refused = [];
+// Mark (on) or unmark (off) invoices "Cash". Returns { done, refused[], requested[] }.
+// Round 258 — opts.reason: why the mark comes off (needed when a cash holder
+// has accepted cash on it: they are asked to approve, see unmarkOne);
+// opts.approved: the holders have approved, take it off now.
+export async function setInvoicesCash(c, ids, on, userId, opts = {}) {
+  const done = [], refused = [], requested = [];
   const { rows } = await c.query(`${INVOICE_ROW_SQL} WHERE i.id = ANY($1::int[]) FOR UPDATE OF i`, [ids]);
   for (const inv of rows) {
-    const res = on ? await markOne(c, inv, userId) : await unmarkOne(c, inv, userId);
-    if (res) refused.push({ id: inv.id, ticket_number: inv.ticket_number, reason: res }); else done.push(inv.id);
+    const res = on ? await markOne(c, inv, userId) : await unmarkOne(c, inv, userId, opts);
+    if (res && typeof res === "object") requested.push({ id: inv.id, ticket_number: inv.ticket_number, holders: res.holders });
+    else if (res) refused.push({ id: inv.id, ticket_number: inv.ticket_number, reason: res });
+    else done.push(inv.id);
   }
-  return { done, refused };
+  return { done, refused, requested };
 }
 
 async function markOne(c, inv, userId) {
@@ -166,12 +172,36 @@ async function markOne(c, inv, userId) {
   return null;
 }
 
-async function unmarkOne(c, inv, userId) {
+async function unmarkOne(c, inv, userId, opts = {}) {
   const { rows } = await c.query(`SELECT id FROM cl_deliveries WHERE invoice_id = $1 AND deleted_at IS NULL FOR UPDATE`, [inv.id]);
   if (rows.length) {
     const id = rows[0].id;
-    const { rows: col } = await c.query(`SELECT COUNT(*)::int AS n FROM cl_collections WHERE delivery_id = $1 AND status <> 'rejected'`, [id]);
-    if (col[0].n) return "money is already collected against it in C Ledger";
+    // Round 258 (owner) — cash a holder has ACCEPTED is in their wallet; the
+    // mark comes off only when they approve. Cash still waiting, rejected or
+    // paid to bank is taken out straight away.
+    const { rows: acc } = await c.query(
+      `SELECT c.holder_id, SUM(c.amount) AS amount, COALESCE(MAX(a.short_name), MAX(u.name)) AS holder
+         FROM cl_collections c JOIN users u ON u.id = c.holder_id LEFT JOIN cl_access a ON a.user_id = c.holder_id
+        WHERE c.delivery_id = $1 AND c.status = 'accepted' AND c.holder_id IS NOT NULL GROUP BY c.holder_id`, [id]);
+    if (acc.length && !opts.approved) {
+      const { rows: waiting } = await c.query(
+        `SELECT string_agg(DISTINCT COALESCE(a.short_name, u.name), ', ') AS who FROM cl_untick_requests r
+           JOIN users u ON u.id = r.holder_id LEFT JOIN cl_access a ON a.user_id = r.holder_id
+          WHERE r.invoice_id = $1 AND r.status = 'pending'`, [inv.id]);
+      if (waiting[0]?.who) return `already waiting for ${waiting[0].who} to approve taking the Cash mark off`;
+      const reason = String(opts.reason || "").trim().slice(0, 300);
+      if (!reason) return `${acc.map((a) => a.holder).join(", ")} accepted cash on it — give the reason; they must approve before the mark comes off`;
+      for (const a of acc) {
+        await c.query(
+          `INSERT INTO cl_untick_requests (invoice_id, delivery_id, holder_id, amount, reason, requested_by) VALUES ($1, $2, $3, $4, $5, $6)`,
+          [inv.id, id, a.holder_id, r2(a.amount), reason, userId]);
+      }
+      try {
+        const { pushToUser } = await import("./push.js");
+        for (const a of acc) await pushToUser(a.holder_id, { title: "Approve: Cash mark off an invoice", body: `${inv.customer_name} · ${inv.ticket_number} · ₹${r2(a.amount)} — ${reason}`, url: "/cost?tab=c-ledger" });
+      } catch { /* push is best effort */ }
+      return { holders: acc.map((a) => a.holder) };
+    }
     await c.query(`UPDATE cl_deliveries SET deleted_at = now(), deleted_by = $2 WHERE id = $1`, [id, userId]);
     await c.query(`DELETE FROM cl_collections WHERE delivery_id = $1`, [id]);
     await c.query(`DELETE FROM cl_delivery_tickets WHERE delivery_id = $1`, [id]);
@@ -210,6 +240,7 @@ export async function refreshInvoiceEntries() {
 // target: { holder_id } (cash only) or { bank: true }.
 export async function sendReceiptToCl(c, receiptId, target, userId) {
   await ensureRound255();
+  await ensureRound258();
   const { rows: rr } = await c.query(
     `SELECT r.*, r.receipt_date::text AS day, r.mode::text AS mode_t, cu.name AS customer_name
        FROM customer_receipts r JOIN customers cu ON cu.id = r.customer_id WHERE r.id = $1 AND r.cancelled_at IS NULL FOR UPDATE OF r`, [receiptId]);
@@ -227,9 +258,9 @@ export async function sendReceiptToCl(c, receiptId, target, userId) {
   }
   const line = async (deliveryId, amount) => {
     await c.query(
-      `INSERT INTO cl_collections (delivery_id, amount, holder_id, mode, paid_on, status, responded_at, receipt_id)
-       VALUES ($1, $2, $3, $4, $5, $6::varchar, CASE WHEN $6::varchar = 'accepted' THEN now() END, $7)`,
-      [deliveryId, r2(amount), bank ? null : holder, bank ? "bank" : "cash", bank ? r.day : null, bank ? "accepted" : "pending", receiptId]);
+      `INSERT INTO cl_collections (delivery_id, amount, holder_id, mode, paid_on, status, responded_at, receipt_id, sent_by)
+       VALUES ($1, $2, $3, $4, $5, $6::varchar, CASE WHEN $6::varchar = 'accepted' THEN now() END, $7, $8)`,
+      [deliveryId, r2(amount), bank ? null : holder, bank ? "bank" : "cash", bank ? r.day : null, bank ? "accepted" : "pending", receiptId, userId]);
   };
   // What the receipt paid: invoices (marked "Cash" if not yet), then the rest.
   const { rows: alloc } = await c.query(

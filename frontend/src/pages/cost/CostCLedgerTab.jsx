@@ -199,6 +199,8 @@ function EntriesView({ me, month }) {
                     {r.source !== "hand" && <SourcePill source={r.source} />}
                     {r.tickets.length ? r.tickets.map((t) => t.number).join(", ") : r.source === "receipt" ? <span style={MUTED}>receipt, not against an invoice</span> : <span style={{ color: "var(--alert-red)" }}>not linked</span>}
                     {r.source === "invoice" && r.invoice_live === false && <div style={{ color: "var(--alert-red)", fontSize: 11.5 }}>invoice cancelled</div>}
+                    {/* Round 258 (owner) — who sent it here, and their role. */}
+                    {r.sent_by?.name && <div style={{ ...MUTED, fontSize: 11.5 }}>sent by {r.sent_by.name}{r.sent_by.role ? ` · ${r.sent_by.role}` : ""}</div>}
                   </td>
                   <td>{r.grade || "—"}</td>
                   <td style={R}>{num(r.qty_m3, 1)}</td>
@@ -209,6 +211,7 @@ function EntriesView({ me, month }) {
                     {r.collections.length === 0 ? <span style={MUTED}>—</span> : r.collections.map((c) => (
                       <div key={c.id} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, whiteSpace: "nowrap", padding: "1px 0" }}>
                         <b style={NUM}>{rs(c.amount)}</b><span>→ {c.holder}</span>{c.bank ? <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 20, background: "#E2EAF6", color: "#1F4A82" }}>Paid to bank</span> : <Badge status={c.status} />}
+                        {c.sent_by && <span style={{ ...MUTED, fontSize: 11 }} title="Sent to C Ledger with the receipt by">· {c.sent_by}{c.sent_by_role ? ` (${c.sent_by_role})` : ""}</span>}
                       </div>
                     ))}
                   </td>
@@ -522,7 +525,7 @@ function WalletView({ me, month }) {
     catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
   const tx = w.transactions.filter((t) => filter === "all" || (filter === "flagged" ? t.flagged : !t.flagged));
-  const respondPath = (i) => `/cost/c-ledger/${i.type === "collection" ? "collections" : i.type === "income" ? "incomes" : "transfers"}/${i.id}/respond`;
+  const respondPath = (i) => `/cost/c-ledger/${i.type === "collection" ? "collections" : i.type === "income" ? "incomes" : i.type === "untick" ? "untick" : "transfers"}/${i.id}/respond`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 720 }}>
@@ -549,7 +552,7 @@ function WalletView({ me, month }) {
         {w.incoming.length === 0 ? <div className="card" style={{ ...MUTED, margin: 0 }}>Nothing waiting for you.</div> : w.incoming.map((i) => (
           <div key={`${i.type}${i.id}`} className="card" style={{ margin: "0 0 8px", display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <div><div style={{ fontWeight: 700 }}>{i.title}</div><div style={MUTED}>{i.meta}</div></div>
+              <div><div style={{ fontWeight: 700 }}>{i.title}</div><div style={MUTED}>{i.meta}</div>{i.note && <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 3 }}>{i.note}</div>}</div>
               <div style={{ textAlign: "right" }}><div style={MUTED}>{fmtDay(i.date)}</div>{i.flagged && <FlagPill />}</div>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#F7F5F0", borderRadius: 8, padding: "8px 10px" }}>
@@ -566,7 +569,7 @@ function WalletView({ me, month }) {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                 <button type="button" style={{ minHeight: 46, color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={() => { setRejecting(`${i.type}${i.id}`); setReason(""); }}>Reject</button>
                 <button type="button" disabled={busy} style={{ minHeight: 46, background: "var(--signal-green)", borderColor: "var(--signal-green)", color: "#fff", fontWeight: 600 }}
-                  onClick={() => act(respondPath(i), { decision: "accept" })}>Accept</button>
+                  onClick={() => act(respondPath(i), { decision: "accept" })}>{i.type === "untick" ? "Approve" : "Accept"}</button>
               </div>
             )}
           </div>

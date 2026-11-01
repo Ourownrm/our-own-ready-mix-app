@@ -21,6 +21,7 @@ import { AGREEMENT_TYPES, DEFAULT_TERMS } from "../lib/quotationTerms.js";
 import { applyQuotationToPriceList, repriceAfterAcceptance, liveRatesForSite, setRowEnabled } from "../lib/priceList.js";
 import { costContext, costMix, siteFuel, cleanCosting } from "../lib/quotationCosting.js";
 import { pushToRole } from "../lib/push.js";
+import { ensureRound258 } from "../lib/round258Schema.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -79,7 +80,7 @@ async function logEvent(client, quotationId, event, userId, extra = {}) {
 
 async function loadQuotation(id) {
   const { rows } = await query(
-    `SELECT q.*, c.name AS customer_name, c.billing_address AS customer_address, s.name AS site_name,
+    `SELECT q.*, q.completed_on::text AS completed_on, c.name AS customer_name, c.billing_address AS customer_address, s.name AS site_name,
             ba.name AS billing_name, ba.address AS billing_address, ba.gstin AS billing_gstin,
             cu.name AS created_by_name, au.name AS approved_by_name, acu.name AS accepted_by_name,
             sp.name AS salesperson_name, s.road_km AS site_road_km
@@ -201,6 +202,7 @@ router.get("/meta", VIEW, async (req, res) => {
 // Register and follow-ups.
 // ---------------------------------------------------------------------------
 router.get("/", VIEW, async (req, res) => {
+  await ensureRound258(); // Round 258 — completed_on
   const scope = await scopeFor(req.user);
   const base = [];
   let where = "$SCOPE_FILTER";
@@ -215,7 +217,7 @@ router.get("/", VIEW, async (req, res) => {
   const { sql, params } = withScope(
     `SELECT q.id, q.quote_no, q.family_no, q.revision, q.status, q.agreement_type, q.quote_date::text AS quote_date,
             q.valid_until::text AS valid_until, q.sent_at, q.accepted_on::text AS accepted_on, q.rates_from::text AS rates_from,
-            q.closed_reason, q.payment, q.created_at, q.approved_at, q.terms_modified,
+            q.closed_reason, q.completed_on::text AS completed_on, q.payment, q.created_at, q.approved_at, q.terms_modified,
             c.id AS customer_id, c.name AS customer_name, s.id AS site_id, s.name AS site_name,
             u.name AS created_by_name, u.role AS created_by_role, q.salesperson_id, spn.name AS salesperson_name,
             (SELECT json_agg(json_build_object('grade', COALESCE(m.name, ql.item_label), 'rate', ql.rate_total, 'qty', ql.qty_m3, 'approved', ql.approved) ORDER BY ql.line_no)
@@ -679,6 +681,70 @@ router.post("/:id(\\d+)/close", EDIT, async (req, res) => {
   );
   await logEvent(pool, req.params.id, status, req.user.id, { note: reason });
   res.json({ ok: true, status });
+});
+
+// Round 258 (owner, 1 Nov 2026) — "when a project is completed, an option is
+// required in the quotation to close it". An accepted quotation is marked
+// Project completed on a date: its price-list rows end that day (no new
+// orders for the site from the next day), open orders after it must be dealt
+// with first. Reopen puts the quotation and those rows back.
+router.post("/:id(\\d+)/complete", EDIT, async (req, res) => {
+  await ensureRound258();
+  const note = String(req.body.note || "").trim().slice(0, 500);
+  const on = ISO.test(req.body.completed_on || "") ? req.body.completed_on : istDay();
+  if (on > istDay()) return res.status(400).json({ error: "The completion date can't be in the future." });
+  const { rows } = await query(`SELECT id, status, site_id, customer_id FROM quotations WHERE id = $1`, [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: "Quotation not found." });
+  const q = rows[0];
+  if (q.status !== "accepted") return res.status(409).json({ error: "Only an accepted quotation (the site's price list) can be closed as project completed." });
+  const { rows: open } = await query(
+    `SELECT id, order_date::text AS d FROM customer_orders
+      WHERE site_id = $1 AND customer_id = $2 AND order_date > $3::date AND status NOT IN ('completed','cancelled','closed') ORDER BY order_date LIMIT 5`,
+    [q.site_id, q.customer_id, on]);
+  if (open.length) {
+    return res.status(409).json({ error: `This site still has open orders after ${on} (${open.map((o) => `ORM-${o.id} on ${o.d}`).join(", ")}) — complete, close or cancel them first.` });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: ended } = await client.query(
+      `UPDATE rate_master SET effective_to = $2::date WHERE quotation_id = $1 AND effective_to IS NULL AND effective_from <= $2::date RETURNING id`,
+      [q.id, on]);
+    // Rows that would only have started after the completion date never apply.
+    const { rows: later } = await client.query(
+      `UPDATE rate_master SET effective_to = effective_from WHERE quotation_id = $1 AND effective_to IS NULL AND effective_from > $2::date RETURNING id`,
+      [q.id, on]);
+    await client.query(
+      `UPDATE quotations SET status = 'completed', completed_on = $2, completed_rate_ids = $3, closed_reason = $4, closed_by = $5, closed_at = now(),
+              next_followup_on = NULL, updated_at = now() WHERE id = $1`,
+      [q.id, on, [...ended, ...later].map((r) => r.id), note || null, req.user.id]);
+    await logEvent(client, q.id, "completed", req.user.id, { note: `Project completed on ${on}.${note ? ` ${note.replace(/[.\s]*$/, ".")}` : ""} Price list ended (${ended.length + later.length} row${ended.length + later.length === 1 ? "" : "s"}).` });
+    await client.query("COMMIT");
+  } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; } finally { client.release(); }
+  res.json({ ok: true, completed_on: on });
+});
+
+router.post("/:id(\\d+)/reopen", EDIT, async (req, res) => {
+  await ensureRound258();
+  const reason = String(req.body.reason || "").trim().slice(0, 300);
+  if (!reason) return res.status(400).json({ error: "Give the reason for reopening." });
+  const { rows } = await query(`SELECT id, status, completed_rate_ids, customer_id, site_id FROM quotations WHERE id = $1`, [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: "Quotation not found." });
+  const q = rows[0];
+  if (q.status !== "completed") return res.status(409).json({ error: "Only a project marked completed can be reopened." });
+  const { rows: newer } = await query(
+    `SELECT quote_no FROM quotations WHERE customer_id = $1 AND site_id = $2 AND id <> $3 AND status = 'accepted' LIMIT 1`, [q.customer_id, q.site_id, q.id]);
+  if (newer.length) return res.status(409).json({ error: `${newer[0].quote_no} is now the site's accepted quotation — reopen isn't possible.` });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (q.completed_rate_ids?.length) await client.query(`UPDATE rate_master SET effective_to = NULL WHERE id = ANY($1::int[])`, [q.completed_rate_ids]);
+    await client.query(
+      `UPDATE quotations SET status = 'accepted', completed_on = NULL, completed_rate_ids = NULL, closed_reason = NULL, closed_by = NULL, closed_at = NULL, updated_at = now() WHERE id = $1`, [q.id]);
+    await logEvent(client, q.id, "reopened", req.user.id, { note: reason });
+    await client.query("COMMIT");
+  } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; } finally { client.release(); }
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

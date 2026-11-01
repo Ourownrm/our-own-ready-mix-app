@@ -12,7 +12,7 @@ export const money = (n, dp = 0) =>
 
 const TONE_CLASS = {
   draft: "badge-neutral", pending_approval: "badge-warning", approved: "badge-info", sent: "badge-info",
-  accepted: "badge-success", declined: "badge-danger", lost: "badge-danger", superseded: "badge-neutral", cancelled: "badge-neutral",
+  accepted: "badge-success", declined: "badge-danger", lost: "badge-danger", superseded: "badge-neutral", cancelled: "badge-neutral", completed: "badge-neutral",
 };
 export function StatusBadge({ status }) {
   return <span className={`badge ${TONE_CLASS[status] || "badge-neutral"}`}>{STATUS_LABEL[status] || status}</span>;

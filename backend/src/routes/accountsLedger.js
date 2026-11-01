@@ -19,6 +19,7 @@ import { lookAlikePriceLists, mergeCustomer, mergeSite, referenceCounts } from "
 import { ensureRound251 } from "../lib/round251Schema.js";
 import { ensureRound252 } from "../lib/round252Schema.js";
 import { ledgerSettings } from "../lib/ledgerPost.js";
+import { ensureRound258 } from "../lib/round258Schema.js";
 import { ensureRound255, setInvoicesCash, sendReceiptToCl, removeReceiptCl, receiptClState } from "../lib/round255Schema.js";
 
 const router = Router();
@@ -51,6 +52,7 @@ router.get("/invoices", INV_VIEW, async (req, res) => {
   if (req.query.gst === "off") where.push("NOT i.gst_applied");
   await ensureRound251(query); // Round 251 — tally_invoice_no
   await ensureRound255(); // Round 255 — the "Cash" mark (C Ledger)
+  await ensureRound258(); // Round 258 — un-tick waiting for a cash holder
   if (req.query.cash === "on") where.push("i.cl_cash");
   if (req.query.cash === "off") where.push("NOT i.cl_cash");
   if (req.query.order_id) { params.push(Number(req.query.order_id)); where.push(`co.id = $${params.length}`); }
@@ -59,6 +61,13 @@ router.get("/invoices", INV_VIEW, async (req, res) => {
             i.rate_per_m3, i.gst_applied, i.billing_name, i.billing_gstin, i.created_at, i.tally_invoice_no, i.cl_cash, co.id AS order_id,
             (SELECT COALESCE(SUM(c.amount), 0) FROM cl_deliveries d JOIN cl_collections c ON c.delivery_id = d.id AND c.status <> 'rejected'
               WHERE d.invoice_id = i.id AND d.deleted_at IS NULL) AS cl_collected,
+            (SELECT COALESCE(SUM(c.amount), 0) FROM cl_deliveries d JOIN cl_collections c ON c.delivery_id = d.id AND c.status = 'accepted' AND c.holder_id IS NOT NULL
+              WHERE d.invoice_id = i.id AND d.deleted_at IS NULL) AS cl_accepted,
+            (SELECT string_agg(DISTINCT COALESCE(ua.short_name, uu.name), ', ') FROM cl_untick_requests ur JOIN users uu ON uu.id = ur.holder_id
+               LEFT JOIN cl_access ua ON ua.user_id = ur.holder_id WHERE ur.invoice_id = i.id AND ur.status = 'pending') AS untick_waiting,
+            (SELECT CONCAT(COALESCE(ua.short_name, uu.name), ': ', ur.reject_reason) FROM cl_untick_requests ur JOIN users uu ON uu.id = ur.holder_id
+               LEFT JOIN cl_access ua ON ua.user_id = ur.holder_id WHERE ur.invoice_id = i.id AND ur.status = 'rejected' AND i.cl_cash
+               ORDER BY ur.decided_at DESC LIMIT 1) AS untick_rejected,
             dt.ticket_number, dt.ticket_date::text AS ticket_date, dt.loaded_quantity_m3, i.rejected_quantity_m3,
             c.id AS customer_id, c.name AS customer_name, s.name AS site_name, m.name AS grade_name,
             q.quote_no, rm.source AS rate_source,
@@ -89,6 +98,7 @@ router.get("/invoices", INV_VIEW, async (req, res) => {
 // mark off. { ids: [...] } or { order_id } (the whole order), and { on }.
 router.post("/invoices/cash", requirePermission("accounts.invoice-cash", "edit"), async (req, res) => {
   await ensureRound255();
+  await ensureRound258();
   const on = !!req.body?.on;
   let ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
   if (!ids.length && req.body?.order_id) {
@@ -101,7 +111,7 @@ router.post("/invoices/cash", requirePermission("accounts.invoice-cash", "edit")
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const out = await setInvoicesCash(client, ids, on, req.user.id);
+    const out = await setInvoicesCash(client, ids, on, req.user.id, { reason: req.body?.reason });
     await client.query("COMMIT");
     res.json(out);
   } catch (err) {

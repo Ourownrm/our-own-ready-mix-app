@@ -49,6 +49,8 @@ function InvoiceList({ canGst }) {
     try {
       const r = await apiRequest("/accounts/invoices/cash", { method: "POST", body });
       if (r.refused?.length) setError(r.refused.map((x) => `${x.ticket_number}: ${x.reason}`).join(" · "));
+      // Round 258 — cash a holder accepted: they approve before the mark comes off.
+      else if (r.requested?.length) setMsg(`Sent for approval — ${r.requested.map((x) => `${x.ticket_number}: ${x.holders.join(", ")}`).join(" · ")}. The Cash mark comes off when they approve in their C Ledger wallet.`);
       else setMsg(body.on ? `${r.done.length} invoice${r.done.length === 1 ? "" : "s"} marked Cash — now in C Ledger.` : `Cash mark taken off ${r.done.length} invoice${r.done.length === 1 ? "" : "s"}.`);
       setReload((t) => t + 1);
       return r;
@@ -99,7 +101,7 @@ function InvoiceList({ canGst }) {
           <th style={{ ...TH, textAlign: "right" }}>Concrete</th><th style={{ ...TH, textAlign: "right" }}>Charges</th><th style={{ ...TH, textAlign: "right" }}>Total</th>
           <th style={{ ...TH, textAlign: "right" }}>Base · GST</th><th style={TH}>GST</th><th style={{ ...TH, textAlign: "right" }}>Due</th>
           {canTally && <th style={TH}>Tally print</th>}
-          <th style={TH} title="Collected in cash through C Ledger">Cash → C Ledger</th>
+          <th style={TH} title="Collected in cash through C Ledger">Cash</th>
         </>}>
           {rows.map((r) => {
             const charges = Number(r.pumping_charge) + Number(r.part_load_charge) + Number(r.waiting_charge || 0);
@@ -134,13 +136,21 @@ function InvoiceList({ canGst }) {
                 )}
                 <td style={TD} onClick={(e) => e.stopPropagation()}>
                   {canCash ? (
-                    <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12, whiteSpace: "nowrap" }} title={Number(r.cl_collected) > 0 ? "Money is collected against it in C Ledger" : undefined}>
-                      <input type="checkbox" checked={!!r.cl_cash} disabled={Number(r.cl_collected) > 0 && r.cl_cash} style={{ width: "auto" }}
-                        onChange={() => markCash({ ids: [r.id], on: !r.cl_cash })} />
+                    <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12, whiteSpace: "nowrap" }} title={Number(r.cl_accepted) > 0 ? "A cash holder has accepted cash on it — taking the mark off needs their approval" : undefined}>
+                      <input type="checkbox" checked={!!r.cl_cash} disabled={!!r.untick_waiting} style={{ width: "auto" }}
+                        onChange={() => {
+                          if (r.cl_cash && Number(r.cl_accepted) > 0) {
+                            const reason = window.prompt(`₹${inr2(r.cl_accepted)} of this invoice is already in a cash holder's wallet. They must approve taking the Cash mark off.\n\nReason:`);
+                            if (!reason || !reason.trim()) return;
+                            markCash({ ids: [r.id], on: false, reason: reason.trim() });
+                          } else markCash({ ids: [r.id], on: !r.cl_cash });
+                        }} />
                       {r.cl_cash ? "Cash" : ""}
                     </label>
                   ) : r.cl_cash ? <span style={{ fontSize: 12 }}>Cash</span> : null}
                   {r.cl_cash && Number(r.cl_collected) > 0 && <div style={{ fontSize: 11, color: "var(--slate)" }}>₹{inr2(r.cl_collected)} collected</div>}
+                  {r.untick_waiting && <div style={{ fontSize: 11, color: "var(--amber)" }}>un-tick waiting for {r.untick_waiting}</div>}
+                  {!r.untick_waiting && r.untick_rejected && <div style={{ fontSize: 11, color: "var(--alert-red)" }}>un-tick refused — {r.untick_rejected}</div>}
                 </td>
               </tr>
             );
@@ -149,7 +159,15 @@ function InvoiceList({ canGst }) {
       )}
       {canCash && rows?.length > 0 && <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Tick <b>Cash</b> for an invoice collected in cash through C Ledger — it becomes a C Ledger entry with its m³ and amount. The invoice itself does not change (GST stays on it). Open an invoice to mark its whole order.</div>}
       {open && <InvoiceDetail inv={open} onClose={() => setOpen(null)} canCash={canCash}
-        onOrderCash={async (on) => { const r = await markCash({ order_id: open.order_id, on }); if (r) setOpen(null); }} />}
+        onOrderCash={async (on) => {
+          // Round 258 — invoices whose cash a holder accepted need a reason; the holder approves.
+          let reason;
+          if (!on) {
+            reason = window.prompt("Reason for taking the Cash mark off this order? (Where a cash holder has accepted the cash, they must approve.)");
+            if (reason === null) return;
+          }
+          const r = await markCash({ order_id: open.order_id, on, reason: reason || undefined }); if (r) setOpen(null);
+        }} />}
       {tally && <TallyPrintModal invoiceId={tally} onClose={() => setTally(null)}
         onPrinted={(inv) => setRows((rs) => rs.map((x) => (x.id === inv.id ? { ...x, tally_invoice_no: inv.tally_invoice_no } : x)))} />}
     </>

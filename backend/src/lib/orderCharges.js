@@ -42,6 +42,11 @@ export async function resolveChargeDecisions(body, { customer_id, site_id, mix_g
   // ash): the Manager must say which; the choice is kept on the order.
   // Round 209 — only mixes the customer approved (enabled price-list rows)
   // can be ordered.
+  // Round 258 (owner, 1 Nov 2026) — a project closed as completed takes no
+  // orders after its completion date, until it is reopened (or a new
+  // quotation for the site is accepted).
+  const closed = await projectClosed(customer_id, site_id, order_date);
+  if (closed) return { error: `This project was closed as completed on ${closed.on} (quotation ${closed.quote_no}). Reopen it in Accounts → Quotations to take more orders.` };
   const picked = await rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option: body.price_option || null }, undefined, { enabledOnly: true });
   if (!picked.options.length) {
     const any = await rateForOrder({ customer_id, site_id, mix_grade_id, order_date, price_option: null });
@@ -230,4 +235,16 @@ export async function resolveOrderMix(body, { customer_id, site_id, mix_grade_id
     return { price_option: null, mix_design_id: null, quoted_mix_design_id: null };
   }
   return { price_option: picked.rate?.price_option || null, mix_design_id: picked.rate?.mix_design_id || null, quoted_mix_design_id: null };
+}
+
+// Round 258 — the site's quotation is "Project completed" before this date,
+// and no quotation for it is accepted since.
+export async function projectClosed(customerId, siteId, orderDate) {
+  if (!customerId || !siteId) return null;
+  const { rows } = await query(
+    `SELECT q.quote_no, q.completed_on::text AS on_day FROM quotations q
+      WHERE q.customer_id = $1 AND q.site_id = $2 AND q.status = 'completed' AND q.completed_on < $3::date
+        AND NOT EXISTS (SELECT 1 FROM quotations a WHERE a.customer_id = q.customer_id AND a.site_id = q.site_id AND a.status = 'accepted')
+      ORDER BY q.completed_on DESC LIMIT 1`, [Number(customerId), Number(siteId), String(orderDate).slice(0, 10)]).catch(() => ({ rows: [] }));
+  return rows[0] ? { quote_no: rows[0].quote_no, on: rows[0].on_day } : null;
 }

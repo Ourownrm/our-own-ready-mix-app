@@ -17,6 +17,7 @@ const EVENT_LABEL = {
   created: "Created", edited: "Edited", submitted: "Sent for approval", approved: "Approved", sent_back: "Sent back for changes",
   sent: "Sent to the customer", followup: "Follow-up", revised: "Revision made", accepted: "Accepted by the customer",
   declined: "Declined", lost: "Lost", cancelled: "Cancelled", extended: "Validity extended", reminder: "Reminder",
+  completed: "Project completed", reopened: "Reopened",
 };
 
 export default function QuotationView({ meta, id, go, onBack }) {
@@ -101,6 +102,7 @@ export default function QuotationView({ meta, id, go, onBack }) {
         <div><div className="kpi-label">Dated · valid</div>{fmtDate(q.quote_date)} · {q.valid_until ? `till ${fmtDate(q.valid_until)}` : `${q.validity_days} days from sending`}</div>
         <div><div className="kpi-label">Prepared · approved</div>{q.created_by_name}{q.approved_by_name ? ` · ${q.approved_by_name}` : ""}</div>
         <div><div className="kpi-label">Salesperson</div>{q.salesperson_name || <span style={{ color: "var(--slate)" }}>not set</span>}<div style={{ fontSize: 11, color: "var(--slate)" }}>app only — not printed</div></div>
+        {q.status === "completed" && <div><div className="kpi-label">Project completed</div><b>{fmtDate(q.completed_on)}</b><div style={{ fontSize: 12 }}>price list ended that day{q.closed_reason ? ` · ${q.closed_reason}` : ""}</div></div>}
         {q.status === "accepted" && <div><div className="kpi-label">Accepted</div>{fmtDate(q.accepted_on)} by {String(q.acceptance_mode || "").replace("_", " ")}<div style={{ fontSize: 12 }}>Price list from <b>{fmtDate(q.rates_from)}</b></div></div>}
         {q.revision_reason && <div><div className="kpi-label">Why revised</div>{q.revision_reason}</div>}
       </div>
@@ -175,6 +177,9 @@ export default function QuotationView({ meta, id, go, onBack }) {
           {withCustomer && p.edit && <button type="button" onClick={() => setModal("close")}>{q.revision > 0 ? "Customer declined" : "Lost"}</button>}
           {["approved", "sent", "accepted", "lost", "declined"].includes(q.status) && p.create && <button type="button" onClick={() => setModal("revise")}>Revise</button>}
           {editable && p.edit && <button type="button" onClick={() => setModal("cancel")} style={{ color: "var(--alert-red)" }}>Cancel</button>}
+          {/* Round 258 — close the agreement when the project is done. */}
+          {q.status === "accepted" && p.edit && <button type="button" onClick={() => setModal("complete")}>Project completed — close</button>}
+          {q.status === "completed" && p.edit && <button type="button" onClick={() => setModal("reopen")}>Reopen</button>}
           <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
             {q.status !== "cancelled" && <button type="button" onClick={download} disabled={busy === "pdf"}>{busy === "pdf" ? "Preparing…" : "Download PDF"}</button>}
             {["approved", "sent", "accepted"].includes(q.status) && <button type="button" onClick={share} disabled={busy === "share"}>Share</button>}
@@ -213,6 +218,8 @@ export default function QuotationView({ meta, id, go, onBack }) {
       {modal === "followup" && <FollowupModal q={q} onClose={() => setModal(null)} onSaved={() => reload("Follow-up saved.")} />}
       {modal === "extend" && <ExtendModal busy={busy} onClose={() => setModal(null)} onSave={(days) => act("extend", { days }, "Validity extended.")} />}
       {modal === "close" && <ReasonModal title={q.revision > 0 ? "Customer declined the revision" : "Quotation lost"} label={q.revision > 0 ? "Why — the current price list stays" : "Why was it lost"} busy={busy} onClose={() => setModal(null)} onSave={(reason) => act("close", { reason }, "Closed.")} />}
+      {modal === "complete" && <CompleteModal busy={busy} onClose={() => setModal(null)} onSave={(body) => act("complete", body, "Closed — project completed. The site's price list ended on that day.")} />}
+      {modal === "reopen" && <ReasonModal title="Reopen this project" label="Why — e.g. more work at the site" busy={busy} onClose={() => setModal(null)} onSave={(reason) => act("reopen", { reason }, "Reopened — the price list is back.")} />}
       {modal === "cancel" && <ReasonModal title="Cancel this quotation" label="Reason" busy={busy} onClose={() => setModal(null)} onSave={(reason) => act("cancel", { reason }, "Cancelled.")} />}
       {modal === "revise" && <ReasonModal title="Make a revision" label="Why — e.g. cement price up, customer asked for a better rate" busy={busy} onClose={() => setModal(null)}
         onSave={async (reason) => {
@@ -238,6 +245,27 @@ function ReasonModal({ title, label, busy, onClose, onSave }) {
           <button type="submit" disabled={!!busy}>Save</button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+// Round 258 — the project is done: the quotation closes and the site's price
+// list from it ends on the completion date.
+function CompleteModal({ busy, onClose, onSave }) {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const [on, setOn] = useState(today);
+  const [note, setNote] = useState("");
+  return (
+    <Modal title="Project completed — close the quotation" onClose={onClose} width={460}>
+      <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>
+        The site's price list from this quotation ends on the completion date, so no new orders can be taken for the site after it. Open orders after that date must be completed, closed or cancelled first. Invoices and the customer's ledger are not changed. It can be reopened.
+      </div>
+      <Field label="Completed on"><input type="date" value={on} max={today} onChange={(e) => setOn(e.target.value)} /></Field>
+      <Field label="Note (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. last pour done, site handed over" /></Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button type="button" onClick={onClose}>Cancel</button>
+        <button type="button" className="btn-primary" disabled={!!busy || !on} onClick={() => onSave({ completed_on: on, note })}>Close — project completed</button>
+      </div>
     </Modal>
   );
 }

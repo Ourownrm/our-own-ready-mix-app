@@ -99,10 +99,11 @@ export function filledTerms(q, defaults) {
 export const STATUS_LABEL = {
   draft: "Draft", pending_approval: "Waiting for approval", approved: "Approved — not sent", sent: "Sent",
   accepted: "Accepted", declined: "Declined", lost: "Lost", superseded: "Superseded", cancelled: "Cancelled",
+  completed: "Project completed",
 };
 export const STATUS_TONE = {
   draft: "slate", pending_approval: "amber", approved: "blue", sent: "blue", accepted: "green",
-  declined: "red", lost: "red", superseded: "slate", cancelled: "slate",
+  declined: "red", lost: "red", superseded: "slate", cancelled: "slate", completed: "slate",
 };
 
 export function fmtDate(ymd) {
