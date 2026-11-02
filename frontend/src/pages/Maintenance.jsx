@@ -3,11 +3,35 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { generateTruckInspectionPdf } from "../lib/truckInspectionPdf.js";
+import { istMonth } from "../lib/istDate.js";
 
 // Round 98 — items 10 (Maintenance module) & 11 (Best Driver of the Month),
 // built from the round-97 mockup the business approved. Reuses that
 // mockup's exact layout/classes (kanban, meter, stacked-bar, timeline —
 // see index.css) now wired to real data instead of sample rows.
+
+// Round 263 (owner, 2 Nov 2026) — "Best driver - need to see previous months
+// also": one month picker for both tabs; the routes already take year / month.
+function shiftMonth(ym, n) {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+const monthLabel = (ym) => { const [y, m] = ym.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" }); };
+const periodQs = (ym) => { const [y, m] = ym.split("-").map(Number); return `?year=${y}&month=${m}`; };
+
+function MonthPicker({ month, setMonth }) {
+  const thisMonth = istMonth();
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+      <button type="button" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="Previous month">‹ Previous</button>
+      <input type="month" value={month} max={thisMonth} onChange={(e) => e.target.value && setMonth(e.target.value > thisMonth ? thisMonth : e.target.value)}
+        style={{ width: 150 }} aria-label="Month" />
+      <button type="button" onClick={() => setMonth(shiftMonth(month, 1))} disabled={month >= thisMonth} aria-label="Next month">Next ›</button>
+      {month !== thisMonth && <button type="button" onClick={() => setMonth(thisMonth)}>This month</button>}
+    </div>
+  );
+}
 
 function fmtDate(d) {
   if (!d) return "—";
@@ -20,6 +44,7 @@ export default function Maintenance() {
   // Site Efficiency, which stay outside it.
   const [tab, setTab] = useState("driver"); // 'driver' | 'site_efficiency'
   const [error, setError] = useState("");
+  const [month, setMonth] = useState(istMonth());
 
   return (
     <>
@@ -57,8 +82,9 @@ export default function Maintenance() {
           <Link to="/maintenance-module">Maintenance module</Link>. The weekly truck inspection below still feeds Best Driver; its
           “Action required” items go onto the truck’s job card there.
         </div>
-        {tab === "driver" && <BestDriverTab setError={setError} />}
-        {tab === "site_efficiency" && <SiteEfficiencyTab setError={setError} />}
+        <MonthPicker month={month} setMonth={setMonth} />
+        {tab === "driver" && <BestDriverTab setError={setError} month={month} />}
+        {tab === "site_efficiency" && <SiteEfficiencyTab setError={setError} month={month} />}
       </div>
     </>
   );
@@ -74,16 +100,19 @@ const COMPONENT_COLORS = {
   fuel: "var(--info)",
 };
 
-function BestDriverTab({ setError }) {
+function BestDriverTab({ setError, month }) {
   const [data, setData] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const current = month === istMonth();
 
   async function load() {
-    try { setData(await apiRequest("/maintenance/best-driver")); } catch (err) { setError(err.message); }
+    setData(null);
+    try { setData(await apiRequest(`/maintenance/best-driver${periodQs(month)}`)); } catch (err) { setError(err.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!data) return <div className="card">Loading…</div>;
+  if (!data) return <div className="card">Loading {monthLabel(month)}…</div>;
+  const inMonth = current ? "this month" : `in ${monthLabel(month)}`;
   const winner = data.ranked[0];
   const w = data.weights;
 
@@ -92,7 +121,7 @@ function BestDriverTab({ setError }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontSize: 15, margin: "0 0 4px" }}>
-            {new Date(data.year, data.month - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" })} — Best Driver of the Month
+            {new Date(data.year, data.month - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" })} — Best Driver of the Month{!current && " (past month)"}
           </h2>
           <p style={{ fontSize: 12.5, color: "var(--slate)", margin: "0 0 14px", maxWidth: 640, lineHeight: 1.5 }}>
             Composite of the weekly Transit Mixer inspection checklist, transit efficiency, load-quality, completed-trip volume,
@@ -109,7 +138,7 @@ function BestDriverTab({ setError }) {
           <div className="spotlight-badge">🏆</div>
           <div>
             <div className="spotlight-name">{winner.driver_name}</div>
-            <div className="spotlight-sub">{winner.trip_count} trip{winner.trip_count === 1 ? "" : "s"} this month</div>
+            <div className="spotlight-sub">{winner.trip_count} trip{winner.trip_count === 1 ? "" : "s"} {inMonth}</div>
           </div>
           <div className="spotlight-score">
             <div className="num">{winner.composite_score}</div>
@@ -118,7 +147,7 @@ function BestDriverTab({ setError }) {
         </div>
       ) : (
         <div className="card" style={{ marginBottom: 18, color: "var(--slate)", fontSize: 13 }}>
-          No driver has both a completed trip and a weekly checklist logged yet this month.
+          {current ? "No driver has both a completed trip and a weekly checklist logged yet this month." : `No driver had both a completed trip and a weekly checklist logged in ${monthLabel(month)}.`}
         </div>
       )}
 
@@ -178,7 +207,7 @@ function BestDriverTab({ setError }) {
 
       {data.unranked.length > 0 && (
         <div className="card" style={{ marginBottom: 18 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Not yet ranked this month</div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>{current ? "Not yet ranked this month" : `Not ranked in ${monthLabel(month)}`}</div>
           {data.unranked.map((d) => (
             <div key={d.driver_id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderTop: "1px solid var(--concrete)" }}>
               <span>{d.driver_name}</span>
@@ -348,15 +377,16 @@ function fmtMin(m) {
   return h > 0 ? `${h}h ${mm}m` : `${mm}m`;
 }
 
-function SiteEfficiencyTab({ setError }) {
+function SiteEfficiencyTab({ setError, month }) {
   const [data, setData] = useState(null);
 
   async function load() {
-    try { setData(await apiRequest("/maintenance/site-efficiency")); } catch (err) { setError(err.message); }
+    setData(null);
+    try { setData(await apiRequest(`/maintenance/site-efficiency${periodQs(month)}`)); } catch (err) { setError(err.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [month]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!data) return <div className="card">Loading…</div>;
+  if (!data) return <div className="card">Loading {monthLabel(month)}…</div>;
 
   return (
     <div>
@@ -366,12 +396,12 @@ function SiteEfficiencyTab({ setError }) {
       <p style={{ fontSize: 12.5, color: "var(--slate)", margin: "0 0 14px", maxWidth: 680, lineHeight: 1.5 }}>
         For each site, average time each driver took on the plant-out → site-in and site-out → plant-in legs only
         (site dwell time excluded — that's site conditions, not the driver). "vs site avg" is positive when a driver
-        is faster than the average of everyone who delivered to that site this month. A site needs at least two
-        trips (from any drivers) this month before a comparison is shown.
+        is faster than the average of everyone who delivered to that site in the chosen month. A site needs at least two
+        trips (from any drivers) in that month before a comparison is shown.
       </p>
 
       {data.sites.length === 0 ? (
-        <div className="card" style={{ color: "var(--slate)", fontSize: 13 }}>No comparable transit data yet this month.</div>
+        <div className="card" style={{ color: "var(--slate)", fontSize: 13 }}>No comparable transit data for this month.</div>
       ) : (
         data.sites.map((site) => (
           <div key={site.site_id} className="card" style={{ marginBottom: 14, padding: 0, overflow: "hidden" }}>

@@ -812,8 +812,8 @@ router.get("/best-driver", allow([["fleet.maintenance", "view"], ["reports.site-
     if (tripCount === 0 || checklistScore == null) {
       unranked.push({
         driver_id: d.id, driver_name: d.name, trip_count: tripCount, checklist_score: checklistScore,
-        reason: tripCount === 0 && checklistScore == null ? "No completed trips or checklist this month"
-          : tripCount === 0 ? "No completed trips this month" : "No weekly checklist filled this month",
+        reason: tripCount === 0 && checklistScore == null ? "No completed trips or checklist in the month"
+          : tripCount === 0 ? "No completed trips in the month" : "No weekly checklist filled in the month",
       });
       continue;
     }

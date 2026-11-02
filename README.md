@@ -9260,3 +9260,11 @@ Owner, 2 Nov 2026: check the other roles for the same access-control problem; th
 **Left as is (presentation, not access):** Fuel request screen layout for Accountant / Loader Operator, HR punch approvals (Plant Manager's own punch needs Admin), the Administrator two-person exemption on mix designs, follow-ups / notifications addressed to a role.
 
 Verified (scratch Postgres at v10.93, then upgraded): 197 probes of every old role on every converted route — none refused; Driver app switched off for drivers → refused; Manager given the Site Supervisor app → opens; Plant In Charge refused Accountant home; QC, Plant Operator, Loader, Site Supervisor, Admin dashboard open for their roles; Sales Executive sees only own leads, Manager all. `npm run check` green; build clean.
+
+## Round 263 — Best Driver: earlier months (v10.95)
+
+Owner, 2 Nov 2026: "Best driver - need to see previous months also".
+
+- Best Driver & Site Efficiency (/maintenance): a month picker above both tabs — ‹ Previous, a month box, Next › (not past the current month), "This month". The leaderboard, winner, not-ranked list and Site Efficiency reload for the chosen month (the routes already took year / month).
+- Wording follows the month ("trips in September 2026", "Not ranked in …"); the not-ranked reasons say "in the month".
+- Also in this round: Tools Issue Register — mockup only (design canvas), no code.
