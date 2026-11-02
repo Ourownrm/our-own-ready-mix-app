@@ -13,7 +13,7 @@ router.use(requireAuth);
 // trucks, which also writes into this same table).
 router.post(
   "/",
-  requireRole("plant_operator", "qc_engineer", "manager", "administrator"),
+  allow([["fleet.breakdowns", "create"]]), // Round 262 — was a role list
   async (req, res) => {
     const { equipment_type, pump_id, equipment_label, location, latitude, longitude, remarks } = req.body;
     if (!equipment_type || !["pump", "plant"].includes(equipment_type)) {

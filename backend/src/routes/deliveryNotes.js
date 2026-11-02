@@ -45,13 +45,14 @@ router.use(requireAuth);
 // Everyone who has a legitimate reason to look at the paperwork for a load
 // leaving the plant today. Manager and Administrator are here because they
 // already had it by other routes; taking it away would be a regression.
+// Round 262 — the function alone decides; this was the old role list (all hold it by default).
 const CHALLAN_ROLES = ["plant_operator", "lab_technician", "qc_engineer", "manager", "administrator"];
 
 // Cancelled tickets are excluded: a cancelled note must never be reprinted and
 // handed to a driver. Everything else raised today is listed, including loads
 // already delivered — reprinting the paperwork for a truck that has come back
 // is a normal thing to need.
-router.get("/today", requireRole(...CHALLAN_ROLES), requirePermission("orders.challan-print", "view"), async (req, res) => {
+router.get("/today", requirePermission("orders.challan-print", "view"), async (req, res) => {
   try {
     const { rows } = await query(
       `SELECT dt.id, dt.ticket_number, dt.ticket_date, dt.loaded_quantity_m3, dt.status, dt.created_at,
@@ -83,7 +84,7 @@ router.get("/today", requireRole(...CHALLAN_ROLES), requirePermission("orders.ch
 // but the document itself is not, because reprinting an older note is a
 // reasonable request and hiding it here would only send people back to asking
 // an Administrator, which is the problem this round is fixing.
-router.get("/:id/challan", requireRole(...CHALLAN_ROLES), requirePermission("orders.challan-print", "view"), async (req, res) => {
+router.get("/:id/challan", requirePermission("orders.challan-print", "view"), async (req, res) => {
   const ticketId = Number(req.params.id);
   if (!Number.isInteger(ticketId)) return res.status(400).json({ error: "Invalid ticket id." });
   try {

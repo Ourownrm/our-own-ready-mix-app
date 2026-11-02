@@ -274,6 +274,24 @@ export const ADMIN_MODULES = [
     to: "/maintenance-complaint",
     screens: [],
   },
+  // Round 262 — the role apps, so a person the Super Admin gives one of
+  // them (on the Access Control page) finds it on the Modules page.
+  {
+    key: "work-apps",
+    label: "Work screens",
+    icon: "clipboard",
+    colour: "#5B4A8A",
+    tint: "#ECE8F5",
+    screens: [
+      { key: "driver-app", label: "Driver duty", icon: "truck", to: "/driver" },
+      { key: "site-supervisor-app", label: "Site Supervisor", icon: "pin", to: "/site-supervisor" },
+      { key: "plant-operator-app", label: "Plant Operator", icon: "factory", to: "/plant-operator" },
+      { key: "qc-engineer-app", label: "QC Engineer", icon: "flask", to: "/qc" },
+      { key: "accountant-home", label: "Accountant home", icon: "rupee", to: "/accountant" },
+      { key: "store-home", label: "Store", icon: "box", to: "/store" },
+      { key: "fuel-filling-app", label: "Fuel / lubricant request", icon: "fuel", to: "/fuel" },
+    ],
+  },
   {
     key: "users-roles",
     label: "Users & Roles",
@@ -370,6 +388,31 @@ export const HUB = [
     screens: [
       { key: "fuel-stations", perm: "fleet.fuel-stations" },
       { key: "fuel-report", perm: "reports.fuel" },
+    ],
+  },
+  // Round 262 — Sales screens and the role apps, by function.
+  {
+    key: "sales-collection",
+    screens: [
+      { key: "sales-dashboard", perm: "sales.field-app" },
+      { key: "booking-links", perm: "sales.bookings" },
+      { key: "sales-forecast", perm: "sales.forecast" },
+      { key: "browse-leads", perm: "sales.team-review" },
+      { key: "customer-feedback", perm: "sales.feedback" },
+      { key: "sales-performance", perm: "sales.performance" },
+      { key: "outstanding-collection", perm: "accounts.outstanding" },
+    ],
+  },
+  {
+    key: "work-apps",
+    screens: [
+      { key: "driver-app", perm: "fleet.driver-screen" },
+      { key: "site-supervisor-app", perm: "orders.site-supervisor" },
+      { key: "plant-operator-app", perm: "production.plant-operator" },
+      { key: "qc-engineer-app", perm: "quality.plant-qc" },
+      { key: "accountant-home", perm: "accounts.accountant-home" },
+      { key: "store-home", perm: "store.items" },
+      { key: "fuel-filling-app", perm: "fleet.fuel-filling" },
     ],
   },
 ];

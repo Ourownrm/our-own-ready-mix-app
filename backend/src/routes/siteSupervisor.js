@@ -1,11 +1,15 @@
 import { Router } from "express";
 import { query, pool } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { confirmArrival, confirmUnloadingStart, confirmUnloadingComplete, confirmRejection } from "../lib/deliveryConfirmation.js";
 import { pushToRole } from "../lib/push.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("site_supervisor"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
+router.get("*", allow([["orders.site-supervisor", "view"]]));
+router.post("*", allow([["orders.site-supervisor", "create"]]));
 
 // Deliveries headed to sites this supervisor is assigned to — every one
 // still awaiting their confirmation, not just today's. Restricting this to

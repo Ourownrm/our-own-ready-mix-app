@@ -2,13 +2,16 @@ import { useEffect, useState } from "react";
 import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 const CONFIDENCE_LABEL = { confirmed: "Confirmed", likely: "Likely", tentative: "Tentative" };
 const CONFIDENCE_COLOR = { confirmed: "badge-success", likely: "badge-info", tentative: "badge-neutral" };
 
 export default function SalesForecast() {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
-  const isSalesExec = user?.role === "sales_executive";
+  // Round 262 — "own forecasts" mode by function (Sales Executive app without team review).
+  const isSalesExec = can("sales.field-app", "create") && !can("sales.team-review");
 
   const [forecasts, setForecasts] = useState([]);
   const [runningOrders, setRunningOrders] = useState([]);

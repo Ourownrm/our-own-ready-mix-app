@@ -60,7 +60,7 @@ export default function OrdersSchedule() {
             customers in the loop on the day's schedule); everyone else who
             lands on this shared /orders page — site supervisors, drivers
             checking today's list, etc. — never sees it at all. */}
-        {user?.role === "manager" && <PictureReportPanel orders={orders} />}
+        {can("production.manager-dashboard") && <PictureReportPanel orders={orders} />}
 
         {overdue.length > 0 && (
           <OrderTable

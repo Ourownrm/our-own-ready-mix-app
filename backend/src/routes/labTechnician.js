@@ -11,7 +11,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
-import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
+import { requirePermission, requireAnyPermission, allow } from "../lib/permissions.js";
 import { resolveCubeTestDnSummary } from "../lib/cubeTestDns.js";
 
 const router = Router();
@@ -1277,7 +1277,7 @@ router.patch("/mix-designs/:id", requirePermission("quality.mix-designs", "edit"
 // letting Postgres's own foreign-key error surface — those cases mean
 // real data depends on this row, and the fix there is to reassign/replace
 // it first, not delete it out from under something that references it.
-router.delete("/mix-designs/:id", requireRole("administrator"), async (req, res) => {
+router.delete("/mix-designs/:id", allow([["quality.mix-design-admin", "delete"]]), async (req, res) => {
   const { rows: existingRows } = await query("SELECT id FROM mix_designs WHERE id = $1", [req.params.id]);
   if (!existingRows.length) return res.status(404).json({ error: "Mix design not found." });
 
@@ -1337,7 +1337,7 @@ router.post("/mix-designs/:id/approve", requirePermission("quality.mix-design-ap
 // the revision bumped and a unique ref code. The admin then edits the draft with
 // the normal draft edit, a second person approves it, and it can be marked the
 // grade's standard (which supersedes the old one) — nothing historical is touched.
-router.post("/mix-designs/:id/revise", requireRole("administrator"), async (req, res) => {
+router.post("/mix-designs/:id/revise", allow([["quality.mix-design-admin", "edit"]]), async (req, res) => {
   const { rows } = await query("SELECT * FROM mix_designs WHERE id = $1", [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: "Mix design not found." });
   const src = rows[0];

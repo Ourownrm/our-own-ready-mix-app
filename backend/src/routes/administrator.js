@@ -21,14 +21,14 @@ router.use(requireAuth); // per-route role checks below, since customers/sites/r
 
 // ===== Users =====
 
-router.get("/users", requireRole("administrator"), async (req, res) => {
+router.get("/users", allow([["admin.users", "view"]]), async (req, res) => {
   const { rows } = await query(
     "SELECT id, name, phone, email, role, is_active, created_at FROM users ORDER BY created_at DESC"
   );
   res.json(rows);
 });
 
-router.post("/users", requireRole("administrator"), async (req, res) => {
+router.post("/users", allow([["admin.users", "create"]]), async (req, res) => {
   const { name, phone, email, password, role } = req.body;
   if (!name || !phone || !password || !role) {
     return res.status(400).json({ error: "Name, phone, password, and role are all required." });
@@ -88,7 +88,7 @@ async function blockIfSuperAdminTarget(req, res) {
 }
 
 // Toggle active/disabled — soft only, never a hard delete (SRS §16)
-router.patch("/users/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/users/:id/status", allow([["admin.users", "edit"]]), async (req, res) => {
   if (await blockIfSuperAdminTarget(req, res)) return;
   const { is_active } = req.body;
   await query("UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2", [is_active, req.params.id]);
@@ -101,7 +101,7 @@ router.patch("/users/:id/status", requireRole("administrator"), async (req, res)
   res.json({ ok: true });
 });
 
-router.post("/users/:id/reset-password", requireRole("administrator"), async (req, res) => {
+router.post("/users/:id/reset-password", allow([["admin.users", "edit"]]), async (req, res) => {
   if (await blockIfSuperAdminTarget(req, res)) return;
   const { new_password } = req.body;
   if (!new_password || new_password.length < 6) {
@@ -472,12 +472,12 @@ router.post("/orders/:id/fix-site-mismatch", allow([["orders.site-mismatch", "ed
   res.json({ ok: true });
 });
 
-router.get("/trucks", requireRole("administrator"), async (req, res) => {
+router.get("/trucks", allow([["fleet.trucks-pumps", "view"]]), async (req, res) => {
   const { rows } = await query("SELECT * FROM trucks ORDER BY truck_number");
   res.json(rows);
 });
 
-router.post("/trucks", requireRole("administrator"), async (req, res) => {
+router.post("/trucks", allow([["fleet.trucks-pumps", "create"]]), async (req, res) => {
   const { truck_number, capacity_m3 } = req.body;
   if (!truck_number) return res.status(400).json({ error: "Truck number is required." });
   const { rows } = await query(
@@ -488,7 +488,7 @@ router.post("/trucks", requireRole("administrator"), async (req, res) => {
 });
 
 // Deactivate/reactivate — safe default, doesn't touch any history that points at this truck.
-router.patch("/trucks/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/trucks/:id/status", allow([["fleet.trucks-pumps", "edit"]]), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE trucks SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
@@ -497,7 +497,7 @@ router.patch("/trucks/:id/status", requireRole("administrator"), async (req, res
 // Hard delete — only for a mistaken entry (e.g. a typo) that was never actually used.
 // If it's referenced by any delivery ticket, breakdown report, etc., Postgres blocks
 // the delete and we surface a clear message instead of a generic error.
-router.delete("/trucks/:id", requireRole("administrator"), async (req, res) => {
+router.delete("/trucks/:id", allow([["fleet.trucks-pumps", "delete"]]), async (req, res) => {
   try {
     const { rowCount } = await query("DELETE FROM trucks WHERE id = $1", [req.params.id]);
     if (!rowCount) return res.status(404).json({ error: "Truck not found." });
@@ -612,12 +612,12 @@ router.delete("/rates/:id", allow([["accounts.rates", "delete"]]), async (req, r
 
 // ===== Master data: Pumps =====
 
-router.get("/pumps", requireRole("administrator"), async (req, res) => {
+router.get("/pumps", allow([["fleet.trucks-pumps", "view"]]), async (req, res) => {
   const { rows } = await query("SELECT * FROM pumps ORDER BY pump_code");
   res.json(rows);
 });
 
-router.post("/pumps", requireRole("administrator"), async (req, res) => {
+router.post("/pumps", allow([["fleet.trucks-pumps", "create"]]), async (req, res) => {
   const { pump_code, pump_type } = req.body;
   if (!pump_code || !pump_type) return res.status(400).json({ error: "Pump code and type are required." });
   const { rows } = await query(
@@ -627,13 +627,13 @@ router.post("/pumps", requireRole("administrator"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.patch("/pumps/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/pumps/:id/status", allow([["fleet.trucks-pumps", "edit"]]), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE pumps SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
 });
 
-router.delete("/pumps/:id", requireRole("administrator"), async (req, res) => {
+router.delete("/pumps/:id", allow([["fleet.trucks-pumps", "delete"]]), async (req, res) => {
   try {
     const { rowCount } = await query("DELETE FROM pumps WHERE id = $1", [req.params.id]);
     if (!rowCount) return res.status(404).json({ error: "Pump not found." });

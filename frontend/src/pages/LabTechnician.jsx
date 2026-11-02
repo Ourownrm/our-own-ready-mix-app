@@ -471,11 +471,12 @@ function GenerateReportBar({ results, onCombined }) {
 // cube rows by contributing DN rather than one flat list, matching the
 // mockup this was built from.
 function PourDetail({ orderId, setError, setNotice, onSaved }) {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
   // Round 129 — date-change and delete on a recorded result used to be
   // administrator-only (Round 124/125); opened up to Lab Technician too,
   // since they're the ones who entered the result in the first place.
-  const canManageResults = isAdminLevel(user?.role) || user?.role === "lab_technician";
+  const canManageResults = can("quality.cube-tests", "edit"); // Round 262 — was Admin + Lab Technician by role
   const [detail, setDetail] = useState(null);
   const [age, setAge] = useState(7);
   const [mixDesignId, setMixDesignId] = useState("");
@@ -1079,6 +1080,7 @@ function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
 }
 
 function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
   // Round 129 — delete on a recorded site-cast result opened up to Lab
   // Technician too, matching the plant-side change above (no date-change
@@ -1503,7 +1505,7 @@ function MixDesignsTab({ setError, setNotice }) {
             {d.status === "approved" && (
               <>
                 <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
-                {isAdminLevel(user?.role) && (
+                {can("quality.mix-design-admin", "edit") && (
                   <button type="button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => revise(d.id)} title="Create a new draft revision from this approved design">Revise</button>
                 )}
               </>

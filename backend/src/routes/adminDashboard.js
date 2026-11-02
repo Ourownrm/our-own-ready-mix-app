@@ -22,13 +22,16 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 // The four headline figures have ONE definition, shared with the Reports
 // page's Director's Dashboard — see the header note in that file.
 import { dashboardKpis } from "../lib/dashboardKpis.js";
 
 const router = Router();
 router.use(requireAuth);
-router.use(requireRole("administrator"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.get("*", allow([["admin.dashboard", "view"]]));
+router.put("*", allow([["admin.dashboard", "edit"]]));
 
 // Screen keys a Super Admin could later pin; validated so a bad client can't
 // store arbitrary text that the frontend would then try to render.

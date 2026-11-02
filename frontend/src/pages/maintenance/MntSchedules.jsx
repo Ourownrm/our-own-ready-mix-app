@@ -266,9 +266,10 @@ export default function MntSchedules() {
 }
 
 function VehicleView({ vehicles, due, sched, allModels, assetId, setAssetId, vq, setVq, canEdit, baseline, setBaseline, saveBaseline, act, onEditSchedule }) {
+  const { can } = usePermissions(); // Round 262
   // Round 243 — Manager / Plant In Charge give a vehicle's PM checks to a person.
   const { user } = useAuth();
-  const canAssign = ["manager", "plant_in_charge", "administrator", "super_admin"].includes(user?.role);
+  const canAssign = can("mnt.pm-assign", "edit"); // Round 262 — was a role list
   const [people, setPeople] = useState([]);
   useEffect(() => { if (canAssign) apiRequest("/maintenance-module/pm-assign/people").then(setPeople).catch(() => {}); }, [canAssign]);
   const assign = (body) => act.run(() => apiRequest("/maintenance-module/pm-assign", { method: "PUT", body }), body.user_id ? "Given — it shows in their login." : "Taken off.");

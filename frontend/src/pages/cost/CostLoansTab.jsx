@@ -15,7 +15,7 @@ const fy = (ymd) => { const y = Number(ymd.slice(0, 4)), m = Number(ymd.slice(5,
 
 export default function CostLoansTab() {
   const { can } = usePermissions();
-  const canEdit = can("cost.bank", "edit");
+  const canEdit = can("cost.loans", "edit");
   const { data: d, error, reload } = useCostData("/cost/bank/loans");
   const [open, setOpen] = useState(null);
   const [edit, setEdit] = useState(null);

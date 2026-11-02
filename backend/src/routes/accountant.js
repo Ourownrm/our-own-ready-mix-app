@@ -2,7 +2,7 @@ import { Router } from "express";
 import { pool, query } from "../db.js";
 import { positions, postReceipt, applyAdvances, OUTSTANDING_SQL, receivedSql } from "../lib/receivables.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requirePermission } from "../lib/permissions.js";
+import { requirePermission, allow } from "../lib/permissions.js";
 
 const router = Router();
 // Round 192 — the Trip Allowance Report is a Production sub-menu that a Super
@@ -12,7 +12,10 @@ const router = Router();
 // allowed got a 403 from here. Those two paths skip the role guard and are
 // gated by the function instead; everything else in this router is unchanged.
 const TRIP_REPORT_PATHS = new Set(["/trip-allowance-report", "/trip-allowance-report/export"]);
-const accountantOnly = requireRole("accountant", "administrator");
+// Round 262 — the Accountant home is a function on the Access Control page
+// (accounts.accountant-home), no longer the Accountant role by name.
+const ACT = { GET: "view", POST: "edit", PUT: "edit", PATCH: "edit", DELETE: "delete" };
+const accountantOnly = (req, res, next) => allow([["accounts.accountant-home", ACT[req.method] || "edit"]])(req, res, next);
 const tripReport = requirePermission("reports.trip-allowance", "view");
 router.use(requireAuth, (req, res, next) => (TRIP_REPORT_PATHS.has(req.path) ? tripReport : accountantOnly)(req, res, next));
 

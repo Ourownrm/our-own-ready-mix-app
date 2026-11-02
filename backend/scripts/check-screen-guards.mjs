@@ -23,18 +23,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND = path.join(__dirname, "..");
 const FRONTEND_SRC = path.join(BACKEND, "..", "frontend", "src");
 
-// Screens opened through the Access Control page (a `perm` ProtectedRoute or a
-// module tab). Role-only screens (Driver, Site Supervisor, Plant Operator, QC
-// Engineer, Accountant home, Administrator, Super Admin, Sales) are not listed.
-const SCREENS = [
-  /^pages\/production\//, /^pages\/CreateOrder\.jsx$/, /^pages\/ManagerDashboard\.jsx$/, /^pages\/OrdersSchedule\.jsx$/,
-  /^pages\/fuel\//, /^pages\/StoreStock\.jsx$/, /^pages\/SupplyApprovals\.jsx$/, /^pages\/NotificationsPage\.jsx$/,
-  /^pages\/TruckTimingReport\.jsx$/, /^pages\/Charts\.jsx$/, /^pages\/TripTimeCrossCheckPage\.jsx$/,
-  /^pages\/DelayJustificationReport\.jsx$/, /^pages\/OutstandingCollectionReport\.jsx$/, /^pages\/Maintenance\.jsx$/,
-  /^pages\/Breakdowns\.jsx$/, /^pages\/HomeScreenPhotos\.jsx$/, /^pages\/SiteContentEditor\.jsx$/,
-  /^pages\/accounts\//, /^pages\/maintenance\//, /^pages\/hr\//, /^pages\/cost\//,
-  /^lib\/DeliveryTrackingView\.jsx$/, /^lib\/OrderDetailModal\.jsx$/, /^lib\/StoreStockCard\.jsx$/,
-];
+// Round 262 — every screen of the app is now opened through the Access
+// Control page, so every frontend file is checked. The only routes still
+// allowed a role guard are the Super Admin's own (requireRole("super_admin")):
+// the Access Control page itself, plugins, C Ledger access, Solitaire access
+// and the MCI370 recipe password.
+const SCREENS = [/./];
 
 const index = fs.readFileSync(path.join(BACKEND, "src", "index.js"), "utf8");
 const imports = Object.fromEntries([...index.matchAll(/import (\w+) from "\.\/routes\/(\w+)\.js"/g)].map((m) => [m[1], m[2]]));
@@ -58,7 +52,9 @@ for (const { prefix, file } of mounts) {
     while (!/async|\(req|=>/.test(guards) && j < i + 4) guards += lines[++j];
     guards = guards.split(/async|\(req,/)[0].replace(/\b([A-Z_][A-Z0-9_]*)\b/g, (w) => consts[w] || w) + " " + (wildcard[m[1].toUpperCase()] || "");
     const perm = /requirePermission|requireAnyPermission|allow\(/.test(guards);
-    const role = /requireRole/.test(guards) || fileRole;
+    const roleSrc = guards + " " + (fileRole ? [...src.matchAll(/router\.use\(([^;]*?)\);/g)].map((x) => x[1]).join(" ") : "");
+    const onlySuper = [...roleSrc.matchAll(/requireRole\(([^)]*)\)/g)].every((x) => x[1].trim() === '"super_admin"');
+    const role = (/requireRole/.test(guards) || fileRole) && !onlySuper;
     const p = (prefix + (m[2] === "/" ? "" : m[2])).replace(/\(\\\\d\+\)/g, "");
     const re = new RegExp("^" + p.replace(/\(\\d\+\)/g, "").replace(/:\w+(\([^)]*\))?/g, "[^/]+").replace(/\//g, "\\/") + "$");
     routes.push({ method: m[1].toUpperCase(), path: p, re, roleOnly: role && !perm, at: `${file}.js:${i + 1}` });

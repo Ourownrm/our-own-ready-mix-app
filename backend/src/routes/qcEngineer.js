@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { pushToRole } from "../lib/push.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("qc_engineer", "manager", "administrator"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
 
 async function logEvent(ticketId, eventType, userId) {
   await query(
@@ -15,7 +17,7 @@ async function logEvent(ticketId, eventType, userId) {
 }
 
 // Tickets awaiting plant QC (created but not yet QC'd)
-router.get("/pending-qc", async (req, res) => {
+router.get("/pending-qc", allow([["quality.plant-qc", "view"], ["production.manager-dashboard", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id, dt.ticket_number, t.truck_number, s.name AS site_name, m.name AS mix_grade_name,
             co.cube_samples_required
@@ -32,7 +34,7 @@ router.get("/pending-qc", async (req, res) => {
 });
 
 // Submit plant QC — advances ticket to dispatched, matching the Trip Status Timeline
-router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), async (req, res) => {
+router.post("/:ticketId/plant-qc", allow([["quality.plant-qc", "create"]]), async (req, res) => {
   const { slump_mm, temperature_c, number_of_cubes, sample_ids, remarks } = req.body;
   if (!slump_mm) return res.status(400).json({ error: "Slump reading is required." });
 
@@ -99,7 +101,7 @@ router.post("/:ticketId/plant-qc", requireRole("qc_engineer", "administrator"), 
 // Trucks that have been sitting at site more than 2 hours — same data Manager
 // sees on Active Trucks, so QC can proactively check on quality without
 // waiting to be told, and flag it back to Manager if something looks off.
-router.get("/delayed-trucks", async (req, res) => {
+router.get("/delayed-trucks", allow([["quality.plant-qc", "view"], ["production.manager-dashboard", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, t.truck_number, u.name AS driver_name,
             c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name,
@@ -133,7 +135,7 @@ router.get("/delayed-trucks", async (req, res) => {
 // QC flags a delayed truck for Manager's attention — shows up directly on the
 // Manager Dashboard's Active Trucks table (as a badge on that row), not as a
 // separate notification inbox (the app doesn't have one yet).
-router.post("/delayed-trucks/:ticketId/flag", async (req, res) => {
+router.post("/delayed-trucks/:ticketId/flag", allow([["quality.plant-qc", "edit"], ["production.manager-dashboard", "view"]]), async (req, res) => {
   await query(
     `INSERT INTO notifications (recipient_role, ticket_id, type, message)
      VALUES ('manager', $1, 'qc_flagged_delay', 'QC Engineer flagged this delayed truck for review')`,

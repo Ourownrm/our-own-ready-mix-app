@@ -1,18 +1,20 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { syncOrderCompletionStatus, checkPumpChargeThreshold, generateInvoiceForTicket } from "../lib/deliveryConfirmation.js";
 import { pushToUser } from "../lib/push.js";
 import { ensureRound254 } from "../lib/round254Schema.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("plant_operator", "manager", "administrator"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
 
 // Plant Operator's own reason for why batching hasn't started yet on an
 // order the site-ready-past-12-min alert has already flagged — this is
 // what actually appears in the delay justification report, since Plant
 // Operator is the one who knows why, not Manager reviewing after the fact.
-router.post("/orders/:orderId/batching-delay-reason", async (req, res) => {
+router.post("/orders/:orderId/batching-delay-reason", allow([["production.plant-operator", "edit"], ["production.manager-dashboard", "view"]]), async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ error: "Write a reason." });
   await query(
@@ -27,7 +29,7 @@ router.post("/orders/:orderId/batching-delay-reason", async (req, res) => {
 // unconfirmed. Doesn't stop the assignment (sometimes it's legitimate — the
 // dispatcher knows the first one really is done and just hasn't been
 // confirmed yet), just makes it visible instead of silent.
-router.get("/driver-open-trips", async (req, res) => {
+router.get("/driver-open-trips", allow([["production.plant-operator", "view"], ["production.manager-dashboard", "view"]]), async (req, res) => {
   const { driver_id } = req.query;
   if (!driver_id) return res.json([]);
   const { rows } = await query(
@@ -52,7 +54,7 @@ async function logEvent(ticketId, eventType, userId) {
 }
 
 // Orders with remaining quantity still available to dispatch — powers the "Select order" dropdown
-router.get("/available-orders", async (req, res) => {
+router.get("/available-orders", allow([["production.plant-operator", "view"], ["production.manager-dashboard", "view"]]), async (req, res) => {
   await ensureRound254();
   const { rows } = await query(
     `SELECT co.id, co.order_quantity_m3, co.scheduled_batching_time, c.name AS customer_name, s.name AS site_name,
@@ -81,7 +83,7 @@ router.get("/available-orders", async (req, res) => {
 });
 
 // Create a delivery ticket against an order
-router.post("/tickets", requireRole("plant_operator", "administrator"), async (req, res) => {
+router.post("/tickets", allow([["production.plant-operator", "create"]]), async (req, res) => {
   const { order_id, loaded_quantity_m3, truck_id, driver_id, idempotency_key } = req.body;
   if (!order_id || !loaded_quantity_m3 || !truck_id || !driver_id) {
     return res.status(400).json({ error: "Order, quantity, truck, and driver are all required." });

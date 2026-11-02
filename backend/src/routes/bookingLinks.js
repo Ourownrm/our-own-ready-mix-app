@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomBytes } from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 
 // ===================== CUSTOMER BOOKING LINKS (round 100, item 4) =====================
 // Manager/Admin side of the customer-facing booking form — generate, list,
@@ -53,7 +54,7 @@ export async function ensureActiveLink(customerId, siteId, userId) {
   return rows[0];
 }
 
-router.get("/", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/", allow([["sales.booking-links", "create"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT cbl.id, cbl.customer_id, cbl.site_id, cbl.token, cbl.tracking_enabled,
             cbl.allow_qc_reports, cbl.allow_technical_writings, cbl.is_active,
@@ -75,7 +76,7 @@ router.get("/", requireRole("manager", "administrator"), async (req, res) => {
 // live GPS — Manager opts a customer into deliberately); QC reports and
 // Technical Writings default ON, matching how the old per-code system
 // behaved before this round (the common case is "let them see everything").
-router.post("/", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/", allow([["sales.booking-links", "create"]]), async (req, res) => {
   const { customer_id, site_id, tracking_enabled, allow_qc_reports, allow_technical_writings } = req.body;
   if (!customer_id || !site_id) return res.status(400).json({ error: "Select a customer and a site." });
 
@@ -103,7 +104,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
 // per-site permissions inline (without a Manager needing to separately
 // generate a public link first) by ensuring a row exists as soon as a site
 // is selected there. See ensureActiveLink above for the full reasoning.
-router.post("/ensure", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/ensure", allow([["sales.booking-links", "create"]]), async (req, res) => {
   const { customer_id, site_id } = req.body;
   if (!customer_id || !site_id) return res.status(400).json({ error: "customer_id and site_id are required." });
 
@@ -122,7 +123,7 @@ router.post("/ensure", requireRole("manager", "administrator"), async (req, res)
 // PATCH /:id/permissions pattern. Independent of revoke either way: flipping
 // any of these does not touch is_active, and revoking doesn't touch these —
 // a revoked link's switches are just moot since there's no link to open.
-router.patch("/:id/permissions", requireRole("manager", "administrator"), async (req, res) => {
+router.patch("/:id/permissions", allow([["sales.booking-links", "create"]]), async (req, res) => {
   const { tracking_enabled, allow_qc_reports, allow_technical_writings } = req.body;
   if (
     typeof tracking_enabled !== "boolean" ||
@@ -140,7 +141,7 @@ router.patch("/:id/permissions", requireRole("manager", "administrator"), async 
   res.json(rows[0]);
 });
 
-router.post("/:id/revoke", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:id/revoke", allow([["sales.booking-links", "delete"]]), async (req, res) => {
   const { rows } = await query(
     `UPDATE customer_booking_links SET is_active = false, revoked_at = now(), revoked_by = $1
      WHERE id = $2 AND is_active RETURNING id`,

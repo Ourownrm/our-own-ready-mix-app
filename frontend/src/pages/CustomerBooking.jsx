@@ -3,6 +3,7 @@ import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { BookingsQueue } from "../lib/SalesPanels.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 // Round 100, item 4 — Manager/Admin's console for the customer booking
 // feature: generate a per-customer+site booking link, manage which links are
@@ -22,8 +23,12 @@ import { useAuth } from "../lib/AuthContext.jsx";
 const BOOKING_STATUS_BADGE = { pending: "badge-warning", converted: "badge-success", declined: "badge-danger" };
 
 export default function CustomerBooking() {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
-  const isSalesExec = user?.role === "sales_executive";
+  // Round 262 — by function, not role name.
+  const isSalesExec = can("sales.field-app", "create") && !can("sales.team-review");
+  const canAccessTab = can("sales.portal-access");
+  const canTechTab = can("quality.technical-writings");
   const [ctab, setCtab] = useState(isSalesExec ? "place" : "access");
 
   return (
@@ -36,17 +41,17 @@ export default function CustomerBooking() {
               now always produces the sign-in code and the per-site
               shareable link(s) together, instead of two tabs for what was,
               from the business's side, one job — see CustomerAccessTab. */}
-          {!isSalesExec && (
+          {canAccessTab && (
             <button onClick={() => setCtab("access")} className={ctab === "access" ? "btn-primary" : ""} style={{ fontSize: 12.5, padding: "6px 12px" }}>
               Customer Access
             </button>
           )}
-          {!isSalesExec && (
+          {canTechTab && (
             <button onClick={() => setCtab("techwritings")} className={ctab === "techwritings" ? "btn-primary" : ""} style={{ fontSize: 12.5, padding: "6px 12px" }}>
               Technical Writings
             </button>
           )}
-          {isSalesExec && (
+          {can("sales.field-app", "create") && (
             <button onClick={() => setCtab("place")} className={ctab === "place" ? "btn-primary" : ""} style={{ fontSize: 12.5, padding: "6px 12px" }}>
               Place a Booking
             </button>
@@ -56,9 +61,9 @@ export default function CustomerBooking() {
           </button>
         </div>
 
-        {ctab === "access" && !isSalesExec && <CustomerAccessTab />}
-        {ctab === "techwritings" && !isSalesExec && <TechnicalWritingsTab />}
-        {ctab === "place" && isSalesExec && <PlaceBookingTab />}
+        {ctab === "access" && canAccessTab && <CustomerAccessTab />}
+        {ctab === "techwritings" && canTechTab && <TechnicalWritingsTab />}
+        {ctab === "place" && can("sales.field-app", "create") && <PlaceBookingTab />}
         {ctab === "feedback" && <FeedbackTab isSalesExec={isSalesExec} />}
       </div>
     </>

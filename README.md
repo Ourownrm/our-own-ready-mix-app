@@ -9231,3 +9231,32 @@ Owner, 2 Nov 2026: Plant In Charge, given Production → Orders, saw "+ New orde
 - Not changed: Plant In Charge's default Production → Orders access (the Super Admin grants it, as done today); pushes still go by role.
 
 **Verified** (scratch Postgres set up with v10.90, then this round): grants applied on start-up; PIC without Orders refused, given Orders by the Super Admin (API) → order saved, billing addresses load, close works, confirm completion still needs its own function; Manager with Orders edit and Customer orders create both switched off → refused; PIC store / supply routes 200; every role on every converted route's old list — 65 GET and 78 write probes — none refused. `npm run check` green; build clean.
+
+## Round 261 — Loans and Partners are their own functions; Store sees material receipts (v10.93)
+
+Owner, 2 Nov 2026: the Accountant reached Partners and Loans without being given them; Store was given Material receipts (view) but saw nothing. Neither was fixed by Round 260.
+
+1. **Loans / Partners.** Both tabs were gated by the *Bank statements* function (`cost.bank`), so anyone given Bank statements got both. New functions **`cost.loans`** (Loans) and **`cost.partners`** (Partners), View / Edit, listed under the Cost module on the Access Control page; default Administrator only. Loans routes (`/cost/bank/loans*`) and all `/cost/partners` routes, the Cost module tabs, and the Edit buttons use them. The Loans card on Bank statements shows only with Loans. Sorting a bank line to a loan already on file stays part of Bank statements.
+   - Effect on deploy: nobody but Administrator has Loans or Partners until the Super Admin ticks them.
+2. **Store — Material receipts.** `GET /material-module/receipts` silently limited a Store login to receipts of orders it had placed itself (`o.requested_by`); orders are placed by Manager / Admin, so the list was empty. Removed — the Access Control page decides. The receiving list (`/orders/receivable`) also opens with Material receipts "create", and the Receipts tab no longer errors for a view-only person.
+3. Checked for other hidden role filters inside permission-gated routes: none left (sales "view as" only).
+
+Verified on scratch Postgres: Accountant with Bank statements → bank 200, Loans 403, Partners 403; given Loans → 200. Store sees a receipt booked by Admin; with receipts View only, the list loads and receiving is skipped. `npm run check` green; build clean.
+
+## Round 262 — every role screen on the Access Control page (v10.94)
+
+Owner, 2 Nov 2026: check the other roles for the same access-control problem; the Super Admin must control every user's access.
+
+**What was still role-only:** 128 routes and 18 screens opened by role name alone — Driver app, Site Supervisor app, Plant Operator, QC Engineer, Loader Operator, Accountant home, Store home / scan, Sales Executive app and Sales screens (50 routes), Administrator dashboard and reports page, users / trucks / pumps, compliance, customer access codes, technical writings, booking links, fuel log, mix-design delete / revise, delivery-note correction, PM assignment; plus role checks inside routes and screens (Sales "own records", quotation scope, order tracking, material opening rate, Material approve / revise / close, receipt edit / delete, physical-stock entry / approval, lab result changes).
+
+**Now:**
+- New functions (defaults = exactly the roles that had them): Site Supervisor app, QC Engineer screen, Technical writings, Delete / revise an approved mix design, Sales Executive app, Sales team review, Follow-ups, Sales contacts, Correct delivery-note status, Administrator dashboard, Accountant home, Give PM schedules to a person. Defaults extended: Fuel filling (+Accountant), Customer portal codes (+Manager), Breakdowns (+QC Engineer) — they had these by role.
+- Every route above uses `allow(...)`; every screen uses `perm`. Only the Super Admin's own controls keep a role guard (Access Control page, plugins, C Ledger access, Solitaire access, MCI370 recipe password).
+- **Whose records** (Sales, quotations): "Sales team review" sees everyone's; the Sales Executive app without team review sees its own. Order tracking: without an all-orders function, only orders the person is on.
+- **Modules page** gains "Work screens" (Driver, Site Supervisor, Plant Operator, QC Engineer, Accountant home, Store, Fuel request) and the Sales screens, so a screen the Super Admin gives someone can be found.
+- Migration `r262_route_grants` (once): every role keeps what its old role list allowed, except where the Super Admin has already decided (permission_change_log).
+- `check-screen-guards.mjs` now checks every screen in the app.
+
+**Left as is (presentation, not access):** Fuel request screen layout for Accountant / Loader Operator, HR punch approvals (Plant Manager's own punch needs Admin), the Administrator two-person exemption on mix designs, follow-ups / notifications addressed to a role.
+
+Verified (scratch Postgres at v10.93, then upgraded): 197 probes of every old role on every converted route — none refused; Driver app switched off for drivers → refused; Manager given the Site Supervisor app → opens; Plant In Charge refused Accountant home; QC, Plant Operator, Loader, Site Supervisor, Admin dashboard open for their roles; Sales Executive sees only own leads, Manager all. `npm run check` green; build clean.

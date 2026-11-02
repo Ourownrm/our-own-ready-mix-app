@@ -47,6 +47,7 @@ import { ensureRound257 } from "./lib/round257Schema.js";
 import { ensureRound258 } from "./lib/round258Schema.js";
 import { ensureRound259 } from "./lib/round259Schema.js";
 import { ensureRound260 } from "./lib/round260Schema.js";
+import { ensureRound262 } from "./lib/round262Schema.js";
 import { query as dbQuery } from "./db.js";
 import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
@@ -340,6 +341,7 @@ ensureRound257().catch((e) => console.error("round 257 schema:", e.message));
 ensureRound258().catch((e) => console.error("round 258 schema:", e.message));
 ensureRound259().catch((e) => console.error("round 259 schema:", e.message));
 ensureRound260({ query: dbQuery }).catch((e) => console.error("round 260 grants:", e.message));
+ensureRound262({ query: dbQuery }).catch((e) => console.error("round 262 grants:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

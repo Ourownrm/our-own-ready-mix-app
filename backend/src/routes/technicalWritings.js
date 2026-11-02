@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 
 // ===================== TECHNICAL WRITINGS — STAFF SIDE (round 119) =====================
 // Manager/Admin manage a small library of PDF guides (e.g. "After-pour
@@ -14,7 +15,12 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 // side (list + download, gated on the per-code switch) lives in
 // routes/customerPortal.js, same split as customerAccess.js/customerPortal.js.
 const router = Router();
-router.use(requireAuth, requireRole("manager", "administrator"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
+router.get("*", allow([["quality.technical-writings", "view"]]));
+router.post("*", allow([["quality.technical-writings", "create"]]));
+router.patch("*", allow([["quality.technical-writings", "edit"]]));
+router.delete("*", allow([["quality.technical-writings", "delete"]]));
 
 const MAX_SIZE_BYTES = 8 * 1024 * 1024; // 8MB — generous for a text/diagram PDF guide, not a scan dump
 

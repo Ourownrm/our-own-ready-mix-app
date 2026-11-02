@@ -19,18 +19,20 @@ import { dueList } from "../lib/maintenanceDue.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { ensureRound243 } from "../lib/round243Schema.js";
 import { istDay } from "../lib/istDate.js";
+import { can } from "../lib/permissions.js";
 
 const router = Router();
 router.use(requireAuth);
 router.use(async (_req, _res, next) => { try { await ensureRound243(); next(); } catch (e) { next(e); } });
 
 const SETTERS = ["manager", "plant_in_charge", "administrator", "super_admin"];
-const canSet = (u) => SETTERS.includes(u.role);
+// Round 262 — the "Give PM schedules to a person" function, not a role list.
+const canSet = (u) => can(u, "mnt.pm-assign", "edit");
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 const num = (v) => (v === "" || v == null ? null : Number(v));
 
 router.get("/pm-assign/people", async (req, res) => {
-  if (!canSet(req.user)) return bad(res, "Only the Manager, Plant In Charge or Administrator assigns PM schedules.", 403);
+  if (!(await canSet(req.user))) return bad(res, "Only the Manager, Plant In Charge or Administrator assigns PM schedules.", 403);
   const { rows } = await query(
     `SELECT id, name, role::text AS role FROM users WHERE is_active AND role::text NOT IN ('super_admin')
       ORDER BY CASE role::text WHEN 'driver' THEN 1 WHEN 'plant_operator' THEN 2 WHEN 'loader_operator' THEN 3 ELSE 4 END, name`);
@@ -38,7 +40,7 @@ router.get("/pm-assign/people", async (req, res) => {
 });
 
 router.put("/pm-assign", async (req, res) => {
-  if (!canSet(req.user)) return bad(res, "Only the Manager, Plant In Charge or Administrator assigns PM schedules.", 403);
+  if (!(await canSet(req.user))) return bad(res, "Only the Manager, Plant In Charge or Administrator assigns PM schedules.", 403);
   const assetId = Number(req.body?.asset_id);
   const scheduleId = req.body?.schedule_id ? Number(req.body.schedule_id) : null;
   const userId = req.body?.user_id ? Number(req.body.user_id) : null;
@@ -89,7 +91,7 @@ router.post("/my-pm/confirm", async (req, res) => {
   if (Number.isNaN(km) || Number.isNaN(hours)) return bad(res, "Readings must be numbers.");
   if (!done && !note) return bad(res, "Say why it was not done.");
   const { rows: asg } = await query(`SELECT user_id FROM mnt_pm_assignees WHERE schedule_id = $1 AND asset_id = $2`, [scheduleId, assetId]);
-  if (!asg.length || (asg[0].user_id !== req.user.id && !canSet(req.user))) return bad(res, "This PM check is not given to you.", 403);
+  if (!asg.length || (asg[0].user_id !== req.user.id && !(await canSet(req.user)))) return bad(res, "This PM check is not given to you.", 403);
   await query(
     `INSERT INTO mnt_pm_confirmations (schedule_id, asset_id, user_id, done, km, hours, note) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [scheduleId, assetId, req.user.id, done, km, hours, note || null]);

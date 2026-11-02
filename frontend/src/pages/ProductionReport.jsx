@@ -7,6 +7,7 @@ import { formatOrderNumber } from "../lib/orderNumber.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 const STATUS_OPTIONS = ["All", "Signed", "Pending", "Refused"];
 const FILTER_KEYS = ["customer_id", "site_id", "truck_id", "driver_id", "salesperson_id", "pump_id", "supervisor_id"];
@@ -47,10 +48,11 @@ function sumTotalAmount(rows) {
 }
 
 export default function ProductionReport() {
+  const { can } = usePermissions(); // Round 262
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
   // Round 164 — only an Administrator may correct a delivery note's status.
-  const canEditNoteStatus = isAdminLevel(user?.role);
+  const canEditNoteStatus = can("reports.delivery-note-correct", "edit");
   const [savingNote, setSavingNote] = useState(null);
   const [customers, setCustomers] = useState([]);
   const [sites, setSites] = useState([]);

@@ -5,7 +5,7 @@ import { afterOrderMix } from "../lib/round254Schema.js";
 import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { allow } from "../lib/permissions.js";
+import { allow, can } from "../lib/permissions.js";
 import { pushToRole } from "../lib/push.js";
 import { getOrderTrackingPayload } from "../lib/orderTracking.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
@@ -478,8 +478,13 @@ router.post("/:orderId/confirm-completion", allow([["orders.confirm-completion",
 // assigned_sales_representative_id, order's sales_representative_id) — the
 // same resolution pattern customerPortal.js's resolveOrderContacts and
 // reports.js's salesmanMonthly already use).
-router.get("/:orderId/tracking", allow([["orders.live-tracking", "view"], ["production.manager-dashboard", "view"], ["production.correct-order", "view"], ["orders.customer-orders", "view"]], { roles: ["site_supervisor"] }), async (req, res) => {
-  if (req.user.role === "site_supervisor" || req.user.role === "sales_executive") {
+router.get("/:orderId/tracking", allow([["orders.live-tracking", "view"], ["production.manager-dashboard", "view"], ["production.correct-order", "view"], ["orders.customer-orders", "view"], ["orders.site-supervisor", "view"]]), async (req, res) => {
+  // Round 262 — someone without an all-orders function (Vehicle tracking,
+  // Plant overview, Orders) sees only orders they are on: as the site
+  // supervisor, or as the site's salesperson.
+  const allOrders = (await can(req.user, "orders.live-tracking", "view")) || (await can(req.user, "production.manager-dashboard", "view"))
+    || (await can(req.user, "production.correct-order", "view"));
+  if (!allOrders) {
     const { rows } = await query(
       `SELECT o.id
        FROM customer_orders o
@@ -487,10 +492,10 @@ router.get("/:orderId/tracking", allow([["orders.live-tracking", "view"], ["prod
        LEFT JOIN salespersons sp ON sp.id = COALESCE(s.assigned_sales_representative_id, o.sales_representative_id)
        WHERE o.id = $1
          AND (
-           ($2 = 'site_supervisor' AND o.assigned_site_supervisor_id = $3)
-           OR ($2 = 'sales_executive' AND sp.user_id = $3)
+           o.assigned_site_supervisor_id = $2
+           OR sp.user_id = $2
          )`,
-      [req.params.orderId, req.user.role, req.user.id]
+      [req.params.orderId, req.user.id]
     );
     if (!rows.length) return res.status(404).json({ error: "Order not found." });
   }

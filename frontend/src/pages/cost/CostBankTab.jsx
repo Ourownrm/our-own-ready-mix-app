@@ -260,11 +260,12 @@ export default function CostBankTab({ month, setMonth }) {
         </div>
       </div>
 
-      {/* Round 239 — loans have their own page (Cost → Loans). */}
-      <div style={{ ...panel("1 1 100%"), display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+      {/* Round 239 — loans have their own page (Cost → Loans).
+          Round 261 — shown only to those given the Loans function. */}
+      {can("cost.loans") && <div style={{ ...panel("1 1 100%"), display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
         <div><h2 style={H2}>Loans</h2><div style={SUB}>{d.loans.filter((l) => l.is_active).length} running · EMIs found on these statements are split into interest and principal there.</div></div>
         <a href="/cost?tab=loans" className="btn-link">Open Cost → Loans ›</a>
-      </div>
+      </div>}
       <Rules d={d} canEdit={canEdit} reload={reload} onAdd={() => setModal("rule")} />
       <Uploads d={d} canEdit={canEdit} reload={reload} setMsg={setMsg} />
 

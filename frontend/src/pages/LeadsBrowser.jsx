@@ -3,6 +3,7 @@ import { TopBar } from "../lib/TopBar.jsx";
 import { apiRequest } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { isAdminLevel } from "../lib/roles.js";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -23,6 +24,7 @@ function enquiryType(l) {
 }
 
 export default function LeadsBrowser() {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
   const [leads, setLeads] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -41,7 +43,7 @@ export default function LeadsBrowser() {
     return (
       <LeadDetailAdmin
         leadId={selectedId}
-        canMarkWon={isAdminLevel(user?.role)}
+        canMarkWon={can("sales.lead-won", "edit")}
         onBack={() => { setSelectedId(null); load(); }}
       />
     );

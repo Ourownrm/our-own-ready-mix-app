@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import {
   confirmArrival, confirmUnloadingStart, confirmUnloadingComplete, confirmRejection,
   orderHasNoSiteSupervisor,
@@ -10,7 +11,11 @@ import { BREAKDOWN_ISSUE_LABELS } from "../lib/breakdownIssueTypes.js";
 import { raiseJobSafe } from "../lib/maintenanceJobs.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("driver"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
+router.get("*", allow([["fleet.driver-screen", "view"]]));
+router.post("*", allow([["fleet.driver-screen", "create"]]));
+router.patch("*", allow([["fleet.driver-screen", "edit"]]));
 
 // SRS §3: Duty ON starts GPS tracking, Duty OFF stops it. Location permission is
 // requested once at PWA install time (per business decision), not on every toggle.

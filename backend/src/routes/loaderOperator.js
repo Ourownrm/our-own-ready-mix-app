@@ -10,13 +10,17 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { pushToRole } from "../lib/push.js";
 import { BREAKDOWN_ISSUE_LABELS } from "../lib/breakdownIssueTypes.js";
 import { raiseJobSafe } from "../lib/maintenanceJobs.js";
 import { OUTSIDE_REQUESTS_SQL } from "./driver.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("loader_operator"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
+router.get("*", allow([["production.loader-operator", "view"]]));
+router.post("*", allow([["production.loader-operator", "create"]]));
 
 router.post("/breakdown", async (req, res) => {
   const { equipment_id, issue_type, remarks } = req.body;

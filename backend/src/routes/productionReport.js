@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requirePermission } from "../lib/permissions.js";
+import { requirePermission, allow } from "../lib/permissions.js";
 
 const router = Router();
 // Same visibility as the Director's Dashboard — Administrator and Manager.
@@ -176,7 +176,7 @@ router.get("/:ticketId/qc-detail", async (req, res) => {
 // the customer's account treat as accepted, so it is a correction an
 // Administrator owns rather than a routine edit. The change is stamped with who
 // made it and when, on the site_qc row.
-router.patch("/:ticketId/delivery-note-status", requireRole("administrator"), async (req, res) => {
+router.patch("/:ticketId/delivery-note-status", allow([["reports.delivery-note-correct", "edit"]]), async (req, res) => {
   const ticketId = Number(req.params.ticketId);
   if (!Number.isInteger(ticketId)) return res.status(400).json({ error: "Invalid ticket id." });
   const status = String(req.body?.delivery_note_status || "").toLowerCase();

@@ -10,8 +10,10 @@ import ComplianceAlertsCard from "../lib/ComplianceAlertsCard.jsx";
 import { GroupedMenu } from "../lib/GroupedMenu.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { monthStartStr, todayStr } from "../lib/istDate.js";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 export default function Reports() {
+  const { can } = usePermissions(); // Round 262
   const [data, setData] = useState(null);
   const [onDutySales, setOnDutySales] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -54,7 +56,7 @@ export default function Reports() {
     <>
       <TopBar title="Reports & Director's Dashboard" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 16px 32px" }}>
-        {isAdminLevel(user?.role) && (
+        {can("admin.users") && (
           <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <Link to="/manager"><button type="button">View Manager Dashboard</button></Link>
             <Link to="/lab-technician"><button type="button">View Lab Technician</button></Link>

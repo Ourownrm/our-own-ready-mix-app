@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -15,7 +16,7 @@ async function logEvent(ticketId, eventType, extra = {}) {
 }
 
 // Plant Operator creates a ticket against an existing order (SRS §5, §5A link)
-router.post("/", requireRole("plant_operator", "manager", "administrator"), async (req, res) => {
+router.post("/", allow([["orders.tickets", "create"], ["production.correct-tickets", "edit"]]), async (req, res) => {
   const { order_id, ticket_number, loaded_quantity_m3, truck_id, driver_id, pump_id, remarks } = req.body;
   if (!order_id || !ticket_number || !truck_id || !driver_id) {
     return res.status(400).json({ error: "Order, ticket number, truck, and driver are required." });
@@ -35,7 +36,7 @@ router.post("/", requireRole("plant_operator", "manager", "administrator"), asyn
 // replaces the old single-trip "LIMIT 1" query, which is exactly why a
 // second trip assigned before the first was closed out made the first one
 // silently disappear from the driver's screen with no way to act on it.
-router.get("/my-trips", requireRole("driver"), async (req, res) => {
+router.get("/my-trips", allow([["fleet.driver-screen", "view"]]), async (req, res) => {
   const { rows } = await query(
     `WITH ticket_stages AS (
        SELECT ticket_id,

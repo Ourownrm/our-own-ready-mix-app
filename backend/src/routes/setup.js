@@ -56,6 +56,7 @@ import { migrateRound257 } from "../lib/round257Schema.js";
 import { migrateRound258 } from "../lib/round258Schema.js";
 import { migrateRound259 } from "../lib/round259Schema.js";
 import { migrateRound260 } from "../lib/round260Schema.js";
+import { migrateRound262 } from "../lib/round262Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4221,6 +4222,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound259(pool, log);
     // ROUND 260 — routes gated by the same functions as their screens; old role access kept.
     await migrateRound260(pool, log);
+    // ROUND 262 — every role screen on the Access Control page; old role access kept.
+    await migrateRound262(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

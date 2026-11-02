@@ -1,9 +1,13 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("driver", "manager", "accountant", "administrator", "site_supervisor"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
+router.get("*", allow([["fleet.fuel-filling", "view"]]));
+router.post("*", allow([["fleet.fuel-filling", "create"]]));
 
 const EQUIPMENT_TYPES = ["truck", "pump", "pickup_van", "loader", "generator"];
 

@@ -129,6 +129,11 @@ export const CATALOGUE = [
     { administrator: E, manager: E }),
   f("orders.site-mismatch", "orders", "Site–customer mismatch fixes", ["view", "edit"],
     { administrator: ["view", "edit"], manager: ["view", "edit"] }),
+  // Round 262 (owner, 2 Nov 2026) — "super admin should be able to control
+  // each and every user access": the screens that were still open by role
+  // alone get their own function. Defaults = exactly the roles they served.
+  f("orders.site-supervisor", "orders", "Site Supervisor app — my deliveries, arrival, unloading, pump departure, site ready, work completed, site cubes", VCE,
+    { site_supervisor: VCE }),
 
   // ---------- Production & plant ----------
   f("production.plant-operator", "production", "Plant Operator screen", VCE,
@@ -147,6 +152,13 @@ export const CATALOGUE = [
     { administrator: VCE, lab_technician: VCE }, { screen: "laboratory" }),
   f("quality.site-qc", "quality", "Site QC / reject concrete", VCE,
     { administrator: VCE, qc_engineer: VCE }),
+  // Round 262 (owner, 2 Nov 2026) — "super admin should be able to control
+  // each and every user access": the screens that were still open by role
+  // alone get their own function. Defaults = exactly the roles they served.
+  f("quality.plant-qc", "quality", "QC Engineer screen — plant QC sign-off before dispatch, delayed trucks", VCE,
+    { qc_engineer: VCE }),
+  f("quality.technical-writings", "quality", "Technical writings for customers", VCED,
+    { manager: VCED }),
   f("quality.cube-tests", "quality", "Cube casting & testing", VCED,
     { administrator: VCED, lab_technician: VCED }),
   f("quality.cube-test-report", "quality", "Cube Test Report", V,
@@ -168,6 +180,11 @@ export const CATALOGUE = [
     { administrator: V, manager: V, qc_engineer: V, lab_technician: V }, { screen: "mix-designs-view" }),
   f("quality.mix-design-standard", "quality", "Set a design as standard for its grade", E,
     { administrator: E, manager: E }),
+  // Round 262 (owner, 2 Nov 2026) — "super admin should be able to control
+  // each and every user access": the screens that were still open by role
+  // alone get their own function. Defaults = exactly the roles they served.
+  f("quality.mix-design-admin", "quality", "Delete or revise an approved mix design", ["edit", "delete"],
+    {}),
   // Round 254 — Quality Control → Mix mapping: each customer's quoted mix
   // design mapped to a plant recipe. QC Engineer and Administrator only
   // (owner, 31 Oct 2026).
@@ -402,7 +419,7 @@ export const CATALOGUE = [
   // Round 216 — the Equipment Breakdowns, Maintenance and Statutory Compliance
   // screens moved into the Maintenance module; reports land on job cards.
   f("fleet.breakdowns", "fleet", "Report a breakdown (lands on the vehicle's job card)", VCE,
-    { administrator: VCE, manager: VCE, driver: VC, site_supervisor: VC, plant_operator: VC }, { screen: "equipment-breakdowns" }),
+    { administrator: VCE, manager: VCE, driver: VC, site_supervisor: VC, plant_operator: VC, qc_engineer: VC }, { screen: "equipment-breakdowns" }), // Round 262 — QC Engineer reported breakdowns by role before
   f("fleet.maintenance", "fleet", "Best Driver & Site Efficiency (weekly truck inspection)", VCE,
     { administrator: VCE, manager: VCE }, { screen: "maintenance" }),
   f("fleet.action-points", "fleet", "Old Maintenance Action Points (replaced by PM schedules)", VCED,
@@ -412,7 +429,7 @@ export const CATALOGUE = [
   f("fleet.inspections", "fleet", "Truck inspections", VCE,
     { administrator: VCE, manager: VCE, driver: VC }),
   f("fleet.fuel-filling", "fleet", "Fuel filling entry", VC,
-    { administrator: VC, manager: VC, driver: VC, site_supervisor: VC, plant_operator: VC, loader_operator: VC }),
+    { administrator: VC, manager: VC, driver: VC, site_supervisor: VC, plant_operator: VC, loader_operator: VC, accountant: VC }), // Round 262 — Accountant used the fuel log by role before
   f("fleet.fuel-stations", "fleet", "Fuel Stations & Equipment", VCED,
     { administrator: VCED }, { screen: "fuel-stations" }),
   f("fleet.lubricant-types", "fleet", "Lubricant types", VCE,
@@ -467,6 +484,9 @@ export const CATALOGUE = [
     { administrator: VCED, manager: VCE, plant_in_charge: VC, store: V }),
   f("mnt.schedules", "maintenance", "PM schedules (checklists, tasks, intervals)", VCED,
     { administrator: VCED, manager: V, plant_in_charge: V }),
+  // Round 262 — was a role list in routes/mntPmAssign.js.
+  f("mnt.pm-assign", "maintenance", "Give PM schedules to a person (My PM checks)", E,
+    { manager: E, plant_in_charge: E }),
   f("mnt.inspections", "maintenance", "PM Inspection — fill a checklist", VC,
     { administrator: VC, manager: VC, plant_in_charge: VC }),
   f("mnt.job-cards", "maintenance", "Job cards — jobs, inside / outside, work done", VCE,
@@ -534,7 +554,18 @@ export const CATALOGUE = [
     // create/delete of booking links stays with Administrator and Manager.
     { administrator: ["view", "create", "delete"], manager: ["view", "create", "delete"], sales_executive: ["view"] }, { screen: "booking-links" }),
   f("sales.portal-access", "sales", "Customer portal access codes", VCED,
-    { administrator: VCED }),
+    { administrator: VCED, manager: VCED }), // Round 262 — Manager issued codes by role before
+  // Round 262 (owner, 2 Nov 2026) — "super admin should be able to control
+  // each and every user access": the screens that were still open by role
+  // alone get their own function. Defaults = exactly the roles they served.
+  f("sales.field-app", "sales", "Sales Executive app — clock in / GPS, own leads, visits, bookings, forecasts, quick customer / site", VCED,
+    { sales_executive: VCED }),
+  f("sales.team-review", "sales", "Sales team review — every salesperson's leads, visits, forecasts, on-duty map, customer clean-up", VE,
+    { manager: VE }),
+  f("sales.followups", "sales", "Follow-ups and visit outcomes", VE,
+    { sales_executive: VE, manager: VE, accountant: VE }),
+  f("sales.contacts", "sales", "Sales contacts", VCE,
+    { sales_executive: VCE, manager: VCE }),
 
   // ---------- Accounts ----------
   f("accounts.invoices", "accounts", "Invoices", VCED,
@@ -651,7 +682,15 @@ export const CATALOGUE = [
     { administrator: E }),
   // Round 223 — bank statements: upload, give each line a cost head or leave
   // it out, loans (EMI split), rules.
-  f("cost.bank", "cost", "Bank statements — upload, categorise lines into cost heads, loans", VE,
+  f("cost.bank", "cost", "Bank statements — upload, categorise lines into cost heads", VE,
+    { administrator: VE }),
+  // Round 261 (owner, 2 Nov 2026) — "I did not provide access to accountant
+  // for partners and loan pages but she has access to it": Loans and Partners
+  // were tabs of the Bank statements function, so whoever was given Bank
+  // statements got both. Each is now its own function.
+  f("cost.loans", "cost", "Loans — loan register, EMI schedule, interest worked out", VE,
+    { administrator: VE }),
+  f("cost.partners", "cost", "Partners — partner capital / loan accounts, interest and TDS", VE,
     { administrator: VE }),
   // Round 236 — GST payable: output vs input credit, GSTR-2B, challans, and
   // the quiet "no tax on this bill" flag on purchases.
@@ -723,6 +762,11 @@ export const CATALOGUE = [
     { administrator: V, manager: V }),
   f("reports.site-efficiency", "reports", "Site efficiency / best driver", V,
     { administrator: V, manager: V }),
+  // Round 262 (owner, 2 Nov 2026) — "super admin should be able to control
+  // each and every user access": the screens that were still open by role
+  // alone get their own function. Defaults = exactly the roles they served.
+  f("reports.delivery-note-correct", "reports", "Correct a signed / refused delivery note status (Daily Production Report)", E,
+    {}),
   f("reports.compliance", "reports", "Old Statutory Compliance (replaced by Maintenance → Certificates)", VCE,
     { administrator: VCE, manager: VCE }, { screen: "statutory-compliance" }),
 
@@ -825,6 +869,13 @@ export const CATALOGUE = [
     { administrator: V }),
   f("admin.notifications", "admin", "Notifications setup", VCE,
     { administrator: VCE, manager: VCE }),
+  // Round 262 (owner, 2 Nov 2026) — "super admin should be able to control
+  // each and every user access": the screens that were still open by role
+  // alone get their own function. Defaults = exactly the roles they served.
+  f("admin.dashboard", "admin", "Administrator dashboard and reports page (tiles, pins, summary)", VE,
+    {}),
+  f("accounts.accountant-home", "accounts", "Accountant home — outstanding by customer, opening balances, bulk receipt, re-price review, credit-note clearing", VCED,
+    { accountant: VCED }),
   f("admin.setup", "admin", "Database setup & transactional reset", ["view", "edit", "delete"],
     {}, { locked: true }),
 
@@ -1030,6 +1081,8 @@ export const MODULES = [
       { key: "cost.balance-sheet", label: "Balance Sheet" },
       { key: "cost.break-even", label: "Break-even" },
       { key: "cost.bank", label: "Bank statements" },
+      { key: "cost.loans", label: "Loans" },
+      { key: "cost.partners", label: "Partners" },
       { key: "cost.gst", label: "GST payable" },
     ],
     support: ["cost.entries", "cost.classify"],

@@ -143,10 +143,10 @@ export default function App() {
           <Route path="/technical-assistance" element={<TechnicalAssistance />} />
 
           <Route path="/driver" element={
-            <ProtectedRoute roles={["driver"]}><DriverDuty /></ProtectedRoute>
+            <ProtectedRoute perm="fleet.driver-screen"><DriverDuty /></ProtectedRoute>
           } />
           <Route path="/driver/settings" element={
-            <ProtectedRoute roles={["driver"]}><DriverSettings /></ProtectedRoute>
+            <ProtectedRoute perm="fleet.driver-screen"><DriverSettings /></ProtectedRoute>
           } />
 
           <Route path="/manager" element={
@@ -162,13 +162,13 @@ export default function App() {
             <ProtectedRoute perm="quality.mix-mapping"><MixMapping /></ProtectedRoute>
           } />
           <Route path="/site-supervisor" element={
-            <ProtectedRoute roles={["site_supervisor"]}><SiteSupervisor /></ProtectedRoute>
+            <ProtectedRoute perm="orders.site-supervisor"><SiteSupervisor /></ProtectedRoute>
           } />
           <Route path="/plant-operator" element={
-            <ProtectedRoute roles={["plant_operator"]}><PlantOperator /></ProtectedRoute>
+            <ProtectedRoute perm="production.plant-operator"><PlantOperator /></ProtectedRoute>
           } />
           <Route path="/qc" element={
-            <ProtectedRoute roles={["qc_engineer"]}><QcEngineer /></ProtectedRoute>
+            <ProtectedRoute perm="quality.plant-qc"><QcEngineer /></ProtectedRoute>
           } />
           {/* Round 125 — the backend has allowed administrator on nearly every
               lab-technician route all along (the router-level requireRole on
@@ -193,16 +193,16 @@ export default function App() {
             <ProtectedRoute perm="quality.lab-due-today"><LabDueToday /></ProtectedRoute>
           } />
           <Route path="/accountant" element={
-            <ProtectedRoute roles={["accountant"]}><Accountant /></ProtectedRoute>
+            <ProtectedRoute perm="accounts.accountant-home"><Accountant /></ProtectedRoute>
           } />
           <Route path="/administrator" element={
-            <ProtectedRoute roles={["administrator"]}><Administrator /></ProtectedRoute>
+            <ProtectedRoute perm="admin.dashboard"><Administrator /></ProtectedRoute>
           } />
           <Route path="/orders" element={
             <ProtectedRoute><OrdersSchedule /></ProtectedRoute>
           } />
           <Route path="/reports" element={
-            <ProtectedRoute roles={["administrator"]}><Reports /></ProtectedRoute>
+            <ProtectedRoute perm="admin.dashboard"><Reports /></ProtectedRoute>
           } />
           <Route path="/production-report" element={
             <ProtectedRoute perm="reports.production"><ProductionReport /></ProtectedRoute>
@@ -255,7 +255,7 @@ export default function App() {
             <ProtectedRoute perm={["fleet.maintenance", "reports.site-efficiency"]}><Maintenance /></ProtectedRoute>
           } />
           <Route path="/customer-booking" element={
-            <ProtectedRoute roles={["sales_executive", "manager", "administrator"]}><CustomerBooking /></ProtectedRoute>
+            <ProtectedRoute perm="sales.bookings"><CustomerBooking /></ProtectedRoute>
           } />
           <Route path="/site-content" element={
             <ProtectedRoute perm={[["admin.site-content", "edit"]]}><SiteContentEditor /></ProtectedRoute>
@@ -266,16 +266,16 @@ export default function App() {
           {/* Round 257 — fuel for the company vehicle allocated to this person, any role. */}
           <Route path="/my-vehicle-fuel" element={<ProtectedRoute><MyVehicleFuel /></ProtectedRoute>} />
           <Route path="/fuel" element={
-            <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator", "loader_operator"]}><FuelFilling /></ProtectedRoute>
+            <ProtectedRoute perm={["fleet.fuel-filling", "production.loader-operator", "store.supply-requests"]}><FuelFilling /></ProtectedRoute>
           } />
           <Route path="/supply-approvals" element={
             <ProtectedRoute perm={[["store.supply-approve", "edit"], ["store.purchase-approve", "edit"]]}><SupplyApprovals /></ProtectedRoute>
           } />
           <Route path="/store" element={
-            <ProtectedRoute roles={["store", "administrator"]}><StoreHome /></ProtectedRoute>
+            <ProtectedRoute perm={["store.items", "material.module", [ "store.supply-issue", "edit" ]]}><StoreHome /></ProtectedRoute>
           } />
           <Route path="/store/scan/:token" element={
-            <ProtectedRoute roles={["store", "administrator"]}><StoreScan /></ProtectedRoute>
+            <ProtectedRoute perm={[["store.supply-issue", "edit"]]}><StoreScan /></ProtectedRoute>
           } />
           <Route path="/store-stock" element={
             <ProtectedRoute perm={["store.items", "fuel.dashboard", "fuel.transactions"]}><StoreStock /></ProtectedRoute>
@@ -358,16 +358,16 @@ export default function App() {
               pushes land there. */}
           <Route path="/receipt-differences" element={<Navigate to="/material-module?tab=receipt-variances" replace />} />
           <Route path="/sales" element={
-            <ProtectedRoute roles={["sales_executive", "administrator"]}><SalesExecutive /></ProtectedRoute>
+            <ProtectedRoute perm="sales.field-app"><SalesExecutive /></ProtectedRoute>
           } />
           <Route path="/sales-performance" element={
-            <ProtectedRoute roles={["administrator"]}><SalesPerformance /></ProtectedRoute>
+            <ProtectedRoute perm="sales.performance"><SalesPerformance /></ProtectedRoute>
           } />
           <Route path="/leads" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><LeadsBrowser /></ProtectedRoute>
+            <ProtectedRoute perm={[["sales.lead-assign", "edit"], "sales.team-review"]}><LeadsBrowser /></ProtectedRoute>
           } />
           <Route path="/customer-feedback" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><CustomerFeedback /></ProtectedRoute>
+            <ProtectedRoute perm="sales.feedback"><CustomerFeedback /></ProtectedRoute>
           } />
           <Route path="/compliance" element={
             <Navigate to="/maintenance-module?tab=certificates" replace />
@@ -376,7 +376,7 @@ export default function App() {
             <ProtectedRoute perm="admin.notifications"><NotificationsPage /></ProtectedRoute>
           } />
           <Route path="/sales-forecast" element={
-            <ProtectedRoute roles={["sales_executive", "manager", "administrator"]}><SalesForecast /></ProtectedRoute>
+            <ProtectedRoute perm="sales.forecast"><SalesForecast /></ProtectedRoute>
           } />
           <Route path="/trip-time-crosscheck" element={
             <ProtectedRoute perm="reports.trip-time-crosscheck"><TripTimeCrossCheckPage /></ProtectedRoute>

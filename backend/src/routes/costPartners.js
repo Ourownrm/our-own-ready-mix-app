@@ -21,8 +21,9 @@ import { istDay } from "../lib/istDate.js";
 const router = Router();
 router.use(requireAuth);
 router.use(async (_req, _res, next) => { try { await ensurePartners(); next(); } catch (e) { next(e); } });
-const VIEW = requirePermission("cost.bank", "view");
-const EDIT = requirePermission("cost.bank", "edit");
+// Round 261 — Partners is its own function now (was under Bank statements).
+const VIEW = requirePermission("cost.partners", "view");
+const EDIT = requirePermission("cost.partners", "edit");
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const KINDS = ["capital_in", "capital_out", "loan_in", "loan_out", "interest_paid", "interest_due"];

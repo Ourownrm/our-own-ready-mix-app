@@ -54,7 +54,7 @@ function Fig({ label, value, c, sub, big }) {
 
 export default function CostPartnersTab() {
   const { can } = usePermissions();
-  const canEdit = can("cost.bank", "edit");
+  const canEdit = can("cost.partners", "edit");
   const [asOf, setAsOf] = useState(istToday());
   const { data: d, error, reload } = useCostData(`/cost/partners?as_of=${asOf}`);
   const [open, setOpen] = useState(null);

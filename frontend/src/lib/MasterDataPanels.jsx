@@ -2389,6 +2389,7 @@ export function MixDesignAssignmentsPanel({ setError }) {
 // design (with the full admixtures/moisture/materials form) stays on the
 // Lab Technician screen, not duplicated here.
 export function MixDesignsPanel({ setError }) {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
   const [designs, setDesigns] = useState([]);
   const [notice, setNotice] = useState("");
@@ -2494,7 +2495,7 @@ export function MixDesignsPanel({ setError }) {
                       </button>
                     )}
                     <button style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => viewPdf(d.id)}>View PDF</button>
-                    {d.status === "approved" && isAdminLevel(user?.role) && (
+                    {d.status === "approved" && can("quality.mix-design-admin", "edit") && (
                       <button
                         style={{ fontSize: 12, padding: "4px 10px" }}
                         disabled={busyId === d.id}
@@ -2504,7 +2505,7 @@ export function MixDesignsPanel({ setError }) {
                         {busyId === d.id ? "..." : "Revise"}
                       </button>
                     )}
-                    {isAdminLevel(user?.role) && (
+                    {can("quality.mix-design-admin", "delete") && (
                       <button
                         style={{ fontSize: 12, padding: "4px 10px", color: "var(--alert-red)" }}
                         disabled={busyId === d.id}

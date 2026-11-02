@@ -54,8 +54,13 @@ export function revisionSuffix(rev) {
 
 // A Sales Executive sees the quotations of the sites they look after, and the
 // ones they raised. Everyone else with view sees all.
+// Round 262 — by function, not role name: the same rule as Sales (own only
+// for the Sales Executive app without Sales team review).
+async function ownOnly(user) {
+  return !(await can(user, "sales.team-review", "view")) && (await can(user, "sales.field-app", "create"));
+}
 async function scopeFor(user) {
-  if (user.role !== "sales_executive") return { sql: "TRUE", params: [] };
+  if (!(await ownOnly(user))) return { sql: "TRUE", params: [] };
   return {
     sql: `(q.created_by = $SCOPE OR s.assigned_sales_representative_id IN (SELECT id FROM salespersons WHERE user_id = $SCOPE))`,
     params: [user.id],
@@ -295,7 +300,7 @@ router.get("/followups", VIEW, async (req, res) => {
 router.get("/:id(\\d+)", VIEW, async (req, res) => {
   const q = await loadQuotation(req.params.id);
   if (!q) return res.status(404).json({ error: "Quotation not found." });
-  if (req.user.role === "sales_executive") {
+  if (await ownOnly(req.user)) {
     const scope = await scopeFor(req.user);
     const { sql, params } = withScope(
       `SELECT 1 FROM quotations q JOIN sites s ON s.id = q.site_id WHERE q.id = $1 AND $SCOPE_FILTER`, scope, [q.id]

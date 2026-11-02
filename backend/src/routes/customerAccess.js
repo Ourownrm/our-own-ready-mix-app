@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomInt } from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { ensureActiveLink } from "./bookingLinks.js";
 
 // ===================== CUSTOMER PORTAL ACCESS CODES (round 119) =====================
@@ -19,7 +20,10 @@ import { ensureActiveLink } from "./bookingLinks.js";
 // three sites can now show different things per site; that couldn't be
 // expressed when the switches lived here.
 const router = Router();
-router.use(requireAuth, requireRole("manager", "administrator"));
+// Round 262 — the Access Control page decides (lib/permissions.js allow), not a role list.
+router.use(requireAuth);
+router.get("*", allow([["sales.portal-access", "view"]]));
+router.post("*", allow([["sales.portal-access", "create"]]));
 
 // Avoids visually ambiguous characters (0/O, 1/I/L) since this is meant to
 // be read out over a phone call or typed in from a WhatsApp message.

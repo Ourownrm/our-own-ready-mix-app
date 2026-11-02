@@ -943,7 +943,7 @@ function OrdersTab({ role }) {
         apiRequest("/material-module/suppliers"),
       ]);
       setOrders(mine); setMaterials(m); setSuppliers(s);
-      if (isAdmin) setPending(await apiRequest("/material-module/orders/pending"));
+      if (can("material.order-approve", "edit")) setPending(await apiRequest("/material-module/orders/pending"));
     } catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
@@ -1100,7 +1100,7 @@ function OrdersTab({ role }) {
         </div>
       </div>
 
-      {isAdmin && pending.length > 0 && (
+      {can("material.order-approve", "edit") && pending.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--amber)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>Pending your approval</div>
           {pending.map((o) => (
@@ -1129,7 +1129,7 @@ function OrdersTab({ role }) {
                   <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => setPrintingPo(o.id)}>
                     {o.status === "pending_approval" ? "Draft PO" : "Print PO"}
                   </button>
-                  {isAdmin && o.status === "approved" && <>
+                  {can("material.orders", "edit") && o.status === "approved" && <>
                     <button type="button" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openRevise(o)}>Revise</button>
                     <button type="button" className="btn-danger" style={{ fontSize: 11, padding: "4px 9px" }} onClick={() => openClose(o)}>Close order</button>
                   </>}
@@ -1605,8 +1605,10 @@ function ReceiptsTab({ role }) {
   }
   async function load() {
     try {
+      // Round 261 — a view-only person (no receiving, no Material orders)
+      // still sees the receipts list instead of a "no access" error.
       const [r] = await Promise.all([
-        apiRequest("/material-module/orders/receivable"),
+        mayReceive || can("material.orders", "view") ? apiRequest("/material-module/orders/receivable") : [],
         loadHistory(),
       ]);
       setReceivable(r);
@@ -1967,10 +1969,10 @@ function ReceiptsTab({ role }) {
                     </td>
                     <td style={{ ...tdCell, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r.landed_rate_per_kg, 4)}</td>
                     <td style={{ ...tdCell, whiteSpace: "nowrap" }}>
-                      {isAdmin && (
+                      {(can("material.receipts", "edit") || can("material.receipts", "delete")) && (
                         <>
-                          <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>
-                          <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => { setDeleteError(""); setDeletingReceipt(r); }}>Delete</button>
+                          {can("material.receipts", "edit") && <button type="button" style={{ fontSize: 10.5, padding: "3px 7px" }} onClick={() => openEditReceipt(r)}>Edit</button>}
+                          {can("material.receipts", "delete") && <button type="button" className="btn-danger" style={{ fontSize: 10.5, padding: "3px 7px", marginLeft: 4 }} onClick={() => { setDeleteError(""); setDeletingReceipt(r); }}>Delete</button>}
                         </>
                       )}
                     </td>
@@ -2350,7 +2352,7 @@ function StockTab({ role, onGoTab }) {
     <div>
       {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
 
-      {isAdmin && summary && summary.pending_approval_count > 0 && (
+      {can("material.order-approve", "edit") && summary && summary.pending_approval_count > 0 && (
         <div className="card" style={{ marginBottom: 12, background: "#FBF6F0", border: "1px solid #EAD9C6", display: "flex", justifyContent: "space-between", alignItems: "center", padding: 10, gap: 10 }}>
           <div style={{ fontSize: 12.5 }}>
             <b>{summary.pending_approval_count}</b> order{summary.pending_approval_count === 1 ? "" : "s"} waiting for your approval
@@ -2490,10 +2492,11 @@ function StockTab({ role, onGoTab }) {
 // type, and a side panel carrying who took the stock, when, and the remarks.
 // The round 139 version was a card per material with a modal per count.
 function PhysicalStockTab({ role }) {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
   const showValuation = role !== "store";
-  const canEnter = role === "store" || isAdminLevel(role);
-  const isAdmin = isAdminLevel(role);   // Round 185 — only admin approves a month
+  const canEnter = can("material.physical-stock", "create"); // Round 262 — was Store + Admin by role
+  const isAdmin = can("material.physical-stock-approve", "edit");   // Round 185 — approving a month (Round 262: by function)
   const [month, setMonth] = useState(thisMonthStr());
   const [materials, setMaterials] = useState([]);
   const [error, setError] = useState("");

@@ -12,6 +12,7 @@ import { TruckTrackingPanel } from "../lib/DeliveryTrackingView.jsx";
 import { isAdminLevel } from "../lib/roles.js";
 import { todayStr, daysAgoStr, monthStartStr, istMonth, istDay } from "../lib/istDate.js";
 import { NewContactForm, ContactsList, CONTACT_TYPE_LABEL, VISITOR_TYPES_FOR_CONTACT } from "../lib/SalesContacts.jsx";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 
 const LEAD_STATUS_BADGE = {
   new: "badge-neutral", contacted: "badge-info", quoted: "badge-progress",
@@ -59,8 +60,10 @@ function AtSitePrompt({ atSite, setAtSite, coords, setCoords }) {
 }
 
 export default function SalesExecutive() {
+  const { can } = usePermissions(); // Round 262
   const { user } = useAuth();
-  const isAdmin = isAdminLevel(user?.role);
+  // Round 262 — the "view any salesperson" mode is Sales team review, not the Administrator role.
+  const isAdmin = can("sales.team-review");
   const [executives, setExecutives] = useState([]);
   const [viewAsUser, setViewAsUser] = useState("");
   const [view, setView] = useState("home");

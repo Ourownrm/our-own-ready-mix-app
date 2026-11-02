@@ -6,12 +6,24 @@ import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { pool, query } from "../db.js";
 import { upperName } from "../lib/names.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
-import { allow } from "../lib/permissions.js";
+import { allow, can } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { daysElapsedIn, istDay, istDaysAgo, istDaysFromNow, istMonth } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth);
+// Round 262 — whose records a person sees is decided by functions, not the
+// role name: "Sales team review" sees everyone's; a person with the "Sales
+// Executive app" but not team review sees (and is clocked-in checked on)
+// their own only. Defaults reproduce the old roles exactly (Manager team,
+// Sales Executive own, Administrator everything).
+router.use(async (req, res, next) => {
+  try {
+    req.salesTeam = await can(req.user, "sales.team-review", "view");
+    req.salesOwnOnly = !req.salesTeam && (await can(req.user, "sales.field-app", "create"));
+    next();
+  } catch (e) { next(e); }
+});
 
 // A Sales Executive can't log any field activity — a lead, a booking, a
 // visit, feedback, a forecast — until they're actually clocked in. Checked
@@ -19,7 +31,7 @@ router.use(requireAuth);
 // applies when the actor is the Sales Executive themselves; Manager/
 // Administrator acting on a lead aren't subject to duty tracking at all.
 async function requireOnDuty(req, res) {
-  if (req.user.role !== "sales_executive") return true;
+  if (!req.salesOwnOnly) return true;
   const { rows } = await query(
     "SELECT is_on FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
     [req.user.id]
@@ -45,20 +57,20 @@ async function mySalespersonId(userId) {
 // for admin/manager; a Sales Executive always sees their own regardless of
 // what's passed.
 function targetUserId(req) {
-  if ((isAdminLevel(req.user.role) || req.user.role === "manager") && req.query.as_user) {
+  if (req.salesTeam && req.query.as_user) {
     return Number(req.query.as_user);
   }
   return req.user.id;
 }
 
-router.get("/executives", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/executives", allow([["sales.team-review", "view"], ["sales.lead-assign", "edit"]]), async (req, res) => {
   const { rows } = await query("SELECT id, name FROM users WHERE role = 'sales_executive' AND is_active ORDER BY name");
   res.json(rows);
 });
 
 // ===================== LEADS =====================
 
-router.post("/leads", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/leads", allow([["sales.lead-assign", "edit"]]), async (req, res) => {
   const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, assigned_to, site_latitude, site_longitude } = req.body;
   if (!prospect_name || !assigned_to) {
     return res.status(400).json({ error: "Prospect name and an assigned salesperson are required." });
@@ -80,7 +92,7 @@ router.post("/leads", requireRole("manager", "administrator"), async (req, res) 
 
 // A Sales Executive adding their own lead, not one assigned by Admin/Manager —
 // auto-assigned and attributed to themselves.
-router.post("/leads/self", requireRole("sales_executive"), async (req, res) => {
+router.post("/leads/self", allow([["sales.field-app", "create"]]), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const { prospect_name, contact_person, contact_phone, site_location, mix_grade_interest, estimated_qty_m3, at_site, latitude, longitude } = req.body;
   if (!prospect_name) return res.status(400).json({ error: "Prospect name is required." });
@@ -102,7 +114,7 @@ router.post("/leads/self", requireRole("sales_executive"), async (req, res) => {
 // Manager/Admin assigns it to a real Sales Executive from here once they've
 // looked it over, same effect as picking one on the original POST /leads
 // form, just after the fact.
-router.patch("/leads/:id/assign", requireRole("manager", "administrator"), async (req, res) => {
+router.patch("/leads/:id/assign", allow([["sales.lead-assign", "edit"]]), async (req, res) => {
   const { assigned_to } = req.body;
   if (!assigned_to) return res.status(400).json({ error: "Select a salesperson to assign this to." });
   const { rows } = await query(
@@ -120,7 +132,7 @@ router.patch("/leads/:id/assign", requireRole("manager", "administrator"), async
 // Reversible (hidden: false) so a manager who hides one by mistake, or wants
 // to glance back, isn't stuck — see the "N hidden — show" toggle in
 // CustomerInquiriesCard.
-router.patch("/leads/:id/dashboard-hide", requireRole("manager", "administrator"), async (req, res) => {
+router.patch("/leads/:id/dashboard-hide", allow([["sales.lead-assign", "edit"]]), async (req, res) => {
   const hidden = req.body.hidden !== false;
   const { rows } = await query(
     `UPDATE leads SET dashboard_hidden = $1, updated_at = now() WHERE id = $2 RETURNING *`,
@@ -130,8 +142,8 @@ router.patch("/leads/:id/dashboard-hide", requireRole("manager", "administrator"
   res.json(rows[0]);
 });
 
-router.get("/leads", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
-  const own = req.user.role === "sales_executive";
+router.get("/leads", allow([["sales.leads", "view"]]), async (req, res) => {
+  const own = req.salesOwnOnly;
   const { rows } = await query(
     `SELECT l.*, u.name AS assigned_to_name, creator.name AS created_by_name, latest.activity_type AS latest_activity_type
      FROM leads l
@@ -147,13 +159,13 @@ router.get("/leads", requireRole("sales_executive", "manager", "administrator"),
   res.json(rows);
 });
 
-router.get("/leads/:id", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+router.get("/leads/:id", allow([["sales.leads", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT l.*, u.name AS assigned_to_name FROM leads l LEFT JOIN users u ON u.id = l.assigned_to WHERE l.id = $1`,
     [req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: "Lead not found." });
-  if (req.user.role === "sales_executive" && rows[0].assigned_to !== req.user.id) {
+  if (req.salesOwnOnly && rows[0].assigned_to !== req.user.id) {
     return res.status(403).json({ error: "This lead isn't assigned to you." });
   }
   const { rows: followups } = await query(
@@ -166,7 +178,7 @@ router.get("/leads/:id", requireRole("sales_executive", "manager", "administrato
 
 const ACTIVITY_TYPES = ["note", "quotation_issued", "quotation_followup", "quotation_revised", "meeting", "site_visit"];
 
-router.post("/leads/:id/followup", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+router.post("/leads/:id/followup", allow([["sales.leads", "edit"]]), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const {
     note, activity_type, quotation_amount, revision_reason, persons_met,
@@ -249,7 +261,7 @@ router.post("/leads/:id/followup", requireRole("sales_executive", "manager", "ad
   res.json({ ok: true, related_visit_id: relatedVisitId, followups: createdFollowups });
 });
 
-router.post("/leads/:id/lost", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+router.post("/leads/:id/lost", allow([["sales.leads", "edit"]]), async (req, res) => {
   const { lost_reason } = req.body;
   if (!lost_reason) return res.status(400).json({ error: "A reason is required to mark a lead lost." });
   await query(
@@ -259,7 +271,7 @@ router.post("/leads/:id/lost", requireRole("sales_executive", "manager", "admini
   res.json({ ok: true });
 });
 
-router.post("/leads/:id/won", requireRole("administrator"), async (req, res) => {
+router.post("/leads/:id/won", allow([["sales.lead-won", "edit"]]), async (req, res) => {
   const { attribution, won_customer_id, won_order_id } = req.body;
   if (!["salesperson", "company"].includes(attribution)) {
     return res.status(400).json({ error: "Choose whether this counts as the salesperson's sale or the company's." });
@@ -286,7 +298,7 @@ router.post("/leads/:id/won", requireRole("administrator"), async (req, res) => 
 // so the customer master is not filled with site engineers and clients.
 // The name is kept in capitals, and a name already in the master is
 // offered back instead of being added a second time.
-router.post("/quick-customer", requireRole("sales_executive"), async (req, res) => {
+router.post("/quick-customer", allow([["sales.field-app", "create"], ["masters.customer-quick-create", "create"]]), async (req, res) => {
   const name = upperName(req.body.name);
   if (!name) return res.status(400).json({ error: "Customer name is required." });
   const { rows: dup } = await query(
@@ -299,7 +311,7 @@ router.post("/quick-customer", requireRole("sales_executive"), async (req, res) 
   res.status(201).json(rows[0]);
 });
 
-router.post("/quick-site", requireRole("sales_executive"), async (req, res) => {
+router.post("/quick-site", allow([["sales.field-app", "create"], ["masters.site-quick-create", "create"]]), async (req, res) => {
   const { customer_id, distance_from_plant_km, force } = req.body;
   const name = upperName(req.body.name);
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
@@ -327,7 +339,7 @@ router.post("/quick-site", requireRole("sales_executive"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.post("/bookings", requireRole("sales_executive"), async (req, res) => {
+router.post("/bookings", allow([["sales.field-app", "create"]]), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const { customer_id, site_id, mix_grade_id, estimated_qty_m3, preferred_date, preferred_time, notes, site_latitude, site_longitude } = req.body;
   if (!customer_id) return res.status(400).json({ error: "Select a customer." });
@@ -345,8 +357,8 @@ router.post("/bookings", requireRole("sales_executive"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.get("/bookings", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
-  const own = req.user.role === "sales_executive";
+router.get("/bookings", allow([["sales.bookings", "view"]]), async (req, res) => {
+  const own = req.salesOwnOnly;
   const { rows } = await query(
     `SELECT b.*, c.name AS customer_name, s.name AS site_name, m.name AS mix_grade_name, u.name AS requested_by_name
      FROM bookings b
@@ -361,7 +373,7 @@ router.get("/bookings", requireRole("sales_executive", "manager", "administrator
   res.json(rows);
 });
 
-router.post("/bookings/:id/decline", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/bookings/:id/decline", allow([["sales.bookings", "edit"]]), async (req, res) => {
   const { declined_reason } = req.body;
   await query(
     "UPDATE bookings SET status = 'declined', declined_reason = $1 WHERE id = $2",
@@ -373,7 +385,7 @@ router.post("/bookings/:id/decline", requireRole("manager", "administrator"), as
 // Manager converts a booking into a real order, after confirming site
 // readiness and payment terms — the booking itself never becomes an order
 // automatically, this is a deliberate human step.
-router.post("/bookings/:id/convert", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/bookings/:id/convert", allow([["sales.bookings", "edit"]]), async (req, res) => {
   const { rows: bookingRows } = await query("SELECT * FROM bookings WHERE id = $1", [req.params.id]);
   const booking = bookingRows[0];
   if (!booking) return res.status(404).json({ error: "Booking not found." });
@@ -497,7 +509,7 @@ router.post("/bookings/:id/convert", requireRole("manager", "administrator"), as
 
 // ===================== AFTER-SALES FEEDBACK =====================
 
-router.post("/feedback", requireRole("sales_executive"), async (req, res) => {
+router.post("/feedback", allow([["sales.field-app", "create"]]), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const { customer_id, order_id, feedback_type, comment } = req.body;
   if (!customer_id || !feedback_type || !comment) {
@@ -517,8 +529,8 @@ router.post("/feedback", requireRole("sales_executive"), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.get("/feedback", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
-  const own = req.user.role === "sales_executive";
+router.get("/feedback", allow([["sales.feedback", "view"]]), async (req, res) => {
+  const own = req.salesOwnOnly;
   const { rows } = await query(
     `SELECT f.*, c.name AS customer_name, u.name AS recorded_by_name
      FROM aftersales_feedback f
@@ -697,7 +709,7 @@ async function applyVisitFollowupsAndNotifications({ visit, isNewProject, answer
   return created;
 }
 
-router.post("/visits", requireRole("sales_executive"), async (req, res) => {
+router.post("/visits", allow([["sales.field-app", "create"]]), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const {
     visited_name, site_id, visitor_type, visit_date, visit_time,
@@ -764,10 +776,10 @@ router.post("/visits", requireRole("sales_executive"), async (req, res) => {
 // Every role that can have a follow-up assigned to them (sales_executive,
 // manager, accountant) sees their own — sorted so overdue is unmissable at
 // the top, matching the actual daily-use pattern this exists for.
-router.get("/followups", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
-  const viewingAs = (isAdminLevel(req.user.role) || req.user.role === "manager") && req.query.as_user;
+router.get("/followups", allow([["sales.followups", "view"]]), async (req, res) => {
+  const viewingAs = req.salesTeam && req.query.as_user;
   const role = viewingAs ? "sales_executive" : req.user.role;
-  const userFilter = viewingAs ? Number(req.query.as_user) : (req.user.role === "sales_executive" ? req.user.id : null);
+  const userFilter = viewingAs ? Number(req.query.as_user) : (req.salesOwnOnly ? req.user.id : null);
   const { rows } = await query(
     `SELECT vf.*, cv.visited_name, cv.site_id, cv.visit_date, s.name AS site_name
      FROM visit_followups vf
@@ -782,7 +794,7 @@ router.get("/followups", requireRole("sales_executive", "manager", "accountant",
   res.json(rows);
 });
 
-router.post("/followups/:id/done", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+router.post("/followups/:id/done", allow([["sales.followups", "edit"]]), async (req, res) => {
   await query("UPDATE visit_followups SET status = 'done' WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
@@ -792,7 +804,7 @@ router.post("/followups/:id/done", requireRole("sales_executive", "manager", "ac
 // eventually gets marked Done). Optionally reschedules the due date in the
 // same step, so "called, they asked for 2 more days" both records the call
 // and pushes the reminder out, in one action instead of two.
-router.post("/followups/:id/log-action", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+router.post("/followups/:id/log-action", allow([["sales.followups", "edit"]]), async (req, res) => {
   const { note, next_due_date } = req.body;
   if (!note || !note.trim()) return res.status(400).json({ error: "Enter what you did." });
   const { rows } = await query(
@@ -808,7 +820,7 @@ router.post("/followups/:id/log-action", requireRole("sales_executive", "manager
 
 // Action history for one or more follow-ups at once (comma-separated ids) —
 // used to render a thread's log without an N+1 request per item.
-router.get("/followups/actions", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+router.get("/followups/actions", allow([["sales.followups", "view"]]), async (req, res) => {
   const ids = (req.query.followup_ids || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
   if (!ids.length) return res.json([]);
   const { rows } = await query(
@@ -843,7 +855,7 @@ router.get("/visit-outcome-reasons", async (req, res) => {
 // a chance" — no action needed to represent that state, it's just what
 // "pending" already means.
 const OUTCOMES = ["won", "lost", "closed"];
-router.post("/visits/:visitId/outcome", requireRole("sales_executive", "manager", "accountant", "administrator"), async (req, res) => {
+router.post("/visits/:visitId/outcome", allow([["sales.followups", "edit"]]), async (req, res) => {
   const { outcome, outcome_reason_id, outcome_notes } = req.body;
   if (!OUTCOMES.includes(outcome)) {
     return res.status(400).json({ error: "Outcome must be won, lost, or closed." });
@@ -862,8 +874,8 @@ router.post("/visits/:visitId/outcome", requireRole("sales_executive", "manager"
   res.json({ ok: true, resolved_count: rows.length });
 });
 
-router.get("/visits", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
-  const own = req.user.role === "sales_executive";
+router.get("/visits", allow([["sales.visits", "view"]]), async (req, res) => {
+  const own = req.salesOwnOnly;
   const { rows } = await query(
     // Round 124, item 7 — joins in the site name so the rebuilt Visits list
     // (matching the approved mockup) can show it under the visited name,
@@ -892,7 +904,7 @@ router.get("/visits", requireRole("sales_executive", "manager", "administrator")
 // surfaces every visit that never got linked to a real customer record, so
 // Admin/Manager can reconcile it once the real billing identity is known —
 // e.g. right when the visit turns into a booking/order.
-router.get("/visits/unlinked-names", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/visits/unlinked-names", allow([["sales.team-review", "edit"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT LOWER(TRIM(cv.visited_name)) AS name_key,
             (ARRAY_AGG(cv.visited_name ORDER BY cv.created_at DESC))[1] AS visited_name,
@@ -914,7 +926,7 @@ router.get("/visits/unlinked-names", requireRole("manager", "administrator"), as
 // insensitive) visited name to a real customer in one go — a visitor
 // usually gets referred to the same way across visits, so reconciling once
 // per name is the natural unit, not per individual visit row.
-router.post("/visits/link-customer", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/visits/link-customer", allow([["sales.team-review", "edit"]]), async (req, res) => {
   const { visited_name, customer_id } = req.body;
   if (!visited_name || !customer_id) {
     return res.status(400).json({ error: "visited_name and customer_id are required." });
@@ -963,7 +975,7 @@ async function dailyVisitCadence(userId, days) {
 // Sales Executive's own visit summary — the "days without a visit" strip on
 // their Visits tab. Manager/Administrator can pass ?as_user= to preview a
 // specific rep's, same convention as /my-dashboard.
-router.get("/visits/summary", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+router.get("/visits/summary", allow([["sales.visits", "view"]]), async (req, res) => {
   const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
   res.json(await dailyVisitCadence(targetUserId(req), days));
 });
@@ -971,7 +983,7 @@ router.get("/visits/summary", requireRole("sales_executive", "manager", "adminis
 // Manager/Administrator view across every active Sales Executive — the
 // visit-cadence accountability piece, added to the Sales Performance page
 // rather than a new report.
-router.get("/visits/cadence", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/visits/cadence", allow([["sales.team-review", "view"]]), async (req, res) => {
   const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
   const { rows: reps } = await query("SELECT id, name FROM users WHERE role = 'sales_executive' AND is_active ORDER BY name");
   const result = [];
@@ -985,7 +997,7 @@ router.get("/visits/cadence", requireRole("manager", "administrator"), async (re
 // their latest logged action, across every Sales Executive — the
 // accountability/report half of the mandatory-follow-up change, added to
 // the Sales Performance page.
-router.get("/followups/report", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/followups/report", allow([["sales.team-review", "view"]]), async (req, res) => {
   const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 180);
   const { rows } = await query(
     `SELECT vf.id, vf.visit_id, vf.title, vf.reason, vf.due_date, vf.status,
@@ -1007,7 +1019,7 @@ router.get("/followups/report", requireRole("manager", "administrator"), async (
 
 // ===================== SALES EXECUTIVE'S OWN DASHBOARD =====================
 
-router.get("/my-dashboard", requireRole("sales_executive", "administrator", "manager"), async (req, res) => {
+router.get("/my-dashboard", allow([["sales.dashboard", "view"]]), async (req, res) => {
   const spId = await mySalespersonId(targetUserId(req));
   if (!spId) {
     return res.json({ customers: [], orders_month_qty: 0, orders_month_value: 0, outstanding: 0, outstanding_by_customer: [], lead_counts: {}, sites_overdue_visit: 0 });
@@ -1091,7 +1103,7 @@ router.get("/my-dashboard", requireRole("sales_executive", "administrator", "man
 // instead of always having to ask Manager/Administrator. Same salesperson
 // resolution used everywhere else in this file: COALESCE(site's
 // assigned_sales_representative_id, order's own sales_representative_id).
-router.get("/my-orders-today", requireRole("sales_executive"), async (req, res) => {
+router.get("/my-orders-today", allow([["sales.field-app", "view"]]), async (req, res) => {
   const spId = await mySalespersonId(req.user.id);
   if (!spId) return res.json([]);
   const { rows } = await query(
@@ -1112,7 +1124,7 @@ router.get("/my-orders-today", requireRole("sales_executive"), async (req, res) 
 
 // ===================== ADMIN: COMBINED PERFORMANCE DASHBOARD =====================
 
-router.get("/performance", requireRole("administrator"), async (req, res) => {
+router.get("/performance", allow([["sales.performance", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sp.id AS salesperson_id, sp.name, sp.user_id,
             COALESCE(month_stats.qty, 0) AS orders_month_qty,
@@ -1178,7 +1190,7 @@ router.get("/performance", requireRole("administrator"), async (req, res) => {
 // this is who owns the ongoing project relationship.)
 
 // Sales Executive's own running projects — what the forecast form picks from.
-router.get("/my-running-projects", requireRole("sales_executive"), async (req, res) => {
+router.get("/my-running-projects", allow([["sales.field-app", "view"]]), async (req, res) => {
   const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
   const salespersonId = spRows[0]?.id;
   if (!salespersonId) return res.json([]);
@@ -1195,7 +1207,7 @@ router.get("/my-running-projects", requireRole("sales_executive"), async (req, r
 
 // Upsert — one forecast per project. Saving (including editing an expired
 // one) re-anchors the window to right now via updated_at.
-router.post("/forecasts", requireRole("sales_executive"), async (req, res) => {
+router.post("/forecasts", allow([["sales.field-app", "create"]]), async (req, res) => {
   if (!(await requireOnDuty(req, res))) return;
   const { site_id, expected_qty_m3, period_days, confidence, notes } = req.body;
   if (!site_id || !expected_qty_m3 || !period_days || !confidence) {
@@ -1237,8 +1249,8 @@ router.post("/forecasts", requireRole("sales_executive"), async (req, res) => {
 });
 
 // Sales Executive sees their own; Manager/Administrator see everyone's.
-router.get("/forecasts", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
-  const own = req.user.role === "sales_executive";
+router.get("/forecasts", allow([["sales.forecast", "view"]]), async (req, res) => {
+  const own = req.salesOwnOnly;
   let salespersonId = null;
   if (own) {
     const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
@@ -1260,7 +1272,7 @@ router.get("/forecasts", requireRole("sales_executive", "manager", "administrato
   res.json(rows);
 });
 
-router.delete("/forecasts/:id", requireRole("sales_executive"), async (req, res) => {
+router.delete("/forecasts/:id", allow([["sales.field-app", "delete"]]), async (req, res) => {
   const { rows: spRows } = await query("SELECT id FROM salespersons WHERE user_id = $1", [req.user.id]);
   const salespersonId = spRows[0]?.id;
   const { rowCount } = await query(
@@ -1288,7 +1300,7 @@ router.post("/sites/:siteId/assign-salesperson", allow([["masters.sites", "edit"
 // Every active site/project, with its forecast status if any — lets
 // Manager/Administrator see gaps (no sales person, no forecast, or an
 // expired one) and request an update, not just review what's current.
-router.get("/running-projects-with-forecast-status", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/running-projects-with-forecast-status", allow([["sales.team-review", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT s.id AS site_id, c.name AS customer_name, s.name AS site_name,
             sp.name AS salesperson_name, sp.user_id AS salesperson_user_id,
@@ -1307,7 +1319,7 @@ router.get("/running-projects-with-forecast-status", requireRole("manager", "adm
 
 // Manager/Administrator asks the assigned Sales Executive to add or refresh
 // a forecast for a specific project — a direct nudge rather than waiting.
-router.post("/forecasts/request-update", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/forecasts/request-update", allow([["sales.team-review", "edit"]]), async (req, res) => {
   const { site_id, message } = req.body;
   if (!site_id) return res.status(400).json({ error: "Select a project." });
 
@@ -1338,7 +1350,7 @@ router.post("/forecasts/request-update", requireRole("manager", "administrator")
 
 // Sales Executive's own pending forecast-update requests — surfaced as an
 // alert at the top of their forecast screen.
-router.get("/forecast-update-requests", requireRole("sales_executive"), async (req, res) => {
+router.get("/forecast-update-requests", allow([["sales.field-app", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT id, site_id, message, created_at FROM notifications
      WHERE recipient_id = $1 AND type = 'forecast_update_requested' AND is_read = false
@@ -1350,7 +1362,7 @@ router.get("/forecast-update-requests", requireRole("sales_executive"), async (r
 
 // Weekly aggregate for the Manager/Administrator chart — expected demand
 // this week and next, broken down by confidence level.
-router.get("/forecasts/summary", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/forecasts/summary", allow([["sales.team-review", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT confidence,
             COALESCE(SUM(
@@ -1372,7 +1384,7 @@ router.get("/forecasts/summary", requireRole("manager", "administrator"), async 
 // Parallel to the Driver duty/GPS system — a Sales Executive's day out in the
 // field, tracked the same way (toggle on/off, periodic pings while on).
 
-router.get("/duty-status", requireRole("sales_executive", "administrator", "manager"), async (req, res) => {
+router.get("/duty-status", allow([["sales.field-app", "view"], ["sales.team-review", "view"]]), async (req, res) => {
   const uid = targetUserId(req);
   const { rows } = await query(
     "SELECT is_on, event_time FROM sales_duty_log WHERE salesperson_user_id = $1 ORDER BY event_time DESC LIMIT 1",
@@ -1391,7 +1403,7 @@ router.get("/duty-status", requireRole("sales_executive", "administrator", "mana
   });
 });
 
-router.post("/duty", requireRole("sales_executive"), async (req, res) => {
+router.post("/duty", allow([["sales.field-app", "create"]]), async (req, res) => {
   const { on, lat, lng } = req.body;
   await query(
     "INSERT INTO sales_duty_log (salesperson_user_id, is_on, latitude, longitude) VALUES ($1, $2, $3, $4)",
@@ -1400,7 +1412,7 @@ router.post("/duty", requireRole("sales_executive"), async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/gps-ping", requireRole("sales_executive"), async (req, res) => {
+router.post("/gps-ping", allow([["sales.field-app", "create"]]), async (req, res) => {
   const { latitude, longitude, accuracy_m } = req.body;
   if (latitude === undefined || longitude === undefined) {
     return res.status(400).json({ error: "Latitude and longitude are required." });
@@ -1416,7 +1428,7 @@ router.post("/gps-ping", requireRole("sales_executive"), async (req, res) => {
 // >12-hour staleness rule as On-Duty Drivers, so a phone that died or an app
 // that got killed without properly clocking off doesn't show as perpetually
 // "on duty."
-router.get("/on-duty", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/on-duty", allow([["sales.team-review", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT DISTINCT ON (d.salesperson_user_id)
             d.salesperson_user_id, u.name AS salesperson_name, d.event_time AS duty_since,
@@ -1457,7 +1469,7 @@ function cleanContact(b) {
   };
 }
 
-router.get("/contacts", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+router.get("/contacts", allow([["sales.contacts", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sc.*, u.name AS created_by_name, c.name AS linked_customer_name,
             (SELECT COUNT(*) FROM customer_visits cv WHERE cv.contact_id = sc.id)::int AS visit_count,
@@ -1470,7 +1482,7 @@ router.get("/contacts", requireRole("sales_executive", "manager", "administrator
   res.json(rows);
 });
 
-router.post("/contacts", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+router.post("/contacts", allow([["sales.contacts", "create"]]), async (req, res) => {
   const c = cleanContact(req.body);
   if (c.error) return res.status(400).json({ error: c.error });
   if (!req.body.force) {
@@ -1486,10 +1498,10 @@ router.post("/contacts", requireRole("sales_executive", "manager", "administrato
   res.status(201).json(rows[0]);
 });
 
-router.patch("/contacts/:id(\\d+)", requireRole("sales_executive", "manager", "administrator"), async (req, res) => {
+router.patch("/contacts/:id(\\d+)", allow([["sales.contacts", "edit"]]), async (req, res) => {
   const { rows: cur } = await query(`SELECT * FROM sales_contacts WHERE id = $1`, [req.params.id]);
   if (!cur.length) return res.status(404).json({ error: "Contact not found." });
-  const boss = req.user.role !== "sales_executive";
+  const boss = !req.salesOwnOnly;
   if (!boss && cur[0].created_by !== req.user.id) return res.status(403).json({ error: "Only the person who added this contact (or the Manager) can change it." });
   const c = cleanContact({ ...cur[0], ...req.body });
   if (c.error) return res.status(400).json({ error: c.error });
@@ -1535,7 +1547,7 @@ async function movableCustomerSql() {
   return `${notC.join(" AND ")}${notS.length ? ` AND NOT EXISTS (SELECT 1 FROM sites s WHERE s.customer_id = c.id AND NOT (${notS.join(" AND ")}))` : ""}`;
 }
 
-router.get("/customer-cleanup", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/customer-cleanup", allow([["sales.team-review", "edit"]]), async (req, res) => {
   const cond = await movableCustomerSql();
   const { rows } = await query(
     `SELECT c.id, c.name, c.contact_number, c.created_via, c.created_at, c.is_active,
@@ -1551,7 +1563,7 @@ router.get("/customer-cleanup", requireRole("manager", "administrator"), async (
   res.json(rows);
 });
 
-router.post("/customer-cleanup/:id(\\d+)/move", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/customer-cleanup/:id(\\d+)/move", allow([["sales.team-review", "edit"]]), async (req, res) => {
   const id = Number(req.params.id);
   const type = CONTACT_TYPES.includes(req.body.contact_type) ? req.body.contact_type : "other";
   const cond = await movableCustomerSql();

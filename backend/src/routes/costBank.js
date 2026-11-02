@@ -422,6 +422,11 @@ router.post("/rules", EDIT, async (req, res) => {
 });
 
 // --------------------------------------------------------------- loans ---
+// Round 261 — the Loans page is its own function (cost.loans), no longer part
+// of Bank statements. A bank line can still be sorted to a loan already on
+// file from Bank statements (that list comes with GET /cost/bank).
+const LOANS_VIEW = requirePermission("cost.loans", "view");
+const LOANS_EDIT = requirePermission("cost.loans", "edit");
 function cleanLoan(b) {
   const name = String(b.name || "").trim().slice(0, 100);
   if (!name) return { error: "Give the loan a name (e.g. Term loan — plant machinery)." };
@@ -464,7 +469,7 @@ async function afterLoanChange() {
   if (rows.length) await autoSort({ ids: rows.map((r) => r.id) });
 }
 // Round 239 — the Loans page.
-router.get("/loans", VIEW, async (_req, res) => {
+router.get("/loans", LOANS_VIEW, async (_req, res) => {
   const d = await loansInsight(istDay());
   const { rows: accs } = await query(`SELECT id, bank, number FROM cost_bank_accounts ORDER BY is_active DESC, id`);
   res.json({ ...d, accounts: accs.map((a) => ({ id: a.id, name: accLabel(a) })) });
@@ -472,7 +477,7 @@ router.get("/loans", VIEW, async (_req, res) => {
 
 // Round 241 — work a loan out from its schedule (nothing saved): the rate the
 // instalments really cost (IRR), the flat rate, and the balance on a date.
-router.post("/loans/calc", VIEW, async (req, res) => {
+router.post("/loans/calc", LOANS_VIEW, async (req, res) => {
   const b = req.body || {};
   const loan = {
     method: b.method === "fixed" ? "fixed" : "emi", loan_amount: Number(b.loan_amount) || 0,
@@ -491,7 +496,7 @@ router.post("/loans/calc", VIEW, async (req, res) => {
     first: sch[0] || null, last: sch[sch.length - 1] || null, rate_on: rateOn({ ...loan, rate_pct: useRate }, on), amount_on: amountOn(loan, on) });
 });
 
-router.post("/loans", EDIT, async (req, res) => {
+router.post("/loans", LOANS_EDIT, async (req, res) => {
   const l = cleanLoan(req.body);
   if (l.error) return bad(res, l.error);
   const { rows } = await query(
@@ -505,7 +510,7 @@ router.post("/loans", EDIT, async (req, res) => {
   await afterLoanChange();
   res.json({ id: rows[0].id });
 });
-router.put("/loans/:id(\\d+)", EDIT, async (req, res) => {
+router.put("/loans/:id(\\d+)", LOANS_EDIT, async (req, res) => {
   const l = cleanLoan(req.body);
   if (l.error) return bad(res, l.error);
   await query(

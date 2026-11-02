@@ -452,7 +452,7 @@ router.get("/director-dashboard", allow([["reports.director-dashboard", "view"]]
 
 // Daily production for the last N days (default 7) — fills in gaps with 0 so
 // a day with no completed deliveries still shows a bar rather than a hole.
-router.get("/daily-production", requireRole("administrator"), async (req, res) => {
+router.get("/daily-production", allow([["admin.dashboard", "view"], ["reports.production", "view"]]), async (req, res) => {
   const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
   const [{ rows }, { rows: dayRows }] = await Promise.all([
     query(

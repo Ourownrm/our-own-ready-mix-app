@@ -9,7 +9,7 @@ import { SILO_LEVELS_SQL } from "../lib/siloFifo.js";
 // a requirePermission. A request must satisfy both, so granting somebody a
 // permission can never let them past a role guard: this can only tighten
 // access, never loosen it.
-import { requirePermission, requireAnyPermission, can } from "../lib/permissions.js";
+import { requirePermission, requireAnyPermission, can, allow } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 // Round 194 — a GRN hands the lab its test cards.
 import { issueCardsForReceipt } from "../lib/rmTestCards.js";
@@ -76,7 +76,10 @@ router.get("/materials", requireAnyPermission(MATERIALS_LIST_KEYS, "view"), asyn
     [isAdminLevel(req.user.role)]
   );
   // Store never sees valuation — enforced here, not just left out of the UI.
-  const sanitized = isStore(req) ? rows.map(({ opening_stock_rate_per_kg, ...rest }) => rest) : rows;
+  // Round 262 — by function: the opening rate is shown to those with stock
+  // valuation or who edit the materials master (Store has neither by default).
+  const seesRate = (await can(req.user, "material.stock-valuation", "view")) || (await can(req.user, "material.materials", "edit"));
+  const sanitized = !seesRate ? rows.map(({ opening_stock_rate_per_kg, ...rest }) => rest) : rows;
   res.json(sanitized);
 });
 
@@ -966,7 +969,9 @@ router.get("/orders/mine", requirePermission("material.orders", "view"), async (
 
 // Orders Store can currently receive against — approved, with something
 // still outstanding. Used to populate the Receipts tab's order picker.
-router.get("/orders/receivable", requirePermission("material.orders", "view"), async (req, res) => {
+// Round 261 — the Receipts screen lists these to receive against, so
+// Material receipts "create" reads them too (not only Material orders view).
+router.get("/orders/receivable", allow([["material.orders", "view"], ["material.receipts", "create"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT ${ORDER_LIST_COLUMNS} ${ORDER_LIST_FROM}
      WHERE o.status = 'approved' AND COALESCE(recv.received_qty, 0) < o.ordered_qty
@@ -1790,11 +1795,12 @@ router.delete("/receipts/:id", requirePermission("material.receipts", "delete"),
 
 router.get("/receipts", requirePermission("material.receipts", "view"), async (req, res) => {
   const params = [];
+  // Round 261 (owner, 2 Nov 2026) — "I provided access to store for material
+  // receipts view but they don't have anything to see": a Store login was
+  // shown only receipts of orders it had placed itself, and orders are
+  // placed by the Manager / Admin, so the list was empty. Who sees receipts is
+  // decided on the Access Control page (Material receipts — View), not here.
   let where = "true";
-  if (req.user.role === "store") {
-    params.push(req.user.id);
-    where = `o.requested_by = $${params.length}`;
-  }
   if (req.query.from_date) { params.push(req.query.from_date); where += ` AND r.received_date >= $${params.length}::date`; }
   if (req.query.to_date) { params.push(req.query.to_date); where += ` AND r.received_date < $${params.length}::date + INTERVAL '1 day'`; }
   if (req.query.material_id) { params.push(req.query.material_id); where += ` AND o.material_id = $${params.length}`; }
