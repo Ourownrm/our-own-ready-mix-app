@@ -179,3 +179,31 @@ export async function permissionsForClient(user) {
   if (cl.any) out["cledger.access"] = ["view"];
   return out;
 }
+
+// Round 260 (owner, 2 Nov 2026) — "the super admin access control is to be
+// reviewed again": Plant In Charge was given Production → Orders on the Access
+// Control page, saw "+ New order", and the save said "You don't have access to
+// this" — POST /orders still carried the old role list (Manager, Admin). The
+// screen and its route were asking two different questions.
+//
+// `allow` is the one guard for a route a Super-Admin-controlled screen calls:
+// it passes when the person holds ANY of the listed [function, action] pairs
+// (module switches already applied), exactly the check the screen makes.
+// `roles` is ONLY for a role-specific screen that is not on the Access Control
+// page (e.g. the Site Supervisor's own app) and calls the same route — it
+// keeps that screen working without opening the route to anyone else.
+// scripts/check-guards.mjs verifies every role the old list allowed still
+// passes by default, so nobody loses access on the day this ships.
+export function allow(pairs, { roles = [] } = {}) {
+  const list = pairs.map((p) => (Array.isArray(p) ? p : [p, "view"]));
+  return async (req, res, next) => {
+    try {
+      if (req.user && roles.includes(req.user.role)) return next();
+      const perms = await effectivePermissions(req.user);
+      if (list.some(([k, a]) => perms.has(pair(k, a)))) return next();
+      return res.status(403).json({ error: "You don't have access to this." });
+    } catch (err) {
+      return next(err);
+    }
+  };
+}

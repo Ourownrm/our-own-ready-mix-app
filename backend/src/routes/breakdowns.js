@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { pushToRole } from "../lib/push.js";
 import { raiseJobSafe } from "../lib/maintenanceJobs.js";
 
@@ -60,7 +61,7 @@ router.post(
 );
 
 // Manager/Administrator: everything currently unresolved, across trucks, pumps, and the plant.
-router.get("/", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT b.id, b.equipment_type, b.breakdown_time, b.location, b.latitude, b.longitude,
             b.issue_type, b.remarks, b.resolved, b.repaired_at,
@@ -79,7 +80,7 @@ router.get("/", requireRole("manager", "administrator"), async (req, res) => {
 });
 
 // Manager marks a breakdown repaired — clears it off the active list.
-router.post("/:id/repaired", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:id/repaired", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { rows } = await query(
     `UPDATE breakdown_reports
      SET resolved = TRUE, repaired_by = $1, repaired_at = now()

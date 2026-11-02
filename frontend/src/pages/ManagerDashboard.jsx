@@ -52,12 +52,14 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
         apiRequest("/orders/live-locations"),
         apiRequest("/orders/on-duty-drivers"),
         apiRequest("/orders/pump-utilization-month"),
-        apiRequest("/supply-requests/pending"),
+        // Round 260 — a part the person has no function for is left empty
+        // instead of failing the whole dashboard with "no access".
+        can("store.supply-approve", "edit") ? apiRequest("/supply-requests/pending") : [],
         // Round 132, item 5 — store stock restock requests (distinct from
         // the issue-out requests above) weren't reflected here at all, so a
         // pending purchase request was invisible until Manager happened to
         // open Supply Approvals and scroll to its own section.
-        apiRequest("/store-stock/purchases/pending"),
+        can("store.purchase-approve", "edit") ? apiRequest("/store-stock/purchases/pending") : [],
       ]);
       setStats(dashboard);
       setOrders(orderList);
@@ -81,6 +83,7 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
   }, []);
 
   async function loadUnreadCount() {
+    if (!can("admin.notifications")) return;
     try {
       const { count } = await apiRequest("/notifications/unread-count");
       setUnreadCount(count);
@@ -94,6 +97,10 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
     setJumpToOrderId(orderId);
     setView("correct-orders");
   }
+
+  // Round 260 — the buttons follow the functions their routes check.
+  const canCloseOrder = can("production.correct-order", "edit") || can("orders.customer-orders", "edit");
+  const canConfirmOrder = can("orders.confirm-completion", "edit");
 
   async function closeOrder(order) {
     const reason = window.prompt(
@@ -241,10 +248,10 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
     const tomorrowUpcoming = (
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
         <div style={{ flex: "1 1 300px", minWidth: 0 }}>
-          <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showSiteReady={false} accentColor="var(--info)" />
+          <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={canCloseOrder ? closeOrder : undefined} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined} setError={setError} onReload={load} showSiteReady={false} accentColor="var(--info)" />
         </div>
         <div style={{ flex: "1 1 300px", minWidth: 0 }}>
-          <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
+          <OrderTable title="Upcoming orders" rows={upcoming} onClose={canCloseOrder ? closeOrder : undefined} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
         </div>
       </div>
     );
@@ -293,12 +300,12 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
           <div style={{ flex: "999 1 600px", minWidth: 0 }}>
             {carriedForward.length > 0 && (
               <div id="mgr-carried">
-                <OrderTable title="Needs attention — carried forward from an earlier day" rows={carriedForward} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder}
-                  onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate accentColor="var(--alert-red)" />
+                <OrderTable title="Needs attention — carried forward from an earlier day" rows={carriedForward} onClose={canCloseOrder ? closeOrder : undefined} onView={setDetailOrderId} onEdit={editOrder}
+                  onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined} setError={setError} onReload={load} showDate accentColor="var(--alert-red)" />
               </div>
             )}
             <div id="mgr-today">
-              <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} accentColor="var(--signal-green)" activeTrucks={activeTrucks} />
+              <OrderTable title="Running Orders Today" rows={today} onClose={canCloseOrder ? closeOrder : undefined} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined} setError={setError} onReload={load} accentColor="var(--signal-green)" activeTrucks={activeTrucks} />
             </div>
             <div id="mgr-trucks">
               <ActiveTrucksTable trucks={activeTrucks} locations={liveLocations} onMarkReviewed={markReviewed} onApplyDelayCharge={applyDelayCharge} onAddSiteDelayReason={addSiteDelayReason} />
@@ -337,15 +344,15 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
         {error && <div style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-          <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>
-          <Link to="/notifications">
+          {(can("production.correct-order", "edit") || can("orders.customer-orders", "create")) && <button className="btn-primary" onClick={() => setView("create-order")}>Create order</button>}
+          <IfCan perm="admin.notifications"><Link to="/notifications">
             <button type="button" style={{ position: "relative" }}>
               Notifications
               {unreadCount > 0 && (
                 <span className="badge badge-danger" style={{ marginLeft: 6, fontSize: 10 }}>{unreadCount}</span>
               )}
             </button>
-          </Link>
+          </Link></IfCan>
           <GroupedMenu
             label="Reports"
             items={allow([
@@ -430,19 +437,19 @@ export default function ManagerDashboard({ embedded = false, onGo } = {}) {
           <OrderTable
             title="Needs attention — carried forward from an earlier day"
             rows={carriedForward}
-            onClose={closeOrder}
+            onClose={canCloseOrder ? closeOrder : undefined}
             onView={setDetailOrderId}
             onEdit={editOrder}
-            onConfirmCompletion={confirmCompletion}
+            onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined}
             setError={setError}
             onReload={load}
             showDate
             accentColor="var(--alert-red)"
           />
         )}
-        <OrderTable title="Running Orders Today" rows={today} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} accentColor="var(--signal-green)" activeTrucks={activeTrucks} />
-        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showSiteReady={false} accentColor="var(--info)" />
-        <OrderTable title="Upcoming orders" rows={upcoming} onClose={closeOrder} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={confirmCompletion} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
+        <OrderTable title="Running Orders Today" rows={today} onClose={canCloseOrder ? closeOrder : undefined} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined} setError={setError} onReload={load} accentColor="var(--signal-green)" activeTrucks={activeTrucks} />
+        <OrderTable title="Scheduled tomorrow" rows={tomorrow} onClose={canCloseOrder ? closeOrder : undefined} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined} setError={setError} onReload={load} showSiteReady={false} accentColor="var(--info)" />
+        <OrderTable title="Upcoming orders" rows={upcoming} onClose={canCloseOrder ? closeOrder : undefined} onView={setDetailOrderId} onEdit={editOrder} onConfirmCompletion={canConfirmOrder ? confirmCompletion : undefined} setError={setError} onReload={load} showDate showSiteReady={false} accentColor="var(--violet)" />
 
         <OnDutyDriversTable drivers={onDutyDrivers} />
         <Link to="/supply-approvals" style={{ textDecoration: "none" }}>
@@ -904,9 +911,9 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
                         <div style={{ marginTop: 4 }}>
                           <span className="badge badge-warning" style={{ fontSize: 10 }}>Site marked complete</span>
                           {o.work_completion_remarks && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 2 }}>"{o.work_completion_remarks}"</div>}
-                          <button style={{ display: "block", marginTop: 4, padding: "3px 8px", fontSize: 11 }} onClick={() => onConfirmCompletion(o)}>
+                          {onConfirmCompletion && <button style={{ display: "block", marginTop: 4, padding: "3px 8px", fontSize: 11 }} onClick={() => onConfirmCompletion(o)}>
                             Confirm completion
-                          </button>
+                          </button>}
                         </div>
                       )}
                     </td>
@@ -949,7 +956,7 @@ function OrderTable({ title, rows, onClose, onView, onEdit, onConfirmCompletion,
                       <button style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onEdit(o.id)}>Edit</button>
                     </td>
                     <td>
-                      {!["closed", "cancelled", "completed"].includes(o.status) && (
+                      {onClose && !["closed", "cancelled", "completed"].includes(o.status) && (
                         <button className="btn-danger" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => onClose(o)}>
                           Close order
                         </button>

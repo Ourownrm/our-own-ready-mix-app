@@ -150,7 +150,7 @@ export default function App() {
           } />
 
           <Route path="/manager" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><ProductionModule defaultTab="overview" /></ProtectedRoute>
+            <ProtectedRoute perm="production.manager-dashboard"><ProductionModule defaultTab="overview" /></ProtectedRoute>
           } />
           {/* Round 254 — the Production module, tabs like Accounts. /manager
               (the Plant Manager's home) opens it on the Plant overview. */}
@@ -214,16 +214,16 @@ export default function App() {
             <ProtectedRoute perm="reports.trip-allowance"><TripAllowanceReport /></ProtectedRoute>
           } />
           <Route path="/delay-justification-report" element={
-            <ProtectedRoute roles={["administrator", "manager", "site_supervisor", "plant_operator"]}><DelayJustificationReport /></ProtectedRoute>
+            <ProtectedRoute perm="reports.delay-justification"><DelayJustificationReport /></ProtectedRoute>
           } />
           <Route path="/charts" element={
-            <ProtectedRoute roles={["administrator", "manager"]}><Charts /></ProtectedRoute>
+            <ProtectedRoute perm="reports.charts"><Charts /></ProtectedRoute>
           } />
           <Route path="/cycle-time-report" element={
             <ProtectedRoute perm="reports.cycle-time"><CycleTimeReport /></ProtectedRoute>
           } />
           <Route path="/truck-timing-report" element={
-            <ProtectedRoute roles={["administrator", "manager"]}><TruckTimingReport /></ProtectedRoute>
+            <ProtectedRoute perm="reports.truck-timing"><TruckTimingReport /></ProtectedRoute>
           } />
           {/* Round 199 — old links and bookmarks land on the analysis inside the Fuel module. */}
           <Route path="/fuel-analysis" element={<Navigate to="/fuel-module?tab=analysis" replace />} />
@@ -246,22 +246,22 @@ export default function App() {
             <ProtectedRoute perm="module.fuel"><FuelModule /></ProtectedRoute>
           } />
           <Route path="/outstanding-collection-report" element={
-            <ProtectedRoute roles={["administrator", "manager", "accountant"]}><OutstandingCollectionReport /></ProtectedRoute>
+            <ProtectedRoute perm="accounts.outstanding"><OutstandingCollectionReport /></ProtectedRoute>
           } />
           <Route path="/breakdowns" element={
             <Navigate to="/maintenance-module?tab=job-cards" replace />
           } />
           <Route path="/maintenance" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><Maintenance /></ProtectedRoute>
+            <ProtectedRoute perm={["fleet.maintenance", "reports.site-efficiency"]}><Maintenance /></ProtectedRoute>
           } />
           <Route path="/customer-booking" element={
             <ProtectedRoute roles={["sales_executive", "manager", "administrator"]}><CustomerBooking /></ProtectedRoute>
           } />
           <Route path="/site-content" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><SiteContentEditor /></ProtectedRoute>
+            <ProtectedRoute perm={[["admin.site-content", "edit"]]}><SiteContentEditor /></ProtectedRoute>
           } />
           <Route path="/home-screen-photos" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><HomeScreenPhotos /></ProtectedRoute>
+            <ProtectedRoute perm="admin.home-screen-photos"><HomeScreenPhotos /></ProtectedRoute>
           } />
           {/* Round 257 — fuel for the company vehicle allocated to this person, any role. */}
           <Route path="/my-vehicle-fuel" element={<ProtectedRoute><MyVehicleFuel /></ProtectedRoute>} />
@@ -269,7 +269,7 @@ export default function App() {
             <ProtectedRoute roles={["driver", "manager", "accountant", "administrator", "site_supervisor", "plant_operator", "loader_operator"]}><FuelFilling /></ProtectedRoute>
           } />
           <Route path="/supply-approvals" element={
-            <ProtectedRoute roles={["manager", "plant_in_charge", "administrator"]}><SupplyApprovals /></ProtectedRoute>
+            <ProtectedRoute perm={[["store.supply-approve", "edit"], ["store.purchase-approve", "edit"]]}><SupplyApprovals /></ProtectedRoute>
           } />
           <Route path="/store" element={
             <ProtectedRoute roles={["store", "administrator"]}><StoreHome /></ProtectedRoute>
@@ -278,7 +278,7 @@ export default function App() {
             <ProtectedRoute roles={["store", "administrator"]}><StoreScan /></ProtectedRoute>
           } />
           <Route path="/store-stock" element={
-            <ProtectedRoute roles={["store", "manager", "plant_in_charge", "administrator"]}><StoreStock /></ProtectedRoute>
+            <ProtectedRoute perm={["store.items", "fuel.dashboard", "fuel.transactions"]}><StoreStock /></ProtectedRoute>
           } />
           {/* Round 139 — Raw Material Module (purchase -> approve -> receive
               -> consume -> physical count -> reports). No Manager access yet
@@ -373,13 +373,13 @@ export default function App() {
             <Navigate to="/maintenance-module?tab=certificates" replace />
           } />
           <Route path="/notifications" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><NotificationsPage /></ProtectedRoute>
+            <ProtectedRoute perm="admin.notifications"><NotificationsPage /></ProtectedRoute>
           } />
           <Route path="/sales-forecast" element={
             <ProtectedRoute roles={["sales_executive", "manager", "administrator"]}><SalesForecast /></ProtectedRoute>
           } />
           <Route path="/trip-time-crosscheck" element={
-            <ProtectedRoute roles={["manager", "administrator"]}><TripTimeCrossCheckPage /></ProtectedRoute>
+            <ProtectedRoute perm="reports.trip-time-crosscheck"><TripTimeCrossCheckPage /></ProtectedRoute>
           } />
 
           <Route path="/" element={<RootRedirect />} />

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 
 // Round 131, item 5 — the purchase/receive/balance layer on top of the
@@ -36,7 +37,7 @@ async function ensureStockItems() {
   `);
 }
 
-router.get("/items", requireRole("store", "manager", "plant_in_charge", "administrator", "accountant"), async (req, res) => {
+router.get("/items", allow([["store.items", "view"], ["fuel.dashboard", "view"], ["fuel.transactions", "view"]]), async (req, res) => {
   await ensureStockItems();
   await query(`ALTER TABLE lubricant_types ADD COLUMN IF NOT EXISTS is_fuel BOOLEAN NOT NULL DEFAULT false`).catch(() => {});
   const { rows } = await query(
@@ -53,7 +54,7 @@ router.get("/items", requireRole("store", "manager", "plant_in_charge", "adminis
 // Manager-only physical stock adjustment — correct the balance to match an
 // actual count, with a required reason. Recorded as a transaction, same as
 // every other change, so it shows up in the item's history below.
-router.post("/items/:id/adjust", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.post("/items/:id/adjust", allow([["store.items", "edit"]]), async (req, res) => {
   const { counted_qty, note } = req.body;
   if (counted_qty === undefined || counted_qty === null || counted_qty === "") {
     return res.status(400).json({ error: "Enter the counted quantity." });
@@ -87,7 +88,7 @@ router.post("/items/:id/adjust", requireRole("manager", "plant_in_charge", "admi
 // screens (StoreScan.jsx, FuelFilling.jsx's external-fill confirmation)
 // read this to pre-fill the cost field — still freely editable there, so
 // this rate is a convenience default, not an enforced price.
-router.patch("/items/:id/rate", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.patch("/items/:id/rate", allow([["store.items", "edit"]]), async (req, res) => {
   const { rate_per_liter } = req.body;
   if (rate_per_liter === undefined || rate_per_liter === null || rate_per_liter === "" || Number(rate_per_liter) < 0) {
     return res.status(400).json({ error: "Enter a valid rate (₹ per liter)." });
@@ -109,7 +110,7 @@ router.patch("/items/:id/rate", requireRole("manager", "plant_in_charge", "admin
   res.json(rows[0]);
 });
 
-router.get("/items/:id/transactions", requireRole("store", "manager", "plant_in_charge", "administrator", "accountant"), async (req, res) => {
+router.get("/items/:id/transactions", allow([["store.items", "view"], ["fuel.dashboard", "view"], ["fuel.transactions", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sst.*, u.name AS created_by_name
      FROM store_stock_transactions sst
@@ -137,7 +138,7 @@ router.get("/items/:id/transactions", requireRole("store", "manager", "plant_in_
 // Manager already being the one who approves/rejects/adjusts stock.
 const REQUESTER_ROLES = ["store", "manager", "plant_in_charge", "administrator"];
 
-router.post("/purchases", requireRole(...REQUESTER_ROLES), async (req, res) => {
+router.post("/purchases", allow([["store.purchases", "create"], ["fuel.purchases", "create"]]), async (req, res) => {
   const { stock_item_id, requested_qty, supplier_name, notes } = req.body;
   if (!stock_item_id) return res.status(400).json({ error: "Select which item this purchase is for." });
   if (!requested_qty || Number(requested_qty) <= 0) return res.status(400).json({ error: "Enter the quantity to purchase." });
@@ -163,7 +164,7 @@ router.post("/purchases", requireRole(...REQUESTER_ROLES), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.get("/purchases/mine", requireRole(...REQUESTER_ROLES), async (req, res) => {
+router.get("/purchases/mine", allow([["store.purchases", "view"], ["fuel.purchases", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sp.*,
             CASE WHEN ssi.item_type = 'fuel' THEN 'Diesel (Plant Store)' ELSE lt.name END AS item_name,
@@ -179,7 +180,7 @@ router.get("/purchases/mine", requireRole(...REQUESTER_ROLES), async (req, res) 
   res.json(rows);
 });
 
-router.get("/purchases/pending", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.get("/purchases/pending", allow([["store.purchase-approve", "edit"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sp.*, u.name AS requested_by_name,
             CASE WHEN ssi.item_type = 'fuel' THEN 'Diesel (Plant Store)' ELSE lt.name END AS item_name,
@@ -194,7 +195,7 @@ router.get("/purchases/pending", requireRole("manager", "plant_in_charge", "admi
   res.json(rows);
 });
 
-router.post("/purchases/:id/approve", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.post("/purchases/:id/approve", allow([["store.purchase-approve", "edit"]]), async (req, res) => {
   const { approved_qty, approved_rate } = req.body;
   const { rows: existing } = await query(
     `SELECT sp.*, ssi.item_type FROM store_stock_purchases sp JOIN store_stock_items ssi ON ssi.id = sp.stock_item_id
@@ -224,7 +225,7 @@ router.post("/purchases/:id/approve", requireRole("manager", "plant_in_charge", 
   res.json(rows[0]);
 });
 
-router.post("/purchases/:id/reject", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.post("/purchases/:id/reject", allow([["store.purchase-approve", "edit"]]), async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ error: "Give a reason for rejecting this." });
   const { rows: existing } = await query("SELECT * FROM store_stock_purchases WHERE id = $1 AND status = 'pending'", [req.params.id]);
@@ -239,7 +240,7 @@ router.post("/purchases/:id/reject", requireRole("manager", "plant_in_charge", "
   res.json(rows[0]);
 });
 
-router.delete("/purchases/:id", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.delete("/purchases/:id", allow([["store.purchases", "delete"], ["fuel.purchases", "delete"]]), async (req, res) => {
   const { rowCount } = await query("DELETE FROM store_stock_purchases WHERE id = $1 AND status = 'pending'", [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "Request not found or already actioned." });
   res.json({ ok: true });
@@ -248,7 +249,7 @@ router.delete("/purchases/:id", requireRole("manager", "plant_in_charge", "admin
 // Store confirms what actually arrived — this is the step that credits the
 // balance. Received qty doesn't have to match approved (a supplier can
 // short-deliver); whatever actually came in is what's recorded.
-router.post("/purchases/:id/receive", requireRole(...REQUESTER_ROLES), async (req, res) => {
+router.post("/purchases/:id/receive", allow([["store.purchases", "edit"], ["fuel.purchases", "edit"]]), async (req, res) => {
   const { received_qty, unit_cost } = req.body;
   if (!received_qty || Number(received_qty) <= 0) return res.status(400).json({ error: "Enter the quantity received." });
   // Round 220 — the date the delivery really came (owner: old deliveries were

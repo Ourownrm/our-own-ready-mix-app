@@ -5,12 +5,21 @@ import { afterOrderMix } from "../lib/round254Schema.js";
 import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { pushToRole } from "../lib/push.js";
 import { getOrderTrackingPayload } from "../lib/orderTracking.js";
 import { istDay, istMonth, istDaysAgo, daysElapsedIn } from "../lib/istDate.js";
 
 const router = Router();
 router.use(requireAuth);
+
+// Round 260 — every guard here is the function the screen itself checks
+// (Access Control page), not a role list. See lib/permissions.js allow().
+const DASH = allow([["production.manager-dashboard", "view"]]);
+const TRUCKS = allow([["production.manager-dashboard", "view"], ["orders.live-tracking", "view"]]);
+// Delay reasons and "reviewed" on a late truck are entered from the Plant
+// overview or Vehicle tracking, so either of those screens' functions.
+const DELAY_REASON = allow([["orders.live-tracking", "edit"], ["production.manager-dashboard", "view"]]);
 
 // List orders — running (today), scheduled (future), and any not-yet-completed
 // order from an earlier day, which carries forward automatically instead of
@@ -39,7 +48,7 @@ router.get("/", async (req, res) => {
 // Administrator's "cancel" — same effect (stops it from carrying forward or
 // counting as running/upcoming) but keeps its own status so the two read
 // differently in the UI and reports.
-router.post("/:id/close", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:id/close", allow([["production.correct-order", "edit"], ["orders.customer-orders", "edit"]]), async (req, res) => {
   const { reason } = req.body;
   const { rows } = await query(
     `UPDATE customer_orders
@@ -53,7 +62,7 @@ router.post("/:id/close", requireRole("manager", "administrator"), async (req, r
 });
 
 // Create order — Manager or Administrator only
-router.post("/", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/", allow([["production.correct-order", "edit"], ["orders.customer-orders", "create"]]), async (req, res) => {
   const {
     order_date, scheduled_batching_time, required_at_site_time, truck_dispatch_interval_minutes,
     customer_id, site_id, mix_grade_id, pump_requirement, pump_id,
@@ -170,7 +179,7 @@ router.post("/", requireRole("manager", "administrator"), async (req, res) => {
 // (a delivery counts once it exists, not only once formally completed) —
 // this used to require status = 'completed', which no longer matched how
 // every other figure in this app counts deliveries.
-router.get("/pump-utilization-month", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/pump-utilization-month", DASH, async (req, res) => {
   const { rows } = await query(
     `SELECT COALESCE(p.pump_code, 'Without pump') AS pump_code, COALESCE(p.pump_type::text, 'none') AS pump_type,
             COUNT(dt.id) AS deliveries,
@@ -185,7 +194,7 @@ router.get("/pump-utilization-month", requireRole("manager", "administrator"), a
   res.json(rows);
 });
 
-router.get("/dashboard", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/dashboard", DASH, async (req, res) => {
   const [today, month, fleet, delayed, rejected, target] = await Promise.all([
     query(
       `SELECT COALESCE(SUM(dt.loaded_quantity_m3), 0) - COALESCE(SUM(sq.rejected_quantity_m3), 0) AS total
@@ -271,7 +280,7 @@ router.get("/dashboard", requireRole("manager", "administrator"), async (req, re
 // Also flags any truck that has been sitting at site more than 2 hours since
 // arrival (site_supervisor's "reached_site" confirmation) so the delay is
 // visible right on this list, not just as a background count.
-router.get("/active-trucks", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/active-trucks", TRUCKS, async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, dt.created_at, dt.order_id, dt.loaded_quantity_m3,
             t.truck_number, u.name AS driver_name, c.name AS customer_name, s.name AS site_name,
@@ -307,7 +316,7 @@ router.get("/active-trucks", requireRole("manager", "administrator"), async (req
 });
 
 // Manager clears a QC flag once they've reviewed it.
-router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/active-trucks/:ticketId/mark-reviewed", DELAY_REASON, async (req, res) => {
   const { response } = req.body;
   if (!response) return res.status(400).json({ error: "Write the action taken or reason before marking this reviewed." });
   await query(
@@ -327,7 +336,7 @@ router.post("/active-trucks/:ticketId/mark-reviewed", requireRole("manager", "ad
 // Records why a truck sat at site past the alert threshold — this alert is
 // purely live/computed with no notification row behind it, so there was
 // nowhere to record a reason at all until now.
-router.post("/tickets/:ticketId/site-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/tickets/:ticketId/site-delay-reason", DELAY_REASON, async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ error: "Write a reason." });
   await query(
@@ -337,7 +346,7 @@ router.post("/tickets/:ticketId/site-delay-reason", requireRole("manager", "admi
   res.json({ ok: true });
 });
 
-router.post("/tickets/:ticketId/apply-delay-charge", requireRole("manager", "administrator", "accountant"), async (req, res) => {
+router.post("/tickets/:ticketId/apply-delay-charge", allow([["orders.delay-charge", "edit"]]), async (req, res) => {
   const FREE_MINUTES = 120;
 
   const { rows } = await query(
@@ -410,7 +419,7 @@ router.post("/tickets/:ticketId/apply-delay-charge", requireRole("manager", "adm
 
 
 // the Site Supervisor didn't (or Manager wants to add more context).
-router.post("/:orderId/pump-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:orderId/pump-delay-reason", DELAY_REASON, async (req, res) => {
   const { reason } = req.body;
   await query(
     "UPDATE customer_orders SET pump_departure_delay_reason = $1, pump_departure_delay_reason_by = $2, pump_departure_delay_reason_at = now() WHERE id = $3",
@@ -419,7 +428,7 @@ router.post("/:orderId/pump-delay-reason", requireRole("manager", "administrator
   res.json({ ok: true });
 });
 
-router.post("/:orderId/site-ready-delay-reason", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:orderId/site-ready-delay-reason", DELAY_REASON, async (req, res) => {
   const { reason } = req.body;
   await query(
     "UPDATE customer_orders SET site_ready_delay_reason = $1, site_ready_delay_reason_by = $2, site_ready_delay_reason_at = now() WHERE id = $3",
@@ -431,7 +440,7 @@ router.post("/:orderId/site-ready-delay-reason", requireRole("manager", "adminis
 // Manager reviews the Site Supervisor's "work completed" signal and
 // explicitly confirms — this is the only thing that actually sets the order
 // to completed; the supervisor's signal alone never does.
-router.post("/:orderId/confirm-completion", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/:orderId/confirm-completion", allow([["orders.confirm-completion", "edit"]]), async (req, res) => {
   const { rows } = await query(
     `UPDATE customer_orders SET status = 'completed', terminal_at = now()
      WHERE id = $1 AND status NOT IN ('cancelled', 'closed', 'completed')
@@ -469,7 +478,7 @@ router.post("/:orderId/confirm-completion", requireRole("manager", "administrato
 // assigned_sales_representative_id, order's sales_representative_id) — the
 // same resolution pattern customerPortal.js's resolveOrderContacts and
 // reports.js's salesmanMonthly already use).
-router.get("/:orderId/tracking", requireRole("manager", "administrator", "site_supervisor", "sales_executive"), async (req, res) => {
+router.get("/:orderId/tracking", allow([["orders.live-tracking", "view"], ["production.manager-dashboard", "view"], ["production.correct-order", "view"], ["orders.customer-orders", "view"]], { roles: ["site_supervisor"] }), async (req, res) => {
   if (req.user.role === "site_supervisor" || req.user.role === "sales_executive") {
     const { rows } = await query(
       `SELECT o.id
@@ -496,7 +505,7 @@ router.get("/:orderId/tracking", requireRole("manager", "administrator", "site_s
 
 // Completed trips today, with the full timeline: batching (ticket created),
 // left plant (dispatched by QC), reached site, unloading start, unloading finish.
-router.get("/completed-trips", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/completed-trips", DASH, async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.status, t.truck_number, u.name AS driver_name,
             c.name AS customer_name, s.name AS site_name, dt.loaded_quantity_m3,
@@ -529,7 +538,7 @@ router.get("/completed-trips", requireRole("manager", "administrator"), async (r
 // Completed Trips happens to use for that column; and unloading_completed
 // for "Site Out", not the unconfirmed 'left_site' geofence hint (see the
 // round-98 postmortem comment on this same mistake in maintenance.js).
-router.get("/truck-timing-report", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/truck-timing-report", allow([["reports.truck-timing", "view"]]), async (req, res) => {
   const today = istDay();
   const defaultFrom = istDaysAgo(4); // 5-day window ending today, by default
   const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : defaultFrom;
@@ -561,7 +570,7 @@ router.get("/truck-timing-report", requireRole("manager", "administrator"), asyn
 });
 
 // Latest known position for every truck currently on an active trip
-router.get("/live-locations", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/live-locations", TRUCKS, async (req, res) => {
   const { rows } = await query(
     `SELECT DISTINCT ON (dt.id)
             dt.id AS ticket_id, dt.ticket_number, t.truck_number, u.name AS driver_name,
@@ -583,7 +592,7 @@ router.get("/live-locations", requireRole("manager", "administrator"), async (re
 // time still need to be trackable. Stays listed here until the driver
 // explicitly presses Duty OFF; a gap in recent GPS pings (backgrounded app,
 // bad signal) is shown as "last seen" rather than dropping them off the list.
-router.get("/on-duty-drivers", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/on-duty-drivers", DASH, async (req, res) => {
   const { rows } = await query(
     `SELECT DISTINCT ON (d.driver_id)
             d.driver_id, u.name AS driver_name, d.event_time AS duty_since,
@@ -616,7 +625,7 @@ router.get("/on-duty-drivers", requireRole("manager", "administrator"), async (r
 // confirmation step, so there's one time per stage, not two) against the
 // nearest GPS ping at that moment. A big gap between the two is worth a
 // look; a small one is just normal GPS noise and isn't flagged.
-router.get("/trip-time-crosscheck", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/trip-time-crosscheck", allow([["reports.trip-time-crosscheck", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT dt.id AS ticket_id, dt.ticket_number, dt.ticket_date,
             u.name AS driver_name, t.truck_number, c.name AS customer_name, s.name AS site_name,

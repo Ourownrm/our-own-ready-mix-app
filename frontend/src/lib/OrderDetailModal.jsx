@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
+import { usePermissions } from "./PermissionContext.jsx";
 import { formatOrderNumber } from "./orderNumber.js";
 import { TruckTrackingPanel } from "./DeliveryTrackingView.jsx";
 
@@ -8,6 +9,7 @@ export default function OrderDetailModal({ orderId, onClose }) {
   const [order, setOrder] = useState(null);
   const [error, setError] = useState("");
   const { user } = useAuth();
+  const { can } = usePermissions();
 
   useEffect(() => {
     if (!orderId) return;
@@ -76,7 +78,8 @@ export default function OrderDetailModal({ orderId, onClose }) {
             )}
             <Row label="Remarks" value={order.remarks || "–"} />
             <Row label="Created by" value={order.created_by_name || "–"} />
-            {["manager", "administrator"].includes(user?.role) && (
+            {/* Round 260 — the panel's route (/orders/:id/tracking) asks for these. */}
+            {(can("orders.live-tracking") || can("production.manager-dashboard") || can("production.correct-order")) && (
               <TruckTrackingPanel orderId={order.id} />
             )}
           </div>

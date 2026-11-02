@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
+import { usePermissions } from "../lib/PermissionContext.jsx";
 import { useAuth } from "../lib/AuthContext.jsx";
 import OrderDetailModal from "../lib/OrderDetailModal.jsx";
 import { formatOrderNumber } from "../lib/orderNumber.js";
@@ -12,7 +13,9 @@ export default function OrdersSchedule() {
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
   const { user } = useAuth();
-  const canClose = user?.role === "manager" || isAdminLevel(user?.role);
+  // Round 260 — the close route asks for these functions, not a role.
+  const { can } = usePermissions();
+  const canClose = can("production.correct-order", "edit") || can("orders.customer-orders", "edit");
 
   async function load() {
     try {

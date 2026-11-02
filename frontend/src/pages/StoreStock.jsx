@@ -27,8 +27,9 @@ const STATUS_COLOR = { pending: "var(--amber, #9C6B12)", approved: "var(--info)"
 
 export default function StoreStock() {
   const { user } = useAuth();
-  const isManager = user?.role === "manager" || isAdminLevel(user?.role);
   const { can } = usePermissions();
+  // Round 260 — Adjust / Set rate ask the store items "edit" function, as their routes do.
+  const isManager = can("store.items", "edit");
 
   const [items, setItems] = useState([]);
   const [mine, setMine] = useState([]);

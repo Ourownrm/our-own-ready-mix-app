@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 
 // ===================== HOME SCREEN PHOTOS — STAFF SIDE (Round 131, item 4) =====================
 // Manager/Admin manage a small gallery of plant/site photos shown as a
@@ -10,7 +11,13 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 // facing side of this). Uploaded as base64 JSON, same convention as
 // technicalWritings.js (no multipart middleware anywhere in this app).
 const router = Router();
-router.use(requireAuth, requireRole("manager", "administrator"));
+// Round 260 — the Access Control page's "Home screen photos" function.
+router.use(requireAuth);
+router.get("*", allow([["admin.home-screen-photos", "view"]]));
+router.post("*", allow([["admin.home-screen-photos", "create"]]));
+router.patch("*", allow([["admin.home-screen-photos", "edit"]]));
+router.put("*", allow([["admin.home-screen-photos", "edit"]]));
+router.delete("*", allow([["admin.home-screen-photos", "delete"]]));
 
 const MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5MB — a phone photo, not a raw camera dump
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];

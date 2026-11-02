@@ -6,6 +6,7 @@ import { deemedAcceptOnFirstOrder } from "../lib/priceList.js";
 import { pool, query } from "../db.js";
 import { upperName } from "../lib/names.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { daysElapsedIn, istDay, istDaysAgo, istDaysFromNow, istMonth } from "../lib/istDate.js";
 
@@ -1273,7 +1274,7 @@ router.delete("/forecasts/:id", requireRole("sales_executive"), async (req, res)
 // Assign a salesperson to the project/site — the actual fix for a project
 // not showing up anywhere in Sales Forecast, since everything here is keyed
 // off this assignment. Persists for the site's whole lifetime.
-router.post("/sites/:siteId/assign-salesperson", requireRole("manager", "administrator"), async (req, res) => {
+router.post("/sites/:siteId/assign-salesperson", allow([["masters.sites", "edit"]]), async (req, res) => {
   const { salesperson_id } = req.body;
   if (!salesperson_id) return res.status(400).json({ error: "Select a salesperson." });
   const { rows } = await query(

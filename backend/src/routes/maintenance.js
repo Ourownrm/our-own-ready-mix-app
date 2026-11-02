@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { CHECKLIST_SECTIONS, CHECKLIST_ITEM_KEYS, RATING_SCALE, scoreFromRatings } from "../lib/inspectionChecklist.js";
 import { istDay } from "../lib/istDate.js";
 import { raiseJobSafe } from "../lib/maintenanceJobs.js";
@@ -46,7 +47,7 @@ async function saveScope(actionPointId, truckIds, equipmentIds) {
   }
 }
 
-router.get("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/action-points", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT ap.id, ap.name, ap.interval_days, ap.interval_hours, ap.interval_qty_m3, ap.is_active, ap.created_at,
             COALESCE(array_agg(sc.truck_id) FILTER (WHERE sc.truck_id IS NOT NULL), '{}') AS truck_ids,
@@ -59,7 +60,7 @@ router.get("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
   res.json(rows);
 });
 
-router.post("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
+router.post("/action-points", allow([["fleet.maintenance", "create"]]), async (req, res) => {
   const { name, interval_days, interval_hours, interval_qty_m3, truck_ids, equipment_ids } = req.body;
   if (!name || (!interval_days && !interval_hours && !interval_qty_m3)) {
     return res.status(400).json({ error: "Name and at least one of interval days / interval hours / interval quantity (m3) are required." });
@@ -73,7 +74,7 @@ router.post("/action-points", requireRole(...STAFF_ROLES), async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-router.patch("/action-points/:id", requireRole(...STAFF_ROLES), async (req, res) => {
+router.patch("/action-points/:id", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { name, interval_days, interval_hours, interval_qty_m3, is_active, truck_ids, equipment_ids } = req.body;
   // Round 135 bug fix: this used `?? null` (only null/undefined become
   // null), unlike POST's `|| null` below — so editing an item that has only
@@ -137,7 +138,7 @@ router.patch("/action-points/:id", requireRole(...STAFF_ROLES), async (req, res)
 // only due for an action point that EXPLICITLY lists it in its scope — equipment
 // is opt-in, so adding the batching plant to an action point's scope is what
 // starts tracking it.
-router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/dashboard", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const [dueRows, equipDueRows, inWorkshop, turnaround] = await Promise.all([
     query(`
       SELECT
@@ -272,7 +273,7 @@ router.get("/dashboard", requireRole(...STAFF_ROLES), async (req, res) => {
 // truck/equipment + action point (the due-list query above always reads the
 // most recent log). Round 179 (#9) — a log is for a truck OR a piece of
 // equipment (e.g. the batching plant); exactly one is required.
-router.post("/logs", requireRole(...STAFF_ROLES), async (req, res) => {
+router.post("/logs", allow([["fleet.maintenance", "create"]]), async (req, res) => {
   const { action_point_id, truck_id, equipment_id, done_at, hours_at_service, notes } = req.body;
   if (!action_point_id) return res.status(400).json({ error: "Action point is required." });
   if ((truck_id && equipment_id) || (!truck_id && !equipment_id)) {
@@ -290,7 +291,7 @@ router.post("/logs", requireRole(...STAFF_ROLES), async (req, res) => {
 
 // Per-vehicle service history — standard maintenance completions and
 // external-workshop repairs, merged into one timeline.
-router.get("/vehicle/:truckId/history", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/vehicle/:truckId/history", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const truckId = req.params.truckId;
   const [logs, repairs] = await Promise.all([
     query(
@@ -329,7 +330,7 @@ router.get("/vehicle/:truckId/history", requireRole(...STAFF_ROLES), async (req,
 // Round 134: truck_id is no longer guaranteed (a Loader Operator's request
 // carries equipment_id instead), so both joins are LEFT now — exactly one
 // of truck_number/equipment_name comes back non-null per row.
-router.get("/external-repairs", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/external-repairs", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT er.*, t.truck_number, eq.name AS equipment_name, ru.name AS requested_by_name, au.name AS approved_by_name
      FROM external_repairs er
@@ -342,7 +343,7 @@ router.get("/external-repairs", requireRole(...STAFF_ROLES), async (req, res) =>
   res.json(rows);
 });
 
-router.patch("/external-repairs/:id/approve", requireRole(...STAFF_ROLES), async (req, res) => {
+router.patch("/external-repairs/:id/approve", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { workshop_name } = req.body;
   const { rows } = await query(
     `UPDATE external_repairs SET status = 'approved', approved_by = $1, approved_at = now(), workshop_name = COALESCE($2, workshop_name)
@@ -353,7 +354,7 @@ router.patch("/external-repairs/:id/approve", requireRole(...STAFF_ROLES), async
   res.json(rows[0]);
 });
 
-router.patch("/external-repairs/:id/reject", requireRole(...STAFF_ROLES), async (req, res) => {
+router.patch("/external-repairs/:id/reject", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { rejection_reason } = req.body;
   if (!rejection_reason) return res.status(400).json({ error: "A reason is required to reject a repair request." });
   const { rows } = await query(
@@ -365,7 +366,7 @@ router.patch("/external-repairs/:id/reject", requireRole(...STAFF_ROLES), async 
   res.json(rows[0]);
 });
 
-router.patch("/external-repairs/:id/sent-out", requireRole(...STAFF_ROLES), async (req, res) => {
+router.patch("/external-repairs/:id/sent-out", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { workshop_name } = req.body;
   const { rows } = await query(
     `UPDATE external_repairs SET status = 'sent_out', sent_out_at = now(), workshop_name = COALESCE($1, workshop_name)
@@ -376,7 +377,7 @@ router.patch("/external-repairs/:id/sent-out", requireRole(...STAFF_ROLES), asyn
   res.json(rows[0]);
 });
 
-router.patch("/external-repairs/:id/returned", requireRole(...STAFF_ROLES), async (req, res) => {
+router.patch("/external-repairs/:id/returned", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { rows } = await query(
     `UPDATE external_repairs SET status = 'returned', returned_at = now()
      WHERE id = $1 AND status = 'sent_out' RETURNING *`,
@@ -396,7 +397,7 @@ router.patch("/external-repairs/:id/returned", requireRole(...STAFF_ROLES), asyn
 // workflow once it's due (see /send-external below), which links the two
 // records via external_repair_id rather than duplicating that workflow's
 // own states here.
-router.get("/repair-action-points", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/repair-action-points", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT rap.*, t.truck_number, eq.name AS equipment_name,
             cu.name AS created_by_name, ou.name AS completed_by_name,
@@ -413,7 +414,7 @@ router.get("/repair-action-points", requireRole(...STAFF_ROLES), async (req, res
   res.json(rows);
 });
 
-router.post("/repair-action-points", requireRole(...STAFF_ROLES), async (req, res) => {
+router.post("/repair-action-points", allow([["fleet.maintenance", "create"]]), async (req, res) => {
   const { truck_id, equipment_id, description, repair_type, scheduled_date, notes } = req.body;
   if (!description || !repair_type) {
     return res.status(400).json({ error: "Description and type (Internal/External) are required." });
@@ -432,7 +433,7 @@ router.post("/repair-action-points", requireRole(...STAFF_ROLES), async (req, re
   res.status(201).json(rows[0]);
 });
 
-router.patch("/repair-action-points/:id", requireRole(...STAFF_ROLES), async (req, res) => {
+router.patch("/repair-action-points/:id", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { description, repair_type, scheduled_date, status, notes } = req.body;
   if (repair_type && !["internal", "external"].includes(repair_type)) {
     return res.status(400).json({ error: "Type must be Internal or External." });
@@ -464,7 +465,7 @@ router.patch("/repair-action-points/:id", requireRole(...STAFF_ROLES), async (re
   res.json(rows[0]);
 });
 
-router.delete("/repair-action-points/:id", requireRole(...STAFF_ROLES), async (req, res) => {
+router.delete("/repair-action-points/:id", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { rowCount } = await query(`DELETE FROM repair_action_points WHERE id = $1`, [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "Repair action point not found." });
   res.status(204).end();
@@ -476,7 +477,7 @@ router.delete("/repair-action-points/:id", requireRole(...STAFF_ROLES), async (r
 // requester having to separately raise a fresh external-repair request.
 // Not required — an External point can still be tracked to completion here
 // on its own if the workshop is being arranged outside the app.
-router.post("/repair-action-points/:id/send-external", requireRole(...STAFF_ROLES), async (req, res) => {
+router.post("/repair-action-points/:id/send-external", allow([["fleet.maintenance", "create"]]), async (req, res) => {
   const { rows: pointRows } = await query(`SELECT * FROM repair_action_points WHERE id = $1`, [req.params.id]);
   const point = pointRows[0];
   if (!point) return res.status(404).json({ error: "Repair action point not found." });
@@ -497,11 +498,11 @@ router.post("/repair-action-points/:id/send-external", requireRole(...STAFF_ROLE
 
 // ===================== DRIVER EVALUATION (round 98, item 11) =====================
 
-router.get("/checklist-definition", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/checklist-definition", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   res.json({ sections: CHECKLIST_SECTIONS, rating_scale: RATING_SCALE });
 });
 
-router.post("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
+router.post("/inspections", allow([["fleet.maintenance", "create"]]), async (req, res) => {
   const { truck_id, driver_id, cleaner_name, inspection_date, odometer_reading, hour_meter_reading, ratings, observations, action_items } = req.body;
   if (!truck_id || !ratings) {
     return res.status(400).json({ error: "Truck and the completed checklist are required." });
@@ -542,7 +543,7 @@ router.post("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
 // Open (and, on request, resolved) maintenance action items raised from
 // weekly inspections — this is Manager's follow-up list, separate from the
 // fixed maintenance_action_points master schedule above.
-router.get("/action-items", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/action-items", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const status = req.query.status === "resolved" ? "resolved" : req.query.status === "all" ? null : "open";
   const params = [];
   let where = "";
@@ -565,7 +566,7 @@ router.get("/action-items", requireRole(...STAFF_ROLES), async (req, res) => {
   res.json(rows);
 });
 
-router.patch("/action-items/:id/resolve", requireRole(...STAFF_ROLES), async (req, res) => {
+router.patch("/action-items/:id/resolve", allow([["fleet.maintenance", "edit"]]), async (req, res) => {
   const { resolution_notes } = req.body;
   const { rows } = await query(
     `UPDATE inspection_action_items SET status = 'resolved', resolved_by = $1, resolved_at = now(), resolution_notes = $2
@@ -576,7 +577,7 @@ router.patch("/action-items/:id/resolve", requireRole(...STAFF_ROLES), async (re
   res.json(rows[0]);
 });
 
-router.get("/inspections", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/inspections", allow([["fleet.maintenance", "view"]]), async (req, res) => {
   const params = [];
   let where = "";
   if (req.query.truck_id) { params.push(req.query.truck_id); where = `WHERE ti.truck_id = $${params.length}`; }
@@ -724,7 +725,7 @@ async function computeTransitRows(year, month, driverIds) {
   return out;
 }
 
-router.get("/best-driver", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/best-driver", allow([["fleet.maintenance", "view"], ["reports.site-efficiency", "view"]]), async (req, res) => {
   const { rows: periodRow } = await query(
     `SELECT COALESCE($1::int, EXTRACT(YEAR FROM CURRENT_DATE)::int) AS year,
             COALESCE($2::int, EXTRACT(MONTH FROM CURRENT_DATE)::int) AS month`,
@@ -863,7 +864,7 @@ router.get("/best-driver", requireRole(...STAFF_ROLES), async (req, res) => {
 // legs (plant-out -> site-in, site-out -> plant-in), so a driver who looks
 // slow overall but is simply unlucky on which sites they were assigned can
 // be told apart from one who's genuinely slower than peers on the SAME site.
-router.get("/site-efficiency", requireRole(...STAFF_ROLES), async (req, res) => {
+router.get("/site-efficiency", allow([["fleet.maintenance", "view"], ["reports.site-efficiency", "view"]]), async (req, res) => {
   const { rows: periodRow } = await query(
     `SELECT COALESCE($1::int, EXTRACT(YEAR FROM CURRENT_DATE)::int) AS year,
             COALESCE($2::int, EXTRACT(MONTH FROM CURRENT_DATE)::int) AS month`,

@@ -1154,6 +1154,17 @@ for (const mk of PLANT_IN_CHARGE_COPIED_MODULES) {
   }
 }
 
+// Round 260 — the Store stock and Supply approvals screens always accepted
+// Plant In Charge by role (Round 215). Those routes are now gated by these
+// functions, so the role's defaults carry the Manager's store functions too
+// (same copy rule as above). The issue step stays with Store.
+export const PLANT_IN_CHARGE_STORE_KEYS = ["store.items", "store.purchases", "store.purchase-approve", "store.supply-requests", "store.supply-approve", "store.supply-report"];
+for (const k of PLANT_IN_CHARGE_STORE_KEYS) {
+  const c = CATALOGUE_BY_KEY[k];
+  if (!c || c.locked || !c.roles.manager) continue;
+  c.roles.plant_in_charge = [...new Set([...(c.roles.plant_in_charge || []), ...c.roles.manager])];
+}
+
 // A module's gate and everything inside it, for the Super Admin page.
 export function functionsOfModule(moduleKey) {
   const m = MODULE_BY_KEY[moduleKey];

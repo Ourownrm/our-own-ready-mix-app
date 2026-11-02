@@ -2,7 +2,8 @@ import { Router } from "express";
 import crypto from "crypto";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requirePermission } from "../lib/permissions.js";
+import { requirePermission, can } from "../lib/permissions.js";
+import { allow } from "../lib/permissions.js";
 import { pushToRole, pushToUser } from "../lib/push.js";
 import { chargeLubricantSoon } from "../lib/maintenanceGeneral.js";
 import { ensureRound243 } from "../lib/round243Schema.js";
@@ -24,12 +25,19 @@ const EQUIP_UNITS = ["pickup_van", "loader", "generator", "company_vehicle"];
 
 // Round 257 — anyone with a company vehicle allocated to them may request
 // fuel for THAT vehicle and confirm its outside fill, whatever their role.
+// Round 260 — the role list is now the Access Control page's "Fuel /
+// lubricant requests" function (store.supply-requests create), so a Plant In
+// Charge or anyone the Super Admin gives it can request; REQUESTER_ROLES stays
+// only as that function's documented default.
 function requesterOrAllocated(req, res, next) {
-  if (req.user?.role === "super_admin" || REQUESTER_ROLES.includes(req.user?.role)) return next();
-  myVehicles(req.user.id).then((v) => {
+  if (req.user?.role === "super_admin") return next();
+  can(req.user, "store.supply-requests", "create").then((ok) => {
+    if (ok) return next();
+    return myVehicles(req.user.id).then((v) => {
     if (!v.length) return res.status(403).json({ error: "You don't have access to this." });
     req.allocatedOnly = v.map((x) => x.id);
     next();
+    });
   }).catch(next);
 }
 
@@ -119,7 +127,8 @@ router.post("/", requesterOrAllocated, async (req, res) => {
     if (request_type !== "fuel" || !EQUIP_UNITS.includes(equipment_type) || !req.allocatedOnly.includes(Number(equipment_id))) {
       return res.status(403).json({ error: "You can request fuel only for the vehicle allocated to you." });
     }
-  } else if (equipment_type === "company_vehicle" && !["manager", "administrator", "super_admin"].includes(req.user.role)
+  } else if (equipment_type === "company_vehicle" && !["administrator", "super_admin"].includes(req.user.role)
+             && !(await can(req.user, "store.supply-approve", "edit"))
              && !(await isAllocatedTo(req.user.id, equipment_id))) {
     return res.status(403).json({ error: "This company vehicle is allocated to someone else." });
   }
@@ -241,7 +250,7 @@ router.get("/mine", requesterOrAllocated, async (req, res) => {
 // or the reading has gone backwards (meter replaced, or simply mistyped) —
 // a wrong number here is worse than none, since the whole point is to catch
 // the wrong number.
-router.get("/pending", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.get("/pending", allow([["store.supply-approve", "edit"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sr.*, u.name AS requested_by_name,
             fs.name AS fuel_station_name, lt.name AS lubricant_type_name,
@@ -310,11 +319,11 @@ async function tankAvailability(excludeId = null) {
   return { current, committed, available: Math.round((current - committed) * 100) / 100, rate: rows[0].rate == null ? null : Number(rows[0].rate) };
 }
 
-router.get("/tank-available", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.get("/tank-available", allow([["store.supply-approve", "edit"]]), async (req, res) => {
   res.json(await tankAvailability());
 });
 
-router.post("/:id/approve", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.post("/:id/approve", allow([["store.supply-approve", "edit"]]), async (req, res) => {
   const { approved_quantity, approved_station_id, approved_rate } = req.body;
   const { rows: existing } = await query("SELECT * FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
   if (!existing.length) return res.status(404).json({ error: "Request not found or already actioned." });
@@ -383,7 +392,7 @@ router.post("/:id/cancel-approved", requirePermission("fuel.cancel-approved", "e
   res.json(rows[0]);
 });
 
-router.post("/:id/reject", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.post("/:id/reject", allow([["store.supply-approve", "edit"]]), async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ error: "Give a reason for rejecting this." });
   const { rows: existing } = await query("SELECT * FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
@@ -403,7 +412,7 @@ router.post("/:id/reject", requireRole("manager", "plant_in_charge", "administra
 // screen before this point. Already-issued or unknown tokens both come
 // back as a clear, safe "not usable" response rather than leaking whether
 // a token ever existed.
-router.get("/scan/:token", requireRole("store", "administrator"), async (req, res) => {
+router.get("/scan/:token", allow([["store.supply-issue", "edit"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sr.*, u.name AS requested_by_name,
             fs.name AS approved_station_name, fs.is_plant AS approved_station_is_plant,
@@ -435,7 +444,7 @@ router.get("/scan/:token", requireRole("store", "administrator"), async (req, re
 // what removes the QR from the driver's screen and blocks re-scanning) and
 // records the actual quantity, which is the figure that matters for
 // analysis, not just what was requested/approved.
-router.post("/:id/issue", requireRole("store", "administrator"), async (req, res) => {
+router.post("/:id/issue", allow([["store.supply-issue", "edit"]]), async (req, res) => {
   const { actual_quantity_issued, fuel_cost } = req.body;
   if (!actual_quantity_issued) return res.status(400).json({ error: "Enter the actual quantity issued." });
 
@@ -503,7 +512,7 @@ async function deductStoreStock(request, qty, userId, requestId) {
 // Manager can clear a pending request outright — distinct from reject
 // (which keeps a record and notifies the requester with a reason). This is
 // for duplicate or mistaken requests that don't need either.
-router.delete("/:id", requireRole("manager", "plant_in_charge", "administrator"), async (req, res) => {
+router.delete("/:id", allow([["store.supply-requests", "delete"]]), async (req, res) => {
   const { rowCount } = await query("DELETE FROM supply_requests WHERE id = $1 AND status = 'pending'", [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "Request not found or already actioned." });
   res.json({ ok: true });

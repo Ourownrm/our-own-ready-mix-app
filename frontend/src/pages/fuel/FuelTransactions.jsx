@@ -4,6 +4,7 @@ import { useAuth } from "../../lib/AuthContext.jsx";
 import { daysAgoStr, todayStr } from "../../lib/istDate.js";
 import { fmtL, fmtRs, fmtNum, fmtWhen, KIND, exportXlsx } from "./fuelUi.jsx";
 import { LedgerKind } from "./FuelDashboard.jsx";
+import { usePermissions } from "../../lib/PermissionContext.jsx";
 
 // Round 199 — one ledger for every litre in and out of the tank, with a
 // running balance, plus outside-station fills (which never touch the tank).
@@ -11,7 +12,6 @@ import { LedgerKind } from "./FuelDashboard.jsx";
 // consumption was worked out.
 
 const CHIPS = [["", "All"], ["issue", "Plant issues"], ["receipt", "Deliveries"], ["external", "Outside fills"], ["adjustment", "Adjustments"]];
-const ADJUST_ROLES = ["manager", "administrator", "super_admin"];
 
 function Detail({ r }) {
   const c = r.calc || {};
@@ -106,6 +106,7 @@ function AdjustForm({ itemId, current, onDone, onCancel }) {
 
 export default function FuelTransactions({ params }) {
   const { user } = useAuth();
+  const { can } = usePermissions();
   const [from, setFrom] = useState(params.get("from") || daysAgoStr(30));
   const [to, setTo] = useState(params.get("to") || todayStr());
   const [kind, setKind] = useState("");
@@ -121,7 +122,8 @@ export default function FuelTransactions({ params }) {
   const [error, setError] = useState("");
   const [item, setItem] = useState(null);
   const [adjusting, setAdjusting] = useState(false);
-  const canAdjust = user && ADJUST_ROLES.includes(user.role);
+  // Round 260 — the adjust route asks store items "edit" (Manager, Plant In Charge, Administrator by default).
+  const canAdjust = can("store.items", "edit");
 
   function qs(p = page, limit = 50) {
     const s = new URLSearchParams({ from_date: from, to_date: to, page: String(p), limit: String(limit) });

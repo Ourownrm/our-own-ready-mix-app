@@ -9208,3 +9208,26 @@ Owner, 2 Nov 2026: "modify quotations logic for admin to add mix design without 
 - **Pricing safety (lib/rateLookup.js)**: the line's original price-list row keeps no option name, so an order that names none (older orders, or the original mix chosen on Create Order) still prices from that row when the grade's other options are mixes added this way. Create Order and the Sales order form no longer ask "which price" when the chosen mix already decides it.
 - Schema (lib/round259Schema.js, additive): `quotation_lines.added_after_approval`, `base_line_id`, `mix_added_by`, `mix_added_at`, `mix_added_note`. Route `POST /quotations/:id/lines/:lineId/mix-design`.
 - Verified on a fresh database (/setup twice): accepted quotation — mix set on an M20 line with none, extra M25 mix added at ₹7,000, still one quotation (no R), print keeps the 2 sent lines, Create Order lists 3 mixes, order without a mix refused, orders on either M25 mix accepted and invoiced at ₹7,000, M20 now asks for the mix; approved-only quotation — mix added, price list untouched, acceptance writes both mixes as options; wrong grade / duplicate / draft refused; revision carries all 3 as normal lines. `npm run check` green; build clean.
+
+## Round 260 — Access Control reviewed: screens and their routes ask the same question (v10.92)
+
+Owner, 2 Nov 2026: Plant In Charge, given Production → Orders, saw "+ New order"; Save said "You don't have access to this". Review Super Admin access control and the Plant In Charge code.
+
+**Cause.** The Access Control page decides who sees a screen and its buttons, but POST /orders (and 116 other routes behind those screens) still checked a fixed role list (Manager / Administrator). A function granted on the page could never get past such a route; one taken away still left the route open.
+
+**Rework.**
+- `lib/permissions.js` **allow(pairs, { roles })** — passes when the person holds any listed function (module switches applied). `roles` only for a role-specific app that is not on the Access Control page (Site Supervisor's tracking).
+- **117 routes** moved from role lists to the functions of the screens that call them: Orders (create, close, confirm completion, dashboard, trucks, delay reasons, delay charge, tracking, truck timing, time cross check), Customers / sites / billing addresses / site contacts / site merge / mismatch, rates, salespersons, plant locations, visit outcome reasons, reports (delay justification, charts, outstanding, director dashboard), notifications, store stock & fuel purchases, supply approvals / issue, old fleet maintenance & breakdowns, home-screen photos, site content.
+- **Nobody loses access**: the old role lists were compared route by route with the new functions' defaults (0 lost). Migration `r260_route_grants` (once) gives each role the function its old route allowed — **skipping any role + function the Super Admin has already changed** (permission_change_log), so a deliberate "off" stays off.
+- New by default: Manager can see the salesperson list (they could already add one); Sales Executive can add a salesperson from the booking form (that button was refused before).
+- **Frontend** follows the same functions: App routes (Plant overview, Delay justification, Charts, Truck timing, Time cross check, Outstanding, Maintenance, Site content, Home photos, Supply approvals, Store stock, Notifications); ProtectedRoute accepts `[key, action]`. Buttons: Confirm completion (`orders.confirm-completion`), Reschedule (`orders.reschedule`), Close, Create order, truck panel. Plant overview no longer fails whole when one part (supply / purchase approvals, notifications) is not granted.
+- `scripts/check-screen-guards.mjs` (in `npm run check`): fails if a Super-Admin-controlled screen calls a route guarded only by a role list.
+
+**Plant In Charge review.**
+- Fuel module: Request / Receive / Approve / Delete purchase, Approve fuel requests and Adjust stock were hidden from Plant In Charge by role lists in the screens even though the role holds those functions — now by function.
+- Store / supply functions the role reached by role list are now its defaults (`store.items`, `store.purchases`, `store.purchase-approve`, `store.supply-requests`, `store.supply-approve`, `store.supply-report`).
+- Requesting fuel / lubricant (`store.supply-requests` create) instead of a role list.
+- Notifications: a Plant In Charge given Notifications also reads what is addressed to the Manager.
+- Not changed: Plant In Charge's default Production → Orders access (the Super Admin grants it, as done today); pushes still go by role.
+
+**Verified** (scratch Postgres set up with v10.90, then this round): grants applied on start-up; PIC without Orders refused, given Orders by the Super Admin (API) → order saved, billing addresses load, close works, confirm completion still needs its own function; Manager with Orders edit and Customer orders create both switched off → refused; PIC store / supply routes 200; every role on every converted route's old list — 65 GET and 78 write probes — none refused. `npm run check` green; build clean.

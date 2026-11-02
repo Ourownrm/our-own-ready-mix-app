@@ -28,8 +28,10 @@ export default function ProtectedRoute({ roles, perm, children }) {
   if (user.role === "super_admin") return children;
   if (perm) {
     if (!ready) return null;
+    // Round 260 — an entry may be [key, action] for a function with no View
+    // (e.g. ["store.supply-approve", "edit"]).
     const keys = Array.isArray(perm) ? perm : [perm];
-    if (keys.some((k) => can(k, "view"))) return children;
+    if (keys.some((k) => (Array.isArray(k) ? can(k[0], k[1]) : can(k, "view")))) return children;
     return <NoAccess />;
   }
   if (roles && !roles.includes(user.role)) return <Navigate to="/login" replace />;

@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 import { pool, query } from "../db.js";
 import { mergeSite } from "../lib/recordMerge.js";
 import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
-import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
+import { requirePermission, requireAnyPermission, allow } from "../lib/permissions.js";
 
 // Round 192 — the Fuel Stations & Equipment screen manages three lists. Each
 // list keeps its own function, and the screen's function opens all three, so
@@ -124,7 +124,7 @@ router.get("/customers", requireAnyPermission(["masters.customers", "quality.mix
   res.json(rows);
 });
 
-router.post("/customers", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
+router.post("/customers", allow([["masters.customers", "create"], ["masters.customer-quick-create", "create"]]), async (req, res) => {
   const { contact_number, billing_address } = req.body;
   const name = upperName(req.body.name);
   if (!name) return res.status(400).json({ error: "Customer name is required." });
@@ -135,7 +135,7 @@ router.post("/customers", requireRole("administrator", "manager", "sales_executi
   res.status(201).json(rows[0]);
 });
 
-router.patch("/customers/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.patch("/customers/:id", allow([["masters.customers", "edit"]]), async (req, res) => {
   const { contact_number, billing_address } = req.body;
   const name = upperName(req.body.name);
   if (!name) return res.status(400).json({ error: "Customer name is required." });
@@ -147,7 +147,7 @@ router.patch("/customers/:id", requireRole("administrator", "manager"), async (r
   res.json(rows[0]);
 });
 
-router.post("/customers/:id/status", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/customers/:id/status", allow([["masters.customers", "edit"]]), async (req, res) => {
   const { is_active } = req.body;
   const { rows } = await query(
     "UPDATE customers SET is_active = $1 WHERE id = $2 RETURNING *",
@@ -162,7 +162,7 @@ router.post("/customers/:id/status", requireRole("administrator", "manager"), as
 // for a real, established customer is "Disable" instead, which is reversible
 // and doesn't risk an FK conflict; delete is really for a duplicate or a
 // pure data-entry mistake caught immediately.
-router.delete("/customers/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.delete("/customers/:id", allow([["masters.customers", "delete"]]), async (req, res) => {
   const { rows: usageCheck } = await query(
     `SELECT
        (SELECT COUNT(*) FROM customer_orders WHERE customer_id = $1) AS orders,
@@ -191,7 +191,7 @@ router.delete("/customers/:id", requireRole("administrator", "manager"), async (
 // none has every order fall back to the plain customers.billing_address
 // field, exactly as before this feature existed.
 
-router.get("/customers/:customerId/billing-addresses", requireRole("administrator", "manager", "sales_executive", "accountant"), async (req, res) => {
+router.get("/customers/:customerId/billing-addresses", allow([["masters.billing-addresses", "view"], ["production.correct-order", "view"], ["orders.customer-orders", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT * FROM customer_billing_addresses WHERE customer_id = $1 ORDER BY is_default DESC, is_active DESC, name`,
     [req.params.customerId]
@@ -199,7 +199,7 @@ router.get("/customers/:customerId/billing-addresses", requireRole("administrato
   res.json(rows);
 });
 
-router.post("/customers/:customerId/billing-addresses", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/customers/:customerId/billing-addresses", allow([["masters.billing-addresses", "create"]]), async (req, res) => {
   const { name, address, gstin, is_default } = req.body;
   if (!name) return res.status(400).json({ error: "A name for this billing entity is required (e.g. the company name)." });
   const { rows: customerCheck } = await query("SELECT id FROM customers WHERE id = $1", [req.params.customerId]);
@@ -222,7 +222,7 @@ router.post("/customers/:customerId/billing-addresses", requireRole("administrat
   res.status(201).json(rows[0]);
 });
 
-router.patch("/billing-addresses/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.patch("/billing-addresses/:id", allow([["masters.billing-addresses", "edit"]]), async (req, res) => {
   const { name, address, gstin } = req.body;
   if (!name) return res.status(400).json({ error: "A name for this billing entity is required." });
   const { rows } = await query(
@@ -233,7 +233,7 @@ router.patch("/billing-addresses/:id", requireRole("administrator", "manager"), 
   res.json(rows[0]);
 });
 
-router.post("/billing-addresses/:id/set-default", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/billing-addresses/:id/set-default", allow([["masters.billing-addresses", "edit"]]), async (req, res) => {
   const { rows: rowCheck } = await query("SELECT customer_id FROM customer_billing_addresses WHERE id = $1", [req.params.id]);
   if (!rowCheck.length) return res.status(404).json({ error: "Billing address not found." });
   await query("UPDATE customer_billing_addresses SET is_default = false WHERE customer_id = $1", [rowCheck[0].customer_id]);
@@ -245,7 +245,7 @@ router.post("/billing-addresses/:id/set-default", requireRole("administrator", "
 // row (invoices only ever snapshot its text anyway, so a deactivated profile
 // changes nothing about history), it just stops appearing as a choice for
 // new orders.
-router.post("/billing-addresses/:id/status", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/billing-addresses/:id/status", allow([["masters.billing-addresses", "edit"]]), async (req, res) => {
   const { is_active } = req.body;
   const { rows } = await query(
     "UPDATE customer_billing_addresses SET is_active = $1 WHERE id = $2 RETURNING *",
@@ -259,7 +259,7 @@ router.post("/billing-addresses/:id/status", requireRole("administrator", "manag
 
 // Every site including disabled ones, with full detail plus its assigned
 // salesperson — for the Administrator management panel.
-router.get("/sites", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/sites", allow([["masters.sites", "view"], ["masters.customers", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT s.*, c.name AS customer_name, sp.name AS salesperson_name,
             tc.label AS trip_allowance_label
@@ -281,7 +281,7 @@ router.get("/sites", requireRole("administrator", "manager"), async (req, res) =
 // diagnostic/adjustment view, not a new detection mechanism — the detection
 // logic in scheduledChecks.js is unchanged; this just makes what it's using
 // visible and editable.
-router.get("/sites/geofence-report", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/sites/geofence-report", allow([["reports.geofence", "view"]]), async (req, res) => {
   const { rows: plant } = await query(
     `SELECT id, name, latitude, longitude, geofence_radius_m, is_active FROM plant_locations ORDER BY is_active DESC, name`
   );
@@ -303,7 +303,7 @@ router.get("/sites/geofence-report", requireRole("administrator", "manager"), as
   res.json({ plant_locations: plant, sites });
 });
 
-router.post("/sites", requireRole("administrator", "manager", "sales_executive"), async (req, res) => {
+router.post("/sites", allow([["masters.sites", "create"], ["masters.site-quick-create", "create"]]), async (req, res) => {
   const { customer_id, address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, assigned_sales_representative_id, plant_out_grace_minutes, force } = req.body;
   const name = upperName(req.body.name);
   if (!customer_id || !name) return res.status(400).json({ error: "Customer and site name are required." });
@@ -333,7 +333,7 @@ router.post("/sites", requireRole("administrator", "manager", "sales_executive")
 // Round 121, item 6 — geofence_radius_m gained a UI (below); previously it
 // only ever existed in the schema with its SQL-level default (150), with no
 // way to actually set it per site.
-router.patch("/sites/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.patch("/sites/:id", allow([["masters.sites", "edit"]]), async (req, res) => {
   const { address, distance_from_plant_km, trip_allowance_category_id, latitude, longitude, geofence_radius_m, plant_out_grace_minutes } = req.body;
   const name = upperName(req.body.name);
   if (!name) return res.status(400).json({ error: "Site name is required." });
@@ -348,7 +348,7 @@ router.patch("/sites/:id", requireRole("administrator", "manager"), async (req, 
   res.json(rows[0]);
 });
 
-router.post("/sites/:id/status", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/sites/:id/status", allow([["masters.sites", "edit"]]), async (req, res) => {
   const { is_active } = req.body;
   const { rows } = await query(
     "UPDATE sites SET is_active = $1 WHERE id = $2 RETURNING *",
@@ -360,7 +360,7 @@ router.post("/sites/:id/status", requireRole("administrator", "manager"), async 
 
 // Hard delete — only if nothing references this site yet. Disable is the
 // right move for any site with real history.
-router.delete("/sites/:id", requireRole("administrator", "manager"), async (req, res) => {
+router.delete("/sites/:id", allow([["masters.sites", "delete"]]), async (req, res) => {
   const { rows: usageCheck } = await query(
     `SELECT
        (SELECT COUNT(*) FROM customer_orders WHERE site_id = $1) AS orders,
@@ -385,7 +385,7 @@ router.delete("/sites/:id", requireRole("administrator", "manager"), async (req,
 // other, even though both show the same name everywhere. Detects the
 // pattern (case/whitespace-insensitive match) so it can be found before it
 // causes another round of "why isn't this invoicing."
-router.get("/sites/duplicates", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/sites/duplicates", allow([["masters.site-merge", "delete"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT s.id, s.name, s.customer_id, c.name AS customer_name, s.is_active,
             (SELECT COUNT(*) FROM customer_orders WHERE site_id = s.id) AS order_count,
@@ -407,7 +407,7 @@ router.get("/sites/duplicates", requireRole("administrator", "manager"), async (
 // Reassigns every reference from one site to another and disables the one
 // being merged away — the records themselves (past orders, invoices) are
 // never touched or deleted, only which site row they point at.
-router.post("/sites/:duplicateId/merge-into/:canonicalId", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/sites/:duplicateId/merge-into/:canonicalId", allow([["masters.site-merge", "delete"]]), async (req, res) => {
   const { duplicateId, canonicalId } = req.params;
   if (duplicateId === canonicalId) return res.status(400).json({ error: "Can't merge a site into itself." });
   // Round 230 — the move is now lib/recordMerge.js: every table that refers
@@ -435,7 +435,7 @@ router.post("/sites/:duplicateId/merge-into/:canonicalId", requireRole("administ
 // was filtered by customer; existing broken orders need to be found and
 // fixed by hand, since which site was actually intended can't be inferred
 // automatically.
-router.get("/orders/site-customer-mismatches", requireRole("administrator", "manager"), async (req, res) => {
+router.get("/orders/site-customer-mismatches", allow([["orders.site-mismatch", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT co.id AS order_id, co.order_date, co.order_quantity_m3, co.status,
             oc.name AS order_customer_name, co.customer_id AS order_customer_id,
@@ -455,7 +455,7 @@ router.get("/orders/site-customer-mismatches", requireRole("administrator", "man
 // Reassigns the order to a site that actually belongs to its own customer —
 // the targeted, safe fix (only touches this one order, not the site record
 // or any other order referencing it).
-router.post("/orders/:id/fix-site-mismatch", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/orders/:id/fix-site-mismatch", allow([["orders.site-mismatch", "edit"]]), async (req, res) => {
   const { correct_site_id } = req.body;
   if (!correct_site_id) return res.status(400).json({ error: "Select the correct site." });
 
@@ -516,7 +516,7 @@ router.delete("/trucks/:id", requireRole("administrator"), async (req, res) => {
 // Administrator can actually see what's on file before adding a new one
 // instead of guessing (this visibility gap is what let overlapping/
 // inconsistent rates happen in the first place).
-router.get("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+router.get("/rates", allow([["accounts.rates", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name, s.name AS site_name,
             (rm.effective_from <= CURRENT_DATE AND (rm.effective_to IS NULL OR rm.effective_to >= CURRENT_DATE)) AS currently_active
@@ -541,7 +541,7 @@ async function ratesLocked(res) {
   return false;
 }
 
-router.post("/rates", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+router.post("/rates", allow([["accounts.rates", "create"]]), async (req, res) => {
   const {
     customer_id, site_id, mix_grade_id, rate_per_m3, waiting_charge_per_hour, effective_from,
     line_pump_charge, line_pump_min_qty_m3, boom_pump_charge, boom_pump_min_qty_m3,
@@ -567,7 +567,7 @@ router.post("/rates", requireRole("administrator", "accountant", "manager"), asy
 // Closes out a rate as of a given date, so it stops being picked up for new
 // deliveries from that point on — use this when replacing a rate instead of
 // just adding a new row and leaving the old one open-ended indefinitely.
-router.post("/rates/:id/end", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+router.post("/rates/:id/end", allow([["accounts.rates", "edit"]]), async (req, res) => {
   const { effective_to } = req.body;
   if (await ratesLocked(res)) return;
   if (!effective_to) return res.status(400).json({ error: "End date is required." });
@@ -585,7 +585,7 @@ router.post("/rates/:id/end", requireRole("administrator", "accountant", "manage
 // own. Finds rows matching that exact fingerprint (generic, no site) so they
 // can be reviewed and removed. Never runs automatically — this only lists
 // candidates for a human to check.
-router.get("/rates/review-seed-pollution", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+router.get("/rates/review-seed-pollution", allow([["accounts.rates", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT rm.*, c.name AS customer_name, m.name AS mix_grade_name,
             (SELECT COUNT(*) FROM invoices i
@@ -603,7 +603,7 @@ router.get("/rates/review-seed-pollution", requireRole("administrator", "account
   res.json(rows);
 });
 
-router.delete("/rates/:id", requireRole("administrator", "accountant", "manager"), async (req, res) => {
+router.delete("/rates/:id", allow([["accounts.rates", "delete"]]), async (req, res) => {
   if (await ratesLocked(res)) return;
   const { rowCount } = await query("DELETE FROM rate_master WHERE id = $1", [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: "Rate not found." });
@@ -696,12 +696,12 @@ router.delete("/fuel-stations/:id", requirePermission("fleet.fuel-stations", "de
 // active plant at a time, same "set-active unmarks any previous one" pattern
 // already used for fuel_stations.is_plant just above. =====
 
-router.get("/plant-locations", requireRole("administrator"), async (req, res) => {
+router.get("/plant-locations", allow([["masters.plant-locations", "view"]]), async (req, res) => {
   const { rows } = await query("SELECT * FROM plant_locations ORDER BY is_active DESC, name");
   res.json(rows);
 });
 
-router.post("/plant-locations", requireRole("administrator"), async (req, res) => {
+router.post("/plant-locations", allow([["masters.plant-locations", "create"]]), async (req, res) => {
   const { name, latitude, longitude, geofence_radius_m } = req.body;
   if (latitude === undefined || longitude === undefined || latitude === null || longitude === null) {
     return res.status(400).json({ error: "Latitude and longitude are required." });
@@ -714,7 +714,7 @@ router.post("/plant-locations", requireRole("administrator"), async (req, res) =
   res.status(201).json(rows[0]);
 });
 
-router.patch("/plant-locations/:id", requireRole("administrator"), async (req, res) => {
+router.patch("/plant-locations/:id", allow([["masters.plant-locations", "edit"]]), async (req, res) => {
   const { name, latitude, longitude, geofence_radius_m } = req.body;
   const { rows } = await query(
     `UPDATE plant_locations SET
@@ -727,13 +727,13 @@ router.patch("/plant-locations/:id", requireRole("administrator"), async (req, r
   res.json(rows[0]);
 });
 
-router.post("/plant-locations/:id/set-active", requireRole("administrator"), async (req, res) => {
+router.post("/plant-locations/:id/set-active", allow([["masters.plant-locations", "edit"]]), async (req, res) => {
   await query("UPDATE plant_locations SET is_active = FALSE WHERE is_active = TRUE");
   await query("UPDATE plant_locations SET is_active = TRUE WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
-router.delete("/plant-locations/:id", requireRole("administrator"), async (req, res) => {
+router.delete("/plant-locations/:id", allow([["masters.plant-locations", "delete"]]), async (req, res) => {
   await query("DELETE FROM plant_locations WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
@@ -777,12 +777,12 @@ router.patch("/lubricant-types/:id", requireAnyPermission(FUEL_SCREEN_LUB, "edit
 // etc.) — same admin-manageable-list pattern as lubricant types, so this
 // stays a controlled vocabulary usable for reporting, not free text. =====
 
-router.get("/visit-outcome-reasons", requireRole("administrator"), async (req, res) => {
+router.get("/visit-outcome-reasons", allow([["masters.visit-outcome-reasons", "view"]]), async (req, res) => {
   const { rows } = await query("SELECT * FROM visit_outcome_reasons ORDER BY outcome_type, reason");
   res.json(rows);
 });
 
-router.post("/visit-outcome-reasons", requireRole("administrator"), async (req, res) => {
+router.post("/visit-outcome-reasons", allow([["masters.visit-outcome-reasons", "create"]]), async (req, res) => {
   const { outcome_type, reason } = req.body;
   if (!["lost", "closed"].includes(outcome_type)) {
     return res.status(400).json({ error: "Outcome type must be lost or closed." });
@@ -795,7 +795,7 @@ router.post("/visit-outcome-reasons", requireRole("administrator"), async (req, 
   res.status(201).json(rows[0]);
 });
 
-router.patch("/visit-outcome-reasons/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/visit-outcome-reasons/:id/status", allow([["masters.visit-outcome-reasons", "edit"]]), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE visit_outcome_reasons SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
@@ -881,12 +881,12 @@ router.delete("/equipment/:id", requireAnyPermission(FUEL_SCREEN_EQUIP, "delete"
 
 // ===== Master data: Salespersons (dropdown, replaces free-text sales rep) =====
 
-router.get("/salespersons", requireRole("administrator"), async (req, res) => {
+router.get("/salespersons", allow([["sales.salespersons", "view"]]), async (req, res) => {
   const { rows } = await query("SELECT * FROM salespersons ORDER BY name");
   res.json(rows);
 });
 
-router.post("/salespersons", requireRole("administrator", "manager"), async (req, res) => {
+router.post("/salespersons", allow([["sales.salespersons", "create"], ["production.correct-order", "edit"], ["orders.customer-orders", "create"], ["sales.bookings", "create"]]), async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: "Name is required." });
   const { rows } = await query(
@@ -898,7 +898,7 @@ router.post("/salespersons", requireRole("administrator", "manager"), async (req
   res.status(201).json(rows[0]);
 });
 
-router.patch("/salespersons/:id/status", requireRole("administrator"), async (req, res) => {
+router.patch("/salespersons/:id/status", allow([["sales.salespersons", "edit"]]), async (req, res) => {
   const { is_active } = req.body;
   await query("UPDATE salespersons SET is_active = $1 WHERE id = $2", [is_active, req.params.id]);
   res.json({ ok: true });
@@ -1131,7 +1131,7 @@ router.post("/tickets/:id/cancel", requirePermission("production.correct-tickets
 // creating also" — that day-to-day edit-while-creating path is
 // /master/site-contacts, used from Create Order; this is the dedicated
 // browse/correct-mistakes screen).
-router.get("/site-contacts", requireRole("administrator"), async (req, res) => {
+router.get("/site-contacts", allow([["masters.site-contacts", "view"]]), async (req, res) => {
   const { rows } = await query(
     `SELECT sc.id, sc.contact_name, sc.phone_number, sc.role_label, sc.is_active, sc.created_at,
             c.name AS customer_name, s.name AS site_name
@@ -1170,7 +1170,7 @@ router.post("/production-targets", requirePermission("production.targets", "crea
   res.status(201).json(rows[0]);
 });
 
-router.patch("/site-contacts/:id", requireRole("administrator"), async (req, res) => {
+router.patch("/site-contacts/:id", allow([["masters.site-contacts", "edit"]]), async (req, res) => {
   const { contact_name, phone_number, role_label, is_active } = req.body;
   const { rows } = await query(
     `UPDATE site_contacts SET
@@ -1282,7 +1282,7 @@ router.delete("/mix-design-assignments/:id", requirePermission("quality.mix-assi
 // one design per grade can hold this at a time (enforced by a partial unique
 // index too); setting a new one here first clears whichever design already
 // held it for that grade.
-router.patch("/mix-designs/:id/standard", requireRole("administrator", "manager"), async (req, res) => {
+router.patch("/mix-designs/:id/standard", allow([["quality.mix-design-standard", "edit"]]), async (req, res) => {
   const { is_standard } = req.body;
   const { rows } = await query("SELECT id, mix_grade_id, status FROM mix_designs WHERE id = $1", [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: "Mix design not found." });

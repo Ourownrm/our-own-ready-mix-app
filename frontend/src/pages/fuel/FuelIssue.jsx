@@ -107,8 +107,9 @@ export default function FuelIssue() {
   const { can } = usePermissions();
   const [rows, setRows] = useState(null);
   const [error, setError] = useState("");
-  const canApprove = can("store.supply-approve", "edit") && ["manager", "administrator", "super_admin"].includes(user?.role);
-  const canScan = can("store.supply-issue", "edit") && ["store", "administrator", "super_admin"].includes(user?.role);
+  // Round 260 — the functions alone decide, as on the routes (Plant In Charge was left out by a role list).
+  const canApprove = can("store.supply-approve", "edit");
+  const canScan = can("store.supply-issue", "edit");
   const canClose = can("fuel.outside-close", "edit");
   const canCancel = can("fuel.outside-cancel", "edit");
   const canCancelApproved = can("fuel.cancel-approved", "edit");

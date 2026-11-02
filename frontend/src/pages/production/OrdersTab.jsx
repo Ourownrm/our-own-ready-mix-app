@@ -48,6 +48,8 @@ function chargeLines(o) {
 export default function OrdersTab({ go, params }) {
   const { can } = usePermissions();
   const canEdit = can("production.correct-order", "edit");
+  // Round 260 — each button asks what its own route asks.
+  const canConfirm = can("orders.confirm-completion", "edit");
   const [view, setView] = useState(params.get("view") || "today");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -185,7 +187,7 @@ export default function OrdersTab({ go, params }) {
                   <td style={TD}><OrderStatus o={o} /></td>
                   <td style={{ ...TD, whiteSpace: "nowrap" }}>
                     <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {o.to_confirm && canEdit && <button type="button" onClick={() => confirmCompletion(o)}>Confirm complete</button>}
+                      {o.to_confirm && canConfirm && <button type="button" onClick={() => confirmCompletion(o)}>Confirm complete</button>}
                       {!terminal && canEdit && view === "carried" && <button type="button" onClick={() => closeOrder(o)}>Close</button>}
                       <button type="button" onClick={() => setOpenId(open ? null : o.id)} style={open ? { background: "var(--charcoal)", color: "#fff", borderColor: "var(--charcoal)" } : undefined}>{open ? "Close" : "Open"}</button>
                     </span>
@@ -218,6 +220,8 @@ export default function OrdersTab({ go, params }) {
 // One order opened for correction. Grade / mix can change only before the
 // first ticket (the server says so); pump and times can change any time.
 function OrderEditor({ order: o, canEdit, setError, go, onSaved, onClose }) {
+  // Round 260 — rescheduling is its own function (orders.reschedule).
+  const canResched = usePermissions().can("orders.reschedule", "edit");
   const [form, setForm] = useState({
     order_quantity_m3: o.order_quantity_m3, mix_grade_id: String(o.mix_grade_id), scheduled_batching_time: t5(o.scheduled_batching_time),
     required_at_site_time: t5(o.required_at_site_time), pump_requirement: o.pump_requirement || "without_pump", pump_id: o.pump_id || "",
@@ -323,7 +327,7 @@ function OrderEditor({ order: o, canEdit, setError, go, onSaved, onClose }) {
 
       <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--border)", paddingTop: 10 }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {canEdit && !terminal && !resched && <button type="button" onClick={() => setResched({ new_order_date: o.order_date, new_scheduled_batching_time: t5(o.scheduled_batching_time), reason: "" })}>Reschedule to another day</button>}
+          {canResched && !terminal && !resched && <button type="button" onClick={() => setResched({ new_order_date: o.order_date, new_scheduled_batching_time: t5(o.scheduled_batching_time), reason: "" })}>Reschedule to another day</button>}
           <button type="button" onClick={() => go("tickets", { date: o.order_date, order: String(o.id) })}>Deliveries of this order</button>
           {canEdit && !terminal && <button type="button" style={{ color: "var(--alert-red)", borderColor: "var(--alert-red)" }} onClick={cancelOrder}>Cancel order</button>}
         </div>

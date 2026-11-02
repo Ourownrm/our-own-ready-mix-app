@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 import { requirePermission } from "../lib/permissions.js";
 // Round 143 follow-up — the four headline figures have ONE definition now,
 // shared with the Administrator dashboard so the two pages cannot disagree.
@@ -21,7 +22,7 @@ router.use(requireAuth);
 // alerts, and time spent at site — into one unified report. Each keeps its
 // own planned/actual pairing since what "planned" means differs by type,
 // but all come back in the same row shape.
-router.get("/delay-justification", requireRole("manager", "administrator", "site_supervisor", "plant_operator"), async (req, res) => {
+router.get("/delay-justification", allow([["reports.delay-justification", "view"]]), async (req, res) => {
   const fromDate = req.query.from_date || istDay();
   const toDate = req.query.to_date || fromDate;
   const delayType = req.query.delay_type || "all";
@@ -165,7 +166,7 @@ function tripTimesCTE(q, params) {
   `;
 }
 
-router.get("/trip-analysis", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/trip-analysis", allow([["reports.charts", "view"]]), async (req, res) => {
   const metric = METRIC_EXPR[req.query.metric] ? req.query.metric : "unloading";
   const groupBy = GROUP_EXPR[req.query.group_by] ? req.query.group_by : "site";
   const params = [];
@@ -190,7 +191,7 @@ router.get("/trip-analysis", requireRole("manager", "administrator"), async (req
 });
 
 // Drill-down — the individual trips behind one group's average.
-router.get("/trip-analysis/detail", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/trip-analysis/detail", allow([["reports.charts", "view"]]), async (req, res) => {
   const metric = METRIC_EXPR[req.query.metric] ? req.query.metric : "unloading";
   const groupBy = GROUP_EXPR[req.query.group_by] ? req.query.group_by : "site";
   const params = [];
@@ -213,7 +214,7 @@ router.get("/trip-analysis/detail", requireRole("manager", "administrator"), asy
 
 // Scatter mode — unloading time against quantity delivered, not grouped,
 // since quantity is continuous rather than a natural pivot dimension.
-router.get("/trip-analysis/scatter", requireRole("manager", "administrator"), async (req, res) => {
+router.get("/trip-analysis/scatter", allow([["reports.charts", "view"]]), async (req, res) => {
   const params = [];
   const cte = tripTimesCTE(req.query, params);
   const { rows } = await query(
@@ -268,7 +269,7 @@ router.get("/cycle-time", requirePermission("reports.cycle-time", "view"), async
 // Outstanding Collection report — as-of-today snapshot, every customer with
 // a balance, broken into aging buckets. Shared with Accountant, not just
 // Admin/Manager, since chasing collections is squarely their job too.
-router.get("/outstanding-collection", requireRole("administrator", "manager", "accountant"), async (req, res) => {
+router.get("/outstanding-collection", allow([["accounts.outstanding", "view"]]), async (req, res) => {
   // Round 205 — the shared calculation (lib/receivables.js): billed − received
   // per customer, open amounts aged from the delivery date. A customer who
   // has paid ahead is not listed.
@@ -283,7 +284,7 @@ router.get("/outstanding-collection", requireRole("administrator", "manager", "a
   res.json(rows);
 });
 
-router.get("/director-dashboard", requireRole("administrator", "manager", "accountant"), async (req, res) => {
+router.get("/director-dashboard", allow([["reports.director-dashboard", "view"]]), async (req, res) => {
   const [
     // Order matters: the first SIX come from dashboardKpiRows() below, in its
     // own order (outstanding is its last), and the rest follow.

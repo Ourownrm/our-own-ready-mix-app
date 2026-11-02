@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allow } from "../lib/permissions.js";
 
 // ===================== SITE CONTENT (round 119, post-ship) =====================
 // Editable copy for the public marketing pages the mockup adds:
@@ -20,7 +21,7 @@ router.get("/:key", async (req, res) => {
   res.json(rows[0]);
 });
 
-router.put("/:key", requireAuth, requireRole("manager", "administrator"), async (req, res) => {
+router.put("/:key", requireAuth, allow([["admin.site-content", "edit"]]), async (req, res) => {
   if (!ONLY_KEYS.includes(req.params.key)) return res.status(404).json({ error: "Unknown content key." });
   const { content } = req.body;
   if (!content || typeof content !== "object") {

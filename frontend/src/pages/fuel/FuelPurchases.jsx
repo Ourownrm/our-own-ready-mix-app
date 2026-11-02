@@ -20,8 +20,6 @@ const STATUS = {
   received: ["Received", "badge-success"],
   rejected: ["Rejected", "badge-danger"],
 };
-const REQUESTER_ROLES = ["store", "manager", "administrator", "super_admin"];
-const APPROVER_ROLES = ["manager", "administrator", "super_admin"];
 
 export default function FuelPurchases() {
   const { user } = useAuth();
@@ -33,10 +31,11 @@ export default function FuelPurchases() {
   const [form, setForm] = useState(null);           // new request
   const [acting, setActing] = useState(null);       // { id, mode: approve|reject|receive, ...values }
   const role = user?.role;
-  const canRequest = can("fuel.purchases", "create") && REQUESTER_ROLES.includes(role);
-  const canReceive = can("fuel.purchases", "edit") && REQUESTER_ROLES.includes(role);
-  const canApprove = can("store.purchase-approve", "edit") && APPROVER_ROLES.includes(role);
-  const canDelete = can("fuel.purchases", "delete") && APPROVER_ROLES.includes(role);
+  // Round 260 — the functions alone decide, as on the routes.
+  const canRequest = can("fuel.purchases", "create");
+  const canReceive = can("fuel.purchases", "edit");
+  const canApprove = can("store.purchase-approve", "edit");
+  const canDelete = can("fuel.purchases", "delete");
   // Round 203 — an Administrator can cancel an approved purchase that won't come.
   const canCancelApproved = can("fuel.cancel-approved", "edit");
 
