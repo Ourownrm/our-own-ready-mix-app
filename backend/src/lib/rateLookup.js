@@ -52,7 +52,15 @@ export function pick(rows, option) {
   const options = optionsOf(rows);
   if (!options.length) return { rate: null, options, reason: "none" };
   if (options.length === 1) return { rate: options[0], options, reason: null };
-  if (!option) return { rate: null, options, reason: "choose" };
+  if (!option) {
+    // Round 259 — a mix the Administrator added to an accepted quotation
+    // (no revision) gets its own option; the line's original row keeps no
+    // option, so an order that names none (older orders, or the original
+    // mix chosen on Create Order) still means that row.
+    const plain = options.filter((r) => !normOption(r.price_option));
+    if (plain.length === 1 && options.every((r) => r === plain[0] || r.mix_design_id)) return { rate: plain[0], options, reason: null };
+    return { rate: null, options, reason: "choose" };
+  }
   const want = normOption(option);
   const hit = options.find((r) => normOption(r.price_option) === want);
   return hit ? { rate: hit, options, reason: null } : { rate: null, options, reason: "no_option" };

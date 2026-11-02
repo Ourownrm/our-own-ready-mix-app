@@ -17,7 +17,7 @@ const EVENT_LABEL = {
   created: "Created", edited: "Edited", submitted: "Sent for approval", approved: "Approved", sent_back: "Sent back for changes",
   sent: "Sent to the customer", followup: "Follow-up", revised: "Revision made", accepted: "Accepted by the customer",
   declined: "Declined", lost: "Lost", cancelled: "Cancelled", extended: "Validity extended", reminder: "Reminder",
-  completed: "Project completed", reopened: "Reopened",
+  completed: "Project completed", reopened: "Reopened", mix_added: "Mix design added (no revision)", price_list: "Price list",
 };
 
 export default function QuotationView({ meta, id, go, onBack }) {
@@ -75,6 +75,8 @@ export default function QuotationView({ meta, id, go, onBack }) {
   const editable = ["draft", "pending_approval"].includes(q.status);
   const withCustomer = ["approved", "sent"].includes(q.status);
   const lines = q.lines || [];
+  // Round 259 — the Administrator adds a mix design without a revision.
+  const canAddMix = p.approve && ["approved", "sent", "accepted"].includes(q.status);
 
   return (
     <>
@@ -125,7 +127,16 @@ export default function QuotationView({ meta, id, go, onBack }) {
               return (
                 <tr key={l.id} style={row}>
                   <td style={{ ...TD, fontWeight: 700 }}>{l.grade_name || l.item_label}</td>
-                  <td style={{ ...TD, fontSize: 12.5, whiteSpace: "nowrap" }}>{l.design_ref_code ? `${l.design_ref_code} · rev ${l.design_revision}` : "—"}</td>
+                  <td style={{ ...TD, fontSize: 12.5, whiteSpace: "nowrap" }}>
+                    {l.design_ref_code ? `${l.design_ref_code} · rev ${l.design_revision}` : "—"}
+                    {l.added_after_approval && <div><span className="badge badge-warning" style={{ fontSize: 10.5 }}>added after approval</span></div>}
+                    {l.added_after_approval && <div style={{ fontSize: 10.5, color: "var(--slate)" }}>not on the print</div>}
+                    {canAddMix && l.mix_grade_id && !l.added_after_approval && (
+                      <div><button type="button" style={{ padding: "2px 8px", fontSize: 11.5, marginTop: 3 }} onClick={() => setModal({ addMix: l })}>
+                        {l.design_ref_code ? "+ Add mix" : "+ Set mix"}
+                      </button></div>
+                    )}
+                  </td>
                   <td style={TD}>{l.specification || "—"}</td>
                   <td style={NUM}>{l.qty_m3 ?? "—"}</td>
                   <td style={NUM}>{inr2(sp.base)}</td>
@@ -229,8 +240,67 @@ export default function QuotationView({ meta, id, go, onBack }) {
           setBusy("");
         }} />}
       {modal?.cost && <CostBreakup c={modal.cost} onClose={() => setModal(null)} />}
+      {modal?.addMix && <AddMixModal q={q} line={modal.addMix} meta={meta} onClose={() => setModal(null)}
+        onDone={(r) => reload(r.attached
+          ? `Mix design set on the line — rate unchanged, no revision.${q.status === "accepted" ? " Create Order now asks for it." : ""}`
+          : `Mix design added at the same rate — no revision; it is not on the printed quotation.${q.status === "accepted" ? " Create Order now lists it." : ""}`)} />}
       {modal === "accept" && <AcceptModal q={q} onClose={() => setModal(null)} onDone={(r) => reload(`Accepted. The price list now uses these rates from the date given${r.repriced?.updated || r.repriced?.created ? ` — ${r.repriced.created} held invoice(s) raised, ${r.repriced.updated} unpaid invoice(s) re-priced` : ""}${r.repriced?.flagged ? `; ${r.repriced.flagged} paid invoice(s) sent to the Accountant to review` : ""}.`)} />}
     </>
+  );
+}
+
+// Round 259 (owner, 2 Nov 2026) — "admin to add mix design without revising
+// the quote". The rate stays as quoted, so the customer has nothing new to
+// accept. A line with no mix design gets it set; a line that already has one
+// gets another mix of the same grade at the same rate (an extra line, kept off
+// the print until the next revision).
+function AddMixModal({ q, line, meta, onClose, onDone }) {
+  const onQuote = new Set((q.lines || []).map((l) => Number(l.mix_design_id)).filter(Boolean));
+  const choices = (meta.mix_designs || []).filter((d) => d.mix_grade_id === line.mix_grade_id && !onQuote.has(d.id));
+  const [mixId, setMixId] = useState(choices.length === 1 ? String(choices[0].id) : "");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const attach = !line.mix_design_id;
+  const chosen = choices.find((d) => String(d.id) === mixId);
+  async function save(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      const r = await apiRequest(`/quotations/${q.id}/lines/${line.id}/mix-design`, { method: "POST", body: { mix_design_id: Number(mixId), note } });
+      onDone(r);
+    } catch (err) { setError(err.message); setBusy(false); }
+  }
+  return (
+    <Modal title={`${attach ? "Set the mix design" : "Add a mix design"} — ${line.grade_name}`} onClose={onClose} width={500}>
+      <form onSubmit={save}>
+        <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 10 }}>
+          {attach
+            ? <>This line has no mix design. The one you choose is set on it. The rate stays <b>₹{inr2(line.rate_total)}</b> (incl. GST) — no revision, nothing for the customer to accept.</>
+            : <>The line already has <b>{line.design_ref_code} · rev {line.design_revision}</b>. The mix you choose is added as another mix of {line.grade_name} at the same rate <b>₹{inr2(line.rate_total)}</b> (incl. GST) — no revision. It is not printed on the quotation sent to the customer; it prints from the next revision.</>}
+          {q.status === "accepted" && <div style={{ marginTop: 6 }}>The site's price list follows straight away{line.approved === false ? " (this grade is not approved by the customer, so the mix stays disabled until enabled in Price lists)" : ""}, and QC can map it to a plant recipe in Mix Mapping.</div>}
+        </div>
+        <Banner>{error}</Banner>
+        {choices.length === 0
+          ? <div style={{ fontSize: 13, marginBottom: 10 }}>No other approved mix design for {line.grade_name}. Add or approve one in QC → Mix designs first.</div>
+          : (
+            <Field label="Mix design (approved, this grade)">
+              <select required value={mixId} onChange={(e) => setMixId(e.target.value)}>
+                <option value="">— choose —</option>
+                {choices.map((d) => <option key={d.id} value={d.id}>{d.label}{d.is_standard_for_grade ? " (standard)" : ""}</option>)}
+              </select>
+            </Field>
+          )}
+        {chosen?.mix_description && <div style={{ fontSize: 12, color: "var(--slate)", margin: "-4px 0 10px" }}>{chosen.mix_description}</div>}
+        <Field label="Note (optional) — e.g. customer asked for the fly ash mix by phone">
+          <textarea rows={2} value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn-primary" disabled={busy || !mixId}>{busy ? "Saving…" : attach ? "Set mix design" : "Add mix design"}</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

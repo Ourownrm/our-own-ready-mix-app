@@ -22,6 +22,7 @@ import { applyQuotationToPriceList, repriceAfterAcceptance, liveRatesForSite, se
 import { costContext, costMix, siteFuel, cleanCosting } from "../lib/quotationCosting.js";
 import { pushToRole } from "../lib/push.js";
 import { ensureRound258 } from "../lib/round258Schema.js";
+import { ensureRound259 } from "../lib/round259Schema.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -798,6 +799,116 @@ router.post("/:id(\\d+)/accept", ACCEPT, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Round 259 (owner, 2 Nov 2026) — "admin to add mix design without revising
+// the quote". The rate does not change, so the customer has nothing new to
+// accept; only the Administrator (quotation-approve) may do it.
+//   * The line has no mix design → the chosen one is set on that line.
+//   * The line already has one → another mix of the same grade is added as an
+//     extra line at the SAME quoted rate ("added after approval"). It is not
+//     printed (the customer's copy stays as sent) until the next revision.
+// On an accepted quotation the site's price list follows straight away, so
+// Create Order lists the mix at once.
+// ---------------------------------------------------------------------------
+router.post("/:id(\\d+)/lines/:lineId(\\d+)/mix-design", APPROVE, async (req, res) => {
+  await ensureRound259();
+  const q = await loadQuotation(req.params.id);
+  if (!q) return res.status(404).json({ error: "Quotation not found." });
+  if (["draft", "pending_approval"].includes(q.status)) {
+    return res.status(409).json({ error: "This quotation is not approved yet — edit it and choose the mix design there." });
+  }
+  if (!["approved", "sent", "accepted"].includes(q.status)) {
+    return res.status(409).json({ error: q.status === "completed"
+      ? "This project is closed as completed — reopen it first."
+      : "Mix designs can be added only to an approved, sent or accepted quotation." });
+  }
+  const line = q.lines.find((l) => l.id === Number(req.params.lineId));
+  if (!line || !line.mix_grade_id) return res.status(404).json({ error: "That grade line is not on this quotation." });
+  const mixId = Number(req.body.mix_design_id) || null;
+  if (!mixId) return res.status(400).json({ error: "Choose the mix design." });
+  const note = String(req.body.note || "").trim().slice(0, 300) || null;
+  const { rows: mds } = await query(
+    `SELECT id, mix_grade_id, status, design_ref_code, revision, mix_description FROM mix_designs WHERE id = $1`, [mixId]);
+  const md = mds[0];
+  if (!md || md.mix_grade_id !== line.mix_grade_id) return res.status(400).json({ error: `That mix design is not one of ${line.grade_name}'s designs.` });
+  if (md.status !== "approved") return res.status(400).json({ error: "That mix design is not approved yet (QC → Mix designs)." });
+  if (q.lines.some((l) => Number(l.mix_design_id) === mixId)) return res.status(409).json({ error: "That mix design is already on this quotation." });
+  const attach = !line.mix_design_id;
+  if (!attach && q.lines.length >= 12) return res.status(409).json({ error: "This quotation already has 12 lines — make a revision to add more." });
+  const label = `${md.design_ref_code} · rev ${md.revision}`;
+
+  const client = await pool.connect();
+  let priceListRows = 0;
+  try {
+    await client.query("BEGIN");
+    await client.query(`SELECT id FROM quotations WHERE id = $1 FOR UPDATE`, [q.id]);
+    let newLineId = line.id;
+    if (attach) {
+      await client.query(
+        `UPDATE quotation_lines SET mix_design_id = $2, mix_added_by = $3, mix_added_at = now(), mix_added_note = $4 WHERE id = $1`,
+        [line.id, mixId, req.user.id, note]);
+    } else {
+      const { rows: mx } = await client.query(`SELECT COALESCE(MAX(line_no), 0) + 1 AS n FROM quotation_lines WHERE quotation_id = $1`, [q.id]);
+      const { rows: ins } = await client.query(
+        `INSERT INTO quotation_lines (quotation_id, line_no, mix_grade_id, item_label, specification, qty_m3, rate_total, mix_design_id,
+                                      approved, added_after_approval, base_line_id, mix_added_by, mix_added_at, mix_added_note)
+         VALUES ($1, $2, $3, NULL, $4, NULL, $5, $6, $7, true, $8, $9, now(), $10) RETURNING id`,
+        [q.id, mx[0].n, line.mix_grade_id, String(md.mix_description || line.specification || "").slice(0, 200) || null,
+         line.rate_total, mixId, line.approved, line.id, req.user.id, note]);
+      newLineId = ins[0].id;
+    }
+    // An accepted quotation: the site's price list follows now.
+    if (q.status === "accepted") {
+      if (attach) {
+        // The row(s) this line wrote at acceptance: same quotation and grade,
+        // no mix design, and the line's own price option.
+        const gradeLines = q.lines.filter((l) => l.mix_grade_id === line.mix_grade_id && !l.added_after_approval);
+        const opt = gradeLines.length > 1 ? (line.specification || `Option ${line.line_no}`) : null;
+        const { rowCount } = await client.query(
+          `UPDATE rate_master SET mix_design_id = $4
+            WHERE quotation_id = $1 AND mix_grade_id = $2 AND mix_design_id IS NULL
+              AND upper(regexp_replace(COALESCE(price_option, ''), '[^A-Za-z0-9+]', '', 'g'))
+                = upper(regexp_replace(COALESCE($3::text, ''), '[^A-Za-z0-9+]', '', 'g'))`,
+          [q.id, line.mix_grade_id, opt, mixId]);
+        priceListRows = rowCount;
+      } else {
+        // A copy of the base line's live price-list row: same rate and
+        // charges, same dates and enabled state, priced by this mix.
+        const { rows: base } = await client.query(
+          `SELECT * FROM rate_master WHERE quotation_id = $1 AND mix_grade_id = $2 AND mix_design_id IS NOT DISTINCT FROM $3
+            ORDER BY (effective_to IS NULL) DESC, effective_to DESC NULLS FIRST, id DESC LIMIT 1`,
+          [q.id, line.mix_grade_id, line.mix_design_id]);
+        if (base.length) {
+          const row = { ...base[0] };
+          delete row.id; delete row.created_at; delete row.updated_at;
+          Object.assign(row, {
+            mix_design_id: mixId, price_option: label, created_by: req.user.id,
+            enabled_note: row.is_enabled === false ? (row.enabled_note || "Not approved by the customer") : `Mix added by the Administrator (no revision)${note ? `: ${note}` : ""}`,
+            enabled_changed_by: req.user.id, enabled_changed_at: new Date(),
+          });
+          const cols = Object.keys(row);
+          await client.query(
+            `INSERT INTO rate_master (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
+            cols.map((c) => row[c]));
+          priceListRows = 1;
+        }
+      }
+    }
+    await logEvent(client, q.id, "mix_added", req.user.id, {
+      note: attach
+        ? `${line.grade_name}: mix design ${label} set on the line (rate ₹${line.rate_total} unchanged, no revision).${note ? ` ${note}` : ""}`
+        : `${line.grade_name}: mix design ${label} added at the same rate ₹${line.rate_total} (no revision; not on the printed quotation).${note ? ` ${note}` : ""}`,
+    });
+    await client.query("COMMIT");
+    res.json({ ok: true, attached: attach, line_id: newLineId, price_list_rows: priceListRows });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Revise — the next revision of the family, as an editable draft. The current
 // price list is untouched until the customer accepts the revision.
 // ---------------------------------------------------------------------------
@@ -918,6 +1029,9 @@ router.get("/:id(\\d+)/print", VIEW, async (req, res) => {
   // Round 209 — the print carries neither the mix design ref / rev, the
   // proposed rate nor the salesperson.
   delete q.salesperson_id; delete q.salesperson_name; delete q.site_fuel; delete q.fuel_basis;
+  // Round 259 — a mix the Administrator added after approval (no revision)
+  // is not on the customer's copy; it prints from the next revision.
+  q.lines = q.lines.filter((l) => !l.added_after_approval);
   for (const l of q.lines) { delete l.cost_rate; delete l.cost_breakup; delete l.design_ref_code; delete l.design_revision; delete l.mix_design_id; }
   res.json({
     quotation: q,

@@ -213,7 +213,9 @@ export default function CreateOrder({ onDone }) {
       setError("Select which pump will be used for this order.");
       return;
     }
-    if (rateInfo?.options?.length > 1 && !priceOption) {
+    // Round 259 — when the grade's prices are mix designs, the chosen mix
+    // decides the price (the original mix of a line has no option name).
+    if (rateInfo?.options?.length > 1 && !priceOption && !(mixMode && gradeHasDesign && mixDesignId)) {
       setError("This site has two prices for the grade — choose which one this order is.");
       return;
     }

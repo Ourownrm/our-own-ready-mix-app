@@ -9192,3 +9192,19 @@ Owner, 31 Oct 2026: the home screen's look-alike colours and icons were confusin
 - Verified at 1366 px (Administrator, Manager): every module and screen link, current screen highlighted, one-open-at-a-time, search, hide/show + reload, arriving on HR › Payroll; at 390 and 1024 px no menu and the page not moved; all tabbed module pages open with no page errors.
 
 Files: frontend/src/App.jsx, index.css, lib/{SideMenu.jsx (new), moduleTabs.js (new), adminScreens.js, version.js}, pages/{Administrator, AccountsModule, CostModule, FuelModule, HrModule, MaintenanceModule, MaterialModule, ProductionModule}.jsx, README.md.
+
+## Round 259 — Administrator adds a mix design without a revision (v10.91)
+
+Owner, 2 Nov 2026: "modify quotations logic for admin to add mix design without revising the quote."
+
+- **Accounts → Quotations → (an approved, sent or accepted quotation)**: each grade line has a button in the Mix design column for the Administrator (`accounts.quotation-approve`):
+  - **+ Set mix** — the line has no mix design: the chosen one is set on that line.
+  - **+ Add mix** — the line already has one: another approved mix of the same grade is added as an extra line at the **same quoted rate**, marked "added after approval · not on the print".
+- No revision, no new quote number, nothing for the customer to accept (the rate does not change). The history records who, what and the optional note.
+- **Accepted quotation**: the site's price list follows straight away — "Set" puts the mix on the line's existing price-list row; "Add" copies the line's live row (rate, charges, dates, enabled / not-approved state) for the new mix, with the mix ref / rev as its price option. Create Order then lists it (and, for a line that had no mix before, now asks for it). Mix Mapping picks it up for QC.
+- **Approved / sent (not accepted yet)**: only the quotation changes; acceptance writes the mix to the price list as usual (and it can be ticked or left unticked there).
+- The **printed quotation** stays as sent (added lines left out); a later **revision** carries every mix as a normal line, and prints them.
+- Refused: draft / pending (edit instead), completed (reopen first), another grade's mix, a mix not approved in QC, a mix already on the quotation, more than 12 lines.
+- **Pricing safety (lib/rateLookup.js)**: the line's original price-list row keeps no option name, so an order that names none (older orders, or the original mix chosen on Create Order) still prices from that row when the grade's other options are mixes added this way. Create Order and the Sales order form no longer ask "which price" when the chosen mix already decides it.
+- Schema (lib/round259Schema.js, additive): `quotation_lines.added_after_approval`, `base_line_id`, `mix_added_by`, `mix_added_at`, `mix_added_note`. Route `POST /quotations/:id/lines/:lineId/mix-design`.
+- Verified on a fresh database (/setup twice): accepted quotation — mix set on an M20 line with none, extra M25 mix added at ₹7,000, still one quotation (no R), print keeps the 2 sent lines, Create Order lists 3 mixes, order without a mix refused, orders on either M25 mix accepted and invoiced at ₹7,000, M20 now asks for the mix; approved-only quotation — mix added, price list untouched, acceptance writes both mixes as options; wrong grade / duplicate / draft refused; revision carries all 3 as normal lines. `npm run check` green; build clean.

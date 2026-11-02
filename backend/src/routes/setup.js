@@ -54,6 +54,7 @@ import { migrateRound254 } from "../lib/round254Schema.js";
 import { migrateRound255 } from "../lib/round255Schema.js";
 import { migrateRound257 } from "../lib/round257Schema.js";
 import { migrateRound258 } from "../lib/round258Schema.js";
+import { migrateRound259 } from "../lib/round259Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4215,6 +4216,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound257(pool, log);
     // ROUND 258 — un-tick approval, sent-by in C Ledger, quotation project completed.
     await migrateRound258(pool, log);
+    // ROUND 259 — Administrator adds a mix design to a quotation without a revision.
+    await migrateRound259(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

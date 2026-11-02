@@ -344,7 +344,9 @@ function ConvertBookingForm({ booking, setError, onDone, onCancel }) {
       setError("Choose the mix design for this grade — the quotation names one.");
       return;
     }
-    if (rateInfo?.options?.length > 1 && !priceOption) {
+    // Round 259 — when the grade's prices are mix designs, the chosen mix
+    // decides the price (the original mix of a line has no option name).
+    if (rateInfo?.options?.length > 1 && !priceOption && !(gradeDesigns.length > 0 && mixDesignId)) {
       setError("This site has two prices for the grade — choose which one this order is.");
       return;
     }
