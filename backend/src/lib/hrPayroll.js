@@ -36,7 +36,7 @@ export function monthRange(month) {
 }
 
 async function monthData(month, from, to) {
-  const [trips, plant, bySp, paidBySp, adv] = await Promise.all([
+  const [trips, plant, bySp, paidBySp, adv, rec] = await Promise.all([
     query(`SELECT driver_id, count(*)::int AS n, COALESCE(sum(amount), 0)::numeric AS amt
            FROM trip_allowance_payouts
            WHERE earned_at >= $1::date AND earned_at < ($2::date + 1)
@@ -72,6 +72,11 @@ async function monthData(month, from, to) {
            GROUP BY co.sales_representative_id`, [from, to]),
     query(`SELECT employee_id, COALESCE(sum(amount), 0) AS amt, count(*)::int AS n
            FROM hr_advances WHERE recover_month = $1 GROUP BY employee_id`, [month]),
+    // Round 264 — a damaged / lost tool or asset the Administrator decided to
+    // recover from this month's salary.
+    query(`SELECT s.employee_id, COALESCE(sum(l.recover_amount), 0) AS amt, string_agg(i.code, ', ') AS codes
+             FROM tl_issue_lines l JOIN tl_issues s ON s.id = l.issue_id JOIN tl_items i ON i.id = l.item_id
+            WHERE l.decision = 'recover' AND l.recover_month = $1 GROUP BY s.employee_id`, [month]).catch(() => ({ rows: [] })),
   ]);
   return {
     trips: new Map(trips.rows.map((t) => [t.driver_id, { n: t.n, amt: Number(t.amt) }])),
@@ -79,6 +84,7 @@ async function monthData(month, from, to) {
     spM3: new Map(bySp.rows.map((r) => [r.sp, Number(r.m3)])),
     spPaid: new Map(paidBySp.rows.map((r) => [r.sp, { m3: Number(r.m3), invoices: r.invoices }])),
     advances: new Map(adv.rows.map((a) => [a.employee_id, { amt: Number(a.amt), n: a.n }])),
+    toolRecovery: new Map(rec.rows.map((a) => [a.employee_id, { amt: Number(a.amt), codes: a.codes }])),
   };
 }
 
@@ -185,7 +191,9 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
   }
   const advance = (data.advances.get(emp.id) || { amt: 0 }).amt;
   const otherDeduction = Number(manual.other_deduction || 0);
-  const totalDeductions = r0(pf + esi + pt + advance + otherDeduction);
+  const toolRec = (data.toolRecovery && data.toolRecovery.get(emp.id)) || { amt: 0, codes: null };
+  const toolRecovery = r0(toolRec.amt);
+  const totalDeductions = r0(pf + esi + pt + advance + otherDeduction + toolRecovery);
   const netPay = totalEarnings - totalDeductions;
   if (netPay < 0) warn.push("deductions are more than the earnings");
 
@@ -204,7 +212,7 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
       trip_count: trip.n, trip_allowance: trip.amt,
       incentive, incentive_note: incentiveNote,
       other_earning: otherEarning, total_earnings: totalEarnings,
-      pf, esi, pt, advance, other_deduction: otherDeduction, total_deductions: totalDeductions,
+      pf, esi, pt, advance, other_deduction: otherDeduction, tool_recovery: toolRecovery, tool_recovery_items: toolRec.codes, total_deductions: totalDeductions,
       pf_employer: pfEr, esi_employer: esiEr, bonus_provision: bonus, gratuity_provision: gratuity,
       service_charge: serviceCharge,
       warnings: warn,

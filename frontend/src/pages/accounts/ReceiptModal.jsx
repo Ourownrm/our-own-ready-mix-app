@@ -31,9 +31,17 @@ export function ReceiptModal({ customerId, onClose, onDone }) {
     if (!f.customer_id) return;
     apiRequest(`/accounts/ledger/${f.customer_id}`).then((d) => setOpen(d.open_items || [])).catch(() => setOpen(null));
   }, [f.customer_id]);
+  // Round 264 (owner) — pick the invoice(s) this money is for. Picked ones are
+  // paid first (oldest of them first); with none picked, oldest dues first.
+  const [pick, setPick] = useState([]);
+  useEffect(() => { setPick([]); }, [f.customer_id]);
+  const keyOf = (it) => `${it.kind}:${it.id}`;
+  const togglePick = (it) => setPick((p) => p.includes(keyOf(it)) ? p.filter((k) => k !== keyOf(it)) : [...p, keyOf(it)]);
+  const ordered = pick.length ? [...(open || []).filter((it) => pick.includes(keyOf(it))), ...(open || []).filter((it) => !pick.includes(keyOf(it)))] : (open || []);
+  const pickedTotal = (open || []).filter((it) => pick.includes(keyOf(it))).reduce((s, it) => s + Number(it.balance), 0);
   const preview = [];
   let left = Number(f.amount) || 0;
-  for (const it of open || []) {
+  for (const it of ordered) {
     if (left <= 0.01) break;
     const amt = Math.min(left, Number(it.balance));
     preview.push({ ...it, amt, full: amt >= Number(it.balance) - 0.01 });
@@ -44,7 +52,8 @@ export function ReceiptModal({ customerId, onClose, onDone }) {
     setBusy(true); setError("");
     const c_ledger = !toCl ? null : f.mode === "cash" ? { holder_id: Number(holder) } : { bank: true };
     if (toCl && f.mode === "cash" && !holder) { setError("Choose the cash holder who has the cash."); setBusy(false); return; }
-    try { onDone(await apiRequest("/accounts/receipts", { method: "POST", body: { ...f, customer_id: Number(f.customer_id), amount: Number(f.amount), c_ledger } })); }
+    try { onDone(await apiRequest("/accounts/receipts", { method: "POST", body: { ...f, customer_id: Number(f.customer_id), amount: Number(f.amount), c_ledger,
+      pick: pick.map((k) => { const [kind, id] = k.split(":"); return { kind, id: Number(id) }; }) } })); }
     catch (err) { setError(err.message); setBusy(false); }
   }
   return (
@@ -86,9 +95,29 @@ export function ReceiptModal({ customerId, onClose, onDone }) {
           ) : <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 6 }}>Goes in as &ldquo;Paid to bank&rdquo; — collected, in nobody&rsquo;s cash.</div>)}
           {toCl && <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 6 }}>The invoices it pays are marked Cash and get a collection line each; anything not set against an invoice goes in as a collection only.</div>}
         </div>
+        {open && open.length > 0 && (
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 12.5 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+              <span style={{ fontWeight: 600 }}>Pay which invoice? <span style={{ fontWeight: 400, color: "var(--slate)" }}>(optional)</span></span>
+              {pick.length > 0 && <button type="button" onClick={() => setPick([])} style={{ padding: "2px 8px", fontSize: 12 }}>Clear</button>}
+            </div>
+            <div style={{ maxHeight: 190, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+              {open.map((it) => (
+                <label key={keyOf(it)} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 2px", cursor: "pointer" }}>
+                  <input type="checkbox" checked={pick.includes(keyOf(it))} onChange={() => togglePick(it)} style={{ width: "auto" }} />
+                  <span style={{ flex: 1 }}>{it.label} · {fmtDate(it.on_date)}</span>
+                  <span>₹{inr2(it.balance)}</span>
+                </label>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 6 }}>
+              {pick.length ? `${pick.length} picked · ₹${inr2(pickedTotal)} due on them. Paid first; anything over goes to the oldest other dues.` : "None picked — paid against the oldest dues first."}
+            </div>
+          </div>
+        )}
         {open && Number(f.amount) > 0 ? (
           <div style={{ background: "var(--concrete)", borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 12.5 }}>
-            <div style={{ color: "var(--slate)", marginBottom: 4 }}>This receipt pays (oldest first):</div>
+            <div style={{ color: "var(--slate)", marginBottom: 4 }}>This receipt pays ({pick.length ? "picked first" : "oldest first"}):</div>
             {!preview.length && <div style={{ color: "var(--slate)" }}>Nothing is due — all of it is kept as an advance.</div>}
             {preview.slice(0, 8).map((p) => (
               <div key={`${p.kind}${p.id}`} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>

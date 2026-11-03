@@ -700,6 +700,7 @@ function LineDetail({ line, locked, canEdit, month, onChanged, onClose }) {
           {row("PF", rs(c.pf))}{row("ESI", rs(c.esi))}{row("Professional tax", rs(c.pt))}
           {row("Advance recovered", rs(c.advance))}
           {c.other_deduction ? row("Other deduction", rs(c.other_deduction)) : null}
+          {c.tool_recovery ? row(`Tool / asset recovery${c.tool_recovery_items ? ` (${c.tool_recovery_items})` : ""}`, rs(c.tool_recovery)) : null}
           {row("Total deductions", rs(c.total_deductions), { bold: true })}
           <div style={{ borderTop: "1px solid var(--border-strong)", marginTop: 6, paddingTop: 6 }}>{row("Net pay", rs(line.net_pay), { bold: true })}</div>
           <div className="kpi-label" style={{ margin: "10px 0 4px" }}>Company cost</div>
@@ -710,6 +711,11 @@ function LineDetail({ line, locked, canEdit, month, onChanged, onClose }) {
         </div>
       </div>
       {line.remarks && <div style={{ fontSize: 12.5, marginTop: 8 }}><span style={{ color: "var(--slate)" }}>Remarks:</span> {line.remarks}</div>}
+      {line.clearance_hold && (
+        <div style={{ background: "var(--alert-red-bg)", color: "var(--alert-red)", borderRadius: 8, padding: "8px 12px", fontSize: 13, marginTop: 10 }}>
+          <b>Salary on hold</b> — exit clearance {line.clearance_hold.done}/{line.clearance_hold.total}. It is paid after the Administrator approves the clearance (HR → Exits).
+        </div>
+      )}
 
       {!locked && canEdit && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 14, alignItems: "end" }}>
@@ -821,6 +827,7 @@ export function PayrollTab() {
       {payAll && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Record payment for everyone not yet marked paid (their net pay)</div>
+          {data.lines.some((l) => l.clearance_hold && l.paid_amount == null) && <div style={{ fontSize: 12.5, color: "var(--alert-red)", marginBottom: 8 }}>Skipped: {data.lines.filter((l) => l.clearance_hold && l.paid_amount == null).map((l) => l.name).join(", ")} — salary on hold until the exit clearance is approved.</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, alignItems: "end" }}>
             <Field label="Who"><select value={payAll.only} onChange={(e) => setPayAll({ ...payAll, only: e.target.value })}><option value="">Everyone</option><option value="payroll">Payroll staff only</option><option value="contract">Contract workers only</option></select></Field>
             <Field label="Paid on"><input type="date" value={payAll.paid_on} onChange={(e) => setPayAll({ ...payAll, paid_on: e.target.value })} /></Field>
@@ -853,8 +860,9 @@ export function PayrollTab() {
                   {data.lines.map((l) => {
                     const c = l.calc;
                     return (
-                      <tr key={l.employee_id} onClick={() => setSel(sel === l.employee_id ? null : l.employee_id)} style={{ cursor: "pointer", background: sel === l.employee_id ? "#FBF3EC" : undefined }}>
-                        <td><div style={{ fontWeight: 600 }}>{l.name}{c.warnings.length > 0 && <span title={c.warnings.join(" · ")} style={{ color: "var(--amber)", marginLeft: 6 }}>⚠</span>}</div><div style={{ fontSize: 11, color: "var(--slate)" }}>{l.emp_code}{c.contract ? " · contract" : ""}</div></td>
+                      <tr key={l.employee_id} onClick={() => setSel(sel === l.employee_id ? null : l.employee_id)} style={{ cursor: "pointer", background: sel === l.employee_id ? "#FBF3EC" : l.clearance_hold ? "var(--alert-red-bg)" : undefined }}>
+                        <td><div style={{ fontWeight: 600 }}>{l.name}{c.warnings.length > 0 && <span title={c.warnings.join(" · ")} style={{ color: "var(--amber)", marginLeft: 6 }}>⚠</span>}</div><div style={{ fontSize: 11, color: "var(--slate)" }}>{l.emp_code}{c.contract ? " · contract" : ""}</div>
+                          {l.clearance_hold && <span className="badge badge-danger" style={{ marginTop: 3 }}>On hold — exit clearance {l.clearance_hold.done}/{l.clearance_hold.total}</span>}</td>
                         <td style={{ textAlign: "right" }}>{c.paid_days}</td>
                         <td style={{ textAlign: "right" }}>{rs(c.earned_gross)}</td>
                         <td style={{ textAlign: "right" }}>{c.ot_amount ? rs(c.ot_amount) : "—"}</td>
@@ -868,7 +876,7 @@ export function PayrollTab() {
                             {l.bank?.account_no ? <>{l.bank.bank_name || "—"}<div style={{ color: "var(--slate)" }}>{l.bank.account_no} · {l.bank.ifsc || "no IFSC"}</div></> : <span className="badge badge-warning">no bank details</span>}
                           </td>
                         )}
-                        <td>{l.paid_amount != null ? <span className="badge badge-success">{rs(l.paid_amount)} · {fmtDay(l.paid_on)}</span> : locked ? <span className="badge badge-warning">unpaid</span> : <span style={{ color: "var(--slate)" }}>—</span>}</td>
+                        <td>{l.paid_amount != null ? <span className="badge badge-success">{rs(l.paid_amount)} · {fmtDay(l.paid_on)}</span> : l.clearance_hold ? <span className="badge badge-danger">on hold</span> : locked ? <span className="badge badge-warning">unpaid</span> : <span style={{ color: "var(--slate)" }}>—</span>}</td>
                       </tr>
                     );
                   })}

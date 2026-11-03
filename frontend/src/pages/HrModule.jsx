@@ -17,6 +17,7 @@ import { TodayTab, CompOffTab } from "./HrToday.jsx";
 import { ContractLabourTab, ContractorBillsTab } from "./HrContract.jsx";
 import { EmployeeDetails, PhotoPanel, Avatar } from "./HrEmployeeCard.jsx";
 import { PpeTab, ExitsTab } from "./HrPeople.jsx";
+import RegisterView from "./tools/RegisterView.jsx";
 import { LetterSettingsCard } from "./HrAppointmentLetter.jsx";
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -985,6 +986,7 @@ export default function HrModule() {
         {current === "bills" && <ContractorBillsTab />}
         {current === "ppe" && <PpeTab />}
         {current === "exits" && <ExitsTab />}
+        {current === "assets" && <RegisterView group="assets" />}
         {meta && current === "settings" && <SettingsTab meta={meta} reloadMeta={loadMeta} />}
       </div>
     </>

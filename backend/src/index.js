@@ -48,6 +48,8 @@ import { ensureRound258 } from "./lib/round258Schema.js";
 import { ensureRound259 } from "./lib/round259Schema.js";
 import { ensureRound260 } from "./lib/round260Schema.js";
 import { ensureRound262 } from "./lib/round262Schema.js";
+import { ensureExit } from "./lib/hrExit.js";
+import toolsRoutes from "./routes/tools.js";
 import { query as dbQuery } from "./db.js";
 import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
@@ -225,6 +227,7 @@ app.use("/api/fuel-module", fuelModuleRoutes);
 app.use("/api/maintenance-module", maintenanceModuleRoutes);
 // Round 216 — tyres & batteries, certificates, bringing over the old screens.
 app.use("/api/maintenance-module", maintenanceModule2Routes);
+app.use("/api/tools", toolsRoutes);
 // Round 243 — PM schedules given to a person, confirmed in their login.
 app.use("/api/maintenance-module", mntPmAssignRoutes);
 // Round 218 — Cost dashboard, Profit & Loss, Balance Sheet.
@@ -342,6 +345,8 @@ ensureRound258().catch((e) => console.error("round 258 schema:", e.message));
 ensureRound259().catch((e) => console.error("round 259 schema:", e.message));
 ensureRound260({ query: dbQuery }).catch((e) => console.error("round 260 grants:", e.message));
 ensureRound262({ query: dbQuery }).catch((e) => console.error("round 262 grants:", e.message));
+// Round 264 — the exit tables, then the tools & assets tables (ensureExit runs both).
+ensureExit().catch((e) => console.error("round 264 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

@@ -9,7 +9,9 @@
 // order); see the "Cube testing, pour-basis" section below for the full
 // reasoning.
 import { Router } from "express";
-import { query } from "../db.js";
+import { pool, query } from "../db.js";
+import { mouldsToSite } from "./tools.js";
+import { ensureRound264 } from "../lib/round264Schema.js";
 import { requireAuth, requireRole, isAdminLevel } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission, allow } from "../lib/permissions.js";
 import { resolveCubeTestDnSummary } from "../lib/cubeTestDns.js";
@@ -611,14 +613,38 @@ router.post("/site-cube-casts", requirePermission("quality.cube-tests", "create"
   if (!order_id || !cast_date) {
     return res.status(400).json({ error: "Order and cast date are required." });
   }
-  const { rows: orderCheck } = await query("SELECT id FROM customer_orders WHERE id = $1", [order_id]);
+  const { rows: orderCheck } = await query(
+    `SELECT co.id, c.name AS customer, s.name AS site FROM customer_orders co JOIN customers c ON c.id = co.customer_id
+       LEFT JOIN sites s ON s.id = co.site_id WHERE co.id = $1`, [order_id]);
   if (!orderCheck.length) return res.status(404).json({ error: "Order not found." });
-  const { rows } = await query(
-    `INSERT INTO site_cube_casts (order_id, cast_date, number_of_cubes, sample_ids, remarks, entered_by)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [order_id, cast_date, number_of_cubes || null, sample_ids || null, remarks || null, req.user.id]
-  );
-  res.status(201).json({ id: rows[0].id });
+  // Round 264 — the cube moulds used (CM-041, CM-042 …) go to the site on the
+  // cube mould list, so it shows where each mould is and what it cast. The
+  // cast and the moulds are saved together, or not at all.
+  if (String(req.body.mould_codes || "").trim()) await ensureRound264();   // outside the transaction
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO site_cube_casts (order_id, cast_date, number_of_cubes, sample_ids, remarks, entered_by)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [order_id, cast_date, number_of_cubes || null, sample_ids || null, remarks || null, req.user.id]
+    );
+    let moulds = [];
+    if (String(req.body.mould_codes || "").trim()) {
+      const o = orderCheck[0];
+      moulds = await mouldsToSite(client, req.body.mould_codes, `Site · ${o.customer}${o.site ? `, ${o.site}` : ""}`,
+        `Site cast ${cast_date} · order ${o.id}`, req.user.id);
+      await client.query(`UPDATE site_cube_casts SET mould_codes = $1 WHERE id = $2`, [moulds.join(", "), rows[0].id]);
+    }
+    await client.query("COMMIT");
+    res.status(201).json({ id: rows[0].id, moulds });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 router.get("/site-cube-casts/:castId", async (req, res) => {

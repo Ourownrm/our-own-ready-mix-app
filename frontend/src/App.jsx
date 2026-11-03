@@ -55,6 +55,7 @@ import Maintenance from "./pages/Maintenance.jsx";
 import MaintenanceModule from "./pages/MaintenanceModule.jsx";
 import CostModule from "./pages/CostModule.jsx";
 import MaintenanceComplaint from "./pages/MaintenanceComplaint.jsx";
+import MyTools from "./pages/tools/MyTools.jsx";
 import CustomerBooking from "./pages/CustomerBooking.jsx";
 import CustomerBookingForm from "./pages/CustomerBookingForm.jsx";
 import PublicInquiry from "./pages/PublicInquiry.jsx";
@@ -241,6 +242,10 @@ export default function App() {
           } />
           <Route path="/maintenance-complaint" element={
             <ProtectedRoute perm="mnt.complaints"><MaintenanceComplaint /></ProtectedRoute>
+          } />
+          {/* Round 264 — My tools & assets; reporting a damaged mould / pipe. */}
+          <Route path="/my-tools" element={
+            <ProtectedRoute perm={["tools.my", ["tools.report-damage", "create"]]}><MyTools /></ProtectedRoute>
           } />
           <Route path="/fuel-module" element={
             <ProtectedRoute perm="module.fuel"><FuelModule /></ProtectedRoute>

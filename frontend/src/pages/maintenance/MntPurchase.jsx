@@ -200,6 +200,11 @@ function PoDetail({ id, go, onChanged, wantGrv }) {
   const [reject, setReject] = useState(null);
   const [grv, setGrv] = useState(null);
   const act = useAction(() => { d.load(); onChanged(); });
+  // Round 264 — a line in a register category gets its IDs on the GRV; a tool
+  // or asset can be issued to a person here (then approved as usual).
+  const mayIssue = can("tools.issue", "create") || can("hr.assets", "create");
+  const tmeta = useLoad(grv ? "/tools/meta" : null, [!!grv]);
+  const [issueTo, setIssueTo] = useState({});
 
   if (!d.data) return <Loading error={d.error} />;
   const p = d.data;
@@ -274,9 +279,28 @@ function PoDetail({ id, go, onChanged, wantGrv }) {
             <tbody>
               {p.lines.map((l) => {
                 const left = Number(l.qty) - Number(l.received_qty);
+                const regKind = !l.job_card_id && tmeta.data?.category_kind?.[l.category];
+                const canIssueLine = regKind && ["tool", "power_tool", "asset"].includes(regKind) && mayIssue && left > 0;
+                const iss = issueTo[l.id] || { employee_id: "", mode: "permanent", return_by: "" };
                 return (
                   <tr key={l.id}>
-                    <td>{l.item_name}</td>
+                    <td>{l.item_name}
+                      {regKind && <div style={MUTED}>{l.category} — each gets its own ID on the register</div>}
+                      {canIssueLine && (
+                        <div style={{ ...ROW, gap: 6, marginTop: 6 }}>
+                          <select aria-label={`Issue ${l.item_name} to`} style={{ width: "auto", fontSize: 12.5 }} value={iss.employee_id} onChange={(e) => setIssueTo({ ...issueTo, [l.id]: { ...iss, employee_id: e.target.value } })}>
+                            <option value="">Issue to a person? (optional)</option>
+                            {(tmeta.data?.employees || []).map((e) => <option key={e.id} value={e.id}>{e.name}{e.designation ? ` · ${e.designation}` : ""}</option>)}
+                          </select>
+                          {iss.employee_id && <>
+                            <select aria-label="Permanent or temporary" style={{ width: "auto", fontSize: 12.5 }} value={iss.mode} onChange={(e) => setIssueTo({ ...issueTo, [l.id]: { ...iss, mode: e.target.value } })}>
+                              <option value="permanent">Permanent</option><option value="temporary">Temporary</option>
+                            </select>
+                            {iss.mode === "temporary" && <input type="date" aria-label="Return by" style={{ width: "auto", fontSize: 12.5 }} value={iss.return_by} onChange={(e) => setIssueTo({ ...issueTo, [l.id]: { ...iss, return_by: e.target.value } })} />}
+                          </>}
+                        </div>
+                      )}
+                    </td>
                     <td>{l.job_card_code || "Stock"}</td>
                     <td style={{ textAlign: "right" }}>{qty(left)} {l.unit}</td>
                     <td>{left > 0 ? <div className="field-input"><input aria-label={`Received ${l.item_name}`} inputMode="decimal" value={grv.lines[l.id] ?? ""} onChange={(e) => setGrv({ ...grv, lines: { ...grv.lines, [l.id]: e.target.value } })} /></div> : <span style={MUTED}>all in</span>}</td>
@@ -297,8 +321,8 @@ function PoDetail({ id, go, onChanged, wantGrv }) {
             <button type="button" className="btn-primary" disabled={act.busy}
               onClick={() => act.run(() => apiRequest(`/maintenance-module/purchase-orders/${id}/grv`, {
                 method: "POST",
-                body: { ...grv, lines: Object.entries(grv.lines).map(([k, v]) => ({ po_line_id: Number(k), qty: v })) },
-              }), (o) => `${o.code} saved — ${fmtRs(o.value, 2)} into stock.`).then((r) => { if (r) { setGrv(null); go("purchase", { po: id }); } })}>Save GRV</button>
+                body: { ...grv, lines: Object.entries(grv.lines).map(([k, v]) => ({ po_line_id: Number(k), qty: v, issue: issueTo[k]?.employee_id ? { ...issueTo[k], employee_id: Number(issueTo[k].employee_id) } : null })) },
+              }), (o) => `${o.code} saved — ${fmtRs(o.value, 2)}.${(o.registered || []).map((r) => ` ${r.item}: ${r.codes.join(", ")}${r.issued_to ? ` → ${r.issued_to} (waiting for approval)` : ""}.`).join("")}`).then((r) => { if (r) { setGrv(null); go("purchase", { po: id }); } })}>Save GRV</button>
           </div>
         </section>
       )}
@@ -309,6 +333,7 @@ function PoDetail({ id, go, onChanged, wantGrv }) {
           {p.grvs.map((g) => (
             <div key={g.id} style={{ ...ROW, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
               <b>{g.code}</b><span>{fmtDate(g.grv_date)}</span><span style={MUTED}>bill {g.bill_no || "—"} · {g.created_by_name}</span>
+              {g.register_codes && <span style={MUTED}>On the register: {g.register_codes}</span>}
               <div style={{ flex: 1 }} />{g.bill_amount != null && <span>{fmtRs(g.bill_amount, 2)}</span>}
             </div>
           ))}

@@ -356,6 +356,7 @@ export function ExitsTab() {
       <div className="card" style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, background: "var(--concrete)" }}>
         <b>How an exit works.</b> Raise it → the Administrator approves (attendance and payroll stop at the last working day) → after the last working day, complete it with the final settlement (the employee becomes inactive and the app login is turned off).
         From the moment it is raised, <b>no new salary advance</b> can be requested, paid or entered for that employee; once approved, <b>no salary for a month after the last working day</b> and <b>no PPE issue</b>. The date of leaving can no longer be typed on the employee form — it comes from the exit.
+        Once approved, the <b>exit clearance</b> opens (tools, personal assets, money, PPE, work handover). <b>Salary is held on payroll</b> until every section is clear and the Administrator approves the clearance; only then can the exit be completed.
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         {[["open", "Open"], ["all", "All"]].map(([v, l]) => <button key={v} type="button" className={`btn-tab${show === v ? " active" : ""}`} onClick={() => setShow(v)}>{l}</button>)}
@@ -365,7 +366,7 @@ export function ExitsTab() {
       {err && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13, margin: 0 }}>{err}</div>}
       {raising && <ExitForm d={d} onCancel={() => setRaising(false)} onDone={() => { setRaising(false); setMsg("Exit raised — waiting for the Administrator's approval. No new advance can be given to this employee now."); load(); }} />}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 12 }}>
-        {list.map((x) => <ExitCard key={x.id} x={x} today={d.today} mayApprove={mayApprove} act={act} />)}
+        {list.map((x) => <ExitCard key={x.id} x={x} today={d.today} mayApprove={mayApprove} mayClear={d.may_clear || []} act={act} />)}
       </div>
       {!list.length && <div className="card" style={MUTED}>{show === "open" ? "No one is leaving right now." : "No exits recorded."}</div>}
     </div>
@@ -402,7 +403,7 @@ function ExitForm({ d, onCancel, onDone }) {
   );
 }
 
-function ExitCard({ x, today, mayApprove, act }) {
+function ExitCard({ x, today, mayApprove, mayClear, act }) {
   const [lwd, setLwd] = useState(x.last_working_day);
   const [note, setNote] = useState("");
   const [settle, setSettle] = useState("");
@@ -447,17 +448,62 @@ function ExitCard({ x, today, mayApprove, act }) {
           <button type="button" onClick={() => act(() => apiRequest(`/hr/exits/${x.id}/decide`, { method: "POST", body: { action: "reject", note } }), "Exit rejected.")}>Reject</button>
         </div>
       )}
+      {x.clearance && <ClearancePanel x={x} mayApprove={mayApprove} mayClear={mayClear} act={act} />}
       {x.status === "approved" && mayApprove && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
           {!lwdPassed && <div style={MUTED}>Complete it after the last working day.</div>}
+          {x.clearance && !x.clearance.approved_at && <div style={{ ...MUTED, color: "var(--amber)" }}>Complete it after the exit clearance is approved.</div>}
           <Field label="Final settlement (what was paid / recovered, PPE collected)"><textarea rows={2} value={settle} onChange={(e) => setSettle(e.target.value)} disabled={!lwdPassed} maxLength={500} /></Field>
           {x.app_user_id && <label style={{ fontSize: 12.5, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={disable} onChange={(e) => setDisable(e.target.checked)} disabled={!lwdPassed} /> Turn off the app login</label>}
-          <div><button type="button" className="btn-primary" disabled={!lwdPassed} onClick={() => window.confirm(`Complete ${x.employee}'s exit? They become inactive${disable && x.app_user_id ? " and their app login is turned off" : ""}.`) && act(() => apiRequest(`/hr/exits/${x.id}/complete`, { method: "POST", body: { settlement_note: settle, disable_login: disable } }), "Exit completed.")}>Complete exit</button></div>
+          <div><button type="button" className="btn-primary" disabled={!lwdPassed || (x.clearance && !x.clearance.approved_at)} onClick={() => window.confirm(`Complete ${x.employee}'s exit? They become inactive${disable && x.app_user_id ? " and their app login is turned off" : ""}.`) && act(() => apiRequest(`/hr/exits/${x.id}/complete`, { method: "POST", body: { settlement_note: settle, disable_login: disable } }), "Exit completed.")}>Complete exit</button></div>
         </div>
       )}
       {open && (
         <div><button type="button" style={SMALL} onClick={() => { const n = window.prompt(`Cancel ${x.employee}'s exit? Reason:`); if (n !== null) act(() => apiRequest(`/hr/exits/${x.id}/cancel`, { method: "POST", body: { note: n } }), "Exit cancelled."); }}>Cancel exit</button></div>
       )}
     </article>
+  );
+}
+
+// Round 264 — exit clearance: five sections, each cleared by its owner; the
+// Administrator approves the whole; salary stays on hold until then.
+function ClearancePanel({ x, mayApprove, mayClear, act }) {
+  const c = x.clearance;
+  const [notes, setNotes] = useState({});
+  const done = c.approved_at;
+  return (
+    <div style={{ border: `1px solid ${done ? "var(--signal-green)" : "var(--alert-red)"}`, borderRadius: 8, padding: 10, fontSize: 12.5, display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+        <b style={{ fontSize: 13 }}>Exit clearance · {c.done}/{c.total}</b>
+        {done ? <span className="badge badge-success">Approved {fmtTs(c.approved_at)}</span> : <span className="badge badge-danger">Salary on hold</span>}
+      </div>
+      {c.sections.map((s) => (
+        <div key={s.key} style={{ display: "flex", gap: 8, alignItems: "flex-start", borderTop: "1px solid var(--border)", paddingTop: 6, flexWrap: "wrap" }}>
+          <span style={{ width: 18, color: s.done ? "var(--signal-green)" : "var(--slate)", fontWeight: 700 }}>{s.done ? "✓" : "○"}</span>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div><b>{s.label}</b> <span style={MUTED}>· {s.who}</span></div>
+            {s.holding.length > 0 && <div style={{ color: "var(--alert-red)" }}>Still held: {s.holding.join(", ")}</div>}
+            {s.auto && <div style={MUTED}>Nothing held — clear.</div>}
+            {s.cleared_by && <div style={MUTED}>Cleared by {s.cleared_by} {fmtTs(s.cleared_at)}{s.note ? ` — ${s.note}` : ""}</div>}
+          </div>
+          {!done && x.status === "approved" && mayClear.includes(s.key) && !s.auto && (
+            s.done
+              ? <button type="button" style={SMALL} onClick={() => act(() => apiRequest(`/hr/exits/${x.id}/clearance/${s.key}`, { method: "POST", body: { action: "reopen" } }), "Section reopened.")}>Reopen</button>
+              : <div style={{ display: "flex", gap: 6 }}>
+                  <input style={{ width: 150, fontSize: 12.5, padding: "4px 8px" }} placeholder="Note" value={notes[s.key] || ""} onChange={(e) => setNotes({ ...notes, [s.key]: e.target.value })} />
+                  <button type="button" style={SMALL} className="btn-primary" disabled={s.holding.length > 0} onClick={() => act(() => apiRequest(`/hr/exits/${x.id}/clearance/${s.key}`, { method: "POST", body: { note: notes[s.key] || "" } }), `${s.label} cleared.`)}>Clear</button>
+                </div>
+          )}
+        </div>
+      ))}
+      {!done && x.status === "approved" && mayApprove && (
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+          <button type="button" className="btn-primary" disabled={!c.all_clear}
+            onClick={() => window.confirm(`Approve ${x.employee}'s exit clearance? Their salary is released on payroll.`) && act(() => apiRequest(`/hr/exits/${x.id}/clearance-approve`, { method: "POST" }), "Exit clearance approved — salary released.")}>
+            Approve clearance</button>
+          {!c.all_clear && <span style={{ ...MUTED, marginLeft: 8 }}>Every section must be clear first.</span>}
+        </div>
+      )}
+    </div>
   );
 }

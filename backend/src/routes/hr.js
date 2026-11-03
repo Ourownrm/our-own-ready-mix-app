@@ -10,6 +10,7 @@ import { Router } from "express";
 import { ensureRound250 } from "../lib/round250Schema.js";
 import { pool, query } from "../db.js";
 import { exitBlock, ensureExit, LEFT_BEFORE_MONTH_SQL } from "../lib/hrExit.js";
+import { payrollHolds, NOT_ON_HOLD_SQL } from "../lib/exitClearance.js";
 import { audit, auditList } from "../lib/hrAudit.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission, can } from "../lib/permissions.js";
@@ -1477,6 +1478,9 @@ router.get("/payroll", requirePermission("hr.payroll", "view"), async (req, res)
           ifsc: r.bank_ifsc || null, pan: r.pan_no || null };
       }
     }
+    // Round 264 — salary on hold until the exit clearance is approved.
+    const holds = lines.rows.length ? await payrollHolds(lines.rows.map((l) => l.employee_id)).catch(() => ({})) : {};
+    for (const l of lines.rows) l.clearance_hold = holds[l.employee_id] || null;
     res.json({ month, run: run.rows[0] || null, lines: lines.rows, month_finished: to < istToday(), pending_requests: pending.rows[0].n, bank_details: bank,
       unlinked_trips: orphanTrips.rows });
   } catch (err) {
@@ -1563,6 +1567,9 @@ router.put("/payroll/:month/lines/:emp/payment", requirePermission("hr.payroll",
     // Round 249 — no salary for a month after an approved exit's last working day.
     const gone = await exitBlock(emp, "salary", { month });
     if (gone) return res.status(409).json({ error: gone });
+    // Round 264 — no salary while the exit clearance is not approved.
+    const hold = (await payrollHolds([emp]))[emp];
+    if (hold) return res.status(409).json({ error: `Salary is on hold — exit clearance ${hold.done}/${hold.total}. The Administrator approves the clearance under HR → Exits first.` });
     const { rowCount } = await query(
       `UPDATE hr_payroll_lines SET paid_amount = $1, paid_on = $2, paid_mode = $3, paid_ref = $4, paid_by = $5 WHERE month = $6 AND employee_id = $7`,
       [amount, on, PAY_MODES.includes(b.paid_mode) ? b.paid_mode : "bank_transfer", text(b.paid_ref, 100), req.user.id, month, emp]);
@@ -1586,6 +1593,8 @@ router.post("/payroll/:month/pay-all", requirePermission("hr.payroll", "edit"), 
        WHERE month = $5 AND paid_amount IS NULL AND net_pay > 0
          -- Round 249 — never someone whose approved exit ended before this month
          AND ${LEFT_BEFORE_MONTH_SQL("$5")}
+         -- Round 264 — never someone whose exit clearance is not approved
+         AND ${NOT_ON_HOLD_SQL}
          AND ($6::text IS NULL OR employee_id IN (SELECT id FROM hr_employees WHERE employment_type = $6))
          -- Round 211 — contract workers with a contractor are paid through the contractor's bill
          AND employee_id NOT IN (SELECT id FROM hr_employees WHERE employment_type = 'contract' AND contractor_id IS NOT NULL)`,

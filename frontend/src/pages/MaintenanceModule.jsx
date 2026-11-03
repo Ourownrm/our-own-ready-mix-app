@@ -17,6 +17,9 @@ import MntPurchase from "./maintenance/MntPurchase.jsx";
 import MntPayments from "./maintenance/MntPayments.jsx";
 import MntTyres from "./maintenance/MntTyres.jsx";
 import MntCertificates from "./maintenance/MntCertificates.jsx";
+import RegisterView from "./tools/RegisterView.jsx";
+import InUseView from "./tools/InUseView.jsx";
+import KitsView from "./tools/KitsView.jsx";
 
 // Round 256 — the tab list (key, label, who may open it) lives in
 // lib/moduleTabs.js, shared with the computer side menu.
@@ -32,6 +35,10 @@ const COMPONENTS = {
   "tyres": MntTyres,
   "certificates": MntCertificates,
   "payments": MntPayments,
+  // Round 264 — Tools Issue Register, cube moulds & pipes, kits.
+  "tools": () => <RegisterView group="tools" />,
+  "in-use": InUseView,
+  "kits": KitsView,
 };
 const TABS = MODULE_TABS["maintenance-module"].tabs.map((t) => ({ ...t, Component: COMPONENTS[t.key] }));
 

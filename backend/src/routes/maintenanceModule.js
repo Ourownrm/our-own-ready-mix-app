@@ -33,6 +33,9 @@ import { syncGeneralCharges } from "../lib/maintenanceGeneral.js";
 import { refreshAssetNames } from "../lib/maintenanceModels.js";
 import { openCardFor, addJobs } from "../lib/maintenanceJobs.js";
 import { requireManualPayments } from "../lib/ledgerPost.js";
+import { addFromGrv, CATEGORY_KIND } from "./tools.js";
+import { ensureRound264 } from "../lib/round264Schema.js";
+import { ensureExit } from "../lib/hrExit.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -1006,7 +1009,10 @@ router.post("/outside-repairs/:id/approve-bill", requirePermission("mnt.outside-
 
 // ------------------------------------------------------------------ store ---
 
-const CATEGORIES = ["Vehicle spares", "Plant spares", "Filters", "Lubricants", "Tyres", "Batteries", "Consumables", "Tools", "Other"];
+// Round 264 — the last four (with Tools) feed the Tools & assets registers:
+// a GRV line in one of them puts numbered items on the register.
+const CATEGORIES = ["Vehicle spares", "Plant spares", "Filters", "Lubricants", "Tyres", "Batteries", "Consumables", "Tools",
+  "Power tools & equipment", "Personal assets", "Cube moulds", "Pump pipes", "Other"];
 
 router.get("/store/items", requireAnyPermission(["mnt.store", "mnt.job-cards", "mnt.purchase-orders"]), async (req, res) => {
   const assetId = req.query.asset_id ? Number(req.query.asset_id) : null;
@@ -1262,11 +1268,12 @@ router.get("/purchase-orders/:id", requirePermission("mnt.purchase-orders", "vie
     LEFT JOIN users cb ON cb.id = po.created_by LEFT JOIN users ab ON ab.id = po.approved_by WHERE po.id = $1`, [req.params.id]);
   if (!rows.length) return bad(res, "Purchase order not found.", 404);
   const [lines, grvs] = await Promise.all([
-    query(`SELECT l.*, i.name AS item_name, i.unit, i.last_price, a.name AS asset_name
+    query(`SELECT l.*, i.name AS item_name, i.unit, i.last_price, i.category, a.name AS asset_name
            FROM mnt_po_lines l JOIN mnt_store_items i ON i.id = l.item_id
            LEFT JOIN mnt_job_cards j ON j.id = l.job_card_id LEFT JOIN mnt_assets a ON a.id = j.asset_id
            WHERE l.po_id = $1 ORDER BY l.id`, [req.params.id]),
-    query(`SELECT g.*, u.name AS created_by_name FROM mnt_grvs g LEFT JOIN users u ON u.id = g.created_by WHERE g.po_id = $1 ORDER BY g.id`, [req.params.id]),
+    query(`SELECT g.*, u.name AS created_by_name, (SELECT string_agg(gl.register_codes, ', ') FROM mnt_grv_lines gl WHERE gl.grv_id = g.id AND gl.register_codes IS NOT NULL) AS register_codes
+           FROM mnt_grvs g LEFT JOIN users u ON u.id = g.created_by WHERE g.po_id = $1 ORDER BY g.id`, [req.params.id]),
   ]);
   res.json({
     ...rows[0], code: code("PO", rows[0].id),
@@ -1375,7 +1382,15 @@ router.post("/purchase-orders/:id/grv", requirePermission("mnt.grv", "create"), 
   const billAmount = num(req.body.bill_amount);
   if ((grvDate && !DATE_RE.test(grvDate)) || (billDate && !DATE_RE.test(billDate))) return bad(res, "Dates must be yyyy-mm-dd.");
   if (Number.isNaN(billAmount) || (billAmount != null && billAmount < 0)) return bad(res, "Bill amount must be a number.");
-  const linesIn = (Array.isArray(req.body.lines) ? req.body.lines : []).map((l) => ({ id: Number(l.po_line_id), qty: num(l.qty) })).filter((l) => l.qty);
+  const linesIn = (Array.isArray(req.body.lines) ? req.body.lines : []).map((l) => ({ id: Number(l.po_line_id), qty: num(l.qty),
+    issue: l.issue && Number(l.issue.employee_id) > 0 ? l.issue : null })).filter((l) => l.qty);
+  if (linesIn.some((l) => l.issue)) {
+    if (!(await can(req.user, "tools.issue", "create")) && !(await can(req.user, "hr.assets", "create"))) return bad(res, "You can't issue to a person — leave \"Issue to\" empty.", 403);
+  }
+  // Schema first, outside the transaction (see routes/tools.js).
+  await ensureRound264();
+  await ensureExit();
+  const registered = [];
   if (!linesIn.length) return bad(res, "Enter what was received.");
   if (linesIn.some((l) => Number.isNaN(l.qty) || l.qty <= 0)) return bad(res, "Received quantities must be positive.");
   try {
@@ -1412,8 +1427,23 @@ router.post("/purchase-orders/:id/grv", requirePermission("mnt.grv", "create"), 
            VALUES ($1,'receive',$2,$3,$4,$5,'grv',$6,$7,$8)`,
           [it.id, li.qty, newQty, money(landed), value, grvId, `${code("GRV", grvId)} / ${code("PO", poId)} · ${po[0].supplier_name}`, req.user.id]);
         await c.query(`UPDATE mnt_po_lines SET received_qty = received_qty + $1 WHERE id = $2`, [li.qty, l.id]);
-        await c.query(`INSERT INTO mnt_grv_lines (grv_id, po_line_id, qty, rate, value, job_card_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+        const gl = await c.query(`INSERT INTO mnt_grv_lines (grv_id, po_line_id, qty, rate, value, job_card_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
           [grvId, l.id, li.qty, money(landed), value, l.job_card_id]);
+        // Round 264 — a tool, power tool, personal asset, cube mould or pump
+        // pipe goes on its register, one numbered item each, and out of the
+        // spares stock (it is now on the register, not on the shelf). A
+        // tool / asset can be issued to a person in the same step; that issue
+        // waits for the Plant In Charge (Administrator for an asset).
+        if (CATEGORY_KIND[it.category] && !l.job_card_id) {
+          const reg = await addFromGrv(c, { grvId, item: it, qty: li.qty, rate: money(landed), grvDate: g.rows[0].grv_date, issue: li.issue, userId: req.user.id });
+          await c.query(`UPDATE mnt_store_items SET current_qty = current_qty - $1 WHERE id = $2`, [li.qty, it.id]);
+          await c.query(
+            `INSERT INTO mnt_store_txns (item_id, txn_type, qty_change, balance_after, rate, value, ref_type, ref_id, note, created_by)
+             VALUES ($1,'issue',$2,$3,$4,$5,'register',$6,$7,$8)`,
+            [it.id, -li.qty, newQty - li.qty, money(landed), value, grvId, `On the register: ${reg.codes.join(", ")}`, req.user.id]);
+          await c.query(`UPDATE mnt_grv_lines SET register_codes = $1 WHERE id = $2`, [reg.codes.join(", "), gl.rows[0].id]);
+          registered.push({ item: it.name, codes: reg.codes, issued_to: reg.issued?.employee || null, assets: reg.issued?.assets || false });
+        }
         // Bought for a job card: straight on to it at the bought rate.
         if (l.job_card_id && l.card_status === "open") {
           await issueToCard(c, { itemId: it.id, qty: li.qty, cardId: l.job_card_id, assetId: l.asset_id, userId: req.user.id, refType: "grv", refId: grvId, rate: landed });
@@ -1431,8 +1461,11 @@ router.post("/purchase-orders/:id/grv", requirePermission("mnt.grv", "create"), 
         `INSERT INTO mnt_bills (source_type, source_id, payee, bill_no, bill_date, amount, due_date)
          VALUES ('grv', $1, $2, $3, COALESCE($4::date, $5::date), $6, COALESCE($4::date, $5::date) + $7::int)`,
         [grvId, po[0].supplier_name, billNo || null, billDate, g.rows[0].grv_date, amount, po[0].credit_days]);
-      return { id: grvId, code: code("GRV", grvId), value: money(total) };
+      return { id: grvId, code: code("GRV", grvId), value: money(total), registered };
     });
+    for (const r of out.registered || []) {
+      if (r.issued_to) notify(r.assets ? "administrator" : "plant_in_charge", r.assets ? "Asset issue to approve" : "Tool issue to approve", `${r.codes.join(", ")} for ${r.issued_to}`, r.assets ? "/hr?tab=assets" : "/maintenance-module?tab=tools");
+    }
     res.status(201).json(out);
   } catch (err) {
     if (err.status) return bad(res, err.message, err.status);

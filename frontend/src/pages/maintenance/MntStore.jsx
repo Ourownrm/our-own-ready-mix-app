@@ -68,7 +68,8 @@ export default function MntStore() {
           <div style={GRID(180)}>
             <Field label="Name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
             <Field label="Part no."><input value={form.part_no || ""} onChange={(e) => setForm({ ...form, part_no: e.target.value })} /></Field>
-            <Field label="Category"><select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>{categories.map((c) => <option key={c}>{c}</option>)}</select></Field>
+            <Field label="Category"><select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
+              {["Tools", "Power tools & equipment", "Personal assets", "Cube moulds", "Pump pipes"].includes(form.category) && <span style={{ ...MUTED, display: "block", marginTop: 4 }}>On a GRV each unit gets its own ID on the {form.category === "Personal assets" ? "personal assets" : form.category === "Cube moulds" || form.category === "Pump pipes" ? "cube moulds & pipes" : "tools"} register.</span>}</Field>
             <Field label="Unit"><input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} /></Field>
             <Field label="Re-order level"><input inputMode="decimal" value={form.reorder_level ?? ""} onChange={(e) => setForm({ ...form, reorder_level: e.target.value })} /></Field>
           </div>

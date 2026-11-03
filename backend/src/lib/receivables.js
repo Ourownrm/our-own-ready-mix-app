@@ -47,7 +47,18 @@ export async function openItems(db, customerId) {
 
 // Sets what a receipt has not yet allocated against the oldest open items.
 // Whatever is left stays on the receipt as the customer's advance.
-export async function allocateReceipt(db, receiptId) {
+// Round 264 (owner, 2 Nov 2026) — `pick` ([{ kind, id }]): the invoices the
+// user chose in Record a receipt are paid first (oldest of them first); what
+// is left then goes to the other dues, oldest first, as before. No pick = the
+// old rule exactly.
+export const pickKey = (kind, id) => `${kind === "opening_balance" ? "opening_balance" : "invoice"}:${Number(id)}`;
+export function orderForPick(items, pick) {
+  const chosen = new Set((Array.isArray(pick) ? pick : []).map((p) => pickKey(p.kind, p.id)));
+  if (!chosen.size) return items;
+  const first = items.filter((it) => chosen.has(pickKey(it.kind, it.id)));
+  return [...first, ...items.filter((it) => !chosen.has(pickKey(it.kind, it.id)))];
+}
+export async function allocateReceipt(db, receiptId, pick = null) {
   const { rows } = await db.query(
     `SELECT r.*, r.receipt_date::text AS receipt_day,
             r.amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.receipt_id = r.id), 0) AS free
@@ -59,7 +70,7 @@ export async function allocateReceipt(db, receiptId) {
   let free = Number(r.free);
   const applied = [];
   if (free > 0.01) {
-    for (const item of await openItems(db, r.customer_id)) {
+    for (const item of orderForPick(await openItems(db, r.customer_id), pick)) {
       if (free <= 0.01) break;
       const amt = r2(Math.min(free, Number(item.balance)));
       const col = item.kind === "opening_balance" ? "opening_balance_id" : "invoice_id";
@@ -89,14 +100,14 @@ export async function applyAdvances(db, customerId) {
   return applied;
 }
 
-export async function postReceipt(db, { customer_id, receipt_date, amount, mode, reference_number, bank_account, narration, remarks, bank_line_id, userId }) {
+export async function postReceipt(db, { customer_id, receipt_date, amount, mode, reference_number, bank_account, narration, remarks, bank_line_id, userId, pick = null }) {
   const { rows } = await db.query(
     `INSERT INTO customer_receipts (customer_id, receipt_date, amount, mode, reference_number, bank_account, narration, remarks, bank_line_id, entered_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
     [customer_id, receipt_date, r2(amount), mode, reference_number || null, bank_account || null, narration || null, remarks || null, bank_line_id || null, userId]
   );
   const id = rows[0].id;
-  return { id, ...(await allocateReceipt(db, id)) };
+  return { id, ...(await allocateReceipt(db, id, pick)) };
 }
 
 // Totals: outstanding (billed − received), and money received in a period.

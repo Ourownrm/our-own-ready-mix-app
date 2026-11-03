@@ -9268,3 +9268,25 @@ Owner, 2 Nov 2026: "Best driver - need to see previous months also".
 - Best Driver & Site Efficiency (/maintenance): a month picker above both tabs — ‹ Previous, a month box, Next › (not past the current month), "This month". The leaderboard, winner, not-ranked list and Site Efficiency reload for the chosen month (the routes already took year / month).
 - Wording follows the month ("trips in September 2026", "Not ranked in …"); the not-ranked reasons say "in the month".
 - Also in this round: Tools Issue Register — mockup only (design canvas), no code.
+
+## Round 264 — Tools & assets register, cube moulds & pipes, exit clearance, receipt invoice choice (v10.96)
+
+Owner, 2–3 Nov 2026 (mockup v5, Project doc `claude/tools-issue-register-mockup-v1.md`): "code this with invoice selection … and according to the super admin access control".
+
+**Tools & power tools** (Maintenance → Tools & power tools): one numbered item per tool (T-…, PT-…). Store issues (permanent / temporary with a return date, or a standard kit) → Plant In Charge approves → the employee accepts on the phone (My tools & assets). Take back per item: good → store; damaged / lost → the Administrator decides no charge, repair, or **recover from salary** (goes on that month's payroll as "Tool / asset recovery"). Overdue temporary items highlighted.
+
+**Kits & tool list** (Maintenance): Mechanic kit (24) and Electrician kit (18) seeded, new kits, item types with ID prefixes; power tools, moulds, pipes and asset types seeded from the mockup.
+
+**Receiving = the only way in.** The direct-purchase screen was dropped (owner). Maintenance store categories gain *Power tools & equipment, Personal assets, Cube moulds, Pump pipes* (with *Tools*). A GRV line in one of them puts each unit on its register with its own ID (moved out of spares stock), and a tool / asset line can be **issued to a person on the GRV** (then approved as usual).
+
+**Cube moulds & pump pipes** (Maintenance → Cube moulds & pipes): every item has an ID (CM, PM, CY, PP, PB, PR, PH). One-time **Add existing list** (by count, or your own numbers) → Plant In Charge confirms; afterwards only GRVs add (corrections need confirmation). Move between lab / BP-01 / line pump set / plant spare / site. The Lab Technician's site cube cast takes the **mould IDs used** and marks them at the site. Damaged → report with photo → "removal pending" → Plant In Charge approves (Administrator for lost); IDs are never reused. History kept.
+
+**Personal assets** (HR → Personal assets): Administrator adds, hands over, approves; prints the Phone & SIM undertaking (owner's content, app design) or a general handover form.
+
+**Exit clearance**: opens when an exit is approved — tools, personal assets, money (Accounts), PPE, work handover. Tools / assets / PPE clear themselves when nothing is held. Administrator approves the clearance; until then **salary is on hold** (payroll row highlighted, Mark paid refused, Pay all skips) and the exit cannot be completed.
+
+**Customer receipt** (Record a receipt): pick the invoice(s) it pays — picked ones first, the rest to the oldest dues; none picked = oldest first as before.
+
+**Access Control** — new functions: tools.register, tools.issue, tools.approve, tools.kits, tools.in-use, tools.removal-approve, tools.loss-decide, tools.report-damage, tools.my, hr.assets, hr.asset-approve, hr.exit-clear-money, hr.exit-clear-handover (defaults as above; migration `r264_tools_grants` respects Super Admin decisions). New screen "My tools & assets" (/my-tools).
+
+Verified on scratch Postgres: 82 live checks pass (receipt pick order, opening list + confirm, own-ID clash, site cast moulds incl. rollback, removals and who approves, GRV numbering / stock / issue, approve → accept → damaged → salary recovery in payroll, asset rights, exit clearance 1/5 → 5/5, payroll hold release, Super Admin switch-off). `npm run check` green; build clean.

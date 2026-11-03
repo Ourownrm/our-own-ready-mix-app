@@ -177,7 +177,7 @@ function earningsRows(c) {
 }
 function deductionRows(c) {
   const rows = [["Provident Fund (PF)", c.pf], ["ESI", c.esi], ["Professional tax", c.pt],
-    ["Salary advance recovered", c.advance], ["Other deduction", c.other_deduction]];
+    ["Salary advance recovered", c.advance], ["Other deduction", c.other_deduction], ["Tool / asset recovery", c.tool_recovery || 0]];
   return rows.filter((r) => Number(r[1]));
 }
 

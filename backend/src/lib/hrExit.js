@@ -18,10 +18,12 @@
 // working day's month (the final month is the full & final settlement).
 import { query } from "../db.js";
 import { ROUND249_SQL } from "./round249Schema.js";
+import { ensureRound264 } from "./round264Schema.js";
 
 let ready = null;
 export function ensureExit() {
-  if (!ready) ready = query(ROUND249_SQL).catch((e) => { ready = null; throw e; });
+  // Round 264 — the exit clearance columns come with it.
+  if (!ready) ready = query(ROUND249_SQL).then(() => ensureRound264()).catch((e) => { ready = null; throw e; });
   return ready;
 }
 const fmt = (ymd) => new Date(`${ymd}T00:00:00+05:30`).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric" });

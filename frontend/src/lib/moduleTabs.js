@@ -83,6 +83,10 @@ export const MODULE_TABS = {
       { key: "tyres", label: "Tyres & batteries", perm: "mnt.tyres" },
       { key: "certificates", label: "Certificates", perm: "mnt.certificates" },
       { key: "payments", label: "Payments", perm: "mnt.payments" },
+      // Round 264 — Tools Issue Register, cube moulds & pipes, kits.
+      { key: "tools", label: "Tools & power tools", any: [["tools.register", "view"], ["tools.issue", "view"], ["tools.approve", "edit"], ["tools.loss-decide", "edit"]] },
+      { key: "in-use", label: "Cube moulds & pipes", any: [["tools.in-use", "view"], ["tools.removal-approve", "edit"]] },
+      { key: "kits", label: "Kits & tool list", perm: "tools.kits" },
     ],
   },
   "fuel-module": {
@@ -145,7 +149,8 @@ export const MODULE_TABS = {
       { key: "contract", label: "Contract labour", perm: "hr.gangs" },
       { key: "bills", label: "Contractor bills", perm: "hr.contractor-bills" },
       { key: "ppe", label: "PPE", any: [["hr.ppe", "view"], ["hr.ppe-approve", "edit"]] },
-      { key: "exits", label: "Exits", any: [["hr.exit", "view"], ["hr.exit-approve", "edit"]] },
+      { key: "exits", label: "Exits", any: [["hr.exit", "view"], ["hr.exit-approve", "edit"], ["hr.exit-clear-money", "edit"], ["hr.exit-clear-handover", "edit"]] },
+      { key: "assets", label: "Personal assets", any: [["hr.assets", "view"], ["hr.asset-approve", "edit"]] },
       { key: "settings", label: "Settings", perm: "hr.settings" },
     ],
   },

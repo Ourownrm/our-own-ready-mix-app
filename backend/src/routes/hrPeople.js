@@ -23,6 +23,7 @@ import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission, can } from "../lib/permissions.js";
 import { ensureExit, exitBlock } from "../lib/hrExit.js";
+import { clearanceOf, canClear, SECTIONS as CLEAR_SECTIONS } from "../lib/exitClearance.js";
 import { istDay } from "../lib/istDate.js";
 import { clearUserCache } from "../middleware/auth.js";
 import { clearPermissionCache } from "../lib/permissions.js";
@@ -214,7 +215,8 @@ router.delete("/ppe/issues/:id(\\d+)", requirePermission("hr.ppe", "delete"), as
 
 // ---------------------------------------------------------------- exits ---
 router.get("/exits", async (req, res) => {
-  if (!(await anyOf(req.user, [["hr.exit", "view"], ["hr.exit-approve", "edit"]]))) return bad(res, "You don't have access to this.", 403);
+  // Round 264 — whoever clears a section of an exit clearance sees the exits too.
+  if (!(await anyOf(req.user, [["hr.exit", "view"], ["hr.exit-approve", "edit"], ["hr.exit-clear-money", "edit"], ["hr.exit-clear-handover", "edit"], ["tools.approve", "edit"], ["hr.assets", "edit"]]))) return bad(res, "You don't have access to this.", 403);
   const { rows } = await query(
     `SELECT x.id, x.employee_id, e.name AS employee, e.emp_code, e.designation, d.name AS department, e.is_active, e.app_user_id,
             to_char(e.date_of_joining, 'YYYY-MM-DD') AS date_of_joining,
@@ -232,7 +234,19 @@ router.get("/exits", async (req, res) => {
        FROM hr_exits x JOIN hr_employees e ON e.id = x.employee_id LEFT JOIN hr_departments d ON d.id = e.department_id
        LEFT JOIN users ru ON ru.id = x.requested_by LEFT JOIN users du ON du.id = x.decided_by LEFT JOIN users cu ON cu.id = x.completed_by
       ORDER BY (x.status IN ('pending','approved')) DESC, x.last_working_day DESC, x.id DESC LIMIT 300`);
-  res.json({ exits: rows, employees: await pickList(), today: istDay() });
+  // Round 264 — the clearance of every approved / completed exit, and which
+  // sections this user may clear.
+  await ensureExit();
+  const { rows: ca } = await query(`SELECT id, clearance_approved_at FROM hr_exits WHERE id = ANY($1::int[])`, [rows.map((x) => x.id)]);
+  const approvedAt = new Map(ca.map((r) => [r.id, r.clearance_approved_at]));
+  for (const x of rows) {
+    if (x.status === "approved" || (x.status === "completed" && approvedAt.get(x.id))) {
+      x.clearance = await clearanceOf({ id: x.id, employee_id: x.employee_id, clearance_approved_at: approvedAt.get(x.id) });
+    }
+  }
+  const mayClear = [];
+  for (const s of CLEAR_SECTIONS) if (await canClear(req.user, s.key)) mayClear.push(s.key);
+  res.json({ exits: rows, employees: await pickList(), today: istDay(), may_clear: mayClear });
 });
 
 router.post("/exits", requirePermission("hr.exit", "create"), async (req, res) => {
@@ -286,6 +300,45 @@ router.post("/exits/:id(\\d+)/decide", requirePermission("hr.exit-approve", "edi
   } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; } finally { client.release(); }
 });
 
+// Round 264 — clear (or reopen) one section of an exit clearance.
+router.post("/exits/:id(\\d+)/clearance/:section", async (req, res) => {
+  await ensureExit();
+  const section = req.params.section;
+  if (!CLEAR_SECTIONS.some((s) => s.key === section)) return bad(res, "Unknown section.");
+  if (!(await canClear(req.user, section))) return bad(res, "This section is cleared by someone else.", 403);
+  const { rows } = await query(`SELECT * FROM hr_exits WHERE id = $1`, [req.params.id]);
+  const x = rows[0];
+  if (!x) return bad(res, "Not found.", 404);
+  if (x.status !== "approved") return bad(res, "The clearance opens when the exit is approved.", 409);
+  if (x.clearance_approved_at) return bad(res, "The clearance is already approved.", 409);
+  const reopen = req.body?.action === "reopen";
+  if (!reopen) {
+    const c = await clearanceOf(x);
+    const s = c.sections.find((y) => y.key === section);
+    if (s.holding.length) return bad(res, `Still held: ${s.holding.join(", ")}. Take them back first.`, 409);
+  }
+  await query(
+    `INSERT INTO hr_exit_clearance (exit_id, section, status, note, cleared_by, cleared_at) VALUES ($1,$2,$3,$4,$5, now())
+     ON CONFLICT (exit_id, section) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, cleared_by = EXCLUDED.cleared_by, cleared_at = EXCLUDED.cleared_at`,
+    [x.id, section, reopen ? "open" : "cleared", txt(req.body?.note, 300), req.user.id]);
+  res.json({ ok: true });
+});
+
+// Round 264 — the Administrator approves the whole clearance; salary is then
+// released on payroll and the exit can be completed.
+router.post("/exits/:id(\\d+)/clearance-approve", requirePermission("hr.exit-approve", "edit"), async (req, res) => {
+  await ensureExit();
+  const { rows } = await query(`SELECT * FROM hr_exits WHERE id = $1`, [req.params.id]);
+  const x = rows[0];
+  if (!x) return bad(res, "Not found.", 404);
+  if (x.status !== "approved") return bad(res, "Only an approved exit has a clearance.", 409);
+  if (x.clearance_approved_at) return bad(res, "Already approved.", 409);
+  const c = await clearanceOf(x);
+  if (!c.all_clear) return bad(res, `Clearance is ${c.done}/${c.total} — every section must be clear first.`, 409);
+  await query(`UPDATE hr_exits SET clearance_approved_by = $1, clearance_approved_at = now() WHERE id = $2`, [req.user.id, x.id]);
+  res.json({ ok: true });
+});
+
 router.post("/exits/:id(\\d+)/complete", requirePermission("hr.exit-approve", "edit"), async (req, res) => {
   const b = req.body || {};
   const { rows } = await query(`SELECT x.*, to_char(x.last_working_day, 'YYYY-MM-DD') AS lwd, e.app_user_id, e.name FROM hr_exits x JOIN hr_employees e ON e.id = x.employee_id WHERE x.id = $1`, [req.params.id]);
@@ -293,6 +346,10 @@ router.post("/exits/:id(\\d+)/complete", requirePermission("hr.exit-approve", "e
   if (!x) return bad(res, "Not found.", 404);
   if (x.status !== "approved") return bad(res, "Approve the exit first.", 409);
   if (x.lwd > istDay()) return bad(res, `The last working day (${x.lwd}) has not come yet.`, 409);
+  // Round 264 — not before the exit clearance is approved.
+  await ensureExit();
+  const { rows: cl } = await query(`SELECT clearance_approved_at FROM hr_exits WHERE id = $1`, [x.id]);
+  if (!cl[0]?.clearance_approved_at) return bad(res, "Approve the exit clearance first (every section clear).", 409);
   const disable = b.disable_login !== false && x.disable_login !== false;
   const client = await pool.connect();
   try {

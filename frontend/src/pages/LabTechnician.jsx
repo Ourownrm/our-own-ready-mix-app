@@ -1027,6 +1027,7 @@ function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
   const [numberOfCubes, setNumberOfCubes] = useState("");
   const [sampleIds, setSampleIds] = useState("");
   const [remarks, setRemarks] = useState("");
+  const [mouldCodes, setMouldCodes] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Round 121, item 4 — only orders that actually received supply are
@@ -1041,9 +1042,9 @@ function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
     try {
       const created = await apiRequest("/lab-technician/site-cube-casts", {
         method: "POST",
-        body: { order_id: orderId, cast_date: castDate, number_of_cubes: numberOfCubes || null, sample_ids: sampleIds || null, remarks: remarks || null },
+        body: { order_id: orderId, cast_date: castDate, number_of_cubes: numberOfCubes || null, sample_ids: sampleIds || null, remarks: remarks || null, mould_codes: mouldCodes || null },
       });
-      setNotice("Site cast recorded — enter test results below once ready.");
+      setNotice(`Site cast recorded${created.moulds?.length ? ` — moulds ${created.moulds.join(", ")} marked at the site` : ""}. Enter test results below once ready.`);
       onDone(created.id);
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
@@ -1069,6 +1070,10 @@ function NewSiteCastForm({ setError, setNotice, onDone, onCancel }) {
       <div>
         <div style={{ color: "var(--slate)" }}>Sample IDs (comma-separated, optional)</div>
         <input value={sampleIds} onChange={(e) => setSampleIds(e.target.value)} />
+      </div>
+      <div>
+        <div style={{ color: "var(--slate)" }}>Cube mould IDs used (optional, e.g. CM-041, CM-042, CM-043)</div>
+        <input value={mouldCodes} onChange={(e) => setMouldCodes(e.target.value.toUpperCase())} />
       </div>
       <div>
         <div style={{ color: "var(--slate)" }}>Remarks</div>

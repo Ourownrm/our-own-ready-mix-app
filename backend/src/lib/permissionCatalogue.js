@@ -525,6 +525,31 @@ export const CATALOGUE = [
   // Store and Manager).
   f("mnt.complaints", "maintenance", "Raise a maintenance complaint", VC,
     { administrator: VC, manager: VC, plant_in_charge: VC, store: VC, driver: VC }),
+  // Round 264 — Tools Issue Register, cube moulds & pump pipes (owner, 2–3 Nov
+  // 2026). Store issues, the Plant In Charge approves; the Administrator
+  // decides a damaged / lost item and approves a lost item's removal.
+  f("tools.register", "maintenance", "Tools & power tools register — list, add existing, edit", VCE,
+    { administrator: VCE, manager: V, plant_in_charge: VCE, store: VCE }),
+  f("tools.issue", "maintenance", "Issue tools to an employee, take them back", VCE,
+    { administrator: VCE, plant_in_charge: VCE, store: VCE }),
+  f("tools.approve", "maintenance", "Approve a tool issue (Plant In Charge)", E,
+    { administrator: E, manager: E, plant_in_charge: E }),
+  f("tools.kits", "maintenance", "Standard kits and the tool list (types, ID prefixes)", VCE,
+    { administrator: VCE, manager: V, plant_in_charge: VCE, store: VCE }),
+  f("tools.in-use", "maintenance", "Cube moulds & concrete pump pipes — list, add existing, move", VCE,
+    { administrator: VCE, manager: V, plant_in_charge: VCE, store: VCE }),
+  f("tools.removal-approve", "maintenance", "Approve removing a damaged mould, pipe or tool; confirm an existing list", E,
+    { administrator: E, plant_in_charge: E }),
+  f("tools.loss-decide", "maintenance", "Damaged / lost item — no charge, repair, or recover from salary; approve a lost item's removal", E,
+    { administrator: E }),
+  // Outside the module on purpose, like complaints: the Lab Technician and the
+  // Site Supervisor report a damaged mould or pipe without the module, and
+  // every employee sees and accepts their own tools and assets.
+  f("tools.report-damage", "maintenance", "Report a damaged or lost mould, pipe or tool", VC,
+    { administrator: VC, manager: VC, plant_in_charge: VC, store: VC, lab_technician: VC, qc_engineer: VC, site_supervisor: VC }),
+  f("tools.my", "maintenance", "My tools & assets — see and accept what is issued to me", VE,
+    Object.fromEntries(["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor",
+      "accountant", "sales_executive", "store", "loader_operator", "plant_in_charge"].map((r) => [r, VE]))),
 
   // ---------- Sales & CRM ----------
   f("sales.leads", "sales", "Browse Leads", VCE,
@@ -849,6 +874,16 @@ export const CATALOGUE = [
   // 2026). The letter carries the salary, so Administrator only by default.
   f("hr.appointment-letter", "hr", "Appointment letters — make, issue, print, cancel", VCED,
     { administrator: VCED }),
+  // Round 264 — personal assets (laptop, phone, SIM …) are the Administrator's,
+  // under HR; and the exit clearance sections that are not tools / assets / PPE.
+  f("hr.assets", "hr", "Personal assets register — add, issue, return, print the form", VCED,
+    { administrator: VCED }),
+  f("hr.asset-approve", "hr", "Personal assets — approve an issue", E,
+    { administrator: E }),
+  f("hr.exit-clear-money", "hr", "Exit clearance — money (advances, cash in hand, petty cash)", E,
+    { administrator: E, accountant: E }),
+  f("hr.exit-clear-handover", "hr", "Exit clearance — work handover", E,
+    { administrator: E, manager: E, plant_in_charge: E }),
 
   // ---------- Administration ----------
   f("admin.users", "admin", "Users — list and create", VCE,
@@ -1003,13 +1038,15 @@ export const MODULES = [
       { key: "hr.contractor-bills", label: "Contractor bills" },
       { key: "hr.ppe", label: "PPE" },
       { key: "hr.exit", label: "Exits" },
+      { key: "hr.assets", label: "Personal assets" },
       { key: "hr.settings", label: "Settings" },
       { key: "admin.attendance-machine", label: "Attendance Machine" },
     ],
-    support: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction", "hr.ppe-approve", "hr.exit-approve", "hr.appointment-letter"],
+    support: ["hr.salary", "hr.employee-ids", "hr.payroll-bank", "hr.advance-request", "hr.advance-approve", "hr.advance-pay", "hr.gang-deduction", "hr.ppe-approve", "hr.exit-approve", "hr.appointment-letter",
+      "hr.asset-approve", "hr.exit-clear-money", "hr.exit-clear-handover"],
     // Round 211 — hr.gang-attendance is deliberately NOT in this module: the
     // Site Supervisor confirms gang crews without having the HR module.
-    noAutoView: ["hr.salary", "hr.employee-ids", "hr.appointment-letter", "hr.payroll-bank", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs"],
+    noAutoView: ["hr.salary", "hr.employee-ids", "hr.appointment-letter", "hr.payroll-bank", "hr.payroll", "hr.advances", "hr.contractor-bills", "hr.gang-deduction", "hr.gangs", "hr.assets"],
   },
   {
     // Round 199 — the Fuel module. Roles are set on each function above rather
@@ -1045,9 +1082,12 @@ export const MODULES = [
       { key: "mnt.tyres", label: "Tyres & batteries" },
       { key: "mnt.certificates", label: "Certificates" },
       { key: "mnt.payments", label: "Payments" },
+      { key: "tools.register", label: "Tools & power tools" },
+      { key: "tools.in-use", label: "Cube moulds & pipes" },
+      { key: "tools.kits", label: "Standard kits & tool list" },
     ],
     support: ["mnt.job-verify", "mnt.outside-approve", "mnt.store-adjust", "mnt.parts-issue", "mnt.po-approve", "mnt.grv",
-      "mnt.cert-rules", "mnt.legacy-import"],
+      "mnt.cert-rules", "mnt.legacy-import", "tools.issue", "tools.approve", "tools.removal-approve", "tools.loss-decide"],
   },
   {
     // Round 204 — the Accounts module. Roles are set on each function above.

@@ -274,6 +274,17 @@ export const ADMIN_MODULES = [
     to: "/maintenance-complaint",
     screens: [],
   },
+  {
+    // Round 264 — every employee's own tools & assets (accept, see what is
+    // held); also where a damaged mould / pipe is reported from.
+    key: "my-tools",
+    label: "My tools & assets",
+    icon: "wrench",
+    colour: "#7A5C2E",
+    tint: "#F3EBDD",
+    to: "/my-tools",
+    screens: [],
+  },
   // Round 262 — the role apps, so a person the Super Admin gives one of
   // them (on the Access Control page) finds it on the Modules page.
   {
@@ -363,6 +374,7 @@ export const HUB = [
   { key: "maintenance-module", perm: ["module.maintenance"], to: "/maintenance-module" },
   { key: "cost-module", perm: ["module.cost", "cledger.access"], to: "/cost" },
   { key: "maintenance-complaint", perm: ["mnt.complaints"], to: "/maintenance-complaint" },
+  { key: "my-tools", perm: ["tools.my", "tools.report-damage"], to: "/my-tools" },
   {
     key: "quality-control",
     screens: [
