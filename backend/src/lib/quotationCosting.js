@@ -10,13 +10,16 @@
 //   proposed  = cost × (1 + margin) × (1 + GST), rounded
 //
 // Site-specific fuel per m³:
-//   transit mixer = (2 × road km ÷ fleet km per litre + drum & waiting litres)
+//   transit mixer = (2 × road km ÷ mixer km per litre + drum & waiting litres)
+//                   (Round 265: the mileage is the Fuel → Settings figure,
+//                   default 2.5 km/L — no longer the fleet average from fills)
 //                   ÷ load per trip
 //   pump          = litres per hour × pour hours ÷ 60 m³ (pumping only)
 //   genset/loader = last month's litres ÷ m³ produced (or the Admin's values)
 //   × the diesel rate (latest in the Fuel module).
 import { query } from "../db.js";
 import { productionM3Range, firstOfNextMonth } from "./plantConsumption.js";
+import { mixerKmpl } from "./round265Schema.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const num = (v, d) => (v === "" || v == null || !Number.isFinite(Number(v)) ? d : Number(v));
@@ -111,27 +114,6 @@ async function fuelUsed(from, toExclusive, rate) {
   return by;
 }
 
-// Fleet km per litre from transit-mixer fills in the last 90 days.
-async function fleetKmpl() {
-  const { rows } = await query(
-    `SELECT truck_id, odometer_reading AS km, actual_quantity_issued AS l
-       FROM supply_requests
-      WHERE request_type = 'fuel' AND COALESCE(fuel_kind, 'diesel') = 'diesel' AND status = 'issued' AND truck_id IS NOT NULL AND odometer_reading IS NOT NULL
-        AND actual_quantity_issued > 0 AND issued_at > now() - interval '90 days'
-      ORDER BY truck_id, odometer_reading`
-  ).catch(() => ({ rows: [] }));
-  const by = new Map();
-  for (const r of rows) { if (!by.has(r.truck_id)) by.set(r.truck_id, []); by.get(r.truck_id).push(r); }
-  let km = 0, litres = 0;
-  for (const list of by.values()) {
-    if (list.length < 2) continue;
-    const d = Number(list[list.length - 1].km) - Number(list[0].km);
-    if (!(d > 0)) continue;
-    km += d;
-    litres += list.slice(1).reduce((t, x) => t + Number(x.l), 0);
-  }
-  return km > 0 && litres > 0 ? Math.round((km / litres) * 100) / 100 : null;
-}
 
 // Everything that does not depend on the mix: read once per request.
 export async function costContext() {
@@ -145,7 +127,7 @@ export async function costContext() {
     productionM3Range({ from: fuelWin.from, toExclusive: fuelWin.toExclusive }).catch(() => ({ total_m3: 0 })),
     fuelUsed(lastMonth.from, lastMonth.toExclusive, rate),
     productionM3Range({ from: lastMonth.from, toExclusive: lastMonth.toExclusive }).catch(() => ({ total_m3: 0 })),
-    fleetKmpl(),
+    mixerKmpl(),
     query(`SELECT r.month, SUM(l.cost_to_company) AS ctc FROM hr_payroll_runs r JOIN hr_payroll_lines l ON l.month = r.month
             WHERE r.status = 'locked' GROUP BY r.month ORDER BY r.month DESC LIMIT 1`).catch(() => ({ rows: [] })),
   ]);
@@ -182,7 +164,8 @@ export function siteFuel(ctx, sf = {}) {
   const rate = num(sf.diesel_rate, ctx.diesel_rate);
   if (!(rate > 0)) return null;
   const load = num(sf.load_m3, c.default_load_m3) || c.default_load_m3;
-  const kmpl = num(sf.tm_kmpl, ctx.fleet_kmpl || c.tm_kmpl) || c.tm_kmpl;
+  // Round 265 — one fixed mixer mileage for every quotation (Fuel → Settings).
+  const kmpl = ctx.fleet_kmpl || 2.5;
   const tripL = (2 * km) / kmpl + c.drum_litres_per_trip;
   const tm = tripL / load;
   const lph = sf.pump === "boom_pump" ? c.boom_pump_lph : sf.pump === "line_pump" ? c.line_pump_lph : 0;

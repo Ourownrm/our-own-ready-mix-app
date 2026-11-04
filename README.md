@@ -9290,3 +9290,13 @@ Owner, 2–3 Nov 2026 (mockup v5, Project doc `claude/tools-issue-register-mocku
 **Access Control** — new functions: tools.register, tools.issue, tools.approve, tools.kits, tools.in-use, tools.removal-approve, tools.loss-decide, tools.report-damage, tools.my, hr.assets, hr.asset-approve, hr.exit-clear-money, hr.exit-clear-handover (defaults as above; migration `r264_tools_grants` respects Super Admin decisions). New screen "My tools & assets" (/my-tools).
 
 Verified on scratch Postgres: 82 live checks pass (receipt pick order, opening list + confirm, own-ID clash, site cast moulds incl. rollback, removals and who approves, GRV numbering / stock / issue, approve → accept → damaged → salary recovery in payroll, asset rights, exit clearance 1/5 → 5/5, payroll hold release, Super Admin switch-off). `npm run check` green; build clean.
+
+## Round 265 — fixed transit-mixer mileage for quotation fuel (v10.97)
+
+Owner, 4 Nov 2026: the quotation's site-specific fuel showed the transit mixer at 52.18 km/L (a fleet average from fills, which mixed in other vehicles).
+
+- **Fuel → Settings → Quotation fuel:** new "Transit mixer mileage (km/L)", default **2.5**, editable with Fuel settings · edit (Administrator by default), 0.5–20, logged in the settings history.
+- Quotation fuel now always uses it: *round trip km ÷ 2.5 km/L + 2 L drum & waiting = L per trip ÷ load*. Example: 25 km, 7 m³ → 50 km ÷ 2.5 + 2 = 22 L per trip ÷ 7 m³ = 3.14 L/m³ (₹308 at ₹98.13/L).
+- Quotation settings show the mileage read-only, pointing to Fuel → Settings. The old fleet-average calculation is removed.
+
+Verified on scratch Postgres: formula line and figures; Manager refused editing, out-of-range refused, Administrator saves. `npm run check` green; build clean.

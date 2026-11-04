@@ -49,6 +49,7 @@ import { ensureRound259 } from "./lib/round259Schema.js";
 import { ensureRound260 } from "./lib/round260Schema.js";
 import { ensureRound262 } from "./lib/round262Schema.js";
 import { ensureExit } from "./lib/hrExit.js";
+import { ensureRound265 } from "./lib/round265Schema.js";
 import toolsRoutes from "./routes/tools.js";
 import { query as dbQuery } from "./db.js";
 import costGstRoutes from "./routes/costGst.js";
@@ -347,6 +348,7 @@ ensureRound260({ query: dbQuery }).catch((e) => console.error("round 260 grants:
 ensureRound262({ query: dbQuery }).catch((e) => console.error("round 262 grants:", e.message));
 // Round 264 — the exit tables, then the tools & assets tables (ensureExit runs both).
 ensureExit().catch((e) => console.error("round 264 schema:", e.message));
+ensureRound265().catch((e) => console.error("round 265 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

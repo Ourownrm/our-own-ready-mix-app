@@ -9,7 +9,7 @@ import { TankGraphic, fmtL, fmtRs, fmtWhen, fmtNum } from "./fuelUi.jsx";
 // values read-only.
 
 const FIELDS = ["tank_name", "capacity_l", "reorder_level_l", "warning_days", "band_high_pct", "band_above_pct",
-  "band_efficient_pct", "close_fill_hours", "work_start", "work_end"];
+  "band_efficient_pct", "close_fill_hours", "work_start", "work_end", "tm_kmpl"];
 
 function Field({ label, hint, unit, value, onChange, type = "number", disabled, width }) {
   return (
@@ -124,6 +124,15 @@ export default function FuelSettings() {
             <Field label="Two fills of one vehicle within" unit="hrs" value={form.close_fill_hours} onChange={set("close_fill_hours")} disabled={dis} />
             <Field label="Working hours start" type="time" value={form.work_start} onChange={set("work_start")} disabled={dis} />
             <Field label="Working hours end" type="time" value={form.work_end} onChange={set("work_end")} disabled={dis} hint="Fuel issued outside these hours is flagged." />
+          </div>
+
+          {/* Round 265 — the mixer mileage the quotation fuel uses. */}
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+            <h2 style={{ fontSize: 16 }}>Quotation fuel</h2>
+            <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 3 }}>Used for the site-specific fuel on quotations: round trip km ÷ this mileage + drum &amp; waiting litres = litres per trip ÷ load.</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 16 }}>
+            <Field label="Transit mixer mileage" unit="km/L" value={form.tm_kmpl} onChange={set("tm_kmpl")} disabled={dis} hint="Default 2.5." />
           </div>
 
           {canEdit && (

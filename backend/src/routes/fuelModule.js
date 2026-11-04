@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { ensureRound265 } from "../lib/round265Schema.js";
 import { query } from "../db.js";
 import { loadKept } from "../lib/plantLoadReview.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -57,16 +58,17 @@ async function fuelItem() {
 }
 
 async function settings() {
+  await ensureRound265();
   await query(`INSERT INTO fuel_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
   const { rows } = await query(
     `SELECT tank_name, capacity_l, reorder_level_l, warning_days, band_high_pct, band_above_pct,
-            band_efficient_pct, close_fill_hours,
+            band_efficient_pct, close_fill_hours, tm_kmpl,
             to_char(work_start, 'HH24:MI') AS work_start, to_char(work_end, 'HH24:MI') AS work_end,
             updated_at, (SELECT name FROM users WHERE id = fuel_settings.updated_by) AS updated_by_name
        FROM fuel_settings WHERE id = 1`
   );
   const s = rows[0];
-  for (const k of ["capacity_l", "reorder_level_l", "warning_days", "band_high_pct", "band_above_pct", "band_efficient_pct", "close_fill_hours"]) {
+  for (const k of ["capacity_l", "reorder_level_l", "warning_days", "band_high_pct", "band_above_pct", "band_efficient_pct", "close_fill_hours", "tm_kmpl"]) {
     s[k] = num(s[k]);
   }
   return s;
@@ -137,6 +139,8 @@ const SETTING_FIELDS = {
   close_fill_hours: { label: "Two fills close together (hours)", type: "num", min: 0, max: 72 },
   work_start: { label: "Working hours start", type: "time" },
   work_end: { label: "Working hours end", type: "time" },
+  // Round 265 — used for quotation fuel (site-specific).
+  tm_kmpl: { label: "Transit mixer mileage (km/L)", type: "num", min: 0.5, max: 20 },
 };
 
 router.patch("/settings", requirePermission("fuel.settings", "edit"), async (req, res) => {
@@ -178,10 +182,10 @@ router.patch("/settings", requirePermission("fuel.settings", "edit"), async (req
     await query(
       `UPDATE fuel_settings SET tank_name = $1, capacity_l = $2, reorder_level_l = $3, warning_days = $4,
          band_high_pct = $5, band_above_pct = $6, band_efficient_pct = $7, close_fill_hours = $8,
-         work_start = $9, work_end = $10, updated_by = $11, updated_at = now()
+         work_start = $9, work_end = $10, updated_by = $11, updated_at = now(), tm_kmpl = $12
        WHERE id = 1`,
       [next.tank_name, next.capacity_l, next.reorder_level_l, next.warning_days, next.band_high_pct,
-        next.band_above_pct, next.band_efficient_pct, next.close_fill_hours, next.work_start, next.work_end, req.user.id]
+        next.band_above_pct, next.band_efficient_pct, next.close_fill_hours, next.work_start, next.work_end, req.user.id, next.tm_kmpl]
     );
     for (const [k, a, b] of changes) {
       await query(

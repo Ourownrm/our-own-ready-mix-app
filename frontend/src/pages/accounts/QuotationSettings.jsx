@@ -189,7 +189,8 @@ function CostingSettings({ canEdit }) {
           <div style={grid}>
             <Field label="Drum &amp; waiting L / trip"><input type="number" min="0" step="0.5" value={c.drum_litres_per_trip} onChange={set("drum_litres_per_trip")} /></Field>
             <Field label="Usual load per trip (m³)"><input type="number" min="1" step="0.5" value={c.default_load_m3} onChange={set("default_load_m3")} /></Field>
-            <Field label="TM km per litre" hint={d?.fleet_kmpl ? `Fleet actual, 90 days: ${d.fleet_kmpl} — used instead` : "Used until fills give a fleet figure"}><input type="number" min="0.5" step="0.1" value={c.tm_kmpl} onChange={set("tm_kmpl")} /></Field>
+            {/* Round 265 — the mixer mileage is set in Fuel → Settings (Administrator). */}
+            <Field label="Transit mixer km per litre" hint="Set in Fuel → Settings"><input type="number" value={d?.fleet_kmpl ?? 2.5} disabled readOnly /></Field>
             <Field label="Line pump L / hour"><input type="number" min="0" step="0.5" value={c.line_pump_lph} onChange={set("line_pump_lph")} /></Field>
             <Field label="Boom pump L / hour"><input type="number" min="0" step="0.5" value={c.boom_pump_lph} onChange={set("boom_pump_lph")} /></Field>
             <Field label="Pour hours per 60 m³"><input type="number" min="0" step="0.5" value={c.pour_hours_per_60} onChange={set("pour_hours_per_60")} /></Field>

@@ -58,6 +58,7 @@ import { migrateRound259 } from "../lib/round259Schema.js";
 import { migrateRound260 } from "../lib/round260Schema.js";
 import { migrateRound262 } from "../lib/round262Schema.js";
 import { migrateRound264 } from "../lib/round264Schema.js";
+import { migrateRound265 } from "../lib/round265Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4227,6 +4228,8 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     await migrateRound262(pool, log);
     // ROUND 264 — tools & assets register, cube moulds & pipes, exit clearance.
     await migrateRound264(pool, log);
+    // ROUND 265 — transit-mixer mileage setting (Fuel → Settings).
+    await migrateRound265(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a
