@@ -26,10 +26,13 @@ export const RULE_DEFS = {
   gratuity_rate: { label: "Gratuity provision % of Basic + DA", type: "num", min: 0, max: 10, default: 4.81 },
   // Round 202 — leave, comp-off
   probation_months: { label: "Probation — months from joining (leave types marked 'not during probation')", type: "int", min: 0, max: 24, default: 3 },
-  co_full_min: { label: "Comp-off — minutes worked on an off day for a full day", type: "int", min: 60, max: 960, default: 480 },
-  co_half_min: { label: "Comp-off — minutes worked on an off day for a half day", type: "int", min: 30, max: 960, default: 240 },
-  co_claim_days: { label: "Comp-off — must be claimed within (days of the day worked)", type: "int", min: 1, max: 180, default: 30 },
+  // Round 267 — comp-off is earned automatically from the punches (no claim).
+  co_auto_days: { label: "Comp-off — days earned for an off day / holiday worked", type: "enum", options: { full: "1 day when worked more than the minutes below", split: "By hours — ½ day from the minutes below, 1 day from the full-day minutes" }, default: "full" },
+  co_half_min: { label: "Comp-off — earned when worked on a weekly off or holiday for more than (minutes)", type: "int", min: 30, max: 960, default: 240 },
+  co_full_min: { label: "Comp-off — minutes for 1 day (only when \"By hours\" is chosen above)", type: "int", min: 60, max: 960, default: 480 },
   co_expiry_days: { label: "Comp-off — expires (days after the day worked)", type: "int", min: 1, max: 365, default: 60 },
+  co_accum_expiry_days: { label: "Comp-off — expires (days after the day worked) for employees set to accumulate comp-off", type: "int", min: 1, max: 730, default: 365 },
+  co_claim_days: { label: "Comp-off — punch corrections are picked up for (days back)", type: "int", min: 1, max: 180, default: 30 },
   // Round 202 — today's dashboard, phone attendance
   not_punched_after_min: { label: "Today: \"not punched in\" after shift start plus (minutes)", type: "int", min: 0, max: 240, default: 20 },
   gps_accuracy_max: { label: "Phone attendance — refuse a location less accurate than (metres)", type: "int", min: 10, max: 1000, default: 50 },

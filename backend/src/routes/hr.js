@@ -20,6 +20,8 @@ import { RULE_DEFS, loadRules, validateRule } from "../lib/hrRules.js";
 import { computePayroll, monthRange } from "../lib/hrPayroll.js";
 // Round 202 — leave allowances, comp-off.
 import { leaveTypes, computeBalances, compoffAvailable, eligibility, addDaysYmd } from "../lib/hrLeave.js";
+// Round 267 — comp-off earned automatically from off days / holidays worked.
+import { ensureRound267, syncAutoCompoffQuiet } from "../lib/round267Schema.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -200,6 +202,8 @@ function employeeFields(b, { withSalary }) {
   if (b.work_area_location_id !== undefined) f.work_area_location_id = intOrNull(b.work_area_location_id);
   // Round 242 — face check on the phone, per employee (default on).
   if (b.face_check !== undefined) f.face_check = bool(b.face_check, true);
+  // Round 267 — accumulate comp-off: credits last co_accum_expiry_days.
+  if (b.compoff_accumulate !== undefined) f.compoff_accumulate = bool(b.compoff_accumulate, false);
   if (f.weekly_off !== null && (f.weekly_off < 0 || f.weekly_off > 6)) throw Object.assign(new Error("Weekly off must be a day of the week."), { expose: true });
   if (f.date_of_leaving && f.date_of_joining && f.date_of_leaving < f.date_of_joining) throw Object.assign(new Error("Leaving date is before joining date."), { expose: true });
   if (withSalary) {
@@ -222,6 +226,7 @@ router.post("/employees", requirePermission("hr.employees", "create"), async (re
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
     await ensureRound250(query);
+    await ensureRound267();
     const f = employeeFields(req.body || {}, { withSalary });
     if (f.contractor_id) f.contractor_name = (await query(`SELECT name FROM hr_contractors WHERE id = $1`, [f.contractor_id])).rows[0]?.name || f.contractor_name;
     if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
@@ -245,6 +250,7 @@ router.patch("/employees/:id", requirePermission("hr.employees", "edit"), async 
   try {
     const withSalary = await can(req.user, "hr.salary", "edit");
     await ensureRound250(query);
+    await ensureRound267();
     const f = employeeFields(req.body || {}, { withSalary });
     if (f.contractor_id) f.contractor_name = (await query(`SELECT name FROM hr_contractors WHERE id = $1`, [f.contractor_id])).rows[0]?.name || f.contractor_name;
     if (await can(req.user, "hr.employee-ids", "edit")) Object.assign(f, idFields(req.body || {}));
@@ -274,6 +280,7 @@ router.patch("/employees/:id", requirePermission("hr.employees", "edit"), async 
       [...cols.map((c) => f[c]), id]
     );
     if (!rowCount) return res.status(404).json({ error: "Employee not found." });
+    if ("compoff_accumulate" in f) await syncAutoCompoffQuiet({ employeeIds: [id] }); // Round 267 — re-date the open credits
     res.json({ ok: true, salary_saved: withSalary });
   } catch (err) {
     friendly(err, res, "Could not save the employee.");
@@ -445,6 +452,7 @@ router.get("/attendance", requirePermission("hr.attendance", "view"), async (req
   }
   try {
     const emp = req.query.employee ? [Number(req.query.employee)].filter(Number.isInteger) : null;
+    await syncAutoCompoffQuiet({ employeeIds: emp && emp.length ? emp : null });
     res.json(await attendanceRegister({ from, to, employeeIds: emp && emp.length ? emp : null }));
   } catch (err) {
     console.error(err);
@@ -563,6 +571,8 @@ router.put("/rules", requirePermission("hr.settings", "edit"), async (req, res) 
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
         [k, JSON.stringify(val), req.user.id]);
     }
+    // Round 267 — comp-off settings re-date / re-count the open credits.
+    if (Object.keys(body).some((k) => k.startsWith("co_"))) await syncAutoCompoffQuiet({ force: true });
     res.json({ ok: true, rules: await loadRules() });
   } catch (err) { friendly(err, res, "Could not save the rules."); }
 });
@@ -816,9 +826,11 @@ async function createLeave(req, res, emp, { self }) {
   const days = await leaveDays(emp, from, to, half);
   if (!days) return res.status(400).json({ error: "Those days are all weekly off or holidays — no leave needed." });
   if (type.kind === "comp_off") {
+    // Round 267 — the balance is earned automatically; bring it up to date first.
+    await syncAutoCompoffQuiet({ employeeIds: [emp.id] });
     const avail = await compoffAvailable(emp.id, type.id, from);
     if (avail < days) {
-      return res.status(400).json({ error: avail ? `Only ${avail} comp-off day${avail === 1 ? "" : "s"} available on that date — claim the worked off day first, or use another leave.` : "No comp-off available on that date. Claim the worked off day first (it must be approved)." });
+      return res.status(400).json({ error: avail ? `Only ${avail} comp-off day${avail === 1 ? "" : "s"} available on that date (earned before it and not yet expired) — use another leave for the rest.` : "No comp-off balance on that date. Comp-off is earned by working on a weekly off or holiday, and can be taken only after that day." });
     }
   }
   const need = await leaveAdminNeed(emp, type, from, days);
@@ -910,6 +922,7 @@ router.get("/leaves", requirePermission("hr.requests", "view"), async (req, res)
 router.get("/leave-balances", requirePermission("hr.requests", "view"), async (req, res) => {
   try {
     const asOf = DATE_RE.test(String(req.query.as_of || "")) ? req.query.as_of : istToday();
+    await syncAutoCompoffQuiet();
     const { rows: emps } = await query(
       `SELECT e.id, e.name, e.emp_code, d.name AS department FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
        WHERE e.is_active ORDER BY d.sort_order NULLS LAST, e.name`);
@@ -1011,7 +1024,7 @@ const CLAIM_SELECT = `
   SELECT c.id, c.employee_id, to_char(c.work_date, 'YYYY-MM-DD') AS work_date, c.days::float AS days, c.worked_min, c.qualifies::float AS qualifies, c.reason,
          c.status, c.needs_admin, c.admin_reason, to_char(c.expires_on, 'YYYY-MM-DD') AS expires_on, c.raised_by, c.raised_at,
          c.decided_at, c.decision_note, e.name AS employee_name, e.emp_code, e.app_user_id, d.name AS department,
-         rb.name AS raised_by_name, db.name AS decided_by_name, c.for_absence,
+         rb.name AS raised_by_name, db.name AS decided_by_name, c.for_absence, c.source, e.compoff_accumulate,
          (SELECT to_char(lv.from_date, 'YYYY-MM-DD') FROM hr_leaves lv WHERE lv.compoff_claim_id = c.id AND lv.status <> 'cancelled' ORDER BY lv.id DESC LIMIT 1) AS off_date
   FROM hr_compoff_claims c
   JOIN hr_employees e ON e.id = c.employee_id
@@ -1155,19 +1168,10 @@ async function decideLinked({ claimId, leaveId }, { status, days, userId, note }
   }
 }
 
-// Off days worked in the last N days that could still be claimed.
-async function claimableDays(emp, rules) {
-  const to = addDaysYmd(istToday(), -1), from = addDaysYmd(istToday(), -rules.co_claim_days);
-  const reg = await attendanceRegister({ from, to, employeeIds: [emp.id] });
-  const { rows } = await query(`SELECT to_char(work_date, 'YYYY-MM-DD') AS d FROM hr_compoff_claims WHERE employee_id = $1 AND status IN ('pending','approved')`, [emp.id]);
-  const taken = new Set(rows.map((r) => r.d));
-  return (reg.employees[0]?.days || []).filter((d) => offDayWorked(d) && !taken.has(d.date))
-    .map((d) => ({ date: d.date, worked: d.worked, times: d.times, days: compoffDaysFor(d.worked, rules), holiday: d.code }));
-}
-
 router.get("/compoff", requirePermission("hr.requests", "view"), async (req, res) => {
   try {
     const status = ["pending", "approved", "rejected", "cancelled"].includes(req.query.status) ? req.query.status : null;
+    await syncAutoCompoffQuiet();
     const { rows } = await query(`${CLAIM_SELECT} WHERE ($1::text IS NULL OR c.status = $1) ORDER BY (c.status = 'pending') DESC, c.work_date DESC LIMIT 300`, [status]);
     const admin = isAdmin(req.user);
     // The day's punches, beside each claim, so it is decided on evidence.
@@ -1265,6 +1269,7 @@ router.get("/my", async (req, res) => {
   try {
     const emp = await myEmployee(req);
     if (!emp) return res.json({ linked: false });
+    await syncAutoCompoffQuiet({ employeeIds: [emp.id] });
     const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : istToday().slice(0, 7);
     const { from, to } = monthRange(month);
     const [reg, reqs, leaves, bal, types] = await Promise.all([
@@ -1274,12 +1279,10 @@ router.get("/my", async (req, res) => {
       balancesFor([emp.id], month === istToday().slice(0, 7) ? istToday() : monthRange(month).to),
       leaveTypes(true),
     ]);
-    const rules = await loadRules();
-    const [claims, claimable] = await Promise.all([
-      query(`${CLAIM_SELECT} WHERE c.employee_id = $1 ORDER BY c.work_date DESC LIMIT 20`, [emp.id]),
-      claimableDays(emp, rules),
-    ]);
-    res.json({ linked: true, month, employee: { name: emp.name, emp_code: emp.emp_code }, attendance: reg.employees[0] || null,
+    // Round 267 — nothing to claim any more: the off days worked are credited.
+    const claims = await query(`${CLAIM_SELECT} WHERE c.employee_id = $1 AND c.status <> 'cancelled' ORDER BY c.work_date DESC LIMIT 20`, [emp.id]);
+    const claimable = [];
+    res.json({ linked: true, month, employee: { name: emp.name, emp_code: emp.emp_code, compoff_accumulate: !!emp.compoff_accumulate }, attendance: reg.employees[0] || null,
       compoff_claims: claims.rows, compoff_claimable: claimable,
       dates: reg.dates, requests: reqs.rows, kinds: KINDS,
       leaves: leaves.rows.map((l) => ({ ...l, days: Number(l.days) })), leave_balances: bal.get(emp.id), leave_types: types });
@@ -1295,20 +1298,11 @@ router.post("/my/leaves", async (req, res) => {
     await createLeave(req, res, emp, { self: true });
   } catch (err) { friendly(err, res, "Could not save the leave request."); }
 });
-router.post("/my/compoff-request", async (req, res) => {
-  try {
-    const emp = await myEmployee(req);
-    if (!emp) return res.status(403).json({ error: "Your login is not linked to an employee record. Ask HR." });
-    await createCompoffRequest(req, res, emp, { self: true });
-  } catch (err) { friendly(err, res, "Could not save the comp-off request."); }
-});
-router.post("/my/compoff", async (req, res) => {
-  try {
-    const emp = await myEmployee(req);
-    if (!emp) return res.status(403).json({ error: "Your login is not linked to an employee record. Ask HR." });
-    await createClaim(req, res, emp, { self: true });
-  } catch (err) { friendly(err, res, "Could not save the claim."); }
-});
+// Round 267 — the employee no longer claims comp-off: off days worked are
+// credited automatically, and a day off is asked for as Comp-off leave.
+const NO_CLAIM = "Comp-off is now added automatically for a weekly off or holiday you worked. Use Ask for leave → Comp-off to take a day from your balance.";
+router.post("/my/compoff-request", (req, res) => res.status(410).json({ error: NO_CLAIM }));
+router.post("/my/compoff", (req, res) => res.status(410).json({ error: NO_CLAIM }));
 router.post("/my/requests", async (req, res) => {
   try {
     const emp = await myEmployee(req);

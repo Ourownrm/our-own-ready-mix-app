@@ -161,23 +161,23 @@ export function TodayTab({ meta, onOpenLeave }) {
 // ================================================================ comp-off
 export function CompOffTab({ meta }) {
   const { can } = usePermissions();
-  const [status, setStatus] = useState("pending");
+  // Round 267 — comp-off is earned automatically; the list opens on what was earned.
+  const [status, setStatus] = useState("approved");
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [notes, setNotes] = useState({});
   const [raising, setRaising] = useState(false);
   const [employees, setEmployees] = useState([]);
-  const [f, setF] = useState({ employee_id: "", work_date: "", off_date: "", days: "", reason: "", approve_now: true });
+  const [f, setF] = useState({ employee_id: "", work_date: "", days: "", reason: "", approve_now: true });
   const load = () => apiRequest(`/hr/compoff${status ? `?status=${status}` : ""}`).then(setData).catch((e) => setError(e.message));
   useEffect(() => { setData(null); load(); }, [status]);
   useEffect(() => { if (can("hr.employees", "view")) apiRequest("/hr/employees").then((r) => setEmployees(r.filter((e) => e.is_active))).catch(() => {}); }, []);
   const act = async (path, body) => { setError(""); try { await apiRequest(path, { method: "POST", body }); load(); } catch (err) { setError(err.message); } };
   async function raise(e) {
     e.preventDefault(); setError("");
-    // Round 205 — with a day off, it is a comp-off request (claim + CO leave
-    // together); without one, only the worked day is banked as before.
-    const path = f.off_date ? "/hr/compoff-request" : "/hr/compoff";
-    try { await apiRequest(path, { method: "POST", body: { ...f, employee_id: Number(f.employee_id), days: f.days ? Number(f.days) : undefined } }); setRaising(false); load(); }
+    // Round 267 — by hand only for a day the punches do not credit (e.g. short
+    // hours the manager still wants to give); the day off is then a CO leave.
+    try { await apiRequest("/hr/compoff", { method: "POST", body: { ...f, employee_id: Number(f.employee_id), days: f.days ? Number(f.days) : undefined } }); setRaising(false); load(); }
     catch (err) { setError(err.message); }
   }
   const r = data?.rules;
@@ -186,13 +186,15 @@ export function CompOffTab({ meta }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }} className="field-input">
         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Show
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="pending">Waiting for approval</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All</option>
+            <option value="approved">Earned</option><option value="pending">Waiting for approval (added by hand)</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled / withdrawn</option><option value="">All</option>
           </select>
         </label>
-        {can("hr.requests", "create") && !raising && <button className="btn-primary" onClick={() => setRaising(true)}>+ Comp-off request</button>}
+        {can("hr.requests", "create") && !raising && <button onClick={() => setRaising(true)}>+ Add comp-off by hand</button>}
       </div>
       {r && <div style={{ background: "#E2EEF3", color: "#1F4E61", borderRadius: 10, padding: "10px 12px", fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>
-        Worked on a weekly off or holiday: {Math.round(r.co_full_min / 6) / 10} h or more earns 1 day, {Math.round(r.co_half_min / 6) / 10} h or more ½ day — anyone can still ask for a full day, and the approver decides 1 day or ½ day · claim within {r.co_claim_days} days · expires {r.co_expiry_days} days after the day worked · an approved comp-off day is not also paid as overtime · a comp-off request names the worked day and the day off (a coming working day, or a past absent day) and both are decided together.
+        Added automatically — no claim: a weekly off or holiday worked {r.co_auto_days === "split"
+          ? <>for {Math.round(r.co_half_min / 6) / 10} h or more earns ½ day, {Math.round(r.co_full_min / 6) / 10} h or more 1 day</>
+          : <>for more than {Math.round(r.co_half_min / 6) / 10} h earns 1 day</>} · expires {r.co_expiry_days} days after the day worked ({r.co_accum_expiry_days} days for employees set to accumulate — tick on the employee) · the employee takes it as Comp-off leave from the balance, approved like any leave, oldest-expiring first · a credited day is not also paid as overtime · punch corrections up to {r.co_claim_days} days back are picked up · all in HR → Settings.
       </div>}
       {raising && (
         <form className="card field-input" onSubmit={raise} style={{ marginBottom: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, alignItems: "end" }}>
@@ -200,27 +202,26 @@ export function CompOffTab({ meta }) {
             <select value={f.employee_id} onChange={(e) => setF({ ...f, employee_id: e.target.value })} required><option value="">—</option>{employees.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.emp_code})</option>)}</select>
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Off day worked<input type="date" value={f.work_date} onChange={(e) => setF({ ...f, work_date: e.target.value })} required /></label>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Day to take off
-            <input type="date" value={f.off_date} onChange={(e) => setF({ ...f, off_date: e.target.value })} />
-          </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Days
-            <select value={f.days} onChange={(e) => setF({ ...f, days: e.target.value })}><option value="">{f.off_date ? "1 day" : "By the hours worked"}</option><option value="1">1 day</option><option value="0.5">½ day</option></select>
+            <select value={f.days} onChange={(e) => setF({ ...f, days: e.target.value })}><option value="">By the hours worked</option><option value="1">1 day</option><option value="0.5">½ day</option></select>
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Reason<input value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} /></label>
           {can("hr.requests", "edit") && <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={f.approve_now} onChange={(e) => setF({ ...f, approve_now: e.target.checked })} /> Approve now</label>}
           <div style={{ display: "flex", gap: 6 }}><button className="btn-primary" type="submit">Save</button><button type="button" onClick={() => setRaising(false)}>Cancel</button></div>
-          <div style={{ gridColumn: "1 / -1", fontSize: 11.5, color: "var(--slate)" }}>The hours are read from the worked day's punches. The day off can be a coming working day, or a past day marked Absent — the absence then becomes comp-off leave. Leave it blank to bank the day for later.</div>
+          <div style={{ gridColumn: "1 / -1", fontSize: 11.5, color: "var(--slate)" }}>Only for an off day / holiday with punches that was not credited by itself (for example fewer hours than the rule). The day off is then asked for as Comp-off leave.</div>
         </form>
       )}
       {error && <div className="card" style={{ color: "var(--alert-red)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
       {!data && !error && <div className="card" style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</div>}
-      {data && !data.claims.length && <div className="card" style={{ fontSize: 13, marginBottom: 12 }}>No claims here.</div>}
+      {data && !data.claims.length && <div className="card" style={{ fontSize: 13, marginBottom: 12 }}>Nothing here.</div>}
       {data?.claims.map((c) => (
         <div key={c.id} className="card" style={{ marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontSize: 13 }}>
-              <div style={{ fontSize: 14 }}><b>{c.employee_name}</b> <span style={{ color: "var(--slate)", fontSize: 12 }}>{c.emp_code}{c.department ? ` · ${c.department}` : ""}</span></div>
-              <div>Worked {fmtDay(c.work_date)} · {c.status === "pending" ? "asks for" : "given"} <b>{c.days === 1 ? "1 day" : "½ day"}</b>{c.off_date ? <> · off on <b>{fmtDay(c.off_date)}</b>{c.for_absence && <span className="badge badge-warning" style={{ marginLeft: 6 }}>absence corrected</span>}</> : <> · expires {fmtDay(c.expires_on)}</>}</div>
+              <div style={{ fontSize: 14 }}><b>{c.employee_name}</b> <span style={{ color: "var(--slate)", fontSize: 12 }}>{c.emp_code}{c.department ? ` · ${c.department}` : ""}</span>
+                <span className={`badge ${c.source === "auto" ? "badge-success" : "badge-neutral"}`} style={{ marginLeft: 6 }}>{c.source === "auto" ? "auto" : "by hand"}</span>
+                {c.compoff_accumulate && <span className="badge badge-info" style={{ marginLeft: 4 }}>accumulates</span>}</div>
+              <div>Worked {fmtDay(c.work_date)}{c.worked_min != null ? ` (${hm(c.worked_min)})` : ""} · {c.status === "pending" ? "asks for" : "given"} <b>{c.days === 1 ? "1 day" : "½ day"}</b>{c.off_date ? <> · off on <b>{fmtDay(c.off_date)}</b>{c.for_absence && <span className="badge badge-warning" style={{ marginLeft: 6 }}>absence corrected</span>}</> : <> · expires {fmtDay(c.expires_on)}</>}</div>
               {c.status === "pending" && c.qualifies != null && c.qualifies < c.days && <div style={{ fontSize: 12.5, color: "var(--amber)" }}>Hours qualify for {c.qualifies ? "½ day" : "less than ½ day"} by the rule — your call.</div>}
               {c.evidence && <div style={{ fontSize: 12.5, color: "#3E4349" }}>Punches: {c.evidence.times.join(", ") || "none"} · {hm(c.evidence.worked)}</div>}
               {c.reason && <div style={{ fontSize: 12, color: "var(--slate)" }}>Reason: {c.reason}</div>}
@@ -239,7 +240,7 @@ export function CompOffTab({ meta }) {
                 <button className={c.days === 0.5 ? "btn-primary" : ""} onClick={() => act(`/hr/compoff/${c.id}/decide`, { approve: true, days: 0.5, note: notes[c.id] || "" })}>Approve ½ day</button>
                 <button style={{ color: "var(--alert-red)" }} onClick={() => act(`/hr/compoff/${c.id}/decide`, { approve: false, note: notes[c.id] || "" })}>Reject</button>
               </>}
-              {c.can_cancel && <button onClick={() => { if (window.confirm("Cancel this comp-off claim?")) act(`/hr/compoff/${c.id}/cancel`); }}>{c.status === "approved" ? "Cancel" : "Withdraw"}</button>}
+              {c.can_cancel && <button onClick={() => { if (window.confirm(c.source === "auto" ? "Cancel this comp-off? It will not be added again for that day." : "Cancel this comp-off claim?")) act(`/hr/compoff/${c.id}/cancel`); }}>{c.status === "approved" ? "Cancel" : "Withdraw"}</button>}
             </div>
           ) : null}
         </div>

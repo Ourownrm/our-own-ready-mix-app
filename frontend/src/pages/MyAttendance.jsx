@@ -32,22 +32,14 @@ export default function MyAttendance() {
   const [asking, setAsking] = useState(null); // leave: date or "" for free choice
   const load = () => apiRequest(`/hr/my?month=${month}`).then(setData).catch((e) => setError(e.message));
   useEffect(() => { setData(null); load(); }, [month]);
-  // Round 202 — attendance on the phone, and comp-off claims.
+  // Round 202 — attendance on the phone.
   const [canPunch, setCanPunch] = useState(false);
   useEffect(() => { apiRequest("/hr/punch/allowed").then((r) => setCanPunch(!!r.allowed)).catch(() => {}); }, []);
-  async function claim(d, days) {
-    setError("");
-    try { await apiRequest("/hr/my/compoff", { method: "POST", body: { work_date: d.date, days } }); load(); } catch (err) { setError(err.message); }
-  }
-  // Round 205 — comp-off request: the worked off day + the day to take off
-  // (a coming working day, or a past day marked Absent).
-  const [co, setCo] = useState(null);
-  async function sendCo(e) {
-    e.preventDefault(); setError("");
-    try { await apiRequest("/hr/my/compoff-request", { method: "POST", body: { ...co, days: Number(co.days) } }); setCo(null); load(); }
-    catch (err) { setError(err.message); }
-  }
-  const absentDays = (data?.attendance?.days || []).filter((d) => d.code === "A" || d.code === "HD").map((d) => d.date);
+  // Round 267 — comp-off is credited automatically for an off day / holiday
+  // worked; it is taken as Comp-off leave from the balance.
+  const coType = (data?.leave_types || []).find((t) => t.kind === "comp_off");
+  const coBal = (data?.leave_balances || []).find((b) => b.kind === "comp_off");
+  const coCredits = (data?.compoff_claims || []).filter((c) => c.status === "approved");
 
   async function withdraw(path) {
     setError("");
@@ -56,7 +48,7 @@ export default function MyAttendance() {
 
   const att = data?.attendance;
   const days = att ? [...att.days].filter((d) => d.code).reverse() : [];
-  const busy = raise !== null || asking !== null || co !== null;
+  const busy = raise !== null || asking !== null;
   return (
     <>
       <TopBar title="My attendance" />
@@ -72,51 +64,16 @@ export default function MyAttendance() {
                 {canPunch && <Link to="/mark-attendance" className="btn-primary" style={{ padding: "10px 14px", borderRadius: 8, textDecoration: "none", fontSize: 13, fontWeight: 600 }}>Mark attendance</Link>}
                 {!busy && <button className={canPunch ? "" : "btn-primary"} onClick={() => setAsking("")}>+ Ask for leave</button>}
                 {!busy && <button onClick={() => setRaise("")}>+ Correct a day</button>}
-                {/* Round 209 — always offered (owner): the employee names the off day
-                    or holiday worked; the server checks its punches. */}
-                {!busy && <button onClick={() => setCo({ work_date: data.compoff_claimable?.[0]?.date || "", off_date: "", days: "1", reason: "" })}>+ Comp-off request</button>}
+                {!busy && coType && coBal?.left > 0 && <button onClick={() => setAsking({ type: coType.id })}>Take comp-off ({coBal.left})</button>}
               </div>
             </div>
             {asking !== null && (
               <div className="card" style={{ marginBottom: 12 }}>
                 <div style={{ fontWeight: 700 }}>Ask for leave</div>
-                <LeaveForm self types={data.leave_types} balances={data.leave_balances} fixed={asking ? { date: asking } : {}}
+                <LeaveForm self types={data.leave_types} balances={data.leave_balances}
+                  fixed={asking?.type ? { leave_type_id: asking.type } : asking ? { date: asking } : {}}
                   onDone={() => { setAsking(null); load(); }} onCancel={() => setAsking(null)} />
               </div>
-            )}
-            {co && (
-              <form className="card field-input" onSubmit={sendCo} style={{ marginBottom: 12 }}>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>Comp-off request</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
-                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Off day / holiday I worked
-                    {data.compoff_claimable?.length > 0 ? (
-                      <select value={co.work_date} onChange={(e) => setCo({ ...co, work_date: e.target.value })} required>
-                        {data.compoff_claimable.map((d) => <option key={d.date} value={d.date}>{fmtDay(d.date)}{d.worked != null ? ` · ${hm(d.worked)}` : ""}</option>)}
-                      </select>
-                    ) : (
-                      <>
-                        <input type="date" value={co.work_date} onChange={(e) => setCo({ ...co, work_date: e.target.value })} required />
-                        <span style={{ fontWeight: 400, fontSize: 11 }}>No worked off day found in your punches yet — give the date; HR checks it.</span>
-                      </>
-                    )}
-                  </label>
-                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Day I take off
-                    <input type="date" value={co.off_date} onChange={(e) => setCo({ ...co, off_date: e.target.value })} required />
-                  </label>
-                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>How much
-                    <select value={co.days} onChange={(e) => setCo({ ...co, days: e.target.value })}><option value="1">1 day</option><option value="0.5">½ day</option></select>
-                  </label>
-                </div>
-                {absentDays.length > 0 && (
-                  <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8 }}>Absent this month — tap to make good with comp-off: {absentDays.map((d) => (
-                    <button key={d} type="button" style={{ padding: "2px 8px", fontSize: 12, margin: "2px 4px 0 0" }} onClick={() => setCo({ ...co, off_date: d })}>{fmtDay(d)}</button>
-                  ))}</div>
-                )}
-                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)", marginTop: 8 }}>Reason
-                  <input value={co.reason} onChange={(e) => setCo({ ...co, reason: e.target.value })} placeholder="Needed if the day off was an absence" />
-                </label>
-                <div style={{ display: "flex", gap: 8, marginTop: 10 }}><button className="btn-primary" type="submit">Send request</button><button type="button" onClick={() => setCo(null)}>Cancel</button></div>
-              </form>
             )}
             {raise !== null && (
               <div className="card" style={{ marginBottom: 12 }}>
@@ -147,35 +104,32 @@ export default function MyAttendance() {
               </div>
             )}
 
-            {(data.compoff_claimable?.length > 0) && (
+            {(coCredits.length > 0 || coBal?.lapsed > 0) && (
               <div className="card" style={{ marginBottom: 12 }}>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>Worked on an off day? Claim comp-off</div>
-                {data.compoff_claimable.map((d) => (
-                  <div key={d.date} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderTop: "1px solid var(--border)" }}>
-                    <span style={{ background: "#ECEAE4", color: "var(--slate)", fontWeight: 700, fontSize: 12, borderRadius: 6, padding: "3px 8px" }}>{d.holiday === "H" ? "H" : "WO"}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 700 }}>My comp-off</div>
+                  <div style={{ fontSize: 12, color: "var(--slate)" }}>
+                    Balance <b style={{ color: "#28657E", fontSize: 15 }}>{coBal?.left ?? 0}</b>{coBal?.waiting ? ` · ${coBal.waiting} asked` : ""}{coBal?.lapsed ? ` · ${coBal.lapsed} lapsed` : ""}
+                    {data.employee.compoff_accumulate && <span className="badge badge-info" style={{ marginLeft: 6 }}>accumulating</span>}
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--slate)", margin: "4px 0 6px" }}>Added automatically for a weekly off or holiday you worked. Take it with “Take comp-off” — the one expiring first is used first.</div>
+                {coCredits.map((c) => (
+                  <div key={c.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
+                    <span style={{ background: "#E2EEF3", color: "#28657E", fontWeight: 700, fontSize: 12, borderRadius: 6, padding: "3px 8px" }}>{c.days === 1 ? "1 day" : "½ day"}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 600 }}>{fmtDay(d.date)}</div>
-                      <div style={{ fontSize: 12, color: "var(--slate)" }}>{d.times.join(", ")}{d.worked != null ? ` · ${hm(d.worked)} worked` : ""}</div>
-                    </div>
-                    {/* Owner's rule: short hours can still ask for a full day; the manager decides. */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-                      {d.days === 1
-                        ? <button className="btn-primary" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => claim(d, 1)}>Claim 1 day</button>
-                        : <>
-                            {d.days === 0.5 && <button className="btn-primary" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => claim(d, 0.5)}>Claim ½ day</button>}
-                            <button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => claim(d, 1)}>Ask for 1 day</button>
-                            <span style={{ fontSize: 11, color: "var(--slate)" }}>{d.days ? "hours qualify for ½ day" : "hours short of ½ day"} — manager decides</span>
-                          </>}
+                      <b>Worked {fmtDay(c.work_date)}</b>{c.worked_min != null ? <span style={{ color: "var(--slate)" }}> · {hm(c.worked_min)}</span> : null}
+                      <div style={{ fontSize: 12, color: "var(--slate)" }}>{c.off_date ? `taken on ${fmtDay(c.off_date)}` : `expires ${fmtDay(c.expires_on)}`}{c.source === "auto" ? "" : " · claimed earlier"}</div>
                     </div>
                   </div>
                 ))}
               </div>
             )}
 
-            {(data.leaves?.length > 0 || data.requests.length > 0 || data.compoff_claims?.length > 0) && (
+            {(data.leaves?.length > 0 || data.requests.length > 0 || data.compoff_claims?.some((c) => c.status === "pending" || c.status === "rejected")) && (
               <div className="card" style={{ marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>My requests</div>
-                {(data.compoff_claims || []).filter((c) => c.status !== "cancelled").map((c) => (
+                {(data.compoff_claims || []).filter((c) => c.status === "pending" || c.status === "rejected").map((c) => (
                   <div key={"c" + c.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
                     <div>
                       <b>{fmtDay(c.work_date)}</b> · Comp-off {c.off_date ? "request" : "claim"} ({c.days === 1 ? "1 day" : "½ day"}){c.off_date ? <> — off on <b>{fmtDay(c.off_date)}</b>{c.for_absence ? " (was absent)" : ""}</> : null}

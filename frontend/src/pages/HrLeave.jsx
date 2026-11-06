@@ -35,7 +35,7 @@ export function balHint(b) {
 export function LeaveForm({ types, employees = [], fixed = {}, self = false, balances = null, canApproveNow = false, onDone, onCancel }) {
   const active = (types || []).filter((t) => t.is_active !== false);
   const [f, setF] = useState({
-    employee_id: fixed.employee_id || "", leave_type_id: active[0]?.id || "", from_date: fixed.date || "", to_date: fixed.date || "",
+    employee_id: fixed.employee_id || "", leave_type_id: fixed.leave_type_id || active[0]?.id || "", from_date: fixed.date || "", to_date: fixed.date || "",
     half_day: false, reason: "", approve_now: canApproveNow,
   });
   const [error, setError] = useState("");

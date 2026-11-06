@@ -179,6 +179,7 @@ export function EmployeeDetails({ employee: e, canSalary, onEdit, onClose, onCha
         <Row label="Timing">{e.policy === "office" ? `Office${e.default_shift_name ? ` · ${e.default_shift_name}` : ""}` : `Operations${e.default_shift_name ? ` · ${e.default_shift_name}` : ""}`}</Row>
         <Row label="Weekly off">{e.weekly_off == null ? null : WEEKDAY[e.weekly_off]}</Row>
         <Row label="Trip allowance">{e.trip_allowance ? "Yes" : "No"}</Row>
+        <Row label="Comp-off">{e.compoff_accumulate ? "Accumulates (longer expiry)" : "Normal expiry"}</Row>
       </div>
 
       {canSalary && (

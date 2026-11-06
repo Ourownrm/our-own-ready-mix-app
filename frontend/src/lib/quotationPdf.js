@@ -142,17 +142,25 @@ export async function buildQuotationPdf({ quotation: q, settings = {}, defaults 
   bar("CUSTOMER");
   const name = (q.billing_name || q.customer_name || "").toUpperCase();
   const addr = (q.billing_address || q.customer_address || "").toUpperCase();
-  font("bold", 10.5); doc.text(name, MX + 2, y + 3.4); y += LH + 0.4;
+  // Round 267 (owner: "align customer name in quotation") — the customer
+  // block starts at the page margin like "PROJECT / SITE", "Dear Sir" and the
+  // body (it was 2 mm in), and a long name wraps instead of running on.
+  font("bold", 10.5);
+  for (const ln of doc.splitTextToSize(name, CW)) { doc.text(ln, MX, y + 3.4); y += LH; }
+  y += 0.4;
   font("normal", 10);
-  for (const ln of doc.splitTextToSize(addr + (q.billing_gstin ? ` (GSTIN : ${q.billing_gstin})` : ""), CW - 4)) {
-    doc.text(ln, MX + 2, y + 3.4); y += LH;
+  for (const ln of doc.splitTextToSize(addr + (q.billing_gstin ? ` (GSTIN : ${q.billing_gstin})` : ""), CW)) {
+    doc.text(ln, MX, y + 3.4); y += LH;
   }
-  if (q.kind_attention) { doc.text(`KIND ATTENTION : ${q.kind_attention.toUpperCase()}`, MX + 2, y + 3.4); y += LH; }
+  if (q.kind_attention) {
+    for (const ln of doc.splitTextToSize(`KIND ATTENTION : ${q.kind_attention.toUpperCase()}`, CW)) { doc.text(ln, MX, y + 3.4); y += LH; }
+  }
   y += 2.5;
   font("bold", 10); doc.text("PROJECT / SITE :", MX, y + 3.4);
+  const siteX = MX + doc.getTextWidth("PROJECT / SITE :") + 2;
   font("normal", 10);
-  const siteLines = doc.splitTextToSize((q.site_name || "").toUpperCase(), CW - 34);
-  siteLines.forEach((ln) => { doc.text(ln, MX + 34, y + 3.4); y += LH; });
+  const siteLines = doc.splitTextToSize((q.site_name || "").toUpperCase(), PAGE_W - MX - siteX);
+  siteLines.forEach((ln) => { doc.text(ln, siteX, y + 3.4); y += LH; });
   y += 3;
   paragraph("Dear Sir,", { justify: false, after: 0 });
   paragraph("We are thankful to you for showing interest in our Products and considering us to submit the quotation for above project. We are pleased to make the competitive offer for your Project and the details are as below:", { after: 3 });

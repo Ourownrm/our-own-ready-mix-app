@@ -327,7 +327,7 @@ const EMPTY = {
   policy: "office", default_shift_id: "", weekly_off: "0", trip_allowance: false, notes: "",
   salary_basic: "", salary_da: "", salary_hra: "", salary_conveyance: "", salary_special: "", pf_applicable: true, esi_applicable: true,
   daily_rate: "", service_charge_pct: "", incentive_basis: "none", incentive_min_m3: "", incentive_rate: "",
-  salesperson_id: "", ot_eligible: false, app_punch: "off", work_area_km: "", work_area_location_id: "", face_check: true,
+  salesperson_id: "", ot_eligible: false, app_punch: "off", work_area_km: "", work_area_location_id: "", face_check: true, compoff_accumulate: false,
   relation_type: "S/o", relation_name: "", address: "",
   aadhaar_no: "", pan_no: "", dl_no: "", dl_valid_till: "", bank_account_name: "", bank_name: "", bank_account_no: "", bank_ifsc: "",
 };
@@ -503,6 +503,10 @@ function EmployeeForm({ meta, initial, onSaved, onCancel }) {
         </Field>
         <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, marginTop: 18 }}>
           <input type="checkbox" checked={f.trip_allowance} onChange={set("trip_allowance")} /> Gets trip allowance in salary
+        </label>
+        {/* Round 267 — comp-off kept longer (HR → Settings) so it can be added to a leave. */}
+        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, marginTop: 18 }} title="Comp-off earned on off days / holidays lasts longer for this person (HR → Settings), so it can be saved up and taken with a leave.">
+          <input type="checkbox" checked={!!f.compoff_accumulate} onChange={set("compoff_accumulate")} /> Accumulate comp-off (longer expiry)
         </label>
       </div>
 

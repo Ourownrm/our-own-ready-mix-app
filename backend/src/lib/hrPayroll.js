@@ -25,6 +25,9 @@
 import { query } from "../db.js";
 import { attendanceRegister, datesBetween } from "./hrAttendance.js";
 import { loadRules } from "./hrRules.js";
+// Round 267 — comp-off credits from off days worked are brought up to date
+// before payroll reads the register (a credited off day is not also overtime).
+import { syncAutoCompoffQuiet } from "./round267Schema.js";
 
 const r2 = (n) => Math.round(n * 100) / 100;
 const r0 = (n) => Math.round(n);
@@ -226,6 +229,7 @@ export function payLine({ emp, att, daysInMonth, datesInMonth, rules, data, manu
 // manual fields already saved on the month's lines.
 export async function computePayroll(month, { employeeIds = null } = {}) {
   const { from, to, days } = monthRange(month);
+  await syncAutoCompoffQuiet({ employeeIds });
   const [reg, rules, data, manualRes] = await Promise.all([
     attendanceRegister({ from, to, employeeIds, withRows: true }),
     loadRules(),
