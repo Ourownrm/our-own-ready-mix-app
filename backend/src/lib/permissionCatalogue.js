@@ -904,6 +904,15 @@ export const CATALOGUE = [
     { administrator: V }),
   f("admin.notifications", "admin", "Notifications setup", VCE,
     { administrator: VCE, manager: VCE }),
+  // Round 268 — Team Chat (owner, 1 & 6 Nov 2026: "small communications with
+  // in the team will happen in app", "without costing anything extra in
+  // render"). Every staff role reads and sends by default; groups and the
+  // chat settings are the Administrator's.
+  f("chat.use", "admin", "Team Chat — read and send messages", VC,
+    Object.fromEntries(["administrator", "manager", "plant_operator", "qc_engineer", "lab_technician", "driver", "site_supervisor",
+      "accountant", "sales_executive", "store", "loader_operator", "plant_in_charge"].map((r) => [r, VC]))),
+  f("chat.manage", "admin", "Team Chat — settings, groups and members; post in Admin-only groups", VE,
+    { administrator: VE }),
   // Round 262 (owner, 2 Nov 2026) — "super admin should be able to control
   // each and every user access": the screens that were still open by role
   // alone get their own function. Defaults = exactly the roles they served.

@@ -10,6 +10,7 @@ import { visibleHub } from "./adminScreens.js";
 import { isAdminLevel } from "./roles.js";
 import { apiRequest } from "./api.js";
 import { useLocked } from "./lockContext.js";
+import { useChatUnread } from "./chatApi.js";
 
 // Round 138, item 2 — a live clock so anyone using the app can see the current
 // date/time at a glance without switching away to check their phone. Ticks
@@ -59,6 +60,10 @@ export function TopBar({ title }) {
   const [notifStatus, setNotifStatus] = useState(null);
   const now = useClock();
   const locked = useLocked(); // Round 243 — locked: only the title in the header
+  // Round 268 — Team Chat: offered to whoever holds its View; the count is one
+  // shared request for the whole app, asked every minute while the app is open.
+  const chatOn = !!user && !locked && permsReady && (user.role === "super_admin" || can("chat.use", "view"));
+  const chatUnread = useChatUnread(chatOn);
 
   // Round 198 — "My attendance" for anyone whose login is linked to an HR
   // employee record. Round 201: only a YES is remembered for the session. A
@@ -155,6 +160,18 @@ export function TopBar({ title }) {
           )}
           {showModules && (
             <Link to="/modules" className="topbar-link">Modules</Link>
+          )}
+          {/* Round 268 — Team Chat, with the unread count, on every screen. */}
+          {chatOn && pathname !== "/chat" && (
+            <Link to="/chat" className="topbar-link" style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: chatUnread ? 600 : undefined, color: chatUnread ? "#fff" : undefined }}
+              aria-label={chatUnread ? `Chat, ${chatUnread} unread` : "Chat"}>
+              Chat
+              {chatUnread > 0 && (
+                <span style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 9, background: "var(--rebar)", color: "#fff", fontSize: 10.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                  {chatUnread > 99 ? "99+" : chatUnread}
+                </span>
+              )}
+            </Link>
           )}
           {/* Round 202 — anyone allowed to mark attendance on the phone. */}
           {myAttendance && canPunch && pathname !== "/mark-attendance" && (

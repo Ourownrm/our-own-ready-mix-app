@@ -38,6 +38,12 @@ self.addEventListener("push", (event) => {
   if (data.action && data.actionText) {
     options.actions = [{ action: "confirm", title: data.actionText }];
   }
+  // Round 268 — Team Chat sends { tag: "chat-<room>" } so a busy chat shows
+  // ONE notification that updates, not a stack of them.
+  if (data.tag) {
+    options.tag = data.tag;
+    options.renotify = true;
+  }
   event.waitUntil(self.registration.showNotification(data.title, options));
 });
 

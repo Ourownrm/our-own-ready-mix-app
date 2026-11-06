@@ -46,6 +46,7 @@ import SalesPerformance from "./pages/SalesPerformance.jsx";
 import LeadsBrowser from "./pages/LeadsBrowser.jsx";
 import CustomerFeedback from "./pages/CustomerFeedback.jsx";
 import NotificationsPage from "./pages/NotificationsPage.jsx";
+import TeamChat from "./pages/TeamChat.jsx";
 import SalesForecast from "./pages/SalesForecast.jsx";
 import TripTimeCrossCheckPage from "./pages/TripTimeCrossCheckPage.jsx";
 import CustomerTracking from "./pages/CustomerTracking.jsx";
@@ -376,6 +377,10 @@ export default function App() {
           } />
           <Route path="/compliance" element={
             <Navigate to="/maintenance-module?tab=certificates" replace />
+          } />
+          {/* Round 268 — Team Chat (function chat.use; every staff role by default). */}
+          <Route path="/chat" element={
+            <ProtectedRoute perm="chat.use"><TeamChat /></ProtectedRoute>
           } />
           <Route path="/notifications" element={
             <ProtectedRoute perm="admin.notifications"><NotificationsPage /></ProtectedRoute>

@@ -2,12 +2,19 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { allow } from "../lib/permissions.js";
+import chatRoutes from "./chat.js";
 
 const router = Router();
 // Round 260 — the Access Control page's "Notifications" function, not a role
 // list. A Plant In Charge (the Plant Manager's deputy) given it also reads
 // what is addressed to the Manager.
 router.use(requireAuth);
+// Round 268 — Team Chat lives under /api/notifications/chat (see the header of
+// routes/chat.js for why it is mounted here and not in index.js). It is placed
+// ABOVE the Notifications guards below on purpose: chat has its own functions
+// (chat.use / chat.manage), and a driver who cannot see Notifications must
+// still be able to chat.
+router.use("/chat", chatRoutes);
 router.get("*", allow([["admin.notifications", "view"]]));
 router.post("*", allow([["admin.notifications", "edit"]]));
 router.delete("*", allow([["admin.notifications", "edit"]]));
