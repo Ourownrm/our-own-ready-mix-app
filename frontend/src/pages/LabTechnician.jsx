@@ -1386,6 +1386,9 @@ function SiteCastDetail({ castId, setError, setNotice, onSaved }) {
 
 function MixDesignsTab({ setError, setNotice }) {
   const { user } = useAuth();
+  // Round 266 — the Revise button (below) checks can(...); without this line
+  // the tab threw "can is not defined" and blanked the whole screen.
+  const { can } = usePermissions();
   const [designs, setDesigns] = useState([]);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
