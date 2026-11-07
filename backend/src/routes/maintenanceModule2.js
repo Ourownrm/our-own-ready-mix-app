@@ -21,6 +21,7 @@
 //   outside-repair requests, inspection action items and breakdowns become
 //   jobs on job cards.
 // ===========================================================================
+import { ensureRound270 } from "../lib/round270Schema.js"; // Round 270 — welfare fund on road tax
 import { Router } from "express";
 import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -447,12 +448,13 @@ router.post("/batteries/:id/claim-close", requirePermission("mnt.tyres", "edit")
 function certOut(r) {
   return {
     ...r, document: undefined, has_document: !!r.has_document, fee: r.fee == null ? null : Number(r.fee),
+    welfare_fund: r.welfare_fund == null ? null : Number(r.welfare_fund),
     days_left: r.days_left == null ? null : Number(r.days_left),
     type_label: r.label || CERT_TYPES[r.cert_type] || r.cert_type,
   };
 }
 const CERT_COLS = `c.id, c.asset_id, c.cert_type, c.label, c.number, c.valid_from::text AS valid_from, c.valid_to::text AS valid_to,
-  c.authority, c.fee, c.status, c.renewed_from_id, c.note, c.created_at, c.document_name, (c.document IS NOT NULL) AS has_document,
+  c.authority, c.fee, c.welfare_fund, c.welfare_receipt, c.status, c.renewed_from_id, c.note, c.created_at, c.document_name, (c.document IS NOT NULL) AS has_document,
   (c.valid_to - CURRENT_DATE) AS days_left, a.name AS asset_name, a.asset_group, u.name AS created_by_name,
   b.id AS bill_id, b.amount AS bill_amount,
   (SELECT COALESCE(SUM(p.amount + p.tds), 0) FROM mnt_payments p WHERE p.bill_id = b.id) AS bill_paid`;
@@ -460,11 +462,12 @@ const CERT_FROM = `FROM mnt_certificates c JOIN mnt_assets a ON a.id = c.asset_i
   LEFT JOIN mnt_bills b ON b.source_type = 'certificate' AND b.source_id = c.id`;
 
 router.get("/certificates", requirePermission("mnt.certificates", "view"), async (req, res) => {
+  await ensureRound270();
   const [certs, rules, assets, spend] = await Promise.all([
     query(`SELECT ${CERT_COLS} ${CERT_FROM} WHERE c.status = 'current' AND a.is_active ORDER BY c.valid_to, a.name`),
     query(`SELECT asset_group, cert_type FROM mnt_cert_rules`),
     query(`SELECT id, name, asset_group FROM mnt_assets WHERE is_active ORDER BY asset_group, name`),
-    query(`SELECT COALESCE(SUM(fee), 0) AS s FROM mnt_certificates
+    query(`SELECT COALESCE(SUM(COALESCE(fee, 0) + COALESCE(welfare_fund, 0)), 0) AS s FROM mnt_certificates
            WHERE created_at >= date_trunc('year', now() - interval '3 months') + interval '3 months' AND legacy_compliance_id IS NULL`),
   ]);
   const list = certs.rows.map(certOut);
@@ -493,11 +496,13 @@ router.get("/certificates", requirePermission("mnt.certificates", "view"), async
 
 // The dashboard / home-screen card: expired or due within 30 days.
 router.get("/certificates/alerts", requireAnyPermission(["mnt.certificates", "reports.compliance", "mnt.dashboard"]), async (req, res) => {
+  await ensureRound270();
   const { rows } = await query(`SELECT ${CERT_COLS} ${CERT_FROM} WHERE c.status = 'current' AND a.is_active AND c.valid_to - CURRENT_DATE <= 30 ORDER BY c.valid_to`);
   res.json(rows.map(certOut));
 });
 
 router.get("/certificates/:id", requirePermission("mnt.certificates", "view"), async (req, res) => {
+  await ensureRound270();
   const { rows } = await query(`SELECT ${CERT_COLS} ${CERT_FROM} WHERE c.id = $1`, [req.params.id]);
   if (!rows.length) return bad(res, "Certificate not found.", 404);
   const c = rows[0];
@@ -538,8 +543,14 @@ router.post("/certificates", requirePermission("mnt.certificates", "create"), ha
   if (b.valid_from && b.valid_from > b.valid_to) return bad(res, "Valid from is after valid to.");
   const fee = num(b.fee);
   if (Number.isNaN(fee) || (fee != null && fee < 0)) return bad(res, "Fee must be a number.");
-  const payment = ["to_pay", "paid"].includes(b.payment) && fee ? b.payment : "none";
+  // Round 270 — the Motor Transport Workers Welfare Fund contribution, paid
+  // together with road tax: one bill for both.
+  const welfare = b.cert_type === "road_tax" ? num(b.welfare_fund) : null;
+  if (Number.isNaN(welfare) || (welfare != null && welfare < 0)) return bad(res, "The welfare fund contribution must be a number.");
+  const total = (fee || 0) + (welfare || 0);
+  const payment = ["to_pay", "paid"].includes(b.payment) && total ? b.payment : "none";
   const doc = docFrom(b);
+  await ensureRound270();
   const out = await tx(async (c) => {
     await assetOr(c, assetId);
     const { rows: cur } = await c.query(
@@ -548,19 +559,21 @@ router.post("/certificates", requirePermission("mnt.certificates", "create"), ha
     if (cur.length) await c.query(`UPDATE mnt_certificates SET status = 'superseded' WHERE id = $1`, [cur[0].id]);
     const { rows } = await c.query(
       `INSERT INTO mnt_certificates (asset_id, cert_type, label, number, valid_from, valid_to, authority, fee, renewed_from_id,
-         document, document_name, document_mime, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+         document, document_name, document_mime, note, created_by, welfare_fund, welfare_receipt)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
       [assetId, b.cert_type, label, b.number || null, b.valid_from || null, b.valid_to, b.authority || null, fee,
-        cur[0]?.id || null, doc?.buf || null, doc?.name || null, doc?.mime || null, b.note || null, req.user.id]);
+        cur[0]?.id || null, doc?.buf || null, doc?.name || null, doc?.mime || null, b.note || null, req.user.id,
+        welfare, welfare != null ? String(b.welfare_receipt || "").trim().slice(0, 100) || null : null]);
     const id = rows[0].id;
     if (payment !== "none") {
       const bill = await c.query(
         `INSERT INTO mnt_bills (source_type, source_id, payee, bill_no, bill_date, amount, due_date, note)
          VALUES ('certificate', $1, $2, $3, COALESCE($4::date, CURRENT_DATE), $5, CURRENT_DATE, $6) RETURNING id`,
-        [id, b.authority || "Renewal fee", b.number || null, b.valid_from || null, fee, `${label || CERT_TYPES[b.cert_type]} fee`]);
+        [id, b.authority || "Renewal fee", b.number || null, b.valid_from || null, total,
+          welfare ? `Road tax ₹${fee || 0} + Motor Transport Workers Welfare Fund ₹${welfare}` : `${label || CERT_TYPES[b.cert_type]} fee`]);
       if (payment === "paid") {
         await c.query(`INSERT INTO mnt_payments (bill_id, amount, tds, paid_on, mode, reference, created_by) VALUES ($1,$2,0,CURRENT_DATE,$3,$4,$5)`,
-          [bill.rows[0].id, fee, b.payment_mode || null, b.payment_ref || null, req.user.id]);
+          [bill.rows[0].id, total, b.payment_mode || null, b.payment_ref || null, req.user.id]);
       }
     }
     return { id, renewed: !!cur.length };
@@ -573,12 +586,15 @@ router.patch("/certificates/:id", requirePermission("mnt.certificates", "edit"),
   if (b.valid_to && !DATE_RE.test(b.valid_to)) return bad(res, "Valid to must be yyyy-mm-dd.");
   if (b.valid_from && !DATE_RE.test(b.valid_from)) return bad(res, "Valid from must be yyyy-mm-dd.");
   const doc = docFrom(b);
+  await ensureRound270();
   const r = await query(
     `UPDATE mnt_certificates SET number = COALESCE($1, number), valid_from = COALESCE($2::date, valid_from), valid_to = COALESCE($3::date, valid_to),
        authority = COALESCE($4, authority), note = COALESCE($5, note),
-       document = COALESCE($6, document), document_name = COALESCE($7, document_name), document_mime = COALESCE($8, document_mime)
+       document = COALESCE($6, document), document_name = COALESCE($7, document_name), document_mime = COALESCE($8, document_mime),
+       welfare_receipt = COALESCE($10, welfare_receipt)
      WHERE id = $9 AND status = 'current'`,
-    [b.number ?? null, b.valid_from || null, b.valid_to || null, b.authority ?? null, b.note ?? null, doc?.buf || null, doc?.name || null, doc?.mime || null, req.params.id]);
+    [b.number ?? null, b.valid_from || null, b.valid_to || null, b.authority ?? null, b.note ?? null, doc?.buf || null, doc?.name || null, doc?.mime || null, req.params.id,
+      b.welfare_receipt ?? null]);
   if (!r.rowCount) return bad(res, "Only the current certificate can be corrected.", 409);
   res.json({ ok: true });
 }));

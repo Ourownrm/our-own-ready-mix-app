@@ -240,7 +240,7 @@ function certGroups(ym, key, ctx) {
     const a = c.start > from ? c.start : from, b = c.valid_to < end ? c.valid_to : end;
     if (a > b) continue;
     const d = days(a, b);
-    rows.push([c.asset_name || "", c.label || c.cert_type, `${c.start} → ${c.valid_to}`, r2(c.fee), `${d} of ${c.days} days`, (c.fee * d) / c.days]);
+    rows.push([c.asset_name || "", c.label || (Number(c.welfare_fund) > 0 ? `${c.cert_type} + welfare fund ₹${Number(c.welfare_fund)}` : c.cert_type), `${c.start} → ${c.valid_to}`, r2(c.fee), `${d} of ${c.days} days`, (c.fee * d) / c.days]);
   }
   return [group("certs", "Certificates — fee spread over the days each covers", ["Vehicle", "Certificate", "Covers", "Fee ₹", "Days in the month", "₹"], rows)];
 }

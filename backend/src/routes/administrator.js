@@ -2,7 +2,7 @@ import { upperName } from "../lib/names.js";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { pool, query } from "../db.js";
-import { mergeSite } from "../lib/recordMerge.js";
+import { mergeSite, mergeCustomer } from "../lib/recordMerge.js";
 import { requireAuth, requireRole, clearUserCache } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission, allow } from "../lib/permissions.js";
 
@@ -122,6 +122,63 @@ router.post("/users/:id/reset-password", allow([["admin.users", "edit"]]), async
 router.get("/customers", requireAnyPermission(["masters.customers", "quality.mix-assignments"], "view"), async (req, res) => {
   const { rows } = await query("SELECT * FROM customers ORDER BY name");
   res.json(rows);
+});
+
+// Round 270 — owner, 7 Nov 2026: "the existing customer list includes
+// customers and their billing address separately; I want an option in admin
+// to move these customers as billing address to the main customer."
+// Each chosen customer becomes a billing profile (name, address, GSTIN from
+// its latest invoice) of the main customer, and is then merged into it with
+// the Round 230 merge: orders, invoices, receipts, quotations, price lists and
+// projects all move across, and its ledger joins the main customer's.
+// Its orders / quotations that had no billing profile are pointed at the new
+// one, and its invoices keep the name they were issued under, so nothing
+// already billed changes.
+router.post("/customers/move-as-billing", requirePermission("masters.customer-merge", "delete"), async (req, res) => {
+  const b = req.body || {};
+  const toId = Number(b.to_customer_id);
+  const fromIds = [...new Set([].concat(b.from_customer_ids || []).map(Number))].filter((n) => Number.isInteger(n) && n > 0 && n !== toId);
+  if (!Number.isInteger(toId) || toId <= 0) return res.status(400).json({ error: "Choose the main customer." });
+  if (!fromIds.length) return res.status(400).json({ error: "Choose the customer(s) to move." });
+  const note = String(b.note || "").trim().slice(0, 300) || null;
+  const client = await pool.connect();
+  const done = [];
+  try {
+    await client.query("BEGIN");
+    const { rows: main } = await client.query(`SELECT id, name, merged_into_id FROM customers WHERE id = $1 FOR UPDATE`, [toId]);
+    if (!main.length) throw Object.assign(new Error("The main customer was not found."), { status: 404 });
+    if (main[0].merged_into_id) throw Object.assign(new Error("The main customer was itself merged into another — choose that one."), { status: 400 });
+    const hasQuotes = (await client.query(`SELECT to_regclass('quotations') AS t`)).rows[0].t;
+    for (const fid of fromIds) {
+      const { rows: fr } = await client.query(`SELECT id, name, billing_address, merged_into_id FROM customers WHERE id = $1 FOR UPDATE`, [fid]);
+      if (!fr.length) throw Object.assign(new Error("A chosen customer was not found."), { status: 404 });
+      const f = fr[0];
+      if (f.merged_into_id) throw Object.assign(new Error(`${f.name} was already merged into another customer.`), { status: 400 });
+      const { rows: g } = await client.query(
+        `SELECT billing_gstin FROM invoices WHERE customer_id = $1 AND billing_gstin IS NOT NULL AND billing_gstin <> '' ORDER BY id DESC LIMIT 1`, [f.id]);
+      const { rows: same } = await client.query(
+        `SELECT id FROM customer_billing_addresses WHERE customer_id = $1 AND LOWER(name) = LOWER($2) AND is_active LIMIT 1`, [toId, f.name]);
+      const baId = same.length ? same[0].id : (await client.query(
+        `INSERT INTO customer_billing_addresses (customer_id, name, address, gstin, is_default) VALUES ($1, $2, $3, $4, false) RETURNING id`,
+        [toId, f.name, f.billing_address || null, g[0]?.billing_gstin || null])).rows[0].id;
+      const orders = await client.query(`UPDATE customer_orders SET billing_address_id = $2 WHERE customer_id = $1 AND billing_address_id IS NULL`, [f.id, baId]);
+      if (hasQuotes) await client.query(`UPDATE quotations SET billing_address_id = $2 WHERE customer_id = $1 AND billing_address_id IS NULL`, [f.id, baId]);
+      await client.query(
+        `UPDATE invoices SET billing_name = COALESCE(billing_name, $2), billing_address = COALESCE(billing_address, $3) WHERE customer_id = $1`,
+        [f.id, f.name, f.billing_address || null]);
+      await mergeCustomer(client, f.id, toId, req.user.id, note || `Moved as a billing name of ${main[0].name}`);
+      done.push({ name: f.name, billing_address_id: baId, orders: orders.rowCount });
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true, to: main[0].name, moved: done });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error("move-as-billing", err);
+    res.status(500).json({ error: "Could not move — nothing was changed." });
+  } finally {
+    client.release();
+  }
 });
 
 router.post("/customers", allow([["masters.customers", "create"], ["masters.customer-quick-create", "create"]]), async (req, res) => {

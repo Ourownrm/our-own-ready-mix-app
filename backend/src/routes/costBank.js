@@ -2,6 +2,7 @@
 // account's statement, give every line a treatment (a cost head, left out
 // because the app has it, own transfer, loan EMI …). The rules live in
 // lib/bankBook.js. Administrator only by default (cost.bank).
+import { ensureRound270 } from "../lib/round270Schema.js";
 import { Router } from "express";
 import { LEGEND_CUT } from "../lib/round252Schema.js";
 import { irr, flatRate, balanceOn, rateOn, amountOn, schedule as loanSchedule } from "../lib/loanMath.js";
@@ -299,6 +300,7 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
   // Left out keeps its app record only while it stays left out.
   const keepMatch = t === "omit" && l.match_kind;
   let applied = 0;
+  await ensureRound270(); // Round 270 — welfare fund columns, before the transaction
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -331,7 +333,8 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
       const b = req.body;
       const out = t === "cert"
         ? await postCertificate(client, { ...common, fee: n0(l.debit), asset_id: b.asset_id, cert_type: b.cert_type, valid_from: b.valid_from || null,
-            valid_to: b.valid_to, number: String(b.number || "").trim().slice(0, 60) || null, authority: String(b.authority || "").trim().slice(0, 100) || null })
+            valid_to: b.valid_to, number: String(b.number || "").trim().slice(0, 60) || null, authority: String(b.authority || "").trim().slice(0, 100) || null,
+            welfare_fund: b.welfare_fund, welfare_receipt: b.welfare_receipt })
         : await postPayment(client, { ...common, kind: b.party_kind, party_id: b.party_id, bill_id: b.bill_id, allocations: b.allocations,
             tds: n0(b.tds), replacing: l.post_kind === b.party_kind ? l.post_id : null });
       // The line claims what it posted, so no other line is matched to it.

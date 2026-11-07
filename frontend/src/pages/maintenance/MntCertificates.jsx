@@ -71,6 +71,8 @@ export default function MntCertificates() {
     setForm({
       asset_id: c?.asset_id || "", cert_type: c?.cert_type || "insurance", label: c?.label || "", number: "", authority: c?.authority || "",
       valid_from: c?.valid_to && !c.missing ? c.valid_to : todayIst(), valid_to: "", fee: "", payment: "to_pay", payment_mode: "Bank transfer", payment_ref: "",
+      // Round 270 — Motor Transport Workers Welfare Fund, paid with road tax (last amount pre-filled on renewal).
+      welfare_fund: c?.welfare_fund != null ? String(c.welfare_fund) : "", welfare_receipt: "",
       renew: c && !c.missing ? c : null, file: null,
     });
   }
@@ -167,15 +169,26 @@ function CertForm({ form, setForm, act, types, assets }) {
         <Field label="Valid from"><input type="date" value={form.valid_from} onChange={(e) => set({ valid_from: e.target.value })} /></Field>
         <Field label="Valid to"><input type="date" value={form.valid_to} onChange={(e) => set({ valid_to: e.target.value })} /></Field>
         <Field label="Insurer / agent / authority"><input value={form.authority} onChange={(e) => set({ authority: e.target.value })} /></Field>
-        <Field label="Premium / fee ₹"><input inputMode="decimal" value={form.fee} onChange={(e) => set({ fee: e.target.value })} /></Field>
-        {Number(form.fee) > 0 && (
+        <Field label={form.cert_type === "road_tax" ? "Road tax ₹" : "Premium / fee ₹"}><input inputMode="decimal" value={form.fee} onChange={(e) => set({ fee: e.target.value })} /></Field>
+        {form.cert_type === "road_tax" && (
+          <>
+            <Field label="Welfare Fund contribution ₹">
+              <input inputMode="decimal" value={form.welfare_fund} onChange={(e) => set({ welfare_fund: e.target.value })} placeholder="Paid with the road tax" title="Kerala Motor Transport Workers Welfare Fund Board" />
+            </Field>
+            <Field label="Welfare Fund receipt no."><input value={form.welfare_receipt} onChange={(e) => set({ welfare_receipt: e.target.value })} /></Field>
+          </>
+        )}
+        {form.cert_type === "road_tax" && Number(form.welfare_fund) > 0 && (
+          <div style={{ ...MUTED, alignSelf: "end", paddingBottom: 6 }}>Total to pay {fmtRs((Number(form.fee) || 0) + Number(form.welfare_fund))} (one bill in Payments)</div>
+        )}
+        {(Number(form.fee) > 0 || (form.cert_type === "road_tax" && Number(form.welfare_fund) > 0)) && (
           <Field label="Payment">
             <select value={form.payment} onChange={(e) => set({ payment: e.target.value })}>
               <option value="to_pay">To be paid (goes to Payments)</option><option value="paid">Paid now</option><option value="none">Not tracked here</option>
             </select>
           </Field>
         )}
-        {Number(form.fee) > 0 && form.payment === "paid" && (
+        {(Number(form.fee) > 0 || (form.cert_type === "road_tax" && Number(form.welfare_fund) > 0)) && form.payment === "paid" && (
           <>
             <Field label="Mode"><select value={form.payment_mode} onChange={(e) => set({ payment_mode: e.target.value })}>{MODES.map((m) => <option key={m}>{m}</option>)}</select></Field>
             <Field label="Reference"><input value={form.payment_ref} onChange={(e) => set({ payment_ref: e.target.value })} /></Field>
@@ -211,7 +224,8 @@ function CertPanel({ id, onClose, onRenew, onChanged }) {
         No. {c.number || "—"}<br />
         Valid {c.valid_from ? `${fmtDate(c.valid_from)} – ` : "to "}{fmtDate(c.valid_to)}<br />
         {c.authority && <>{c.authority}<br /></>}
-        {c.fee != null && <>Fee {fmtRs(c.fee)}{c.bill_id ? ` · ${Number(c.bill_paid) >= Number(c.bill_amount) ? "paid" : "in Payments"}` : ""}<br /></>}
+        {c.fee != null && <>{c.cert_type === "road_tax" ? "Road tax" : "Fee"} {fmtRs(c.fee)}{c.welfare_fund == null && c.bill_id ? ` · ${Number(c.bill_paid) >= Number(c.bill_amount) ? "paid" : "in Payments"}` : ""}<br /></>}
+        {c.welfare_fund != null && <>Welfare Fund contribution {fmtRs(c.welfare_fund)}{c.welfare_receipt ? ` · receipt ${c.welfare_receipt}` : ""}{c.bill_id ? ` · total ${fmtRs(Number(c.fee || 0) + c.welfare_fund)} ${Number(c.bill_paid) >= Number(c.bill_amount) ? "paid" : "in Payments"}` : ""}<br /></>}
         <span style={MUTED}>Entered by {c.created_by_name || "—"} {fmtWhen(c.created_at)}</span>
       </div>
       {err && <div style={{ ...MUTED, color: "var(--alert-red)" }}>{err}</div>}
@@ -229,7 +243,8 @@ function CertPanel({ id, onClose, onRenew, onChanged }) {
         <tbody>
           {c.history.map((h) => (
             <tr key={h.id}>
-              <td>{h.number || "—"}<div style={MUTED}>{h.valid_from ? `${fmtDate(h.valid_from)} – ` : "to "}{fmtDate(h.valid_to)}</div></td>
+              <td>{h.number || "—"}<div style={MUTED}>{h.valid_from ? `${fmtDate(h.valid_from)} – ` : "to "}{fmtDate(h.valid_to)}</div>
+                {(h.fee != null || h.welfare_fund != null) && <div style={MUTED}>{h.fee != null ? fmtRs(h.fee) : ""}{h.welfare_fund != null ? ` + welfare fund ${fmtRs(h.welfare_fund)}` : ""}</div>}</td>
               <td>{h.status === "current" ? <span className="badge badge-success">Current</span> : h.status === "retired" ? <span className="badge badge-neutral">Removed</span> : <span className="badge badge-neutral">Earlier</span>}</td>
               <td style={{ textAlign: "right" }}>{h.has_document && <button type="button" style={SMALL_BTN} onClick={() => openDocument(h.id).catch((e) => setErr(e.message))}>Doc</button>}</td>
             </tr>

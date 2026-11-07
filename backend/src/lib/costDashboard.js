@@ -43,6 +43,7 @@
 // read as higher than it is.
 //
 // Per-m³ figures are on SALES quantity. All amounts exclude GST.
+import { ensureRound270 } from "./round270Schema.js";
 import { query } from "../db.js";
 import { istMonth, istDay } from "./istDate.js";
 import { consumptionByMaterialMonthRange, firstOfNextMonth, productionM3Range } from "./plantConsumption.js";
@@ -156,10 +157,13 @@ export async function newContext() {
              FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
             WHERE r.landed_rate_per_kg IS NOT NULL AND r.accepted_qty_kg > 0 GROUP BY 1, 2`),
     query(`SELECT id, name, category, mix_component, opening_stock_rate_per_kg, is_active FROM rm_materials`),
-    query(`SELECT c.id, c.cert_type, c.label, c.fee, c.valid_from::text AS valid_from, c.valid_to::text AS valid_to,
+    // Round 270 — road tax counts with the Motor Transport Workers Welfare
+    // Fund contribution paid with it (both spread over the quarter).
+    ensureRound270().then(() => query(`SELECT c.id, c.cert_type, c.label, COALESCE(c.fee, 0) + COALESCE(c.welfare_fund, 0) AS fee, c.welfare_fund,
+                  c.valid_from::text AS valid_from, c.valid_to::text AS valid_to,
                   (c.created_at AT TIME ZONE 'Asia/Kolkata')::date::text AS made_on, c.status, a.name AS asset_name
              FROM mnt_certificates c LEFT JOIN mnt_assets a ON a.id = c.asset_id
-            WHERE c.fee > 0 AND c.status <> 'retired'`)
+            WHERE COALESCE(c.fee, 0) + COALESCE(c.welfare_fund, 0) > 0 AND c.status <> 'retired'`))
       // Round 235 — a fee paid from a bank line counts from the day it was paid.
       .then((r) => query(`SELECT id, paid_on::text AS paid_on FROM mnt_certificates WHERE paid_on IS NOT NULL`)
         .then((p) => { const m = new Map(p.rows.map((x) => [x.id, x.paid_on])); for (const c of r.rows) if (m.has(c.id)) c.made_on = m.get(c.id); return r; })

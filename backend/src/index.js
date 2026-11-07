@@ -60,6 +60,7 @@ import weighbridgeRoutes from "./routes/weighbridge.js";
 import weighbridgeWeighingRoutes from "./routes/weighbridgeWeighing.js";
 import marketingRoutes from "./routes/marketing.js";
 import marketingPublicRoutes from "./routes/marketingPublic.js";
+import { ensureRound270 } from "./lib/round270Schema.js";
 // Round 195 — attendance machine (eSSL) punches; /sync is API-key, the rest is session.
 import attendanceRoutes from "./routes/attendance.js";
 // Round 197 — HR module stage 1.
@@ -366,6 +367,7 @@ ensureRound262({ query: dbQuery }).catch((e) => console.error("round 262 grants:
 ensureExit().catch((e) => console.error("round 264 schema:", e.message));
 ensureRound265().catch((e) => console.error("round 265 schema:", e.message));
 ensureRound267().catch((e) => console.error("round 267 schema:", e.message));
+ensureRound270().catch((e) => console.error("round 270 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

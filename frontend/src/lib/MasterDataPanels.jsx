@@ -132,7 +132,104 @@ export function CustomerBillingAddressesEditor({ customerId, setError }) {
   );
 }
 
+// Round 270 — owner, 7 Nov 2026: customers that are really billing names of
+// another customer (entered as separate customers) are moved under the main
+// customer as billing profiles. Uses the Round 230 merge, so every order,
+// invoice, receipt, quotation, price list and project moves across.
+function MoveAsBillingDialog({ customers, start, onClose, onDone }) {
+  const choices = customers.filter((c) => !c.merged_into_id);
+  const [toId, setToId] = useState("");
+  const [fromIds, setFromIds] = useState([start.id]);
+  const [q, setQ] = useState("");
+  const [qMain, setQMain] = useState("");
+  const [refs, setRefs] = useState({});
+  const [note, setNote] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    for (const id of fromIds) {
+      if (refs[id]) continue;
+      apiRequest(`/accounts/merge/preview?from_customer_id=${id}&to_customer_id=${toId || id}`)
+        .then((p) => setRefs((r) => ({ ...r, [id]: p.from_customer?.refs || [] }))).catch(() => {});
+    }
+  }, [fromIds]); // eslint-disable-line react-hooks/exhaustive-deps
+  const byId = new Map(choices.map((c) => [c.id, c]));
+  const main = byId.get(Number(toId));
+  const moving = fromIds.map((id) => byId.get(id)).filter(Boolean);
+  const toggle = (id) => setFromIds((l) => (l.includes(id) ? l.filter((x) => x !== id) : [...l, id]));
+  const words = (r) => (r || []).map((x) => `${x.rows} ${x.table.replace(/^customer_/, "").replace(/_/g, " ")}`).join(" · ") || "nothing on file";
+  async function go() {
+    setErr(""); setBusy(true);
+    try {
+      const out = await apiRequest("/administrator/customers/move-as-billing", { method: "POST", body: { to_customer_id: Number(toId), from_customer_ids: fromIds, note } });
+      onDone(out);
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  const box = { border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 };
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Move as billing name" style={{ position: "fixed", inset: 0, background: "rgba(34,38,43,.45)", zIndex: 60, display: "flex", justifyContent: "center", alignItems: "flex-start", padding: "5vh 10px", overflowY: "auto" }}
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="card" style={{ width: "100%", maxWidth: 680, margin: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <b style={{ fontSize: 16 }}>Move under a main customer as billing name</b>
+          <button type="button" onClick={onClose} disabled={busy} aria-label="Close">✕</button>
+        </div>
+        <div style={{ fontSize: 12.5, color: "var(--slate)", lineHeight: 1.5 }}>
+          Each customer ticked below becomes a <b>billing profile</b> (name, billing address and GSTIN from its last invoice) of the main customer, and is merged into it:
+          its orders, invoices, receipts, quotations, price lists and projects move to the main customer, and its ledger joins the main customer's.
+          Its orders and invoices keep the billing name they had. This can't be undone.
+        </div>
+        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Main customer
+          <input value={qMain} onChange={(e) => setQMain(e.target.value)} placeholder="Type to find the main customer" style={{ fontWeight: 400 }} />
+          <select value={toId} onChange={(e) => { setToId(e.target.value); setFromIds((l) => l.filter((x) => x !== Number(e.target.value))); }} size={5} style={{ fontWeight: 400 }}>
+            {choices.filter((c) => !fromIds.includes(c.id) && (!qMain || c.name.toLowerCase().includes(qMain.toLowerCase()))).map((c) => (
+              <option key={c.id} value={c.id}>{c.name}{c.is_active ? "" : " (disabled)"}</option>
+            ))}
+          </select>
+        </label>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--slate)", marginBottom: 4 }}>Customers to move as billing names</div>
+          {moving.map((c) => (
+            <div key={c.id} style={{ ...box, marginBottom: 6, display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <div><b>{c.name}</b>{c.billing_address ? <div style={{ fontSize: 12, color: "var(--slate)" }}>{c.billing_address}</div> : null}
+                <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{refs[c.id] ? words(refs[c.id]) : "…"}</div></div>
+              <button type="button" onClick={() => toggle(c.id)} style={{ alignSelf: "flex-start", fontSize: 12 }}>Remove</button>
+            </div>
+          ))}
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Add another — type a name" style={{ width: "100%", marginTop: 4 }} />
+          {q.trim() && (
+            <div style={{ ...box, maxHeight: 160, overflowY: "auto", marginTop: 4 }}>
+              {choices.filter((c) => c.id !== Number(toId) && !fromIds.includes(c.id) && c.name.toLowerCase().includes(q.toLowerCase())).slice(0, 30).map((c) => (
+                <button key={c.id} type="button" onClick={() => { toggle(c.id); setQ(""); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "5px 2px" }}>+ {c.name}</button>
+              ))}
+            </div>
+          )}
+        </div>
+        {main && moving.length > 0 && (
+          <div style={{ ...box, background: "var(--signal-green-bg)", borderColor: "var(--signal-green)" }}>
+            After this, <b>{main.name}</b> has the billing names: {moving.map((c) => c.name).join(", ")}. Pick one on an order (Create Order / Correct order) or a quotation to bill under it.
+          </div>
+        )}
+        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--slate)" }}>Note (optional)
+          <input value={note} onChange={(e) => setNote(e.target.value)} style={{ fontWeight: 400 }} />
+        </label>
+        {err && <div role="alert" style={{ color: "var(--alert-red)", fontSize: 13 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="btn-primary" disabled={busy || !main || !moving.length} onClick={go}>
+            {busy ? "Moving…" : `Move ${moving.length} as billing name${moving.length === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CustomersPanel({ setError }) {
+  const { can } = usePermissions();
+  const canMove = can("masters.customer-merge", "delete");
+  const [moving, setMoving] = useState(null);
+  const [moved, setMoved] = useState("");
   const [customers, setCustomers] = useState([]);
   const [form, setForm] = useState({ name: "", contact_number: "", billing_address: "" });
   const [editingId, setEditingId] = useState(null);
@@ -191,6 +288,9 @@ export function CustomersPanel({ setError }) {
 
   return (
     <div>
+      {moved && <div role="status" className="card" style={{ background: "var(--signal-green-bg)", color: "var(--signal-green)", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{moved}</div>}
+      {moving && <MoveAsBillingDialog customers={customers} start={moving} onClose={() => setMoving(null)}
+        onDone={(out) => { setMoving(null); setMoved(`Moved under ${out.to} as billing name${out.moved.length === 1 ? "" : "s"}: ${out.moved.map((m) => m.name).join(", ")}.`); load(); }} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>Customers</div>
         <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
@@ -229,6 +329,9 @@ export function CustomersPanel({ setError }) {
                       <button type="button" onClick={() => setBillingOpenId(billingOpenId === c.id ? null : c.id)}>
                         {billingOpenId === c.id ? "Hide billing profiles" : "Billing profiles"}
                       </button>
+                      {canMove && !c.merged_into_id && (
+                        <button type="button" onClick={() => { setMoved(""); setMoving(c); }} title="This customer is really a billing name of another customer">Move as billing name…</button>
+                      )}
                     </td>
                   </>
                 )}

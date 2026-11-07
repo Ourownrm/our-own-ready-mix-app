@@ -633,6 +633,16 @@ function CertFields({ l, post, setPost }) {
         <label style={FIELD}>Valid to<input type="date" value={post.valid_to || ""} onChange={(e) => set("valid_to", e.target.value)} style={{ minHeight: 32 }} /></label>
         <label style={{ ...FIELD, flex: "1 1 120px" }}>Policy / receipt no.<input value={post.number || ""} onChange={(e) => set("number", e.target.value)} style={{ minHeight: 32 }} /></label>
       </div>
+      {post.cert_type === "road_tax" && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {/* Round 270 — part of the payment can be the Motor Transport Workers Welfare Fund contribution. */}
+          <label style={{ ...FIELD, flex: "1 1 170px" }}>Of which Welfare Fund contribution ₹
+            <input inputMode="decimal" value={post.welfare_fund || ""} onChange={(e) => set("welfare_fund", e.target.value)} style={{ minHeight: 32 }} placeholder="0 if none" />
+          </label>
+          <label style={{ ...FIELD, flex: "1 1 130px" }}>Welfare Fund receipt no.<input value={post.welfare_receipt || ""} onChange={(e) => set("welfare_receipt", e.target.value)} style={{ minHeight: 32 }} /></label>
+          {Number(post.welfare_fund) > 0 && <div style={{ ...MUTED, alignSelf: "end" }}>Road tax {rs(Math.max(0, Number(l.debit) - Number(post.welfare_fund)))} + welfare fund {rs(Number(post.welfare_fund))}</div>}
+        </div>
+      )}
       {cur && <div style={MUTED}>On file: valid to {fmtDay(cur.valid_to)}.{post.valid_to && post.valid_to <= cur.valid_to ? " This one ends earlier — it is kept as history, the current one stays." : ""}</div>}
       {days > 0 && <div style={MUTED}>→ Compliance register renewed · fee {rs(l.debit)} paid {fmtDay(l.txn_date)} · P&amp;L about {rs(Math.round(l.debit / months))} a month for {months} month(s) (vehicle taxes &amp; insurance), the unused part on the Balance Sheet as prepaid.</div>}
     </div>

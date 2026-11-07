@@ -311,8 +311,13 @@ export async function postCertificate(c, p) {
   if (!ISO.test(p.valid_to || "")) throw fail("Enter the valid-to date of the new certificate.");
   if (p.valid_from && !ISO.test(p.valid_from)) throw fail("Valid from: a date.");
   if (p.valid_from && p.valid_from > p.valid_to) throw fail("Valid from is after valid to.");
-  const fee = r2(p.fee);
-  if (!(fee > 0)) throw fail("The fee must be more than 0.");
+  const total = r2(p.fee);
+  if (!(total > 0)) throw fail("The fee must be more than 0.");
+  // Round 270 — part of a road-tax payment can be the Motor Transport Workers
+  // Welfare Fund contribution: kept on the certificate, the bill is the total.
+  const welfare = p.cert_type === "road_tax" && Number(p.welfare_fund) > 0 ? r2(p.welfare_fund) : null;
+  if (welfare != null && welfare >= total) throw fail("The welfare fund contribution must be less than the amount paid.");
+  const fee = welfare != null ? r2(total - welfare) : total;
   const { rows: cur } = await c.query(
     `SELECT id, valid_to::text AS valid_to FROM mnt_certificates WHERE asset_id = $1 AND cert_type = $2 AND label IS NULL AND status = 'current' FOR UPDATE`,
     [assetId, p.cert_type]);
@@ -320,18 +325,20 @@ export async function postCertificate(c, p) {
   if (cur.length && newer) await c.query(`UPDATE mnt_certificates SET status = 'superseded' WHERE id = $1`, [cur[0].id]);
   const { rows } = await c.query(
     `INSERT INTO mnt_certificates (asset_id, cert_type, label, number, valid_from, valid_to, authority, fee, renewed_from_id, status, note,
-       created_by, source, source_id, paid_on)
-     VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+       created_by, source, source_id, paid_on, welfare_fund, welfare_receipt)
+     VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
     [assetId, p.cert_type, p.number || null, p.valid_from || null, p.valid_to, p.authority || null, fee,
-      newer ? cur[0]?.id || null : null, newer ? "current" : "superseded", p.notes || null, p.user_id, p.source || null, p.source_id || null, p.paid_on]);
+      newer ? cur[0]?.id || null : null, newer ? "current" : "superseded", p.notes || null, p.user_id, p.source || null, p.source_id || null, p.paid_on,
+      welfare, welfare != null ? String(p.welfare_receipt || "").trim().slice(0, 100) || null : null]);
   const id = rows[0].id;
   const bill = await c.query(
     `INSERT INTO mnt_bills (source_type, source_id, payee, bill_no, bill_date, amount, due_date, note)
      VALUES ('certificate', $1, $2, $3, $4::date, $5, $4::date, $6) RETURNING id`,
-    [id, p.authority || "Renewal fee", p.number || null, p.paid_on, fee, `${CERT_TYPES[p.cert_type]} fee`]);
+    [id, p.authority || "Renewal fee", p.number || null, p.paid_on, total,
+      welfare != null ? `Road tax ₹${fee} + Motor Transport Workers Welfare Fund ₹${welfare}` : `${CERT_TYPES[p.cert_type]} fee`]);
   const { rows: pay } = await c.query(
     `INSERT INTO mnt_payments (bill_id, amount, tds, paid_on, mode, reference, created_by, source, source_id) VALUES ($1,$2,0,$3,$4,$5,$6,$7,$8) RETURNING id`,
-    [bill.rows[0].id, fee, p.paid_on, p.mode || null, (p.reference || "").slice(0, 100) || null, p.user_id, p.source || null, p.source_id || null]);
+    [bill.rows[0].id, total, p.paid_on, p.mode || null, (p.reference || "").slice(0, 100) || null, p.user_id, p.source || null, p.source_id || null]);
   return { kind: "certificate", id, payment_id: pay[0].id, label: `${a[0].name} · ${CERT_TYPES[p.cert_type]} to ${p.valid_to}${newer ? "" : " (older period — kept as history)"}` };
 }
 
