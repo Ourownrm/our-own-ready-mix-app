@@ -16,6 +16,7 @@ import BankReceipts from "./accounts/BankReceipts.jsx";
 import Cheques from "./accounts/Cheques.jsx";
 import PettyCash from "./accounts/PettyCash.jsx";
 import SendToCa from "./accounts/SendToCa.jsx";
+import TallyB2c from "./accounts/TallyB2c.jsx"; // Round 271
 import QuotationSettings from "./accounts/QuotationSettings.jsx";
 
 // Round 256 — the tab list (key, label, who may open it) lives in
@@ -30,6 +31,7 @@ const COMPONENTS = {
   "cheques": Cheques,
   "petty-cash": PettyCash,
   "send-to-ca": SendToCa,
+  "b2c-tally": TallyB2c,
   "settings": QuotationSettings,
 };
 const TABS = MODULE_TABS["accounts-module"].tabs.map((t) => ({ ...t, Component: COMPONENTS[t.key] }));

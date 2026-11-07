@@ -61,6 +61,7 @@ import weighbridgeWeighingRoutes from "./routes/weighbridgeWeighing.js";
 import marketingRoutes from "./routes/marketing.js";
 import marketingPublicRoutes from "./routes/marketingPublic.js";
 import { ensureRound270 } from "./lib/round270Schema.js";
+import { ensureRound271 } from "./lib/round271Schema.js";
 // Round 195 — attendance machine (eSSL) punches; /sync is API-key, the rest is session.
 import attendanceRoutes from "./routes/attendance.js";
 // Round 197 — HR module stage 1.
@@ -87,6 +88,8 @@ import adminDashboardRoutes from "./routes/adminDashboard.js";
 import quotationRoutes from "./routes/quotations.js";
 import accountsLedgerRoutes from "./routes/accountsLedger.js";
 import accountsTallyRoutes from "./routes/accountsTally.js";
+import accountsTallyPostRoutes from "./routes/accountsTallyPost.js"; // Round 271
+import tallyBridgeRoutes from "./routes/tallyBridge.js"; // Round 271
 import accountsCreditNotesRoutes from "./routes/accountsCreditNotes.js";
 import accountsChequesRoutes from "./routes/accountsCheques.js";
 import accountsPettyCashRoutes from "./routes/accountsPettyCash.js";
@@ -296,6 +299,8 @@ app.use("/api/contract-labour", contractLabourRoutes);
 app.use("/api/quotations", quotationRoutes);
 app.use("/api/accounts", accountsLedgerRoutes);
 app.use("/api/accounts", accountsTallyRoutes); // Round 251 — B2C invoice in the Tally format
+app.use("/api/accounts", accountsTallyPostRoutes); // Round 271 — B2C invoices → Tally (verify, approve, post)
+app.use("/api/tally-bridge", tallyBridgeRoutes); // Round 271 — the Tally Bridge on the Tally computer (its own token)
 app.use("/api/accounts", accountsCreditNotesRoutes); // Round 252 — credit notes
 app.use("/api/accounts", accountsChequesRoutes); // Round 253 — cheque register
 app.use("/api/accounts", accountsPettyCashRoutes); // Round 253 — petty cash
@@ -368,6 +373,7 @@ ensureExit().catch((e) => console.error("round 264 schema:", e.message));
 ensureRound265().catch((e) => console.error("round 265 schema:", e.message));
 ensureRound267().catch((e) => console.error("round 267 schema:", e.message));
 ensureRound270().catch((e) => console.error("round 270 schema:", e.message));
+ensureRound271().catch((e) => console.error("round 271 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

@@ -9300,3 +9300,37 @@ Owner, 4 Nov 2026: the quotation's site-specific fuel showed the transit mixer a
 - Quotation settings show the mileage read-only, pointing to Fuel → Settings. The old fleet-average calculation is removed.
 
 Verified on scratch Postgres: formula line and figures; Manager refused editing, out-of-range refused, Administrator saves. `npm run check` green; build clean.
+
+## Round 271 — B2C invoices into Tally: verify, approve, Post to Tally (v11.03)
+
+Owner, 31 Oct 2026 (mock-up "B2C Invoices to Tally Mockup", claude/b2c-tally-posting-mockup-v1.md) — Tally is the firm's own, on the same office network; only B2C invoices go, only with a manual "Post to Tally"; the owner types the next Tally voucher number once and the app counts on (correctable by hand), so the Tally voucher has the app's number; an invoice verification / approval screen. "Code this", 7 Nov 2026. **Run /setup once** (additive; also made at start-up).
+
+Open questions in the mock-up were built as drawn: the Accountant approves; one "Cash" party ledger by default (or each customer's own, a setting); accounting vouchers (ledgers and amounts, details in the narration); voucher type "Sales B2C" (a setting); an invoice with GST off goes with CGST/SGST inside the same total, exactly as the Tally-format print shows it.
+
+### Accounts › B2C → Tally (accounts/TallyB2c.jsx, routes/accountsTallyPost.js)
+- Lists B2C invoices (no GSTIN) dated from the start date in Tally settings (default: the day this round is installed). Filters To verify / Approved / Failed / Sending / Posted / Changed / All, month (or all months), search; a banner when other months still have work.
+- Strip: Tally connected / Tally not open / Tally Bridge not running / not set up; "Next Tally voucher no." with Change.
+- **Verify** (one invoice): the invoice worked out Tally's way (rate ÷ 1.18, CGST/SGST 9 %, round-off — the same figures as the Round 251 Tally-format print, lib/tallyXml.js `tallyFigures`), checks (B2C, quantity = loaded − returned, rate from quotation / price list, charges, credit notes, return credit due, GST off, Cash → C Ledger, rounding), the voucher number (proposed: the invoice's own Tally number if it was printed, else the next in the series skipping numbers used in the app; asks when there is no series yet or a new financial year starts and "ask on 1 April" is on), the date (default the delivery date), and the Tally ledgers each amount goes to. Approve / Approve & next / Send back with a note / Back to "To verify". Approving sends nothing.
+- A number used on another invoice is refused (any case). The series moves on from the highest number approved.
+- **Post to Tally**: tick approved invoices → confirm → the app asks Tally first whether that voucher number already exists for the voucher type in that financial year (Tally allows duplicates unless the voucher type forbids them), then creates the voucher with the same number and date. Each comes back Posted or Failed with Tally's reason in plain words (company not open, ledger / voucher type not in Tally, number already in Tally). Failed → change the number and retry, or "Mark as entered in Tally". Queued ones not yet picked up can be stopped.
+- **Download Tally XML** for the ticked approved invoices (TallyPrime › Import › Transactions), then "Mark as entered in Tally".
+- Once Posted (or marked entered) an invoice is never sent again and its number is fixed. An invoice whose total changes (or gets a GSTIN) after approval is flagged "Changed — approve again" and can't be posted until re-approved; after posting it is flagged "Changed after posting" (fix in Tally / credit note).
+- The Tally-format print (Round 251) can't change a number fixed by approval; an invoice printed in the Tally format before this round counts as entered in Tally by hand (one-time mark `r271_printed_are_in_tally`).
+
+### Tally settings (modal on the same tab)
+Company name (exactly as in Tally), voucher type, prefix / next number / suffix with preview, ask for a new start number on 1 April, start date, party ledger mode, ledger names (party, concrete sales, pump, part-load, waiting, CGST, SGST, round off) with **Check names in Tally** (found / not in Tally), and **Download the bridge file**.
+
+### The Tally Bridge (lib/tallyXml.js `bridgeBat`, routes/tallyBridge.js)
+- One file, OORM-Tally-Bridge.bat — a batch file with a PowerShell script inside (PowerShell comes with Windows; nothing to install). Double-click on the Tally computer, keep the window open. In TallyPrime: Help › Settings › Connectivity › "TallyPrime acts as Server", port 9000.
+- Every 5 s it tells the app it is there (and whether Tally answers), takes the requests waiting, sends each to Tally on that computer and returns Tally's reply as it came. All rules and all reading of Tally's answers are in the app.
+- Signs in with its own token (X-Bridge-Token, stored hashed); making a new file stops the old one. Requests sent as plain ASCII XML (other characters as character references).
+- No answer within 3 minutes → the invoice fails with what to do (look in Tally for the number, then Mark as entered or Retry).
+
+### Data / permissions
+- invoices.tp_state / tp_note / tp_date / tp_total / tp_approved_by,_at / tp_posted_by,_at / tp_by_hand; the voucher number is invoices.tally_invoice_no (Round 251). New tables tally_settings (one row), tally_jobs. lib/round271Schema.js.
+- `accounts.tally-b2c` (VE: Administrator, Accountant) and `accounts.tally-settings` (VE: Administrator; V: Accountant). Menu: Accounts › B2C → Tally (also in the computer side menu).
+
+### Verified
+End to end against a stand-in for TallyPrime's XML server (answers import, voucher-number and ledger requests the way Tally does, rejects malformed XML) with the real bridge script run in PowerShell 7: 58 checks pass — start date, permissions, series and proposals, duplicate numbers, send back, bridge not set up / not running / Tally closed, ledger check (found one real bug: Tally's `RESERVEDNAME` attribute — fixed), voucher number already in Tally, ledger missing, vouchers balanced with the right party / date / type / narration and posted once, retry with a new number, mark entered, print guard, changed after approval / after posting, XML download, no-answer timeout, old bridge file refused, new financial year. Screens at 1366 and 390 px, no page errors. Not yet tried against a real TallyPrime — first live post should be one invoice, checked in Tally.
+
+Files: backend/src/{index.js, lib/{round271Schema.js (new), tallyXml.js (new), permissionCatalogue.js}, routes/{accountsTallyPost.js (new), tallyBridge.js (new), accountsTally.js, setup.js}}, frontend/src/{lib/{moduleTabs.js, version.js}, pages/{AccountsModule.jsx, accounts/TallyB2c.jsx (new)}}, README.md.

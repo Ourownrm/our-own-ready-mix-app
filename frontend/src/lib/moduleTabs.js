@@ -115,6 +115,7 @@ export const MODULE_TABS = {
       { key: "cheques", label: "Cheques", perm: "accounts.cheques" },
       { key: "petty-cash", label: "Petty cash", perm: "accounts.petty-cash" },
       { key: "send-to-ca", label: "Send to CA", perm: "accounts.send-to-ca" },
+      { key: "b2c-tally", label: "B2C → Tally", perm: "accounts.tally-b2c" },
       { key: "settings", label: "Settings", perm: "accounts.quotation-settings" },
     ],
   },

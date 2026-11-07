@@ -12,6 +12,7 @@ import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../lib/permissions.js";
 import { ensureRound251 } from "../lib/round251Schema.js";
+import { ensureRound271 } from "../lib/round271Schema.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -68,6 +69,17 @@ router.post("/invoices/:id(\\d+)/tally", requirePermission("accounts.invoice-pri
     const b = req.body || {};
     const no = txt(b.invoice_no, 40);
     if (!no) return res.status(400).json({ error: "Type the Tally invoice number." });
+    // Round 271 — once B2C → Tally has approved the invoice, its number is the
+    // Tally voucher's: the print can't change it (reopen it there first).
+    await ensureRound271();
+    const { rows: tp } = await query(`SELECT tp_state FROM invoices WHERE id = $1`, [id]);
+    const fixed = tp[0] && ["approved", "queued", "posting", "posted", "manual", "failed"].includes(tp[0].tp_state);
+    if (fixed && inv.tally_invoice_no && no.toLowerCase() !== String(inv.tally_invoice_no).toLowerCase()) {
+      return res.status(409).json({
+        error: `This invoice is approved for Tally as voucher ${inv.tally_invoice_no}${["posted", "manual"].includes(tp[0].tp_state) ? " and is in Tally" : ""} — print it with that number.`,
+        fixed_no: inv.tally_invoice_no,
+      });
+    }
     // The owner: a number already used on another invoice is flagged.
     if (!b.force) {
       const { rows: dup } = await query(

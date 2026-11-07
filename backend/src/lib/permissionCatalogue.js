@@ -643,6 +643,12 @@ export const CATALOGUE = [
   // Round 255 — the month's data for the CA, in Excel, by the 5th.
   f("accounts.send-to-ca", "accounts", "Send to CA — download the month's data, mark it sent, set the CA's ledger names", VE,
     { administrator: VE, accountant: VE }),
+  // Round 271 — B2C invoices into Tally: verify, approve (gives the Tally
+  // voucher number), Post to Tally; the settings and the bridge file.
+  f("accounts.tally-b2c", "accounts", "B2C → Tally — verify and approve B2C invoices, post them to Tally", VE,
+    { administrator: VE, accountant: VE }),
+  f("accounts.tally-settings", "accounts", "B2C → Tally — Tally settings (company, numbering, ledger names) and the Tally Bridge file", VE,
+    { administrator: VE, accountant: V }),
   // Round 252 — credit notes: Accounts raises one against an invoice; only
   // the Administrator approves, and only an approved note changes the ledger.
   f("accounts.credit-notes", "accounts", "Credit notes — see and raise", VC,
@@ -1140,13 +1146,14 @@ export const MODULES = [
       { key: "accounts.cheques", label: "Cheques" },
       { key: "accounts.petty-cash", label: "Petty cash" },
       { key: "accounts.send-to-ca", label: "Send to CA" },
+      { key: "accounts.tally-b2c", label: "B2C → Tally" },
       { key: "accounts.rate-migration", label: "Rate file migration" },
       { key: "accounts.quotation-settings", label: "Settings" },
     ],
     support: ["accounts.quotation-followup", "accounts.quotation-approve", "accounts.quotation-accept",
       "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.invoice-cash", "accounts.credit-note-approve", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
       "accounts.petty-cash-approve", "accounts.petty-cash-fund", "accounts.petty-cash-setup", "accounts.cheque-correct",
-      "accounts.quotation-costing", "accounts.price-list-enable"],
+      "accounts.quotation-costing", "accounts.price-list-enable", "accounts.tally-settings"],
   },
   {
     // Round 269 — the Marketing module. Roles are set on each function above.
