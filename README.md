@@ -9334,3 +9334,38 @@ Company name (exactly as in Tally), voucher type, prefix / next number / suffix 
 End to end against a stand-in for TallyPrime's XML server (answers import, voucher-number and ledger requests the way Tally does, rejects malformed XML) with the real bridge script run in PowerShell 7: 58 checks pass — start date, permissions, series and proposals, duplicate numbers, send back, bridge not set up / not running / Tally closed, ledger check (found one real bug: Tally's `RESERVEDNAME` attribute — fixed), voucher number already in Tally, ledger missing, vouchers balanced with the right party / date / type / narration and posted once, retry with a new number, mark entered, print guard, changed after approval / after posting, XML download, no-answer timeout, old bridge file refused, new financial year. Screens at 1366 and 390 px, no page errors. Not yet tried against a real TallyPrime — first live post should be one invoice, checked in Tally.
 
 Files: backend/src/{index.js, lib/{round271Schema.js (new), tallyXml.js (new), permissionCatalogue.js}, routes/{accountsTallyPost.js (new), tallyBridge.js (new), accountsTally.js, setup.js}}, frontend/src/{lib/{moduleTabs.js, version.js}, pages/{AccountsModule.jsx, accounts/TallyB2c.jsx (new)}}, README.md.
+
+## Round 272 — Tally number rule; Motor workers welfare fund on its own; bank lines to partners; Accounts › Bank receipts hidden (v11.04)
+
+Owner, 7 Nov 2026 (21:56). Built on Round 271 (v11.03). **Run /setup once** (additive; also made at start-up).
+
+### 1. Tally voucher numbers may repeat until posted
+- The Tally-format print no longer stops a number used on another invoice. It is refused only when that number is already **in Tally** (posted, marked entered by hand, or being sent) on another invoice. The "Print anyway" step is gone. A print can change the number of an approved invoice that hasn't been posted yet; a posted one keeps its number.
+- B2C → Tally: approving with a number used on another invoice is allowed; refused only when that number is in Tally or being sent ("TEST-500 is already in Tally for delivery note …" / "… is being sent to Tally …").
+- Post to Tally: an invoice whose number is in Tally, or being sent, on another invoice is not sent; two ticked with the same number → only the first goes. Tally's own check (number already in Tally) still runs before each voucher.
+
+### 2. Motor workers welfare fund — its own entry, period and P&L line
+- New certificate type **"Motor workers welfare fund"** (`welfare_fund`) in Maintenance › Certificates: own vehicle, number (receipt), valid from / to, contribution, payment, renewal and expiry alerts like road tax. Road tax no longer carries a welfare amount (Round 270's fields removed from the road tax form).
+- **Cost › Bank statements**, road tax line: "Of which Welfare Fund contribution ₹" stays (one bank payment for both), now with **Welfare fund from / to** (default: the road tax's period). It makes a separate welfare fund entry (`paid_with_id` → the road tax entry); the one bill / payment for the whole amount stays on the road tax entry. Undoing the bank line removes both and brings back the earlier ones. "WELFARE" in a narration suggests the welfare fund type.
+- **Cost Dashboard / P&L / Break-even / P&L breakup:** new line **"Motor workers welfare fund"**, spread over the days of its own period; road tax no longer includes it. Overheads unchanged in total.
+- **One-time move** (mark `r272_welfare_fund_split`): every road tax entry with a Round 270 contribution got its own welfare fund entry — same vehicle, same period, contribution as fee, receipt as number, current if the road tax was; the road tax entry keeps only road tax. Bills untouched.
+- Not added to the required-certificate rules (no new "missing" alerts); add it per machine type in the certificate rules if wanted.
+
+### 3. Cost › Bank statements → partners
+- New choice on a line, **"To / from a partner → Cost › Partners"**:
+  - money in: **Loan received from a partner** (with "interest from" date, default the bank date) · **Capital brought in**
+  - money out: **Interest paid to a partner** (TDS deducted, suggested from the partners' TDS rate; settled = paid + TDS) · **Loan repaid** · **Capital returned / drawn**
+- Partner suggested from the narration (name / match words). The entry goes straight into Cost › Partners (balances, interest, Balance Sheet). Interest paid is not a P&L cost here — partners' interest reaches the P&L as it accrues.
+- An entry already in Partners for the same partner, kind, day and amount (typed or from the sheet) is **linked**, not added twice; undoing the line only unlinks it. An entry made by the line is removed when the line is changed or reset.
+- In Partners, entries from the bank show "from bank statement" and can't be edited or removed there. "Always" rules can't post to partners. CA pack "money paid" includes partner payments.
+
+### 4. Accounts › Bank receipts hidden
+- The tab is gone from Accounts (and the side menu); the Accountant home no longer shows "bank credits to post" or the Bank receipts link. Bank statements are worked only in **Cost › Bank statements**, where a credit can post as a customer payment (Round 252). "+ Record a receipt" (by hand) stays. Note: Cost › Bank statements is Administrator-only by default — give the Accountant `cost.bank` in Super Admin if they should post receipts there.
+
+### Data
+mnt_certificates.paid_with_id; cost_partner_txns.source / source_id; cost_bank_lines treatment 'partner'. lib/round272Schema.js.
+
+### Verified (scratch Postgres)
+32 checks: split (road tax 9,800 / welfare 1,350 own entry); November P&L road tax 3,195.65 + welfare 440.22 = 3,635.87 as before; breakup adds up; bank road tax 12,000 with welfare 2,200 for a year → two entries, one 12,000 bill, earlier welfare superseded; undo restores; partner loan in (interest-from), interest paid with TDS, wrong side refused, typed capital linked not doubled, bank entries locked in Partners, change/reset remove or unlink; Tally: repeated print number allowed, posted number blocked (print and approve), two same-number posts → one goes, posted number fixed. Round 271 Tally run-through (real bridge in PowerShell + Tally stand-in) re-run: 58 pass. Screens: partner choice, welfare period, Accounts tabs — no page errors.
+
+Files: backend/src/{index.js, lib/{round272Schema.js (new), ledgerPost.js, bankBook.js, costDashboard.js, breakEven.js, plBreakup.js, partners.js, round216Schema.js}, routes/{accountsTally.js, accountsTallyPost.js, costBank.js, costPartners.js, accountsCa.js, maintenanceModule2.js, setup.js}}, frontend/src/{lib/{moduleTabs.js, version.js, ComplianceAlertsCard.jsx}, pages/{Accountant.jsx, ComplianceMonitoring.jsx, accounts/{TallyPrint.jsx, TallyB2c.jsx}, cost/{CostBankTab.jsx, CostPartnersTab.jsx}, maintenance/MntCertificates.jsx}}, README.md.

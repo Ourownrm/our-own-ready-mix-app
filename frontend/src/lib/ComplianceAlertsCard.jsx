@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { apiRequest } from "./api.js";
 
 const DOC_LABEL = {
-  insurance: "Insurance", road_tax: "Road tax", permit: "Permit", puc: "PUC",
+  insurance: "Insurance", road_tax: "Road tax", welfare_fund: "Motor workers welfare fund", permit: "Permit", puc: "PUC",
   fitness_certificate: "Fitness certificate", registration_certificate: "Registration certificate",
   amc: "AMC", calibration_certificate: "Calibration certificate",
   inspection_certificate: "Inspection certificate", load_testing_certificate: "Load testing certificate",

@@ -233,8 +233,9 @@ async function payrollGroups(ym, key) {
 
 function certGroups(ym, key, ctx) {
   const { from, end } = monthBounds(ym);
-  const want = key === "road_tax" ? (c) => c.cert_type === "road_tax" : key === "insurance" ? (c) => c.cert_type === "insurance"
-    : (c) => c.cert_type !== "road_tax" && c.cert_type !== "insurance";
+  const want = key === "road_tax" ? (c) => c.cert_type === "road_tax" : key === "welfare" ? (c) => c.cert_type === "welfare_fund"
+    : key === "insurance" ? (c) => c.cert_type === "insurance"
+      : (c) => !["road_tax", "insurance", "welfare_fund"].includes(c.cert_type);
   const rows = [];
   for (const c of ctx.certs.filter(want)) {
     const a = c.start > from ? c.start : from, b = c.valid_to < end ? c.valid_to : end;
@@ -266,7 +267,7 @@ async function monthGroups(ym, key, core, ctx) {
   else if (key === "water") push(waterGroups(core));
   else if (key === "repairs") push(await repairsGroups(ym));
   else if (key === "salaries" || key === "contract_labour") push(await payrollGroups(ym, key));
-  else if (["road_tax", "insurance", "other_certs"].includes(key)) push(certGroups(ym, key, ctx));
+  else if (["road_tax", "welfare", "insurance", "other_certs"].includes(key)) push(certGroups(ym, key, ctx));
   if (key === "other_income") push(await otherIncomeGroups(ym));
   // Typed-in figures, bank lines and cash spent in the head, for every head that takes them.
   push(enteredGroup(core, key));

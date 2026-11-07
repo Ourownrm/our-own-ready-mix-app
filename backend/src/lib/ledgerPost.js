@@ -25,7 +25,7 @@ const ISO = /^\d{4}-\d{2}-\d{2}$/;
 export const ROUND235_SQL = `
 ALTER TABLE cost_bank_lines DROP CONSTRAINT IF EXISTS cost_bank_lines_treatment_check;
 ALTER TABLE cost_bank_lines ADD CONSTRAINT cost_bank_lines_treatment_check
-  CHECK (treatment IN ('todo','check','cost','omit','own','loan','tax','asset','capital','personal','pay','cert'));
+  CHECK (treatment IN ('todo','check','cost','omit','own','loan','tax','asset','capital','personal','pay','cert','partner'));
 ALTER TABLE cost_bank_lines ADD COLUMN IF NOT EXISTS post_kind VARCHAR(12);
 ALTER TABLE cost_bank_lines ADD COLUMN IF NOT EXISTS post_id INTEGER;
 ALTER TABLE cost_bank_lines ADD COLUMN IF NOT EXISTS party_label VARCHAR(200);
@@ -91,7 +91,7 @@ export async function refuseIfSourced(table, id) {
 }
 
 export const POST_KINDS = ["supplier", "transporter", "contractor", "maintenance", "customer"];
-const KIND_LABEL = { customer: "Customer ledger (Accounts)", supplier: "Supplier ledger", transporter: "Transporter ledger", contractor: "Contractor ledger (HR)", maintenance: "Maintenance → Payments", certificate: "Compliance register" };
+const KIND_LABEL = { customer: "Customer ledger (Accounts)", supplier: "Supplier ledger", transporter: "Transporter ledger", contractor: "Contractor ledger (HR)", maintenance: "Maintenance → Payments", certificate: "Compliance register", partner: "Cost → Partners" };
 export const postWhere = (k) => KIND_LABEL[k] || k;
 
 // How the bank paid it, from the narration.
@@ -131,10 +131,14 @@ export async function partyOptions() {
     // Round 252 — money in from a customer posts to the customer ledger.
     safe(query(`SELECT id, name, COALESCE(is_active, true) AS is_active FROM customers ORDER BY COALESCE(is_active, true) DESC, name`)),
   ]);
+  // Round 272 — partners, for a bank line into Cost › Partners.
+  const partners = await query(`SELECT id, name, match_words, is_active FROM cost_partners ORDER BY is_active DESC, name`).then((r) => r.rows).catch(() => []);
+  const tdsRate = await query(`SELECT tds_rate::float AS r FROM cost_partner_settings WHERE id = 1`).then((r) => r.rows[0]?.r ?? 10).catch(() => 10);
   const { rows: certs } = await query(
     `SELECT c.asset_id, c.cert_type, c.valid_to::text AS valid_to FROM mnt_certificates c WHERE c.status = 'current'`).catch(() => ({ rows: [] }));
   return {
-    suppliers, transporters, contractors, customers,
+    suppliers, transporters, contractors, customers, partners, partner_tds_rate: tdsRate,
+    partner_kinds: Object.entries(PARTNER_KINDS).map(([key, v]) => ({ key, ...v })),
     mnt_bills: bills.map((b) => ({ ...b, amount: n0(b.amount), balance: r2(b.balance) })),
     assets, current_certs: certs,
     cert_types: Object.entries(CERT_TYPES).filter(([k]) => k !== "other").map(([key, label]) => ({ key, label })),
@@ -284,6 +288,8 @@ export async function unpostPayment(c, kind, id, userId, reason = "Changed at it
     await c.query(`DELETE FROM mnt_payments WHERE id = $1`, [id]);
   } else if (kind === "certificate") {
     await unpostCertificate(c, id);
+  } else if (kind === "partner") {
+    await unpostPartner(c, id);
   } else if (kind === "customer") {
     // Round 255 — its C Ledger lines (if it was sent there) go with it.
     const { removeReceiptCl } = await import("./round255Schema.js");
@@ -313,10 +319,15 @@ export async function postCertificate(c, p) {
   if (p.valid_from && p.valid_from > p.valid_to) throw fail("Valid from is after valid to.");
   const total = r2(p.fee);
   if (!(total > 0)) throw fail("The fee must be more than 0.");
-  // Round 270 — part of a road-tax payment can be the Motor Transport Workers
-  // Welfare Fund contribution: kept on the certificate, the bill is the total.
+  // Round 270 / 272 — part of a road-tax payment can be the Motor Transport
+  // Workers Welfare Fund contribution. Since Round 272 it becomes its own
+  // welfare fund certificate with its own period (default: the road tax's);
+  // the one bill (road tax + contribution) stays on the road tax entry.
   const welfare = p.cert_type === "road_tax" && Number(p.welfare_fund) > 0 ? r2(p.welfare_fund) : null;
   if (welfare != null && welfare >= total) throw fail("The welfare fund contribution must be less than the amount paid.");
+  const wFrom = welfare != null ? (p.welfare_from || p.valid_from || null) : null;
+  const wTo = welfare != null ? (p.welfare_to || p.valid_to) : null;
+  if (welfare != null && (!ISO.test(wTo || "") || (wFrom && !ISO.test(wFrom)) || (wFrom && wFrom > wTo))) throw fail("Check the welfare fund's period (from / to).");
   const fee = welfare != null ? r2(total - welfare) : total;
   const { rows: cur } = await c.query(
     `SELECT id, valid_to::text AS valid_to FROM mnt_certificates WHERE asset_id = $1 AND cert_type = $2 AND label IS NULL AND status = 'current' FOR UPDATE`,
@@ -326,11 +337,24 @@ export async function postCertificate(c, p) {
   const { rows } = await c.query(
     `INSERT INTO mnt_certificates (asset_id, cert_type, label, number, valid_from, valid_to, authority, fee, renewed_from_id, status, note,
        created_by, source, source_id, paid_on, welfare_fund, welfare_receipt)
-     VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+     VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULL,NULL) RETURNING id`,
     [assetId, p.cert_type, p.number || null, p.valid_from || null, p.valid_to, p.authority || null, fee,
-      newer ? cur[0]?.id || null : null, newer ? "current" : "superseded", p.notes || null, p.user_id, p.source || null, p.source_id || null, p.paid_on,
-      welfare, welfare != null ? String(p.welfare_receipt || "").trim().slice(0, 100) || null : null]);
+      newer ? cur[0]?.id || null : null, newer ? "current" : "superseded", p.notes || null, p.user_id, p.source || null, p.source_id || null, p.paid_on]);
   const id = rows[0].id;
+  if (welfare != null) {
+    const { rows: wc } = await c.query(
+      `SELECT id, valid_to::text AS valid_to FROM mnt_certificates WHERE asset_id = $1 AND cert_type = 'welfare_fund' AND label IS NULL AND status = 'current' FOR UPDATE`,
+      [assetId]);
+    const wNewer = !wc.length || wTo > wc[0].valid_to;
+    if (wc.length && wNewer) await c.query(`UPDATE mnt_certificates SET status = 'superseded' WHERE id = $1`, [wc[0].id]);
+    await c.query(
+      `INSERT INTO mnt_certificates (asset_id, cert_type, label, number, valid_from, valid_to, authority, fee, renewed_from_id, status, note,
+         created_by, source, source_id, paid_on, paid_with_id)
+       VALUES ($1,'welfare_fund',NULL,$2,$3,$4,'Kerala Motor Transport Workers Welfare Fund Board',$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [assetId, String(p.welfare_receipt || "").trim().slice(0, 100) || null, wFrom, wTo, welfare,
+        wNewer ? wc[0]?.id || null : null, wNewer ? "current" : "superseded", "Paid with road tax (one bank payment)",
+        p.user_id, p.source || null, p.source_id || null, p.paid_on, id]);
+  }
   const bill = await c.query(
     `INSERT INTO mnt_bills (source_type, source_id, payee, bill_no, bill_date, amount, due_date, note)
      VALUES ('certificate', $1, $2, $3, $4::date, $5, $4::date, $6) RETURNING id`,
@@ -351,4 +375,49 @@ async function unpostCertificate(c, id) {
   if (rows[0].status === "current" && rows[0].renewed_from_id) {
     await c.query(`UPDATE mnt_certificates SET status = 'current' WHERE id = $1 AND status = 'superseded'`, [rows[0].renewed_from_id]);
   }
+  // Round 272 — the welfare fund entry paid in the same payment goes with it.
+  const { rows: sib } = await c.query(`SELECT id FROM mnt_certificates WHERE paid_with_id = $1 AND status <> 'retired'`, [id]).catch(() => ({ rows: [] }));
+  for (const w of sib) await unpostCertificate(c, w.id);
+}
+
+// ------------------------------------------------------ partners ---
+// Round 272 — a bank line to or from a partner, into Cost › Partners.
+//   money in:  loan_in (unsecured loan received), capital_in
+//   money out: interest_paid (net paid; TDS beside it), loan_out (repaid), capital_out
+// An entry already in Partners for the same partner, kind, day and amount
+// (typed, or from the uploaded sheet) is linked, not made twice.
+export const PARTNER_KINDS = {
+  loan_in: { side: "credit", label: "Loan received from partner" },
+  capital_in: { side: "credit", label: "Capital brought in" },
+  interest_paid: { side: "debit", label: "Interest paid to partner" },
+  loan_out: { side: "debit", label: "Loan repaid to partner" },
+  capital_out: { side: "debit", label: "Capital returned / drawn" },
+};
+export async function postPartner(c, p) {
+  const k = PARTNER_KINDS[p.partner_kind];
+  if (!k) throw fail("Choose what the money is (loan, capital, interest …).");
+  if (k.side !== p.side) throw fail(p.side === "credit" ? "Money received can be a loan received or capital brought in." : "Money paid out can be interest paid, a loan repaid or capital returned.");
+  const { rows: pr } = await c.query(`SELECT id, name FROM cost_partners WHERE id = $1`, [Number(p.partner_id)]);
+  if (!pr.length) throw fail("Choose the partner.");
+  const amount = r2(p.amount);
+  if (!(amount > 0)) throw fail("The line has no amount.");
+  const tds = p.partner_kind === "interest_paid" ? r2(p.tds) : 0;
+  if (tds < 0) throw fail("TDS must be 0 or more.");
+  const from = p.partner_kind === "loan_in" ? (ISO.test(p.interest_from || "") ? p.interest_from : p.paid_on) : null;
+  const { rows: same } = await c.query(
+    `SELECT id FROM cost_partner_txns WHERE partner_id = $1 AND kind = $2 AND txn_date = $3 AND amount = $4 AND source IS NULL ORDER BY id LIMIT 1 FOR UPDATE`,
+    [pr[0].id, p.partner_kind, p.paid_on, amount]);
+  if (same.length) {
+    await c.query(`UPDATE cost_partner_txns SET source = 'bank-link', source_id = $2 WHERE id = $1`, [same[0].id, p.source_id || null]);
+    return { kind: "partner", id: same[0].id, label: `${pr[0].name} · ${k.label} (already in Partners — linked)` };
+  }
+  const { rows } = await c.query(
+    `INSERT INTO cost_partner_txns (partner_id, kind, txn_date, amount, tds, narration, note, created_by, interest_from, source, source_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'bank',$10) RETURNING id`,
+    [pr[0].id, p.partner_kind, p.paid_on, amount, tds, p.narration || null, String(p.notes || "").slice(0, 200) || null, p.user_id, from, p.source_id || null]);
+  return { kind: "partner", id: rows[0].id, label: `${pr[0].name} · ${k.label}${tds ? ` (TDS ${tds})` : ""}` };
+}
+async function unpostPartner(c, id) {
+  await c.query(`DELETE FROM cost_partner_txns WHERE id = $1 AND source = 'bank'`, [id]);
+  await c.query(`UPDATE cost_partner_txns SET source = NULL, source_id = NULL WHERE id = $1 AND source = 'bank-link'`, [id]);
 }

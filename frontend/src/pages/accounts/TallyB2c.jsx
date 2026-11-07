@@ -116,7 +116,7 @@ function Verify({ id, onClose, onOpen, canEdit }) {
   const propNote = d.proposal?.why === "first" ? "Type the next Tally voucher number once — the app counts on from it."
     : d.proposal?.why === "new_fy" ? `New financial year (${d.proposal.fy}) — type the first Tally number of the year.`
       : d.proposal?.why === "own" ? "The number already on this invoice (typed at a Tally-format print, or approved before)."
-        : d.proposal?.why === "next" ? "Next in your series. Change it if needed — a number used on another invoice is refused." : "";
+        : d.proposal?.why === "next" ? "Next in your series. Change it if needed — only a number already in Tally is refused." : "";
   const st = inv.changed ? ["Changed", "badge-danger"] : STATE[inv.state] || [inv.state, "badge-neutral"];
 
   return (

@@ -134,6 +134,18 @@ function rowOut(inv) {
   };
 }
 
+// Round 272 — another invoice with this number that is in Tally (or on its
+// way there). A number only typed on a print, or approved and not posted, may
+// repeat.
+async function inTallyElsewhere(c, no, id) {
+  const { rows } = await c.query(
+    `SELECT i.id, i.tp_state, dt.ticket_number, COALESCE(i.billing_name, cu.name) AS customer
+       FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id JOIN customers cu ON cu.id = i.customer_id
+      WHERE lower(i.tally_invoice_no) = lower($1) AND i.id <> $2 AND i.tp_state IN ('queued','posting','posted','manual') LIMIT 1`, [no, id]);
+  if (rows[0]) rows[0].where = ["queued", "posting"].includes(rows[0].tp_state) ? "being sent to Tally" : "already in Tally";
+  return rows[0] || null;
+}
+
 // The number the next approval gets: the invoice's own (typed at print, or
 // given before), else the next in the series, skipping any already used in
 // the app. null = ask (no series yet, or a new financial year).
@@ -285,11 +297,10 @@ router.post("/tally/b2c/:id(\\d+)/approve", EDIT, async (req, res) => {
     if (String(inv.billing_gstin || "").trim()) { await c.query("ROLLBACK"); return res.status(400).json({ error: "This bill has a GSTIN — only B2C invoices go to Tally." }); }
     if (LOCKED.includes(inv.tp_state)) { await c.query("ROLLBACK"); return res.status(409).json({ error: inv.tp_state === "posted" || inv.tp_state === "manual" ? "Already in Tally." : "It is being posted — wait for Tally's answer." }); }
     const date = ISO.test(req.body?.date || "") ? req.body.date : inv.ticket_date;
-    const { rows: dup } = await c.query(
-      `SELECT i.id, dt.ticket_number, COALESCE(i.billing_name, cu.name) AS customer
-         FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id JOIN customers cu ON cu.id = i.customer_id
-        WHERE lower(i.tally_invoice_no) = lower($1) AND i.id <> $2 LIMIT 1`, [no, id]);
-    if (dup[0]) { await c.query("ROLLBACK"); return res.status(409).json({ error: `${no} is already used on delivery note ${dup[0].ticket_number} (${dup[0].customer}). Choose another number.` }); }
+    // Round 272 (owner): a number may repeat until it is posted — only a
+    // number already in Tally (posted, entered by hand, or on its way) is refused.
+    const dup = await inTallyElsewhere(c, no, id);
+    if (dup) { await c.query("ROLLBACK"); return res.status(409).json({ error: `${no} is ${dup.where} for delivery note ${dup.ticket_number} (${dup.customer}). Choose another number.` }); }
     await c.query(
       `UPDATE invoices SET tally_invoice_no = $2, tp_state = 'approved', tp_note = NULL, tp_date = $3, tp_total = total_amount,
               tp_approved_by = $4, tp_approved_at = now()
@@ -364,6 +375,10 @@ router.post("/tally/b2c/post", EDIT, async (req, res) => {
       if (!["approved", "failed"].includes(inv.tp_state)) { refused.push({ id, voucher_no: inv.tally_invoice_no, error: inv.tp_state ? `It is ${inv.tp_state}.` : "Not approved yet." }); continue; }
       if (changed(inv)) { refused.push({ id, voucher_no: inv.tally_invoice_no, error: "Changed since it was approved — verify and approve again." }); continue; }
       if (!inv.tally_invoice_no) { refused.push({ id, error: "No voucher number." }); continue; }
+      const dup = await inTallyElsewhere(c, inv.tally_invoice_no, id);
+      if (dup) { refused.push({ id, voucher_no: inv.tally_invoice_no, error: `${inv.tally_invoice_no} is ${dup.where} for delivery note ${dup.ticket_number} — give this one another number.` }); continue; }
+      // Two ticked with the same number: only the first goes.
+      if (queued.some((q) => q.voucher_no.toLowerCase() === String(inv.tally_invoice_no).toLowerCase())) { refused.push({ id, voucher_no: inv.tally_invoice_no, error: "Another ticked invoice has the same number — give this one another number." }); continue; }
       await c.query(`UPDATE tally_jobs SET status = 'dropped', done_at = now() WHERE invoice_id = $1 AND status IN ('new','picked')`, [id]);
       await c.query(
         `INSERT INTO tally_jobs (kind, invoice_id, xml, created_by) VALUES ('exists', $1, $2, $3)`,

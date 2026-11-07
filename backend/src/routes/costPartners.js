@@ -125,6 +125,14 @@ function txnBody(b) {
   return { t };
 }
 
+// Round 272 — an entry posted from (or matched to) a bank statement line is
+// changed there, so the two never disagree.
+const FROM_BANK = "This entry comes from a bank statement line — change or undo it in Cost › Bank statements.";
+async function fromBank(id) {
+  const { rows } = await query(`SELECT source FROM cost_partner_txns WHERE id = $1`, [Number(id)]).catch(() => ({ rows: [] }));
+  return !!rows[0]?.source;
+}
+
 router.post("/txns", EDIT, async (req, res) => {
   const { t, err } = txnBody(req.body || {});
   if (err) return bad(res, err);
@@ -137,6 +145,7 @@ router.post("/txns", EDIT, async (req, res) => {
 router.put("/txns/:id(\\d+)", EDIT, async (req, res) => {
   const { t, err } = txnBody(req.body || {});
   if (err) return bad(res, err);
+  if (await fromBank(req.params.id)) return bad(res, FROM_BANK, 409);
   const r = await query(
     `UPDATE cost_partner_txns SET partner_id=$1, kind=$2, txn_date=$3, amount=$4, tds=$5, note=$6, interest_from=$8 WHERE id=$7`,
     [t.partner_id, t.kind, t.txn_date, t.amount, t.tds, t.note, Number(req.params.id), t.interest_from]);
@@ -144,6 +153,7 @@ router.put("/txns/:id(\\d+)", EDIT, async (req, res) => {
   res.json({ ok: true });
 });
 router.delete("/txns/:id(\\d+)", EDIT, async (req, res) => {
+  if (await fromBank(req.params.id)) return bad(res, FROM_BANK, 409);
   const r = await query(`DELETE FROM cost_partner_txns WHERE id = $1`, [Number(req.params.id)]);
   if (!r.rowCount) return bad(res, "Entry not found.", 404);
   res.json({ ok: true });

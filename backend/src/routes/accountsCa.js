@@ -205,7 +205,7 @@ async function paidSheet(from, end) {
                  WHERE a.given_on BETWEEN $1::date AND $2::date`, [from, end])),
     safe(query(`SELECT l.id, l.txn_date::text AS day, l.narration, l.reference, l.debit, l.treatment, l.head, l.interest, l.principal, a.bank
                   FROM cost_bank_lines l JOIN cost_bank_accounts a ON a.id = l.account_id
-                 WHERE l.debit > 0 AND l.treatment IN ('cost','loan','tax','asset','capital','personal','todo','check')
+                 WHERE l.debit > 0 AND l.treatment IN ('cost','loan','tax','asset','capital','personal','partner','todo','check')
                    AND l.txn_date BETWEEN $1::date AND $2::date`, [from, end])),
   ]);
   const via = (src) => (src === "bank" ? "Bank statement" : src === "cledger" ? "C Ledger (cash)" : src === "petty" ? "Petty cash" : "Entered in the app");

@@ -10,7 +10,7 @@ const ASSET_TYPES = [
   ["car", "Car", "vehicle"], ["motor_bike", "Motor bike", "vehicle"], ["other", "Other", "equipment"],
 ];
 const VEHICLE_DOCS = [
-  ["insurance", "Insurance"], ["road_tax", "Road tax"], ["permit", "Permit"], ["puc", "PUC"],
+  ["insurance", "Insurance"], ["road_tax", "Road tax"], ["welfare_fund", "Motor workers welfare fund"], ["permit", "Permit"], ["puc", "PUC"],
   ["fitness_certificate", "Fitness certificate"], ["registration_certificate", "Registration certificate"],
 ];
 const EQUIPMENT_DOCS = [

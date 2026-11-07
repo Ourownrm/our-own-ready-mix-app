@@ -311,7 +311,7 @@ function PartnerDetail({ p, canEdit, onClose, onRecord, onEdit, onDelete }) {
                 <td style={TDR}>{x.book === "loan" ? rs(x.balance) : ""}</td><td style={TDR}>{x.book === "loan" ? rs(x.interest_due) : ""}</td>
                 <td style={TDR}>{x.book === "capital" ? rs(x.balance) : ""}</td>
                 <td style={{ ...TD, ...MUTED, maxWidth: 280 }}>{[x.narration, x.note].filter(Boolean).join(" · ")}</td>
-                <td style={{ ...TD, whiteSpace: "nowrap" }}>{canEdit && <>
+                <td style={{ ...TD, whiteSpace: "nowrap" }}>{x.source ? <span style={{ ...MUTED, fontSize: 11.5 }} title="Change or undo it in Cost › Bank statements">from bank statement</span> : canEdit && <>
                   <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => onEdit({ id: x.id, partner_id: p.id, kind: x.kind, txn_date: x.date, amount: x.amount, tds: x.tds || "", note: x.note || "", interest_from: x.interest_from || "" })}>Edit</button>{" "}
                   <button type="button" style={{ padding: "3px 8px", fontSize: 11.5 }} onClick={() => onDelete(x)}>Remove</button></>}</td>
               </tr>

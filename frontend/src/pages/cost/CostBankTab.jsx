@@ -27,6 +27,8 @@ const T = {
   // Round 235
   pay: { label: "To a ledger", bg: "#E2EAF6", fg: "#1F4A82" },
   cert: { label: "Vehicle certificate", bg: "#FCE9DC", fg: "#8A3E0B" },
+  // Round 272
+  partner: { label: "Partner", bg: "#EDE6F4", fg: "#55357A" },
 };
 const PAY_KINDS = [
   ["supplier", "Supplier payment", "Supplier ledger"], ["transporter", "Transporter payment", "Transporter ledger"],
@@ -40,7 +42,7 @@ const KIND = { current: "Current account", savings: "Savings account", cc: "Cash
 const FILTERS = [
   ["all", "All", () => true], ["open", "To categorise", (l) => l.treatment === "todo" || l.treatment === "check"],
   ["cost", "Costs", (l) => l.treatment === "cost"], ["loan", "Loan EMIs", (l) => l.treatment === "loan"],
-  ["posted", "To ledgers", (l) => l.treatment === "pay" || l.treatment === "cert"],
+  ["posted", "To ledgers", (l) => l.treatment === "pay" || l.treatment === "cert" || l.treatment === "partner"],
   ["omit", "Left out", (l) => l.treatment === "omit"], ["own", "Own transfers", (l) => l.treatment === "own"],
   ["other", "Tax, assets, other", (l) => ["tax", "asset", "capital", "personal"].includes(l.treatment)],
 ];
@@ -317,7 +319,7 @@ function Treat({ l, d, canEdit, onDone }) {
   const what = l.treatment === "cost" ? headLabel(d, l.head)
     : l.treatment === "loan" ? (l.loan_name || "Loan")
       : l.treatment === "omit" ? "Already in the app"
-        : l.treatment === "pay" || l.treatment === "cert" ? (l.party_label || "") : "";
+        : l.treatment === "pay" || l.treatment === "cert" || l.treatment === "partner" ? (l.party_label || "") : "";
   return (
     <div>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -384,6 +386,16 @@ function Editor({ l, d, onCancel, onDone }) {
     if (!v) { setErr("Choose what this line is."); return; }
     setBusy(true); setErr("");
     const [t, x] = v.split(":");
+    if (t === "partner") {
+      // Round 272 — into Cost › Partners.
+      if (!post.partner_id) { setErr("Choose the partner."); setBusy(false); return; }
+      try {
+        await apiRequest(`/cost/bank/lines/${l.id}`, { method: "PUT", body: { treatment: "partner", partner_kind: x, partner_id: Number(post.partner_id),
+          tds: x === "interest_paid" ? Number(post.tds || 0) : undefined, interest_from: x === "loan_in" ? post.interest_from || undefined : undefined } });
+        onDone("Saved — the entry is in Cost → Partners.");
+      } catch (e) { setErr(e.message); setBusy(false); }
+      return;
+    }
     if (t === "pay" || t === "cert") {
       const miss = t === "cert" ? (!post.asset_id ? "Choose the vehicle." : !post.cert_type ? "Choose the certificate." : !post.valid_to ? "Enter the valid-to date." : "")
         : x === "maintenance" ? (!post.bill_id ? "Choose the bill this pays." : "") : !post.party_id ? "Choose who was paid." : "";
@@ -423,6 +435,12 @@ function Editor({ l, d, onCancel, onDone }) {
             <option value="cert">Vehicle certificate — road tax, insurance, permit …</option>
           </optgroup>
         )}
+        {/* Round 272 — a partner's loan, capital or interest → Cost › Partners. */}
+        <optgroup label={credit ? "From a partner → Cost › Partners" : "To a partner → Cost › Partners"}>
+          {(credit ? [["loan_in", "Loan received from a partner"], ["capital_in", "Capital brought in by a partner"]]
+            : [["interest_paid", "Interest paid to a partner"], ["loan_out", "Loan repaid to a partner"], ["capital_out", "Capital returned / drawn by a partner"]])
+            .map(([k, label]) => <option key={k} value={`partner:${k}`}>{label}</option>)}
+        </optgroup>
         <optgroup label="Leave out">{LEAVE.map(([k, label]) => <option key={k} value={k}>{label}</option>)}</optgroup>
         <optgroup label="Balance Sheet">
           {!credit && <option value="asset">Fixed asset bought</option>}
@@ -434,12 +452,13 @@ function Editor({ l, d, onCancel, onDone }) {
       )}
       {v.startsWith("pay:") && <PayFields key={v} l={l} kind={v.slice(4)} post={post} setPost={setPost} />}
       {v === "cert" && <CertFields l={l} post={post} setPost={setPost} />}
+      {v.startsWith("partner:") && <PartnerFields key={v} l={l} kind={v.slice(8)} post={post} setPost={setPost} />}
       {v.startsWith("loan:") && !credit && (
         <label style={{ ...MUTED, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>Interest in this EMI (only if the bank told you)
           <input type="number" min="0" step="0.01" value={interest} onChange={(e) => setInterest(e.target.value)} placeholder="worked out" style={{ width: 120, minHeight: 32 }} />
         </label>
       )}
-      {v && v !== "omit" && !v.startsWith("pay:") && v !== "cert" && (
+      {v && v !== "omit" && !v.startsWith("pay:") && !v.startsWith("partner:") && v !== "cert" && (
         <label style={{ ...MUTED, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <input type="checkbox" checked={always} onChange={(e) => setAlways(e.target.checked)} /> always for narrations with
           <input value={kw} onChange={(e) => setKw(e.target.value.toUpperCase())} aria-label="Word to look for" style={{ width: 170, minHeight: 30, fontSize: 12 }} />
@@ -585,6 +604,8 @@ function TdsField({ post, setPost }) {
 }
 const CERT_WORDS = [[/INSURANCE|ASSURANCE|POLICY|GIC\b|ICICI LOMBARD|BAJAJ ALLIANZ|TATA AIG|HDFC ERGO/, "insurance"], [/ROAD TAX|MVD|VAHAN|PARIVAHAN|RTO|TAX/, "road_tax"],
   [/PERMIT/, "permit"], [/FITNESS/, "fitness_certificate"], [/PUC|POLLUTION/, "puc"]];
+// Round 272 — welfare fund words win over the generic "TAX".
+CERT_WORDS.unshift([/WELFARE/, "welfare_fund"]);
 const addDaysStr = (ymd, n) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };   // ist-ok: a calendar date shifted in UTC, no clock time
 const addMonthsStr = (ymd, n) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() + n); return addDaysStr(d.toISOString().slice(0, 10), -1); };   // ist-ok: a calendar date shifted in UTC, no clock time
 function CertFields({ l, post, setPost }) {
@@ -596,6 +617,7 @@ function CertFields({ l, post, setPost }) {
       const from = cur && cur.valid_to >= addDaysStr(l.txn_date, -60) ? addDaysStr(cur.valid_to, 1) : l.txn_date;
       n.valid_from = from;
       n.valid_to = addMonthsStr(from, n.cert_type === "road_tax" ? 3 : 12);
+      if (n.cert_type === "road_tax") { delete n.welfare_from; delete n.welfare_to; }
     }
     return n;
   });
@@ -640,11 +662,60 @@ function CertFields({ l, post, setPost }) {
             <input inputMode="decimal" value={post.welfare_fund || ""} onChange={(e) => set("welfare_fund", e.target.value)} style={{ minHeight: 32 }} placeholder="0 if none" />
           </label>
           <label style={{ ...FIELD, flex: "1 1 130px" }}>Welfare Fund receipt no.<input value={post.welfare_receipt || ""} onChange={(e) => set("welfare_receipt", e.target.value)} style={{ minHeight: 32 }} /></label>
-          {Number(post.welfare_fund) > 0 && <div style={{ ...MUTED, alignSelf: "end" }}>Road tax {rs(Math.max(0, Number(l.debit) - Number(post.welfare_fund)))} + welfare fund {rs(Number(post.welfare_fund))}</div>}
+          {/* Round 272 — the contribution becomes its own "Motor workers welfare fund" entry, with its own period. */}
+          {Number(post.welfare_fund) > 0 && <>
+            <label style={FIELD}>Welfare fund from<input type="date" value={post.welfare_from ?? post.valid_from ?? ""} onChange={(e) => set("welfare_from", e.target.value)} style={{ minHeight: 32 }} /></label>
+            <label style={FIELD}>Welfare fund to<input type="date" value={post.welfare_to ?? post.valid_to ?? ""} onChange={(e) => set("welfare_to", e.target.value)} style={{ minHeight: 32 }} /></label>
+            <div style={{ ...MUTED, alignSelf: "end", flexBasis: "100%" }}>Road tax {rs(Math.max(0, Number(l.debit) - Number(post.welfare_fund)))} + welfare fund {rs(Number(post.welfare_fund))} — the welfare fund goes in as its own entry and its own P&amp;L line, spread over its period.</div>
+          </>}
         </div>
       )}
       {cur && <div style={MUTED}>On file: valid to {fmtDay(cur.valid_to)}.{post.valid_to && post.valid_to <= cur.valid_to ? " This one ends earlier — it is kept as history, the current one stays." : ""}</div>}
-      {days > 0 && <div style={MUTED}>→ Compliance register renewed · fee {rs(l.debit)} paid {fmtDay(l.txn_date)} · P&amp;L about {rs(Math.round(l.debit / months))} a month for {months} month(s) (vehicle taxes &amp; insurance), the unused part on the Balance Sheet as prepaid.</div>}
+      {days > 0 && <div style={MUTED}>→ Compliance register renewed · fee {rs(l.debit)} paid {fmtDay(l.txn_date)} · P&amp;L about {rs(Math.round((l.debit - (post.cert_type === "road_tax" ? Number(post.welfare_fund) || 0 : 0)) / months))} a month for {months} month(s){post.cert_type === "road_tax" && Number(post.welfare_fund) > 0 ? " (road tax; the welfare fund over its own period)" : " (vehicle taxes & insurance)"}, the unused part on the Balance Sheet as prepaid.</div>}
+    </div>
+  );
+}
+// Round 272 — a bank line to or from a partner, into Cost › Partners.
+function PartnerFields({ l, kind, post, setPost }) {
+  const { p, err } = useParties();
+  const amount = Number(l.credit) > 0 ? Number(l.credit) : Number(l.debit);
+  useEffect(() => {
+    if (!p || post.partner_id) return;
+    const narr = squash(l.narration);
+    const hit = (p.partners || []).find((x) => x.is_active && [x.name, ...String(x.match_words || "").split(/[,;]/)].some((w) => squash(w).length >= 4 && narr.includes(squash(w))));
+    const tds = kind === "interest_paid" ? Math.round((amount * (p.partner_tds_rate || 0)) / (100 - (p.partner_tds_rate || 0)) * 100) / 100 : undefined;
+    setPost((x) => ({ ...x, partner_id: hit ? String(hit.id) : x.partner_id, tds: x.tds ?? (tds != null ? String(tds) : undefined), interest_from: x.interest_from ?? l.txn_date }));
+  }, [p]);   // eslint-disable-line react-hooks/exhaustive-deps
+  if (err) return <div role="alert" style={{ color: "var(--alert-red)", fontSize: 12 }}>{err}</div>;
+  if (!p) return <div style={MUTED}>Loading…</div>;
+  const set = (k, val) => setPost((x) => ({ ...x, [k]: val }));
+  const partners = p.partners || [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <label style={{ ...FIELD, flex: "1 1 180px" }}>Partner
+          <select value={post.partner_id || ""} onChange={(e) => set("partner_id", e.target.value)} style={{ fontSize: 12.5, minHeight: 34 }}>
+            <option value="">Choose…</option>
+            {partners.map((x) => <option key={x.id} value={x.id}>{x.name}{x.is_active ? "" : " (inactive)"}</option>)}
+          </select>
+        </label>
+        {kind === "interest_paid" && (
+          <label style={{ ...FIELD, flex: "1 1 120px" }}>TDS deducted ₹
+            <input inputMode="decimal" value={post.tds ?? ""} onChange={(e) => set("tds", e.target.value)} style={{ minHeight: 32 }} />
+          </label>
+        )}
+        {kind === "loan_in" && (
+          <label style={FIELD}>Interest from<input type="date" value={post.interest_from || ""} onChange={(e) => set("interest_from", e.target.value)} style={{ minHeight: 32 }} /></label>
+        )}
+      </div>
+      {!partners.length && <div style={MUTED}>No partners yet — add them in Cost → Partners first.</div>}
+      <div style={MUTED}>
+        {kind === "interest_paid" ? <>→ Cost → Partners: interest paid {rs(amount)}{Number(post.tds) > 0 ? <> + TDS {rs(Number(post.tds))} = {rs(amount + Number(post.tds))} settled</> : null}. Not a cost here — partners’ interest reaches the P&amp;L as it accrues.</>
+          : kind === "loan_in" ? <>→ Cost → Partners: unsecured loan {rs(amount)}, interest at the partners’ rate from the date above.</>
+            : kind === "loan_out" ? <>→ Cost → Partners: loan repaid {rs(amount)}.</>
+              : kind === "capital_in" ? <>→ Cost → Partners: capital brought in {rs(amount)}.</> : <>→ Cost → Partners: capital returned {rs(amount)}.</>}
+        {" "}If the same entry is already in Partners (typed or from the sheet), it is linked, not added twice.
+      </div>
     </div>
   );
 }

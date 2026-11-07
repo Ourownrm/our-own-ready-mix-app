@@ -3,6 +3,7 @@
 // because the app has it, own transfer, loan EMI …). The rules live in
 // lib/bankBook.js. Administrator only by default (cost.bank).
 import { ensureRound270 } from "../lib/round270Schema.js";
+import { ensureRound272 } from "../lib/round272Schema.js";
 import { Router } from "express";
 import { LEGEND_CUT } from "../lib/round252Schema.js";
 import { irr, flatRate, balanceOn, rateOn, amountOn, schedule as loanSchedule } from "../lib/loanMath.js";
@@ -17,7 +18,7 @@ import {
 } from "../lib/bankBook.js";
 import {
   ensureRound235, ledgerSettings, partyOptions, partyBills, postPayment, unpostPayment, postCertificate,
-  POST_KINDS, postWhere, bankMode, bankRef,
+  POST_KINDS, postWhere, bankMode, bankRef, postPartner,
 } from "../lib/ledgerPost.js";
 
 const router = Router();
@@ -283,17 +284,19 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
   }
   // Round 235 — a payment to a party, or a vehicle certificate: posted into
   // the ledger / compliance register when the line is saved.
-  const posting = t === "pay" || t === "cert";
+  const posting = t === "pay" || t === "cert" || t === "partner";
+  // Round 272 — a partner's loan / capital / interest: either side.
+  const isPartner = t === "partner";
   // Round 252 — money IN from a customer posts to the customer ledger; money
   // OUT to a supplier / transporter / contractor / maintenance bill as before.
   const isCustomer = t === "pay" && req.body.party_kind === "customer";
   if (isCustomer && !(n0(l.credit) > 0)) return bad(res, "Only money received (a credit) posts to a customer's ledger.");
-  if (posting && !isCustomer && !(n0(l.debit) > 0)) return bad(res, "Only a payment out (a debit) posts into a supplier, transporter, contractor or maintenance ledger.");
+  if (posting && !isCustomer && !isPartner && !(n0(l.debit) > 0)) return bad(res, "Only a payment out (a debit) posts into a supplier, transporter, contractor or maintenance ledger.");
   if (t === "pay" && !POST_KINDS.includes(req.body.party_kind)) return bad(res, "Choose who this payment is to.");
   if (posting && req.body.always) return bad(res, "A payment to a party is saved line by line — untick “always”.");
   const acc = `${l.bank} ••${String(l.number).slice(-4)}`;
   const common = {
-    amount: isCustomer ? n0(l.credit) : n0(l.debit), paid_on: l.txn_date, narration: l.narration, mode: bankMode(l.narration), reference: bankRef(`${l.reference || ""} ${l.narration || ""}`, `BANK-${l.id}`),
+    amount: isCustomer || (isPartner && n0(l.credit) > 0) ? n0(l.credit) : n0(l.debit), paid_on: l.txn_date, narration: l.narration, mode: bankMode(l.narration), reference: bankRef(`${l.reference || ""} ${l.narration || ""}`, `BANK-${l.id}`),
     bank_account: acc, notes: `From the ${acc} statement, ${l.txn_date}${req.body.note ? ` — ${String(req.body.note).slice(0, 120)}` : ""}`,
     user_id: req.user.id, source: "bank", source_id: l.id,
   };
@@ -301,6 +304,7 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
   const keepMatch = t === "omit" && l.match_kind;
   let applied = 0;
   await ensureRound270(); // Round 270 — welfare fund columns, before the transaction
+  await ensureRound272(); // Round 272 — welfare fund certificates, partner entries from bank lines
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -334,13 +338,16 @@ router.put("/lines/:id(\\d+)", EDIT, async (req, res) => {
       const out = t === "cert"
         ? await postCertificate(client, { ...common, fee: n0(l.debit), asset_id: b.asset_id, cert_type: b.cert_type, valid_from: b.valid_from || null,
             valid_to: b.valid_to, number: String(b.number || "").trim().slice(0, 60) || null, authority: String(b.authority || "").trim().slice(0, 100) || null,
-            welfare_fund: b.welfare_fund, welfare_receipt: b.welfare_receipt })
+            welfare_fund: b.welfare_fund, welfare_receipt: b.welfare_receipt, welfare_from: b.welfare_from || null, welfare_to: b.welfare_to || null })
+        : isPartner
+          ? await postPartner(client, { ...common, side: n0(l.credit) > 0 ? "credit" : "debit", partner_id: b.partner_id, partner_kind: b.partner_kind,
+              tds: n0(b.tds), interest_from: b.interest_from || null })
         : await postPayment(client, { ...common, kind: b.party_kind, party_id: b.party_id, bill_id: b.bill_id, allocations: b.allocations,
             tds: n0(b.tds), replacing: l.post_kind === b.party_kind ? l.post_id : null });
       // The line claims what it posted, so no other line is matched to it.
       // (a customer receipt is matched as "receipt", the kind the sorter knows)
-      const claimKind = out.kind === "certificate" ? "maintenance" : out.kind === "customer" ? "receipt" : out.kind;
-      const claimId = out.kind === "certificate" ? out.payment_id : out.id;
+      const claimKind = out.kind === "certificate" ? "maintenance" : out.kind === "customer" ? "receipt" : out.kind === "partner" ? null : out.kind;
+      const claimId = out.kind === "certificate" ? out.payment_id : out.kind === "partner" ? null : out.id;
       await client.query(
         `UPDATE cost_bank_lines SET post_kind = $2, post_id = $3, party_label = $4, match_kind = $5, match_id = $6, why = $7 WHERE id = $1`,
         [l.id, out.kind, out.id, String(out.label).slice(0, 200), claimKind, claimId, `Posted → ${postWhere(out.kind)}`]);
@@ -407,7 +414,7 @@ router.post("/rules", EDIT, async (req, res) => {
   if (keyword.length < 3) return bad(res, "The word to look for: 3 letters or more.");
   const side = ["debit", "credit", "any"].includes(req.body.side) ? req.body.side : "debit";
   const t = req.body.treatment;
-  if (!TREATMENTS.includes(t) || ["omit", "check", "todo", "pay", "cert"].includes(t)) return bad(res, "Choose what such lines are.");
+  if (!TREATMENTS.includes(t) || ["omit", "check", "todo", "pay", "cert", "partner"].includes(t)) return bad(res, "Choose what such lines are.");
   const head = t === "cost" ? req.body.head : null;
   if (t === "cost" && !HEAD_KEYS.has(head)) return bad(res, "Choose the cost head.");
   const loanId = t === "loan" ? Number(req.body.loan_id) || null : null;

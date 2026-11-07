@@ -545,7 +545,9 @@ router.post("/certificates", requirePermission("mnt.certificates", "create"), ha
   if (Number.isNaN(fee) || (fee != null && fee < 0)) return bad(res, "Fee must be a number.");
   // Round 270 — the Motor Transport Workers Welfare Fund contribution, paid
   // together with road tax: one bill for both.
-  const welfare = b.cert_type === "road_tax" ? num(b.welfare_fund) : null;
+  // Round 272 — the welfare fund is its own certificate type now (owner); a
+  // road tax entry no longer carries it.
+  const welfare = null;
   if (Number.isNaN(welfare) || (welfare != null && welfare < 0)) return bad(res, "The welfare fund contribution must be a number.");
   const total = (fee || 0) + (welfare || 0);
   const payment = ["to_pay", "paid"].includes(b.payment) && total ? b.payment : "none";

@@ -27,6 +27,8 @@ export const CERT_TYPES = {
   pressure_vessel: "Pressure vessel test",
   electrical_inspector: "Electrical inspector approval",
   fire_extinguisher: "Fire extinguisher refill",
+  // Round 272 — its own entry and period, apart from road tax (owner).
+  welfare_fund: "Motor workers welfare fund",
   other: "Other",
 };
 

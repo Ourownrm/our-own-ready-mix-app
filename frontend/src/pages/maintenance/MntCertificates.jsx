@@ -169,26 +169,17 @@ function CertForm({ form, setForm, act, types, assets }) {
         <Field label="Valid from"><input type="date" value={form.valid_from} onChange={(e) => set({ valid_from: e.target.value })} /></Field>
         <Field label="Valid to"><input type="date" value={form.valid_to} onChange={(e) => set({ valid_to: e.target.value })} /></Field>
         <Field label="Insurer / agent / authority"><input value={form.authority} onChange={(e) => set({ authority: e.target.value })} /></Field>
-        <Field label={form.cert_type === "road_tax" ? "Road tax ₹" : "Premium / fee ₹"}><input inputMode="decimal" value={form.fee} onChange={(e) => set({ fee: e.target.value })} /></Field>
-        {form.cert_type === "road_tax" && (
-          <>
-            <Field label="Welfare Fund contribution ₹">
-              <input inputMode="decimal" value={form.welfare_fund} onChange={(e) => set({ welfare_fund: e.target.value })} placeholder="Paid with the road tax" title="Kerala Motor Transport Workers Welfare Fund Board" />
-            </Field>
-            <Field label="Welfare Fund receipt no."><input value={form.welfare_receipt} onChange={(e) => set({ welfare_receipt: e.target.value })} /></Field>
-          </>
-        )}
-        {form.cert_type === "road_tax" && Number(form.welfare_fund) > 0 && (
-          <div style={{ ...MUTED, alignSelf: "end", paddingBottom: 6 }}>Total to pay {fmtRs((Number(form.fee) || 0) + Number(form.welfare_fund))} (one bill in Payments)</div>
-        )}
-        {(Number(form.fee) > 0 || (form.cert_type === "road_tax" && Number(form.welfare_fund) > 0)) && (
+        <Field label={form.cert_type === "road_tax" ? "Road tax ₹" : form.cert_type === "welfare_fund" ? "Contribution ₹" : "Premium / fee ₹"}><input inputMode="decimal" value={form.fee} onChange={(e) => set({ fee: e.target.value })} /></Field>
+        {/* Round 272 — the welfare fund is its own certificate type ("Motor workers welfare fund"), with its own period. */}
+        {form.cert_type === "road_tax" && <div style={{ ...MUTED, alignSelf: "end", paddingBottom: 6 }}>Welfare fund paid with it? Add it as its own entry — “Motor workers welfare fund”.</div>}
+        {Number(form.fee) > 0 && (
           <Field label="Payment">
             <select value={form.payment} onChange={(e) => set({ payment: e.target.value })}>
               <option value="to_pay">To be paid (goes to Payments)</option><option value="paid">Paid now</option><option value="none">Not tracked here</option>
             </select>
           </Field>
         )}
-        {(Number(form.fee) > 0 || (form.cert_type === "road_tax" && Number(form.welfare_fund) > 0)) && form.payment === "paid" && (
+        {Number(form.fee) > 0 && form.payment === "paid" && (
           <>
             <Field label="Mode"><select value={form.payment_mode} onChange={(e) => set({ payment_mode: e.target.value })}>{MODES.map((m) => <option key={m}>{m}</option>)}</select></Field>
             <Field label="Reference"><input value={form.payment_ref} onChange={(e) => set({ payment_ref: e.target.value })} /></Field>

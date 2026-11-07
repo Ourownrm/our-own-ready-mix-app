@@ -126,7 +126,7 @@ export default function Accountant() {
   const needs = n ? [
     caDue && !caDue.sent && { key: "ca", tone: caDue.overdue ? "var(--alert-red)" : "var(--rebar)", title: `Send ${caDue.label}'s data to the CA`,
       sub: caDue.overdue ? `Overdue — it was due by ${fmtDate(caDue.due_on)}` : `Due by ${fmtDate(caDue.due_on)} · Accounts → Send to CA`, to: "/accounts?tab=send-to-ca" },
-    n.bank_lines > 0 && { key: "bank", tone: "var(--rebar)", title: `${n.bank_lines} bank credit${n.bank_lines > 1 ? "s" : ""} to post`, sub: `${money(n.bank_amount)} · ${n.bank_matched} with a suggested customer`, to: "/accounts?tab=receipts" },
+    // Round 272 — Accounts › Bank receipts is hidden; bank credits are posted in Cost › Bank statements.
     n.held_loads > 0 && { key: "held", tone: "var(--alert-red)", title: `${n.held_loads} load${n.held_loads > 1 ? "s" : ""} held — no price`, sub: `${Number(n.held_m3).toLocaleString("en-IN")} m³ delivered, not invoiced until the site has an accepted price`, to: "/accounts?tab=invoices&view=held" },
     // Round 252 — returns to credit and notes waiting for the Administrator.
     (n.cn_to_raise > 0 || n.cn_pending > 0) && { key: "cn2", tone: "var(--amber)",
@@ -147,7 +147,6 @@ export default function Accountant() {
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
           {canReceipt && <button type="button" className="btn-primary" onClick={() => setReceiptFor({})}>+ Record a receipt</button>}
-          <IfCan perm="accounts.bank-receipts"><Link to="/accounts?tab=receipts" className="btn-link">Bank receipts</Link></IfCan>
           <IfCan perm="accounts.customer-ledger"><Link to="/accounts?tab=ledger" className="btn-link">Customer ledger</Link></IfCan>
           <IfCan perm="accounts.outstanding"><Link to="/outstanding-collection-report" className="btn-link">Outstanding Collection</Link></IfCan>
           <button type="button" className="btn-link" onClick={() => setShowOpeningBalances(true)}>Opening balances</button>

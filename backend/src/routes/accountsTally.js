@@ -69,29 +69,27 @@ router.post("/invoices/:id(\\d+)/tally", requirePermission("accounts.invoice-pri
     const b = req.body || {};
     const no = txt(b.invoice_no, 40);
     if (!no) return res.status(400).json({ error: "Type the Tally invoice number." });
-    // Round 271 — once B2C → Tally has approved the invoice, its number is the
-    // Tally voucher's: the print can't change it (reopen it there first).
+    // Round 272 (owner, 7 Nov 2026): a Tally-format print may repeat a number
+    // freely. Only a number already in Tally (posted, entered by hand, or on
+    // its way) is blocked — on another invoice, or changed on this one.
     await ensureRound271();
+    const IN_TALLY = ["queued", "posting", "posted", "manual"];
     const { rows: tp } = await query(`SELECT tp_state FROM invoices WHERE id = $1`, [id]);
-    const fixed = tp[0] && ["approved", "queued", "posting", "posted", "manual", "failed"].includes(tp[0].tp_state);
-    if (fixed && inv.tally_invoice_no && no.toLowerCase() !== String(inv.tally_invoice_no).toLowerCase()) {
+    if (tp[0] && IN_TALLY.includes(tp[0].tp_state) && inv.tally_invoice_no && no.toLowerCase() !== String(inv.tally_invoice_no).toLowerCase()) {
       return res.status(409).json({
-        error: `This invoice is approved for Tally as voucher ${inv.tally_invoice_no}${["posted", "manual"].includes(tp[0].tp_state) ? " and is in Tally" : ""} — print it with that number.`,
-        fixed_no: inv.tally_invoice_no,
+        error: `This invoice is in Tally as voucher ${inv.tally_invoice_no} — print it with that number.`,
+        fixed_no: inv.tally_invoice_no, in_tally: true,
       });
     }
-    // The owner: a number already used on another invoice is flagged.
-    if (!b.force) {
-      const { rows: dup } = await query(
-        `SELECT i.id, dt.ticket_number, dt.ticket_date::text AS ticket_date, COALESCE(i.billing_name, c.name) AS customer
-           FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id JOIN customers c ON c.id = i.customer_id
-          WHERE lower(i.tally_invoice_no) = lower($1) AND i.id <> $2 LIMIT 1`, [no, id]);
-      if (dup[0]) {
-        return res.status(409).json({
-          error: `${no} is already printed on ${dup[0].ticket_number} (${dup[0].customer}, ${dup[0].ticket_date}).`,
-          duplicate: dup[0],
-        });
-      }
+    const { rows: used } = await query(
+      `SELECT i.id, dt.ticket_number, dt.ticket_date::text AS ticket_date, COALESCE(i.billing_name, c.name) AS customer
+         FROM invoices i JOIN delivery_tickets dt ON dt.id = i.ticket_id JOIN customers c ON c.id = i.customer_id
+        WHERE lower(i.tally_invoice_no) = lower($1) AND i.id <> $2 AND i.tp_state IN ('queued','posting','posted','manual') LIMIT 1`, [no, id]);
+    if (used[0]) {
+      return res.status(409).json({
+        error: `${no} is already in Tally for delivery note ${used[0].ticket_number} (${used[0].customer}, ${used[0].ticket_date}) — use another number.`,
+        in_tally: true,
+      });
     }
     const d = b.details || {};
     const details = {

@@ -62,6 +62,7 @@ import marketingRoutes from "./routes/marketing.js";
 import marketingPublicRoutes from "./routes/marketingPublic.js";
 import { ensureRound270 } from "./lib/round270Schema.js";
 import { ensureRound271 } from "./lib/round271Schema.js";
+import { ensureRound272 } from "./lib/round272Schema.js";
 // Round 195 — attendance machine (eSSL) punches; /sync is API-key, the rest is session.
 import attendanceRoutes from "./routes/attendance.js";
 // Round 197 — HR module stage 1.
@@ -374,6 +375,7 @@ ensureRound265().catch((e) => console.error("round 265 schema:", e.message));
 ensureRound267().catch((e) => console.error("round 267 schema:", e.message));
 ensureRound270().catch((e) => console.error("round 270 schema:", e.message));
 ensureRound271().catch((e) => console.error("round 271 schema:", e.message));
+ensureRound272().catch((e) => console.error("round 272 schema:", e.message));
 
 // The "truck over 2 hours at site" push is the one notification not tied to
 // a specific user action, so it runs on a timer instead — checked every 5

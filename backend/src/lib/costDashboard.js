@@ -157,8 +157,8 @@ export async function newContext() {
              FROM rm_receipts_effective r JOIN rm_orders o ON o.id = r.order_id
             WHERE r.landed_rate_per_kg IS NOT NULL AND r.accepted_qty_kg > 0 GROUP BY 1, 2`),
     query(`SELECT id, name, category, mix_component, opening_stock_rate_per_kg, is_active FROM rm_materials`),
-    // Round 270 — road tax counts with the Motor Transport Workers Welfare
-    // Fund contribution paid with it (both spread over the quarter).
+    // Round 270 — a welfare fund contribution still on a road tax entry counts
+    // with it; Round 272 moves them to their own welfare_fund entries.
     ensureRound270().then(() => query(`SELECT c.id, c.cert_type, c.label, COALESCE(c.fee, 0) + COALESCE(c.welfare_fund, 0) AS fee, c.welfare_fund,
                   c.valid_from::text AS valid_from, c.valid_to::text AS valid_to,
                   (c.created_at AT TIME ZONE 'Asia/Kolkata')::date::text AS made_on, c.status, a.name AS asset_name
@@ -438,9 +438,10 @@ async function manpower(ym) {
 
 // --------------------------------------------- road tax and insurance ---
 // A fee is spread evenly over the days its certificate covers.
-function certBucket(c) { return c.cert_type === "road_tax" ? "road_tax" : c.cert_type === "insurance" ? "insurance" : "other_certs"; }
+// Round 272 — the Motor workers welfare fund is its own line.
+function certBucket(c) { return c.cert_type === "road_tax" ? "road_tax" : c.cert_type === "welfare_fund" ? "welfare" : c.cert_type === "insurance" ? "insurance" : "other_certs"; }
 function certExpense(ctx, from, end) {
-  const out = { road_tax: 0, insurance: 0, other_certs: 0 };
+  const out = { road_tax: 0, welfare: 0, insurance: 0, other_certs: 0 };
   for (const c of ctx.certs) {
     const a = maxDay(c.start, from), b = minDay(c.valid_to, end);
     if (a > b) continue;
@@ -512,7 +513,7 @@ async function computeMonth(ym, ctx) {
     concrete: sales.concrete, pumping: sales.pumping, part_load: sales.part_load, other_income: e("other_income"),
     rm: rm.consumed, fuel: fuel.issued_value, water: water.value || 0, power: e("power"), repairs: mnt.total, hired_vehicles: e("hired_vehicles"),
     salaries: man.staff, contract_labour: r2(man.gangs + man.contract), admin_office: e("admin_office"), selling: e("selling"),
-    road_tax: certs.road_tax, insurance: certs.insurance, other_certs: certs.other_certs, rent_rates: e("rent_rates"),
+    road_tax: certs.road_tax, welfare: certs.welfare, insurance: certs.insurance, other_certs: certs.other_certs, rent_rates: e("rent_rates"),
     depreciation: e("depreciation"), interest: e("interest"), tax: e("tax"),
   };
   // Round 223 — bank statement lines given a cost head are ADDED to that head
@@ -535,7 +536,7 @@ export function withTotals(a) {
   t.revenue = r2(a.concrete + a.pumping + a.part_load + a.other_income);
   t.direct = r2(a.rm + a.fuel + (a.water || 0) + a.power + a.repairs + a.hired_vehicles);
   t.gross = r2(t.revenue - t.direct);
-  t.overheads = r2(a.salaries + a.contract_labour + a.admin_office + a.selling + a.road_tax + a.insurance + a.other_certs + a.rent_rates);
+  t.overheads = r2(a.salaries + a.contract_labour + a.admin_office + a.selling + a.road_tax + (a.welfare || 0) + a.insurance + a.other_certs + a.rent_rates);
   t.ebitda = r2(t.gross - t.overheads);
   t.pbt = r2(t.ebitda - a.depreciation - a.interest);
   t.pat = r2(t.pbt - a.tax);
@@ -766,6 +767,7 @@ export const PL_LINES = [
   { key: "admin_office", label: "Admin & office", src: "entered", cost: true },
   { key: "selling", label: "Selling & marketing", src: "entered", cost: true, hint: "sales incentive is in salaries" },
   { key: "road_tax", label: "Road tax", src: "app", hint: "spread over the quarter it covers", cost: true },
+  { key: "welfare", label: "Motor workers welfare fund", src: "app", hint: "spread over the period it covers", cost: true, hideZero: true },
   { key: "insurance", label: "Vehicle insurance", src: "app", hint: "spread over the policy year", cost: true },
   { key: "other_certs", label: "Other certificates & permits", src: "app", hint: "spread over their validity", cost: true, hideZero: true },
   { key: "rent_rates", label: "Rent & rates", src: "entered", cost: true },
@@ -861,7 +863,7 @@ export async function profitLoss(ym, { period = "month", compare = "prev" } = {}
   const water = qty > 0 && cur.revenue > 0 ? [
     ["Raw material", cur.rm], ["Fuel", cur.fuel], ["Water, power, repairs, hire", (cur.water || 0) + cur.power + cur.repairs + cur.hired_vehicles],
     ["Salaries & contract labour", cur.salaries + cur.contract_labour],
-    ["Other overheads", cur.admin_office + cur.selling + cur.road_tax + cur.insurance + cur.other_certs + cur.rent_rates],
+    ["Other overheads", cur.admin_office + cur.selling + cur.road_tax + (cur.welfare || 0) + cur.insurance + cur.other_certs + cur.rent_rates],
     ["Depreciation & interest", cur.depreciation + cur.interest], ["Tax", cur.tax], ["Profit after tax", cur.pat],
   ].map(([label, v]) => ({ label, per_m3: Math.round(v / qty), pct: r2((v / cur.revenue) * 100) })) : [];
 

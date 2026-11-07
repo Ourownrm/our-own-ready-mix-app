@@ -64,8 +64,8 @@ export default function TallyPrintModal({ invoiceId, onClose, onPrinted }) {
       onPrinted?.(r.invoice);
       onClose();
     } catch (e) {
-      if (e.status === 409 || /already printed/i.test(e.message)) setDup(e.message);
-      else setError(e.message);
+      // Round 272 — only a number already in Tally is refused; nothing to override.
+      setError(e.message);
     } finally { setBusy(false); }
   }
 

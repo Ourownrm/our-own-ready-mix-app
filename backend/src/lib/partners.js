@@ -137,7 +137,7 @@ export function loanPosition(txns, settings, until, { through = false } = {}) {
     else if (t.kind === "loan_out") { bal -= amt; repaid += amt; }
     else if (t.kind === "interest_paid") { paidGross += amt + td; paidNet += amt; tds += td; }
     else if (t.kind === "interest_due") { openingDue += amt; }
-    ledger.push({ id: t.id, date: t.txn_date, kind: t.kind, amount: r2(amt), tds: r2(td), interest_from: t.interest_from || null, narration: t.narration, note: t.note,
+    ledger.push({ id: t.id, date: t.txn_date, kind: t.kind, amount: r2(amt), tds: r2(td), interest_from: t.interest_from || null, narration: t.narration, note: t.note, source: t.source || null,
       balance: r2(bal), interest_to_date: r2(accrued + openingDue), interest_due: r2(accrued + openingDue - paidGross), upload_id: t.upload_id });
   }
   if (rows.length) runTo(asOf);
@@ -160,7 +160,7 @@ export function capitalPosition(txns, asOf) {
   const ledger = rows.map((t) => {
     const a = Number(t.amount) || 0;
     if (t.kind === "capital_in") { bal += a; inn += a; } else { bal -= a; out += a; }
-    return { id: t.id, date: t.txn_date, kind: t.kind, amount: r2(a), narration: t.narration, note: t.note, balance: r2(bal), upload_id: t.upload_id };
+    return { id: t.id, date: t.txn_date, kind: t.kind, amount: r2(a), narration: t.narration, note: t.note, balance: r2(bal), upload_id: t.upload_id, source: t.source || null };
   });
   return { brought_in: r2(inn), returned: r2(out), balance: r2(bal), ledger };
 }
@@ -170,7 +170,8 @@ async function loadAll() {
   const [{ rows: partners }, { rows: txns }] = await Promise.all([
     query(`SELECT id, name, match_words, pan, is_active FROM cost_partners ORDER BY is_active DESC, name`),
     query(`SELECT id, partner_id, kind, to_char(txn_date, 'YYYY-MM-DD') AS txn_date, amount::float AS amount, tds::float AS tds,
-                  to_char(interest_from, 'YYYY-MM-DD') AS interest_from, narration, note, upload_id FROM cost_partner_txns ORDER BY txn_date, id`),
+                  to_char(interest_from, 'YYYY-MM-DD') AS interest_from, narration, note, upload_id,
+                  to_jsonb(cost_partner_txns.*) ->> 'source' AS source FROM cost_partner_txns ORDER BY txn_date, id`), // Round 272 — source: from a bank line
   ]);
   return { partners, txns };
 }

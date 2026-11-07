@@ -59,6 +59,7 @@ export const BE_LINES = [
   { key: "selling", label: "Selling & marketing", hint: "", kind: "fixed", src: "entered" },
   { key: "rent_rates", label: "Rent & rates", hint: "", kind: "fixed", src: "entered" },
   { key: "road_tax", label: "Road tax", hint: "quarterly payments ÷ 3", kind: "fixed", src: "app" },
+  { key: "welfare", label: "Motor workers welfare fund", hint: "spread over the period it covers", kind: "fixed", src: "app" },
   { key: "insurance", label: "Vehicle insurance", hint: "yearly premiums ÷ 12", kind: "fixed", src: "app" },
   { key: "other_certs", label: "Other certificates & permits", hint: "spread over their validity", kind: "fixed", src: "app" },
   { key: "depreciation", label: "Depreciation", hint: "from the fixed-asset register", kind: "fixed", src: "entered" },
@@ -119,7 +120,7 @@ function rawLines(core) {
     incentive: inc, trip, overtime: ot, salaries_base: r2(n0(m.staff) - inc - trip - ot + n0(core.bank?.salaries)),
     pump_gangs: n0(m.gangs), contract: r2(n0(m.contract) + n0(core.bank?.contract_labour)),
     admin_office: a.admin_office, selling: a.selling, rent_rates: a.rent_rates,
-    road_tax: a.road_tax, insurance: a.insurance, other_certs: a.other_certs,
+    road_tax: a.road_tax, welfare: a.welfare || 0, insurance: a.insurance, other_certs: a.other_certs,
     depreciation: a.depreciation, interest: a.interest,
   };
 }

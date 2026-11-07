@@ -111,7 +111,8 @@ export const MODULE_TABS = {
       { key: "invoices", label: "Invoices", perm: "accounts.invoice-list" },
       { key: "credit-notes", label: "Credit notes", perm: "accounts.credit-notes" },
       { key: "ledger", label: "Customer ledger", perm: "accounts.customer-ledger" },
-      { key: "receipts", label: "Bank receipts", perm: "accounts.bank-receipts" },
+      // Round 272 — Bank receipts hidden (owner: bank statements are worked in
+      // Cost › Bank statements only; customer receipts post from there).
       { key: "cheques", label: "Cheques", perm: "accounts.cheques" },
       { key: "petty-cash", label: "Petty cash", perm: "accounts.petty-cash" },
       { key: "send-to-ca", label: "Send to CA", perm: "accounts.send-to-ca" },

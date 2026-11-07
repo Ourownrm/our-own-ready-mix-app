@@ -84,7 +84,8 @@ export function headGstCaseSql(col = "head") {
 export const HEAD_KEYS = new Set(BANK_HEADS.map((h) => h.key));
 // Round 235 — pay: a payment to a party, posted into its ledger; cert: a
 // vehicle certificate (road tax, insurance …) renewed in the compliance register.
-export const TREATMENTS = ["todo", "check", "cost", "omit", "own", "loan", "tax", "asset", "capital", "personal", "pay", "cert"];
+// Round 272 — partner: a loan / capital / interest line into Cost › Partners.
+export const TREATMENTS = ["todo", "check", "cost", "omit", "own", "loan", "tax", "asset", "capital", "personal", "pay", "cert", "partner"];
 
 export const ROUND223_SQL = `
 CREATE TABLE IF NOT EXISTS cost_bank_accounts (
