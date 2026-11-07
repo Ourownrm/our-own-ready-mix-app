@@ -16,5 +16,18 @@
   "pollSeconds": 60,
   "trailingDays": 30,
   "batchSize": 500,
-  "table": "transaction"
+  "table": "transaction",
+
+  "_indicator_comment": "Round 269 — live weight for weighing from the app (indicator.js). Run  node indicator.js --listen  first to see the frames.",
+  "indicator": {
+    "port": "COM1",
+    "baudRate": 9600,
+    "frameStart": ":",
+    "frameEnd": "\r",
+    "pattern": "(-?\\d+(?:\\.\\d+)?)",
+    "multiplier": 1,
+    "stableMs": 2000,
+    "stableBandKg": 20,
+    "postEveryMs": 1000
+  }
 }

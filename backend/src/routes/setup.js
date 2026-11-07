@@ -60,6 +60,7 @@ import { migrateRound262 } from "../lib/round262Schema.js";
 import { migrateRound264 } from "../lib/round264Schema.js";
 import { migrateRound265 } from "../lib/round265Schema.js";
 import { migrateRound267 } from "../lib/round267Schema.js";
+import { migrateRound269 } from "../lib/round269Schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -4232,6 +4233,7 @@ CREATE OR REPLACE VIEW rm_receipts_effective AS
     // ROUND 265 — transit-mixer mileage setting (Fuel → Settings).
     await migrateRound265(pool, log);
     await migrateRound267(pool, log);
+    await migrateRound269(pool, log);
 
     // Round 204 — Receipt Variances moved from the Weighbridge module to the
     // Raw Material module. The module switch now gates it, so a role (or a

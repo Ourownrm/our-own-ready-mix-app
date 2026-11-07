@@ -33,7 +33,7 @@ const MIN_WIDTH = 1100;
 const HIDE_KEY = "oorm_side_menu_hidden";
 
 // Public pages and the Delivery Challan module (its own login) never get it.
-const HIDDEN_ON = [/^\/login/, /^\/track\//, /^\/solitaire\//, /^\/book\//, /^\/inquiry/, /^\/portal/, /^\/services/, /^\/rmc-vs-sitemix/, /^\/technical-assistance/];
+const HIDDEN_ON = [/^\/login/, /^\/track\//, /^\/solitaire\//, /^\/book\//, /^\/inquiry/, /^\/portal/, /^\/services/, /^\/rmc-vs-sitemix/, /^\/technical-assistance/, /^\/m\//];
 
 // `ink` is the icon colour on the group colour; `text` the group name's colour
 // on white (each ≥ 4.5:1); `soft` the open module's background; `line` the rule
@@ -46,7 +46,7 @@ export const NAV_GROUPS = [
   { key: "quality", label: "Quality", colour: "#7C3AED", ink: "#FFFFFF", text: "#6D28D9", soft: "#F1ECFE", line: "#C4B5FD",
     modules: ["quality-control"] },
   { key: "sales", label: "Sales", colour: "#1D4ED8", ink: "#FFFFFF", text: "#1D4ED8", soft: "#E8F0FE", line: "#93C5FD",
-    modules: ["sales-collection"] },
+    modules: ["sales-collection", "marketing-module"] },
   { key: "money", label: "Money", colour: "#15803D", ink: "#FFFFFF", text: "#166534", soft: "#E6F6EC", line: "#86EFAC",
     modules: ["accounts-module", "cost-module", "directors-dashboard"] },
   { key: "people", label: "People & Admin", colour: "#334155", ink: "#FFFFFF", text: "#334155", soft: "#EEF1F5", line: "#94A3B8",
@@ -71,6 +71,7 @@ const NAV_LOOK = {
   "quality-control": { icon: "flask" },
   "sales-collection": { icon: "trend" },
   "accounts-module": { icon: "receipt" },
+  "marketing-module": { icon: "megaphone" },
   "cost-module": { icon: "pie" },
   "directors-dashboard": { icon: "chart" },
   hr: { icon: "people" },

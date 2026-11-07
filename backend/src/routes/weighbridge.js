@@ -40,6 +40,10 @@ import { pool, query } from "../db.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requirePermission, requireAnyPermission } from "../lib/permissions.js";
 import { loadResolver, resolveTicket, resolveVehicle, normalise } from "../lib/weighbridgeNames.js";
+// Round 269 — tickets weighed from the app live in the same table from
+// 1,000,000 up (source 'app'); the agent's resume point must ignore them.
+import { ensureRound269 } from "../lib/round269Schema.js";
+const APP_TICKET_BASE = 1000000;
 
 const router = Router();
 
@@ -322,7 +326,7 @@ router.post("/sync", async (req, res) => {
     // No rows is a perfectly normal poll — the agent still says hello so the
     // app can tell "nothing new" apart from "the agent has stopped".
     if (!incoming.length) {
-      const { rows: hw } = await query(`SELECT max(ticket_number) AS highest FROM weighbridge_tickets`);
+      const { rows: hw } = await query(`SELECT max(ticket_number) AS highest FROM weighbridge_tickets WHERE ticket_number < ${APP_TICKET_BASE}`);
       await query(
         `INSERT INTO weighbridge_sync_log (agent_version, rows_sent, highest_ticket) VALUES ($1, 0, $2)`,
         [agentVersion, hw[0].highest]
@@ -439,7 +443,7 @@ router.post("/sync", async (req, res) => {
       updated = rows.length - inserted;
     }
 
-    const { rows: hw } = await query(`SELECT max(ticket_number) AS highest FROM weighbridge_tickets`);
+    const { rows: hw } = await query(`SELECT max(ticket_number) AS highest FROM weighbridge_tickets WHERE ticket_number < ${APP_TICKET_BASE}`);
     const unchanged = clean.length - inserted - updated;
 
     await query(
@@ -495,10 +499,11 @@ const MAPPING_ROLES = ["administrator"];
 // opens this screen to answer "what came in today".
 router.get("/tickets", requirePermission("material.weighbridge", "view"), async (req, res) => {
   try {
+    await ensureRound269();
     const status = ["matched", "needs_review", "ignored"].includes(req.query.status) ? req.query.status : null;
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 400);
     const { rows } = await query(
-      `SELECT wb.ticket_number, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
+      `SELECT wb.ticket_number, wb.app_ticket_no, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
               wb.challan_number, wb.driver_name, wb.remarks, wb.charges,
               wb.empty_weight_kg, wb.loaded_weight_kg, wb.net_weight_kg,
               wb.billed_qty_raw, wb.material_id,${WB_SOURCE_COLS}
@@ -553,6 +558,7 @@ router.get("/tickets", requirePermission("material.weighbridge", "view"), async 
 // ---------------------------------------------------------------------------
 router.get("/report", requirePermission("weighbridge.records", "view"), async (req, res) => {
   try {
+    await ensureRound269();
     const params = [];
     const wh = [];
     const eventDate = "COALESCE(wb.weighed_at::date, wb.ticket_date)";
@@ -575,7 +581,7 @@ router.get("/report", requirePermission("weighbridge.records", "view"), async (r
     const where = wh.length ? wh.join(" AND ") : "true";
 
     const { rows } = await query(
-      `SELECT wb.ticket_number, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
+      `SELECT wb.ticket_number, wb.app_ticket_no, wb.raw_vehicle, wb.raw_material, wb.raw_supplier, wb.purpose,
               wb.challan_number, wb.driver_name, wb.net_weight_kg, wb.empty_weight_kg, wb.loaded_weight_kg,
               wb.billed_qty_raw, wb.material_id,${WB_SOURCE_COLS}
               m.tolerance_pct,

@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../lib/api.js";
 import { TopBar } from "../lib/TopBar.jsx";
 import { usePermissions } from "../lib/PermissionContext.jsx";
+import WeighbridgeWeighings from "./WeighbridgeWeighings.jsx"; // Round 269
 
 // Round 154 — the weighbridge screen.
 //
@@ -356,7 +357,7 @@ function Receipts({ canEdit }) {
                   <Fragment key={r.ticket_number}>
                   <tr style={{ borderTop: "1px solid var(--border)", background: isFixing ? "#FFF8F2" : undefined }}>
                     <td style={{ padding: "9px 12px", fontWeight: 600 }}>
-                      #{r.ticket_number}
+                      {r.app_ticket_no || `#${r.ticket_number}`}
                       {r.challan_number && r.challan_number !== "001" && (
                         <div style={{ fontSize: 11, color: "var(--slate)" }}>DC {r.challan_number}</div>
                       )}
@@ -1040,7 +1041,7 @@ function Records() {
           <tbody>
             {data.rows.map((t) => (
               <tr key={t.ticket_number} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={{ padding: "6px 8px", fontWeight: 600, whiteSpace: "nowrap" }}>#{t.ticket_number}</td>
+                <td style={{ padding: "6px 8px", fontWeight: 600, whiteSpace: "nowrap" }}>{t.app_ticket_no || `#${t.ticket_number}`}</td>
                 <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{t.weighed_at ? fmtWhen(t.weighed_at) : fmtDay(t.ticket_date)}</td>
                 <td style={{ padding: "6px 8px" }}>
                   {t.vehicle_registration || t.raw_vehicle || "—"}
@@ -1085,7 +1086,9 @@ export default function Weighbridge() {
   // granted view-only therefore saw live dropdowns that answered 403 on use.
   // Read and write are now gated by the action each one actually needs.
   const canMapEdit = ready && can("material.weighbridge-mapping", "edit");
-  const firstTab = [["receipts", canView], ["records", canRecords], ["mapping", canMap], ["vehicles", canVehicles]]
+  // Round 269 — weighing from the app.
+  const canWeigh = ready && can("weighbridge.weighing", "view");
+  const firstTab = [["weighings", canWeigh], ["receipts", canView], ["records", canRecords], ["mapping", canMap], ["vehicles", canVehicles]]
     .find((t) => t[1])?.[0] || "";
   const current = tab || firstTab;
 
@@ -1114,6 +1117,11 @@ export default function Weighbridge() {
             (it used to appear only for mappers). Mapping and Vehicles stay
             behind the mapping permission. */}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          {canWeigh && (
+            <button type="button" className={`btn-tab ${current === "weighings" ? "active" : ""}`} onClick={() => setTab("weighings")}>
+              Weighings
+            </button>
+          )}
           {canView && (
             <button type="button" className={`btn-tab ${current === "receipts" ? "active" : ""}`} onClick={() => setTab("receipts")}>
               Receipts
@@ -1136,7 +1144,9 @@ export default function Weighbridge() {
           )}
           {/* Round 204 — Receipt Variances moved to the Raw Material module. */}
         </div>
-        {current === "records" && canRecords
+        {current === "weighings" && canWeigh
+          ? <WeighbridgeWeighings canCreate={can("weighbridge.weighing", "create")} canEdit={can("weighbridge.weighing", "edit")} />
+          : current === "records" && canRecords
           ? <Records />
           : current === "mapping" && canMap
             ? <Mapping canEdit={canMapEdit} />

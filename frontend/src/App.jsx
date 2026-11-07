@@ -35,6 +35,8 @@ import TruckTimingReport from "./pages/TruckTimingReport.jsx";
 // Round 199 — the 360° Fuel Analysis lives inside the Fuel module now.
 import FuelModule from "./pages/FuelModule.jsx";
 import AccountsModule from "./pages/AccountsModule.jsx";
+import MarketingModule from "./pages/MarketingModule.jsx"; // Round 269
+import MarketingLink from "./pages/MarketingLink.jsx"; // Round 269 — public tracking link
 import OutstandingCollectionReport from "./pages/OutstandingCollectionReport.jsx";
 import FuelFilling, { MyVehicleFuel } from "./pages/FuelFilling.jsx";
 import SupplyApprovals from "./pages/SupplyApprovals.jsx";
@@ -120,6 +122,7 @@ export default function App() {
 
           {/* Public, no login — reached only via a shared per-order link. */}
           <Route path="/track/:token" element={<CustomerTracking />} />
+          <Route path="/m/:token" element={<MarketingLink />} />
           {/* Round 149 — the Delivery Challan (Solitaire) plugin. NOT wrapped in
               ProtectedRoute on purpose: the module has its own login, session and
               device lock (backend lib/solitaireAuth.js), a separate trust boundary
@@ -230,6 +233,9 @@ export default function App() {
           {/* Round 199 — old links and bookmarks land on the analysis inside the Fuel module. */}
           <Route path="/fuel-analysis" element={<Navigate to="/fuel-module?tab=analysis" replace />} />
           {/* Round 204 — the Accounts module (quotations, price lists, invoices, ledger, bank receipts). */}
+          <Route path="/marketing" element={
+            <ProtectedRoute perm="module.marketing"><MarketingModule /></ProtectedRoute>
+          } />
           <Route path="/accounts" element={
             <ProtectedRoute perm="module.accounts"><AccountsModule /></ProtectedRoute>
           } />

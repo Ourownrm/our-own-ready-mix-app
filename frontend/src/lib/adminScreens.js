@@ -43,6 +43,8 @@ export const GLYPHS = {
   box: '<path d="M20.5 7.6 12 3 3.5 7.6v8.8L12 21l8.5-4.6z"/><path d="M3.7 7.7 12 12.2l8.3-4.5M12 12.2V21"/>',
   phone: '<rect x="6.5" y="2.6" width="11" height="18.8" rx="2.4"/><path d="M10.6 5.4h2.8"/><path d="M11 18.4h2"/>',
   star: '<path d="m12 3.6 2.6 5.4 5.9.8-4.3 4.1 1.1 5.9-5.3-2.9-5.3 2.9 1.1-5.9L3.5 9.8l5.9-.8z"/>',
+  // Round 269 — Marketing.
+  megaphone: '<path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
   chat: '<path d="M20.5 12.6c0 4-3.8 7.2-8.5 7.2a10 10 0 0 1-2.8-.4L4 21l1.4-3.7A6.9 6.9 0 0 1 3.5 12.6c0-4 3.8-7.2 8.5-7.2s8.5 3.2 8.5 7.2z"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.7h17M8.5 3v4M15.5 3v4"/>',
   image: '<rect x="3.2" y="4.6" width="17.6" height="14.8" rx="2"/><circle cx="9" cy="10" r="1.7"/><path d="m4.4 17.6 4.9-4.5 3.6 3.1 3-2.5 3.7 3.2"/>',
@@ -241,6 +243,17 @@ export const ADMIN_MODULES = [
     screens: [],
   },
   {
+    // Round 269 — the Marketing module: directory, due today, library of
+    // posters / videos / PDFs (Google Drive), sending and tracking.
+    key: "marketing-module",
+    label: "Marketing",
+    icon: "megaphone",
+    colour: "#1D4ED8",
+    tint: "#E8F0FE",
+    to: "/marketing",
+    screens: [],
+  },
+  {
     // Round 218 — the Cost module: Cost dashboard, Profit & Loss, Balance
     // Sheet. Administrator only by default.
     key: "cost-module",
@@ -371,6 +384,7 @@ export const HUB = [
   { key: "hr", perm: ["module.hr"], to: "/hr" },
   { key: "fuel-module", perm: ["module.fuel"], to: "/fuel-module" },
   { key: "accounts-module", perm: ["module.accounts"], to: "/accounts" },
+  { key: "marketing-module", perm: ["module.marketing"], to: "/marketing" },
   { key: "maintenance-module", perm: ["module.maintenance"], to: "/maintenance-module" },
   { key: "cost-module", perm: ["module.cost", "cledger.access"], to: "/cost" },
   { key: "maintenance-complaint", perm: ["mnt.complaints"], to: "/maintenance-complaint" },

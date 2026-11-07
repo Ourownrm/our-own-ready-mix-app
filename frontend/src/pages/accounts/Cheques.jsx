@@ -87,7 +87,11 @@ export default function Cheques({ params, go }) {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8 }}>
           {d.week.map((w, i) => (
-            <div key={w.date} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5 }}>
+            // Round 269 (owner, 6 Nov 2026) — a day with a cheque to deposit gets a red border.
+            <div key={w.date} aria-label={w.deposit.n > 0 ? `${i === 0 ? "Today" : dayLabel(w.date)}: cheque due for deposit` : undefined}
+              style={w.deposit.n > 0
+                ? { border: "2px solid var(--alert-red)", borderRadius: 8, padding: "7px 9px", fontSize: 12.5, background: "var(--alert-red-bg)" }
+                : { border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5 }}>
               <div style={{ fontWeight: 600 }}>{i === 0 ? "Today" : dayLabel(w.date)}</div>
               {w.deposit.n > 0 && <div style={{ color: "var(--signal-green)" }}>↓ {w.deposit.n} to deposit{i === 0 ? " (incl. overdue)" : ""} · {money(w.deposit.amount)}</div>}
               {w.issued.n > 0 && <div style={{ color: "var(--amber)" }}>↑ {w.issued.n} issued · {money(w.issued.amount)}</div>}

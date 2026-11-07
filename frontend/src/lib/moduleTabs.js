@@ -154,4 +154,16 @@ export const MODULE_TABS = {
       { key: "settings", label: "Settings", perm: "hr.settings" },
     ],
   },
+  // Round 269 — the Marketing module.
+  "marketing-module": {
+    path: "/marketing",
+    tabs: [
+      { key: "directory", label: "Directory", perm: "marketing.directory" },
+      { key: "due", label: "Due today", perm: "marketing.directory" },
+      { key: "library", label: "Library", any: [["marketing.library", "view"], ["marketing.approve", "edit"]] },
+      { key: "send", label: "Send", any: [["marketing.send-group", "create"], ["marketing.send-own", "create"]] },
+      { key: "tracking", label: "Tracking", perm: "marketing.tracking" },
+      { key: "settings", label: "Settings", perm: "marketing.settings" },
+    ],
+  },
 };

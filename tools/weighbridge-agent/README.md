@@ -161,3 +161,27 @@ agent is visible there rather than being discovered a week later.
 The agent never exits on an error; it logs it and retries next cycle. Losing the
 network for a week loses nothing, because the weighbridge's own database is the
 queue — the agent simply re-reads it when the network is back.
+
+## Round 269 — live weight for weighing from the app (`indicator.js`)
+
+The app can now open and close weighbridge tickets itself (Weighbridge → Weighings). The weight is
+never typed: `indicator.js` reads the weighbridge indicator's serial output and sends the reading to
+the app about once a second.
+
+1. In this folder: `npm install` (adds the `serialport` package).
+2. Add the `indicator` block from `config.example.json` to your `config.json` (COM1, 9600 baud, frames
+   `:` … `\r` are already the plant's settings).
+3. Check it: `node indicator.js --listen` — you should see lines like
+   `frame "  24860" -> 24860 kg STABLE`. If the weight is wrong, change `pattern` / `multiplier`.
+4. Run it for real: `node indicator.js`, and add it as a second scheduled task (At startup, same as
+   `agent.js`).
+
+**One program per serial port.** While SmartWeigh has COM1 open, `indicator.js` cannot read it (the
+log says "Could not open COM1"). Options, best first:
+- connect the indicator's **second serial output** (most indicators have two) to another COM port
+  (or a USB-serial adapter) and set `"port"` to it;
+- a passive **RS-232 splitter / Y-cable**, so both programs listen to the same output;
+- stop using SmartWeigh for weighing and close it.
+
+`agent.js` keeps syncing SmartWeigh tickets as before; app tickets are numbered `WB-A-0001…` and never
+clash with SmartWeigh numbers.

@@ -339,6 +339,11 @@ export const CATALOGUE = [
   // Round 192 — Weighbridge sub-menus that rode on the two keys above.
   f("weighbridge.records", "material", "Weighbridge — Records", V, { ...WB_ROLES }),
   f("weighbridge.vehicles", "material", "Weighbridge — Vehicles", VE, { administrator: VE }),
+  // Round 269 — weighing a lorry from the app (live weight from the
+  // indicator, never typed). Create = first / second weight; edit = cancel an
+  // open ticket.
+  f("weighbridge.weighing", "material", "Weighbridge — Weighings (weigh from the app)", VCE,
+    { administrator: VCE, manager: VCE, store: VC }),
   // The variance REPORT on the Receipt Differences screen (it used to need the
   // whole material.reports key). Confirming a disputed load stays
   // material.receipt-confirm.
@@ -904,6 +909,27 @@ export const CATALOGUE = [
     { administrator: V }),
   f("admin.notifications", "admin", "Notifications setup", VCE,
     { administrator: VCE, manager: VCE }),
+  // Round 269 — the Marketing module (owner, 6 Nov 2026): directory of firms
+  // and contacts by level, communication plans, the library of posters /
+  // videos / technical PDFs in Google Drive (Admin approves), sending by
+  // WhatsApp API / phone / email, and tracking. "Admin to choose a person in
+  // permission, and admin should approve."
+  f("module.marketing", "sales", "Marketing module", V,
+    { administrator: V, manager: V, sales_executive: V }),
+  f("marketing.directory", "sales", "Marketing — directory, contacts, plans, due today, log calls", VCE,
+    { administrator: VCE, manager: VCE, sales_executive: VCE }),
+  f("marketing.library", "sales", "Marketing — library (view, upload)", VC,
+    { administrator: VC, manager: VC, sales_executive: V }),
+  f("marketing.approve", "sales", "Marketing — approve material in the library", E,
+    { administrator: E }),
+  f("marketing.send-group", "sales", "Marketing — send to a group (WhatsApp API / email)", VC,
+    { administrator: VC }),
+  f("marketing.send-own", "sales", "Marketing — send to own firms from the phone", VC,
+    { administrator: VC, manager: VC, sales_executive: VC }),
+  f("marketing.tracking", "sales", "Marketing — tracking (who opened what)", V,
+    { administrator: V, manager: V }),
+  f("marketing.settings", "sales", "Marketing — settings (WhatsApp, Google Drive, email, lists)", VE,
+    { administrator: VE }),
   // Round 268 — Team Chat (owner, 1 & 6 Nov 2026: "small communications with
   // in the team will happen in app", "without costing anything extra in
   // render"). Every staff role reads and sends by default; groups and the
@@ -1027,8 +1053,10 @@ export const MODULES = [
       { key: "weighbridge.records", label: "Records" },
       { key: "material.weighbridge-mapping", label: "Name Mapping" },
       { key: "weighbridge.vehicles", label: "Vehicles" },
+      { key: "weighbridge.weighing", label: "Weighings" },
     ],
     support: [],
+    noAutoView: ["weighbridge.weighing"],
   },
   {
     // Round 197 — HR, stage 1. Plant Manager and Accountant get the module per
@@ -1119,6 +1147,19 @@ export const MODULES = [
       "accounts.price-revision", "accounts.invoice-gst", "accounts.invoice-print", "accounts.invoice-cash", "accounts.credit-note-approve", "accounts.receipt-cancel", "accounts.receipt-correct", "accounts.quotation-import",
       "accounts.petty-cash-approve", "accounts.petty-cash-fund", "accounts.petty-cash-setup", "accounts.cheque-correct",
       "accounts.quotation-costing", "accounts.price-list-enable"],
+  },
+  {
+    // Round 269 — the Marketing module. Roles are set on each function above.
+    key: "marketing", label: "Marketing", gate: "module.marketing", to: "/marketing",
+    matrixRoles: [],
+    menus: [
+      { key: "marketing.directory", label: "Directory & due today" },
+      { key: "marketing.library", label: "Library" },
+      { key: "marketing.send-group", label: "Send" },
+      { key: "marketing.tracking", label: "Tracking" },
+      { key: "marketing.settings", label: "Settings" },
+    ],
+    support: ["marketing.approve", "marketing.send-own"],
   },
   {
     // Round 218 — the Cost module. Administrator only by default.

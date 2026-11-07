@@ -57,6 +57,9 @@ import costGstRoutes from "./routes/costGst.js";
 import cLedgerRoutes from "./routes/cLedger.js";
 import deliveryNotesRoutes from "./routes/deliveryNotes.js";
 import weighbridgeRoutes from "./routes/weighbridge.js";
+import weighbridgeWeighingRoutes from "./routes/weighbridgeWeighing.js";
+import marketingRoutes from "./routes/marketing.js";
+import marketingPublicRoutes from "./routes/marketingPublic.js";
 // Round 195 — attendance machine (eSSL) punches; /sync is API-key, the rest is session.
 import attendanceRoutes from "./routes/attendance.js";
 // Round 197 — HR module stage 1.
@@ -187,7 +190,12 @@ app.use((req, res, next) => {
 // 8MB of base64 alone is ~10.7MB before the surrounding JSON (title,
 // filename, etc.) is even added — 10mb would silently 413 files the
 // route's own size check was written to accept.
-app.use(express.json({ limit: "12mb" }));
+// Round 269 — the WhatsApp webhook's signature is over the raw bytes, so keep
+// them for that one path.
+app.use(express.json({
+  limit: "12mb",
+  verify: (req, res, buf) => { if (req.originalUrl.startsWith("/api/marketing-public/wa-webhook")) req.rawBody = buf; },
+}));
 // Round 149 — Solitaire keeps its session and device lock in cookies rather
 // than a bearer token, deliberately: it is a separate trust boundary from the
 // main app and must never be reachable with a main-app JWT. Nothing else in
@@ -247,7 +255,14 @@ app.use("/api/delivery-notes", deliveryNotesRoutes);
 // Round 154 — the weighbridge sync. NOTE: this router deliberately exposes ONE
 // route (POST /sync) that is authenticated by an API key rather than a session,
 // declared above its own requireAuth. See routes/weighbridge.js.
+// Round 269 — weighing from the app. BEFORE weighbridgeRoutes: its router puts
+// every path behind a session, and the indicator agent's POST /live has none.
+app.use("/api/weighbridge", weighbridgeWeighingRoutes);
 app.use("/api/weighbridge", weighbridgeRoutes);
+// Round 269 — the Marketing module; marketing-public has no sign-in (tracking
+// links, WhatsApp webhook, Google Drive callback, signed media).
+app.use("/api/marketing", marketingRoutes);
+app.use("/api/marketing-public", marketingPublicRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/hr", hrRoutes);
 // Round 202 — attendance marked on the phone (face, location, registered phone).
